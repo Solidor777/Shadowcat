@@ -191,7 +191,7 @@ pub async fn router(state: AppState) -> Router {
         .route(
             "/api/worlds/{world}/assets",
             post(assets::upload)
-                .get(assets::list)
+                .get(assets::query::list)
                 .layer(DefaultBodyLimit::disable()),
         )
         .route(

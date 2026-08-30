@@ -296,6 +296,7 @@ pub async fn create_asset_from_bytes(
 }
 
 pub mod process;
+pub mod query;
 pub mod tags;
 
 #[cfg(test)]

@@ -4,6 +4,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use super::*;
+use crate::data::asset::query::{AssetCursor, AssetFilter, AssetKind, AssetSort, FolderFilter};
 use crate::data::asset::tags::{derive, provenance_of, DeriveInput};
 use crate::data::asset::{Asset, AssetMeta};
 use crate::data::engine::ASSET_FOLDER_DOC_TYPE;
@@ -394,6 +395,138 @@ impl SqliteRepository {
         row.map(|r| Self::asset_from_row(&r)).transpose()
     }
 
+    /// Fill `tags`/`derived_tags` on every asset in `assets` with one query
+    /// per 500 ids.
+    async fn fill_tags(&self, assets: &mut [Asset]) -> Result<(), DataError> {
+        for chunk in assets.chunks_mut(500) {
+            let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
+                "SELECT asset_id, tag, derived FROM asset_tags WHERE asset_id IN (",
+            );
+            let mut sep = qb.separated(", ");
+            for a in chunk.iter() {
+                sep.push_bind(a.id.to_string());
+            }
+            qb.push(") ORDER BY tag");
+            let rows = qb.build().fetch_all(&self.pool).await?;
+            let mut by_asset: std::collections::HashMap<Uuid, Vec<TagRow>> =
+                std::collections::HashMap::new();
+            for r in rows {
+                let asset_id = Uuid::parse_str(r.get::<String, _>("asset_id").as_str())
+                    .map_err(|e| DataError::OpFailed(e.to_string()))?;
+                by_asset.entry(asset_id).or_default().push(TagRow {
+                    tag: r.get("tag"),
+                    derived: r.get::<i64, _>("derived") != 0,
+                });
+            }
+            for asset in chunk.iter_mut() {
+                let (tags, derived) = split_tags(by_asset.remove(&asset.id).unwrap_or_default());
+                asset.tags = tags;
+                asset.derived_tags = derived;
+            }
+        }
+        Ok(())
+    }
+
+    /// The SQL-side asset query: `filter` narrows, `sort` orders (`sort`'s
+    /// key then `id`, ascending), `after` resumes past a keyset position, and
+    /// at most `limit` rows come back with tags filled. A recursive folder
+    /// scope walks `documents.parent_id` over `asset_folder` rows in a CTE.
+    pub async fn query_assets(
+        &self,
+        world: Uuid,
+        filter: &AssetFilter,
+        sort: AssetSort,
+        after: Option<&AssetCursor>,
+        limit: u32,
+    ) -> Result<Vec<Asset>, DataError> {
+        let mut qb = sqlx::QueryBuilder::<sqlx::Sqlite>::new("");
+        if let Some(FolderFilter::In {
+            folder,
+            recursive: true,
+        }) = filter.folder
+        {
+            qb.push("WITH RECURSIVE sub(id) AS (SELECT ");
+            qb.push_bind(folder.to_string());
+            qb.push(
+                " UNION ALL SELECT d.id FROM documents d JOIN sub ON d.parent_id = sub.id                  WHERE d.doc_type = 'asset_folder') ",
+            );
+        }
+        qb.push("SELECT a.* FROM assets a WHERE a.world_id = ");
+        qb.push_bind(world.to_string());
+        match filter.folder {
+            None | Some(FolderFilter::Any) => {}
+            Some(FolderFilter::Root) => {
+                qb.push(" AND a.folder_id IS NULL");
+            }
+            Some(FolderFilter::In {
+                folder,
+                recursive: false,
+            }) => {
+                qb.push(" AND a.folder_id = ");
+                qb.push_bind(folder.to_string());
+            }
+            Some(FolderFilter::In {
+                recursive: true, ..
+            }) => {
+                qb.push(" AND a.folder_id IN (SELECT id FROM sub)");
+            }
+        }
+        for tag in &filter.tags {
+            qb.push(" AND EXISTS (SELECT 1 FROM asset_tags t WHERE t.asset_id = a.id AND t.tag = ");
+            qb.push_bind(tag.clone());
+            qb.push(")");
+        }
+        match filter.kind {
+            None => {}
+            Some(AssetKind::Image) => {
+                qb.push(" AND a.content_type LIKE 'image/%'");
+            }
+            Some(AssetKind::Other) => {
+                qb.push(" AND a.content_type NOT LIKE 'image/%'");
+            }
+        }
+        if let Some(name) = &filter.name {
+            // `\` escapes LIKE's own wildcards so a literal `%`/`_` in the
+            // needle matches itself.
+            let needle = name
+                .to_lowercase()
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_");
+            qb.push(" AND lower(a.original_name) LIKE '%' || ");
+            qb.push_bind(needle);
+            qb.push(" || '%' ESCAPE '\\'");
+        }
+        let key = sort.sql_key();
+        if let Some(cur) = after {
+            qb.push(format!(" AND ({key}, a.id) > ("));
+            match sort {
+                AssetSort::Name => {
+                    qb.push_bind(cur.sort_key.clone());
+                }
+                AssetSort::Created | AssetSort::Size => {
+                    let n: i64 = cur
+                        .sort_key
+                        .parse()
+                        .map_err(|_| DataError::OpFailed("malformed cursor".into()))?;
+                    qb.push_bind(n);
+                }
+            }
+            qb.push(", ");
+            qb.push_bind(cur.id.to_string());
+            qb.push(")");
+        }
+        qb.push(format!(" ORDER BY {key}, a.id LIMIT "));
+        qb.push_bind(i64::from(limit));
+        let rows = qb.build().fetch_all(&self.pool).await?;
+        let mut assets: Vec<Asset> = rows
+            .iter()
+            .map(Self::asset_from_row)
+            .collect::<Result<_, _>>()?;
+        self.fill_tags(&mut assets).await?;
+        Ok(assets)
+    }
+
     /// All asset rows for `world`, oldest first, tags filled.
     ///
     /// # Examples
@@ -417,31 +550,7 @@ impl SqliteRepository {
             .iter()
             .map(Self::asset_from_row)
             .collect::<Result<_, _>>()?;
-        let tag_rows = sqlx::query(
-            "SELECT t.asset_id AS asset_id, t.tag AS tag, t.derived AS derived \
-             FROM asset_tags t JOIN assets a ON a.id = t.asset_id \
-             WHERE a.world_id = ? ORDER BY t.tag",
-        )
-        .bind(world.to_string())
-        .fetch_all(&self.pool)
-        .await?;
-        let mut by_asset: std::collections::HashMap<Uuid, Vec<TagRow>> =
-            std::collections::HashMap::new();
-        for r in tag_rows {
-            let asset_id = Uuid::parse_str(r.get::<String, _>("asset_id").as_str())
-                .map_err(|e| DataError::OpFailed(e.to_string()))?;
-            by_asset.entry(asset_id).or_default().push(TagRow {
-                tag: r.get("tag"),
-                derived: r.get::<i64, _>("derived") != 0,
-            });
-        }
-        for asset in &mut assets {
-            if let Some(rows) = by_asset.remove(&asset.id) {
-                let (tags, derived) = split_tags(rows);
-                asset.tags = tags;
-                asset.derived_tags = derived;
-            }
-        }
+        self.fill_tags(&mut assets).await?;
         Ok(assets)
     }
 }
