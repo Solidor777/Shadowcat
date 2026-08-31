@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use proptest::prelude::*;
 
 use super::types::{FormulaError, FormulaErrorKind, FormulaValue};
-use super::{evaluate, parse, resolve_all};
+use super::{evaluate, parse, resolve_all, resolve_notation_template};
 
 /// Source strings drawn from the language's own alphabet so a useful fraction
 /// parses, plus arbitrary junk so the error paths are exercised too.
@@ -28,6 +28,17 @@ fn resolver_value() -> impl Strategy<Value = FormulaValue> {
             FormulaErrorKind::UnknownRef,
             "unknown reference 'x'"
         ))),
+    ]
+}
+
+/// Template sources: the notation alphabet including brackets and dots (so
+/// label spans, keyword runs and dotted references all occur), plus arbitrary
+/// junk for the error and literal-fallback paths.
+fn template_source() -> impl Strategy<Value = String> {
+    prop_oneof![
+        3 => "[0-9a-z_ .+*/%(),\\[\\]-]{0,60}",
+        1 => "[a-z]+(\\.[a-z]+){0,3}",
+        1 => "\\PC{0,40}",
     ]
 }
 
@@ -63,5 +74,15 @@ proptest! {
         for n in r.values().flatten() {
             prop_assert!(n.is_finite());
         }
+    }
+
+    #[test]
+    fn resolve_notation_template_never_panics(
+        src in template_source(),
+        v in resolver_value(),
+    ) {
+        // The assertion is the call itself: the crate's never-panics rule
+        // covers the template scan on every input and every resolver outcome.
+        let _ = resolve_notation_template(&src, &|_: &[String]| v.clone());
     }
 }

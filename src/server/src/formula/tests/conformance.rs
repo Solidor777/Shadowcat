@@ -66,10 +66,37 @@ struct GraphCase {
     expect: BTreeMap<String, Expected>,
 }
 
+/// A template case's expectation: the rewritten notation, or the error the
+/// scan ends in. `Notation` is tried first so an error object's `error`/
+/// `detail` keys can never parse as it.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum TemplateExpect {
+    /// The scan succeeds with this notation.
+    Notation {
+        /// The rewritten notation string.
+        notation: String,
+    },
+    /// The scan ends in this error.
+    Failure(FormulaError),
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateCase {
+    name: String,
+    src: String,
+    /// Stub-resolver environment keyed by the dotted path in the author's raw
+    /// case — the template grammar never lowercases what it offers.
+    #[serde(default)]
+    bindings: BTreeMap<String, Expected>,
+    expect: TemplateExpect,
+}
+
 #[derive(Debug, Deserialize)]
 struct Corpus {
     expressions: Vec<ExpressionCase>,
     graphs: Vec<GraphCase>,
+    templates: Vec<TemplateCase>,
 }
 
 /// The shared corpus, read from the client package so both suites see one file.
@@ -95,6 +122,7 @@ fn case_names_are_unique() {
         .iter()
         .map(|e| e.name.as_str())
         .chain(c.graphs.iter().map(|g| g.name.as_str()))
+        .chain(c.templates.iter().map(|t| t.name.as_str()))
         .collect();
     let total = names.len();
     names.sort();
@@ -118,6 +146,34 @@ fn every_expression_case_matches() {
             }),
         };
         assert_eq!(actual, expected, "expression case '{}'", case.name);
+    }
+}
+
+#[test]
+fn every_template_case_matches() {
+    let c = corpus();
+    assert!(!c.templates.is_empty());
+    for case in c.templates {
+        let bindings: BTreeMap<String, FormulaValue> = case
+            .bindings
+            .into_iter()
+            .map(|(k, v)| (k, v.into()))
+            .collect();
+        let actual = crate::formula::resolve_notation_template(&case.src, &|path: &[String]| {
+            let key = path.join(".");
+            bindings
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(|| unknown_ref(&key))
+        });
+        match case.expect {
+            TemplateExpect::Notation { notation } => {
+                assert_eq!(actual, Ok(notation), "template case '{}'", case.name);
+            }
+            TemplateExpect::Failure(err) => {
+                assert_eq!(actual, Err(err), "template case '{}'", case.name);
+            }
+        }
     }
 }
 
