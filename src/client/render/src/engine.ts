@@ -15,6 +15,7 @@ import { DrawingView } from "./drawing-view";
 import { TemplateView } from "./template-view";
 import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
+import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
@@ -128,6 +129,8 @@ export class RenderEngine implements SceneToolHost {
   private readonly walls: WallView;
   /** Doc→shape reconciler for `region` docs. */
   private readonly regions: RegionView;
+  /** Doc→shape reconciler for `light` docs (GM authoring markers). */
+  private readonly lights: LightView;
   /** Transient ping-ring state, ticked each frame; drives `DisplayBackend.drawPings`. */
   private readonly pings = new PingView();
   /** Whether ping rings were drawn last frame, so the ticker stops redrawing once idle. */
@@ -238,6 +241,7 @@ export class RenderEngine implements SceneToolHost {
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
     this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
     this.regions = new RegionView(opts.store, opts.backend, this.viewedScene);
+    this.lights = new LightView(opts.store, opts.backend, this.viewedScene);
     this.compositor = new Compositor(opts.backend);
     this.lighting = new Lighting(opts.backend);
   }
@@ -273,6 +277,7 @@ export class RenderEngine implements SceneToolHost {
     this.templates.reconcile();
     this.walls.reconcile();
     this.regions.reconcile();
+    this.lights.reconcile();
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
@@ -280,6 +285,7 @@ export class RenderEngine implements SceneToolHost {
       this.templates.reconcile();
       this.walls.reconcile();
       this.regions.reconcile();
+      this.lights.reconcile();
       this.flushPendingDerived();
     });
     this.opts.backend.startTicker((dt) => {
@@ -498,6 +504,7 @@ export class RenderEngine implements SceneToolHost {
     this.templates.reconcile();
     this.walls.reconcile();
     this.regions.reconcile();
+    this.lights.reconcile();
     if (this.lastRawPayload !== undefined) {
       this.lighting.setTarget(this.toLighting(this.lastRawPayload));
       this.lastInput = this.toVisibility(this.lastRawPayload);

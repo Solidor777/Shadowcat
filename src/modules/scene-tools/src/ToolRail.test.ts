@@ -4,7 +4,7 @@ import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation } from "@shadowcat/core";
 import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
@@ -340,4 +340,119 @@ test("select/input controls get a 44px coarse-pointer min-height", () => {
   const controlsRuleMatch = toolRailSource.match(/\.controls select,\s*\.controls input\s*\{([^}]*@media[^}]*\{[^}]*\}[^}]*)\}/);
   expect(controlsRuleMatch).toBeTruthy();
   expect(controlsRuleMatch?.[1]).toMatch(/@media \(pointer: coarse\)\s*\{\s*min-height:\s*44px;\s*\}/);
+});
+
+// --- Light/wall editors (the shared editing selection) ---
+
+/** A store with one scene, one light at (200,200), one wall along y=700. */
+function editorStore(): DocumentStore {
+  const docs = sceneStore();
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildLightDoc("w1", "s1", {
+          x: 200, y: 200,
+          emission: { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+        }, "light-1"),
+      },
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "wall", {
+          seg: { x1: 0, y1: 700, x2: 400, y2: 700 }, blocksSight: true, blocksMove: true, blocksLight: true,
+        }),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("the light tool is GM-only in the rail; a GM sees it, a player does not", () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  expect(screen.getByTestId("tool-light")).toBeTruthy();
+
+  const second = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", scene: second.scene }) });
+  expect(screen.queryAllByTestId("tool-light")).toHaveLength(1); // only the GM instance's
+});
+
+test("clicking a light with the light tool opens the editor; edits dispatch with raw-stored OCC pre-images", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  const tool = tools.at(-1)!;
+  tool.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tool.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  expect(await screen.findByTestId("light-editor")).toBeTruthy();
+
+  // Intensity edit: old is the RAW stored 0.8, new the typed value.
+  await fireEvent.change(screen.getByTestId("light-intensity"), { target: { value: "0.5" } });
+  const op = dispatched.at(-1)![0];
+  expect(op).toEqual({ op: "update", doc_id: "light-1", changes: [{ path: "/engine/emission/intensity", old: 0.8, new: 0.5 }] });
+
+  // Enabled toggle off.
+  await fireEvent.click(screen.getByTestId("light-enabled"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/emission/enabled", old: true, new: false }],
+  });
+
+  // Falloff select writes the wrapper object; the raw stored `falloff` was absent → old null.
+  await fireEvent.change(screen.getByTestId("light-falloff"), { target: { value: "quadratic" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/emission/falloff", old: null, new: { curve: "quadratic" } }],
+  });
+});
+
+test("the light editor's delete dispatches the full pre-image and closes the editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tools.at(-1)!.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  await screen.findByTestId("light-editor");
+  await fireEvent.click(screen.getByTestId("light-delete"));
+  const op = dispatched.at(-1)![0];
+  expect(op.op).toBe("delete");
+  if (op.op === "delete") expect(op.doc.id).toBe("light-1");
+  expect(screen.queryByTestId("light-editor")).toBeNull();
+});
+
+test("selecting a wall with the select tool opens the flag editor; a flag toggle dispatches raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+
+  await fireEvent.click(screen.getByTestId("wall-blocks-light")); // uncheck blocksLight
+  const wallId = docs.query("wall")[0].id;
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/blocksLight", old: true, new: false }],
+  });
+});
+
+test("Escape clears the open editor", async () => {
+  const { scene, tools } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: () => {} }) });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tools.at(-1)!.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  await screen.findByTestId("light-editor");
+  await fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByTestId("light-editor")).toBeNull();
 });

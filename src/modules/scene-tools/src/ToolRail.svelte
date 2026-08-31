@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, type WireDocument } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type LightEngine, type WallEngine, type FalloffCurve } from "@shadowcat/core";
   import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -113,6 +113,7 @@
     { id: "ping", label: t("tools.ping"), gmOnly: false },
     { id: "wall", label: t("tools.wall"), gmOnly: true },
     { id: "region", label: t("tools.region"), gmOnly: true },
+    { id: "light", label: t("tools.light"), gmOnly: true },
   ];
   const visibleTools = tools.filter((tool) => isGm || !tool.gmOnly);
   // Speak-as-token affordance: shown whenever exactly one token is selected and the current
@@ -150,7 +151,68 @@
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
+  const falloffCurves: FalloffCurve[] = ["linear", "quadratic", "none"];
+
+  // The light/wall editor's target document, resolved live from the shared editing selection
+  // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
+  const editingDoc = $derived.by((): WireDocument | null => {
+    subscribe();
+    const sel = controller.editingEntity;
+    if (!sel) return null;
+    const doc = ctx.documents.get(sel.id);
+    // A deleted/elsewhere-moved doc drops the selection rather than editing a ghost.
+    if (!doc || doc.doc_type !== sel.kind) return null;
+    return doc;
+  });
+  // Keep the controller's selection honest when the target disappears.
+  $effect(() => {
+    if (controller.editingEntity && !editingDoc) controller.editingEntity = null;
+  });
+
+  /** Dispatch one field-level update against the light/wall being edited. `old` MUST be the
+   * RAW stored value at `path` (the server's field-level optimistic-concurrency check compares
+   * against it) — never a resolved/defaulted value. The standing raw-`old` convention.
+   * @param path The engine-band JSON pointer being written.
+   * @param oldRaw The raw stored value currently at `path` (`null` when absent).
+   * @param value The new value to write.
+   * @example
+   * ```
+   * editSelected("/engine/emission/enabled", true, false);
+   * ```
+   */
+  function editSelected(path: string, oldRaw: unknown, value: unknown): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    ctx.dispatchIntent([{ op: "update", doc_id: doc.id, changes: [{ path, old: oldRaw, new: value }] }]);
+  }
+
+  /** Delete the document open in the editor (full pre-image op) and clear the selection.
+   * @example
+   * ```
+   * deleteSelected();
+   * ```
+   */
+  function deleteSelected(): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    ctx.dispatchIntent([{ op: "delete", doc }]);
+    controller.editingEntity = null;
+  }
+
+  /** Escape backs out of an open light/wall editor (clears the editing selection). Tool
+   * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
+   * @param event The window keydown event.
+   * @example
+   * ```
+   * onWindowKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+   * ```
+   */
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.key === "Escape" && controller.editingEntity) controller.editingEntity = null;
+  }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
   {#each visibleTools as tool (tool.id)}
@@ -226,6 +288,108 @@
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}
         </label>
+      </div>
+    {/if}
+
+    <!-- The light/wall editors key off the shared editing selection, not the active tool:
+         both the select tool and the light tool can open one. `onchange` (commit-on-blur /
+         picker-close), never `oninput`, so a slider/color drag doesn't fire one OCC write per
+         pixel; each write's `old` reads the RAW stored value from the freshly derived doc. -->
+    {#if editingDoc && controller.editingEntity?.kind === "light"}
+      {@const eng = editingDoc.engine as LightEngine}
+      <div class="controls" data-testid="light-editor">
+        <label>
+          <input
+            type="checkbox"
+            data-testid="light-enabled"
+            checked={eng.emission.enabled}
+            onchange={(e) => editSelected("/engine/emission/enabled", eng.emission.enabled, e.currentTarget.checked)}
+          />
+          {t("tools.enabled")}
+        </label>
+        <input
+          type="color"
+          data-testid="light-color"
+          aria-label={t("tools.color")}
+          value={/^#[0-9a-fA-F]{6}$/.test(eng.emission.color) ? eng.emission.color : "#ffffff"}
+          onchange={(e) => editSelected("/engine/emission/color", eng.emission.color, e.currentTarget.value)}
+        />
+        <label>
+          {t("tools.intensity")}
+          <input
+            type="number"
+            data-testid="light-intensity"
+            min="0"
+            max="1"
+            step="0.05"
+            value={eng.emission.intensity}
+            onchange={(e) => editSelected("/engine/emission/intensity", eng.emission.intensity, e.currentTarget.valueAsNumber)}
+          />
+        </label>
+        <label>
+          {t("tools.brightRadius")}
+          <input
+            type="number"
+            data-testid="light-bright"
+            min="0"
+            step="0.5"
+            value={eng.emission.brightRadius}
+            onchange={(e) => editSelected("/engine/emission/brightRadius", eng.emission.brightRadius, e.currentTarget.valueAsNumber)}
+          />
+        </label>
+        <label>
+          {t("tools.dimRadius")}
+          <input
+            type="number"
+            data-testid="light-dim"
+            min="0"
+            step="0.5"
+            value={eng.emission.dimRadius}
+            onchange={(e) => editSelected("/engine/emission/dimRadius", eng.emission.dimRadius, e.currentTarget.valueAsNumber)}
+          />
+        </label>
+        <select
+          data-testid="light-falloff"
+          aria-label={t("tools.falloff")}
+          value={eng.emission.falloff?.curve ?? "linear"}
+          onchange={(e) =>
+            editSelected("/engine/emission/falloff", eng.emission.falloff ?? null, { curve: e.currentTarget.value })}
+        >
+          {#each falloffCurves as f (f)}<option value={f}>{f}</option>{/each}
+        </select>
+        <button type="button" class="tool" data-testid="light-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "wall"}
+      {@const eng = editingDoc.engine as WallEngine}
+      <div class="controls" data-testid="wall-editor">
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-sight"
+            checked={eng.blocksSight}
+            onchange={(e) => editSelected("/engine/blocksSight", eng.blocksSight, e.currentTarget.checked)}
+          />
+          {t("tools.blocksSight")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-move"
+            checked={eng.blocksMove}
+            onchange={(e) => editSelected("/engine/blocksMove", eng.blocksMove, e.currentTarget.checked)}
+          />
+          {t("tools.blocksMove")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-light"
+            checked={eng.blocksLight}
+            onchange={(e) => editSelected("/engine/blocksLight", eng.blocksLight, e.currentTarget.checked)}
+          />
+          {t("tools.blocksLight")}
+        </label>
+        <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
   {/if}
