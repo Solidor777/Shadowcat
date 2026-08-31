@@ -37,6 +37,8 @@ interface WillDropProbe {
 interface ComponentInternals {
   _onWillDrop: InternalEmitter<WillDropProbe>;
   _bufferOnDidLayoutChange: InternalEmitter<void>;
+  _onDidPopoutGroupSizeChange: InternalEmitter<{ width: number; height: number; group: IDockviewGroupPanel }>;
+  _onDidPopoutGroupPositionChange: InternalEmitter<{ screenX: number; screenY: number; group: IDockviewGroupPanel }>;
 }
 
 /** Group-level internals, reached per group rather than through the component. */
@@ -1920,3 +1922,73 @@ test("restorePopouts on an empty arrangement (or before init) is a no-op", () =>
   engineFresh.restorePopouts!([{ key: "w1", panels: ["chat"], rect: null }]); // no init — must not throw
   engineFresh.destroy();
 });
+
+/** Stubs `DockviewApi.getPopouts` to report one entry for `group` whose live
+ * popup `Window` reports `geometry` — jsdom has no real popup, so the entry's
+ * window carries the values a real one would. Returns the spy's restore
+ * function. */
+function stubPopoutEntry(
+  api: DockviewApi,
+  group: IDockviewGroupPanel,
+  geometry: { screenX: number; screenY: number; innerWidth: number; innerHeight: number },
+): () => void {
+  const popupWindow = geometry as unknown as Window;
+  const spy = vi
+    .spyOn(api, "getPopouts")
+    .mockReturnValue([{ id: group.id, group, window: popupWindow }] as unknown as ReturnType<DockviewApi["getPopouts"]>);
+  return () => spy.mockRestore();
+}
+
+test("popout geometry capture: a window move emits updatePopoutGeometry read from the popout entry's own window, never the event payload", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-move");
+  const restore = stubPopoutEntry(api, group, { screenX: 640, screenY: 220, innerWidth: 900, innerHeight: 700 });
+  try {
+    // The vendored position event's payload is corrupt by construction
+    // (`screenY` populated from `screenX`) — both axes deliberately disagree
+    // with the window's real geometry, so a passing assertion proves the
+    // payload is never read.
+    componentOf(api)._onDidPopoutGroupPositionChange.fire({ screenX: 1, screenY: 1, group });
+    expect(ops).toContainEqual({
+      op: "updatePopoutGeometry",
+      key: expect.any(String),
+      rect: { left: 640, top: 220, width: 900, height: 700 },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("popout geometry capture: a window resize emits updatePopoutGeometry read from the entry's window (payload ignored)", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-resize");
+  const restore = stubPopoutEntry(api, group, { screenX: 10, screenY: 20, innerWidth: 1024, innerHeight: 640 });
+  try {
+    componentOf(api)._onDidPopoutGroupSizeChange.fire({ width: 5, height: 5, group });
+    expect(ops).toContainEqual({
+      op: "updatePopoutGeometry",
+      key: expect.any(String),
+      rect: { left: 10, top: 20, width: 1024, height: 640 },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("popout geometry capture: an event for a group with no tracked window key emits nothing", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-untracked");
+  const other = api.groups.find((g) => g.id !== group.id)!;
+  componentOf(api)._onDidPopoutGroupPositionChange.fire({ screenX: 1, screenY: 1, group: other });
+  componentOf(api)._onDidPopoutGroupSizeChange.fire({ width: 5, height: 5, group: other });
+  expect(ops.some((o) => o.op === "updatePopoutGeometry")).toBe(false);
+});
+
+test("popout geometry capture: an event whose popout entry is already gone from getPopouts (window closed mid-delivery) emits nothing", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-gone");
+  const spy = vi.spyOn(api, "getPopouts").mockReturnValue([]);
+  try {
+    componentOf(api)._onDidPopoutGroupPositionChange.fire({ screenX: 1, screenY: 1, group });
+    expect(ops.some((o) => o.op === "updatePopoutGeometry")).toBe(false);
+  } finally {
+    spy.mockRestore();
+  }
+});
+

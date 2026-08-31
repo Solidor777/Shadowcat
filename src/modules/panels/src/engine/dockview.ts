@@ -823,6 +823,8 @@ export class DockviewEngine implements EngineAdapter {
       api.onDidActivePanelChange((event) => this.#handleActivePanelChange(event)),
       api.onDidRemovePopoutGroup((event) => this.#handleRemovePopoutGroup(event)),
       api.onDidLayoutChange(() => this.#handleFloatingLayoutChange()),
+      api.onDidPopoutGroupSizeChange((event) => this.#handlePopoutGeometryChange(event.group)),
+      api.onDidPopoutGroupPositionChange((event) => this.#handlePopoutGeometryChange(event.group)),
     );
   }
 
@@ -1420,6 +1422,50 @@ export class DockviewEngine implements EngineAdapter {
       if (id === STAGE_ID) continue;
       for (const cb of this.#opListeners) cb({ op: "popIn", id });
     }
+  }
+
+  /** Pop-out geometry capture: a popup window the user moved or resized
+   * (`onDidPopoutGroupPositionChange`/`onDidPopoutGroupSizeChange`, fired off
+   * the popup's own move-end/resize-end listeners) is persisted as an
+   * `updatePopoutGeometry` op addressed by the tree's window key
+   * (`#popoutWindowKeys`). Geometry is read from the popout entry's OWN live
+   * `Window` (`DockviewApi.getPopouts()` matched on the group — the same four
+   * fields `PopoutWindow.dimensions()` reads), NEVER the event payload: the
+   * vendored `dockview-core@7.0.2` `onDidWindowMoveEnd` listener inside
+   * `DockviewComponent`'s pop-out wiring fires its position event with
+   * `screenY` populated from `window.screenX` (an upstream defect, recorded
+   * in `docs/OPEN_BUGS.md`) — re-verify against the vendored source on any
+   * dockview-core version bump. Both events fire with the window's full
+   * current geometry implied, so one handler serves both. The subscriptions
+   * are component-level (one pair in `#disposables` for the component's whole
+   * lifetime): a CLOSED popout needs no per-window unsubscribe — its entry is
+   * gone from `getPopouts()`, so a late event is a silent no-op. No
+   * `#applying` guard: `apply()` never touches a popout window (pop-out is
+   * gesture-time imperative, never reconciled), so these events can never be
+   * self-caused.
+   * @param group The popout group whose window moved or resized.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only by
+   * // dockview-core's own onDidPopoutGroupSizeChange/
+   * // onDidPopoutGroupPositionChange events
+   * declare const group: IDockviewGroupPanel;
+   * this.#handlePopoutGeometryChange(group);
+   * ```
+   */
+  #handlePopoutGeometryChange(group: IDockviewGroupPanel): void {
+    const key = this.#popoutWindowKeys.get(group.id);
+    if (!key) return;
+    // `PopoutGroup.window` is declared non-nullable but is
+    // `PopoutWindow.getWindow()` underneath, which reads null once the popup
+    // has closed — the guard covers a close racing the event.
+    const win = this.#api?.getPopouts().find((p) => p.id === group.id)?.window;
+    if (!win) return;
+    const rect: ScreenRect = { left: win.screenX, top: win.screenY, width: win.innerWidth, height: win.innerHeight };
+    // A mid-close read can report a degenerate box; the codec's `isScreenRect`
+    // requires strictly positive dimensions, so never persist one.
+    if (rect.width <= 0 || rect.height <= 0) return;
+    for (const cb of this.#opListeners) cb({ op: "updatePopoutGeometry", key, rect });
   }
 
   /** Intercept-and-redispatch: the ONLY place a dockview drag event is
@@ -2138,7 +2184,8 @@ export class DockviewEngine implements EngineAdapter {
    * keydown handlers (wired in `#wireFloatingA11y` — Escape's `close` op and
    * `#handleFloatingKeydown`'s move/resize `resizeFloating` ops); a restore
    * gesture (`restorePopouts`'s `popOut`/`popOutInto` ops, via the same
-   * `#popOutPanel` core the menu uses);
+   * `#popOutPanel` core the menu uses); a popout window's move/resize
+   * (`#handlePopoutGeometryChange`, an `updatePopoutGeometry` op);
    * and a user-driven tab activation (`#handleActivePanelChange`, an
    * `activeTab` op).
    * @param cb Called once per emitted op.
