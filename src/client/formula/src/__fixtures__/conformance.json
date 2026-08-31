@@ -526,5 +526,205 @@
         }
       }
     }
+  ],
+  "templates": [
+    {
+      "name": "identifier substitution",
+      "src": "1d20 + str",
+      "bindings": {
+        "str": 3
+      },
+      "expect": {
+        "notation": "1d20 + 3[str]"
+      }
+    },
+    {
+      "name": "negative substitution is a labeled negation",
+      "src": "1d6 + str",
+      "bindings": {
+        "str": -2
+      },
+      "expect": {
+        "notation": "1d6 + -2[str]"
+      }
+    },
+    {
+      "name": "zero substitution",
+      "src": "hp",
+      "bindings": {
+        "hp": 0
+      },
+      "expect": {
+        "notation": "0[hp]"
+      }
+    },
+    {
+      "name": "dotted path substitution",
+      "src": "hp.max + 1",
+      "bindings": {
+        "hp.max": 10
+      },
+      "expect": {
+        "notation": "10[hp.max] + 1"
+      }
+    },
+    {
+      "name": "reference path keeps the author's case",
+      "src": "1d20 + STR",
+      "bindings": {
+        "STR": 4
+      },
+      "expect": {
+        "notation": "1d20 + 4[STR]"
+      }
+    },
+    {
+      "name": "keyword modifier survives unclaimed by the resolver",
+      "src": "2d6kh1",
+      "expect": {
+        "notation": "2d6kh1"
+      }
+    },
+    {
+      "name": "keyword membership probe is case-insensitive but emission keeps case",
+      "src": "2D6",
+      "expect": {
+        "notation": "2D6"
+      }
+    },
+    {
+      "name": "dice count synthesized at the start",
+      "src": "d20",
+      "expect": {
+        "notation": "1d20"
+      }
+    },
+    {
+      "name": "dice count synthesized after an identifier claim",
+      "src": "str d6",
+      "bindings": {
+        "str": 3
+      },
+      "expect": {
+        "notation": "3[str] 1d6"
+      }
+    },
+    {
+      "name": "label span kept verbatim",
+      "src": "1d20[attack] + str",
+      "bindings": {
+        "str": 3
+      },
+      "expect": {
+        "notation": "1d20[attack] + 3[str]"
+      }
+    },
+    {
+      "name": "unterminated label rejects at its position",
+      "src": "2d20 + hp[max",
+      "bindings": {
+        "hp": 7
+      },
+      "expect": {
+        "error": "parse",
+        "detail": "unterminated '[' label at position 9"
+      }
+    },
+    {
+      "name": "positions count UTF-16 units across an astral character",
+      "src": "😀[x",
+      "expect": {
+        "error": "parse",
+        "detail": "unterminated '[' label at position 2"
+      }
+    },
+    {
+      "name": "unknown reference fails the scan",
+      "src": "1d20 + str",
+      "expect": {
+        "error": "unknown-ref",
+        "detail": "unknown reference 'str'"
+      }
+    },
+    {
+      "name": "non-integer resolution rejected",
+      "src": "1d20 + str",
+      "bindings": {
+        "str": 3.5
+      },
+      "expect": {
+        "error": "type",
+        "detail": "'str' = 3.5: roll templates require integers (use floor/round in the stat formula)"
+      }
+    },
+    {
+      "name": "magnitude past i32 caps",
+      "src": "1d20 + str",
+      "bindings": {
+        "str": 3000000000
+      },
+      "expect": {
+        "error": "cap",
+        "detail": "'str' = 3000000000: out of i32 range"
+      }
+    },
+    {
+      "name": "most-negative i32 exceeds the asymmetric magnitude cap",
+      "src": "1d20 + str",
+      "bindings": {
+        "str": -2147483648
+      },
+      "expect": {
+        "error": "cap",
+        "detail": "'str' = -2147483648: out of i32 range"
+      }
+    },
+    {
+      "name": "split claim concatenates an integer run onto the substitution",
+      "src": "2hp",
+      "bindings": {
+        "hp": 7
+      },
+      "expect": {
+        "notation": "27[hp]"
+      }
+    },
+    {
+      "name": "keyword prefix splits the key and the suffix resolves alone",
+      "src": "kh.max",
+      "expect": {
+        "error": "unknown-ref",
+        "detail": "unknown reference 'max'"
+      }
+    },
+    {
+      "name": "a resolver's own error passes through verbatim",
+      "src": "str + 1",
+      "bindings": {
+        "str": {
+          "error": "cycle",
+          "detail": "reference cycle involving 'str'"
+        }
+      },
+      "expect": {
+        "error": "cycle",
+        "detail": "reference cycle involving 'str'"
+      }
+    },
+    {
+      "name": "template over the length cap refuses before scanning",
+      "src": "111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111",
+      "expect": {
+        "error": "cap",
+        "detail": "template exceeds 512 characters"
+      }
+    },
+    {
+      "name": "empty template rewrites to empty",
+      "src": "",
+      "expect": {
+        "notation": ""
+      }
+    }
   ]
 }
