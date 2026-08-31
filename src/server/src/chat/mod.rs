@@ -36,6 +36,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod commands;
+mod host;
 mod link_preview;
 mod oembed;
 mod post_publish;
