@@ -6,7 +6,7 @@ import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS, silentLogger } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__ } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -33,12 +33,15 @@ function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null } {
   return {
     destroyed: false,
+    clearColor: null,
+    gridColor: null,
     ensureLayers() {},
     setBackground() {},
-    drawGrid() {},
+    setClearColor(color: number) { this.clearColor = color; },
+    drawGrid(_lines: unknown, color: number) { this.gridColor = color; },
     setCameraTransform() {},
     setVisibility() {},
     addLayerFilter() { return () => {}; },
@@ -457,4 +460,39 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(spy).toHaveBeenCalledTimes(1);
   spy.mockRestore();
+});
+
+test("a theme change re-reads the color tokens and pushes them into the engine", async () => {
+  // `readColor` resolves a token through a throwaway probe span's computed
+  // `color`; jsdom never resolves `var(...)`, so stub `getComputedStyle` to
+  // answer from this per-test map, keyed off the probe's inline `color`.
+  const colors: Record<string, string> = {
+    "--surface-base": "rgb(16, 16, 20)",
+    "--grid-line": "rgb(54, 54, 69)",
+  };
+  vi.stubGlobal("getComputedStyle", (el: Element) => {
+    const token = /var\((--[\w-]+)\)/.exec((el as HTMLElement).style?.color ?? "")?.[1] ?? "";
+    return { color: colors[token] ?? "" } as CSSStyleDeclaration;
+  });
+  try {
+    const backend = fakeBackend();
+    render(Stage, {
+      props: { createBackend: async () => backend },
+      context: setAppContextForTest({ subscribeScene: () => ({ unsubscribe: () => {} }) }),
+    });
+    // The mount effect applies the current theme's colors once the engine exists.
+    await vi.waitFor(() => expect(backend.clearColor).toBe(0x101014));
+    expect(backend.gridColor).toBe(0x363645);
+
+    // Simulate the swapped theme's token values, then swap the theme.
+    colors["--surface-base"] = "rgb(240, 240, 244)";
+    colors["--grid-line"] = "rgb(200, 200, 210)";
+    theme.setActive("slate-light");
+
+    await vi.waitFor(() => expect(backend.clearColor).toBe(0xf0f0f4));
+    expect(backend.gridColor).toBe(0xc8c8d2);
+  } finally {
+    theme.setActive("slate-dark");
+    vi.unstubAllGlobals();
+  }
 });

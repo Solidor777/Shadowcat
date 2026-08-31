@@ -11,6 +11,8 @@ export class MockBackend implements DisplayBackend {
   /** Last `setBackground` spec, recorded verbatim; `null` before the first call, or after a
    * clear (`setBackground(null)`). */
   background: BackgroundSpec | null = null;
+  /** Last `setClearColor` value, recorded verbatim; `null` before the first call. */
+  clearColor: number | null = null;
   /** Count of lines passed to the last `drawGrid` call — the geometry itself is discarded. */
   gridLineCount = 0;
   /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
@@ -109,6 +111,20 @@ export class MockBackend implements DisplayBackend {
    */
   setBackground(spec: BackgroundSpec | null): void {
     this.background = spec;
+  }
+  /** `DisplayBackend.setClearColor`: records `color` verbatim into `this.clearColor`.
+   * @param color The clear color to record, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setClearColor(0x1e1e2e);
+   * backend.clearColor; // 0x1e1e2e
+   * ```
+   */
+  setClearColor(color: number): void {
+    this.clearColor = color;
   }
   /** `DisplayBackend.drawGrid`: records only `lines.length` (as `gridLineCount`) and `color` — NOT
    * the line geometry itself. Unlike `PixiBackend`, which strokes every segment's exact

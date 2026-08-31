@@ -50,3 +50,10 @@ test("MockBackend captures the ticker callback", () => {
   b.tick!(16);
   expect(dt).toBe(16);
 });
+
+test("MockBackend records the clear color", () => {
+  const b = new MockBackend();
+  expect(b.clearColor).toBeNull();
+  b.setClearColor(0x112233);
+  expect(b.clearColor).toBe(0x112233);
+});

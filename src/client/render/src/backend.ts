@@ -19,6 +19,11 @@ export interface DisplayBackend {
   /** Set or clear the background-layer sprite.
    * @param spec The background image, or `null` to clear it. */
   setBackground(spec: BackgroundSpec | null): void;
+  /** Set the renderer's clear color (the background fill behind every layer) at
+   * runtime, packed `0xRRGGBB` — the canvas half of a theme swap, alongside a
+   * `RenderEngine.setThemeColors` grid recolor.
+   * @param color The new clear color, `0xRRGGBB`. */
+  setClearColor(color: number): void;
   /** Replace the grid-layer line set (scene coords) with the given color (0xRRGGBB).
    * @param lines The grid line segments to draw, in scene coordinates.
    * @param color Line color, `0xRRGGBB`. */

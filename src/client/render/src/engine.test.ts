@@ -1141,3 +1141,29 @@ test("the engine renders a token at the footprint lookup it was constructed with
   expect(backend.tokens.get("t1")!.h).toBe(400);
   engine.destroy();
 });
+
+test("setThemeColors routes the background to the backend clear color and redraws the grid in the new color", () => {
+  const { backend, engine } = makeEngine();
+  engine.setViewport(300, 200);
+  engine.start();
+  expect(backend.clearColor).toBeNull();
+  expect(backend.gridColor).toBe(0x3a3a4a); // the default slate
+
+  engine.setThemeColors({ background: 0x112233, gridColor: 0x445566 });
+
+  expect(backend.clearColor).toBe(0x112233);
+  expect(backend.gridColor).toBe(0x445566);
+});
+
+test("setThemeColors with only a background leaves the grid untouched (no redraw, same color)", () => {
+  const { backend, engine } = makeEngine();
+  engine.setViewport(300, 200);
+  engine.start();
+  backend.gridLineCount = -1; // sentinel: any redraw overwrites this
+
+  engine.setThemeColors({ background: 0x000001 });
+
+  expect(backend.clearColor).toBe(0x000001);
+  expect(backend.gridLineCount).toBe(-1);
+  expect(backend.gridColor).toBe(0x3a3a4a);
+});

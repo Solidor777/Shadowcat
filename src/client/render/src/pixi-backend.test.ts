@@ -54,3 +54,13 @@ describe("PixiBackend.setLighting", () => {
     for (const d of draws) expect(d).toEqual(expected);
   });
 });
+
+test("setClearColor writes the renderer's background clear color", () => {
+  const fakeApp = {
+    stage: new Container(),
+    renderer: { background: { color: 0x000000 } },
+  } as unknown as Application;
+  const backend = new PixiBackend(fakeApp);
+  backend.setClearColor(0x123456);
+  expect(fakeApp.renderer.background.color).toBe(0x123456);
+});
