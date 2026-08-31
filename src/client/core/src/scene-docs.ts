@@ -865,7 +865,8 @@ export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: s
 
 // --- Light-gradation registry ---
 
-/** Built-in three-band gradation (bright → dim → dark).
+/** Built-in three-band gradation (bright → dim → dark) — a MIRROR of the server's
+ * `LightGradationEngine::seed` definition (the world singleton is server-seeded from it).
  * Stored unsorted; `resolveGradation` returns a sorted copy.
  * Deep-frozen so shared refs returned by resolveGradation cannot be mutated by consumers. */
 export const DEFAULT_GRADATION: LightGradationEngine = deepFreeze({
@@ -918,7 +919,8 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
 
 // --- Vision-modes registry ---
 
-/** Built-in two-mode seed: normal sight + darkvision.
+/** Built-in two-mode seed: normal sight + darkvision — a MIRROR of the server's
+ * `VisionModesEngine::seed` definition (the world singleton is server-seeded from it).
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
   normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, renderHint: null },

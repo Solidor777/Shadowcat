@@ -57,7 +57,7 @@ fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
     assert_eq!(
         ecs.resolved_diagonal_rule(),
         crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "unknown rule fails to chebyshev (mirrors client default)"
+        "unknown rule fails to chebyshev (the engine literal the client mirrors)"
     );
 }
 
