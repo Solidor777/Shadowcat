@@ -214,7 +214,15 @@ fn tint_mixes_by_illuminance_weight() {
         intensity: 0.5,
         ..lamp()
     };
-    let c = cell_illumination((0.0, 0.0), 0.0, 0, &[red, blue], &[vec![], vec![]], &[], 100.0);
+    let c = cell_illumination(
+        (0.0, 0.0),
+        0.0,
+        0,
+        &[red, blue],
+        &[vec![], vec![]],
+        &[],
+        100.0,
+    );
     assert_eq!(c.tint, 0xAA0055);
 }
 
