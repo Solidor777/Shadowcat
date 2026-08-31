@@ -3003,7 +3003,13 @@ pub(crate) struct LightingInputs {
     pub(crate) all_bright: bool,
     /// Resolved scene lights (empty under `all_bright`).
     pub(crate) lights: Vec<lighting::Light>,
-    /// Per-light visibility polygons, index-aligned with `lights`.
+    /// Per-light visibility polygons, index-aligned with `lights` (built by mapping over it, so
+    /// the lengths always agree). `visibility_polygon` unions the raycast bound's own edges into
+    /// the occluder set, so a non-degenerate bound always yields a non-empty polygon; an EMPTY
+    /// entry arises only from degenerate (non-finite) light positions, and `cell_illumination`
+    /// reads an empty polygon as "no occluder computed" — never occludes. That fail-open is
+    /// inert on this path: a position degenerate enough to empty the polygon also makes the
+    /// per-cell distance non-finite, which `cell_illumination` zeroes per source.
     pub(crate) lit_polys: Vec<Vec<vision::P>>,
     /// Scene-boundary visibility polygons occluding the environment ambient (`env_light_polys`).
     /// Empty under `all_bright` (env is not the mechanism there — every LOS cell is forced bright).

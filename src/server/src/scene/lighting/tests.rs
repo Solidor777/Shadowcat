@@ -123,7 +123,7 @@ fn open_env() -> Vec<Vec<P>> {
 }
 
 #[test]
-fn cell_illumination_takes_max_and_respects_occlusion() {
+fn cell_illumination_composes_additively_and_respects_occlusion() {
     let l = lamp(); // at origin, bright 2 / dim 6 cells, intensity 1, linear
                     // No env, cell at the light center, `world_units_per_cell` 100 → full + light tint.
     let c = cell_illumination(
@@ -149,7 +149,7 @@ fn cell_illumination_takes_max_and_respects_occlusion() {
     );
     assert_eq!(far.level, 0.3);
     assert_eq!(far.tint, 0x0A0E1A);
-    // Max-compose: a brighter env beats a dim faraway light contribution.
+    // Additive: env 0.6 + light 0.5 (4 cells → t=0.5 linear) sums to 1.1 and saturates at 1.0.
     let near = cell_illumination(
         (400.0, 0.0),
         0.6,
@@ -158,9 +158,11 @@ fn cell_illumination_takes_max_and_respects_occlusion() {
         &[vec![]],
         &open_env(),
         100.0,
-    ); // 4 cells → 0.5
-    assert_eq!(near.level, 0.6); // env 0.6 > light 0.5 (no over-brightening)
-                                 // Occlusion: a light whose polygon excludes the cell contributes nothing.
+    );
+    assert_eq!(near.level, 1.0);
+    // Tint: (0.6×0x0A0E1A + 0.5×0xFFEEAA) / 1.1 per channel = (121.36→121, 115.82→116, 91.45→91).
+    assert_eq!(near.tint, 0x79745B);
+    // Occlusion: a light whose polygon excludes the cell contributes nothing.
     let occluded_poly = vec![(1000.0, 1000.0), (1001.0, 1000.0), (1001.0, 1001.0)]; // tiny, far away
     let occ = cell_illumination(
         (0.0, 0.0),
@@ -172,6 +174,96 @@ fn cell_illumination_takes_max_and_respects_occlusion() {
         100.0,
     );
     assert_eq!(occ.level, 0.0); // cell center not inside the light's poly → dark
+}
+
+#[test]
+fn two_overlapping_dim_lights_cross_the_bright_threshold() {
+    // Two 0.4-intensity lights both covering the cell at full (inside bright radius): each alone
+    // sits in the dim band (0.34 ≤ 0.4 < 0.67); their sum 0.8 crosses into bright (≥ 0.67).
+    let a = Light {
+        color: 0xFF0000,
+        intensity: 0.4,
+        ..lamp()
+    };
+    let b = Light {
+        color: 0x0000FF,
+        intensity: 0.4,
+        ..lamp()
+    };
+    let single = cell_illumination((0.0, 0.0), 0.0, 0, &[a.clone()], &[vec![]], &[], 100.0);
+    assert_eq!(single.level, 0.4);
+    let bands = sorted_bands(default_bands());
+    assert_eq!(bands[band_index(&bands, single.level)].name, "dim");
+    let both = cell_illumination((0.0, 0.0), 0.0, 0, &[a, b], &[vec![], vec![]], &[], 100.0);
+    assert!((both.level - 0.8).abs() < 1e-9);
+    assert_eq!(bands[band_index(&bands, both.level)].name, "bright");
+    // Equal weights → the red/blue mix is pure magenta.
+    assert_eq!(both.tint, 0x800080);
+}
+
+#[test]
+fn tint_mixes_by_illuminance_weight() {
+    // A full-strength red light and a half-strength blue light: 2:1 mix → (170, 0, 85).
+    // r = (255×1.0 + 0×0.5)/1.5 = 170, b = (0×1.0 + 255×0.5)/1.5 = 85.
+    let red = Light {
+        color: 0xFF0000,
+        ..lamp()
+    };
+    let blue = Light {
+        color: 0x0000FF,
+        intensity: 0.5,
+        ..lamp()
+    };
+    let c = cell_illumination((0.0, 0.0), 0.0, 0, &[red, blue], &[vec![], vec![]], &[], 100.0);
+    assert_eq!(c.tint, 0xAA0055);
+}
+
+#[test]
+fn composition_saturates_at_full_level_without_skewing_hue() {
+    // Two full-intensity lights sum to 2.0 but clamp to 1.0; the tint divisor is the
+    // UNSATURATED sum, so saturation brightens without shifting the mix (still equal-weight).
+    let a = Light {
+        color: 0xFF0000,
+        ..lamp()
+    };
+    let b = Light {
+        color: 0x00FF00,
+        ..lamp()
+    };
+    let c = cell_illumination((0.0, 0.0), 0.0, 0, &[a, b], &[vec![], vec![]], &[], 100.0);
+    assert_eq!(c.level, 1.0);
+    assert_eq!(c.tint, 0x808000);
+}
+
+#[test]
+fn environment_and_placed_light_compose_additively() {
+    // env 0.3 + light 0.5 (4 cells → t=0.5 linear) = 0.8, below saturation.
+    let c = cell_illumination(
+        (400.0, 0.0),
+        0.3,
+        0x0A0E1A,
+        std::slice::from_ref(&lamp()),
+        &[vec![]],
+        &open_env(),
+        100.0,
+    );
+    assert!((c.level - 0.8).abs() < 1e-9);
+}
+
+#[test]
+fn zero_contributors_is_dark_and_untinted() {
+    let c = cell_illumination((0.0, 0.0), 0.0, 0x0A0E1A, &[], &[], &[], 100.0);
+    assert_eq!(c.level, 0.0);
+    assert_eq!(c.tint, 0);
+    // A NaN-intensity light is a per-source fail-closed case: contributes nothing (and must not
+    // poison the running sum — `f64::clamp` panics on NaN).
+    let nan = Light {
+        intensity: f64::NAN,
+        ..lamp()
+    };
+    let c = cell_illumination((0.0, 0.0), 0.0, 0, &[nan], &[vec![]], &[], 100.0);
+    assert_eq!(c.level, 0.0);
+    assert_eq!(c.tint, 0);
 }
 
 #[test]
@@ -189,7 +281,7 @@ fn non_finite_dim_radius_contributes_nothing() {
 }
 
 #[test]
-fn missing_polygon_does_not_occlude_and_brighter_light_wins() {
+fn missing_polygon_does_not_occlude_and_unoccluded_light_contributes() {
     let dim = Light {
         intensity: 0.4,
         bright_radius: 1.0,
@@ -206,7 +298,8 @@ fn missing_polygon_does_not_occlude_and_brighter_light_wins() {
     };
     // Two lights, only ONE polygon provided → the second light has no entry in lit_polys
     // (index past end) → fail-open: it still contributes. The cell sits at the bright light's
-    // center, so the brighter light wins the MAX compose and its tint is taken.
+    // center; the dim light's reach (2 cells) does not extend here, so the bright light alone
+    // sets the level and tint.
     let c = cell_illumination(
         (400.0, 0.0),
         0.0,
