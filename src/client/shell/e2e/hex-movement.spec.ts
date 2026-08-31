@@ -447,6 +447,12 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // rejected would have rolled back well before this point.
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-game-settings:panel").click();
+    // Panel-open is not instant under a session this long (many panels stay
+    // mounted); wait for the control to be VISIBLE before asserting its value,
+    // with its own generous budget.
+    await expect(gm.getByLabel("gameSettings.movementRestriction")).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue(
       "unrestricted",
     );
