@@ -42,3 +42,5 @@ export {
   sanitizeCustomThemes,
 } from "./theme";
 export type { ThemeDefinition, ThemeTokenName, CustomTheme } from "./theme";
+export { ThemeController, theme, activeTheme } from "./theme.svelte";
+export type { PersistedTheme, ThemeListener } from "./theme.svelte";
