@@ -735,7 +735,7 @@ export function buildTokenFromActor(
   // the defect this seam exists to remove.
   const base: TokenEngine = {
     x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
-    visual: null, actor_id: null, overrides: null, face: null,
+    visual: null, actor_id: null, overrides: null, face: null, elevation: null,
   };
   if (mode === "link") {
     return envelope(worldId, "token", sceneId, {}, id, { ...base, actor_id: actor.id }, null);

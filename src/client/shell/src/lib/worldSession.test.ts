@@ -385,7 +385,7 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
   await session.enter("w1");
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1");
   session.dispatchIntent([{ op: "create", doc }]);
 
   // Prediction: the optimistic view (ctx.client) shows the new doc immediately.
@@ -412,7 +412,7 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
   session.leave(); // tears down the socket → no transport
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-x");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-x");
   session.dispatchIntent([{ op: "create", doc }]);
 
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
@@ -470,7 +470,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 
   // Transport drops but the client stays running → reconnecting.
   handlers.onClose();
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-off");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-off");
   session.dispatchIntent([{ op: "create", doc }]);
   // Predicted immediately, but NOT transmitted while offline.
   expect(capturedClient!.get("tok-off")).toBeTruthy();
@@ -520,7 +520,7 @@ test("canEdit: effective token ownership (inherited from the linked actor) unloc
   const linked = buildTokenDoc(
     "w1",
     "s1",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null },
     "tok-linked",
   );
   session.dispatchIntent([

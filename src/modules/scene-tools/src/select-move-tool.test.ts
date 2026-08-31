@@ -16,7 +16,7 @@ function setup() {
   const docs = new DocumentStore();
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
-    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "t1") }],
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t1") }],
   });
   const drags: (string | null)[] = [];
   const overlays: unknown[][] = [];
@@ -39,8 +39,8 @@ function setupTwo() {
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok2") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok2") },
     ],
   });
   const bridge = new SceneInteractionBridge();
@@ -174,7 +174,7 @@ function harness(opts: {
       { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
       ...opts.tokens.map((t) => ({
         op: "create" as const,
-        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, t.id),
+        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, t.id),
       })),
     ],
   });
@@ -300,6 +300,7 @@ test("a GM click on a light marker selects it for editing; a wall click selects 
         op: "create",
         doc: buildLightDoc("w1", "s1", {
           x: 500, y: 500,
+          elevation: null,
           emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
         }, "light-1"),
       },

@@ -75,7 +75,7 @@ function setupRoute(over: {
       },
       {
         op: "create",
-        doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1"),
+        doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1"),
       },
     ],
   });
@@ -267,7 +267,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
       { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1") },
     ],
   });
 
@@ -568,7 +568,7 @@ function seedRouteCtx(over: {
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: over.tokenAt.x, y: over.tokenAt.y, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
         }, over.tokenAt.id),
       },
     ],

@@ -41,6 +41,7 @@ test("clicking a light marker selects it into the shared editing selection (no i
   const light = buildLightDoc("w1", "scene-1", {
     x: 200,
     y: 200,
+    elevation: null,
     emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });
@@ -56,6 +57,7 @@ test("dragging a selected light repositions it with the raw stored position as O
   const light = buildLightDoc("w1", "scene-1", {
     x: 200,
     y: 200,
+    elevation: null,
     emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });
@@ -88,6 +90,7 @@ test("a light out of marker tolerance is not picked (a click beside it places in
   const light = buildLightDoc("w1", "scene-1", {
     x: 200,
     y: 200,
+    elevation: null,
     emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });

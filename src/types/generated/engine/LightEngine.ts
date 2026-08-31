@@ -17,6 +17,12 @@ x: number,
  */
 y: number, 
 /**
+ * Elevation above the scene's ground plane (`None`/absent = 0, grounded);
+ * decides which walls' elevation bands occlude this light. A carried
+ * emission takes its token's elevation instead (`TokenEngine::elevation`).
+ */
+elevation: number | null, 
+/**
  * The light's photometric payload.
  */
 emission: LightEmission, };

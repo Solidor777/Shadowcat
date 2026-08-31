@@ -48,6 +48,12 @@ pub struct TokenEngine {
     /// actor's faces map, not an override of actor data).
     #[serde(default)]
     pub face: Option<String>,
+    /// Elevation above the scene's ground plane (`None`/absent = 0, grounded).
+    /// Token state, not actor state: altitude is per-token. Read through
+    /// `scene::elevation::elevation_or_ground`, which clamps a non-finite
+    /// stored value to ground.
+    #[serde(default)]
+    pub elevation: Option<f64>,
 }
 
 impl TokenEngine {
@@ -72,6 +78,11 @@ impl TokenEngine {
         ] {
             if !v.is_finite() {
                 return Err(format!("{name} must be finite"));
+            }
+        }
+        if let Some(e) = self.elevation {
+            if !e.is_finite() {
+                return Err("elevation must be finite".to_string());
             }
         }
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;

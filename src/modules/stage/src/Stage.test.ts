@@ -167,7 +167,7 @@ test("drives the initial reconcile from ctx.viewedSceneId", async () => {
         doc: buildTokenDoc(
           "w1",
           "sB",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
           "t-b",
         ),
       },
@@ -226,7 +226,7 @@ test("exposes the viewed scene's committed token positions as data-token-positio
     doc: buildTokenDoc(
       "w1",
       scene,
-      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+      { x, y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
       id,
     ),
   });
@@ -354,7 +354,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
           "t1",
         ),
       },
@@ -375,7 +375,7 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
           "t2",
         ),
       },
@@ -428,7 +428,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
           "t1",
         ),
       },
@@ -448,7 +448,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
         doc: buildTokenDoc(
           "w1",
           "sA",
-          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
           "t2",
         ),
       },

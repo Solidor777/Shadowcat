@@ -39,7 +39,7 @@ describe("TokenLightControl", () => {
   it("renders nothing for a raw token, an instanced token, or a non-GM", () => {
     // A genuinely raw token (no actor link, no embedded copy).
     const raw = buildTokenDoc("w1", "scene1", {
-      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null,
+      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null,
     }, "tok-raw");
     render(TokenLightControl, {
       context: setAppContextForTest({ documents: storeWith(raw), dispatchIntent: vi.fn(), role: "gm" }),

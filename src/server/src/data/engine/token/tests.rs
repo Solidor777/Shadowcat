@@ -11,6 +11,7 @@ fn base() -> TokenEngine {
         actor_id: None,
         overrides: None,
         face: None,
+        elevation: None,
     }
 }
 
@@ -28,6 +29,9 @@ fn non_finite_fields_are_rejected() {
         let mut t = base();
         t.rotation = f;
         assert!(t.validate().is_err(), "rotation = {f} must be rejected");
+        let mut t = base();
+        t.elevation = Some(f);
+        assert!(t.validate().is_err(), "elevation = {f} must be rejected");
     }
 }
 

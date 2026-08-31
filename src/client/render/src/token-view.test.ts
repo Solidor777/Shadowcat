@@ -191,7 +191,7 @@ test("a token the server has stated no extent for keeps its document's own autho
 test("raw token keeps its own size + defaults to square", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
-  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null }, "tok1");
+  const token = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 80, h: 80, rotation: 0, visual: { kind: "image", asset: "a1" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: token }]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   const spec = backend.tokens.get("tok1")!;

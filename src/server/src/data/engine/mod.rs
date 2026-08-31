@@ -25,7 +25,7 @@ pub use combat::{
 };
 pub use geometry::{
     DrawingEngine, DrawingShape, Fill, RegionEngine, RegionShape, Seg, Stroke, TemplateEngine,
-    TemplateShape, WallEngine,
+    TemplateShape, WallElevation, WallEngine,
 };
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,

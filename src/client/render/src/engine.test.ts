@@ -1014,8 +1014,8 @@ describe("multi-scene render filtering", () => {
     store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [
       { op: "create", doc: buildSceneDoc("w1", { background: "bgA" }, "sA") },
       { op: "create", doc: buildSceneDoc("w1", { background: "bgB" }, "sB") },
-      { op: "create", doc: buildTokenDoc("w1", "sA", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "t-a") },
-      { op: "create", doc: buildTokenDoc("w1", "sB", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "t-b") },
+      { op: "create", doc: buildTokenDoc("w1", "sA", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t-a") },
+      { op: "create", doc: buildTokenDoc("w1", "sB", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t-b") },
     ] });
     return store;
   }

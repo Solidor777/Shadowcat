@@ -22,7 +22,7 @@ const eng: ActorEngine = {
 /** A raw (actorless) token's full engine body — every generated key is required
  * (though nullable), so every fixture below spells out the shape in full. */
 function rawTokenEngine(over: Partial<TokenEngine> = {}): TokenEngine {
-  return { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, ...over };
+  return { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null, ...over };
 }
 
 function storeWith(...docs: WireDocument[]): DocumentStore {

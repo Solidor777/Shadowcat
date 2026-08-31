@@ -6,6 +6,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 pub(crate) mod emitters;
+pub(crate) mod elevation;
 pub mod explored;
 pub mod footprint;
 pub(crate) mod grid_shape;

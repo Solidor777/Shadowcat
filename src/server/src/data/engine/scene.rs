@@ -375,6 +375,11 @@ pub struct LightEngine {
     pub x: f64,
     /// Position y, scene units.
     pub y: f64,
+    /// Elevation above the scene's ground plane (`None`/absent = 0, grounded);
+    /// decides which walls' elevation bands occlude this light. A carried
+    /// emission takes its token's elevation instead (`TokenEngine::elevation`).
+    #[serde(default)]
+    pub elevation: Option<f64>,
     /// The light's photometric payload.
     pub emission: LightEmission,
 }

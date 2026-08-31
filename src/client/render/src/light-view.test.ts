@@ -6,6 +6,7 @@ function lightDoc(id: string, x: number, y: number, over: Record<string, unknown
   const doc = buildLightDoc("w1", "s1", {
     x,
     y,
+    elevation: null,
     emission: { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, ...over },
   }, id);
   return doc;

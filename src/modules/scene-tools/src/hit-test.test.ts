@@ -59,7 +59,7 @@ test("a hex token the server has stated no extent for is picked over its own aut
 });
 
 test("raw token uses its own box; topmost (last) wins on overlap", () => {
-  const a = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null }, "a");
-  const b = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null }, "b");
+  const a = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null }, "a");
+  const b = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null }, "b");
   expect(topTokenAt([a, b], { x: 0, y: 0 }, fakeStore([a, b]), EMPTY_FOOTPRINTS)).toBe("b");
 });

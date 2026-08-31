@@ -328,7 +328,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: null }),
         },
       ]);
       return true;
@@ -511,7 +511,7 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
         return true;
       }
       const at = ctx.scene.snap(p);
-      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, emission: { ...NEW_LIGHT_EMISSION } });
+      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, elevation: null, emission: { ...NEW_LIGHT_EMISSION } });
       ctx.dispatchIntent([{ op: "create", doc }]);
       // Placing selects the new light so the rail editor targets it immediately (a second
       // click would place ANOTHER light, not select this one).
