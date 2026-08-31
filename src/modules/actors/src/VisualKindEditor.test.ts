@@ -4,31 +4,37 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore } from "@shadowcat/core";
 import VisualKindEditor from "./VisualKindEditor.svelte";
 
-// Suppress listAssets fetch: the editor calls listAssets in an $effect which hits /api/... in jsdom.
-vi.mock("@shadowcat/core", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@shadowcat/core")>();
-  return {
-    ...actual,
-    listAssets: vi.fn().mockResolvedValue([]),
-  };
-});
-
 describe("VisualKindEditor", () => {
   it("emits a complete image visual via onBuild when an asset is picked (image kind)", async () => {
     const onBuild = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue("asset-1");
     render(VisualKindEditor, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
       props: { conditionOptions: [], onBuild },
     });
 
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
-    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "image" });
+    await vi.waitFor(() =>
+      expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1" }),
+    );
+  });
 
-    expect(onBuild).toHaveBeenLastCalledWith({ kind: "image", asset: "asset-1" });
+  it("the frames pick replaces the ordered frame list wholesale", async () => {
+    const onBuild = vi.fn();
+    const pickAsset = vi.fn().mockResolvedValue(["f2", "f1"]);
+    render(VisualKindEditor, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      props: { conditionOptions: [], onBuild },
+    });
+    await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "animated" } });
+    await fireEvent.click(screen.getByTestId("visual-pick-frames"));
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "image", multiple: true });
+    await vi.waitFor(() =>
+      expect(onBuild).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: "animated", source: { type: "frames", frames: ["f2", "f1"] } }),
+      ),
+    );
   });
 
   it("emits null via onBuild for an incomplete faces row (no asset picked)", async () => {
