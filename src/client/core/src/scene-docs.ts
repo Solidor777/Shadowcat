@@ -45,6 +45,7 @@ import type {
   GradationBand,
   LightGradationEngine,
   VisionMode,
+  Perception,
   VisionModesEngine,
   DrawingEngine,
   DrawingShape,
@@ -127,6 +128,7 @@ export type {
   GradationBand,
   LightGradationEngine,
   VisionMode,
+  Perception,
   VisionModesEngine,
   DrawingEngine,
   DrawingShape,
@@ -923,12 +925,15 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
 
 // --- Vision-modes registry ---
 
-/** Built-in two-mode seed: normal sight + darkvision — a MIRROR of the server's
- * `VisionModesEngine::seed` definition (the world singleton is server-seeded from it).
+/** Built-in three-mode seed: normal sight, darkvision, and tremorsense (a creature sense:
+ * grounded tokens within 12 cells, ignoring walls and illumination; its illuminationFloor is
+ * inert) — a MIRROR of the server's `VisionModesEngine::seed` definition (the world singleton is
+ * server-seeded from it).
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
-  normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, renderHint: null },
-  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, renderHint: "desaturate" },
+  normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null },
+  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" },
+  tremorsense: { id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null },
 });
 
 /** A top-level (world-scoped, parentless) vision-modes config document.

@@ -1065,7 +1065,7 @@ fn light_gradation_seed_content() {
 #[test]
 fn vision_modes_seed_content() {
     let s = VisionModesEngine::seed();
-    assert_eq!(s.modes.len(), 2);
+    assert_eq!(s.modes.len(), 3);
     let n = &s.modes["normal"];
     assert_eq!(
         (
@@ -1073,9 +1073,11 @@ fn vision_modes_seed_content() {
             n.name.as_str(),
             n.illumination_floor.as_str(),
             n.default_range,
-            n.render_hint.as_deref()
+            n.render_hint.as_deref(),
+            n.perceives,
+            n.requires_los,
         ),
-        ("normal", "Normal", "dim", 0.0, None)
+        ("normal", "Normal", "dim", 0.0, None, Perception::Terrain, true)
     );
     let d = &s.modes["darkvision"];
     assert_eq!(
@@ -1084,12 +1086,51 @@ fn vision_modes_seed_content() {
             d.name.as_str(),
             d.illumination_floor.as_str(),
             d.default_range,
-            d.render_hint.as_deref()
+            d.render_hint.as_deref(),
+            d.perceives,
+            d.requires_los,
         ),
-        ("darkvision", "Darkvision", "dark", 12.0, Some("desaturate"))
+        (
+            "darkvision",
+            "Darkvision",
+            "dark",
+            12.0,
+            Some("desaturate"),
+            Perception::Terrain,
+            true
+        )
+    );
+    let t = &s.modes["tremorsense"];
+    assert_eq!(
+        (
+            t.id.as_str(),
+            t.name.as_str(),
+            t.default_range,
+            t.render_hint.as_deref(),
+            t.perceives,
+            t.requires_los,
+        ),
+        ("tremorsense", "Tremorsense", 12.0, None, Perception::Creatures, false)
     );
     let v = serde_json::to_value(&s).unwrap();
     assert!(validate_engine("vision-modes", Some(&v)).is_ok());
+}
+
+#[test]
+fn vision_mode_absent_sense_fields_default_to_terrain_los() {
+    // A mode authored before `perceives`/`requiresLos` existed (no keys at all)
+    // must deserialize unchanged: terrain perception, LOS-gated.
+    let v = json!({
+        "id": "normal", "name": "Normal",
+        "illuminationFloor": "dim", "defaultRange": 0.0
+    });
+    let m: VisionMode = serde_json::from_value(v).unwrap();
+    assert_eq!(m.perceives, Perception::Terrain);
+    assert!(m.requires_los);
+    // Serde wire shape: camelCase field names, lowercase perception values.
+    let w = serde_json::to_value(&m).unwrap();
+    assert_eq!(w["perceives"], json!("terrain"));
+    assert_eq!(w["requiresLos"], json!(true));
 }
 
 #[test]

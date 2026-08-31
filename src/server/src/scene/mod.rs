@@ -150,6 +150,9 @@ pub struct ResolvedScene {
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
 /// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
 /// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
+/// `perceives`/`requires_los` carry the sense descriptor through: a `Creatures` mode
+/// contributes nothing to the illumination-floor mask and instead feeds
+/// `SceneEcs::player_perceived_tokens`.
 #[derive(Clone, Debug)]
 pub struct VisionMode {
     /// Minimum illumination band name the mode can see under.
@@ -158,6 +161,23 @@ pub struct VisionMode {
     pub default_range: f64,
     /// Client render treatment (e.g. `"desaturate"`); `None` = plain.
     pub render_hint: Option<String>,
+    /// What the mode perceives (terrain mask vs creature perception).
+    pub perceives: eng::Perception,
+    /// Whether sight walls bound the mode's reach (creature senses only; the
+    /// terrain mask is always LOS-gated).
+    pub requires_los: bool,
+}
+
+/// Wire (`eng::VisionMode`) → resolved bridge — the single conversion both the
+/// authored-doc branch and the seed fallback of `resolved_vision_modes` pass through.
+fn conv_vision_mode(m: eng::VisionMode) -> VisionMode {
+    VisionMode {
+        illumination_floor: m.illumination_floor,
+        default_range: m.default_range,
+        render_hint: m.render_hint,
+        perceives: m.perceives,
+        requires_los: m.requires_los,
+    }
 }
 
 /// Parse `#rrggbb` or CSS 3-digit `#rgb` → packed `0xRRGGBB`; fail-closed to `0x000000`
@@ -1212,8 +1232,8 @@ impl SceneEcs {
 
     /// Resolved vision-mode registry. Returns a `BTreeMap` for deterministic key order
     /// (`.get(id)` works identically for callers).
-    /// Fail-closed to the built-in `normal`+`darkvision` seed ONLY when no doc/`modes` is present
-    /// (mirrors TS `sys?.modes ?? SEED`). A GM-authored modes doc with all-malformed entries is
+    /// Fail-closed to the engine seed (`eng::VisionModesEngine::seed`) ONLY when no doc/`modes`
+    /// is present (mirrors TS `sys?.modes ?? SEED`). A GM-authored modes doc with all-malformed entries is
     /// returned as-is rather than silently re-granting built-in modes the GM may have removed.
     pub fn resolved_vision_modes(&self) -> BTreeMap<String, VisionMode> {
         let mut out = BTreeMap::new();
@@ -1226,35 +1246,16 @@ impl SceneEcs {
         match parsed {
             Some(vme) => {
                 for (id, m) in vme.modes {
-                    out.insert(
-                        id,
-                        VisionMode {
-                            illumination_floor: m.illumination_floor,
-                            default_range: m.default_range,
-                            render_hint: m.render_hint,
-                        },
-                    );
+                    out.insert(id, conv_vision_mode(m));
                 }
             }
             None => {
-                // Mirrors the client's `SEED_VISION_MODES`: normal has no hint;
-                // darkvision desaturates.
-                out.insert(
-                    "normal".into(),
-                    VisionMode {
-                        illumination_floor: "dim".into(),
-                        default_range: 0.0,
-                        render_hint: None,
-                    },
-                );
-                out.insert(
-                    "darkvision".into(),
-                    VisionMode {
-                        illumination_floor: "dark".into(),
-                        default_range: 12.0,
-                        render_hint: Some("desaturate".into()),
-                    },
-                );
+                // The engine seed is the fallback (the client's `SEED_VISION_MODES` mirrors it):
+                // read through the SAME `conv_vision_mode` as the authored-doc branch so the two
+                // can never drift.
+                for (id, m) in eng::VisionModesEngine::seed().modes {
+                    out.insert(id, conv_vision_mode(m));
+                }
             }
         }
         out
@@ -1958,7 +1959,10 @@ impl SceneEcs {
     /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
     /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
     /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
-    /// (fail-closed: it contributes no vision floor). Always returns ≥1 triple (normal fallback
+    /// (fail-closed: it contributes no vision floor). A `Perception::Creatures` mode is likewise
+    /// absent here — creature senses perceive tokens, not terrain
+    /// (`SceneEcs::player_perceived_tokens` is their consumer), so they must not widen the
+    /// illumination-floor mask. Always returns ≥1 triple (normal fallback
     /// with `render_hint: None`).
     pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
@@ -2000,6 +2004,11 @@ impl SceneEcs {
                 let Some(vm) = modes.get(&a.mode) else {
                     continue;
                 }; // unknown mode → drop (fail-closed)
+                // A creature sense contributes no terrain floor — it perceives tokens
+                // (`player_perceived_tokens`), never the illumination mask.
+                if vm.perceives == eng::Perception::Creatures {
+                    continue;
+                }
                    // An omitted assignment range inherits the mode's own authored default — both
                    // are authored in the SAME unit (grid cells; see `VisionAssignment::range`'s and
                    // `VisionMode::default_range`'s docs), so no additional per-cell conversion is

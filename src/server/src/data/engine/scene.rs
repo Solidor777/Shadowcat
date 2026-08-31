@@ -428,10 +428,34 @@ pub enum FalloffCurve {
     None,
 }
 
+/// What a vision mode perceives. Terrain senses (normal sight, darkvision)
+/// see the SCENE: their reach is `LOS ∩ illumination ≥ floor`, range-limited.
+/// Creature senses (tremorsense) perceive TOKENS: grounded tokens within
+/// range, ignoring illumination and — when `VisionMode::requires_los` is
+/// false — walls. The lit-mask pipeline reads terrain senses only; creature
+/// senses feed the `perceived` token list (`SceneEcs::player_perceived_tokens`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "lowercase")]
+pub enum Perception {
+    /// The ordinary LOS ∩ illumination-floor mask.
+    #[default]
+    Terrain,
+    /// Perceives grounded tokens within range, not terrain.
+    Creatures,
+}
+
+/// Serde default for `VisionMode::requires_los` — a mode's reach is
+/// wall-bounded unless it declares otherwise.
+fn default_requires_los() -> bool {
+    true
+}
+
 /// A named vision mode that tokens/actors may possess (mirrors the client's
 /// `VisionMode`). `illuminationFloor`: the lowest gradation band name a token
-/// with this mode can see into. `defaultRange`: effective sight distance in
-/// grid cells (0 = unlimited).
+/// with this mode can see into (inert for creature senses — creature
+/// perception never reads the illumination field). `defaultRange`: effective
+/// sight distance in grid cells (0 = unlimited).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -444,6 +468,15 @@ pub struct VisionMode {
     pub illumination_floor: String,
     /// Default sight distance in grid cells (0 = unlimited).
     pub default_range: f64,
+    /// What the mode perceives; absent = `terrain`, so every mode authored
+    /// before this field existed is unchanged.
+    #[serde(default)]
+    pub perceives: Perception,
+    /// Whether sight walls bound the mode's reach; absent = `true`. Consulted
+    /// by creature senses (tremorsense declares `false`); terrain senses are
+    /// always LOS-gated by the mask pipeline itself.
+    #[serde(default = "default_requires_los")]
+    pub requires_los: bool,
     /// Optional client render treatment tag (e.g. a tint); never interpreted
     /// server-side.
     #[serde(default)]
@@ -460,17 +493,20 @@ pub struct VisionModesEngine {
 }
 
 impl VisionModesEngine {
-    /// Default world seed: `normal` (dim floor, unlimited range) and
-    /// `darkvision` (dark floor, 12 cells, desaturate render hint). The
-    /// engine definition — the client's `SEED_VISION_MODES` mirrors this.
+    /// Default world seed: `normal` (dim floor, unlimited range), `darkvision`
+    /// (dark floor, 12 cells, desaturate render hint), and `tremorsense`
+    /// (creature sense: grounded tokens within 12 cells, ignoring walls and
+    /// illumination; its illumination floor is inert). The engine definition —
+    /// the client's `SEED_VISION_MODES` mirrors this.
     ///
     /// # Examples
     ///
     /// ```
-    /// use shadowcat::data::engine::VisionModesEngine;
+    /// use shadowcat::data::engine::{Perception, VisionModesEngine};
     ///
     /// let s = VisionModesEngine::seed();
     /// assert_eq!(s.modes["darkvision"].default_range, 12.0);
+    /// assert_eq!(s.modes["tremorsense"].perceives, Perception::Creatures);
     /// ```
     pub fn seed() -> Self {
         let mut modes = BTreeMap::new();
@@ -481,6 +517,8 @@ impl VisionModesEngine {
                 name: "Normal".to_string(),
                 illumination_floor: "dim".to_string(),
                 default_range: 0.0,
+                perceives: Perception::Terrain,
+                requires_los: true,
                 render_hint: None,
             },
         );
@@ -491,7 +529,22 @@ impl VisionModesEngine {
                 name: "Darkvision".to_string(),
                 illumination_floor: "dark".to_string(),
                 default_range: 12.0,
+                perceives: Perception::Terrain,
+                requires_los: true,
                 render_hint: Some("desaturate".to_string()),
+            },
+        );
+        modes.insert(
+            "tremorsense".to_string(),
+            VisionMode {
+                id: "tremorsense".to_string(),
+                name: "Tremorsense".to_string(),
+                // Inert: a creature sense never reads the illumination field.
+                illumination_floor: "dark".to_string(),
+                default_range: 12.0,
+                perceives: Perception::Creatures,
+                requires_los: false,
+                render_hint: None,
             },
         );
         Self { modes }
