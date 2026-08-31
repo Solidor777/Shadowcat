@@ -94,3 +94,12 @@ test("rename patches the display name", async () => {
   await fireEvent.keyDown(input, { key: "Enter" });
   await waitFor(() => expect(patch).toHaveBeenCalledWith("a1", { name: "dragon.png" }));
 });
+
+test("replace swaps bytes behind the stable uuid via replaceAsset", async () => {
+  const rep = vi.spyOn(api, "replaceAsset").mockResolvedValue(asset() as never);
+  const changed = pane(asset());
+  const file = new File([new Uint8Array([9])], "new.png", { type: "image/png" });
+  await fireEvent.change(screen.getByTestId("preview-replace"), { target: { files: [file] } });
+  await waitFor(() => expect(rep).toHaveBeenCalledWith("a1", file));
+  expect(changed).toHaveBeenCalled();
+});

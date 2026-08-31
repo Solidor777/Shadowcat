@@ -17,28 +17,31 @@ test("upload an image, see the thumbnail, replace it, then delete it", async ({
   await page.getByLabel("New world name").fill("Asset World");
   await page.getByRole("button", { name: "Create world" }).click();
 
-  // In-world: the Assets panel starts launcher-closed; open it from the topbar
-  // launcher.
+  // In-world: the browser panel starts launcher-closed; open it from the
+  // topbar launcher.
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
-  await expect(page.getByRole("heading", { name: "Assets" })).toBeVisible();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
+  await expect(page.getByTestId("asset-browser")).toBeVisible();
 
   // Upload.
   await page
-    .getByTestId("asset-upload")
+    .getByTestId("asset-upload-input")
     .setInputFiles({ name: "map.png", mimeType: "image/png", buffer: PNG_1X1 });
   const tile = page.getByTestId("asset-tile");
   await expect(tile).toHaveCount(1);
 
-  // Replace (the tile persists; same UUID, new bytes).
-  await tile.locator('input[type="file"]').setInputFiles({
+  // Replace via the preview pane (the tile persists; same UUID, new bytes).
+  await tile.click();
+  await page.getByTestId("preview-replace").setInputFiles({
     name: "map2.png",
     mimeType: "image/png",
     buffer: PNG_1X1,
   });
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
 
-  // Delete.
-  await tile.getByRole("button", { name: "Delete" }).click();
+  // Delete via the preview pane, with its confirm step.
+  await page.getByTestId("asset-tile").click();
+  await page.getByTestId("preview-delete").click();
+  await page.getByTestId("preview-delete-confirm").click();
   await expect(page.getByTestId("asset-tile")).toHaveCount(0);
 });

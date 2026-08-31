@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { patchAsset, deleteAsset, reconvertAsset, originalUrl } from "@shadowcat/core";
+  import { patchAsset, deleteAsset, reconvertAsset, replaceAsset, originalUrl } from "@shadowcat/core";
 
   let {
     asset,
@@ -171,6 +171,21 @@
 
   {#if mutable}
     <div class="actions">
+      <label class="replace">
+        {t("assetBrowser.replace")}
+        <input
+          type="file"
+          data-testid="preview-replace"
+          disabled={busy}
+          onchange={(e) => {
+            const file = e.currentTarget.files?.[0];
+            e.currentTarget.value = "";
+            // Byte swap behind the STABLE uuid: every existing reference keeps
+            // resolving; the version bump re-keys the ETag and derivatives.
+            if (file) void run(() => replaceAsset(asset.id, file));
+          }}
+        />
+      </label>
       {#if asset.original_retained}
         <a data-testid="preview-download-original" href={originalUrl(asset.id)} download>
           {t("assetBrowser.downloadOriginal")}
