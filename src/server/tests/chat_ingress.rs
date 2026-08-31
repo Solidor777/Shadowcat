@@ -163,6 +163,6 @@ async fn client_authored_message_create_is_rejected() {
     assert_eq!(frame["type"], "reject");
     assert_eq!(frame["reason"], "forbidden");
 
-    // No event was broadcast; the authoritative log stays empty.
-    assert!(h.authoritative_seqs().await.is_empty());
+    // No event was broadcast; the log holds only the join-time config seed.
+    assert_eq!(h.authoritative_seqs().await, vec![1]);
 }

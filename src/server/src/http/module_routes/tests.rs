@@ -524,6 +524,75 @@ async fn enabled_modules_rejects_two_system_providers() {
 }
 
 #[tokio::test]
+async fn enabling_a_system_module_refreshes_the_system_defaults_singleton() {
+    /// The world's stored `system-defaults` engine body, read straight from
+    /// the repo (the stored copy is what must track the manifest).
+    async fn stored_sd(state: &crate::http::AppState, world_id: uuid::Uuid) -> serde_json::Value {
+        use crate::data::repository::Repository;
+        let docs = state
+            .repo
+            .query_documents_by_types(world_id, &["system-defaults"])
+            .await
+            .unwrap();
+        assert_eq!(docs.len(), 1, "the singleton exists");
+        docs[0].engine.clone().unwrap()
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("sys")).unwrap();
+    std::fs::write(
+        dir.path().join("sys").join("module.json"),
+        r#"{"id":"sys","version":"1.0.0","engines":{"shadowcat":"*"},"provides":[{"contract":"shadowcat.system","cardinality":"singleton"}],"systemDefaults":{"scene":{"fog":false}}}"#,
+    )
+    .unwrap();
+    let mut state = initialized_state().await;
+    state.config = std::sync::Arc::new(crate::config::Config {
+        modules_dir: Some(dir.path().to_string_lossy().to_string()),
+        ..crate::config::Config::default()
+    });
+    let hash = crate::auth::password::hash_password("pw").unwrap();
+    state
+        .repo
+        .create_user("gm", Some(&hash), crate::auth::role::ServerRole::User, 0)
+        .await
+        .unwrap();
+    let server = axum_test::TestServer::builder()
+        .save_cookies()
+        .build(router(state.clone()).await)
+        .unwrap();
+    server
+        .post("/api/login")
+        .json(&serde_json::json!({ "username": "gm", "password": "pw" }))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    // Creating the world seeds the singleton with the empty default (no
+    // module enabled yet).
+    let world: serde_json::Value = server
+        .post("/api/worlds")
+        .json(&serde_json::json!({ "name": "W" }))
+        .await
+        .json();
+    let world_id: uuid::Uuid = world["id"].as_str().unwrap().parse().unwrap();
+    let empty = serde_json::to_value(crate::data::engine::SystemDefaultsEngine::default()).unwrap();
+    assert_eq!(stored_sd(&state, world_id).await, empty);
+    // Enabling the system refreshes the stored singleton to its declaration.
+    server
+        .put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!(["sys"]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    let after = stored_sd(&state, world_id).await;
+    assert_eq!(after.pointer("/scene/fog"), Some(&serde_json::json!(false)));
+    // Disabling refreshes back to the empty default.
+    server
+        .put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+    assert_eq!(stored_sd(&state, world_id).await, empty);
+}
+
+#[tokio::test]
 async fn enabled_modules_dedups_a_duplicate_id_preserving_first_occurrence_order() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();

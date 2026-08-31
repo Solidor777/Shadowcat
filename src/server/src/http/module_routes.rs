@@ -213,6 +213,32 @@ pub async fn set_world_enabled_modules(
         )));
     }
     state.repo.set_world_enabled_modules(world, &ids).await?;
+    // Refresh the world's config from the (possibly changed) enabled set —
+    // the SAME reseed pass the world-join runs, so the decision is never
+    // forked; a live room broadcasts the refresh. A failed refresh only
+    // warns: the stored copy re-converges on the next join's reseed.
+    match state
+        .ws
+        .rooms
+        .get_or_create(state.repo.as_ref(), world)
+        .await
+    {
+        Ok(Some(room)) => {
+            if let Err(e) = crate::ws::conn::reseed_world_config(
+                &room,
+                state.repo.as_ref(),
+                &state.config.modules_path(),
+            )
+            .await
+            {
+                tracing::warn!(world = %world, error = %e, "system-defaults refresh failed after enable-set change");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(world = %world, error = %e, "room open for system-defaults refresh failed");
+        }
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

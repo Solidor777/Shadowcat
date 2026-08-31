@@ -310,9 +310,10 @@ async fn join_welcome_emit_receive() {
     let first = ws.next().await.unwrap().unwrap();
     let welcome: serde_json::Value = serde_json::from_str(first.to_text().unwrap()).unwrap();
     assert_eq!(welcome["type"], "welcome");
-    assert_eq!(welcome["current_seq"], 0);
+    // The join-time config seed committed (seq 1) before this Welcome.
+    assert_eq!(welcome["current_seq"], 1);
 
-    // Emit one create intent; expect an Event with seq 1.
+    // Emit one create intent; expect an Event with seq 2.
     ws.send(create_intent(h.world, 1)).await.unwrap();
     let evt = loop {
         let m = ws.next().await.unwrap().unwrap();
@@ -321,8 +322,8 @@ async fn join_welcome_emit_receive() {
             break v;
         }
     };
-    assert_eq!(evt["command"]["seq"], 1);
-    assert_eq!(h.authoritative_seqs().await, vec![1]);
+    assert_eq!(evt["command"]["seq"], 2);
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -356,9 +357,10 @@ async fn all_clients_converge_after_reconnect() {
         pubc.send(create_intent(h.world, n)).await.unwrap();
     }
 
-    // Client A receives all 5 live.
+    // Client A receives all 5 live (seq 1 is A's own join-time config seed,
+    // published before A subscribed, so its stream starts at 2).
     let a_seqs = drain_event_seqs(&mut a, 5).await;
-    assert_eq!(a_seqs, vec![1, 2, 3, 4, 5]);
+    assert_eq!(a_seqs, vec![2, 3, 4, 5, 6]);
 
     // Client B joins late and explicitly resyncs from seq 1.
     let mut b = h.connect().await;
@@ -368,11 +370,13 @@ async fn all_clients_converge_after_reconnect() {
     ))
     .await
     .unwrap();
+    // B's replay is clamped to A's floor (established at the post-seed
+    // watermark, seq 1), so it starts at 2 like A's live stream did.
     let b_seqs = drain_event_seqs(&mut b, 5).await;
-    assert_eq!(b_seqs, vec![1, 2, 3, 4, 5]);
+    assert_eq!(b_seqs, vec![2, 3, 4, 5, 6]);
 
     // Authoritative log is the ground truth both converged to.
-    assert_eq!(h.authoritative_seqs().await, vec![1, 2, 3, 4, 5]);
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2, 3, 4, 5, 6]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -402,21 +406,22 @@ async fn slow_reader_recovers_via_resync() {
     // Wait until all 30 are durably applied (and thus broadcast). Bounded so a genuine
     // stall fails loudly rather than hanging.
     let mut waited = 0;
-    while h.authoritative_seqs().await.len() < 30 {
+    // 31 = the join-time config seed + the 30 published intents.
+    while h.authoritative_seqs().await.len() < 31 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         waited += 1;
-        assert!(waited < 300, "server did not apply 30 intents within 30s");
+        assert!(waited < 300, "server did not apply seed + 30 intents within 30s");
     }
 
     // Resume reading `slow`: the final delivered seq reaches the authoritative tail
-    // (30), strictly increasing, no dups — via live frames or a resync.
-    let seqs = drain_until_seq(&mut slow, 30).await;
-    assert_eq!(*seqs.last().unwrap(), 30);
+    // (31), strictly increasing, no dups — via live frames or a resync.
+    let seqs = drain_until_seq(&mut slow, 31).await;
+    assert_eq!(*seqs.last().unwrap(), 31);
     let mut sorted = seqs.clone();
     sorted.sort();
     sorted.dedup();
     assert_eq!(seqs, sorted, "no duplicates or reordering after resync");
-    assert_eq!(*h.authoritative_seqs().await.last().unwrap(), 30);
+    assert_eq!(*h.authoritative_seqs().await.last().unwrap(), 31);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -475,37 +480,40 @@ async fn converges_with_publishing_during_resync() {
 
     // Begin reading partway through the publish, so delivery overlaps live emission.
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-    let seqs = drain_until_seq(&mut reader, TOTAL).await;
+    let seqs = drain_until_seq(&mut reader, TOTAL + 1).await;
 
     // Keep the publisher socket open past its last send, then wait until the server
     // has durably applied every published intent (the single-writer pool may still
     // be draining the ingress backlog on a slow runner). 600×100ms = 60s headroom.
     let _pubc = publisher.await.unwrap();
     for _ in 0..600 {
-        if h.authoritative_seqs().await.last().copied() == Some(TOTAL) {
+        if h.authoritative_seqs().await.last().copied() == Some(TOTAL + 1) {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
-    // (1) No drop/reorder under concurrent publishing: a contiguous prefix from 1.
-    assert_eq!(seqs.first().copied(), Some(1));
+    // (1) No drop/reorder under concurrent publishing: a contiguous prefix from
+    // seq 2 (seq 1 is the reader's own join-time config seed, published before
+    // it subscribed).
+    assert_eq!(seqs.first().copied(), Some(2));
     assert!(
         seqs.windows(2).all(|w| w[1] == w[0] + 1),
         "events dropped or duplicated under concurrent publishing: {seqs:?}"
     );
 
     // All published intents are durably sequenced...
-    assert_eq!(h.authoritative_seqs().await.last().copied(), Some(TOTAL));
+    assert_eq!(h.authoritative_seqs().await.last().copied(), Some(TOTAL + 1));
 
-    // (2) ...and the full history is recoverable: a fresh client resyncs from seq 1
-    // and receives every event contiguously through the tail.
+    // (2) ...and the full history is recoverable: a fresh client resyncs from
+    // seq 1 and receives every event its floor admits (the shared user's floor
+    // sits at the post-seed watermark, seq 1) contiguously through the tail.
     let mut late = h.connect().await;
-    let _ = late.next().await; // Welcome (current_seq = TOTAL)
+    let _ = late.next().await; // Welcome (current_seq = TOTAL + 1)
     late.send(resync_request(1)).await.unwrap();
-    let recovered = drain_until_seq(&mut late, TOTAL).await;
-    assert_eq!(recovered.first().copied(), Some(1));
-    assert_eq!(*recovered.last().unwrap(), TOTAL);
+    let recovered = drain_until_seq(&mut late, TOTAL + 1).await;
+    assert_eq!(recovered.first().copied(), Some(2));
+    assert_eq!(*recovered.last().unwrap(), TOTAL + 1);
     assert!(
         recovered.windows(2).all(|w| w[1] == w[0] + 1),
         "gap in full resync: {recovered:?}"
@@ -565,14 +573,15 @@ async fn resync_floor_bounds_a_late_clients_reach_when_enforced() {
         pubc.send(create_intent(h.world, n)).await.unwrap();
     }
     let mut waited = 0;
-    while h.authoritative_seqs().await.len() < 3 {
+    // 4 = the join-time config seed + the 3 published intents.
+    while h.authoritative_seqs().await.len() < 4 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         waited += 1;
-        assert!(waited < 100, "3 events did not commit in time");
+        assert!(waited < 100, "seed + 3 events did not commit in time");
     }
 
     let mut late = h.connect().await;
-    let _ = late.next().await; // Welcome (current_seq = 3)
+    let _ = late.next().await; // Welcome (current_seq = 4)
     late.send(hello_cold_start(h.world)).await.unwrap();
     late.send(resync_request(1)).await.unwrap();
 
@@ -582,7 +591,7 @@ async fn resync_floor_bounds_a_late_clients_reach_when_enforced() {
         "resync must not replay events committed before the client's own cold-start floor: {seqs:?}"
     );
     assert_eq!(
-        end["current_seq"], 3,
+        end["current_seq"], 4,
         "resync_end still reports the true tail"
     );
 }
@@ -600,10 +609,11 @@ async fn resync_without_a_prior_hello_fails_closed_when_enforced() {
         pubc.send(create_intent(h.world, n)).await.unwrap();
     }
     let mut waited = 0;
-    while h.authoritative_seqs().await.len() < 3 {
+    // 4 = the join-time config seed + the 3 published intents.
+    while h.authoritative_seqs().await.len() < 4 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         waited += 1;
-        assert!(waited < 100, "3 events did not commit in time");
+        assert!(waited < 100, "seed + 3 events did not commit in time");
     }
 
     let mut late = h.connect().await;
@@ -683,13 +693,14 @@ async fn conflicting_same_field_update_is_rejected() {
         .filter(|f| f["type"] == "event")
         .map(|f| f["command"]["seq"].as_i64().unwrap())
         .collect();
-    assert_eq!(event_seqs, vec![1, 2], "create + first update commit");
+    assert_eq!(event_seqs, vec![2, 3], "create + first update commit");
     let rejects: Vec<&serde_json::Value> =
         frames.iter().filter(|f| f["type"] == "reject").collect();
     assert_eq!(rejects.len(), 1);
     assert_eq!(rejects[0]["reason"], "conflict");
-    // The committed value is the first writer's.
-    assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
+    // The committed value is the first writer's (seq 1 is the join-time
+    // config seed).
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2, 3]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -707,7 +718,7 @@ async fn player_write_to_gm_owned_doc_is_forbidden() {
     .await
     .unwrap();
     let created = drain_frames(&mut gm, 1).await;
-    assert_eq!(created[0]["command"]["seq"], 1);
+    assert_eq!(created[0]["command"]["seq"], 2);
 
     // A player member tries to update it → Reject{forbidden}.
     let cookie = h.add_member("p", WorldRole::Player).await;
@@ -777,7 +788,7 @@ async fn gm_only_property_hidden_from_player() {
 
     let frames = drain_frames(&mut pc, 1).await;
     assert_eq!(frames[0]["type"], "event");
-    assert_eq!(frames[0]["command"]["seq"], 1);
+    assert_eq!(frames[0]["command"]["seq"], 2);
     let created = &frames[0]["command"]["ops"][0];
     assert_eq!(created["op"], "create");
     assert_eq!(created["doc"]["system"]["public"], 7);
@@ -850,6 +861,7 @@ async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
     assert!(p["user"].is_string());
 
     // It is out-of-band: the ping itself must not have created an authoritative
-    // event (only the scene-creation intent above did, at seq 1).
-    assert_eq!(h.authoritative_seqs().await, vec![1]);
+    // event (seq 1 is the join-time config seed; the scene-creation intent
+    // above committed at seq 2).
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
 }
