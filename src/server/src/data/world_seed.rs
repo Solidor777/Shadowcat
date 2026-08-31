@@ -162,7 +162,7 @@ fn config_doc(world_id: Uuid, doc_type: &str, engine: serde_json::Value, now: i6
 /// let sd = enabled_system_defaults(&repo, world_id, modules_dir).await;
 /// ```
 pub async fn enabled_system_defaults(
-    repo: &SqliteRepository,
+    repo: &dyn Repository,
     world_id: Uuid,
     modules_dir: &Path,
 ) -> Option<SystemDefaultsEngine> {
@@ -187,7 +187,9 @@ pub async fn enabled_system_defaults(
 /// `Uuid`, so seeds are attributed to a real member deterministically).
 /// `None` when the world has no GM member — the seed pass is skipped there
 /// (`create_world_owned` always seats one, so this arises only in
-/// legacy/test fixtures).
+/// legacy/test fixtures). Takes the concrete `SqliteRepository` rather than
+/// `dyn Repository` because `list_members` is an inherent method the trait
+/// does not carry.
 ///
 /// # Examples
 ///
