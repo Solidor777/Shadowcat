@@ -2563,8 +2563,131 @@ async fn apply_intent_update_violating_system_schema_is_rejected_and_seq_untouch
 }
 
 #[tokio::test]
-async fn system_defaults_is_a_singleton_and_gm_write_only() {
-    use crate::data::document::DocRole;
+async fn system_defaults_client_writes_are_rejected() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    // Create under Client is rejected even for a GM: system-defaults is
+    // server-authored (mirrors the installed system package's declaration).
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(1, w.id, "system-defaults"),
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+
+    // Seed it under ConfigSeed, then Update and Delete under Client are
+    // rejected against the STORED doc_type (never a client-supplied one).
+    let doc = singleton_test_doc(1, w.id, "system-defaults");
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        2,
+        WriteOrigin::ConfigSeed,
+    )
+    .await
+    .unwrap();
+    let update = Operation::Update {
+        doc_id: doc.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine".into(),
+            old: serde_json::json!({}),
+            new: serde_json::json!({ "scene": { "fog": false } }),
+        }],
+    };
+    let err = r
+        .apply_intent(&gm_ctx, w.id, vec![update], 3, WriteOrigin::Client)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Delete { doc: doc.clone() }],
+            4,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+}
+
+#[tokio::test]
+async fn system_defaults_config_seed_writes_apply() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let doc = singleton_test_doc(1, w.id, "system-defaults");
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        1,
+        WriteOrigin::ConfigSeed,
+    )
+    .await
+    .unwrap();
+    // The singleton create-gate still applies to this origin.
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(2, w.id, "system-defaults"),
+            }],
+            2,
+            WriteOrigin::ConfigSeed,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)));
+    // Update under ConfigSeed applies. The OCC pre-image is the NORMALIZED
+    // stored body: ingress round-trips the empty `{}` fixture body through
+    // `SystemDefaultsEngine`, which reserializes absent overlays as null.
+    let stored =
+        serde_json::to_value(crate::data::engine::SystemDefaultsEngine::default()).unwrap();
+    let update = Operation::Update {
+        doc_id: doc.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine".into(),
+            old: stored,
+            new: serde_json::json!({ "scene": { "fog": false } }),
+        }],
+    };
+    r.apply_intent(&gm_ctx, w.id, vec![update], 3, WriteOrigin::ConfigSeed)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn config_seed_skips_capability_gates_but_not_occ() {
     use crate::data::membership::PermissionContext;
     let r = repo().await;
     let gm = r
@@ -2574,52 +2697,37 @@ async fn system_defaults_is_a_singleton_and_gm_write_only() {
     let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
     let w = r.create_world_owned("W", gm, 0).await.unwrap();
     r.add_member(w.id, player, WorldRole::Player).await.unwrap();
-    let gm_ctx = PermissionContext {
-        user_id: gm,
-        world_role: WorldRole::Gm,
-    };
-    r.apply_intent(
-        &gm_ctx,
-        w.id,
-        vec![Operation::Create {
-            doc: singleton_test_doc(1, w.id, "system-defaults"),
-        }],
-        1,
-        WriteOrigin::Client,
-    )
-    .await
-    .unwrap();
-    let err = r
-        .apply_intent(
-            &gm_ctx,
-            w.id,
-            vec![Operation::Create {
-                doc: singleton_test_doc(2, w.id, "system-defaults"),
-            }],
-            2,
-            WriteOrigin::Client,
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(err, DataError::Conflict(_)));
-
     let p_ctx = PermissionContext {
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let mut doc = singleton_test_doc(3, w.id, "system-defaults");
-    doc.permissions.users.insert(player, DocRole::Owner);
+    // A Player ctx under Client could never create a config singleton; under
+    // ConfigSeed the per-op capability gates are skipped and the create applies.
+    let doc = singleton_test_doc(1, w.id, "system-defaults");
+    r.apply_intent(
+        &p_ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        1,
+        WriteOrigin::ConfigSeed,
+    )
+    .await
+    .unwrap();
+    // OCC still runs for this origin: a stale pre-image is a Conflict.
+    let update = Operation::Update {
+        doc_id: doc.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine".into(),
+            old: serde_json::json!({ "bogus": true }),
+            new: serde_json::json!({}),
+        }],
+    };
     let err = r
-        .apply_intent(
-            &p_ctx,
-            w.id,
-            vec![Operation::Create { doc }],
-            3,
-            WriteOrigin::Client,
-        )
+        .apply_intent(&p_ctx, w.id, vec![update], 2, WriteOrigin::ConfigSeed)
         .await
         .unwrap_err();
-    assert!(matches!(err, DataError::Forbidden));
+    assert!(matches!(err, DataError::Conflict(_)));
 }
 
 // --- combat family ingress: singleton registry, one active combat per

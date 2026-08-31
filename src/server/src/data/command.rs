@@ -233,7 +233,9 @@ impl Command {
 /// derivable from any wire frame — skips the ordinary per-op capability gates
 /// on a batch while every structural/OCC check still runs; it may `Create` a
 /// `message` doc (roll results, event messages) but is blanket-rejected from
-/// `Update`-ing one, same as `Client`.
+/// `Update`-ing one, same as `Client`. `ConfigSeed` — set ONLY by the server's
+/// world-config seed/refresh path — skips the same capability gates and is the
+/// ONLY origin permitted to author the `system-defaults` singleton.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOrigin {
     /// Any wire-derived write (WS intent or HTTP).
@@ -247,6 +249,12 @@ pub enum WriteOrigin {
     /// one-active-per-scene, schema and OCC checks all run; never derivable
     /// from a wire frame.
     CombatTransition,
+    /// Server-authored world-config seed/refresh write (world creation, world
+    /// join, enabled-modules change): per-op capability gates are skipped;
+    /// scope, size, engine, containment, singleton, schema and OCC checks all
+    /// run; never derivable from a wire frame. The ONLY origin permitted to
+    /// Create, Update or Delete a `system-defaults` doc.
+    ConfigSeed,
 }
 
 impl WriteOrigin {
@@ -264,7 +272,32 @@ impl WriteOrigin {
     pub fn is_server_authored(&self) -> bool {
         matches!(
             self,
-            WriteOrigin::ServerMessageRevision | WriteOrigin::CombatTransition
+            WriteOrigin::ServerMessageRevision
+                | WriteOrigin::CombatTransition
+                | WriteOrigin::ConfigSeed
+        )
+    }
+
+    /// Whether this origin skips `apply_intent`'s ordinary per-op capability
+    /// gates (the WRITE_FIELDS floor, the world-level create/delete
+    /// authorization, the per-path and declared-capability checks). Scope,
+    /// size, engine, containment, singleton, schema and OCC checks run for
+    /// every origin. `ServerMessageRevision` deliberately does NOT skip: its
+    /// writes pass through a scoped access grant instead.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::command::WriteOrigin;
+    ///
+    /// assert!(WriteOrigin::CombatTransition.skips_capability_gates());
+    /// assert!(WriteOrigin::ConfigSeed.skips_capability_gates());
+    /// assert!(!WriteOrigin::ServerMessageRevision.skips_capability_gates());
+    /// ```
+    pub fn skips_capability_gates(&self) -> bool {
+        matches!(
+            self,
+            WriteOrigin::CombatTransition | WriteOrigin::ConfigSeed
         )
     }
 }
