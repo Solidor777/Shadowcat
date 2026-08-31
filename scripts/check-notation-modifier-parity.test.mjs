@@ -5,10 +5,12 @@ import { expect, test } from "vitest";
 import {
   extractModifierMatchBlock,
   extractRustModifierIdents,
+  extractRustNotationFunctions,
+  extractRustTemplateFunctions,
   extractRustTemplateKeywords,
   modifierParityDifference,
 } from "./check-notation-modifier-parity.mjs";
-import { NOTATION_KEYWORDS } from "../src/client/formula/src/template.ts";
+import { NOTATION_FUNCTIONS, NOTATION_KEYWORDS } from "../src/client/formula/src/template.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const rustSource = readFileSync(
@@ -90,4 +92,26 @@ test("the template-twin extractor resolves the dice-operator constant and reject
     .toThrow(/NOTATION_KEYWORDS/);
   expect(() => extractRustTemplateKeywords(source.replace(`"kh"`, "kh")))
     .toThrow(/unrecognized entry/);
+});
+
+// The math-function vocabulary is likewise ONE decision with THREE declarations: the dice
+// parser's `fn_call` match arms and both template sides' `NOTATION_FUNCTIONS`.
+
+test("the template grammar reserves exactly the math functions the notation parser accepts", () => {
+  const parserFunctions = extractRustNotationFunctions(rustSource);
+  expect(parserFunctions.length).toBeGreaterThan(0);
+  expect(NOTATION_FUNCTIONS).toEqual(parserFunctions);
+  expect(extractRustTemplateFunctions(rustTemplateSource)).toEqual(parserFunctions);
+});
+
+test("the function extractors fail loudly on renames and junk", () => {
+  expect(() => extractRustNotationFunctions("fn other() { match x { } }"))
+    .toThrow(/fn fn_call/);
+  expect(() => extractRustNotationFunctions(
+    `fn fn_call(&mut self) { match name.as_str() { "floor" => f(), } }`))
+    .toThrow(/catch-all/);
+  expect(() => extractRustTemplateFunctions(`const NOTATION_FUNCTIONS: [&str; 1] = [floor];`))
+    .toThrow(/unrecognized entry/);
+  expect(() => extractRustTemplateFunctions(`const RENAMED: [&str; 1] = ["floor"];`))
+    .toThrow(/NOTATION_FUNCTIONS/);
 });

@@ -1364,3 +1364,99 @@ async fn write_capability_without_ownership_does_not_admit_a_combat_intent() {
         "the refused advance left the clock where it was"
     );
 }
+
+/// `CombatRoll` notation is a TEMPLATE: each entry's references resolve server-side against
+/// that combatant's formula host (here the player's linked actor, whose `system.init` is 4);
+/// the stored roll keeps the author's template text with the value as a labeled chip. A roll
+/// for a combatant with no resolvable host fails with the unknown-reference error.
+#[tokio::test]
+async fn roll_notation_references_resolve_against_each_combatants_host() {
+    let h = combat_harness().await;
+
+    // Give the player's actor an `init` leaf.
+    let actor = h
+        .repo
+        .query_documents(h.world_id, "actor")
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap();
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![crate::data::command::Operation::Update {
+                doc_id: actor.id,
+                changes: vec![crate::data::command::FieldChange {
+                    remove: false,
+                    path: "/system".into(),
+                    old: actor.system.clone(),
+                    new: serde_json::json!({ "init": 4 }),
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "general".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.player_combatant,
+                notation: "1d1+init".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(
+        ok.is_none(),
+        "the player's roll for their own combatant commits"
+    );
+
+    let pc = h
+        .repo
+        .get_document(h.player_combatant)
+        .await
+        .unwrap()
+        .unwrap();
+    let pc_engine: CombatantEngine = serde_json::from_value(pc.engine.unwrap()).unwrap();
+    assert_eq!(pc_engine.initiative, Some(1.0 + 4.0));
+
+    let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
+    assert_eq!(msgs.len(), 1);
+    let content = &msgs[0].engine.as_ref().unwrap()["content"];
+    assert_eq!(content[0]["formula"], "1d1+init");
+    assert_eq!(content[0]["outcome"]["labeled_consts"][0]["label"], "init");
+    assert_eq!(content[0]["outcome"]["labeled_consts"][0]["value"], 4);
+
+    // The hidden NPC's actor document was never created: no host, so the
+    // reference cannot resolve and the intent refuses.
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "general".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.hidden_npc,
+                notation: "1d1+init".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
+}

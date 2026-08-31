@@ -973,7 +973,16 @@ pub async fn handle_send_message(
     let policy = resolve_content_policy(repo, room.world_id).await;
     let mut content_segments = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id, &channel).await;
-        match rolls::execute_roll(&parsed.body, dice_ctx) {
+        // The roll's actor binding: the send's validated `actor_owner` —
+        // references resolve against that document's `system` band, or fail
+        // `unknown-ref` when nothing is bound.
+        let host = match &actor_owner {
+            Some(owner_ref) => host::host_for_actor_owner(repo, owner_ref)
+                .await
+                .map_err(SendMessageError::Data)?,
+            None => None,
+        };
+        match rolls::execute_roll(&parsed.body, dice_ctx, host.as_ref()) {
             Ok((formula, outcome, spec, raw)) => vec![Segment::RollEmbed {
                 formula,
                 outcome,
@@ -1023,8 +1032,10 @@ pub async fn handle_send_message(
             sanitize(&parsed.body, &policy)
         } else {
             // Ambient dice context is resolved at most once, lazily, only when
-            // a roll/button chunk actually appears in this body.
+            // a roll/button chunk actually appears in this body. The roll's
+            // host (the send's actor binding) resolves just as lazily.
             let mut dice_ctx: Option<crate::dice::ParseContext> = None;
+            let mut roll_host: Option<Option<Document>> = None;
             let mut segments = Vec::with_capacity(chunks.len());
             let mut roll_err = None;
             for chunk in chunks {
@@ -1035,7 +1046,16 @@ pub async fn handle_send_message(
                             dice_ctx =
                                 Some(resolve_dice_context(repo, room.world_id, &channel).await);
                         }
-                        match rolls::execute_roll(formula, dice_ctx.unwrap()) {
+                        if roll_host.is_none() {
+                            roll_host = Some(match &actor_owner {
+                                Some(owner_ref) => host::host_for_actor_owner(repo, owner_ref)
+                                    .await
+                                    .map_err(SendMessageError::Data)?,
+                                None => None,
+                            });
+                        }
+                        let host_ref = roll_host.as_ref().expect("roll host computed").as_ref();
+                        match rolls::execute_roll(formula, dice_ctx.unwrap(), host_ref) {
                             Ok((formula, outcome, spec, raw)) => {
                                 segments.push(Segment::RollEmbed {
                                     formula,

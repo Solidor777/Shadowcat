@@ -96,3 +96,58 @@ export function extractRustTemplateKeywords(rustTemplateSource) {
       return literal[1];
     });
 }
+
+const FUNCTIONS_LIST_HEAD_RE = /NOTATION_FUNCTIONS\s*:\s*\[&str;\s*\d+\]\s*=\s*\[/;
+
+// The server formula twin's math-function list, in declaration order. Every entry is a plain
+// literal (unlike NOTATION_KEYWORDS' leading constant), so extraction is the simpler anchored
+// scan; a rename of the anchor or a non-literal entry throws rather than matching nothing.
+export function extractRustTemplateFunctions(rustTemplateSource) {
+  const head = rustTemplateSource.match(FUNCTIONS_LIST_HEAD_RE);
+  if (!head) {
+    throw new Error("`NOTATION_FUNCTIONS` declaration not found in the template twin source");
+  }
+  const start = head.index + head[0].length;
+  const end = rustTemplateSource.indexOf("];", start);
+  if (end === -1) throw new Error("`NOTATION_FUNCTIONS` declaration is unterminated");
+  return rustTemplateSource
+    .slice(start, end)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((token) => token !== "")
+    .map((token) => {
+      const literal = token.match(/^"([a-z]+)"$/);
+      if (!literal) {
+        throw new Error(`unrecognized entry '${token}' in the template twin's NOTATION_FUNCTIONS`);
+      }
+      return literal[1];
+    });
+}
+
+const FN_CALL_HEAD = "match name.as_str() {";
+const FN_CATCH_ALL_MARKER = "unknown function";
+
+// The math-function names the server's notation parser accepts, in declaration order, taken
+// from the arm heads of `fn_call`'s match block — the runtime set a template scan must
+// reserve (followed by `(`), or every function-calling roll breaks at resolution.
+export function extractRustNotationFunctions(parserSource) {
+  const fnAt = parserSource.indexOf("fn fn_call(");
+  if (fnAt === -1) throw new Error("`fn fn_call` not found in the notation parser source");
+  const matchAt = parserSource.indexOf(FN_CALL_HEAD, fnAt);
+  if (matchAt === -1) throw new Error("`match name.as_str()` not found inside `fn fn_call`");
+  let depth = 0;
+  for (let i = matchAt + FN_CALL_HEAD.length - 1; i < parserSource.length; i++) {
+    if (parserSource[i] === "{") depth++;
+    else if (parserSource[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        const block = parserSource.slice(matchAt, i + 1);
+        if (!block.includes(FN_CATCH_ALL_MARKER)) {
+          throw new Error("the extracted fn_call match block is missing its catch-all arm");
+        }
+        return [...block.matchAll(/"([a-z]+)"[ \t]*=>/g)].map((m) => m[1]);
+      }
+    }
+  }
+  throw new Error("`match name.as_str()` block is unterminated");
+}

@@ -57,6 +57,17 @@ pub(crate) const NOTATION_KEYWORDS: [&str; 15] = [
     "xf",
 ];
 
+/// The dice-notation grammar's math-function vocabulary (the six spellings
+/// `dice::spec::FnName` declares and `dice::notation::parser`'s `fn_call`
+/// recognizes). NOT `NOTATION_KEYWORDS` members: the keyword list guards the
+/// dice-MECHANIC modifier vocabulary, while function names are notation only
+/// when immediately followed by `(` — `claim_notation_function` tests exactly
+/// that, and anywhere else the same word is an ordinary identifier a resolver
+/// may answer. One of three declarations of one decision (the client
+/// template module's own list and the dice parser's match arms are the other
+/// two); the notation-modifier parity gate reads all three.
+pub(crate) const NOTATION_FUNCTIONS: [&str; 6] = ["floor", "ceil", "round", "abs", "min", "max"];
+
 /// Largest magnitude a substituted value may have (asymmetric about zero on
 /// purpose: the most negative representable i32 exceeds it and is rejected).
 const I32_MAX: f64 = 2147483647.0;
@@ -69,7 +80,8 @@ enum ClaimKind {
     /// A run of digits.
     Integer,
     /// An identifier-start run that is a `NOTATION_KEYWORDS` member when
-    /// lowercased.
+    /// lowercased, or a `NOTATION_FUNCTIONS` member immediately followed by
+    /// `(`.
     Keyword,
     /// A dotted reference span — the only kind whose text reaches the
     /// consumer's resolver.
@@ -157,6 +169,29 @@ fn claim_notation_keyword(chars: &[(char, usize)], at: usize) -> Option<usize> {
         .then_some(j)
 }
 
+/// An identifier-start run that is a `NOTATION_FUNCTIONS` member when
+/// lowercased AND is immediately followed by `(` — the exact rule the dice
+/// notation parser applies when it recognizes a math function (`fn_call`).
+/// Reserved because the server runs every roll through this scan: without
+/// it, `floor(101d6/2)` would read `floor` as a stat reference and the roll
+/// would fail (or, under placeholder validation, break shape). Ordered after
+/// `claim_notation_keyword`; the two sets are disjoint, so that adjacency is
+/// unobservable.
+fn claim_notation_function(chars: &[(char, usize)], at: usize) -> Option<usize> {
+    if !is_word_start(chars[at].0) {
+        return None;
+    }
+    let mut j = at;
+    while j < chars.len() && is_word_start(chars[j].0) {
+        j += 1;
+    }
+    let run: String = chars[at..j].iter().map(|(c, _)| c).collect();
+    (NOTATION_FUNCTIONS.contains(&run.to_ascii_lowercase().as_str())
+        && j < chars.len()
+        && chars[j].0 == '(')
+        .then_some(j)
+}
+
 /// A dotted reference span: an `is_word_start` run continued by
 /// `is_word_char`, joined by a `.` to a further such run only when the
 /// character immediately after that `.` is itself an identifier-start
@@ -199,6 +234,13 @@ fn claim_at(chars: &[(char, usize)], at: usize) -> Result<Claim, FormulaError> {
         });
     }
     if let Some(end) = claim_notation_keyword(chars, at) {
+        return Ok(Claim {
+            kind: ClaimKind::Keyword,
+            start: at,
+            end,
+        });
+    }
+    if let Some(end) = claim_notation_function(chars, at) {
         return Ok(Claim {
             kind: ClaimKind::Keyword,
             start: at,

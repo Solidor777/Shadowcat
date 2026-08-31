@@ -3513,3 +3513,192 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
         );
     }
 }
+
+// --- Reference resolution at send ---
+
+/// The send-path harness: an in-memory repo, one world, one player member,
+/// the world's room, and a fresh rate limiter.
+async fn roll_send_harness() -> (
+    crate::data::sqlite::SqliteRepository,
+    std::sync::Arc<crate::ws::room::Room>,
+    PermissionContext,
+    PingRateLimiter,
+    Uuid,
+) {
+    use crate::auth::role::ServerRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = repo
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    repo.add_member(w.id, player, WorldRole::Player)
+        .await
+        .unwrap();
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    (repo, room, ctx, PingRateLimiter::new(), w.id)
+}
+
+/// Sends one message through the production ingest path.
+async fn send(
+    repo: &crate::data::sqlite::SqliteRepository,
+    room: &crate::ws::room::Room,
+    ctx: &PermissionContext,
+    rate: &PingRateLimiter,
+    content: &str,
+    actor_owner: Option<ActorOwnerRef>,
+) -> Command {
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room,
+            repo,
+            ctx,
+            rate,
+            preview: LinkPreviewDeps {
+                client: &link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "all".into(),
+        content.into(),
+        actor_owner,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    cmd
+}
+
+/// The single `Create` op's document, and its decoded `MessageEngine`.
+fn created_message(cmd: &Command) -> serde_json::Value {
+    let doc = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.clone(),
+        other => panic!("expected one Create, got {other:?}"),
+    };
+    serde_json::to_value(
+        serde_json::from_value::<MessageEngine>(doc.engine.clone().unwrap())
+            .expect("engine decodes as MessageEngine"),
+    )
+    .unwrap()
+}
+
+/// Seeds a player-owned actor whose `system.stats.str` is 3, returning its id.
+async fn seed_str_actor(
+    repo: &crate::data::sqlite::SqliteRepository,
+    world_id: Uuid,
+    player: Uuid,
+) -> Uuid {
+    use crate::data::command::UnsequencedCommand;
+
+    let actor_id = Uuid::new_v4();
+    let mut actor = seed_actor_doc(actor_id, world_id, Some(player));
+    actor.system = serde_json::json!({ "stats": { "str": 3 } });
+    repo.apply_command(UnsequencedCommand {
+        world_id,
+        author: player,
+        ts: 0,
+        ops: vec![Operation::Create { doc: actor }],
+    })
+    .await
+    .unwrap();
+    actor_id
+}
+
+#[tokio::test]
+async fn a_slash_roll_resolves_references_against_the_speak_as_actor() {
+    let (repo, room, ctx, rate, world_id) = roll_send_harness().await;
+    let actor_id = seed_str_actor(&repo, world_id, ctx.user_id).await;
+
+    let cmd = send(
+        &repo,
+        &room,
+        &ctx,
+        &rate,
+        "/roll 1d20+stats.str",
+        Some(ActorOwnerRef::Actor { actor_id }),
+    )
+    .await;
+    let sys = created_message(&cmd);
+    let seg = &sys["content"][0];
+    assert_eq!(
+        seg["formula"], "1d20+stats.str",
+        "the stored formula keeps the author's template text"
+    );
+    assert_eq!(sys["kind"], "roll");
+    assert_eq!(
+        seg["outcome"]["labeled_consts"][0]["label"], "stats.str",
+        "the substituted reference surfaces as a labeled chip"
+    );
+    assert_eq!(seg["outcome"]["labeled_consts"][0]["value"], 3);
+}
+
+#[tokio::test]
+async fn a_slash_roll_with_references_and_no_binding_posts_a_notice_instead() {
+    let (repo, room, ctx, rate, _world_id) = roll_send_harness().await;
+
+    let cmd = send(&repo, &room, &ctx, &rate, "/roll 1d20+stats.str", None).await;
+    let sys = created_message(&cmd);
+    assert_eq!(sys["kind"], "system");
+    let text = sys["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("unknown reference 'stats.str'"),
+        "the notice names the unresolvable reference, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn an_inline_roll_resolves_references_against_the_speak_as_actor() {
+    let (repo, room, ctx, rate, world_id) = roll_send_harness().await;
+    let actor_id = seed_str_actor(&repo, world_id, ctx.user_id).await;
+
+    let cmd = send(
+        &repo,
+        &room,
+        &ctx,
+        &rate,
+        "dmg [[1d20+stats.str]]!",
+        Some(ActorOwnerRef::Actor { actor_id }),
+    )
+    .await;
+    let sys = created_message(&cmd);
+    let roll = &sys["content"][1];
+    assert_eq!(roll["kind"], "roll_embed");
+    assert_eq!(roll["formula"], "1d20+stats.str");
+}
+
+#[tokio::test]
+async fn a_roll_button_stores_its_template_unresolved() {
+    let (repo, room, ctx, rate, _world_id) = roll_send_harness().await;
+
+    // No actor binding: a button is per-clicker, so ingest validates the
+    // template structurally and stores it raw.
+    let cmd = send(
+        &repo,
+        &room,
+        &ctx,
+        &rate,
+        "[[roll:1d20+stats.str|Attack]]",
+        None,
+    )
+    .await;
+    let sys = created_message(&cmd);
+    let seg = &sys["content"][0];
+    assert_eq!(seg["kind"], "roll_button");
+    assert_eq!(seg["formula"], "1d20+stats.str");
+    assert_eq!(seg["label"], "Attack");
+}

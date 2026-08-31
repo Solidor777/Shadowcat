@@ -88,6 +88,7 @@ impl RollPost {
         let (_, outcome, spec, raw) = crate::chat::rolls::execute_roll_with_seed(
             &total.to_string(),
             crate::dice::notation::ParseContext::default(),
+            None,
             0,
         )
         .expect("a bare integer constant always parses and evaluates deterministically");

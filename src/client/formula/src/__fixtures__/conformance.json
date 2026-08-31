@@ -759,6 +759,40 @@
       "expect": {
         "notation": "1D20"
       }
+    },
+    {
+      "name": "a math-function call is notation, never a reference",
+      "src": "floor(101d6/2)",
+      "expect": {
+        "notation": "floor(101d6/2)"
+      }
+    },
+    {
+      "name": "a math-function name keeps the author's case",
+      "src": "FLOOR(2d6)",
+      "expect": {
+        "notation": "FLOOR(2d6)"
+      }
+    },
+    {
+      "name": "a math-function name without a following paren resolves as a stat",
+      "src": "floor + 1",
+      "bindings": {
+        "floor": 3
+      },
+      "expect": {
+        "notation": "3[floor] + 1"
+      }
+    },
+    {
+      "name": "a reference inside a math-function call substitutes",
+      "src": "min(stats.str, 2)",
+      "bindings": {
+        "stats.str": 7
+      },
+      "expect": {
+        "notation": "min(7[stats.str], 2)"
+      }
     }
   ]
 }

@@ -68,7 +68,7 @@ fn records_cap_rejects_post_roll() {
     // runs to `CHAIN_CAP = 100` (`eval::groups`'s per-die chain cap)
     // regardless of seed -- 100 base dice x (1 + 100 chained extras) =
     // 10_100 records, well past `MAX_ROLL_RECORDS`. No seed search needed.
-    match execute_roll_with_seed("100d2!>=1", total_ctx(), 42) {
+    match execute_roll_with_seed("100d2!>=1", total_ctx(), None, 42) {
         Err(RollError::TooManyRecords(n)) => assert!(n > MAX_ROLL_RECORDS),
         other => panic!("expected TooManyRecords, got {other:?}"),
     }
@@ -346,20 +346,20 @@ fn scan_max_inline_rolls_past_limit_rejects() {
 
 #[test]
 fn execute_roll_with_seed_is_deterministic() {
-    let a = execute_roll_with_seed("4d6+2", total_ctx(), 12345).unwrap();
-    let b = execute_roll_with_seed("4d6+2", total_ctx(), 12345).unwrap();
+    let a = execute_roll_with_seed("4d6+2", total_ctx(), None, 12345).unwrap();
+    let b = execute_roll_with_seed("4d6+2", total_ctx(), None, 12345).unwrap();
     assert_eq!(a, b);
 }
 
 #[test]
 fn execute_roll_returns_the_formula_verbatim() {
-    let (formula, _, _, _) = execute_roll_with_seed("2d6+1", total_ctx(), 1).unwrap();
+    let (formula, _, _, _) = execute_roll_with_seed("2d6+1", total_ctx(), None, 1).unwrap();
     assert_eq!(formula, "2d6+1");
 }
 
 #[test]
 fn execute_roll_with_seed_returns_spec_and_raw_matching_the_outcome() {
-    let (_, outcome, spec, raw) = execute_roll_with_seed("2d6+1", total_ctx(), 5).unwrap();
+    let (_, outcome, spec, raw) = execute_roll_with_seed("2d6+1", total_ctx(), None, 5).unwrap();
     // spec/raw are exactly what `evaluate` was run against -- re-evaluating
     // them independently must reproduce the same outcome.
     assert_eq!(crate::dice::evaluate(&spec, &raw), outcome);
@@ -377,7 +377,7 @@ fn entropy_seed_two_calls_differ() {
 
 #[test]
 fn execute_roll_rejects_over_cap_formula() {
-    match execute_roll("101d6", total_ctx()) {
+    match execute_roll("101d6", total_ctx(), None) {
         Err(RollError::TooManyDice(101)) => {}
         other => panic!("expected TooManyDice(101), got {other:?}"),
     }
@@ -429,7 +429,8 @@ fn pure_const_multiplication_chain_saturates_without_panic() {
     // `MAX_ROLL_RECORDS` never see this formula. Run under a debug build
     // (overflow-checks on) -- if the fold used raw `*` this would panic;
     // reaching a saturated result proves it does not.
-    let (_, out, _, _) = execute_roll_with_seed("2000000000*2000000000*3", total_ctx(), 1).unwrap();
+    let (_, out, _, _) =
+        execute_roll_with_seed("2000000000*2000000000*3", total_ctx(), None, 1).unwrap();
     assert_eq!(out.total, i64::MAX);
 }
 
@@ -441,7 +442,7 @@ fn multi_group_multiplication_saturates_without_panic() {
     // completes (no panic) and the total is a finite, non-negative i64
     // (both dice draws are positive, so the true product is always >= 0,
     // never spuriously saturating to `i64::MIN`).
-    let (_, out, _, _) = execute_roll_with_seed("1d10000*1d10000", total_ctx(), 7).unwrap();
+    let (_, out, _, _) = execute_roll_with_seed("1d10000*1d10000", total_ctx(), None, 7).unwrap();
     assert!(out.total >= 0);
 }
 
@@ -536,4 +537,111 @@ fn tr_and_rs_together_produce_a_working_successcount_tier_classification_end_to_
          the required-successes reference -- got tier_label={:?}",
         out.tier_label
     );
+}
+
+// --- Reference resolution ---
+
+/// A host document carrying the given `system` band — the shape
+/// `SystemLeafResolver` reads references from.
+fn host_doc(system: serde_json::Value) -> Document {
+    Document {
+        id: Uuid::new_v4(),
+        scope: crate::data::document::Scope::World {
+            world_id: Uuid::new_v4(),
+        },
+        doc_type: "actor".into(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: None,
+        permissions: crate::data::document::PermissionSet::default(),
+        embedded: Default::default(),
+        parent_id: None,
+        engine: None,
+        system,
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+#[test]
+fn a_reference_resolves_against_the_host_system_band() {
+    let host = host_doc(serde_json::json!({ "stats": { "str": 3 } }));
+    let (formula, outcome, _, _) =
+        execute_roll_with_seed("1d1+stats.str", total_ctx(), Some(&host), 1).unwrap();
+    assert_eq!(
+        formula, "1d1+stats.str",
+        "the stored formula keeps the author's template text"
+    );
+    assert_eq!(outcome.total, 1 + 3);
+    assert_eq!(
+        outcome.labeled_consts,
+        vec![crate::dice::spec::ConstTerm {
+            value: 3,
+            label: Some("stats.str".into())
+        }],
+        "the substituted reference surfaces as a labeled chip"
+    );
+}
+
+#[test]
+fn a_negative_reference_substitutes_as_a_signed_labeled_const() {
+    let host = host_doc(serde_json::json!({ "stats": { "str": -2 } }));
+    let (_, outcome, _, _) =
+        execute_roll_with_seed("1d1+stats.str", total_ctx(), Some(&host), 1).unwrap();
+    assert_eq!(outcome.total, 1 - 2);
+    assert_eq!(
+        outcome.labeled_consts,
+        vec![crate::dice::spec::ConstTerm {
+            value: -2,
+            label: Some("stats.str".into())
+        }]
+    );
+}
+
+#[test]
+fn a_reference_without_a_host_fails_unknown_ref() {
+    match execute_roll("1d20+str", total_ctx(), None) {
+        Err(RollError::Reference(e)) => assert_eq!(e.detail, "unknown reference 'str'"),
+        other => panic!("expected Reference(unknown-ref), got {other:?}"),
+    }
+}
+
+#[test]
+fn a_reference_to_a_non_number_leaf_fails_with_a_type_error() {
+    let host = host_doc(serde_json::json!({ "name": "Goblin" }));
+    match execute_roll("1d20+name", total_ctx(), Some(&host)) {
+        Err(RollError::Reference(e)) => {
+            assert_eq!(e.error, crate::formula::FormulaErrorKind::Type)
+        }
+        other => panic!("expected Reference(type), got {other:?}"),
+    }
+}
+
+#[test]
+fn a_referencing_button_template_validates_without_a_host() {
+    // Buttons validate structurally: references stand in as placeholder
+    // zeros, so an unbound author can store a statted button.
+    assert!(validate_formula("1d20+stats.str", total_ctx()).is_ok());
+}
+
+#[test]
+fn a_button_template_with_an_unterminated_label_is_rejected() {
+    match validate_formula("1d20[attack", total_ctx()) {
+        Err(RollError::Reference(e)) => {
+            assert_eq!(e.detail, "unterminated '[' label at position 4")
+        }
+        other => panic!("expected Reference(parse), got {other:?}"),
+    }
+}
+
+#[test]
+fn a_reference_free_template_is_byte_identical_after_resolution() {
+    // Backwards compatibility: pre-substituted notation (what older clients
+    // sent) and plain literal notation both roll unchanged.
+    for src in ["2d6kh1+3", "1d20+3[str]"] {
+        let (formula, _, _, _) = execute_roll(src, total_ctx(), None).unwrap();
+        assert_eq!(formula, src);
+    }
 }

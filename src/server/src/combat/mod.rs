@@ -415,8 +415,18 @@ async fn build_ops(
             let dice_ctx = crate::chat::resolve_dice_context(repo, room.world_id, &channel).await;
             let mut posts = Vec::with_capacity(rolls.len());
             for entry in &rolls {
+                // Each entry's references resolve against ITS combatant's
+                // formula host — the token-embedded copy or the linked actor,
+                // the one precedence rule `eval::formula_host` declares. A
+                // combatant with no host resolves every reference as unknown
+                // and the intent refuses with the roll error.
+                let host = snap
+                    .combatants
+                    .iter()
+                    .find(|c| c.doc.id == entry.combatant_id)
+                    .and_then(|c| eval::formula_host(&snap.hosts, &c.engine.kind));
                 let (formula, outcome, spec, raw) =
-                    crate::chat::rolls::execute_roll(&entry.notation, dice_ctx)?;
+                    crate::chat::rolls::execute_roll(&entry.notation, dice_ctx, host)?;
                 posts.push((
                     entry.combatant_id,
                     RollPost {
