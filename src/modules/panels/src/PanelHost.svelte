@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack, type Component } from "svelte";
-  import { getAppContext, sizeClass, Surface } from "@shadowcat/ui-kit";
+  import { getAppContext, notifications, sizeClass, Surface } from "@shadowcat/ui-kit";
   import { consoleLogger, type Logger } from "@shadowcat/core";
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
@@ -159,8 +159,25 @@
         // the seam a visible toast (e.g. a statusbar live region) hangs off
         // once that surface exists — a no-op until then.
         onReset: () => {},
-        onNotice: (key) => {
-          announce = t(key);
+        onNotice: (key, action) => {
+          // A notice carrying a call-to-action routes to the toast host (the
+          // only surface that can render a clickable action); its own
+          // aria-live="polite" container covers the screen-reader
+          // announcement the text-only live region would otherwise make. The
+          // restore gesture needs the ENGINE (the controller holds no
+          // reference to it), so `run` is assembled here from
+          // `EngineAdapter.restorePopouts` + the controller's full
+          // pre-prune arrangement record. An engine without pop-out support
+          // (`FakeEngine`, which omits `restorePopouts`) degrades the notice
+          // to the plain live-region announce.
+          if (action && eng.restorePopouts) {
+            notifications.push("info", t(key), {
+              label: t(action.labelKey),
+              run: () => eng.restorePopouts?.(ctrl.restorablePopouts()),
+            });
+          } else {
+            announce = t(key);
+          }
         },
         onOp: (op, prev) => {
           // Wires the reachable `SheetsController.openDocument` ->

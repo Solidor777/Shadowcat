@@ -43,6 +43,16 @@ export interface PanelsBridgeLike {
   bind(impl: PanelsApi): void;
 }
 
+/** A call-to-action attached to a controller-originated notice: the caller
+ * resolves `labelKey` exactly like the notice's own key and wires the actual
+ * behavior itself — the controller holds no engine reference (only `PanelHost`
+ * does), so the restore gesture's `run` is assembled host-side from
+ * `EngineAdapter.restorePopouts` + `PanelsController.restorablePopouts`. */
+export interface PanelsNoticeAction {
+  /** The action label's i18n key, resolved by the notice's surfacer. */
+  labelKey: string;
+}
+
 /** Everything `PanelsController` needs from its host to bridge layout-changing inputs onto
  * `applyOp` and persist the result. */
 export interface PanelsControllerDeps {
@@ -78,12 +88,16 @@ export interface PanelsControllerDeps {
   /** Fired with a user-facing i18n key for a CONTROLLER-originated notice the
    * caller surfaces (live region / toast) — today, only ever
    * `panels.popoutRestoredFloating`, queued by `#rehydratePoppedOut` when
-   * reload rehydrates a popped-out panel to floating (a page load cannot
-   * reopen a popup) and flushed post-mount via `flushPendingNotice`. An
+   * dormant pop-out arrangement records exist after rehydration (whether or
+   * not this load converted anything — the restore affordance is keyed on
+   * dormant-presence) and flushed post-mount via `flushPendingNotice`. The
+   * optional `action` declares a call-to-action the caller renders (e.g. the
+   * "Reopen windows" restore gesture); the caller supplies the behavior, since
+   * the controller holds no engine reference. An
    * ENGINE-originated notice (e.g. `DockviewEngine`'s `panels.popoutBlocked`)
    * is a SEPARATE channel: `PanelHost` subscribes to `EngineAdapter.onNotice`
    * directly and never routes it through this hook. */
-  onNotice?: (key: string) => void;
+  onNotice?: (key: string, action?: PanelsNoticeAction) => void;
 }
 
 const EMPTY_LAYOUT: PanelLayoutV1 = {
@@ -141,7 +155,7 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
   /** A notice queued during construction, pending `flushPendingNotice()` —
    * see that method's doc comment for why `#rehydratePoppedOut` cannot call
    * `deps.onNotice` directly. */
-  #pendingNotice: string | null = null;
+  #pendingNotice: { key: string; action?: PanelsNoticeAction } | null = null;
 
   /** Decodes the persisted layout blob (falling back to a fresh
    * `defaultLayout` built from the role-filtered registry on garbage/absence —
@@ -191,10 +205,11 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * window's entry is RETAINED — marked `dormant`, rect and panel set intact —
    * as the arrangement record a later restore gesture re-opens (see
    * `PopoutWindowLayout.dormant`).
-   * Runs once; persists + queues a notice only if it actually converted
-   * anything — see `flushPendingNotice` for why the notice is QUEUED here
-   * rather than fired through `deps.onNotice` directly (this method runs
-   * synchronously inside the constructor, before the host has mounted).
+   * The notice (queued for `flushPendingNotice`, with the restore action
+   * declared) fires whenever dormant entries EXIST after rehydration — not
+   * only when this load converted something: a blob of already-dormant
+   * entries (a prior load's persisted rehydrate output) still offers the
+   * restore gesture.
    * @example
    * ```
    * // private method; not part of the public API — invoked only from the
@@ -204,37 +219,46 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    */
   #rehydratePoppedOut(): void {
     const live = this.#layout.expanded.popouts.filter((w) => w.dormant !== true);
-    if (live.length === 0) return;
-    let l = this.#layout;
-    for (const w of live) {
-      for (const id of w.panels) {
-        // Cascade off the CURRENT floating count each iteration (not the loop
-        // index) so rehydrated popouts interleave correctly with any panel
-        // that was already floating before rehydration ran.
-        const n = l.expanded.floating.length;
-        const off = (n % 6) * REHYDRATE_FLOAT_STEP;
-        const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
-        l = applyOp(l, { op: "float", id, rect });
+    if (live.length > 0) {
+      let l = this.#layout;
+      for (const w of live) {
+        for (const id of w.panels) {
+          // Cascade off the CURRENT floating count each iteration (not the loop
+          // index) so rehydrated popouts interleave correctly with any panel
+          // that was already floating before rehydration ran.
+          const n = l.expanded.floating.length;
+          const off = (n % 6) * REHYDRATE_FLOAT_STEP;
+          const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
+          l = applyOp(l, { op: "float", id, rect });
+        }
       }
+      // Retain the arrangement record: each converted window's entry is written
+      // back marked dormant. Its panels are now floating, so `locate` never
+      // resolves them through the entry; the entry exists purely as the saved
+      // grouping/rect a restore gesture reads. A direct tree write, not an op:
+      // this is construction-time normalization (like the constructor's own
+      // decode assignment), not a user/engine gesture. A same-keyed entry still
+      // present above (a crafted blob that listed an already-floating panel —
+      // its `float` no-op'd, leaving the window undrained) is replaced by this
+      // record, never duplicated.
+      const liveKeys = new Set(live.map((w) => w.key));
+      const popouts = [
+        ...l.expanded.popouts.filter((w) => !liveKeys.has(w.key)),
+        ...live.map((w): PopoutWindowLayout => ({ ...w, dormant: true })),
+      ];
+      l = { ...l, expanded: { ...l.expanded, popouts } };
+      this.#layout = l;
+      this.#persist(l);
     }
-    // Retain the arrangement record: each converted window's entry is written
-    // back marked dormant. Its panels are now floating, so `locate` never
-    // resolves them through the entry; the entry exists purely as the saved
-    // grouping/rect a restore gesture reads. A direct tree write, not an op:
-    // this is construction-time normalization (like the constructor's own
-    // decode assignment), not a user/engine gesture. A same-keyed entry still
-    // present above (a crafted blob that listed an already-floating panel —
-    // its `float` no-op'd, leaving the window undrained) is replaced by this
-    // record, never duplicated.
-    const liveKeys = new Set(live.map((w) => w.key));
-    const popouts = [
-      ...l.expanded.popouts.filter((w) => !liveKeys.has(w.key)),
-      ...live.map((w): PopoutWindowLayout => ({ ...w, dormant: true })),
-    ];
-    l = { ...l, expanded: { ...l.expanded, popouts } };
-    this.#layout = l;
-    this.#persist(l);
-    this.#pendingNotice = "panels.popoutRestoredFloating";
+    // The restore notice is keyed on dormant-PRESENCE after rehydration, not
+    // on conversion: a reload whose blob carried only dormant entries (a prior
+    // load already converted them) converts nothing — yet the arrangement is
+    // still restorable, so the "Reopen windows" affordance must still be
+    // offered. The action's behavior is wired host-side (see
+    // `PanelsNoticeAction`); the controller only declares it.
+    if (this.#layout.expanded.popouts.some((w) => w.dormant === true)) {
+      this.#pendingNotice = { key: "panels.popoutRestoredFloating", action: { labelKey: "panels.reopenWindows" } };
+    }
   }
 
   /** Flushes a notice queued during construction (currently only
@@ -262,9 +286,36 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    */
   flushPendingNotice(): void {
     if (this.#pendingNotice === null) return;
-    const key = this.#pendingNotice;
+    const notice = this.#pendingNotice;
     this.#pendingNotice = null;
-    this.#deps.onNotice?.(key);
+    this.#deps.onNotice?.(notice.key, notice.action);
+  }
+
+  /** The full saved pop-out arrangement a restore gesture re-opens — read
+   * from the retained PRE-PRUNE persisted source (`#persistedSource`), not the
+   * live tree: `decodeLayout`'s prune pass and `syncRegistrations`'s `prune`
+   * both shrink a dormant entry's `panels` to the currently-registered ids
+   * during the boot registration trickle, while the source record keeps the
+   * full panel set the user actually saved (a late-registering panel restores
+   * with its window instead of being silently dropped from the arrangement).
+   * Entries naming panels that never registered are tolerated engine-side
+   * (skipped at restore time). Empty when there is no persisted source (a
+   * fresh or reset layout — which then also has no dormant entries, so no
+   * restore notice is ever queued in that state).
+   * @returns The saved pop-out window records, with original keys, full panel
+   * sets, and last-known rects.
+   * @example
+   * ```ts
+   * import { PanelsController } from "@shadowcat/module-panels";
+   * import type { PanelsControllerDeps } from "@shadowcat/module-panels";
+   *
+   * declare const deps: PanelsControllerDeps;
+   * const controller = new PanelsController(deps);
+   * const windows = controller.restorablePopouts();
+   * ```
+   */
+  restorablePopouts(): readonly PopoutWindowLayout[] {
+    return this.#persistedSource?.expanded.popouts ?? [];
   }
 
   /** The current `PanelLayoutV1` tree — `$state`, so a reactive reader

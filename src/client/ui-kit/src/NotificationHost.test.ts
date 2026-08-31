@@ -1,4 +1,4 @@
-import { test, expect, afterEach, beforeEach } from "vitest";
+import { test, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { notifications } from "./notifications.svelte";
 import NotificationHost from "./NotificationHost.svelte";
@@ -31,4 +31,21 @@ test("the host container carries aria-live=\"polite\"", () => {
   const { container } = render(NotificationHost);
   const host = container.querySelector("[aria-live]");
   expect(host?.getAttribute("aria-live")).toBe("polite");
+});
+
+test("renders the action button when a notification carries one; clicking runs the action and dismisses the notification", async () => {
+  const run = vi.fn();
+  const id = notifications.push("warning", "Restore me.", { label: "Reopen windows", run });
+  render(NotificationHost);
+  const actionBtn = screen.getByRole("button", { name: "Reopen windows" });
+  await fireEvent.click(actionBtn);
+  expect(run).toHaveBeenCalledTimes(1);
+  expect(notifications.items.find((n) => n.id === id)).toBeUndefined();
+  expect(screen.queryByText("Restore me.")).toBeNull();
+});
+
+test("a notification without an action renders only its dismiss button", () => {
+  notifications.push("warning", "Plain.");
+  render(NotificationHost);
+  expect(screen.getAllByRole("button")).toHaveLength(1);
 });

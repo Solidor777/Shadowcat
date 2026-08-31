@@ -29,6 +29,21 @@
   {#each items as n (n.id)}
     <div class="sc-notify sc-notify-{n.level}" role="status">
       <span class="sc-notify-message">{n.message}</span>
+      {#if n.action}
+        <button
+          type="button"
+          class="sc-notify-action"
+          onclick={() => {
+            // The action IS the user's response to this notification — run it
+            // and dismiss together, so an already-acted-on notice can't be
+            // clicked twice.
+            n.action!.run();
+            notifications.dismiss(n.id);
+          }}
+        >
+          {n.action.label}
+        </button>
+      {/if}
       <button
         type="button"
         class="sc-notify-dismiss"
@@ -75,6 +90,27 @@
   .sc-notify-message {
     flex: 1;
     font-size: 0.9rem;
+  }
+  .sc-notify-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px; /* touch target (mobile invariant); >=24px a11y floor */
+    padding: 0 var(--space-3);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-1);
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.9rem;
+    cursor: pointer;
+    white-space: nowrap;
+    &:hover {
+      background: var(--surface-base);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
   }
   .sc-notify-dismiss {
     display: inline-flex;

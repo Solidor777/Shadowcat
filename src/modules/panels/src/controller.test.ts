@@ -443,6 +443,133 @@ test("rehydratePoppedOut: a legacy poppedOut blob migrates, floats, and retains 
   ]);
 });
 
+// The restore affordance is keyed on dormant-PRESENCE, not on conversion: a
+// second reload's blob carries ONLY dormant entries (the first reload's
+// rehydrate already converted and persisted them), so nothing converts — yet
+// the arrangement is still restorable, so the notice (with its "Reopen
+// windows" action) must still fire.
+test("rehydratePoppedOut: a blob carrying only dormant entries converts nothing but still queues the restore notice, with its action", () => {
+  const contributions = new ContributionRegistry();
+  contributions.contribute({
+    id: "chat",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // Session 1's blob: chat popped out in a live window.
+  let saved = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w-chat", rect: { left: 500, top: 100, width: 900, height: 700 } });
+
+  // Session 1's rehydrate converts + persists; its OUTPUT is session 2's blob.
+  const first = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+  const secondBlob = encodeLayout(first.layout);
+
+  const notices: { key: string; action?: { labelKey: string } }[] = [];
+  const setPanelLayout = vi.fn();
+  const second = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => secondBlob,
+    setPanelLayout,
+    bridge: fakeBridge(),
+    logger: silentLogger,
+    onNotice: (key, action) => notices.push({ key, ...(action ? { action } : {}) }),
+  });
+
+  // Nothing converted (the panel was already floating in the blob), and
+  // nothing needed re-persisting.
+  expect(second.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
+  expect(second.layout.expanded.popouts).toEqual([
+    { key: "w-chat", panels: ["chat"], rect: { left: 500, top: 100, width: 900, height: 700 }, dormant: true },
+  ]);
+  expect(setPanelLayout).not.toHaveBeenCalled();
+
+  second.flushPendingNotice();
+  expect(notices).toEqual([{ key: "panels.popoutRestoredFloating", action: { labelKey: "panels.reopenWindows" } }]);
+});
+
+// The restore gesture's arrangement record is the retained PRE-PRUNE persisted
+// source: a window's panel that registers only after construction (the boot
+// registration trickle) is pruned out of the live tree's dormant entry at
+// decode/`syncRegistrations` time, but the restore must still know the full
+// saved panel set.
+test("restorablePopouts returns the full pre-prune arrangement across the boot registration trickle", () => {
+  const contributions = new ContributionRegistry();
+  contributions.contribute({
+    id: "chat",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+
+  // chat + assets shared ONE saved window — but only chat is registered at
+  // construction time.
+  let saved = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w1", rect: { left: 40, top: 50, width: 600, height: 500 } });
+  saved = {
+    ...saved,
+    expanded: {
+      ...saved.expanded,
+      popouts: [{ key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 } }],
+    },
+  };
+
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  // The live tree's dormant record was pruned to the registered panel…
+  expect(ctrl.layout.expanded.popouts).toEqual([
+    { key: "w1", panels: ["chat"], rect: { left: 40, top: 50, width: 600, height: 500 }, dormant: true },
+  ]);
+  // …but the restore surface reads the full saved arrangement.
+  expect(ctrl.restorablePopouts()).toEqual([
+    { key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 } },
+  ]);
+
+  // The late registration floats the panel (persisted popped-out location →
+  // floating) and the restore record stays complete.
+  contributions.contribute({
+    id: "assets",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "a", labelKey: "assets.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  ctrl.syncRegistrations(regsForRole(contributions.contributionsFor(PANEL_CONTRACT), "gm"));
+  expect(locate(ctrl.layout, "assets").where).toBe("floating");
+  expect(ctrl.restorablePopouts()).toEqual([
+    { key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 } },
+  ]);
+});
+
+// No persisted history (or a reset blob) means no arrangement to restore.
+test("restorablePopouts is empty with no persisted source", () => {
+  const ctrl = new PanelsController({
+    contributions: registry(),
+    role: "gm",
+    getPanelLayout: () => null,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+  expect(ctrl.restorablePopouts()).toEqual([]);
+});
+
 // Anti-drift gate for a deliberately-forked constant pair. `layout/tree`'s
 // SHEET_CASCADE_BASE/STEP and `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP
 // are intentionally NOT a shared import (the pure layout tree stays decoupled

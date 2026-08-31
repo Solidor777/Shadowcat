@@ -19,7 +19,7 @@ import { mount, unmount } from "svelte";
 import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
 import { i18n, theme } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
-import type { ExpandedLayout, LayoutOp, Rect } from "../layout/tree";
+import type { ExpandedLayout, LayoutOp, PopoutWindowLayout, Rect, ScreenRect } from "../layout/tree";
 import { classifyDrop, opForMenuCommand, MENU_FLOAT_RECT, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
 import PanelMenu from "../PanelMenu.svelte";
 // Minimal wiring: imports dockview's base stylesheet + our token overrides —
@@ -57,6 +57,45 @@ const FLOATING_KEY_STEP_LARGE = 32;
  * persist (resetting the whole layout on the following load), and a tiny
  * window is unreachable UI besides. */
 const FLOATING_MIN_SIZE = 100;
+
+/** Clamps a saved pop-out screen rect to the CURRENT screen's available
+ * bounds: the machine that saved the rect may have had a larger or
+ * differently-arranged display set, and a window reopened fully off-screen is
+ * lost UI. Size first (never exceeding the available area, never below 1px —
+ * the codec's `isScreenRect` requires strictly positive), then position pinned
+ * inside `[availOrigin, availOrigin + availSize - size]` per axis. A
+ * degenerate zero-area `screen` read (headless test DOMs report all-zero
+ * screens) means the bounds are unknown — the rect passes through unchanged
+ * rather than clamping to a useless 1px box.
+ * @param rect The saved screen rect to clamp (`window.open` feature semantics).
+ * @returns The clamped rect — `rect` values that already fit (or cannot be
+ * checked) pass through unchanged.
+ * @example
+ * ```
+ * // private function; not part of the public API — used by
+ * // DockviewEngine.#popOutPanel when reusing a saved popout rect
+ * declare const rect: import("../layout/tree").ScreenRect;
+ * clampScreenRectToAvailable(rect);
+ * ```
+ */
+function clampScreenRectToAvailable(rect: ScreenRect): ScreenRect {
+  // `availLeft`/`availTop` are de-facto-standard but absent from the DOM lib's
+  // `Screen` — read them through a widened view.
+  const screen = window.screen as Screen & { availLeft?: number; availTop?: number };
+  const availLeft = screen.availLeft ?? 0;
+  const availTop = screen.availTop ?? 0;
+  const availWidth = screen.availWidth ?? screen.width ?? 0;
+  const availHeight = screen.availHeight ?? screen.height ?? 0;
+  // A degenerate (zero-area) read means the bounds are UNKNOWN (headless test
+  // DOMs report all-zero screens) — pass the saved rect through rather than
+  // clamp a real window down to a useless 1px box.
+  if (availWidth <= 0 || availHeight <= 0) return rect;
+  const width = Math.min(Math.max(rect.width, 1), availWidth);
+  const height = Math.min(Math.max(rect.height, 1), availHeight);
+  const left = Math.min(Math.max(rect.left, availLeft), availLeft + (availWidth - width));
+  const top = Math.min(Math.max(rect.top, availTop), availTop + (availHeight - height));
+  return { left, top, width, height };
+}
 
 /** Content renderer that adopts an externally-owned element (a panel slot,
  * or the shared stage element) into dockview's panel content container.
@@ -666,6 +705,11 @@ export class DockviewEngine implements EngineAdapter {
    * by `destroy()` — the same add/dispose lifecycle bracket as
    * `#popoutGroupSubs`. */
   #popoutDocumentUnsubs = new Map<string, () => void>();
+  /** Popout group id -> the tree's window key for that popout, recorded at
+   * pop-out success so `restorePopouts` (which revives a window BY key) can
+   * translate between the two. Deleted in `#handleRemovePopoutGroup` and
+   * cleared by `destroy()`, same lifecycle bracket as `#poppedOutGroupPanels`. */
+  #popoutWindowKeys = new Map<string, string>();
   /** Gesture-time popout invoker. Defaults to dockview's native popout (verified same-heap,
    * content re-parented, stylesheets cloned, via `PopoutWindow.open`). Injectable so unit
    * tests exercise the async-result → op translation without a real `window.open` (jsdom
@@ -832,11 +876,13 @@ export class DockviewEngine implements EngineAdapter {
     for (const cb of this.#opListeners) cb(result);
   }
 
-  /** Gesture-time pop-out: drives dockview's native `addPopoutGroup`
-   * synchronously (preserving the user gesture), then translates the async
-   * result into a tree op. Success ⇒ `popOut` (records the id + its live popout
-   * group for close-translation). Block/throw ⇒ falls back to `float` + a
-   * `panels.popoutBlocked` notice.
+  /** Gesture-time pop-out from the panel menu: mints a FRESH window key per
+   * gesture, reuses the panel's saved pop-out rect when a dormant arrangement
+   * record carries one (`#savedPopoutRect`, clamped to the current screen),
+   * and defers to `#popOutPanel`'s shared core. Gesture timing is the reason
+   * this stays imperative (never reconciled through `apply()`): `window.open`
+   * (inside addPopoutGroup, synchronous before its first await) must run in
+   * THIS click's tick or the browser blocks it.
    * @param id The panel id to pop out.
    * @example
    * ```
@@ -846,31 +892,86 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   #requestPopOut(id: string): void {
+    const rect = this.#savedPopoutRect(id);
+    // The tree's window identity, minted here (a fresh key per pop-out
+    // gesture) and carried by the `popOut` op on success — the tree never
+    // interprets it; ops address the window by it. A menu gesture always
+    // mints fresh: a dormant record the panel belonged to stays intact for
+    // the remaining panels until a restore gesture revives it.
+    const key = crypto.randomUUID();
+    void this.#popOutPanel(id, key, rect);
+  }
+
+  /** The saved screen rect a DORMANT arrangement record carries for `id`, if
+   * any — the panel's last known pop-out geometry, reused by a gesture-time
+   * pop-out so a panel returns to where its window last was. Read off the
+   * last-applied tree (`#expanded`), which retains dormant records.
+   * @param id The panel id to look up a saved rect for.
+   * @returns The saved `ScreenRect`, or `null` when no dormant record names
+   * `id` with a rect.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #requestPopOut
+   * this.#savedPopoutRect("chat");
+   * ```
+   */
+  #savedPopoutRect(id: string): ScreenRect | null {
+    const entry = this.#expanded?.popouts.find((w) => w.dormant === true && w.panels.includes(id));
+    return entry?.rect ?? null;
+  }
+
+  /** The shared pop-out core behind every producer — the menu's
+   * `#requestPopOut` and `restorePopouts`'s per-window reopen both funnel
+   * here; never duplicate this machinery. Drives dockview's
+   * `addPopoutGroup`-backed driver synchronously (preserving the user
+   * gesture), then translates the async result into a tree op. Success ⇒
+   * `popOut` (records the id + its live popout group for close-translation +
+   * geometry-capture keying). Block/throw ⇒ falls back to `float` + a
+   * `panels.popoutBlocked` notice.
+   * @param id The panel id to pop out.
+   * @param key The tree's window identity for this pop-out — freshly minted
+   * for a menu gesture, or a dormant record's own key when a restore gesture
+   * revives it (the reducer's `popOut` case redefines the record's panel list
+   * on a repeat key).
+   * @param rect The window's requested screen rect (clamped to the current
+   * screen's available bounds before reaching the driver), or null to let the
+   * driver place the window itself.
+   * @returns Whether the window actually opened (the driver's settled
+   * result); `false` on every refused/failed path.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #requestPopOut and restorePopouts
+   * await this.#popOutPanel("chat", crypto.randomUUID(), null);
+   * ```
+   */
+  #popOutPanel(id: string, key: string, rect: ScreenRect | null): Promise<boolean> {
     const api = this.#api;
-    if (!api) return;
+    if (!api) return Promise.resolve(false);
     // Second STAGE_ID layer alongside `#handleMenuCommand`'s early return (the
     // stage has no menu button at all — its group is headerless — so neither
     // should ever fire for it).
-    if (id === STAGE_ID) return;
+    if (id === STAGE_ID) return Promise.resolve(false);
     const panel = api.getPanel(id);
-    if (!panel) return;
+    if (!panel) return Promise.resolve(false);
     // In-flight guard: dockview's `mutation()` bracket around `addPopoutGroup`
     // does not span the async window.open → re-parent gap (see `#pendingPopouts`),
     // so a duplicate request in that gap is refused here, mirroring the
     // logged-warning-on-reentry style of the menu-command veto path.
     if (this.#pendingPopouts.has(id)) {
       this.#logger.warn("panels: pop-out already in flight; ignoring duplicate request", { id });
-      return;
+      return Promise.resolve(false);
     }
     this.#pendingPopouts.add(id);
-    // The tree's window identity, minted here (a fresh key per pop-out
-    // gesture) and carried by the `popOut` op on success — the tree never
-    // interprets it; ops address the window by it.
-    const key = crypto.randomUUID();
     // Origin group captured BEFORE the driver re-parents the panel: after a
     // successful pop-out `panel.group.id` is the POPOUT group's own id, so the
     // origin must be read now (see `#poppedOutOriginGroups`).
     const originGroupId = panel.group.id;
+    // A saved rect is clamped to the CURRENT screen's available bounds before
+    // reaching the driver (screens change between sessions; a window reopened
+    // fully off-screen is lost UI — see `clampScreenRectToAvailable`).
+    const position = rect ? clampScreenRectToAvailable(rect) : null;
     // The popout window's `Document` is captured via `onDidOpen`, which
     // dockview's `PopoutWindow.open` fires synchronously once `window.open`
     // succeeds — before `addPopoutGroup`'s promise settles — so it is
@@ -878,7 +979,8 @@ export class DockviewEngine implements EngineAdapter {
     // application beats the stylesheets dockview clones into the popup on its
     // later `load` event, so registering at `onDidOpen` time is not racy.
     let popoutDocument: Document | undefined;
-    this.#popoutDriver(panel, {
+    return this.#popoutDriver(panel, {
+      ...(position ? { position } : {}),
       onDidOpen: (event) => {
         popoutDocument = event.window.document;
       },
@@ -889,6 +991,7 @@ export class DockviewEngine implements EngineAdapter {
           this.#poppedOutOriginGroups.set(id, originGroupId);
           const gid = api.getPanel(id)?.group.id;
           if (gid) this.#poppedOutGroupPanels.set(gid, [id]);
+          if (gid) this.#popoutWindowKeys.set(gid, key);
           // Register once per open, keyed by the popout group id; the paired
           // unregister runs in `#handleRemovePopoutGroup` and `destroy()`.
           if (gid && popoutDocument) {
@@ -917,18 +1020,76 @@ export class DockviewEngine implements EngineAdapter {
               }),
             ]);
           }
-          for (const cb of this.#opListeners) cb({ op: "popOut", id, key, rect: null });
+          for (const cb of this.#opListeners) cb({ op: "popOut", id, key, rect: position });
         } else {
           for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
           this.#emitNotice("panels.popoutBlocked");
         }
+        return ok;
       })
       .catch((err) => {
         this.#pendingPopouts.delete(id);
         this.#logger.warn("panels: pop-out failed; falling back to floating", { id, err });
         for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
         this.#emitNotice("panels.popoutBlocked");
+        return false;
       });
+  }
+
+  /** `EngineAdapter.restorePopouts`: re-opens each saved pop-out window — one
+   * click on the restore notification is the single user gesture every
+   * `window.open` in here rides on. Per window: the first restorable panel
+   * pops out through the shared `#popOutPanel` core at the window's saved
+   * (clamped) rect, REVIVING the retained record under its original key; once
+   * that window's group exists, each remaining panel moves into it via
+   * `panel.api.moveTo` (dockview's own `movingLock` brackets the move, so the
+   * component-level add/remove events this engine translates stay silent — no
+   * spurious `close` ops) and a `popOutInto` op records the join. Partial
+   * records are tolerated: panels with no live panel (unregistered since the
+   * save, closed) or already living in a popout (re-popped-out via the menu
+   * meanwhile) are skipped, and a window with no restorable panel is skipped
+   * whole.
+   * @param windows The saved arrangement records to restore — dormant
+   * `PopoutWindowLayout` entries read from the controller's persisted source.
+   * @example
+   * ```ts
+   * import { DockviewEngine } from "@shadowcat/module-panels";
+   *
+   * const engine = new DockviewEngine();
+   * engine.restorePopouts([{ key: "w1", panels: ["chat"], rect: null }]);
+   * ```
+   */
+  restorePopouts(windows: readonly PopoutWindowLayout[]): void {
+    const api = this.#api;
+    if (!api) return;
+    for (const w of windows) {
+      const restorable = w.panels.filter((id) => {
+        if (id === STAGE_ID) return false;
+        const panel = api.getPanel(id);
+        return panel !== undefined && panel.group.api.location.type !== "popout";
+      });
+      const [first, ...rest] = restorable;
+      if (!first) continue;
+      void this.#popOutPanel(first, w.key, w.rect).then((ok) => {
+        if (!ok) return;
+        // The popout group the first panel now lives in — whatever group the
+        // (possibly injected) driver moved it to.
+        const popoutGroup = api.getPanel(first)?.group;
+        if (!popoutGroup) return;
+        for (const id of rest) {
+          const panel = api.getPanel(id);
+          if (!panel || panel.group.api.location.type === "popout") continue;
+          const wasFloating = panel.group.api.location.type === "floating";
+          panel.api.moveTo({ group: popoutGroup });
+          // `#handleDidRemovePanel` never sees the move (movingLock suppresses
+          // the component-level event), so the floating teardown it would have
+          // run — Escape listener, `#lastFloatingRect` snapshot — runs here
+          // instead.
+          if (wasFloating) this.#teardownFloatingA11y(id);
+          for (const cb of this.#opListeners) cb({ op: "popOutInto", id, key: w.key });
+        }
+      });
+    }
   }
 
   /** Mounts the stage into its own dedicated group — headerless (no tab
@@ -1231,6 +1392,9 @@ export class DockviewEngine implements EngineAdapter {
   }): void {
     const ids = this.#poppedOutGroupPanels.get(event.id) ?? event.group.model.panels.map((p) => p.id);
     this.#poppedOutGroupPanels.delete(event.id);
+    // The gid→window-key mapping (`#popoutWindowKeys`, geometry capture's
+    // translation table) unwinds unconditionally alongside.
+    this.#popoutWindowKeys.delete(event.id);
     // This group's own subscription bundle (`onWillDrop`/`onDidAddPanel`/
     // `onDidRemovePanel`, wired at pop-out success in `#requestPopOut`) is
     // scoped to exactly this popout group's lifetime — dispose it unconditionally,
@@ -1965,13 +2129,16 @@ export class DockviewEngine implements EngineAdapter {
   }
 
   /** `EngineAdapter.onOp`: subscribes to every `LayoutOp` this engine emits.
-   * Seven sources, all funneled through this same `#opListeners` channel: a
+   * Sources, all funneled through this same `#opListeners` channel: a
    * drag gesture (`#handleWillDrop`/`#handleGroupWillDrop`); a menu command
    * (`#handleMenuCommand`, including `#requestPopOut`'s async continuation);
    * a resize (`#handleGroupDimensionsChange`/`#handleFloatingLayoutChange`);
    * a popout window closing (`#handleRemovePopoutGroup`); a panel removal
    * (`#handleDidRemovePanel`, a `close` op); a floating dialog's own
-   * Escape keydown handler (wired in `#wireFloatingA11y`, also a `close` op);
+   * keydown handlers (wired in `#wireFloatingA11y` — Escape's `close` op and
+   * `#handleFloatingKeydown`'s move/resize `resizeFloating` ops); a restore
+   * gesture (`restorePopouts`'s `popOut`/`popOutInto` ops, via the same
+   * `#popOutPanel` core the menu uses);
    * and a user-driven tab activation (`#handleActivePanelChange`, an
    * `activeTab` op).
    * @param cb Called once per emitted op.
@@ -2074,6 +2241,7 @@ export class DockviewEngine implements EngineAdapter {
     this.#lastGroupPx.clear();
     this.#lastFloatingRect.clear();
     this.#poppedOutGroupPanels.clear();
+    this.#popoutWindowKeys.clear();
     this.#pendingPopouts.clear();
     this.#poppedOutOriginGroups.clear();
     this.#noticeListeners.clear();

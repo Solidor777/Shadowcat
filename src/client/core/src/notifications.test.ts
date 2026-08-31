@@ -32,4 +32,19 @@ describe("NotificationCenter", () => {
     center.push("error", "third");
     expect(center.items.map((n) => n.message)).toEqual(["first", "second", "third"]);
   });
+
+  it("push carries an optional action; omitting it stays backward compatible", () => {
+    const center = new NotificationCenter();
+    const run = vi.fn();
+    const id = center.push("info", "Restorable.", { label: "Reopen windows", run });
+    expect(center.items[0]).toEqual({
+      id,
+      level: "info",
+      message: "Restorable.",
+      action: { label: "Reopen windows", run },
+    });
+    const plain = center.push("info", "Plain.");
+    expect(center.items[1]).toEqual({ id: plain, level: "info", message: "Plain." });
+    expect(center.items[1].action).toBeUndefined();
+  });
 });
