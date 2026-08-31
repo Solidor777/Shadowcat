@@ -14,6 +14,7 @@ fn origin_extent(w: f64, h: f64) -> WorldExtent {
 fn lamp() -> Light {
     Light {
         pos: (0.0, 0.0),
+        elevation: 0.0,
         color: 0xFFEEAA,
         intensity: 1.0,
         bright_radius: 2.0,
@@ -434,3 +435,5 @@ fn cell_illumination_occludes_environment_outside_the_boundary_polys() {
         "cell inside a boundary poly gets the full ambient"
     );
 }
+
+

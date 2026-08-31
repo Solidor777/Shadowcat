@@ -13,7 +13,7 @@
 
 use uuid::Uuid;
 
-use super::{engine_as, parse_hex_color, SceneEcs, SceneEntity};
+use super::{elevation, engine_as, parse_hex_color, SceneEcs, SceneEntity};
 use crate::data::document::Document;
 use crate::data::engine as eng;
 use crate::scene::lighting::{Falloff, Light};
@@ -21,8 +21,10 @@ use crate::scene::lighting::{Falloff, Light};
 /// Convert an engine-band emission payload at world position `pos` into the lighting field's
 /// `Light`. `None` when the emission is disabled (the suppress path for a carried emission, the
 /// on/off switch for a standalone light). `falloff` absent ⇒ linear (the read-side default);
-/// intensity is clamped to `[0, 1]`.
-fn emission_to_light(pos: (f64, f64), em: &eng::LightEmission) -> Option<Light> {
+/// intensity is clamped to `[0, 1]`. `elevation` is the emitter's height above the ground plane
+/// (the standalone light's own, or the carrying token's) — read through
+/// `elevation::elevation_or_ground` by the caller.
+fn emission_to_light(pos: (f64, f64), elevation: f64, em: &eng::LightEmission) -> Option<Light> {
     if !em.enabled {
         return None;
     }
@@ -33,6 +35,7 @@ fn emission_to_light(pos: (f64, f64), em: &eng::LightEmission) -> Option<Light> 
     };
     Some(Light {
         pos,
+        elevation,
         color: parse_hex_color(&em.color),
         intensity: em.intensity.clamp(0.0, 1.0),
         bright_radius: em.bright_radius,
@@ -101,20 +104,28 @@ impl SceneEcs {
                     else {
                         continue;
                     };
-                    if let Some(l) = emission_to_light((le.x, le.y), &le.emission) {
+                    if let Some(l) = emission_to_light(
+                        (le.x, le.y),
+                        elevation::elevation_or_ground(le.elevation),
+                        &le.emission,
+                    ) {
                         out.push(l);
                     }
                 }
                 "token" => {
-                    let Some(pos) = self
-                        .engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc)
-                        .map(|t| (t.x, t.y))
+                    let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc)
                     else {
                         continue;
                     };
+                    // A carried emission emits at its token's elevation (the token IS the
+                    // emitter); the token's own x/y/elevation are the position read.
+                    let (pos, elev) = (
+                        (t.x, t.y),
+                        elevation::elevation_or_ground(t.elevation),
+                    );
                     if let Some(l) = self
                         .token_light_emission(&e.doc)
-                        .and_then(|em| emission_to_light(pos, &em))
+                        .and_then(|em| emission_to_light(pos, elev, &em))
                     {
                         out.push(l);
                     }
@@ -133,6 +144,7 @@ impl SceneEcs {
                 .0
                 .total_cmp(&b.pos.0)
                 .then(a.pos.1.total_cmp(&b.pos.1))
+                .then(a.elevation.total_cmp(&b.elevation))
                 .then(a.color.cmp(&b.color))
                 .then(a.intensity.total_cmp(&b.intensity))
                 .then(a.bright_radius.total_cmp(&b.bright_radius))

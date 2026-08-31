@@ -35,11 +35,15 @@ pub enum Falloff {
 /// A light source's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
 /// The value fields mirror `LightEmission` (used by both standalone `LightEngine` docs and
 /// token-carried emissions); `pos` is the source's scene-unit position (the document's `x`/`y`,
-/// or the carrying token's live position).
+/// or the carrying token's live position); `elevation` is the source's height above the ground
+/// plane (decides which wall elevation bands occlude it — see
+/// `crate::scene::elevation::wall_occludes`; never read by the illumination math itself).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
     /// Position in scene units.
     pub pos: P,
+    /// Elevation above the ground plane (0 = grounded); occlusion-band input only.
+    pub elevation: f64,
     /// Packed `0xRRGGBB` tint contribution.
     pub color: u32,
     /// Peak illumination level within `bright_radius`.

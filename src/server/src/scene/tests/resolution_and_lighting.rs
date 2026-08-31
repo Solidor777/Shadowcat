@@ -1869,3 +1869,260 @@ fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
         "the suppressed torch no longer lights the viewer's cell"
     );
 }
+
+// --- Elevation-aware occlusion (the wall band test) ---
+
+/// LOS-only scene (lighting off ⇒ all-bright, so only the sight-wall raycast gates cells):
+/// grid size 20, the user's token at (10,10), and a vertical blocksSight wall at x=30 whose
+/// elevation band is `band`. The target cell is (2,0) (center (50,10)), straight past the wall.
+fn elevation_los_fixture(
+    band: serde_json::Value,
+    token_elevation: serde_json::Value,
+) -> (SceneEcs, Uuid, Uuid) {
+    use serde_json::json;
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0, "elevation": token_elevation }),
+    );
+    tok.owner = Some(user);
+    let wall = entity_doc_eng(
+        30,
+        10,
+        "wall",
+        json!({ "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 }, "blocksSight": true, "elevation": band }),
+    );
+    let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": {
+            "losRestriction": true, "fog": true,
+            "lightingEnabled": false, "lightMode": "environmentLight",
+            "environment": { "color": "#000000", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    }));
+    (ecs, user, scene_id)
+}
+
+#[test]
+fn wall_elevation_band_gates_sight_by_source_elevation() {
+    use serde_json::json;
+    let band = json!({ "bottom": 0, "top": 3 });
+    let target = (2, 0);
+
+    // Grounded viewer against a {0,3} wall: blocked (the pre-elevation behavior).
+    let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(null));
+    assert!(
+        !ecs.visible_cells(user, scene, false).contains(&target),
+        "a grounded viewer must not see past a wall whose band covers elevation 0"
+    );
+
+    // Above the band: sees over.
+    let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(5.0));
+    assert!(
+        ecs.visible_cells(user, scene, false).contains(&target),
+        "a viewer above the wall's top must see over it"
+    );
+
+    // Below the band: sees under (the bridge-overhead case).
+    let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(-1.0));
+    assert!(
+        ecs.visible_cells(user, scene, false).contains(&target),
+        "a viewer below the wall's bottom must see under it"
+    );
+
+    // Malformed interval (bottom > top) fails CLOSED: occludes at every elevation.
+    let (ecs, user, scene) = elevation_los_fixture(json!({ "bottom": 5, "top": 1 }), json!(7.0));
+    assert!(
+        !ecs.visible_cells(user, scene, false).contains(&target),
+        "a malformed wall band must block everything, never open a sightline"
+    );
+
+    // An absent band occludes every elevation (unchanged behavior for unmarked walls).
+    let (ecs, user, scene) = elevation_los_fixture(json!(null), json!(50.0));
+    assert!(
+        !ecs.visible_cells(user, scene, false).contains(&target),
+        "a wall with no elevation band must occlude at any elevation"
+    );
+}
+
+#[test]
+fn light_elevation_band_gates_occlusion_per_light() {
+    use serde_json::json;
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let band = json!({ "bottom": 0, "top": 3 });
+    // blocksLight only: LOS is unobstructed, so the target cell's visibility is decided
+    // purely by whether the light reaches it.
+    let wall = entity_doc_eng(
+        30,
+        10,
+        "wall",
+        json!({ "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 }, "blocksLight": true, "elevation": band }),
+    );
+    // Light at (10,10), bright 5 / dim 8 cells: the target at (50,10) is 2 cells out — full
+    // intensity whenever the wall does not occlude.
+    let light_at = |elevation: serde_json::Value| {
+        entity_doc_eng(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 10.0, "y": 10.0, "elevation": elevation,
+                "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
+            }),
+        )
+    };
+    let target = (2, 0);
+
+    // Grounded light against a {0,3} wall: occluded — the target cell stays dark.
+    let ecs = SceneEcs::from_documents(
+        vec![scene.clone(), tok.clone(), wall.clone(), light_at(json!(null))],
+        0,
+    );
+    assert!(
+        !ecs.visible_cells(user, scene_id, false).contains(&target),
+        "a grounded light must not reach past a wall whose band covers elevation 0"
+    );
+
+    // The same light above the band shines over the wall.
+    let ecs =
+        SceneEcs::from_documents(vec![scene, tok, wall, light_at(json!(5.0))], 0);
+    assert!(
+        ecs.visible_cells(user, scene_id, false).contains(&target),
+        "a light above the wall's band must shine over it"
+    );
+}
+
+#[test]
+fn env_light_stays_occluded_by_walls_at_any_elevation_band() {
+    use serde_json::json;
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    // A high-only band {5,10}: no grounded/raised source inside it would be blocked, but
+    // environment ambient is sky-light and must be shadowed by the FULL wall set regardless.
+    // Four walls enclose the target cell (2,2) (center (50,50)) — env light is projected from
+    // the whole scene perimeter, so only an enclosure fully INSIDE the scene bounds keeps a
+    // cell dark under daylight.
+    let banded_wall = |id: u128, x1: i32, y1: i32, x2: i32, y2: i32| {
+        entity_doc_eng(
+            id,
+            10,
+            "wall",
+            json!({ "seg": { "x1": x1, "y1": y1, "x2": x2, "y2": y2 }, "blocksLight": true, "elevation": { "bottom": 5, "top": 10 } }),
+        )
+    };
+    let room = vec![
+        banded_wall(30, 30, 30, 30, 70),
+        banded_wall(31, 70, 30, 70, 70),
+        banded_wall(32, 30, 30, 70, 30),
+        banded_wall(33, 30, 70, 70, 70),
+    ];
+    let world = json!({
+        "scene": {
+            "losRestriction": false, "fog": true,
+            "lightingEnabled": true, "lightMode": "environmentLight",
+            "environment": { "color": "#ffffff", "intensity": 1.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    });
+    let target = (2, 2);
+
+    // Anchor: with no wall, bright environment light admits the target cell.
+    let mut ecs = SceneEcs::from_documents(vec![scene.clone(), tok.clone()], 0);
+    ecs.set_world_settings_for_test(world.clone());
+    assert!(
+        ecs.visible_cells(user, scene_id, false).contains(&target),
+        "anchor: bright environment light must reach the target cell with no wall"
+    );
+
+    // The high-banded walls still shadow sky-light: the enclosed target cell stays dark.
+    let mut docs = vec![scene, tok];
+    docs.extend(room);
+    let mut ecs = SceneEcs::from_documents(docs, 0);
+    ecs.set_world_settings_for_test(world);
+    assert!(
+        !ecs.visible_cells(user, scene_id, false).contains(&target),
+        "environment ambient must stay occluded by the full wall set at any elevation band"
+    );
+}
+
+#[test]
+fn visible_cells_cached_invalidates_on_source_elevation_change() {
+    use serde_json::json;
+    let band = json!({ "bottom": 0, "top": 3 });
+    let (mut ecs, user, scene) = elevation_los_fixture(band, json!(null));
+    let target = (2, 0);
+
+    let mask1 = ecs.visible_cells_cached(user, scene, false);
+    assert!(
+        !mask1.contains(&target),
+        "grounded: the wall occludes the target cell"
+    );
+    assert_eq!(ecs.visible_cells_recompute_count(), 1, "cold cache");
+    let again = ecs.visible_cells_cached(user, scene, false);
+    assert_eq!(mask1, again);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        1,
+        "an unchanged call must be served from the cache"
+    );
+
+    // Raise the token above the wall's band: the same walls at a new elevation are a
+    // different mask — the snapshot must disagree and force a recompute.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![fc("/engine/elevation", json!(5.0))],
+    });
+    let mask2 = ecs.visible_cells_cached(user, scene, false);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        2,
+        "an elevation change must invalidate the cached mask"
+    );
+    assert!(
+        mask2.contains(&target),
+        "above the band, the same walls no longer occlude the target cell"
+    );
+}
+

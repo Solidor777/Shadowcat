@@ -292,12 +292,14 @@ pub struct LitScene {
 const VISION_BOUND_MARGIN: f64 = 100.0;
 
 /// Pre-collected per-move-constant inputs for the mover's vision trajectory.
-/// Holds the full `blocksSight` wall set and the visibility polygons for every stationary
+/// Holds the `blocksSight` wall set filtered at the mover's elevation and the visibility
+/// polygons for every stationary
 /// owned token (all owned tokens in the scene except the moving one). Computed once per move
 /// via `SceneEcs::player_vision_inputs`; each sample then calls the cheaper `polygons_at`
 /// (one moving-token raycast only, no repeated O(entities) ECS or wall scan).
 pub(crate) struct VisionMoveInputs {
-    /// Full `blocksSight` wall set (includes `gm_only` walls — full-wall-set invariant).
+    /// `blocksSight` wall set at the mover's elevation (includes `gm_only` walls — the
+    /// full-wall-set invariant, narrowed only by the elevation band test).
     walls: Vec<vision::Seg>,
     /// Vision polygons for every owned token in the scene EXCEPT the moving token, at their
     /// committed (stationary) positions. Constant across all samples of one move.
@@ -314,8 +316,8 @@ pub(crate) struct VisionMoveInputs {
 impl VisionMoveInputs {
     /// Per-sample: compute the moving token's visibility polygon at `viewpoint` and prepend it
     /// to the precomputed static polygons. Returns empty when `empty == true` (no owned token
-    /// in this scene — fail-closed). Uses the same `sight_walls` set and raycast primitives as
-    /// `player_vision_polygons` (full-wall-set invariant; no fork).
+    /// in this scene — fail-closed). Uses the same raycast primitives and wall provenance
+    /// (`sight_walls_for`) as `player_vision_polygons` — no fork.
     pub(crate) fn polygons_at(&self, viewpoint: (f64, f64)) -> Vec<Vec<vision::P>> {
         if self.empty {
             return Vec::new();
@@ -1344,7 +1346,9 @@ impl SceneEcs {
     /// Empty when the player controls no tokens.
     pub fn player_vision_polygons(&self, user_id: Uuid) -> Vec<(Uuid, Vec<vision::P>)> {
         // Collect owned-token viewpoints first (drops the query borrow before the wall queries).
-        let mut viewpoints: Vec<(Uuid, vision::P)> = Vec::new();
+        // Each carries its token's elevation: the sight-wall set is filtered per source through
+        // `sight_walls_for` (a token above a wall's band sees over it).
+        let mut viewpoints: Vec<(Uuid, vision::P, f64)> = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token" || self.token_effective_owner(&e.doc) != Some(user_id) {
                 continue;
@@ -1353,7 +1357,7 @@ impl SceneEcs {
                 self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc),
                 e.doc.parent_id,
             ) {
-                viewpoints.push((scene, (t.x, t.y)));
+                viewpoints.push((scene, (t.x, t.y), elevation::elevation_or_ground(t.elevation)));
             }
         }
         // `scene_grid_sizes` is a full entity scan, so it is read ONCE here rather than per
@@ -1367,8 +1371,8 @@ impl SceneEcs {
         let mut extents: std::collections::HashMap<Uuid, grid_shape::WorldExtent> =
             std::collections::HashMap::new();
         let mut out = Vec::with_capacity(viewpoints.len());
-        for (scene, vp) in viewpoints {
-            let walls = self.sight_walls(scene);
+        for (scene, vp, elev) in viewpoints {
+            let walls = self.sight_walls_for(scene, elev);
             let scene_extent = *extents
                 .entry(scene)
                 .or_insert_with(|| self.world_extent_from(&grid_sizes, scene));
@@ -1391,9 +1395,12 @@ impl SceneEcs {
         scene: Uuid,
         moving_token: Uuid,
     ) -> VisionMoveInputs {
-        // Collect static-token viewpoints (non-moving owned tokens in `scene`). Drop the query
-        // borrow before wall queries — mirrors player_vision_polygons collect-then-query order.
-        let mut static_vps: Vec<vision::P> = Vec::new();
+        // Collect static-token viewpoints (non-moving owned tokens in `scene`), each with its
+        // elevation, plus the mover's own elevation (its per-sample raycast is filtered by the
+        // walls its height can see over/under). Drop the query borrow before wall queries —
+        // mirrors player_vision_polygons collect-then-query order.
+        let mut static_vps: Vec<(vision::P, f64)> = Vec::new();
+        let mut mover_elevation = elevation::GROUND;
         let mut has_owned = false;
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.doc_type != "token"
@@ -1403,12 +1410,15 @@ impl SceneEcs {
                 continue;
             }
             has_owned = true;
+            let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) else {
+                continue;
+            };
+            let elev = elevation::elevation_or_ground(t.elevation);
             if e.doc.id == moving_token {
+                mover_elevation = elev;
                 continue; // mover's viewpoint varies per sample; skip here
             }
-            if let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) {
-                static_vps.push((t.x, t.y));
-            }
+            static_vps.push(((t.x, t.y), elev));
         }
         let scene_extent = self.scene_world_extent(scene);
         if !has_owned {
@@ -1419,12 +1429,15 @@ impl SceneEcs {
                 empty: true,
             };
         }
-        // Full wall set: computed once for the entire move (same as player_vision_polygons).
-        let walls = self.sight_walls(scene);
-        // Static polygons: one per stationary owned token; constant across all samples.
+        // The mover's wall set, filtered at the mover's elevation: computed once for the
+        // entire move (the mover's elevation is constant across its own samples).
+        let walls = self.sight_walls_for(scene, mover_elevation);
+        // Static polygons: one per stationary owned token, each filtered at that token's own
+        // elevation; constant across all samples.
         let static_polys = static_vps
             .iter()
-            .map(|&vp| {
+            .map(|&(vp, elev)| {
+                let walls = self.sight_walls_for(scene, elev);
                 let bound = vision::bound_for_scene(vp, &walls, scene_extent, VISION_BOUND_MARGIN);
                 vision::visibility_polygon(vp, &walls, bound)
             })
@@ -1468,48 +1481,6 @@ impl SceneEcs {
                 .filter(|s| *s > 0.0)
                 .unwrap_or(100.0);
             out.insert(e.doc.id, size);
-        }
-        out
-    }
-
-    /// The `blocksSight` wall segments of `scene`.
-    fn sight_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
-        let mut out = Vec::new();
-        for w in self.world.query::<&SceneEntity>().iter() {
-            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
-                continue;
-            }
-            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
-                continue;
-            };
-            if wall.blocks_sight != Some(true) {
-                continue;
-            }
-            out.push(vision::Seg {
-                a: (wall.seg.x1, wall.seg.y1),
-                b: (wall.seg.x2, wall.seg.y2),
-            });
-        }
-        out
-    }
-
-    /// The `blocksLight` wall segments of `scene` (the light-occlusion geometry for lighting mask).
-    pub(crate) fn light_walls(&self, scene: Uuid) -> Vec<vision::Seg> {
-        let mut out = Vec::new();
-        for w in self.world.query::<&SceneEntity>().iter() {
-            if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
-                continue;
-            }
-            let Some(wall) = self.engine_as_cached::<eng::WallEngine>(w.doc.id, &w.doc) else {
-                continue;
-            };
-            if wall.blocks_light != Some(true) {
-                continue;
-            }
-            out.push(vision::Seg {
-                a: (wall.seg.x1, wall.seg.y1),
-                b: (wall.seg.x2, wall.seg.y2),
-            });
         }
         out
     }
@@ -2414,14 +2385,14 @@ impl SceneEcs {
         let light_walls = if all_bright {
             Vec::new()
         } else {
-            self.light_walls(scene)
+            self.light_wall_entries(scene)
         };
         let grid = self.resolve_grid_shape(scene, cell);
         Self::lighting_inputs_from(
             all_bright,
             lights,
             &light_walls,
-            self.sight_walls(scene),
+            self.sight_wall_entries(scene),
             grid.world_extent(settings.bounds),
             cell,
             grid.world_units_per_cell(),
@@ -2448,8 +2419,8 @@ impl SceneEcs {
     fn lighting_inputs_from(
         all_bright: bool,
         lights: Vec<lighting::Light>,
-        light_walls: &[vision::Seg],
-        sight_walls: Vec<vision::Seg>,
+        light_walls: &[elevation::BandedWall],
+        sight_walls: Vec<elevation::BandedWall>,
         extent: grid_shape::WorldExtent,
         cell: f64,
         world_units_per_cell: f64,
@@ -2459,24 +2430,30 @@ impl SceneEcs {
         } else {
             0.0
         };
+        // Each light raycasts against the light walls whose elevation band covers the LIGHT's
+        // own elevation (`wall_occludes`): a lamp above a wall's band shines over it.
         let lit_polys: Vec<Vec<vision::P>> = lights
             .iter()
             .map(|l| {
+                let lw = elevation::walls_at_elevation(light_walls, l.elevation);
                 let reach = [l.bright_radius, l.dim_radius]
                     .into_iter()
                     .filter(|r| r.is_finite() && *r > 0.0)
                     .fold(0.0_f64, f64::max)
                     * wu;
-                let b = vision::bound_for_reach(l.pos, light_walls, VISION_BOUND_MARGIN, reach);
-                vision::visibility_polygon(l.pos, light_walls, b)
+                let b = vision::bound_for_reach(l.pos, &lw, VISION_BOUND_MARGIN, reach);
+                vision::visibility_polygon(l.pos, &lw, b)
             })
             .collect();
         // Boundary-projected environment occlusion. Empty under all_bright (env is not
-        // the mechanism there); occluded by the SAME blocksLight walls as the placed lights.
+        // the mechanism there). Environment ambient keeps the FULL light-wall set at every
+        // elevation (it is sky-light; walls always shadow it, or daylight would flood
+        // interiors) — the one place elevation does not filter occlusion.
         let env_polys = if all_bright {
             Vec::new()
         } else {
-            lighting::env_light_polys(extent, cell, light_walls)
+            let full: Vec<vision::Seg> = light_walls.iter().map(|(s, _)| *s).collect();
+            lighting::env_light_polys(extent, cell, &full)
         };
         LightingInputs {
             all_bright,
@@ -2522,6 +2499,8 @@ impl SceneEcs {
         struct Src {
             scene: Uuid,
             vp: vision::P,
+            // Source token's elevation: filters the sight-wall set (see-over/see-under).
+            elevation: f64,
             // (floor_min_value, range_cells, render_hint): render_hint drives per-cell
             // darkvision hint resolution in the cell-accumulation loop (admit_hint).
             floors: Vec<(f64, f64, Option<String>)>,
@@ -2561,6 +2540,7 @@ impl SceneEcs {
                 sources.push(Src {
                     scene,
                     vp: (t.x, t.y),
+                    elevation: elevation::elevation_or_ground(t.elevation),
                     floors: self.token_vision_floors(&e.doc),
                 });
             }
@@ -2610,10 +2590,12 @@ impl SceneEcs {
                 .entry(scene)
                 .or_insert_with(|| (cell, BTreeMap::new()));
             for src in sources.iter().filter(|s| s.scene == scene) {
-                // LOS polygon for this source (or, LOS off, the whole bound box as a polygon).
+                // LOS polygon for this source (or, LOS off, the whole bound box as a polygon),
+                // raycast against the sight walls whose band covers the source's elevation.
+                let src_walls = elevation::walls_at_elevation(&li.sight_walls, src.elevation);
                 let poly = source_los_poly(
                     src.vp,
-                    &li.sight_walls,
+                    &src_walls,
                     settings.los_restriction,
                     cell_grid.world_extent(settings.bounds),
                 );
@@ -2785,7 +2767,8 @@ impl SceneEcs {
     /// parity tests, are UNCHANGED and keep calling the uncached primitive). Reuses the mask from
     /// a prior call for the same `(user, scene)` only when a freshly rebuilt
     /// `VisibilityInputsSnapshot` — built from the SAME `gather_vision_sources_in_scene` call and
-    /// the SAME raw `resolve_scene`/`scene_grid_sizes`/`scene_lights`/`light_walls`/`sight_walls`
+    /// the SAME raw `resolve_scene`/`scene_grid_sizes`/`scene_lights` and banded wall-collector
+    /// (`sight_wall_entries`/`light_wall_entries`)
     /// reads the uncached path uses — compares EQUAL to the snapshot stored alongside the cached
     /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, a
     /// token gaining or losing owner/observer-tier status in this scene, or `lenient` itself
@@ -2831,9 +2814,9 @@ impl SceneEcs {
         let light_walls = if all_bright {
             Vec::new()
         } else {
-            self.light_walls(scene)
+            self.light_wall_entries(scene)
         };
-        let sight_walls = self.sight_walls(scene);
+        let sight_walls = self.sight_wall_entries(scene);
 
         let snapshot = VisibilityInputsSnapshot {
             lenient,
@@ -2841,7 +2824,7 @@ impl SceneEcs {
             cell,
             sources: sources
                 .iter()
-                .map(|s| (s.id, s.vp, s.floors.clone()))
+                .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
                 .collect(),
             lights: lights.clone(),
             light_walls: light_walls.clone(),
@@ -2924,6 +2907,7 @@ impl SceneEcs {
                 sources.push(VisSrc {
                     id: e.doc.id,
                     vp: (t.x, t.y),
+                    elevation: elevation::elevation_or_ground(t.elevation),
                     floors: self.token_vision_floors(&e.doc),
                 });
             }
@@ -2987,8 +2971,10 @@ pub(crate) struct LightingInputs {
     /// Scene-boundary visibility polygons occluding the environment ambient (`env_light_polys`).
     /// Empty under `all_bright` (env is not the mechanism there — every LOS cell is forced bright).
     pub(crate) env_polys: Vec<Vec<vision::P>>,
-    /// `blocksSight` wall segments (LOS raycast input).
-    pub(crate) sight_walls: Vec<vision::Seg>,
+    /// `blocksSight` wall segments with their elevation bands (the LOS raycast input —
+    /// each vision source filters them at its own elevation through
+    /// `elevation::walls_at_elevation` before raycasting).
+    pub(crate) sight_walls: Vec<elevation::BandedWall>,
 }
 
 /// Whether a single sample `point` (already known to lie inside the LOS polygon) qualifies a
@@ -3050,24 +3036,32 @@ struct VisSrc {
     id: Uuid,
     /// Viewpoint in scene units.
     vp: vision::P,
+    /// The source token's elevation (0 = grounded): filters the sight-wall set through
+    /// `elevation::wall_occludes` and grounds tremorsense (`SceneEcs::player_perceived_tokens`).
+    elevation: f64,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
     floors: Vec<(f64, f64, Option<String>)>,
 }
 
-/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, vision floors)`.
-type VisSrcSnapshot = (Uuid, vision::P, Vec<(f64, f64, Option<String>)>);
+/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors)`.
+/// Elevation is part of the fingerprint: a token gaining/losing height changes which walls
+/// occlude it, so the same walls at two elevations must never share a cached mask.
+type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<String>)>);
 
 /// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
 /// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
 /// Built from the SAME calls the real computation makes (`gather_vision_sources_in_scene`,
-/// `resolve_scene`, `scene_grid_sizes`, `scene_lights`, `light_walls`, `sight_walls`) — not a
+/// `resolve_scene`, `scene_grid_sizes`, `scene_lights`, and the banded wall collectors
+/// `sight_wall_entries`/`light_wall_entries` — wall geometry, block flags AND elevation bands) —
+/// not a
 /// separately-derived "things that might matter" list — so completeness reduces to "does this
 /// struct hold every field `accumulate_visible_cells`/`gather_vision_sources_in_scene` read",
 /// which is directly checkable by inspection, rather than "were all mutation call sites
 /// enumerated", which `engine_cache`'s `CachedEngine` already proved is an open, unboundable
 /// question for this codebase (`apply_op` is not the sole mutation chokepoint). Any change to
-/// what these fields hold — a token moving/gaining-or-losing source status, a wall's
-/// blocksSight/blocksLight/geometry changing, a light being added/moved/toggled, a vision-mode or
+/// what these fields hold — a token moving/changing elevation/gaining-or-losing source status,
+/// a wall's blocksSight/blocksLight/geometry/elevation-band changing, a light being
+/// added/moved/toggled (its `elevation` rides `lights`), a vision-mode or
 /// gradation band definition changing (both flow into `sources`' `floors` via
 /// `token_vision_floors`), a linked actor's vision assignment changing (same path), the scene's
 /// own grid size or vision/lighting overrides changing, or world-settings' `observerVision`/
@@ -3085,10 +3079,10 @@ struct VisibilityInputsSnapshot {
     sources: Vec<VisSrcSnapshot>,
     /// Resolved scene lights.
     lights: Vec<lighting::Light>,
-    /// `blocksLight` wall segments.
-    light_walls: Vec<vision::Seg>,
-    /// `blocksSight` wall segments.
-    sight_walls: Vec<vision::Seg>,
+    /// `blocksLight` wall segments with their elevation bands.
+    light_walls: Vec<elevation::BandedWall>,
+    /// `blocksSight` wall segments with their elevation bands.
+    sight_walls: Vec<elevation::BandedWall>,
 }
 
 /// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the
@@ -3114,9 +3108,10 @@ fn accumulate_visible_cells(
     // sample of every candidate cell of every source shares the value.
     let world_units_per_cell = grid.world_units_per_cell();
     for src in sources {
+        let src_walls = elevation::walls_at_elevation(&li.sight_walls, src.elevation);
         let poly = source_los_poly(
             src.vp,
-            &li.sight_walls,
+            &src_walls,
             settings.los_restriction,
             grid.world_extent(settings.bounds),
         );
