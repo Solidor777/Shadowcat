@@ -1234,7 +1234,7 @@ impl Room {
 
         // Position write commits ALONE under `WriteOrigin::Client`, UNCONDITIONALLY — never
         // bundled with the combat decrement below. `apply_intent`'s ownership/capability check
-        // (`origin != WriteOrigin::CombatTransition && !access.has(need)`) is skipped for every
+        // (`!origin.skips_capability_gates() && !access.has(need)`) is skipped for every
         // op in a batch whenever ANY op in it carries `CombatTransition`; bundling the two under
         // one origin let a `CombatTransition`-tagged decrement silently waive the ownership check
         // on the token-position write in the same batch, so any authenticated non-GM could move

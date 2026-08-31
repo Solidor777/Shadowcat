@@ -288,6 +288,13 @@ async fn handle_socket(
         }
     };
 
+    // Lazy world-config reseed: backfills a pre-existing world and self-heals
+    // a deleted singleton on the next join; a failed pass (a lost seed race
+    // is swallowed inside) degrades to a log line — a join never fails here.
+    if let Err(e) = reseed_world_config(&room, repo.as_ref(), &state.config.modules_path()).await {
+        tracing::warn!(world = %world_id, error = %e, "world-config reseed failed; continuing join");
+    }
+
     room.stats.connections.fetch_add(1, Ordering::AcqRel);
     tracing::info!(world = %world_id, user = %user_id, "ws connected");
     let (rx, current_seq) = room.subscribe();
@@ -1923,6 +1930,41 @@ where
     .await
     .map_err(|_| ())?;
     Ok(to_seq)
+}
+
+/// Bring `room`'s world-config singleton set current under
+/// `WriteOrigin::ConfigSeed`: creates whatever `missing_config_ops` finds
+/// absent and refreshes a drifted `system-defaults` body from the enabled
+/// system package. Attributed to the world's first GM (`seed_author`); a
+/// world with no GM is a no-op Ok. A `Conflict` from a lost seed race (a
+/// concurrent join seeded first) is swallowed — the winner's docs are live
+/// and this pass has nothing left to do; any other error propagates for the
+/// caller to log (a join must never fail on a reseed).
+pub(crate) async fn reseed_world_config(
+    room: &Room,
+    repo: &SqliteRepository,
+    modules_dir: &std::path::Path,
+) -> Result<(), crate::data::DataError> {
+    let world_id = room.world_id;
+    let Some(ctx) = crate::data::world_seed::seed_author(repo, world_id).await else {
+        return Ok(());
+    };
+    let sd = crate::data::world_seed::enabled_system_defaults(repo, world_id, modules_dir).await;
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    let existing = repo.query_documents_by_types(world_id, &types).await?;
+    let ops =
+        crate::data::world_seed::missing_config_ops(&existing, world_id, sd.as_ref(), now_millis());
+    if ops.is_empty() {
+        return Ok(());
+    }
+    match room
+        .publish(repo, &ctx, ops, now_millis(), WriteOrigin::ConfigSeed)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(crate::data::DataError::Conflict(_)) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

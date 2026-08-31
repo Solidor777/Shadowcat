@@ -332,10 +332,9 @@ const systemModuleStub: Module = {
     provides: [{ contract: SYSTEM_CONTRACT, cardinality: "singleton" as const }],
   },
   register: vi.fn(),
-  systemDefaults: { scene: { fog: false } },
 };
 
-test("a GM's welcome dispatches the system-defaults upsert when the system module declares defaults", async () => {
+test("a GM's welcome dispatches no system-defaults create (the server seeds and refreshes the singleton from the installed package)", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
   const gmFrame = { ...welcomeFrame, user_role: "gm" };
@@ -344,10 +343,9 @@ test("a GM's welcome dispatches the system-defaults upsert when the system modul
   });
   await session.enter("w1");
   push(gmFrame);
-  await vi.waitFor(() => expect(systemDefaultsCreates(sent).length).toBe(1));
-  const create = systemDefaultsCreates(sent)[0] as { ops: Array<{ op: string; doc: { doc_type: string; engine: unknown } }> };
-  expect(create.ops).toHaveLength(1);
-  expect(create.ops[0]).toMatchObject({ op: "create", doc: { doc_type: SYSTEM_DEFAULTS_DOC_TYPE, engine: { scene: { fog: false } } } });
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+  await new Promise((r) => setTimeout(r, 20));
+  expect(systemDefaultsCreates(sent)).toHaveLength(0);
 });
 
 test("a player's welcome dispatches nothing for system-defaults", async () => {

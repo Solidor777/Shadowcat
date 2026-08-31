@@ -35,8 +35,7 @@ fn animation_speed_must_be_finite_and_positive() {
 /// the overlay has no extra `Some` slots the world struct lacks.
 #[test]
 fn world_scene_defaults_and_overlay_share_a_field_set() {
-    let world =
-        serde_json::to_value(crate::data::engine::WorldSettingsEngine::default().scene).unwrap();
+    let world = serde_json::to_value(crate::data::engine::WorldSceneDefaults::default()).unwrap();
     let overlay: SceneDefaultsOverlay = serde_json::from_value(world.clone()).unwrap();
     let back = serde_json::to_value(&overlay).unwrap();
     assert_eq!(

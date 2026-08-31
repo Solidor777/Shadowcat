@@ -13,28 +13,29 @@ function gmStoreWith(...docs: WireDocument[]) {
 describe("settings provenance", () => {
   it("shows which layer supplies each world default", () => {
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false } }, deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE));
-    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    // The world doc AUTHORS the fog leaf: structural provenance reports
+    // "world" for exactly the leaves the overlay carries.
+    const ws = buildWorldSettingsDoc("w1", { scene: { fog: true } }, "ws1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(sd, ws), dispatchIntent: vi.fn() }) });
     expect(screen.getByTestId("provenance:scene.fog").textContent).toContain("gameSettings.source.world");
   });
 
-  it("reset to system default writes the system-resolved value into the required world leaf", async () => {
+  it("reset clears the world leaf (writes null) so resolution falls through to the system layer", async () => {
     const dispatchIntent = vi.fn();
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false } }, deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE));
-    const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
+    const ws = buildWorldSettingsDoc("w1", { scene: { fog: true } }, "ws1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(sd, ws), dispatchIntent }) });
     await fireEvent.click(screen.getByLabelText("gameSettings.resetToSystem:scene.fog"));
+    // A CLEAR, never a client-resolved literal: null and absent are
+    // wire-equivalent, so the leaf falls through to the system layer.
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/fog", old: true, new: false }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/fog", old: true, new: null }] },
     ]);
   });
 
-  it("reports the system layer, not \"world\", and renders no reset button when the stored world value merely coincides with the system default", () => {
-    // The world-settings doc is required-field-complete on the wire — scene.fog is present
-    // (true, the built-in default) on every seeded doc even though nobody has genuinely
-    // overridden it. The system doc separately declares the same value (true): a stored world
-    // leaf that matches the layer beneath it is not an override, so the panel must report
-    // "system" here, not "world", and must not offer a reset that would be a no-op.
+  it("reports the system layer and renders no reset button when the world doc authors no leaf", () => {
+    // The seeded world doc is the empty overlay: it authors nothing, so the
+    // system layer supplies the value and there is no stored leaf to clear.
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: true } }, deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE));
     const ws = buildWorldSettingsDoc("w1", undefined, "ws1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(sd, ws), dispatchIntent: vi.fn() }) });

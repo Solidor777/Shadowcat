@@ -48,6 +48,9 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     SYSTEM_DEFAULTS_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
+    crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
+    crate::data::engine::LIGHT_GRADATION_DOC_TYPE,
+    crate::data::engine::VISION_MODES_DOC_TYPE,
 ];
 
 /// One-level merge of a single key into `map`: when both the existing
@@ -3219,6 +3222,15 @@ impl Repository for SqliteRepository {
                             check_command_scope(&parent, world_id)?;
                         }
                     }
+                    // `system-defaults` is server-authored: its content mirrors
+                    // the installed system package's declaration, so every
+                    // client-reachable origin is rejected outright —
+                    // `WriteOrigin::ConfigSeed` (the world-config seed/refresh
+                    // path) is the ONLY origin that may author it.
+                    if doc.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
+                    {
+                        return Err(DataError::Forbidden);
+                    }
                     let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
                     let access = resolve_access_world(
                         ctx.user_id,
@@ -3227,14 +3239,16 @@ impl Repository for SqliteRepository {
                         &world_defaults.grants_for(&doc.doc_type),
                         create_owner,
                     );
-                    // `CombatTransition` is a server-authored write: the combat
-                    // clock's own handler has already decided this batch is
-                    // legitimate, so the ordinary per-op capability floor and
-                    // the world-level create gate below are skipped for this
-                    // origin ONLY — every other check in this arm (scope,
+                    // A capability-skipping server-authored origin
+                    // (`WriteOrigin::skips_capability_gates`: the combat
+                    // clock's `CombatTransition`, the world-config seed's
+                    // `ConfigSeed`) has already been vetted by its own trusted
+                    // caller, so the ordinary per-op capability floor and the
+                    // world-level create gate below are skipped for those
+                    // origins ONLY — every other check in this arm (scope,
                     // size, engine, containment, singleton, one-active-per-
                     // scene, schema) still runs unconditionally.
-                    if origin != WriteOrigin::CombatTransition && !access.has(cap::WRITE_FIELDS) {
+                    if !origin.skips_capability_gates() && !access.has(cap::WRITE_FIELDS) {
                         return Err(DataError::Forbidden);
                     }
                     // World-level create authorization: GM/admin hold every
@@ -3258,7 +3272,7 @@ impl Repository for SqliteRepository {
                     let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && ctx.world_role == WorldRole::Player
                         && doc.owner == Some(ctx.user_id);
-                    if origin != WriteOrigin::CombatTransition
+                    if !origin.skips_capability_gates()
                         && ctx.world_role != WorldRole::Gm
                         && !is_baseline_message
                         && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
@@ -3323,10 +3337,18 @@ impl Repository for SqliteRepository {
                     // Authorize against the stored doc, scoped to this world, so
                     // a GM of one world cannot delete another world's document.
                     check_command_scope(&cur, world_id)?;
+                    // `system-defaults` deletion is reserved to the server-side
+                    // config-seed path — same rejection the Create arm applies,
+                    // against the authoritative STORED doc_type.
+                    if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
+                    {
+                        return Err(DataError::Forbidden);
+                    }
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                    // `CombatTransition` skips this capability gate — see the
-                    // Create arm's matching comment above.
-                    if origin != WriteOrigin::CombatTransition
+                    // Capability-skipping origins (`WriteOrigin::
+                    // skips_capability_gates`) skip this gate — see the Create
+                    // arm's matching comment above.
+                    if !origin.skips_capability_gates()
                         && !resolve_access_world(
                             ctx.user_id,
                             ctx.world_role,
@@ -3373,6 +3395,14 @@ impl Repository for SqliteRepository {
                     // one — the same blanket rejection `Client` gets.
                     if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
                         && origin != WriteOrigin::ServerMessageRevision
+                    {
+                        return Err(DataError::Forbidden);
+                    }
+                    // `system-defaults` is server-authored (see the Create
+                    // arm's matching rejection): rejected against the
+                    // authoritative STORED doc_type for every origin but the
+                    // world-config seed/refresh path's `ConfigSeed`.
+                    if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
                     {
                         return Err(DataError::Forbidden);
                     }
@@ -3470,11 +3500,13 @@ impl Repository for SqliteRepository {
                         // explicit edit_permissions grant) but never by an owner,
                         // since the DocRole::Owner floor excludes that cap.
                         let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
-                        // `CombatTransition` skips only the actor-holds-`need`
-                        // test below, never `required_cap_for_path`'s mapping
-                        // above: an immutable envelope path (`None`) is still
-                        // rejected for every origin, this origin included.
-                        if origin != WriteOrigin::CombatTransition && !access.has(need) {
+                        // A capability-skipping origin (`WriteOrigin::
+                        // skips_capability_gates`) skips only the
+                        // actor-holds-`need` test below, never
+                        // `required_cap_for_path`'s mapping above: an immutable
+                        // envelope path (`None`) is still rejected for every
+                        // origin, those included.
+                        if !origin.skips_capability_gates() && !access.has(need) {
                             // A `ServerMessageRevision` write to a message doc may
                             // ALSO write exactly `/permissions/property_overrides`
                             // (never any other `/permissions` subpath) without
@@ -3516,7 +3548,7 @@ impl Repository for SqliteRepository {
                                 ch.path.as_str(),
                                 "/engine" | "/permissions/property_overrides"
                             );
-                        if origin != WriteOrigin::CombatTransition && !is_scoped_smr_write {
+                        if !origin.skips_capability_gates() && !is_scoped_smr_write {
                             for extra in declared_caps_for_path(&ch.path, &world_reqs) {
                                 if !access.has(extra) {
                                     tracing::debug!(
@@ -3631,9 +3663,10 @@ impl Repository for SqliteRepository {
                         })?;
                         check_command_scope(&cur, world_id)?;
                         let desc_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        // `CombatTransition` skips this capability gate — see the
+                        // Capability-skipping origins (`WriteOrigin::
+                        // skips_capability_gates`) skip this gate — see the
                         // Create arm's matching comment above.
-                        if origin != WriteOrigin::CombatTransition
+                        if !origin.skips_capability_gates()
                             && !resolve_access_world(
                                 ctx.user_id,
                                 ctx.world_role,

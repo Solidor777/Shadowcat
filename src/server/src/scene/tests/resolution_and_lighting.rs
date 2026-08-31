@@ -11,33 +11,30 @@ fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
 }
 
 #[test]
-fn diagonal_rule_falls_back_when_structural_keys_absent() {
-    // A world-settings doc with `pathfinding.diagonalRule:"alternating"` but missing `scene`
-    // or `animation` must resolve to `Chebyshev` — the structural guard (same as resolve_scene)
-    // must reject a partial doc rather than partially resolving.
+fn partial_world_doc_authored_rule_applies_and_absent_leaf_falls_back() {
+    // Overlay semantics: a partial world-settings body contributes exactly its
+    // authored leaves — there is no structural completeness requirement.
     use serde_json::json;
     let mut ecs = SceneEcs::new();
 
-    // Missing `scene` key entirely.
+    // Authored pathfinding leaf, no scene/animation keys: the leaf applies.
     ecs.set_world_settings_for_test(json!({
-        "pathfinding": { "diagonalRule": "alternating" },
-        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-    }));
-    assert_eq!(
-        ecs.resolved_diagonal_rule(),
-        crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "missing scene key must fall back to Chebyshev"
-    );
-
-    // Missing `animation` key entirely.
-    ecs.set_world_settings_for_test(json!({
-        "scene": { "movementRestriction": "visible" },
         "pathfinding": { "diagonalRule": "alternating" }
     }));
     assert_eq!(
         ecs.resolved_diagonal_rule(),
+        crate::scene::pathfinding::DiagonalRule::Alternating,
+        "a partial doc's authored leaf applies"
+    );
+
+    // No pathfinding leaf at all: the engine literal.
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "movementRestriction": "visible" }
+    }));
+    assert_eq!(
+        ecs.resolved_diagonal_rule(),
         crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "missing animation key must fall back to Chebyshev"
+        "an unauthored leaf falls back to the engine literal"
     );
 }
 
@@ -60,7 +57,7 @@ fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
     assert_eq!(
         ecs.resolved_diagonal_rule(),
         crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "unknown rule fails to chebyshev (mirrors client default)"
+        "unknown rule fails to chebyshev (the engine literal the client mirrors)"
     );
 }
 

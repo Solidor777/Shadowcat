@@ -11,27 +11,13 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 
-describe("game-settings seed", () => {
-  it("GM seeds world-settings, light-gradation, vision-modes, dice-settings, chat-settings once", () => {
+describe("server-seeded config singletons", () => {
+  it("a GM mount on an empty store dispatches no config-singleton creates (the server seeds them at world creation/join)", () => {
     const dispatchIntent = vi.fn();
     render(GameSettingsPanel, {
       context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent }),
     });
-    expect(dispatchIntent).toHaveBeenCalledTimes(1);
-    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
-    expect(ops).toHaveLength(5);
-    const created = ops.map((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type);
-    expect(created).toContain("world-settings");
-    expect(created).toContain("light-gradation");
-    expect(created).toContain("vision-modes");
-    expect(created).toContain("dice-settings");
-    expect(created).toContain("chat-settings");
-    const diceOp = ops.find((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type === "dice-settings") as
-      { op: "create"; doc: { engine: unknown } };
-    expect(diceOp.doc.engine).toEqual({ mode: "total", direction: "high_wins", channel_overrides: {} });
-    const chatOp = ops.find((op) => (op as { op: "create"; doc: { doc_type: string } }).doc.doc_type === "chat-settings") as
-      { op: "create"; doc: { engine: unknown } };
-    expect(chatOp.doc.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null });
+    expect(dispatchIntent).not.toHaveBeenCalled();
   });
 
   it("non-GM seeds nothing", () => {

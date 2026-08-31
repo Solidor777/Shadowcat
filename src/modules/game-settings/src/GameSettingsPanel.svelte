@@ -2,8 +2,6 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
-    buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
-    buildChatSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
     resolveSettingProvenance,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
@@ -14,38 +12,11 @@
 
   const ctx = getAppContext();
 
-  // Reactive subscription: mirrors the established registry-seed pattern (FactionsPanel/ConditionsPanel).
-  // Calling subscribe() inside the effect registers a reactive dependency on the document store so
-  // the effect re-evaluates after the resync stream populates it post-mount.
+  // Reactive subscription: calling subscribe() inside a $derived/$effect registers a reactive
+  // dependency on the document store so reads re-evaluate after the resync stream populates it
+  // post-mount. This panel only EDITS config singletons — the server seeds every one of them at
+  // world creation and world join, so no client-side create path exists here.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
-  let seeded = false;
-
-  // Idempotent GM seed: create world-settings, light-gradation, and vision-modes once, only when
-  // absent. The per-doc-type length === 0 guard prevents duplicate creation once the store is
-  // populated. The reactive subscription ensures re-evaluation after resync lands.
-  $effect(() => {
-    if (ctx.role !== "gm" || seeded) return;
-    subscribe();
-    const ops = [];
-    if (ctx.documents.query("world-settings").length === 0) ops.push({ op: "create" as const, doc: buildWorldSettingsDoc(ctx.world) });
-    if (ctx.documents.query("light-gradation").length === 0) ops.push({ op: "create" as const, doc: buildLightGradationDoc(ctx.world) });
-    if (ctx.documents.query("vision-modes").length === 0) ops.push({ op: "create" as const, doc: buildVisionModesDoc(ctx.world) });
-    if (ctx.documents.query("dice-settings").length === 0) {
-      ops.push({ op: "create" as const, doc: buildDiceSettingsDoc(ctx.world, { mode: "total", direction: "high_wins", channel_overrides: {} }) });
-    }
-    // chat-settings mirrors the server's ChatContentPolicy::default() (every toggle
-    // off/absent — plain text, previews resolve false since hyperlinks is off).
-    if (ctx.documents.query("chat-settings").length === 0) {
-      ops.push({
-        op: "create" as const,
-        doc: buildChatSettingsDoc(ctx.world, {
-          markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null,
-        }),
-      });
-    }
-    seeded = true;
-    if (ops.length > 0) ctx.dispatchIntent(ops);
-  });
 
   // Derived reads — each calls subscribe() so they re-resolve when the doc store updates
   // (reactive subscription pattern; matches FactionsPanel's registry/$factionEntries deriveds).
@@ -91,31 +62,29 @@
   }
 
   /** Exact `WorldSceneDefaults`/`Pathfinding`/`AnimationSettings` leaves this panel's
-   * world-defaults section renders a reset control for — every leaf here is REQUIRED on the
-   * wire, so reset always WRITES the system-resolved (or engine-literal) value rather than
-   * removing the key (unlike `combat.*` leaves, which are optional and use `remove: true`). */
+   * world-defaults section renders a reset control for. The world layer is an
+   * `Option`-lifted overlay, so reset is a CLEAR: it writes `null` at the leaf
+   * (null and absent are wire-equivalent) and resolution falls through to the
+   * system layer, then the engine literal — the client never writes a
+   * resolved literal it would have to know. */
   type WorldDefaultsPath = Exclude<SettingPath, `combat.${string}`>;
 
   /**
-   * Reset a required world-defaults leaf back to its system-resolved (or engine-literal) value.
-   * `old` is the field's real current stored value on the world-settings doc (the OCC
-   * pre-image); `target` is `prov(path).systemOrEngine.value`, computed by the caller — reusing
-   * `resolveSettingProvenance`'s own system-or-engine baseline rather than re-deriving the
-   * system/engine-default table a second time in this component (that table is defined exactly
-   * once, in `resolveSettingProvenance`'s switch). Required leaves are never removed (see
-   * `WorldDefaultsPath`'s doc comment).
-   * @param path The world-defaults setting to reset.
-   * @param old The field's real current value on the world-settings doc.
-   * @param target The system-or-engine value to write.
+   * Clear a world-defaults overlay leaf: writes `null` at the leaf pointer so
+   * resolution falls through to the system-or-engine baseline. `old` is the
+   * field's real current stored value on the world-settings doc (the OCC
+   * pre-image).
+   * @param path The world-defaults setting to clear.
+   * @param old The field's real current stored value on the world-settings doc.
    * @example
    * ```
    * // private function; not part of the public API — wired to each reset button's onclick
-   * if (ws) resetToSystem("scene.fog", wsys!.scene.fog, prov("scene.fog").systemOrEngine.value);
+   * if (ws) resetToSystem("scene.fog", wsys?.scene?.fog);
    * ```
    */
-  function resetToSystem(path: WorldDefaultsPath, old: unknown, target: unknown): void {
+  function resetToSystem(path: WorldDefaultsPath, old: unknown): void {
     if (!ws) return;
-    set(ws.id, "/engine/" + path.replace(".", "/"), old, target);
+    set(ws.id, "/engine/" + path.replace(".", "/"), old, null);
   }
 
   const lgDoc = $derived.by((): WireDocument | undefined => {
@@ -175,7 +144,7 @@
    * ```
    * // private function; not part of the public API — wired to each control's
    * // onchange below
-   * if (ws && wsys) set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, "visible");
+   * if (ws && wsys) set(ws.id, "/engine/scene/movementRestriction", wsys.scene?.movementRestriction, "visible");
    * ```
    */
   function set(docId: string, path: string, old: unknown, value: unknown): void {
@@ -257,16 +226,14 @@
   <h2>{ctx.t("gameSettings.title")}</h2>
 
   <!-- Per-control provenance hint + reset-to-system-default button, shared by every world-defaults
-       control below. `resolveSettingProvenance` reports "world" only when the stored world value
-       genuinely differs from the system/engine value beneath it (see its equality collapse) —
-       a structurally-complete world-settings doc's own leaf is always present but is not always
-       a real override, so the reset button renders exactly when there is something to reset. -->
+       control below. Provenance is structural on the overlay: a PRESENT world leaf IS an
+       override, so the reset button renders exactly when a stored leaf exists to clear. -->
   {#snippet provControl(path: WorldDefaultsPath, old: unknown)}
     {@const p = prov(path)}
     <p class="hint" data-testid={"provenance:" + path}>{ctx.t("gameSettings.source." + p.source)}</p>
     {#if p.source === "world"}
       <button type="button" class="reset-to-system" aria-label={"gameSettings.resetToSystem:" + path}
-        onclick={() => resetToSystem(path, old, p.systemOrEngine.value)}>{ctx.t("gameSettings.resetToSystem")}</button>
+        onclick={() => resetToSystem(path, old)}>{ctx.t("gameSettings.resetToSystem")}</button>
     {/if}
   {/snippet}
 
@@ -274,67 +241,67 @@
     <!-- World-defaults: movement, lighting, light mode, fog, pathfinding, animation -->
     <label>
       {ctx.t("gameSettings.movementRestriction")}
-      <select aria-label="gameSettings.movementRestriction" value={wsys.scene.movementRestriction}
-        onchange={(e) => set(ws.id, "/engine/scene/movementRestriction", wsys.scene.movementRestriction, (e.currentTarget as HTMLSelectElement).value)}>
+      <select aria-label="gameSettings.movementRestriction" value={prov("scene.movementRestriction").value as string}
+        onchange={(e) => set(ws.id, "/engine/scene/movementRestriction", wsys.scene?.movementRestriction, (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
-    {@render provControl("scene.movementRestriction", wsys.scene.movementRestriction)}
+    {@render provControl("scene.movementRestriction", wsys.scene?.movementRestriction)}
 
     <label>
       {ctx.t("gameSettings.movementModel")}
-      <select aria-label="gameSettings.movementModel" value={wsys.scene.movementModel}
-        onchange={(e) => set(ws.id, "/engine/scene/movementModel", wsys.scene.movementModel, (e.currentTarget as HTMLSelectElement).value)}>
+      <select aria-label="gameSettings.movementModel" value={prov("scene.movementModel").value as string}
+        onchange={(e) => set(ws.id, "/engine/scene/movementModel", wsys.scene?.movementModel, (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
-    {@render provControl("scene.movementModel", wsys.scene.movementModel)}
+    {@render provControl("scene.movementModel", wsys.scene?.movementModel)}
 
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
-      <input type="checkbox" aria-label="gameSettings.lightingEnabled" checked={wsys.scene.lightingEnabled}
-        onchange={(e) => set(ws.id, "/engine/scene/lightingEnabled", wsys.scene.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
+      <input type="checkbox" aria-label="gameSettings.lightingEnabled" checked={prov("scene.lightingEnabled").value === true}
+        onchange={(e) => set(ws.id, "/engine/scene/lightingEnabled", wsys.scene?.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
     </label>
-    {@render provControl("scene.lightingEnabled", wsys.scene.lightingEnabled)}
+    {@render provControl("scene.lightingEnabled", wsys.scene?.lightingEnabled)}
 
     <label>
       {ctx.t("gameSettings.lightMode")}
-      <select aria-label="gameSettings.lightMode" value={wsys.scene.lightMode}
-        onchange={(e) => set(ws.id, "/engine/scene/lightMode", wsys.scene.lightMode, (e.currentTarget as HTMLSelectElement).value)}>
+      <select aria-label="gameSettings.lightMode" value={prov("scene.lightMode").value as string}
+        onchange={(e) => set(ws.id, "/engine/scene/lightMode", wsys.scene?.lightMode, (e.currentTarget as HTMLSelectElement).value)}>
         {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
-    {@render provControl("scene.lightMode", wsys.scene.lightMode)}
+    {@render provControl("scene.lightMode", wsys.scene?.lightMode)}
 
     <!-- No editable world-level fog control exists: only the per-scene override below has an
          input. This section renders the provenance hint + reset-to-system button standalone,
          reading the current stored value from wsys for the reset's OCC pre-image. -->
-    {@render provControl("scene.fog", wsys.scene.fog)}
+    {@render provControl("scene.fog", wsys.scene?.fog)}
 
     <label>
       {ctx.t("gameSettings.diagonalRule")}
-      <select aria-label="gameSettings.diagonalRule" value={wsys.pathfinding.diagonalRule}
-        onchange={(e) => set(ws.id, "/engine/pathfinding/diagonalRule", wsys.pathfinding.diagonalRule, (e.currentTarget as HTMLSelectElement).value)}>
+      <select aria-label="gameSettings.diagonalRule" value={prov("pathfinding.diagonalRule").value as string}
+        onchange={(e) => set(ws.id, "/engine/pathfinding/diagonalRule", wsys.pathfinding?.diagonalRule, (e.currentTarget as HTMLSelectElement).value)}>
         {#each DIAGONAL as d}<option value={d}>{d}</option>{/each}
       </select>
     </label>
-    {@render provControl("pathfinding.diagonalRule", wsys.pathfinding.diagonalRule)}
+    {@render provControl("pathfinding.diagonalRule", wsys.pathfinding?.diagonalRule)}
 
     <label>
       {ctx.t("gameSettings.animSpeed")}
-      <input type="number" min="1" step="1" aria-label="gameSettings.animSpeed" value={wsys.animation.speedCellsPerSec}
-        onchange={(e) => set(ws.id, "/engine/animation/speedCellsPerSec", wsys.animation.speedCellsPerSec, Number((e.currentTarget as HTMLInputElement).value))} />
+      <input type="number" min="1" step="1" aria-label="gameSettings.animSpeed" value={prov("animation.speedCellsPerSec").value as number}
+        onchange={(e) => set(ws.id, "/engine/animation/speedCellsPerSec", wsys.animation?.speedCellsPerSec, Number((e.currentTarget as HTMLInputElement).value))} />
     </label>
-    {@render provControl("animation.speedCellsPerSec", wsys.animation.speedCellsPerSec)}
+    {@render provControl("animation.speedCellsPerSec", wsys.animation?.speedCellsPerSec)}
 
     <label>
       {ctx.t("gameSettings.animEasing")}
-      <select aria-label="gameSettings.animEasing" value={wsys.animation.easing}
-        onchange={(e) => set(ws.id, "/engine/animation/easing", wsys.animation.easing, (e.currentTarget as HTMLSelectElement).value)}>
+      <select aria-label="gameSettings.animEasing" value={prov("animation.easing").value as string}
+        onchange={(e) => set(ws.id, "/engine/animation/easing", wsys.animation?.easing, (e.currentTarget as HTMLSelectElement).value)}>
         {#each EASING as ea}<option value={ea}>{ea}</option>{/each}
       </select>
     </label>
-    {@render provControl("animation.easing", wsys.animation.easing)}
+    {@render provControl("animation.easing", wsys.animation?.easing)}
   {/if}
 
   {#if ctx.role === "gm" && lgsys && lgDoc}

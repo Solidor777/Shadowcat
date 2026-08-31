@@ -28,9 +28,7 @@ further at design time. Numbering continues from Phase 1.
   [`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md) §1):
   - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-2 — combat resolution server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-3 — world-config authority**: `create_world` seeds every config singleton;
-    `system-defaults` read server-side from the installed system package; engine defaults are
-    the definition (client constants mirror them); client seed/upsert helpers deleted.
+  - **M14c-3 — world-config authority** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-4 — dice references + chat channel**: reference production in the notation grammar;
     roll frames carry an actor binding; `resolveNotationTemplate` preview-only;
     `MessageEngine.channel` validated at ingest.

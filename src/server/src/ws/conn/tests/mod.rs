@@ -252,6 +252,71 @@ async fn welcome_unions_enabled_modules_requirements_with_gm_authored_ones() {
 }
 
 #[tokio::test]
+async fn reseed_world_config_seeds_missing_singletons_idempotently() {
+    use crate::data::repository::Repository;
+    use crate::ws::room::RoomRegistry;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    reseed_world_config(&room, repo.as_ref(), dir.path())
+        .await
+        .unwrap();
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    let docs = repo
+        .query_documents_by_types(world.id, &types)
+        .await
+        .unwrap();
+    assert_eq!(docs.len(), types.len());
+    // Second pass: still Ok, creates nothing (same ids survive).
+    reseed_world_config(&room, repo.as_ref(), dir.path())
+        .await
+        .unwrap();
+    let docs2 = repo
+        .query_documents_by_types(world.id, &types)
+        .await
+        .unwrap();
+    let ids: std::collections::BTreeSet<uuid::Uuid> = docs.iter().map(|d| d.id).collect();
+    let ids2: std::collections::BTreeSet<uuid::Uuid> = docs2.iter().map(|d| d.id).collect();
+    assert_eq!(ids, ids2, "second pass creates nothing");
+}
+
+#[tokio::test]
+async fn reseed_world_config_without_a_gm_is_a_noop_ok() {
+    use crate::data::repository::Repository;
+    use crate::ws::room::RoomRegistry;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    // A world with no GM member (legacy fixture shape): nothing to attribute
+    // a seed to, so the pass is a no-op Ok rather than an error.
+    let world = repo.create_world("W", 0).await.unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    reseed_world_config(&room, repo.as_ref(), dir.path())
+        .await
+        .unwrap();
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    assert!(repo
+        .query_documents_by_types(world.id, &types)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn welcome_capability_requirements_unions_caps_for_the_same_path_prefix() {
     use crate::data::document::CapabilityRequirement;
     use std::collections::BTreeSet;

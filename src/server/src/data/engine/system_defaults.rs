@@ -73,9 +73,10 @@ pub struct AnimationOverlay {
 }
 
 /// The engine body of the `system-defaults` singleton (mirrors the client's
-/// `SystemDefaultsEngine`). Written by the GM's client from the active system
-/// module's declaration, never edited by hand; `active_scene` is world state,
-/// not a setting, and has no overlay.
+/// `SystemDefaultsEngine`). Server-written from the installed system
+/// package's manifest declaration (the world-config seed path — no client
+/// origin may author it); `active_scene` is world state, not a setting, and
+/// has no overlay.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -94,26 +95,46 @@ pub struct SystemDefaultsEngine {
     pub combat: Option<CombatDefaults>,
 }
 
+impl SceneDefaultsOverlay {
+    /// A present environment intensity is within `0..=1`. Shared by every
+    /// engine carrying this overlay (`SystemDefaultsEngine`,
+    /// `WorldSettingsEngine`) — one statement of the range rule.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(e) = &self.environment {
+            if !(0.0..=1.0).contains(&e.intensity) {
+                return Err("scene.environment.intensity must be within 0..=1".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl AnimationOverlay {
+    /// A present speed is finite and `> 0`. Shared by every engine carrying
+    /// this overlay — one statement of the range rule.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(s) = self.speed_cells_per_sec {
+            if !s.is_finite() || s <= 0.0 {
+                return Err("animation.speedCellsPerSec must be finite and > 0".into());
+            }
+        }
+        Ok(())
+    }
+}
+
 impl SystemDefaultsEngine {
-    /// Numeric overlays are finite and positive where the world struct requires
-    /// it, and every combat lifecycle formula parses.
+    /// The shared overlay range checks (`SceneDefaultsOverlay::validate`,
+    /// `AnimationOverlay::validate`), and every combat lifecycle formula
+    /// present parses.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if let Some(c) = &self.combat {
             c.validate("combat")?;
         }
         if let Some(a) = &self.animation {
-            if let Some(s) = a.speed_cells_per_sec {
-                if !s.is_finite() || s <= 0.0 {
-                    return Err("animation.speedCellsPerSec must be finite and > 0".into());
-                }
-            }
+            a.validate()?;
         }
         if let Some(s) = &self.scene {
-            if let Some(e) = &s.environment {
-                if !(0.0..=1.0).contains(&e.intensity) {
-                    return Err("scene.environment.intensity must be within 0..=1".into());
-                }
-            }
+            s.validate()?;
         }
         Ok(())
     }

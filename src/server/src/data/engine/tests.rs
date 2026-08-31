@@ -84,6 +84,27 @@ fn world_settings_minimal_body_is_valid() {
 }
 
 #[test]
+fn world_settings_partial_overlay_body_is_valid() {
+    // The world layer is an optional overlay: a single authored leaf is a
+    // complete, valid body — absent leaves fall through the resolution chain.
+    let v = json!({ "scene": { "fog": false } });
+    assert!(validate_engine("world-settings", Some(&v)).is_ok());
+    // The old full-required shape remains valid (full ⊃ optional).
+    let full = json!({
+        "scene": {
+            "losRestriction": true, "fog": true, "lightingEnabled": true,
+            "lightMode": "environmentLight",
+            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+            "observerVision": false, "movementRestriction": "visible",
+            "movementModel": "grid-stepped", "partialCellLeniency": true
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" }
+    });
+    assert!(validate_engine("world-settings", Some(&full)).is_ok());
+}
+
+#[test]
 fn vision_modes_minimal_body_is_valid() {
     let v = json!({ "modes": {} });
     assert!(validate_engine("vision-modes", Some(&v)).is_ok());
@@ -541,27 +562,41 @@ fn region_behavior_literal_set_deserializes() {
     }
 }
 
-/// Drift guard: `WorldSettingsEngine::default()` must serialize to the
-/// SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
+/// Drift guard: the engine-literal fallbacks (`WorldSceneDefaults::default`,
+/// `Pathfinding::default`, `AnimationSettings::default`) must serialize to
+/// the SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
+/// `WorldSettingsEngine::default()` itself is the EMPTY overlay (what the
+/// world-config seed authors) — every member serializes as null.
 #[test]
-fn world_settings_default_matches_client_default() {
-    let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+fn engine_literal_defaults_match_client_default() {
     assert_eq!(
-        v,
+        serde_json::to_value(WorldSceneDefaults::default()).unwrap(),
         json!({
-            "scene": {
-                "losRestriction": true,
-                "fog": true,
-                "lightingEnabled": true,
-                "lightMode": "environmentLight",
-                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
-                "observerVision": false,
-                "movementRestriction": "visible",
-                "movementModel": "grid-stepped",
-                "partialCellLeniency": true,
-            },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" },
+            "losRestriction": true,
+            "fog": true,
+            "lightingEnabled": true,
+            "lightMode": "environmentLight",
+            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "movementModel": "grid-stepped",
+            "partialCellLeniency": true,
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Pathfinding::default()).unwrap(),
+        json!({ "diagonalRule": "chebyshev" })
+    );
+    assert_eq!(
+        serde_json::to_value(AnimationSettings::default()).unwrap(),
+        json!({ "speedCellsPerSec": 6.0, "easing": "easeInOut" })
+    );
+    assert_eq!(
+        serde_json::to_value(WorldSettingsEngine::default()).unwrap(),
+        json!({
+            "scene": null,
+            "pathfinding": null,
+            "animation": null,
             "activeScene": null,
             "combat": null,
         })
@@ -919,6 +954,127 @@ fn system_defaults_wrong_type_is_rejected() {
         Some(&json!({ "animation": { "speedCellsPerSec": -1.0 } }))
     )
     .is_err());
+}
+
+// --- world-config seed bodies (the engine definition; client constants mirror these) ---
+
+#[test]
+fn faction_registry_seed_content() {
+    let s = FactionRegistryEngine::seed();
+    assert_eq!(s.factions.len(), 3);
+    let f = &s.factions["friendly"];
+    assert_eq!(
+        (f.name.as_str(), f.color.as_str(), f.stance),
+        ("Friendly", "#3fb950", FactionStance::Friendly)
+    );
+    let n = &s.factions["neutral"];
+    assert_eq!(
+        (n.name.as_str(), n.color.as_str(), n.stance),
+        ("Neutral", "#9e9e9e", FactionStance::Neutral)
+    );
+    let h = &s.factions["hostile"];
+    assert_eq!(
+        (h.name.as_str(), h.color.as_str(), h.stance),
+        ("Hostile", "#f85149", FactionStance::Hostile)
+    );
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("faction-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn condition_registry_seed_content() {
+    let s = ConditionRegistryEngine::seed();
+    let expect: &[(&str, &str, &str)] = &[
+        ("dead", "Dead", "💀"),
+        ("unconscious", "Unconscious", "😵"),
+        ("prone", "Prone", "🛌"),
+        ("stunned", "Stunned", "💫"),
+        ("poisoned", "Poisoned", "🤢"),
+        ("blinded", "Blinded", "🙈"),
+        ("invisible", "Invisible", "👻"),
+        ("hasted", "Hasted", "⚡"),
+        ("slowed", "Slowed", "🐌"),
+    ];
+    assert_eq!(s.conditions.len(), expect.len());
+    for (id, name, icon) in expect {
+        let c = &s.conditions[*id];
+        assert_eq!((c.name.as_str(), c.icon.as_str()), (*name, *icon));
+    }
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn channel_registry_seed_content() {
+    let s = ChannelRegistryEngine::seed();
+    assert_eq!(s.channels.len(), 1);
+    assert_eq!(s.channels["general"].name, "General");
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("channel-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn light_gradation_seed_content() {
+    let s = LightGradationEngine::seed();
+    let bands: Vec<(&str, f64)> = s
+        .bands
+        .iter()
+        .map(|b| (b.name.as_str(), b.min_illumination))
+        .collect();
+    assert_eq!(bands, vec![("bright", 0.67), ("dim", 0.34), ("dark", 0.0)]);
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("light-gradation", Some(&v)).is_ok());
+}
+
+#[test]
+fn vision_modes_seed_content() {
+    let s = VisionModesEngine::seed();
+    assert_eq!(s.modes.len(), 2);
+    let n = &s.modes["normal"];
+    assert_eq!(
+        (
+            n.id.as_str(),
+            n.name.as_str(),
+            n.illumination_floor.as_str(),
+            n.default_range,
+            n.render_hint.as_deref()
+        ),
+        ("normal", "Normal", "dim", 0.0, None)
+    );
+    let d = &s.modes["darkvision"];
+    assert_eq!(
+        (
+            d.id.as_str(),
+            d.name.as_str(),
+            d.illumination_floor.as_str(),
+            d.default_range,
+            d.render_hint.as_deref()
+        ),
+        ("darkvision", "Darkvision", "dark", 12.0, Some("desaturate"))
+    );
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("vision-modes", Some(&v)).is_ok());
+}
+
+#[test]
+fn empty_default_config_bodies_are_valid() {
+    let chat = serde_json::to_value(ChatSettingsEngine::default()).unwrap();
+    assert!(validate_engine("chat-settings", Some(&chat)).is_ok());
+    let dice_default = DiceSettingsEngine::default();
+    assert_eq!(
+        (
+            dice_default.mode,
+            dice_default.direction,
+            dice_default.channel_overrides.len()
+        ),
+        (DiceModeSetting::Total, DiceDirectionSetting::HighWins, 0)
+    );
+    let dice = serde_json::to_value(&dice_default).unwrap();
+    assert!(validate_engine("dice-settings", Some(&dice)).is_ok());
+    let resources = serde_json::to_value(ResourceRegistryEngine::default()).unwrap();
+    assert!(validate_engine("resource-registry", Some(&resources)).is_ok());
+    let sd = serde_json::to_value(SystemDefaultsEngine::default()).unwrap();
+    assert!(validate_engine("system-defaults", Some(&sd)).is_ok());
 }
 
 #[test]

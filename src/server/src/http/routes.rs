@@ -581,6 +581,25 @@ pub async fn create_world(
         .repo
         .create_world_owned(&body.name, user.id, now_millis())
         .await?;
+    // Server-side config seed: every config singleton exists from the world's
+    // first instant, authored by the creator (just seated as GM). A brand-new
+    // world has no enabled modules, so the system layer is the empty default
+    // and no module scan is needed.
+    let ops = crate::data::world_seed::missing_config_ops(&[], world.id, None, now_millis());
+    let ctx = crate::data::membership::PermissionContext {
+        user_id: user.id,
+        world_role: crate::data::document::WorldRole::Gm,
+    };
+    state
+        .repo
+        .apply_intent(
+            &ctx,
+            world.id,
+            ops,
+            now_millis(),
+            crate::data::command::WriteOrigin::ConfigSeed,
+        )
+        .await?;
     Ok(Json(world))
 }
 

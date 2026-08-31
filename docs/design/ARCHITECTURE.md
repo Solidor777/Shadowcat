@@ -101,17 +101,20 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 - **Stable asset identity.** Assets are referenced by stable UUID from first upload, so moving, renaming, replacing or reconverting an asset never breaks links. On disk the UUID is the canonical served file (`<assets_dir>/<world>/<uuid>`); the retained original and the thumb/preview derivatives are siblings (`<uuid>.orig`, `<uuid>.thumb.webp`, `<uuid>.preview.webp`) that every file-op moves as one set, and `version` — bumped only by a byte swap — keys the ETag of the canonical and its derivatives alike.
 - **Schema migration: mechanism now, migrations later.** Documents carry `schema_version` and the data-model layer exposes a synchronous, client-side `migrateData` seam (coerce a document from its stored version to current on load/update — pure transform, no sandbox). Because nothing ships before v1, there are **no documents in existence to migrate**: v1 builds the migration *machinery* and the seam runs as a no-op pass-through, but **no actual migrations are authored** until a post-ship schema change creates the first real use case. Arbitrary bulk fix-up *scripts* are a separate, far-future concern.
 - **Validation at boundaries.** The client validates the `system` body against the system's Zod schema before writes; the server enforces structural limits (size caps, field-path validity, `deny_unknown_fields`) and permissions on `system`, but never its semantic correctness (invariant 6). The `engine` body gets a stricter boundary: server-side shape/type ingress validation (`validate_engine`/`validate_engine_tree`, `deny_unknown_fields` on every engine struct) rejects a malformed body outright rather than merely capping its size — engine-owned geometry (movement-collision, vision) reads this typed, pre-validated band directly (invariant 6), no separate exception needed. Live template inheritance is never resolved on read (M2: merge is an explicit command); a derived value a system wants the engine to act on is a persisted `system` leaf the server evaluates from (invariant 6).
-- **Settings resolve through a four-tier chain: engine → system-defaults → world → scene.** The
-  engine ships a hardcoded fallback for every world-configurable setting (scene defaults,
-  pathfinding, animation, combat); a `system-defaults` singleton document lets the world's active
-  game-system module (the `SYSTEM_CONTRACT` winner, via its declared `Module.systemDefaults`,
-  upserted by the GM's client on join via `systemDefaultsUpsertOps` — a client-authority
-  mechanism the world-config authority sub-project of M14c moves to the server) override those
-  fallbacks per world; a
-  `world-settings` document lets the GM override the same keys further; and a per-scene override
-  is the narrowest and wins last. `resolve_combat_rules` (server) is the definition of this
-  precedence; `resolveSettingProvenance` (client) is a display mirror for the settings UI and is
-  asserted against it.
+- **Settings resolve through a four-tier chain: engine → system-defaults → world → scene, and
+  every tier's authority is server-side.** The engine's hardcoded fallback for every
+  world-configurable setting is defined in Rust (the `WorldSceneDefaults`/`Pathfinding`/
+  `AnimationSettings` `Default` impls; the client's `DEFAULT_WORLD_SETTINGS` is an asserted
+  mirror); the `system-defaults` singleton is server-written from the enabled system package's
+  manifest `systemDefaults` declaration (validated at scan; refreshed at world join and on any
+  enabled-set change; client writes to it are rejected outright); the `world-settings` singleton
+  is an `Option`-lifted overlay the GM edits per leaf (server-seeded empty at world creation —
+  clearing a leaf, not writing a client-resolved literal, is how a setting resets); and a
+  per-scene override is the narrowest and wins last. Every config singleton is created by the
+  server's world-config seed path (`WriteOrigin::ConfigSeed`) at world creation and world join —
+  no client seeds config documents. `resolve_combat_rules` (server) is the definition of the
+  combat precedence; `resolveSettingProvenance` (client) is a display mirror for the settings UI
+  and is asserted against it.
 - **The combat clock is a server-owned state transition, never a client-authored write.** A
   combat's turn order, round/turn counters, and turn-history log are mutated only by the server's
   own pure `transition` functions, dispatched from a fixed set of typed intents

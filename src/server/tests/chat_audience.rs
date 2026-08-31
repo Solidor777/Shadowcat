@@ -288,8 +288,8 @@ async fn whisper_reaches_the_gm_when_named() {
 }
 
 /// A whisper naming a uuid that is not a world member is rejected wholesale
-/// — fail-closed — and nothing is persisted (proven by a subsequent public
-/// message landing at seq 1, not seq 2).
+/// — fail-closed — and nothing is persisted (proven by the event log growing
+/// by exactly the one marker message that follows it).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
     let (h, _gm_id) = spawn().await;
@@ -297,6 +297,10 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
 
     let mut ws_sender = h.connect_with(&cookie_sender).await;
     recv_until(&mut ws_sender, "welcome").await;
+    // Baseline AFTER the join: the join-time world-config reseed consumes its
+    // own seq; the property under test is only that the rejected whisper adds
+    // nothing beyond the marker.
+    let baseline = h.repo.events_since(h.world, 0).await.unwrap().len();
 
     let foreign = Uuid::from_u128(999_999);
     ws_sender
@@ -322,7 +326,7 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
     let seqs = h.repo.events_since(h.world, 0).await.unwrap();
     assert_eq!(
         seqs.len(),
-        1,
+        baseline + 1,
         "only the marker was persisted — the rejected whisper consumed no seq"
     );
 }
