@@ -259,7 +259,15 @@ export const BUILTIN_THEMES: readonly ThemeDefinition[] = [
 ];
 
 /** Keeps only entries whose key is a real token name and whose value is a
- * string — the validation every custom override set passes through. */
+ * string — the validation every custom override set passes through.
+ * @param tokens The override map to validate.
+ * @returns A map containing only the valid overrides.
+ * @example
+ * ```ts
+ * // internal helper; not part of the public API
+ * sanitizeTokenOverrides({ accent: "#123456" }); // { accent: "#123456" }
+ * ```
+ */
 function sanitizeTokenOverrides(
   tokens: Partial<Record<ThemeTokenName, string>>,
 ): Partial<Record<ThemeTokenName, string>> {
@@ -277,6 +285,12 @@ function sanitizeTokenOverrides(
  * all (non-object, missing label/base strings, or a non-object `tokens` map).
  * @param value The persisted value to validate.
  * @returns The sanitized custom theme, or `null` for garbage.
+ * @example
+ * ```ts
+ * import { sanitizeCustomTheme } from "@shadowcat/ui-kit";
+ *
+ * sanitizeCustomTheme({ label: "Mine", base: "slate-dark", tokens: {} });
+ * ```
  */
 export function sanitizeCustomTheme(value: unknown): CustomTheme | null {
   if (typeof value !== "object" || value === null) return null;
@@ -295,6 +309,12 @@ export function sanitizeCustomTheme(value: unknown): CustomTheme | null {
 /** Validates a persisted custom-theme map entry by entry, dropping garbage.
  * @param value The persisted map to validate.
  * @returns A map containing only the entries that passed `sanitizeCustomTheme`.
+ * @example
+ * ```ts
+ * import { sanitizeCustomThemes } from "@shadowcat/ui-kit";
+ *
+ * const custom = sanitizeCustomThemes({ mine: { label: "Mine", base: "slate-dark", tokens: {} } });
+ * ```
  */
 export function sanitizeCustomThemes(value: unknown): Record<string, CustomTheme> {
   const clean: Record<string, CustomTheme> = {};
