@@ -14,6 +14,7 @@
     selectedFolder,
     onSelectFolder,
     onDropAssets,
+    onDropFiles,
     mutable = true,
   }: {
     /** The folder filtering the grid, or `null` = all assets. */
@@ -22,6 +23,8 @@
     onSelectFolder: (id: string | null) => void;
     /** Dragged asset ids dropped onto a folder node. */
     onDropAssets: (ids: string[], folderId: string) => void;
+    /** OS files dropped onto a folder node (upload targets). */
+    onDropFiles?: (files: File[], folderId: string) => void;
     /** Whether mutation affordances (create/move/delete) render; pick mode
      * passes `false`. Defaults to mutable. */
     mutable?: boolean;
@@ -136,6 +139,11 @@
    */
   function handleDrop(ev: DragEvent, folderId: string): void {
     ev.preventDefault();
+    const files = Array.from(ev.dataTransfer?.files ?? []);
+    if (files.length > 0) {
+      onDropFiles?.(files, folderId);
+      return;
+    }
     const assetPayload = ev.dataTransfer?.getData("application/x-shadowcat-assets");
     if (assetPayload) {
       try {

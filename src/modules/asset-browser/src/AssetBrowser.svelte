@@ -6,6 +6,10 @@
   import type { FilterState } from "./filterState";
   import AssetGrid from "./AssetGrid.svelte";
   import FolderTree from "./FolderTree.svelte";
+  import PreviewPane from "./PreviewPane.svelte";
+  import BulkBar from "./BulkBar.svelte";
+  import UploadQueue from "./UploadQueue.svelte";
+  import { UploadQueue as UploadQueueModel } from "./uploadQueueModel.svelte";
 
   let {
     mode,
@@ -47,6 +51,12 @@
   const compact = $derived(sizeClass() === "compact");
   /** Mutation affordances render only in the managing panel, never pick mode. */
   const mutable = $derived(mode === "manage");
+  /** The single selected asset shown in the preview pane, or null. */
+  const previewAsset = $derived(
+    selected.length === 1 ? (items.find((a) => a.id === selected[0]) ?? null) : null,
+  );
+  /** The browser's upload queue; refreshes the listing per created asset. */
+  const uploads = new UploadQueueModel(world, () => void reload());
   // Monotonic reload marker: a stale page resolving after a newer reload
   // started must not clobber the newer listing.
   let generation = 0;
@@ -196,10 +206,25 @@
           void reload();
         }}
         onDropAssets={(ids, folderId) => void fileAssets(ids, folderId)}
+        onDropFiles={mutable ? (files, folderId) => uploads.enqueue(files, folderId) : undefined}
       />
     </aside>
   {/if}
-  <div class="content">
+  <div
+    class="content"
+    role="presentation"
+    ondragover={(e) => {
+      if (mutable && e.dataTransfer?.types.includes("Files")) e.preventDefault();
+    }}
+    ondrop={(e) => {
+      if (!mutable) return;
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length > 0) {
+        e.preventDefault();
+        uploads.enqueue(files, selectedFolder);
+      }
+    }}
+  >
     {#if compact}
       <button
         type="button"
@@ -210,6 +235,21 @@
       >📁</button>
     {/if}
     <FilterBar {filter} onChange={onFilterChange} />
+    {#if mutable}
+      <label class="upload-fallback">
+        {t("assetBrowser.upload")}
+        <input
+          type="file"
+          multiple
+          data-testid="asset-upload-input"
+          onchange={(e) => {
+            const files = Array.from(e.currentTarget.files ?? []);
+            e.currentTarget.value = "";
+            if (files.length > 0) uploads.enqueue(files, selectedFolder);
+          }}
+        />
+      </label>
+    {/if}
     {#if error}
       <p class="error">{error}</p>
     {:else}
@@ -222,6 +262,10 @@
         }}
         onNearEnd={() => void loadMore()}
       />
+    {/if}
+    <UploadQueue queue={uploads} />
+    {#if mutable && selected.length > 1}
+      <BulkBar {selected} onChanged={() => void reload()} />
     {/if}
     {#if mode === "pick"}
       <footer class="pick-bar" data-testid="pick-bar">
@@ -239,7 +283,11 @@
       </footer>
     {/if}
   </div>
-  <aside class="preview" data-testid="asset-browser-preview"></aside>
+  <aside class="preview" data-testid="asset-browser-preview">
+    {#if previewAsset}
+      <PreviewPane asset={previewAsset} {mutable} onChanged={() => void reload()} />
+    {/if}
+  </aside>
 </div>
 
 <style lang="scss">
