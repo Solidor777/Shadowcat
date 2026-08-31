@@ -7,6 +7,7 @@ import type {
   CreateComponentOptions,
   DockviewApi,
   DockviewActivePanelChangeEvent,
+  DockviewPopoutGroupOptions,
   DockviewWillDropEvent,
   IDockviewGroupPanel,
   IContentRenderer,
@@ -16,7 +17,7 @@ import type {
 } from "dockview-core";
 import { mount, unmount } from "svelte";
 import { consoleLogger, type Logger, type PanelMeta, type ZoneId } from "@shadowcat/core";
-import { i18n } from "@shadowcat/ui-kit";
+import { i18n, theme } from "@shadowcat/ui-kit";
 import type { EngineAdapter } from "./adapter";
 import type { ExpandedLayout, LayoutOp, Rect } from "../layout/tree";
 import { classifyDrop, opForMenuCommand, MENU_FLOAT_RECT, STAGE_ID, type DropSite, type MenuCommand } from "./policy";
@@ -611,11 +612,20 @@ export class DockviewEngine implements EngineAdapter {
    * these ids into `seenGroupIds` to keep the orphan-group loop from destroying the group
    * dockview still depends on. */
   #poppedOutOriginGroups = new Map<string, string>();
+  /** Popout group id -> the unregister returned by the ui-kit theme
+   * controller's `registerDocument` for that popout window's `Document`,
+   * recorded at pop-out success (`#requestPopOut`'s `onDidOpen` capture) so
+   * the popped-out window follows every later theme swap. Invoked and removed
+   * in `#handleRemovePopoutGroup` (window closed, however caused) and in bulk
+   * by `destroy()` — the same add/dispose lifecycle bracket as
+   * `#popoutGroupSubs`. */
+  #popoutDocumentUnsubs = new Map<string, () => void>();
   /** Gesture-time popout invoker. Defaults to dockview's native popout (verified same-heap,
    * content re-parented, stylesheets cloned, via `PopoutWindow.open`). Injectable so unit
    * tests exercise the async-result → op translation without a real `window.open` (jsdom
-   * has none). */
-  #popoutDriver: (panel: IDockviewPanel) => Promise<boolean>;
+   * has none). Receives the `onDidOpen` option the engine uses to capture the popout
+   * window's `Document` for theme registration (see `#popoutDocumentUnsubs`). */
+  #popoutDriver: (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions) => Promise<boolean>;
 
   /** Builds an engine instance with no dockview API yet (that is created by
    * `init()`, which a `PanelHost` calls once at mount). `popoutDriver` is a
@@ -630,7 +640,9 @@ export class DockviewEngine implements EngineAdapter {
    * @param popoutDriver Replaces dockview's native `addPopoutGroup` call for
    * pop-out requests; defaults to the real driver. Injectable so a test can
    * exercise the async-result → op translation without a real `window.open`
-   * (jsdom has none).
+   * (jsdom has none). The `options` argument carries the engine's `onDidOpen`
+   * callback (the popout-Document capture for theme registration) — a driver
+   * that actually opens a window must forward it to `addPopoutGroup`.
    * @example
    * ```ts
    * import { DockviewEngine } from "@shadowcat/module-panels";
@@ -638,14 +650,14 @@ export class DockviewEngine implements EngineAdapter {
    * const engine = new DockviewEngine();
    * ```
    */
-  constructor(logger?: Logger, popoutDriver?: (panel: IDockviewPanel) => Promise<boolean>) {
+  constructor(logger?: Logger, popoutDriver?: (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions) => Promise<boolean>) {
     this.#logger = logger ?? consoleLogger();
     // `/popout.html` is the same-origin loader document dockview's popout
     // window navigates to; passed explicitly to document the dependency
     // rather than relying on dockview's own default drifting.
     // `assertSameOriginPopoutUrl` rejects
     // `about:blank`/cross-origin, so this URL is load-bearing.
-    this.#popoutDriver = popoutDriver ?? ((panel) => this.#api!.addPopoutGroup(panel, { popoutUrl: "/popout.html" }));
+    this.#popoutDriver = popoutDriver ?? ((panel, options) => this.#api!.addPopoutGroup(panel, { ...options, popoutUrl: "/popout.html" }));
   }
 
   /** `EngineAdapter.init`: creates the underlying `DockviewApi` against `host`,
@@ -795,13 +807,29 @@ export class DockviewEngine implements EngineAdapter {
     // successful pop-out `panel.group.id` is the POPOUT group's own id, so the
     // origin must be read now (see `#poppedOutOriginGroups`).
     const originGroupId = panel.group.id;
-    this.#popoutDriver(panel)
+    // The popout window's `Document` is captured via `onDidOpen`, which
+    // dockview's `PopoutWindow.open` fires synchronously once `window.open`
+    // succeeds — before `addPopoutGroup`'s promise settles — so it is
+    // populated by the time the success branch below runs. Inline theme
+    // application beats the stylesheets dockview clones into the popup on its
+    // later `load` event, so registering at `onDidOpen` time is not racy.
+    let popoutDocument: Document | undefined;
+    this.#popoutDriver(panel, {
+      onDidOpen: (event) => {
+        popoutDocument = event.window.document;
+      },
+    })
       .then((ok) => {
         this.#pendingPopouts.delete(id);
         if (ok) {
           this.#poppedOutOriginGroups.set(id, originGroupId);
           const gid = api.getPanel(id)?.group.id;
           if (gid) this.#poppedOutGroupPanels.set(gid, [id]);
+          // Register once per open, keyed by the popout group id; the paired
+          // unregister runs in `#handleRemovePopoutGroup` and `destroy()`.
+          if (gid && popoutDocument) {
+            this.#popoutDocumentUnsubs.set(gid, theme.registerDocument(popoutDocument));
+          }
           // The freshly-created popout group is never touched by apply()'s
           // zone loop (see `#popoutGroupSubs`'s doc comment) — wire its own
           // veto bypass closure and panel-list sync here, at the only point
@@ -1067,6 +1095,11 @@ export class DockviewEngine implements EngineAdapter {
     // the same way `#poppedOutGroupPanels` above is cleared unconditionally.
     for (const d of this.#popoutGroupSubs.get(event.id) ?? []) d.dispose();
     this.#popoutGroupSubs.delete(event.id);
+    // The theme registration for this popout window's `Document` unwinds
+    // unconditionally alongside the tracking maps above — the window is gone
+    // regardless of which path removed the group.
+    this.#popoutDocumentUnsubs.get(event.id)?.();
+    this.#popoutDocumentUnsubs.delete(event.id);
     // Origin-group tracking clears unconditionally (like `#poppedOutGroupPanels`
     // above), for both a user window-close and our own `apply()`-driven pop-in:
     // once the panel leaves the popped-out state its origin group is a normal
@@ -1757,7 +1790,8 @@ export class DockviewEngine implements EngineAdapter {
 
   /** `EngineAdapter.destroy`: disposes every subscription this engine created
    * (component-level, per-group resize/drop, per-popout-group `#popoutGroupSubs`
-   * bundle, per-floating-panel Escape), clears every internal tracking map, and
+   * bundle, per-floating-panel Escape), unregisters every popout window's theme
+   * registration (`#popoutDocumentUnsubs`), clears every internal tracking map, and
    * disposes the underlying
    * `DockviewApi` itself. Slot elements are NOT destroyed — ownership returns
    * to `PanelHost`'s staging container, per the `EngineAdapter` contract.
@@ -1780,6 +1814,8 @@ export class DockviewEngine implements EngineAdapter {
       for (const d of subs) d.dispose();
     }
     this.#popoutGroupSubs.clear();
+    for (const unregister of this.#popoutDocumentUnsubs.values()) unregister();
+    this.#popoutDocumentUnsubs.clear();
     for (const dispose of this.#floatingEscapeSubs.values()) dispose();
     this.#floatingEscapeSubs.clear();
     this.#floatInvokers.clear();

@@ -1,10 +1,12 @@
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach, vi } from "vitest";
 import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../layout/tree";
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
+import { theme } from "@shadowcat/ui-kit";
 import type {
   DockviewApi,
+  DockviewPopoutGroupOptions,
   DockviewWillDropEvent,
   IDockviewGroupPanel,
   IDockviewPanel,
@@ -1099,7 +1101,7 @@ test("the stage's own tab never renders a .sc-tab-menu-btn — no menu-command a
 /** Mounts an engine on a body-attached host with one docked panel and clicks
  * its tab menu's "Pop out" item, returning the ops emitted. `driver` stands in
  * for `addPopoutGroup` (jsdom has no real `window.open`). */
-async function popOutViaMenu(driver: () => Promise<boolean>): Promise<{ ops: LayoutOp[]; notices: string[] }> {
+async function popOutViaMenu(driver: (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions) => Promise<boolean>): Promise<{ ops: LayoutOp[]; notices: string[] }> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   attachedHost = host;
@@ -1478,4 +1480,80 @@ test("popout group subscriptions are disposed on window close: a later onDidAddP
   modelOf(group)._onDidAddPanel.fire({ panel: api.getPanel("chat")! });
 
   expect(engine!.debugPoppedOutGroupPanels.has("sc-real-popout-group")).toBe(false);
+});
+
+/** A `popoutDriver` that stands in for the window-opening half of dockview's
+ * `addPopoutGroup`: like the stub driver `popOutViaMenu` uses elsewhere it
+ * moves nothing, but it fires the options' `onDidOpen` callback the way
+ * dockview's `PopoutWindow.open` does — synchronously after the window opens,
+ * carrying the fresh `Window` — so the engine's pop-out success path sees the
+ * popout `Document` it must register with the ui-kit theme controller. */
+function themePopoutDriver(popoutDoc: Document): (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions) => Promise<boolean> {
+  return (_panel, options) => {
+    options?.onDidOpen?.({ id: "sc-popout-window", window: { document: popoutDoc } as unknown as Window });
+    return Promise.resolve(true);
+  };
+}
+
+/** Spies on the ui-kit `theme` singleton's `registerDocument`, calling through
+ * (so registration really happens and the unregister really detaches) while
+ * counting unregister invocations — both halves of the register/unregister
+ * pairing become assertable. */
+function spyOnThemeRegistration(): { spy: ReturnType<typeof vi.spyOn>; unregisterCount: () => number } {
+  let calls = 0;
+  const original = theme.registerDocument.bind(theme);
+  const spy = vi.spyOn(theme, "registerDocument").mockImplementation((doc: Document) => {
+    const unregister = original(doc);
+    return () => {
+      calls += 1;
+      unregister();
+    };
+  });
+  return { spy, unregisterCount: () => calls };
+}
+
+test("a successful pop-out registers the popout document with the ui-kit theme; window close unregisters it", async () => {
+  const popoutDoc = document.implementation.createHTMLDocument("popout");
+  const { spy, unregisterCount } = spyOnThemeRegistration();
+  try {
+    await popOutViaMenu(themePopoutDriver(popoutDoc));
+
+    // Exactly one registration, for the popout window's own Document, and the
+    // call-through applied the resolved theme inline.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(popoutDoc);
+    expect(popoutDoc.documentElement.style.getPropertyValue("--surface-base")).not.toBe("");
+    expect(unregisterCount()).toBe(0);
+
+    const api = engine!.debugApi!;
+    const groupId = "sc-group:chat";
+    fireRemovePopoutGroup(api, groupId, api.getGroup(groupId)!);
+    expect(unregisterCount()).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("destroy() unregisters a pop-out document still open at engine teardown", async () => {
+  const popoutDoc = document.implementation.createHTMLDocument("popout");
+  const { spy, unregisterCount } = spyOnThemeRegistration();
+  try {
+    await popOutViaMenu(themePopoutDriver(popoutDoc));
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    engine!.destroy();
+    expect(unregisterCount()).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("a pop-out whose driver never fires onDidOpen registers no document with the theme", async () => {
+  const spy = vi.spyOn(theme, "registerDocument");
+  try {
+    await popOutViaMenu(() => Promise.resolve(true));
+    expect(spy).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+  }
 });
