@@ -497,6 +497,33 @@ async fn enabled_modules_rejects_a_module_with_no_engines_field() {
 }
 
 #[tokio::test]
+async fn enabled_modules_rejects_two_system_providers() {
+    let dir = tempfile::tempdir().unwrap();
+    for id in ["sys-a", "sys-b"] {
+        std::fs::create_dir_all(dir.path().join(id)).unwrap();
+        std::fs::write(
+            dir.path().join(id).join("module.json"),
+            format!(
+                r#"{{"id":"{id}","version":"1.0.0","engines":{{"shadowcat":"*"}},"provides":[{{"contract":"shadowcat.system","cardinality":"singleton"}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    // Two enabled system providers would let the server's system-defaults
+    // pick and the client's singleton-contract winner diverge: rejected.
+    gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!(["sys-a", "sys-b"]))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    // Exactly one system provider is fine.
+    gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!(["sys-a"]))
+        .await
+        .assert_status(StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn enabled_modules_dedups_a_duplicate_id_preserving_first_occurrence_order() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();

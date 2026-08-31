@@ -197,6 +197,21 @@ pub async fn set_world_enabled_modules(
             )));
         }
     }
+    // At most one enabled module may provide the system contract: the
+    // server's system-defaults derivation and the client's singleton-contract
+    // winner must never diverge on which system is active.
+    let systems: Vec<&str> = ids
+        .iter()
+        .filter(|id| installed.iter().any(|m| &m.id == *id && m.provides_system))
+        .map(String::as_str)
+        .collect();
+    if systems.len() > 1 {
+        return Err(AppError::Unprocessable(format!(
+            "at most one enabled module may provide {} (got: {})",
+            crate::modules::SYSTEM_CONTRACT,
+            systems.join(", ")
+        )));
+    }
     state.repo.set_world_enabled_modules(world, &ids).await?;
     Ok(StatusCode::NO_CONTENT)
 }
