@@ -59,16 +59,28 @@ Seeded docs use fresh UUIDs: absence/lookup is by `doc_type`, and the singleton 
 backstops any server-internal race, so no client-mirroring deterministic-id derivation is
 needed.
 
+The helper is split so the seed DECISION lives in one place while only the commit transport
+differs by construction: an ops-builder computes what is missing/stale (reading current docs +
+the enabled system's manifest), and each caller commits those ops through its own channel —
+`apply_intent` where no room exists, `Room::publish` where one does (publish wraps the same
+`apply_intent` plus broadcast, so this is not a forked decision). A concurrent double-seed
+(two simultaneous first joins) is resolved by the existing doc_type-scoped singleton create
+gate: the loser's Create fails with a conflict the seed path logs and swallows — a lost seed
+race must never fail the join.
+
 Call sites:
-- `create_world_owned` (after seating the GM, same flow) — author = creator.
-- `RoomRegistry::get_or_create` hydration — lazy reseed for pre-existing dev worlds and
-  self-healing after a deletion (a deleted singleton resurrects empty on next room open).
+- `create_world_owned`'s HTTP caller (after seating the GM) — commits via `apply_intent`;
+  author = creator.
+- The WS world-join path (`handle_socket`, immediately after the room is obtained) — lazy
+  reseed for pre-existing dev worlds and self-healing after a deletion (a deleted singleton
+  resurrects on next join); commits via `Room::publish`. Deliberately NOT inside
+  `RoomRegistry::get_or_create`: seeding there would burn world seqs in every room-level test
+  and force seed context through a hydration API that tests exercise directly.
 - `set_world_enabled_modules` — after validating D6, refresh `system-defaults` content from the
   (possibly changed) system package: an Update with OCC pre-image when content differs, going
-  through `RoomRegistry::get_or_create` + `Room::publish` so a live room broadcasts (one path,
-  not an if-room-open fork).
+  through `RoomRegistry::get_or_create` + `Room::publish` so a live room broadcasts.
 
-A manifest edited on disk with no enable-set change is picked up at the next room hydration;
+A manifest edited on disk with no enable-set change is picked up at the next world join;
 that staleness window is accepted and documented.
 
 ### 2.3 Manifest surface
