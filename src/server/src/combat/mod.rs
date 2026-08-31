@@ -86,6 +86,11 @@ pub enum CombatError {
     /// the caller doesn't already know.
     #[error("duplicate combatant in rolls")]
     DuplicateRoll,
+    /// `CombatRoll` named a channel that is not in the world's channel
+    /// registry. Distinct wording is safe, same as `DuplicateRoll`: the
+    /// caller supplied the channel and the registry's keys are member-visible.
+    #[error("unknown channel")]
+    UnknownChannel,
     /// The caller's per-minute combat-intent flood budget is exhausted.
     /// Distinct wording (never leaks combat/hidden state, same class as
     /// `SendMessageError::RateLimited`).
@@ -411,6 +416,11 @@ async fn build_ops(
                 if !seen.insert(entry.combatant_id) {
                     return Err(CombatError::DuplicateRoll);
                 }
+            }
+            // The channel the results post to (and whose dice context they
+            // resolve under) must be a registered channel of this world.
+            if !crate::chat::channel_registered(repo, room.world_id, &channel).await? {
+                return Err(CombatError::UnknownChannel);
             }
             let dice_ctx = crate::chat::resolve_dice_context(repo, room.world_id, &channel).await;
             let mut posts = Vec::with_capacity(rolls.len());

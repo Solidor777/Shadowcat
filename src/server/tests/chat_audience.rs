@@ -198,7 +198,7 @@ async fn whisper_reaches_only_the_named_recipient() {
 
     ws_sender
         .send(send_message_frame(
-            "whispers",
+            "general",
             "secret",
             whisper_audience(&[recipient_id]),
         ))
@@ -209,7 +209,7 @@ async fn whisper_reaches_only_the_named_recipient() {
 
     ws_sender
         .send(send_message_frame(
-            "all",
+            "general",
             "marker",
             serde_json::json!({ "kind": "public" }),
         ))
@@ -238,7 +238,7 @@ async fn whisper_excludes_the_gm_unless_named() {
     recv_until(&mut ws_a, "welcome").await;
 
     ws_a.send(send_message_frame(
-        "whispers",
+        "general",
         "player-to-player secret",
         whisper_audience(&[b_id]),
     ))
@@ -246,7 +246,7 @@ async fn whisper_excludes_the_gm_unless_named() {
     .unwrap();
 
     ws_a.send(send_message_frame(
-        "all",
+        "general",
         "marker",
         serde_json::json!({ "kind": "public" }),
     ))
@@ -273,7 +273,7 @@ async fn whisper_reaches_the_gm_when_named() {
     recv_until(&mut ws_a, "welcome").await;
 
     ws_a.send(send_message_frame(
-        "whispers",
+        "general",
         "for the GM's eyes too",
         whisper_audience(&[gm_id]),
     ))
@@ -305,7 +305,7 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
     let foreign = Uuid::from_u128(999_999);
     ws_sender
         .send(send_message_frame(
-            "whispers",
+            "general",
             "should never persist",
             whisper_audience(&[foreign]),
         ))
@@ -314,7 +314,7 @@ async fn whisper_to_unknown_recipient_is_rejected_and_nothing_persists() {
 
     ws_sender
         .send(send_message_frame(
-            "all",
+            "general",
             "marker",
             serde_json::json!({ "kind": "public" }),
         ))
@@ -349,7 +349,7 @@ async fn whisper_is_hidden_from_a_non_recipients_resync_but_visible_to_the_recip
 
     ws_sender
         .send(send_message_frame(
-            "whispers",
+            "general",
             "resync-only secret",
             whisper_audience(&[recipient_id]),
         ))
@@ -395,7 +395,7 @@ async fn whisper_content_is_hidden_from_a_non_recipient_search() {
 
     ws_sender
         .send(send_message_frame(
-            "whispers",
+            "general",
             "xylophone galaxy secret",
             whisper_audience(&[recipient_id]),
         ))
@@ -453,7 +453,7 @@ async fn gm_only_channel_visible_to_gm_hidden_from_regular_member() {
 
     // Any regular member may post into the GM-only channel.
     ws_a.send(send_message_frame(
-        "gm",
+        "general",
         "for the GM's eyes only",
         serde_json::json!({ "kind": "gm_only" }),
     ))
@@ -466,7 +466,7 @@ async fn gm_only_channel_visible_to_gm_hidden_from_regular_member() {
     );
 
     ws_a.send(send_message_frame(
-        "all",
+        "general",
         "marker",
         serde_json::json!({ "kind": "public" }),
     ))
@@ -502,7 +502,7 @@ async fn gm_only_channel_promotion_immediately_grants_backlog_access() {
     recv_until(&mut ws_gm, "welcome").await;
     ws_gm
         .send(send_message_frame(
-            "gm",
+            "general",
             "posted before promotion",
             serde_json::json!({ "kind": "gm_only" }),
         ))
@@ -553,7 +553,7 @@ async fn gm_only_channel_demotion_immediately_revokes_backlog_access() {
     recv_until(&mut ws_gm, "welcome").await;
     ws_gm
         .send(send_message_frame(
-            "gm",
+            "general",
             "gm staff note",
             serde_json::json!({ "kind": "gm_only" }),
         ))
@@ -598,7 +598,7 @@ async fn gm_only_channel_content_is_hidden_from_a_regular_members_search() {
 
     ws_gm
         .send(send_message_frame(
-            "gm",
+            "general",
             "marmoset quokka signal",
             serde_json::json!({ "kind": "gm_only" }),
         ))

@@ -139,5 +139,39 @@ pub async fn resolve_dice_context(
     }
 }
 
+/// Whether `channel` is a registered channel of this world — the ingest gate
+/// for `MessageEngine.channel`, consulted by `handle_send_message` and the
+/// `CombatRoll` dispatch before any content work runs. A message's channel
+/// selects the per-channel dice `ParseContext` (`resolve_dice_context`) and
+/// labels the clients' channel views, so a sender naming a channel that does
+/// not exist is a mistake to refuse, not to file.
+///
+/// Fail-closed, but distinguishable: a query error, a registry with no
+/// `engine` body, or a body that fails to deserialize is an internal-class
+/// failure (`Err`), as is a genuinely ABSENT registry — world creation seeds
+/// it and world-join reseeds it, so absence means corruption, not a state to
+/// accommodate; an existing registry that simply lacks the key is `Ok(false)`,
+/// which the caller renders as the player-presentable unknown-channel refusal.
+pub async fn channel_registered(
+    repo: &dyn Repository,
+    world: Uuid,
+    channel: &str,
+) -> Result<bool, crate::data::DataError> {
+    let docs = repo
+        .query_documents(world, crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE)
+        .await?;
+    let Some(doc) = docs.first() else {
+        return Err(crate::data::DataError::NotFound);
+    };
+    let Some(engine) = doc.engine.clone() else {
+        return Err(crate::data::DataError::BadEngine(
+            "channel-registry: missing engine body".to_string(),
+        ));
+    };
+    let registry: crate::data::engine::ChannelRegistryEngine =
+        serde_json::from_value(engine).map_err(crate::data::DataError::Serde)?;
+    Ok(registry.channels.contains_key(channel))
+}
+
 #[cfg(test)]
 mod tests;

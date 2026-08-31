@@ -128,7 +128,19 @@ fn dice_settings_minimal_body_is_valid() {
 
 #[test]
 fn channel_registry_minimal_body_is_valid() {
-    assert!(validate_engine("channel-registry", Some(&json!({ "channels": {} }))).is_ok());
+    // The smallest body `ChannelRegistryEngine::validate` admits: one channel.
+    let v = json!({ "channels": { "general": { "name": "General" } } });
+    assert!(validate_engine("channel-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn channel_registry_rejects_an_empty_channels_map_but_the_seed_validates() {
+    // An empty registry wedges all chat (message ingest validates
+    // `MessageEngine.channel` against membership), so it is refused.
+    assert!(validate_engine("channel-registry", Some(&json!({ "channels": {} }))).is_err());
+    assert!(crate::data::engine::ChannelRegistryEngine::seed()
+        .validate()
+        .is_ok());
 }
 
 #[test]

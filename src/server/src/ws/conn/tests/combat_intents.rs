@@ -282,6 +282,29 @@ async fn combat_harness() -> Harness {
     .await
     .unwrap();
 
+    // Channel registry: `CombatRoll`'s channel gate refuses unregistered
+    // channels; "table" is the combat roll channel these tests exercise
+    // alongside the seeded "general".
+    let mut channels = wdoc(world.id, Uuid::from_u128(0xCA09), "channel-registry");
+    channels.owner = Some(gm_id);
+    let mut channel_registry = crate::data::engine::ChannelRegistryEngine::seed();
+    channel_registry.channels.insert(
+        "table".to_string(),
+        crate::data::engine::Channel {
+            name: "Table".into(),
+        },
+    );
+    channels.engine = Some(serde_json::to_value(&channel_registry).unwrap());
+    room.publish(
+        repo.as_ref(),
+        &gm,
+        vec![crate::data::command::Operation::Create { doc: channels }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
     // The combat itself: inactive, order = [player_combatant, hidden_npc].
     let mut combat = wdoc(world.id, combat_id, "combat");
     combat.owner = Some(gm_id);
@@ -666,6 +689,36 @@ async fn roll_uses_the_channel_dice_context_and_posts_a_gm_only_message_for_hidd
     )
     .await;
     assert!(matches!(player_on_npc, Some(ServerMsg::CombatError { .. })));
+}
+
+/// A `CombatRoll` naming a channel the world's channel-registry does not
+/// declare is refused with the unknown-channel `CombatError` wording — the
+/// caller supplied the channel string and the registry's keys are
+/// member-visible, so the distinct wording discloses nothing.
+#[tokio::test]
+async fn combat_roll_to_an_unregistered_channel_is_refused() {
+    let h = combat_harness().await;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "nowhere".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id: h.player_combatant,
+                notation: "1d20".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    let Some(ServerMsg::CombatError { message, .. }) = refused else {
+        panic!("expected a CombatError refusal");
+    };
+    assert_eq!(message, "unknown channel");
 }
 
 /// A non-GM sending `CombatRoll` with an EMPTY `rolls` list gets refused, not a committed write —

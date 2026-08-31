@@ -54,8 +54,22 @@ fn test_fetch_deps(
 
 /// A publish helper: sends a plain message and returns its message id --
 /// no `og:image` involved (these tests exercise `run_pending_enrichments`
-/// directly, not the synchronous scrape).
+/// directly, not the synchronous scrape). Seeds the channel-registry
+/// singleton first when the world lacks one: the send path refuses an
+/// unregistered channel, and these directly-built worlds never pass through
+/// create/join seeding.
 async fn seed_message(room: &Room, repo: &SqliteRepository, ctx: &PermissionContext) -> Uuid {
+    if repo
+        .query_documents(
+            room.world_id,
+            crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
+        )
+        .await
+        .unwrap()
+        .is_empty()
+    {
+        crate::data::world_seed::seed_test_channel_registry(repo, room.world_id, &[]).await;
+    }
     let rate = PingRateLimiter::new();
     let (cmd, _pending) = handle_send_message(
         MessageRequestCtx {
@@ -71,7 +85,7 @@ async fn seed_message(room: &Room, repo: &SqliteRepository, ctx: &PermissionCont
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hello".into(),
         None,
         Audience::Public,

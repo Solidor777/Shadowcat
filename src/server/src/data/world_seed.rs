@@ -182,6 +182,37 @@ pub async fn enabled_system_defaults(
         .and_then(|m| m.system_defaults)
 }
 
+/// Test-only fixture seed: persist JUST the channel-registry singleton for
+/// `world_id` — the production seed body plus any `extra` channel ids a
+/// fixture exercises (each registered under its own id as the display name;
+/// fixture assertions never render channel names). Production worlds receive
+/// this doc from `missing_config_ops` at world create / join reseed, so an
+/// in-process fixture that never passes through either must seed it
+/// explicitly or `chat::settings::channel_registered` fail-closes every
+/// send. Goes through `SqliteRepository::seed_document_unvalidated` (fixtures
+/// retain no GM `PermissionContext` to drive an ingress Create), so this
+/// stays `#[cfg(test)]`-only exactly like that method.
+#[cfg(test)]
+pub(crate) async fn seed_test_channel_registry(
+    repo: &SqliteRepository,
+    world_id: Uuid,
+    extra: &[&str],
+) {
+    let mut registry = ChannelRegistryEngine::seed();
+    for id in extra {
+        registry.channels.insert(
+            (*id).to_string(),
+            crate::data::engine::Channel {
+                name: (*id).to_string(),
+            },
+        );
+    }
+    let engine = serde_json::to_value(registry).expect("ChannelRegistryEngine serializes");
+    repo.seed_document_unvalidated(&config_doc(world_id, CHANNEL_REGISTRY_DOC_TYPE, engine, 0))
+        .await
+        .expect("channel-registry seed persists");
+}
+
 /// The `PermissionContext` a config-seed commit is attributed to: the
 /// world's first GM member by sorted user id (`Command.author` is a required
 /// `Uuid`, so seeds are attributed to a real member deterministically).

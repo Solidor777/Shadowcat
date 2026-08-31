@@ -62,8 +62,8 @@ pub use preview_cache::{
 };
 pub use sanitize::sanitize;
 pub use settings::{
-    resolve_content_policy, resolve_dice_context, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE,
-    DICE_SETTINGS_DOC_TYPE,
+    channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
+    CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE,
 };
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
@@ -621,9 +621,12 @@ fn build_roll_error_notice(
 /// Max characters accepted for a single message's raw content (pre-producer).
 pub const MAX_MESSAGE_CHARS: usize = 4096;
 
-/// Max characters accepted for a message's `channel` name. Otherwise `channel`
-/// is unbounded save for the 256 KB whole-document size cap.
-pub const MAX_CHANNEL_CHARS: usize = 128;
+/// Max characters accepted for a message's `channel` name. The one
+/// declaration lives in `data::engine`
+/// (`crate::data::engine::MAX_CHANNEL_CHARS`) so the channel registry's own
+/// validation can read it without a layering inversion; re-exported here
+/// where the ingest check uses it.
+pub use crate::data::engine::MAX_CHANNEL_CHARS;
 
 /// Max recipients accepted on an `Audience::Whisper`. A world's realistic
 /// member count is small; this is generous but bounded — without it, a single
@@ -649,6 +652,10 @@ pub enum SendMessageError {
     /// An `Audience::Whisper` recipient uuid does not belong to this world.
     /// Fail-closed: the whole send is rejected, nothing is persisted.
     UnknownRecipient,
+    /// The `channel` is not a key of the world's channel registry — refuse the send
+    /// rather than file a message under (and select dice settings by) a
+    /// channel that does not exist.
+    UnknownChannel,
     /// The authoritative write (`Room::publish`) failed.
     Data(DataError),
     /// The target message does not exist (edit/delete).
@@ -699,6 +706,12 @@ impl std::fmt::Display for SendMessageError {
                 // so this discloses nothing a sender cannot already enumerate; the
                 // offending id is never echoed.
                 f.write_str("One or more whisper recipients are not members of this world.")
+            }
+            SendMessageError::UnknownChannel => {
+                // Safe: the sender supplied the channel string, and the
+                // registry's keys are already visible to every member through
+                // the channel views.
+                f.write_str("That channel does not exist.")
             }
             SendMessageError::AudienceLocked => {
                 f.write_str("You cannot change who can see a message after it is sent.")
@@ -825,6 +838,16 @@ pub async fn handle_send_message(
     }
     if !rate.check(ctx.user_id, now, budget_per_min) {
         return Err(SendMessageError::RateLimited);
+    }
+    // Channel membership gate: `channel` selects the per-channel dice
+    // `ParseContext` and labels the clients' channel views, so an
+    // unregistered channel is refused, not filed. Placed after the flood
+    // check so the cheap guard stays ahead of the registry read.
+    if !channel_registered(repo, room.world_id, &channel)
+        .await
+        .map_err(SendMessageError::Data)?
+    {
+        return Err(SendMessageError::UnknownChannel);
     }
     // Attribution ownership gate: `actor_owner` is client-supplied
     // and otherwise stored verbatim — without this check any world member
