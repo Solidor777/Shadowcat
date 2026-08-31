@@ -410,7 +410,10 @@ async fn slow_reader_recovers_via_resync() {
     while h.authoritative_seqs().await.len() < 31 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         waited += 1;
-        assert!(waited < 300, "server did not apply seed + 30 intents within 30s");
+        assert!(
+            waited < 300,
+            "server did not apply seed + 30 intents within 30s"
+        );
     }
 
     // Resume reading `slow`: the final delivered seq reaches the authoritative tail
@@ -503,7 +506,10 @@ async fn converges_with_publishing_during_resync() {
     );
 
     // All published intents are durably sequenced...
-    assert_eq!(h.authoritative_seqs().await.last().copied(), Some(TOTAL + 1));
+    assert_eq!(
+        h.authoritative_seqs().await.last().copied(),
+        Some(TOTAL + 1)
+    );
 
     // (2) ...and the full history is recoverable: a fresh client resyncs from
     // seq 1 and receives every event its floor admits (the shared user's floor
