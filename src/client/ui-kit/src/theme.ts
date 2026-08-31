@@ -59,6 +59,7 @@ export const THEME_TOKEN_NAMES = [
   "shadow-elevated",
   "z-popover",
   "scrim",
+  "drop-overlay",
 ] as const;
 
 /** Union of every theme token name (a member of `THEME_TOKEN_NAMES`). */
@@ -160,6 +161,7 @@ const SLATE_DARK: ThemeDefinition = {
     warning: "#e0a23b",
     "shadow-elevated": "0 4px 12px rgba(0, 0, 0, 0.35)",
     scrim: "rgba(0, 0, 0, 0.5)",
+    "drop-overlay": "rgba(45, 110, 232, 0.25)",
   },
 };
 
@@ -204,6 +206,7 @@ const SLATE_LIGHT: ThemeDefinition = {
     warning: "#8f6407",
     "shadow-elevated": "0 4px 12px rgba(23, 23, 31, 0.18)",
     scrim: "rgba(23, 23, 31, 0.45)",
+    "drop-overlay": "rgba(36, 90, 192, 0.18)",
   },
 };
 
@@ -248,6 +251,7 @@ const CONTRAST_DARK: ThemeDefinition = {
     warning: "#f2b64f",
     "shadow-elevated": "0 4px 12px rgba(0, 0, 0, 0.7)",
     scrim: "rgba(0, 0, 0, 0.7)",
+    "drop-overlay": "rgba(127, 168, 241, 0.3)",
   },
 };
 
