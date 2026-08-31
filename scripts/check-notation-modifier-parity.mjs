@@ -1,8 +1,9 @@
-// The dice-notation modifier vocabulary is declared twice, in two languages: the server's
-// notation parser matches it in `P::modifiers`, and `@shadowcat/formula` reserves it in
-// `NOTATION_KEYWORDS` so a template rewrite does not hand a modifier to a consumer's stat
-// resolver. Neither language can read the other's declaration, so the two are a forked
-// decision; this reads both and reports the difference, which is what turns a drift into a
+// The dice-notation modifier vocabulary is ONE decision with THREE declarations: the server's
+// notation parser matches it in `P::modifiers`, `@shadowcat/formula` reserves it in
+// `NOTATION_KEYWORDS`, and the server's formula twin declares its own `NOTATION_KEYWORDS` —
+// both template sides reserve the set so a template rewrite does not hand a modifier to a
+// consumer's stat resolver. No declaration can read another, so the three are a forked
+// decision; this extracts each and diffs every pair, which is what turns a drift into a
 // build failure instead of a wrong roll an author has to notice.
 //
 // Extraction is anchored on named items rather than on line positions: a rename of either

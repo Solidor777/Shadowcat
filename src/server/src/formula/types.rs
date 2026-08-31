@@ -73,10 +73,14 @@ impl FormulaError {
 pub type FormulaValue = Result<f64, FormulaError>;
 
 /// Renders a number the way JavaScript's template interpolation does for the
-/// spellings this library ever emits: `Infinity`, `-Infinity`, `NaN`; a
-/// finite value uses Rust's shortest round-trip form, which agrees with JS for
-/// every value the library interpolates (only non-finite results reach a
-/// `detail`).
+/// spellings this library emits: `Infinity`, `-Infinity`, `NaN`, and `0` for
+/// negative zero (JS renders `-0` as `"0"`; Rust's `Display` would emit
+/// `"-0"`). Finite values use Rust's shortest round-trip form, which agrees
+/// with JS for integers and ordinary decimals; past JS's exponent thresholds
+/// (e.g. `1e21`) the renderings can differ inside an error `detail` — the
+/// conformance corpus pins only values where the two agree. The substituted
+/// notation a template emits is always an integer within the i32-magnitude
+/// cap, where the two never differ.
 pub(crate) fn js_number(n: f64) -> String {
     if n.is_nan() {
         "NaN".to_string()
@@ -84,6 +88,8 @@ pub(crate) fn js_number(n: f64) -> String {
         "Infinity".to_string()
     } else if n == f64::NEG_INFINITY {
         "-Infinity".to_string()
+    } else if n == 0.0 {
+        "0".to_string()
     } else {
         format!("{n}")
     }

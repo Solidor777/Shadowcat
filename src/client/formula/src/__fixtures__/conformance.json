@@ -725,6 +725,40 @@
       "expect": {
         "notation": ""
       }
+    },
+    {
+      "name": "negative zero substitutes as zero",
+      "src": "1d20 + x",
+      "bindings": {
+        "x": -0
+      },
+      "expect": {
+        "notation": "1d20 + 0[x]"
+      }
+    },
+    {
+      "name": "dice count synthesized after a label claim",
+      "src": "[x]d6",
+      "expect": {
+        "notation": "[x]1d6"
+      }
+    },
+    {
+      "name": "the i32 maximum itself substitutes",
+      "src": "1d20 + big",
+      "bindings": {
+        "big": 2147483647
+      },
+      "expect": {
+        "notation": "1d20 + 2147483647[big]"
+      }
+    },
+    {
+      "name": "a synthesized count keeps the dice operator's case",
+      "src": "D20",
+      "expect": {
+        "notation": "1D20"
+      }
     }
   ]
 }

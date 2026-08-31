@@ -85,4 +85,17 @@ proptest! {
         // covers the template scan on every input and every resolver outcome.
         let _ = resolve_notation_template(&src, &|_: &[String]| v.clone());
     }
+
+    #[test]
+    fn a_non_finite_resolver_value_never_reaches_an_ok_output(src in template_source(), non_finite in prop_oneof![Just(f64::INFINITY), Just(f64::NEG_INFINITY), Just(f64::NAN)]) {
+        // Substituting an identifier with a non-finite value is a `NonFinite`
+        // error, so a successful rewrite over a non-finite resolver proves no
+        // identifier claim was resolved at all — and then the same source over
+        // a zero resolver must produce the identical text.
+        let with_non_finite = resolve_notation_template(&src, &|_: &[String]| Ok(non_finite));
+        if let Ok(out) = with_non_finite {
+            let with_zero = resolve_notation_template(&src, &|_: &[String]| Ok(0.0));
+            prop_assert_eq!(Ok(out), with_zero);
+        }
+    }
 }
