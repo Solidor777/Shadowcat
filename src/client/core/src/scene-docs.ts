@@ -6,9 +6,7 @@
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { WireOperation, WireFieldChange } from "./wire";
 import type { FootprintExtent } from "./footprints";
-import { deepEqual } from "./merge";
 import type {
   MovementRestriction,
   MovementModel,
@@ -1158,34 +1156,6 @@ export function buildResourceRegistryDoc(worldId: string, resources: Record<stri
   return envelope(worldId, RESOURCE_REGISTRY_DOC_TYPE, null, {}, id, { resources } satisfies ResourceRegistryEngine, null);
 }
 
-/** Idempotent GM seed for the world's `resource-registry` singleton under a deterministic id;
- * a no-op when the registry already exists (including after a lost create race, which the
- * optimistic layer rolls back on its own). The engine ships no resources: `seed` is the active
- * system's definition set.
- * @param store Read access, to check whether the registry already exists.
- * @param worldId The owning world's id — the deterministic id's namespace input.
- * @param seed The resources to seed.
- * @param dispatchIntent The fire-and-forget intent dispatcher to send the Create through.
- * @example
- * ```ts
- * import { seedResourceRegistryIfAbsent, type ReadableDocuments, type WireOperation } from "@shadowcat/core";
- *
- * declare const store: ReadableDocuments;
- * declare const dispatchIntent: (ops: WireOperation[]) => void;
- * seedResourceRegistryIfAbsent(store, "world-1", {}, dispatchIntent);
- * ```
- */
-export function seedResourceRegistryIfAbsent(
-  store: ReadableDocuments,
-  worldId: string,
-  seed: Record<string, Resource>,
-  dispatchIntent: (ops: WireOperation[]) => void,
-): void {
-  const id = deterministicId(worldId, RESOURCE_REGISTRY_DOC_TYPE);
-  if (store.get(id) || store.query(RESOURCE_REGISTRY_DOC_TYPE).length > 0) return;
-  dispatchIntent([{ op: "create", doc: buildResourceRegistryDoc(worldId, seed, id) }]);
-}
-
 /** An effect document: engine band (activation, transfer, clock-bound duration) plus the
  * system's opaque body (modifiers). Parentless; embed it under an actor or item via the
  * `embedded.effect` collection when it should apply to a host.
@@ -1231,8 +1201,10 @@ export function buildCombatHistoryDoc(worldId: string, combatId: string, id?: st
 // --- System-defaults document ---
 
 /**
- * Build a `system-defaults` document. GM-written from the active system module's
- * `Module.systemDefaults` declaration; never edited by hand.
+ * Build a `system-defaults` document, for test fixtures and previews. The
+ * LIVE singleton is server-written from the installed system package's
+ * manifest declaration (the world-config seed path); no client origin may
+ * author it.
  * @param worldId Owning world.
  * @param engine The overlay body (every leaf optional).
  * @param id Explicit id — pass `deterministicId(worldId, SYSTEM_DEFAULTS_DOC_TYPE)` for the
@@ -1247,41 +1219,6 @@ export function buildCombatHistoryDoc(worldId: string, combatId: string, id?: st
  */
 export function buildSystemDefaultsDoc(worldId: string, engine: SystemDefaultsEngine, id?: string): WireDocument {
   return envelope(worldId, SYSTEM_DEFAULTS_DOC_TYPE, null, {}, id, engine, null);
-}
-
-/**
- * The ops that bring the world's `system-defaults` singleton to `declared`: a `create` when
- * absent, else one field change per top-level section (`scene`/`pathfinding`/`animation`/
- * `combat`) whose stored value differs (whole-section replace, `null` for a section the
- * declaration omits), with the stored value as the OCC pre-image; `[]` when already equal.
- * Compares sections, not leaves, so a section-shaped change is one field change.
- * @param store Document read access.
- * @param worldId Owning world.
- * @param declared The active system module's declaration.
- * @returns Intent ops, possibly empty.
- * @example
- * ```ts
- * import { systemDefaultsUpsertOps, DocumentStore } from "@shadowcat/core";
- *
- * systemDefaultsUpsertOps(new DocumentStore(), "world-1", {}).length; // 1
- * ```
- */
-export function systemDefaultsUpsertOps(store: ReadableDocuments, worldId: string, declared: SystemDefaultsEngine): WireOperation[] {
-  const id = deterministicId(worldId, SYSTEM_DEFAULTS_DOC_TYPE);
-  const existing = store.get(id) ?? store.query(SYSTEM_DEFAULTS_DOC_TYPE)[0];
-  if (!existing) return [{ op: "create", doc: buildSystemDefaultsDoc(worldId, declared, id) }];
-  const stored = (existing.engine ?? {}) as Record<string, unknown>;
-  const changes: WireFieldChange[] = [];
-  for (const key of ["scene", "pathfinding", "animation", "combat"] as const) {
-    const want = (declared as Record<string, unknown>)[key] ?? null;
-    const have = stored[key] ?? null;
-    // Key-order-independent: the server's serde_json has no `preserve_order` feature, so a
-    // section read back from the store is always alphabetically-keyed regardless of the
-    // author's declared order — a string comparison would false-positive on every multi-field
-    // section.
-    if (!deepEqual(want, have)) changes.push({ path: `/engine/${key}`, old: have, new: want });
-  }
-  return changes.length ? [{ op: "update", doc_id: existing.id, changes }] : [];
 }
 
 // --- Per-setting provenance ---

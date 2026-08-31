@@ -482,7 +482,6 @@ test("systemModule() returns the singleton provider of the system contract", asy
   const sys: Module = {
     manifest: { id: "sys", version: "1.0.0", dependencies: {}, provides: [{ contract: SYSTEM_CONTRACT, cardinality: "singleton" }] },
     register() {},
-    systemDefaults: { scene: { fog: false } },
   };
   r.add(sys);
   await r.activate();

@@ -2,7 +2,6 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { conditionTarget, type Condition, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
-  import { seedConditionRegistryIfAbsent } from "./seed";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -25,19 +24,10 @@
     return ctx.documents.query("token").filter((tok) => ids.has(tok.id));
   });
 
-  // Idempotent GM seed: create the registry (deterministic id, so racing GMs converge on one)
-  // once, only when absent — this default content is replaceable, per the `conditions` module's
-  // own modding contract: a game-system module can supply its own seed/editor instead. The
-  // optimistic dispatch adds it to the store immediately, so a second reactive run sees it and
-  // `seeded` short-circuits further attempts. Mirrors the sibling faction-registry seed
-  // (`factions`'s `seedFactionRegistryIfAbsent`) exactly.
-  let seeded = false;
-  $effect(() => {
-    if (ctx.role !== "gm" || seeded) return;
-    subscribe();
-    seeded = true;
-    seedConditionRegistryIfAbsent(ctx.documents, ctx.world, ctx.dispatchIntent);
-  });
+  // The condition registry is server-seeded (world creation / world join) with the engine's
+  // default emoji set; this panel only reads and edits it. The default content stays
+  // replaceable per the `conditions` module's modding contract: a game-system module can
+  // supply its own registry editor instead.
 
   /** GM registry editor: patches one or more fields of a condition entry, dispatching one
    * `update` op per changed field. `old` reads the RAW currently-stored value (never a

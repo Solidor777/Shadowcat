@@ -7,16 +7,15 @@ import {
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import {
-  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, seedResourceRegistryIfAbsent,
+  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
   type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
 } from "./scene-docs";
 import {
-  buildSystemDefaultsDoc, systemDefaultsUpsertOps, resolveSettingProvenance, SYSTEM_DEFAULTS_DOC_TYPE,
+  buildSystemDefaultsDoc, resolveSettingProvenance,
   type SystemDefaultsEngine,
 } from "./scene-docs";
 import { DocumentStore } from "./store";
-import type { WireOperation } from "./wire";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
 
@@ -551,7 +550,7 @@ describe("combat document builders", () => {
     expect(hidden.owner).toBe("user-1");
   });
 
-  it("buildResourceRegistryDoc and the seed helper are idempotent and deterministic", () => {
+  it("buildResourceRegistryDoc is deterministic over an explicit id", () => {
     const seed: Record<string, Resource> = {
       movement: { name: "Movement", order: 0, binding: { kind: "tracked", max: "speed",
         recover: { turn_start: "speed", turn_end: 0, round_start: 0, round_end: 0 } } },
@@ -561,15 +560,6 @@ describe("combat document builders", () => {
     expect(doc.doc_type).toBe(RESOURCE_REGISTRY_DOC_TYPE);
     expect(doc.id).toBe(id);
     expect((doc.engine as ResourceRegistryEngine).resources.movement.binding.kind).toBe("tracked");
-
-    const store = new DocumentStore();
-    const dispatched: WireOperation[][] = [];
-    seedResourceRegistryIfAbsent(store, "world-1", seed, (ops) => dispatched.push(ops));
-    expect(dispatched).toHaveLength(1);
-    expect(dispatched[0][0]).toMatchObject({ op: "create", doc: { id, doc_type: RESOURCE_REGISTRY_DOC_TYPE } });
-    store.applyCommand({ seq: 1, world_id: "world-1", author: "u", ts: 0, ops: dispatched[0] });
-    seedResourceRegistryIfAbsent(store, "world-1", seed, (ops) => dispatched.push(ops));
-    expect(dispatched).toHaveLength(1);
   });
 
   it("buildEffectDoc carries the engine band and the system body", () => {
@@ -591,49 +581,6 @@ describe("combat document builders", () => {
 });
 
 describe("system defaults", () => {
-  it("upsert creates the singleton at the deterministic id when absent", () => {
-    const ops = systemDefaultsUpsertOps(storeWith(), "w1", { scene: { fog: false } });
-    expect(ops).toHaveLength(1);
-    expect(ops[0]).toMatchObject({
-      op: "create",
-      doc: { id: deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE), doc_type: SYSTEM_DEFAULTS_DOC_TYPE, engine: { scene: { fog: false } } },
-    });
-  });
-
-  it("upsert writes one field change per differing section with the stored value as pre-image", () => {
-    const existing = buildSystemDefaultsDoc(
-      "w1",
-      { scene: { fog: false, losRestriction: true }, pathfinding: { diagonalRule: "euclidean" } },
-      deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE),
-    );
-    const ops = systemDefaultsUpsertOps(storeWith(existing), "w1", { scene: { fog: true, losRestriction: true } });
-    expect(ops).toEqual([{
-      op: "update",
-      doc_id: existing.id,
-      changes: [
-        { path: "/engine/scene", old: { fog: false, losRestriction: true }, new: { fog: true, losRestriction: true } },
-        { path: "/engine/pathfinding", old: { diagonalRule: "euclidean" }, new: null },
-      ],
-    }]);
-  });
-
-  it("upsert is a no-op when the stored doc equals the declaration", () => {
-    const existing = buildSystemDefaultsDoc("w1", { combat: { enforcement: "hard" } }, deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE));
-    expect(systemDefaultsUpsertOps(storeWith(existing), "w1", { combat: { enforcement: "hard" } })).toEqual([]);
-  });
-
-  it("upsert is a no-op when a stored section round-tripped through key-order normalization (server BTreeMap) still matches the declaration", () => {
-    // The author's declared order is non-alphabetical; the stored doc simulates what the
-    // server's serde_json (no `preserve_order`) actually returns: alphabetically-keyed.
-    const declared: SystemDefaultsEngine = { combat: { enforcement: "hard", movementResource: "gold" } };
-    const existing = buildSystemDefaultsDoc(
-      "w1",
-      { combat: { movementResource: "gold", enforcement: "hard" } },
-      deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE),
-    );
-    expect(systemDefaultsUpsertOps(storeWith(existing), "w1", declared)).toEqual([]);
-  });
-
   it("resolveSceneSettings folds engine < system < world < scene per field", () => {
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false, observerVision: true }, animation: { speedCellsPerSec: 3 } });
     const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: true } }, "ws1");

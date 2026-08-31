@@ -21,7 +21,6 @@ import {
 import { ContributionRegistry, type Contribution, SYSTEM_CONTRACT } from "./contributions";
 import { satisfies } from "./semver";
 import type { I18n, Messages } from "./i18n";
-import type { SystemDefaultsEngine } from "@shadowcat/types";
 
 /** Options for `ModuleContext.services.provide` — narrower than `ServiceProvideOptions`
  * (no `module` field: the wrapper stamps the calling module's id automatically). */
@@ -146,12 +145,6 @@ export interface Module {
    * teardown logic beyond its registrations, which `unload` strips automatically, may omit it).
    * @returns Resolves (or returns) once teardown is complete. */
   unregister?(): void | Promise<void>;
-  /** Declared defaults for every world setting; upserted into the `system-defaults` singleton
-   * by the GM's client on join when this module is the `SYSTEM_CONTRACT` winner. Lives on
-   * `Module` rather than `manifest` — `ModuleManifest` is Zod-validated (`ManifestSchema`),
-   * which silently strips unknown keys, so adding it there would need a schema change; `Module`
-   * itself is not schema-validated. */
-  systemDefaults?: SystemDefaultsEngine;
 }
 
 /** A registered module's identity and activation state, as returned by `ModuleRegistry.list`. */

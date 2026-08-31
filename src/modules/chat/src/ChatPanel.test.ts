@@ -103,29 +103,10 @@ describe("ChatPanel — rendering + view filters", () => {
   });
 });
 
-describe("ChatPanel — GM channel registry seed", () => {
-  it("seeds the channel registry once for GM when absent", async () => {
+describe("ChatPanel — server-seeded channel registry", () => {
+  it("never dispatches a registry create, even for a GM on an empty store (the server seeds it at world creation/join)", async () => {
     const dispatchIntent = vi.fn();
     render(ChatPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, contributions: new ContributionRegistry() }) });
-    await vi.waitFor(() => expect(dispatchIntent).toHaveBeenCalled());
-    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
-    expect(ops[0].op).toBe("create");
-    const doc = (ops[0] as { doc: WireDocument }).doc;
-    expect(doc.doc_type).toBe("channel-registry");
-    expect((doc.engine as { channels: Record<string, { name: string }> }).channels.general.name).toBe("General");
-  });
-
-  it("does not re-seed when a registry already exists", async () => {
-    const dispatchIntent = vi.fn();
-    const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" } }, "creg1"));
-    render(ChatPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, store, dispatchIntent, contributions: new ContributionRegistry() }) });
-    await Promise.resolve();
-    expect(dispatchIntent.mock.calls.some((c) => (c[0] as WireOperation[])[0]?.op === "create")).toBe(false);
-  });
-
-  it("does not seed for a player", async () => {
-    const dispatchIntent = vi.fn();
-    render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: new DocumentStore(), dispatchIntent, contributions: new ContributionRegistry() }) });
     await Promise.resolve();
     expect(dispatchIntent).not.toHaveBeenCalled();
   });

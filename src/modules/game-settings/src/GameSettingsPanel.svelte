@@ -2,8 +2,6 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
-    buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc,
-    buildChatSettingsDoc,
     DEFAULT_WORLD_SETTINGS,
     resolveSettingProvenance,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
@@ -14,38 +12,11 @@
 
   const ctx = getAppContext();
 
-  // Reactive subscription: mirrors the established registry-seed pattern (FactionsPanel/ConditionsPanel).
-  // Calling subscribe() inside the effect registers a reactive dependency on the document store so
-  // the effect re-evaluates after the resync stream populates it post-mount.
+  // Reactive subscription: calling subscribe() inside a $derived/$effect registers a reactive
+  // dependency on the document store so reads re-evaluate after the resync stream populates it
+  // post-mount. This panel only EDITS config singletons — the server seeds every one of them at
+  // world creation and world join, so no client-side create path exists here.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
-  let seeded = false;
-
-  // Idempotent GM seed: create world-settings, light-gradation, and vision-modes once, only when
-  // absent. The per-doc-type length === 0 guard prevents duplicate creation once the store is
-  // populated. The reactive subscription ensures re-evaluation after resync lands.
-  $effect(() => {
-    if (ctx.role !== "gm" || seeded) return;
-    subscribe();
-    const ops = [];
-    if (ctx.documents.query("world-settings").length === 0) ops.push({ op: "create" as const, doc: buildWorldSettingsDoc(ctx.world) });
-    if (ctx.documents.query("light-gradation").length === 0) ops.push({ op: "create" as const, doc: buildLightGradationDoc(ctx.world) });
-    if (ctx.documents.query("vision-modes").length === 0) ops.push({ op: "create" as const, doc: buildVisionModesDoc(ctx.world) });
-    if (ctx.documents.query("dice-settings").length === 0) {
-      ops.push({ op: "create" as const, doc: buildDiceSettingsDoc(ctx.world, { mode: "total", direction: "high_wins", channel_overrides: {} }) });
-    }
-    // chat-settings mirrors the server's ChatContentPolicy::default() (every toggle
-    // off/absent — plain text, previews resolve false since hyperlinks is off).
-    if (ctx.documents.query("chat-settings").length === 0) {
-      ops.push({
-        op: "create" as const,
-        doc: buildChatSettingsDoc(ctx.world, {
-          markdown: null, html: null, images: null, hyperlinks: null, emails: null, link_previews: null,
-        }),
-      });
-    }
-    seeded = true;
-    if (ops.length > 0) ctx.dispatchIntent(ops);
-  });
 
   // Derived reads — each calls subscribe() so they re-resolve when the doc store updates
   // (reactive subscription pattern; matches FactionsPanel's registry/$factionEntries deriveds).
