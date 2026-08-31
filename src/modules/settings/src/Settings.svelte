@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
   import { i18n, locale } from "@shadowcat/ui-kit";
+  import { BUILTIN_THEMES, theme } from "@shadowcat/ui-kit";
   import ModuleManager from "./ModuleManager.svelte";
   import InviteManager from "./InviteManager.svelte";
   import UserManager from "./UserManager.svelte";
@@ -31,6 +32,16 @@
   <label>{t("settings.language")}
     <select value={locale()} onchange={(e) => i18n.setLocale(e.currentTarget.value)}>
       {#each i18n.locales as loc (loc)}<option value={loc}>{loc}</option>{/each}
+    </select>
+  </label>
+  <label>{t("settings.theme.label")}
+    <select value={theme.active} onchange={(e) => theme.setActive(e.currentTarget.value)}>
+      {#each BUILTIN_THEMES as builtin (builtin.id)}
+        <option value={builtin.id}>{t(builtin.labelKey)}</option>
+      {/each}
+      {#each Object.entries(theme.customThemes) as [id, custom] (id)}
+        <option value={`custom:${id}`}>{custom.label}</option>
+      {/each}
     </select>
   </label>
   {#if role === "gm"}
