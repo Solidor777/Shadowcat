@@ -37,6 +37,19 @@ describe("VisualKindEditor", () => {
     );
   });
 
+  it("a cancelled pick (null) leaves the visual state untouched", async () => {
+    const onBuild = vi.fn();
+    const pickAsset = vi.fn().mockResolvedValue(null);
+    render(VisualKindEditor, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent: vi.fn(), pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      props: { conditionOptions: [], onBuild },
+    });
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalled());
+    // No asset applied: the image visual stays incomplete.
+    expect(onBuild).toHaveBeenLastCalledWith(null);
+  });
+
   it("emits null via onBuild for an incomplete faces row (no asset picked)", async () => {
     const onBuild = vi.fn();
     render(VisualKindEditor, {
