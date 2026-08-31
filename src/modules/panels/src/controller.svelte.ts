@@ -88,7 +88,7 @@ export interface PanelsControllerDeps {
 
 const EMPTY_LAYOUT: PanelLayoutV1 = {
   version: 1,
-  expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], poppedOut: [] },
+  expanded: { zones: { right: { groups: [], size: 320 }, bottom: { groups: [], size: 240 }, left: { groups: [], size: 320 } }, floating: [], minimized: [], popouts: [] },
   compact: { activeView: null, order: [] },
 };
 
@@ -185,7 +185,7 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
   /** Popouts cannot be reopened without a user gesture (a page load is not one
    * — the browser blocks it), so every persisted popped-out id rehydrates to a
    * floating window at construction, before the first `apply()`. The tree's
-   * `poppedOut` array persists across sessions; the live `Window` never does.
+   * `popouts` records persist across sessions; the live `Window` never does.
    * Runs once; persists + queues a notice only if it actually converted
    * anything — see `flushPendingNotice` for why the notice is QUEUED here
    * rather than fired through `deps.onNotice` directly (this method runs
@@ -198,7 +198,7 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * ```
    */
   #rehydratePoppedOut(): void {
-    const ids = [...this.#layout.expanded.poppedOut];
+    const ids = this.#layout.expanded.popouts.filter((w) => w.dormant !== true).flatMap((w) => w.panels);
     if (ids.length === 0) return;
     let l = this.#layout;
     for (const id of ids) {

@@ -21,6 +21,47 @@ export interface Rect {
   h: number;
 }
 
+/** A popped-out window's screen position and size, in `window.open` feature
+ * semantics (screen-absolute CSS px, unlike `Rect`'s host-relative
+ * coordinates). Carried on `popouts` entries and on the `popOut`/
+ * `updatePopoutGeometry` ops. `left`/`top` may be negative (a monitor left
+ * of/above the primary); `width`/`height` are always positive (see
+ * `isScreenRect`, which enforces this on decode). */
+export interface ScreenRect {
+  /** Screen-absolute CSS px (see this interface's own doc); may be negative (multi-monitor). */
+  left: number;
+  /** Screen-absolute CSS px (see this interface's own doc); may be negative (multi-monitor). */
+  top: number;
+  /** CSS px; always positive — enforced by `isScreenRect` on decode. */
+  width: number;
+  /** CSS px; always positive — enforced by `isScreenRect` on decode. */
+  height: number;
+}
+
+/** One popped-out child window's arrangement record: which panels it holds
+ * (tab order) and its last known screen rect. PERSISTED as data only — the
+ * live `Window` handle is the engine's, never serialized. INVARIANT: `panels`
+ * is never empty — a window whose last panel leaves is dropped from
+ * `ExpandedLayout.popouts` entirely (see `detach`). */
+export interface PopoutWindowLayout {
+  /** Engine-agnostic window identity, minted by the engine at pop-out time
+   * (see `LayoutOp.popOut`). The tree never interprets it; ops address a
+   * window by it. */
+  key: string;
+  /** Panels in this window, in tab order. */
+  panels: string[];
+  /** Last known screen rect, or null when never observed (e.g. a window
+   * migrated from a blob that recorded no geometry). */
+  rect: ScreenRect | null;
+  /** True on an entry retained after reload-rehydration floated its panels
+   * (see `PanelsController.#rehydratePoppedOut`): the window is NOT live — its
+   * panels are located wherever they actually live — and the entry exists
+   * purely as the arrangement record a later restore gesture re-opens.
+   * `locate` skips dormant entries, so a listed panel is never resolved
+   * through one. Absent/false on a live window. */
+  dormant?: boolean;
+}
+
 /** One tab strip within a zone. `size` is this group's fraction (0..1) of the zone. */
 export interface GroupNode {
   /** Panel ids in this group, in tab-strip order. */
@@ -42,7 +83,7 @@ export interface ZoneNode {
 }
 
 /** The "expanded" (non-compact) view's full layout state: the three dock zones, floating
- * panels, minimized panels, and popped-out ids. `locate` treats these four locations plus
+ * panels, minimized panels, and popped-out windows. `locate` treats these four locations plus
  * "closed" as mutually exclusive and exhaustive for a given panel id (see `detach`'s own doc
  * comment). */
 export interface ExpandedLayout {
@@ -61,12 +102,12 @@ export interface ExpandedLayout {
   }[];
   /** Minimized panel ids; order is not display-significant. */
   minimized: string[];
-  /** Ids currently rendered in a same-heap child window (dockview popout). PERSISTED
-   * as ids only — the live `Window` handle is dockview's, never serialized. A page
-   * load cannot reopen a popup (no user gesture), so a persisted entry rehydrates to
-   * floating at controller construction; during a live session an id lands here only
-   * after a gesture-time `addPopoutGroup` succeeds. */
-  poppedOut: string[];
+  /** Popped-out child windows (dockview popouts), one `PopoutWindowLayout` per
+   * window. A page load cannot reopen a popup (no user gesture), so a
+   * persisted entry rehydrates to floating at controller construction; during
+   * a live session an entry lands here only after a gesture-time
+   * `addPopoutGroup` succeeds. */
+  popouts: PopoutWindowLayout[];
 }
 
 /** The narrow-viewport (<48rem) view's layout state: a single-column `order` of panel ids
@@ -358,7 +399,9 @@ export function locate(l: PanelLayoutV1, id: string): PanelLocation {
   const fi = l.expanded.floating.findIndex((f) => f.id === id);
   if (fi !== -1) return { where: "floating", index: fi };
   if (l.expanded.minimized.includes(id)) return { where: "minimized" };
-  if (l.expanded.poppedOut.includes(id)) return { where: "popped-out" };
+  // Dormant entries are skipped: they are retained arrangement records, not
+  // live windows — their panels are located wherever they actually live.
+  if (l.expanded.popouts.some((w) => w.dormant !== true && w.panels.includes(id))) return { where: "popped-out" };
   return { where: "closed" };
 }
 
@@ -391,8 +434,13 @@ function detach(l: PanelLayoutV1, id: string): [PanelLayoutV1, PanelLocation] {
       return [{ ...l, expanded: { ...l.expanded, floating } }, loc];
     }
     case "popped-out": {
-      const poppedOut = l.expanded.poppedOut.filter((p) => p !== id);
-      return [{ ...l, expanded: { ...l.expanded, poppedOut } }, loc];
+      // Remove `id` from its (non-dormant — `locate` never resolves through a
+      // dormant one) window's panel list; an emptied window entry is dropped
+      // entirely (`PopoutWindowLayout`'s never-empty `panels` invariant).
+      const popouts = l.expanded.popouts
+        .map((w) => (w.dormant === true || !w.panels.includes(id) ? w : { ...w, panels: w.panels.filter((p) => p !== id) }))
+        .filter((w) => w.panels.length > 0);
+      return [{ ...l, expanded: { ...l.expanded, popouts } }, loc];
     }
     case "docked": {
       const zoneNode = l.expanded.zones[loc.zone];
@@ -636,7 +684,10 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       const loc = locate(l, o.id);
       if (loc.where === "popped-out") return l;
       const [l1] = detach(l, o.id);
-      return { ...l1, expanded: { ...l1.expanded, poppedOut: [...l1.expanded.poppedOut, o.id] } };
+      // The op names no window, so the new single-panel window is keyed by
+      // its sole panel id.
+      const popouts: PopoutWindowLayout[] = [...l1.expanded.popouts, { key: o.id, panels: [o.id], rect: null }];
+      return { ...l1, expanded: { ...l1.expanded, popouts } };
     }
 
     case "popIn": {
@@ -652,9 +703,12 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
   }
 }
 
-/** Drops every id not in `known` from all four locations (zones/floating/minimized) plus
+/** Drops every id not in `known` from all four locations (zones/floating/minimized/popout
+ * windows) plus
  * `compact.order`, repairing `active`/`activeView` to a surviving member (or the group's/
- * order's new first entry). A zone's groups are renormalized — ALL surviving groups in
+ * order's new first entry). A popout window whose `panels` list is emptied by
+ * pruning is dropped entirely (`PopoutWindowLayout`'s never-empty invariant),
+ * dormant entries included. A zone's groups are renormalized — ALL surviving groups in
  * that zone get an equal-share `size`, not just the affected one — whenever pruning drops
  * a whole group from it; a group that merely lost one of several tabs (but is not itself
  * dropped) keeps every group's manually-set size untouched.
@@ -712,9 +766,15 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
   const minimizedChanged = minimizedKept.length !== l.expanded.minimized.length;
   if (minimizedChanged) changed = true;
 
-  const poppedOutKept = l.expanded.poppedOut.filter((id) => known.has(id));
-  const poppedOutChanged = poppedOutKept.length !== l.expanded.poppedOut.length;
-  if (poppedOutChanged) changed = true;
+  const popoutsKept = l.expanded.popouts
+    .map((w) => {
+      const panels = w.panels.filter((id) => known.has(id));
+      return panels.length === w.panels.length ? w : { ...w, panels };
+    })
+    .filter((w) => w.panels.length > 0);
+  const popoutsChanged =
+    popoutsKept.length !== l.expanded.popouts.length || popoutsKept.some((w, i) => w !== l.expanded.popouts[i]);
+  if (popoutsChanged) changed = true;
 
   const orderKept = l.compact.order.filter((id) => known.has(id));
   const orderChanged = orderKept.length !== l.compact.order.length;
@@ -733,7 +793,7 @@ export function prune(l: PanelLayoutV1, known: ReadonlySet<string>): PanelLayout
       zones,
       floating,
       minimized: minimizedChanged ? minimizedKept : l.expanded.minimized,
-      poppedOut: poppedOutChanged ? poppedOutKept : l.expanded.poppedOut,
+      popouts: popoutsChanged ? popoutsKept : l.expanded.popouts,
     },
     compact: { activeView, order: orderChanged ? orderKept : l.compact.order },
   };
@@ -948,7 +1008,7 @@ export function defaultLayout(
 ): PanelLayoutV1 {
   const empty: PanelLayoutV1 = {
     version: 1,
-    expanded: { zones: emptyZones(), floating: [], minimized: [], poppedOut: [] },
+    expanded: { zones: emptyZones(), floating: [], minimized: [], popouts: [] },
     compact: { activeView: null, order: [] },
   };
   return placeNewRegistrations(empty, regs);

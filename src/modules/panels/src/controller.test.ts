@@ -281,7 +281,7 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
     onNotice: (key) => notices.push(key),
   });
 
-  expect(ctrl.layout.expanded.poppedOut).toEqual([]);
+  expect(ctrl.layout.expanded.popouts).toEqual([]);
   expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
   // The notice is QUEUED, not fired, at construction
   // — `deps.onNotice` must not be invoked until a post-mount caller (`PanelHost`'s
@@ -334,7 +334,7 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
     logger: silentLogger,
   });
 
-  expect(ctrl.layout.expanded.poppedOut).toEqual([]);
+  expect(ctrl.layout.expanded.popouts).toEqual([]);
   const rects = ctrl.layout.expanded.floating.map((f) => ({ x: f.rect.x, y: f.rect.y }));
   expect(rects).toHaveLength(2);
   expect(rects[0]).not.toEqual(rects[1]);

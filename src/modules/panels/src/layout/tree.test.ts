@@ -642,9 +642,9 @@ describe("popOut / popIn", () => {
     return applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
   }
 
-  it("popOut detaches from its zone and records the id in poppedOut", () => {
+  it("popOut detaches from its zone and records a single-panel window keyed by the panel id", () => {
     const l = applyOp(docked(), { op: "popOut", id: "chat" });
-    expect(l.expanded.poppedOut).toEqual(["chat"]);
+    expect(l.expanded.popouts).toEqual([{ key: "chat", panels: ["chat"], rect: null }]);
     expect(l.expanded.zones.right.groups).toEqual([]);
     expect(locate(l, "chat")).toEqual({ where: "popped-out" });
   });
@@ -655,10 +655,10 @@ describe("popOut / popIn", () => {
     expect(l2).toBe(l1);
   });
 
-  it("popIn removes the id from poppedOut and docks it right", () => {
+  it("popIn removes the id from its window, dropping the emptied window entry, and docks it right", () => {
     const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
     const l2 = applyOp(l1, { op: "popIn", id: "chat" });
-    expect(l2.expanded.poppedOut).toEqual([]);
+    expect(l2.expanded.popouts).toEqual([]);
     expect(l2.expanded.zones.right.groups[0].tabs).toEqual(["chat"]);
   });
 
@@ -667,17 +667,27 @@ describe("popOut / popIn", () => {
     expect(applyOp(l, { op: "popIn", id: "chat" })).toBe(l);
   });
 
-  it("float on a popped-out id detaches it from poppedOut", () => {
+  it("float on a popped-out id detaches it from its window", () => {
     const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
     const l2 = applyOp(l1, { op: "float", id: "chat", rect: { x: 1, y: 2, w: 3, h: 4 } });
-    expect(l2.expanded.poppedOut).toEqual([]);
+    expect(l2.expanded.popouts).toEqual([]);
     expect(l2.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
   });
 
-  it("prune drops an unknown popped-out id", () => {
+  it("a dormant window entry is an arrangement record only — its panels do not locate as popped-out", () => {
+    const base = docked();
+    const l: PanelLayoutV1 = {
+      ...base,
+      expanded: { ...base.expanded, popouts: [{ key: "w", panels: ["chat"], rect: null, dormant: true }] },
+    };
+    // chat is docked; the dormant entry listing it changes nothing.
+    expect(locate(l, "chat")).toEqual({ where: "docked", zone: "right", group: 0, tabIndex: 0 });
+  });
+
+  it("prune drops an unknown popped-out id, dropping the emptied window entry", () => {
     const l = applyOp(docked(), { op: "popOut", id: "chat" });
     const pruned = prune(l, new Set());
-    expect(pruned.expanded.poppedOut).toEqual([]);
+    expect(pruned.expanded.popouts).toEqual([]);
   });
 
   it("prune with all ids known is a same-reference no-op", () => {
@@ -693,7 +703,7 @@ describe("popOut / popIn", () => {
     source = applyOp(source, { op: "popOut", id: "assets" });
 
     const rehydrated = placeNewRegistrations(defaultLayout([]), [{ id: "chat" }, { id: "assets" }], source);
-    expect(rehydrated.expanded.poppedOut).toEqual([]);
+    expect(rehydrated.expanded.popouts).toEqual([]);
     const rects = rehydrated.expanded.floating;
     expect(rects).toHaveLength(2);
     const [a, b] = rects;

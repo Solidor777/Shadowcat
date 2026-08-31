@@ -1115,7 +1115,7 @@ export class DockviewEngine implements EngineAdapter {
     if (this.#applying) return;
     for (const id of ids) {
       // STAGE_ID veto, belt-and-suspenders alongside every other STAGE_ID guard
-      // in this class: the stage never enters `poppedOut`, so this only
+      // in this class: the stage never enters `popouts`, so this only
       // ever matters for the `event.group.model.panels` fallback above — skip
       // it rather than emit a `popIn` for an id that was never a valid subject.
       if (id === STAGE_ID) continue;
@@ -1398,24 +1398,27 @@ export class DockviewEngine implements EngineAdapter {
     this.#meta = meta;
     this.#applying = true;
     try {
-      // Popped-out ids stay in dockview's model (a same-heap popout group), so
+      // Panels of a live (non-dormant) popout window stay in dockview's model
+      // (a same-heap popout group), so
       // seed them here — otherwise the orphan-removal loop below tears the live
       // popout panel out of its window. The zone/floating placement loops never
       // list a popped-out id, so `apply()` leaves the popout untouched (hands-
       // off). A menu dock/float on a popped-out panel drops the id from
-      // `poppedOut` first, so it is NOT seeded and the placement loops move it
+      // its window's `panels` first, so it is NOT seeded and the placement
+      // loops move it
       // back (removePanel of the popout's last panel disposes the window — the
       // resulting onDidRemovePopoutGroup is `#applying`-suppressed).
-      const seenPanelIds = new Set<string>([STAGE_ID, ...expanded.poppedOut]);
+      const poppedOutIds = expanded.popouts.filter((w) => w.dormant !== true).flatMap((w) => w.panels);
+      const seenPanelIds = new Set<string>([STAGE_ID, ...poppedOutIds]);
       const seenGroupIds = new Set<string>([STAGE_GROUP_ID]);
       // A popped-out panel's ORIGIN group stays alive-but-hidden in dockview's
       // model, but the `popOut` op has already stripped it from the persisted
       // tree — so the zone walk below never re-lists it. Seed it (mirroring
-      // `seenPanelIds`'s `poppedOut` seed) so the orphan-group loop does not
+      // `seenPanelIds`'s popout-panel seed) so the orphan-group loop does not
       // destroy the group dockview's own window-close path hands the panel back
       // to. Untracked ids (e.g. a pop-out that never went through this engine)
       // simply contribute nothing.
-      for (const id of expanded.poppedOut) {
+      for (const id of poppedOutIds) {
         const originGroupId = this.#poppedOutOriginGroups.get(id);
         if (originGroupId) seenGroupIds.add(originGroupId);
       }
