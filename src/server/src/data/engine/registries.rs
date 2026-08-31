@@ -39,6 +39,30 @@ pub struct ChannelRegistryEngine {
     pub channels: BTreeMap<String, Channel>,
 }
 
+impl ChannelRegistryEngine {
+    /// Default world seed: the single `general` channel. The engine
+    /// definition — the client renders whatever the registry holds and
+    /// declares no seed of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::ChannelRegistryEngine;
+    ///
+    /// assert_eq!(ChannelRegistryEngine::seed().channels["general"].name, "General");
+    /// ```
+    pub fn seed() -> Self {
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "general".to_string(),
+            Channel {
+                name: "General".to_string(),
+            },
+        );
+        Self { channels }
+    }
+}
+
 /// A faction's stance toward the party (mirrors the client's `FactionStance`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -77,6 +101,50 @@ pub struct FactionRegistryEngine {
     pub factions: BTreeMap<String, Faction>,
 }
 
+impl FactionRegistryEngine {
+    /// Default three-faction world seed (friendly / neutral / hostile). The
+    /// engine definition — the client's faction UI mirrors these ids and
+    /// colors rather than declaring its own seed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::FactionRegistryEngine;
+    ///
+    /// let s = FactionRegistryEngine::seed();
+    /// assert_eq!(s.factions.len(), 3);
+    /// assert_eq!(s.factions["friendly"].color, "#3fb950");
+    /// ```
+    pub fn seed() -> Self {
+        let mut factions = BTreeMap::new();
+        factions.insert(
+            "friendly".to_string(),
+            Faction {
+                name: "Friendly".to_string(),
+                color: "#3fb950".to_string(),
+                stance: FactionStance::Friendly,
+            },
+        );
+        factions.insert(
+            "neutral".to_string(),
+            Faction {
+                name: "Neutral".to_string(),
+                color: "#9e9e9e".to_string(),
+                stance: FactionStance::Neutral,
+            },
+        );
+        factions.insert(
+            "hostile".to_string(),
+            Faction {
+                name: "Hostile".to_string(),
+                color: "#f85149".to_string(),
+                stance: FactionStance::Hostile,
+            },
+        );
+        Self { factions }
+    }
+}
+
 /// A status condition's display (mirrors the client's `Condition`). `icon`
 /// is a short glyph (emoji) rendered as a token badge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -98,6 +166,45 @@ pub struct Condition {
 pub struct ConditionRegistryEngine {
     /// Conditions keyed by condition id (`ActorEngine.conditions` holds keys).
     pub conditions: BTreeMap<String, Condition>,
+}
+
+impl ConditionRegistryEngine {
+    /// Default nine-condition emoji-glyph world seed. The engine definition —
+    /// the client's conditions UI renders whatever the registry holds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::ConditionRegistryEngine;
+    ///
+    /// let s = ConditionRegistryEngine::seed();
+    /// assert_eq!(s.conditions.len(), 9);
+    /// assert_eq!(s.conditions["dead"].icon, "💀");
+    /// ```
+    pub fn seed() -> Self {
+        let entries: [(&str, &str, &str); 9] = [
+            ("dead", "Dead", "💀"),
+            ("unconscious", "Unconscious", "😵"),
+            ("prone", "Prone", "🛌"),
+            ("stunned", "Stunned", "💫"),
+            ("poisoned", "Poisoned", "🤢"),
+            ("blinded", "Blinded", "🙈"),
+            ("invisible", "Invisible", "👻"),
+            ("hasted", "Hasted", "⚡"),
+            ("slowed", "Slowed", "🐌"),
+        ];
+        let mut conditions = BTreeMap::new();
+        for (id, name, icon) in entries {
+            conditions.insert(
+                id.to_string(),
+                Condition {
+                    name: name.to_string(),
+                    icon: icon.to_string(),
+                },
+            );
+        }
+        Self { conditions }
+    }
 }
 
 /// GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).

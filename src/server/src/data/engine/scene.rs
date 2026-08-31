@@ -410,6 +410,45 @@ pub struct VisionModesEngine {
     pub modes: BTreeMap<String, VisionMode>,
 }
 
+impl VisionModesEngine {
+    /// Default world seed: `normal` (dim floor, unlimited range) and
+    /// `darkvision` (dark floor, 12 cells, desaturate render hint). The
+    /// engine definition — the client's `SEED_VISION_MODES` mirrors this.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::VisionModesEngine;
+    ///
+    /// let s = VisionModesEngine::seed();
+    /// assert_eq!(s.modes["darkvision"].default_range, 12.0);
+    /// ```
+    pub fn seed() -> Self {
+        let mut modes = BTreeMap::new();
+        modes.insert(
+            "normal".to_string(),
+            VisionMode {
+                id: "normal".to_string(),
+                name: "Normal".to_string(),
+                illumination_floor: "dim".to_string(),
+                default_range: 0.0,
+                render_hint: None,
+            },
+        );
+        modes.insert(
+            "darkvision".to_string(),
+            VisionMode {
+                id: "darkvision".to_string(),
+                name: "Darkvision".to_string(),
+                illumination_floor: "dark".to_string(),
+                default_range: 12.0,
+                render_hint: Some("desaturate".to_string()),
+            },
+        );
+        Self { modes }
+    }
+}
+
 /// A named illumination band (mirrors the client's `GradationBand`).
 /// `minIllumination` is the minimum light level `[0,1]` a cell must reach to
 /// qualify; bands are sorted brightest-first at resolution time.
@@ -430,4 +469,35 @@ pub struct GradationBand {
 pub struct LightGradationEngine {
     /// The world's illumination bands (sorted brightest-first at resolution).
     pub bands: Vec<GradationBand>,
+}
+
+impl LightGradationEngine {
+    /// Default three-band world seed (bright ≥ 0.67, dim ≥ 0.34, dark ≥ 0).
+    /// The engine definition — the client's `DEFAULT_GRADATION` mirrors this.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::LightGradationEngine;
+    ///
+    /// assert_eq!(LightGradationEngine::seed().bands.len(), 3);
+    /// ```
+    pub fn seed() -> Self {
+        Self {
+            bands: vec![
+                GradationBand {
+                    name: "bright".to_string(),
+                    min_illumination: 0.67,
+                },
+                GradationBand {
+                    name: "dim".to_string(),
+                    min_illumination: 0.34,
+                },
+                GradationBand {
+                    name: "dark".to_string(),
+                    min_illumination: 0.0,
+                },
+            ],
+        }
+    }
 }
