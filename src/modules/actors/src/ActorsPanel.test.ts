@@ -639,6 +639,11 @@ describe("ActorsPanel — carried light", () => {
     expect(dispatchIntent).toHaveBeenCalledWith([
       { op: "update", doc_id: "act1", changes: [{ path: "/engine/light", old: torch, new: { ...torch, enabled: false } }] },
     ]);
+    // Toggling the row's carried-light checkbox OFF removes the emission (`new: null`).
+    await fireEvent.click(within(listItem).getByLabelText("actors.carriedLight"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/light", old: torch, new: null }] },
+    ]);
   });
 
   it("the create form stamps a carried light when its toggle is on", async () => {

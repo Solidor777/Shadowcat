@@ -378,7 +378,7 @@ test("the light tool is GM-only in the rail; a GM sees it, a player does not", (
   expect(screen.queryAllByTestId("tool-light")).toHaveLength(1); // only the GM instance's
 });
 
-test("clicking a light with the light tool opens the editor; edits dispatch with raw-stored OCC pre-images", async () => {
+test("clicking a light with the light tool opens the editor; edits dispatch whole-payload writes with the raw stored emission as old", async () => {
   const { scene, tools } = captureScene();
   const dispatched: WireOperation[][] = [];
   render(ToolRail, {
@@ -390,23 +390,28 @@ test("clicking a light with the light tool opens the editor; edits dispatch with
   tool.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
   expect(await screen.findByTestId("light-editor")).toBeTruthy();
 
-  // Intensity edit: old is the RAW stored 0.8, new the typed value.
-  await fireEvent.change(screen.getByTestId("light-intensity"), { target: { value: "0.5" } });
-  const op = dispatched.at(-1)![0];
-  expect(op).toEqual({ op: "update", doc_id: "light-1", changes: [{ path: "/engine/emission/intensity", old: 0.8, new: 0.5 }] });
+  const stored = { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true };
 
-  // Enabled toggle off.
-  await fireEvent.click(screen.getByTestId("light-enabled"));
+  // Intensity edit: one `/engine/emission` write carrying the whole payload.
+  await fireEvent.change(screen.getByTestId("emission-intensity"), { target: { value: "0.5" } });
   expect(dispatched.at(-1)![0]).toEqual({
     op: "update", doc_id: "light-1",
-    changes: [{ path: "/engine/emission/enabled", old: true, new: false }],
+    changes: [{ path: "/engine/emission", old: stored, new: { ...stored, intensity: 0.5 } }],
   });
 
-  // Falloff select writes the wrapper object; the raw stored `falloff` was absent → old null.
-  await fireEvent.change(screen.getByTestId("light-falloff"), { target: { value: "quadratic" } });
+  // Enabled toggle off (suppress, not delete).
+  await fireEvent.click(screen.getByTestId("emission-enabled"));
   expect(dispatched.at(-1)![0]).toEqual({
     op: "update", doc_id: "light-1",
-    changes: [{ path: "/engine/emission/falloff", old: null, new: { curve: "quadratic" } }],
+    changes: [{ path: "/engine/emission", old: stored, new: { ...stored, enabled: false } }],
+  });
+
+  // Falloff select writes the wrapper object inside the whole payload; the raw stored
+  // `falloff` was absent → null in both pre-image and payload.
+  await fireEvent.change(screen.getByTestId("emission-falloff"), { target: { value: "quadratic" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/emission", old: stored, new: { ...stored, falloff: { curve: "quadratic" } } }],
   });
 });
 

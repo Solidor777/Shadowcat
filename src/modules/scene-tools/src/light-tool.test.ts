@@ -92,9 +92,12 @@ test("a light out of marker tolerance is not picked (a click beside it places in
   }, "light-1");
   docs.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: light }] });
   expect(tool.onPointerDown({ x: 200, y: 300 }, ev)).toBe(true); // 100 units away
-  expect(controller.editingEntity).toBeNull();
   expect(sent[0][0].op).toBe("create"); // a NEW light was placed instead
-  // The placed light's engine carries the nested emission shape end to end.
+  // The placed light's engine carries the nested emission shape end to end, and placement
+  // retargets the editing selection at the NEW light (never the existing one beside it).
   const op = sent[0][0];
-  if (op.op === "create") expect((op.doc.engine as LightEngine).emission.enabled).toBe(true);
+  if (op.op === "create") {
+    expect((op.doc.engine as LightEngine).emission.enabled).toBe(true);
+    expect(controller.editingEntity).toEqual({ kind: "light", id: op.doc.id });
+  }
 });

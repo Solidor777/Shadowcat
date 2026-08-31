@@ -226,10 +226,10 @@ export class ToolController {
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
   /** The non-token scene entity currently open for editing (a light or a wall picked with the
-   * select or light tool), or `null`. Cleared on every tool switch (`toggle`) and on an
-   * empty-canvas click; `ToolRail` renders the matching editor while it is set. One shared
-   * selection source for both tools, so the editor can never disagree with the canvas about
-   * which entity is being edited. */
+   * select or light tool), or `null`. Cleared on every tool switch (`toggle`) and on a GM's
+   * empty-canvas click with the select tool; `ToolRail` renders the matching editor while it is
+   * set. One shared selection source for both tools, so the editor can never disagree with the
+   * canvas about which entity is being edited. */
   editingEntity = $state<{
     /** Which kind of scene entity is being edited. */
     kind: "light" | "wall";
@@ -511,9 +511,12 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
         return true;
       }
       const at = ctx.scene.snap(p);
-      ctx.dispatchIntent([
-        { op: "create", doc: buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, emission: { ...NEW_LIGHT_EMISSION } }) },
-      ]);
+      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, emission: { ...NEW_LIGHT_EMISSION } });
+      ctx.dispatchIntent([{ op: "create", doc }]);
+      // Placing selects the new light so the rail editor targets it immediately (a second
+      // click would place ANOTHER light, not select this one).
+      controller.editingEntity = { kind: "light", id: doc.id };
+      drawLightRings(ctx, at, NEW_LIGHT_EMISSION);
       return true;
     },
     onPointerMove(p: Point): void {
@@ -526,16 +529,19 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
       if (!dragId) return;
       if (moved) {
         const target = ctx.scene.snap(p);
-        ctx.dispatchIntent([
-          {
-            op: "update",
-            doc_id: dragId,
-            changes: [
-              { path: "/engine/x", old: dragOrigin.x, new: target.x },
-              { path: "/engine/y", old: dragOrigin.y, new: target.y },
-            ],
-          },
-        ]);
+        // A sub-pixel-jitter "drag" that snaps back to the origin writes nothing.
+        if (target.x !== dragOrigin.x || target.y !== dragOrigin.y) {
+          ctx.dispatchIntent([
+            {
+              op: "update",
+              doc_id: dragId,
+              changes: [
+                { path: "/engine/x", old: dragOrigin.x, new: target.x },
+                { path: "/engine/y", old: dragOrigin.y, new: target.y },
+              ],
+            },
+          ]);
+        }
         const cur = readLight(dragId);
         if (cur) drawLightRings(ctx, target, cur.em);
       }

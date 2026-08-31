@@ -145,11 +145,14 @@
             if (Number.isNaN(h)) return;
             setEngine("size", { w: engine.size?.w ?? 1, h });
           }} /></label>
-      <label><input type="checkbox" aria-label={t("actors.carriedLight")} checked={engine.light != null} disabled={readOnly}
+      <label><input type="checkbox" aria-label={t("actors.carriedLight")} checked={engine.light != null} disabled={readOnly || ctx.role !== "gm"}
         onchange={(e) => setEngine("light", (e.currentTarget as HTMLInputElement).checked ? { ...DEFAULT_LIGHT_EMISSION } : null)} />
         {t("actors.carriedLight")}</label>
       {#if engine.light}
-        <LightEmissionEditor value={engine.light} disabled={readOnly} onCommit={(next) => setEngine("light", next)} />
+        <!-- GM-only like the server's carried-light write gate (`carried_light_touched`):
+             an emission edits the SHARED illumination field, unlike the owner-writable fields
+             above. -->
+        <LightEmissionEditor value={engine.light} disabled={readOnly || ctx.role !== "gm"} onCommit={(next) => setEngine("light", next)} />
       {/if}
     </div>
 

@@ -11,10 +11,11 @@ const MARKER_RADIUS = 8;
 /** Marker outline color (contrast against the light's own fill color). */
 const MARKER_STROKE = 0x222222;
 
-/** Reconciles `doc_type:"light"` documents into the `walls` layer as point markers — the
- * GM's affordance for finding a placed light to select/edit it. Mirrors `WallView`: a dumb
- * per-frame reconciler with no client-side secrecy logic (the docs a recipient receives are
- * already egress-filtered server-side). */
+/** Reconciles `doc_type:"light"` documents into the `walls` layer as point markers. Like
+ * `WallView`, this renders every light the recipient's store holds — document egress is
+ * permission-based, not doc-type-based, so players see the markers too; the EDITING affordance
+ * is GM-gated at the tool layer (`ToolRail`'s per-tool visibility), not here. A dumb per-frame
+ * reconciler with no client-side secrecy logic. */
 export class LightView {
   /** Document ids currently tracked in the backend, refreshed each `reconcile()`. */
   private readonly ids = new Set<string>();

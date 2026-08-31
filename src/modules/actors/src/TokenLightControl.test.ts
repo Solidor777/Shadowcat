@@ -4,6 +4,7 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import {
   DocumentStore,
   buildActorDoc,
+  buildTokenDoc,
   buildTokenFromActor,
   DEFAULT_LIGHT_EMISSION,
   type LightEmission,
@@ -35,18 +36,28 @@ function linkedSetup(overrides?: TokenEngine["overrides"]) {
 }
 
 describe("TokenLightControl", () => {
-  it("renders nothing for a raw token, an instanced token, or when canEdit refuses", () => {
-    // Raw token (no actor at all).
-    const raw = buildTokenFromActor("w1", "scene1", buildActorDoc("w1", "G", actorEngine, "act1"), "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-i");
+  it("renders nothing for a raw token, an instanced token, or a non-GM", () => {
+    // A genuinely raw token (no actor link, no embedded copy).
+    const raw = buildTokenDoc("w1", "scene1", {
+      x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null,
+    }, "tok-raw");
     render(TokenLightControl, {
-      context: setAppContextForTest({ documents: storeWith(raw), dispatchIntent: vi.fn(), canEdit: () => true }),
-      props: { tokenId: "tok-i" },
+      context: setAppContextForTest({ documents: storeWith(raw), dispatchIntent: vi.fn(), role: "gm" }),
+      props: { tokenId: "tok-raw" },
     });
-    // Instanced token: overrides do not apply → no control even with a carried light inside.
     expect(screen.queryByTestId("token-light-mode")).toBeNull();
 
+    // Instanced token: overrides do not apply → no control even with a carried light inside.
+    const instanced = buildTokenFromActor("w1", "scene1", buildActorDoc("w1", "G", actorEngine, "act1"), "instance", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok-i");
     render(TokenLightControl, {
-      context: setAppContextForTest({ documents: linkedSetup(), dispatchIntent: vi.fn(), canEdit: () => false }),
+      context: setAppContextForTest({ documents: storeWith(instanced), dispatchIntent: vi.fn(), role: "gm" }),
+      props: { tokenId: "tok-i" },
+    });
+    expect(screen.queryByTestId("token-light-mode")).toBeNull();
+
+    // A non-GM gets no editor affordance (the server's carried-light gate is GM-only).
+    render(TokenLightControl, {
+      context: setAppContextForTest({ documents: linkedSetup(), dispatchIntent: vi.fn(), role: "player" }),
       props: { tokenId: "tok1" },
     });
     expect(screen.queryByTestId("token-light-mode")).toBeNull();

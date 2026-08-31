@@ -46,8 +46,10 @@
 
   const editable = $derived.by((): boolean => {
     subscribe();
-    const tok = token;
-    return tok !== null && linked && ctx.canEdit(tok, "/engine/overrides");
+    // GM-only, mirroring the server's carried-light write gate (`carried_light_touched`):
+    // an emission joins the shared illumination field, so it is not owner-writable like the
+    // sibling override fields. Advisory; the server re-checks authoritatively.
+    return token !== null && linked && ctx.role === "gm";
   });
 
   /** Dispatch a whole-object `/engine/overrides` write with only `light` changed. The whole
