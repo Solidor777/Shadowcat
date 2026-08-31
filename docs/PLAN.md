@@ -67,6 +67,9 @@ further at design time. Numbering continues from Phase 1.
 - Excludes: pop-out windows (shipped, M12e).
 
 ### M17 · Vision, lighting + movement completion
+- **M17a (photometric field + carried emitters + light/wall authoring) is DONE** — delivery
+  notes in [`HISTORY.md`](HISTORY.md). Remaining: M17b (vision-mode descriptor v2, tremorsense,
+  elevation), M17c (movement-type tags + terrain exemptions), M17d (moving light mid-walk).
 - Photometric lighting (illumination coupling replacing the flat/edge-projected environment light
   model), darkvision / tremorsense / height.
 - **Per-actor/faction movement exemptions** (deferred from M10g): flying/incorporeal ignore

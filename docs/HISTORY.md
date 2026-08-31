@@ -1965,6 +1965,49 @@ Coverage added: 8 `process` unit tests on generated fixtures, tag/query/upload/m
 and five new integration files (`assets_chunked`, `assets_query`, `assets_mutate`, plus the
 extended `assets` and bundle round-trips).
 
+### M17a · Photometric field + carried emitters + light/wall authoring ✅
+Branch `m17`, executed from the design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D1, D2, D9-light, fold-in fix 2) and plan
+[`superpowers/plans/2026-08-31-m17a-photometric-emitters.md`](superpowers/plans/2026-08-31-m17a-photometric-emitters.md);
+M17b (senses/elevation), M17c (movement tags) and M17d (moving light mid-walk) remain.
+Delivered, server: `cell_illumination` is additive superposition with saturation
+(`clamp01(Σ)` per cell) and illuminance-weighted tint mixing (`Σ(levelᵢ × colorᵢ) /
+Σ(levelᵢ)` over the unsaturated sum), replacing max-of-contributors/dominant-tint; the
+boundary-projected environment ambient is one more additive contributor with its
+`blocksLight` occlusion unchanged. `LightEmission` is the single emission payload shared by
+standalone lights (`LightEngine` restructured to `{ x, y, emission }`) and token/actor-carried
+emissions (`ActorEngine.light`, `TokenOverrides.light`, wholesale override with `enabled:false`
+as the suppress path); `Falloff.curve` is the closed `FalloffCurve` enum. The new
+`scene::emitters` module resolves a token's effective emission with `token_vision_floors`'
+precedence (uncached embedded-actor read) and `SceneEcs::scene_lights` returns standalone lights
+∪ carried emissions at each token's live position — the one read path into the illumination
+field, so the lit mask, the movement gate and the visibility-cache snapshot all inherit the
+union. Fold-in fix: `compute_derived` resolves the gradation once and passes it into
+`player_lit_mask`. Review-found and fixed in flight (two independent reviewers, converged):
+**carried-light authoring is GM-only** — `permission::carried_light_touched` /
+`carried_light_in_body` classify any write that creates, changes or removes an emission (direct
+pointer writes, value-compared ancestor writes, removals, create bodies) and `apply_intent`
+refuses them for non-GMs on both arms, because an emission edits the SHARED illumination field
+every viewer's mask reads, unlike the owner-writable presentation fields; `light_illumination`
+refuses a non-finite distance for every falloff curve (the flat arm would otherwise light every
+cell of a NaN-positioned light); the visibility-cache snapshot membership of carried lights is
+pinned by recompute-count tests on both the carrier-move and the emission-value-edit paths;
+`scene_lights`'s sort chain is fully deterministic. Client: `EffectiveActor.light` joins
+`resolveTokenActor`'s projection; `DEFAULT_LIGHT_EMISSION` (`@shadowcat/core`) is the one
+authoring default. Authoring: `makeLightTool` (place with defaults / click-select /
+drag-reposition with raw-stored OCC pre-images), `LightView` markers on the walls layer
+(visible to any doc recipient, like walls; editing is GM-gated at the tool layer), the select
+tool picks lights/walls into `ToolController.editingEntity`, and `ToolRail` renders the light
+editor (enabled/color/intensity/radii/falloff/delete) and the wall flag editor
+(`blocksSight`/`blocksMove`/`blocksLight`/delete). `LightEmissionEditor` (ui-kit) is the shared
+emission field set across the light editor, the actor panel (per-row + create form), the actor
+sheet, and the per-token override control (`TokenLightControl`: inherit / suppress / custom as a
+whole-object `/engine/overrides` write). Accepted without action per the no-migrations
+pre-customers rule: a pre-restructure flat `light` document fails the new engine decode and goes
+dark (fail-closed). Two existing test expectations changed for the additive composition
+(env-plus-light saturation and a max-compose rename); no other suite moved.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference
