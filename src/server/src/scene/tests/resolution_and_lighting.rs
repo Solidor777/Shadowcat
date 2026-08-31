@@ -1744,3 +1744,69 @@ fn carried_light_participates_in_the_lit_mask() {
         "the carried torch lights the token's surroundings"
     );
 }
+
+#[test]
+fn carried_light_move_invalidates_the_cached_visibility_mask() {
+    // A carried emission flows through `scene_lights`, which IS a member of the cache's
+    // `VisibilityInputsSnapshot` — so a token move must recompute the mask, not serve the
+    // stale one. The light carrier here is NOT the viewer's vision source (a GM's torchbearer
+    // walking away from the player's token), so `sources` is unchanged across the move and only
+    // the `lights` snapshot member can force the recompute — this pins that membership against a
+    // future snapshot edit dropping it.
+    let player = Uuid::from_u128(42);
+    let mut viewer = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    viewer.owner = Some(player);
+    let mut carrier = linked_token(12, 200, 150.0, 50.0); // the GM's torchbearer, one cell over
+    carrier.owner = Some(Uuid::from_u128(7)); // not the player: not the player's vision source
+    let mut ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            viewer,
+            carrier,
+        ],
+        0,
+    );
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    let scene = Uuid::from_u128(10);
+
+    // The torch (bright 2 / dim 4 cells) covers the viewer's cell while the carrier stands by.
+    let mask1 = ecs.visible_cells_cached(player, scene, false);
+    assert!(
+        mask1.contains(&(0, 0)),
+        "the nearby torch lights the viewer's cell"
+    );
+    let recomputes = ecs.visible_cells_recompute_count();
+
+    // The carrier walks to the far side of the scene: the viewer's cell goes dark.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(12),
+        changes: vec![FieldChange {
+            path: "/engine/x".to_string(),
+            old: json!(150.0),
+            new: json!(9050.0),
+            remove: false,
+        }],
+    });
+    let mask2 = ecs.visible_cells_cached(player, scene, false);
+    assert!(
+        ecs.visible_cells_recompute_count() > recomputes,
+        "a non-source carrier's move must recompute the mask (its light is a snapshot input)"
+    );
+    assert!(
+        !mask2.contains(&(0, 0)),
+        "the viewer's cell is dark once the torch leaves"
+    );
+}
