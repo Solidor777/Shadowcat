@@ -145,3 +145,122 @@
 .sc-panel-menu-popover {
   z-index: var(--z-popover);
 }
+
+// Resize hit targets: dockview's own `.dv-resize-handle-*` elements are 4px
+// strips (16px under its own coarse-pointer media query) — below the 24px
+// a11y floor. The handles paint nothing (only `.dv-debug` shows them), so the
+// hit zone grows by enlarging the transparent elements themselves, centered
+// on the window's edge; the visible frame (border + shadow on
+// `.dv-resize-container`) is untouched. Corners stay 24px so the diagonal
+// affordance isn't dwarfed by the long edges. Scoped under `.sc-dockview-root`
+// both for specificity over the vendored rules and to keep the override off
+// any foreign dockview instance. Re-verify the vendored geometry
+// (`.dv-resize-handle-*` in dockview-core's stylesheet) on any dockview-core
+// version bump.
+.sc-dockview-root .dv-resize-container {
+  .dv-resize-handle-top,
+  .dv-resize-handle-bottom {
+    height: 24px;
+    width: calc(100% - 48px);
+  }
+  .dv-resize-handle-top {
+    top: -12px;
+    left: 24px;
+  }
+  .dv-resize-handle-bottom {
+    bottom: -12px;
+    left: 24px;
+  }
+  .dv-resize-handle-left,
+  .dv-resize-handle-right {
+    width: 24px;
+    height: calc(100% - 48px);
+  }
+  .dv-resize-handle-left {
+    left: -12px;
+    top: 24px;
+  }
+  .dv-resize-handle-right {
+    right: -12px;
+    top: 24px;
+  }
+  .dv-resize-handle-topleft,
+  .dv-resize-handle-topright,
+  .dv-resize-handle-bottomleft,
+  .dv-resize-handle-bottomright {
+    width: 24px;
+    height: 24px;
+  }
+  .dv-resize-handle-topleft {
+    top: -12px;
+    left: -12px;
+  }
+  .dv-resize-handle-topright {
+    top: -12px;
+    right: -12px;
+  }
+  .dv-resize-handle-bottomleft {
+    bottom: -12px;
+    left: -12px;
+  }
+  .dv-resize-handle-bottomright {
+    bottom: -12px;
+    right: -12px;
+  }
+}
+
+// Coarse pointers (touch): the 44px target floor, same edge-centered
+// geometry as above.
+@media (pointer: coarse) {
+  .sc-dockview-root .dv-resize-container {
+    .dv-resize-handle-top,
+    .dv-resize-handle-bottom {
+      height: 44px;
+      width: calc(100% - 88px);
+    }
+    .dv-resize-handle-top {
+      top: -22px;
+      left: 44px;
+    }
+    .dv-resize-handle-bottom {
+      bottom: -22px;
+      left: 44px;
+    }
+    .dv-resize-handle-left,
+    .dv-resize-handle-right {
+      width: 44px;
+      height: calc(100% - 88px);
+    }
+    .dv-resize-handle-left {
+      left: -22px;
+      top: 44px;
+    }
+    .dv-resize-handle-right {
+      right: -22px;
+      top: 44px;
+    }
+    .dv-resize-handle-topleft,
+    .dv-resize-handle-topright,
+    .dv-resize-handle-bottomleft,
+    .dv-resize-handle-bottomright {
+      width: 44px;
+      height: 44px;
+    }
+    .dv-resize-handle-topleft {
+      top: -22px;
+      left: -22px;
+    }
+    .dv-resize-handle-topright {
+      top: -22px;
+      right: -22px;
+    }
+    .dv-resize-handle-bottomleft {
+      bottom: -22px;
+      left: -22px;
+    }
+    .dv-resize-handle-bottomright {
+      bottom: -22px;
+      right: -22px;
+    }
+  }
+}

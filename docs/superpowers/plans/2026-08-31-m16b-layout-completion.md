@@ -105,7 +105,7 @@ verbatim directive paragraph + the report-delivery requirement.
 - Test: `dockview.test.ts` — stub `getBoundingClientRect` per the existing live-sync tests;
   assert a tree-side rect change repositions the widget AND fires no `resizeFloating` echo.
 
-- [ ] Failing tests first. Implement. Gates + commit.
+- [x] Failing tests first. Implement. Gates + commit.
 
 ### Task 5: Keyboard move/resize of floating windows
 
@@ -123,7 +123,7 @@ verbatim directive paragraph + the report-delivery requirement.
 - Test: `dockview.test.ts` keyboard emission (fire keydown on the wrapper, assert the op) +
   no-op when focus is in an input.
 
-- [ ] Failing tests first. Implement. Gates + commit.
+- [x] Failing tests first. Implement. Gates + commit.
 
 ### Task 6: Notification actions + "Reopen windows" restore
 
@@ -144,7 +144,7 @@ verbatim directive paragraph + the report-delivery requirement.
 - Tests: core notifications test (action carried, push back-compat), NotificationHost test,
   controller/dockview tests (restore flow via the injected driver; gesture-time rect reuse).
 
-- [ ] Failing tests first. Implement. Gates + commit.
+- [x] Failing tests first. Implement. Gates + commit.
 
 ### Task 7: Pop-out geometry capture
 
@@ -162,7 +162,7 @@ verbatim directive paragraph + the report-delivery requirement.
   `(api as any).component._bufferOnDidLayoutChange.fire()` pattern / the popout event emitters
   on the component), stub the entry dimensions, assert the op payload.
 
-- [ ] Failing tests first. Implement. Gates + commit.
+- [x] Failing tests first. Implement. Gates + commit.
 
 ### Task 8: Resize hit targets
 
@@ -171,7 +171,7 @@ verbatim directive paragraph + the report-delivery requirement.
   but grow the hit zone to ≥24px (transparent pseudo-element or negative-inset), 44px under
   `@media (pointer: coarse)`. Token-only colors.
 
-- [ ] Implement; visual smoke via dev server screenshots (floating panel, all four edges).
+- [x] Implement; visual smoke via dev server screenshots (floating panel, all four edges).
   Gates + commit.
 
 ## Phase 3 — e2e + close-out
