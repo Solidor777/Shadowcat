@@ -656,10 +656,10 @@
     font-weight: 700;
   }
   .roll-pass.pass {
-    color: var(--success, seagreen);
+    color: var(--success);
   }
   .roll-pass.fail {
-    color: var(--danger, crimson);
+    color: var(--danger);
   }
   .roll-dice {
     display: flex;
@@ -679,10 +679,10 @@
     text-decoration: line-through;
   }
   .die-chip.crit-success {
-    border-color: var(--success, seagreen);
+    border-color: var(--success);
   }
   .die-chip.crit-fail {
-    border-color: var(--danger, crimson);
+    border-color: var(--danger);
   }
   .die-label,
   .die-symbols {
@@ -697,10 +697,10 @@
     font-size: 0.9em;
   }
   .counter.positive {
-    color: var(--success, seagreen);
+    color: var(--success);
   }
   .counter.negative {
-    color: var(--danger, crimson);
+    color: var(--danger);
   }
   .chip.recalculated {
     font-style: normal;
@@ -826,15 +826,15 @@
     max-width: 100%;
     max-height: 160px;
     object-fit: cover;
-    border-radius: var(--radius-1, 4px);
+    border-radius: var(--radius-1);
   }
   .oembed-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     padding: var(--space-1);
-    border: 1px solid var(--border-color, #444);
-    border-radius: var(--radius-1, 4px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
     text-decoration: none;
     color: inherit;
   }

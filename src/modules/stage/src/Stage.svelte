@@ -356,14 +356,14 @@
   }
   .gm-view {
     position: absolute;
-    top: var(--space-2, 0.5rem);
-    right: var(--space-2, 0.5rem);
-    padding: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+    top: var(--space-2);
+    right: var(--space-2);
+    padding: var(--space-1) var(--space-2);
     font-size: 0.8125rem;
-    color: var(--text-on-surface, #e8e8f0);
-    background: var(--surface-raised, #1c1c24);
-    border: 1px solid var(--border-subtle, #363645);
-    border-radius: var(--radius-sm, 0.25rem);
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
     cursor: pointer;
     min-height: 2.25rem; /* touch target (#10) */
   }
