@@ -55,6 +55,43 @@ const modelOf = (group: IDockviewGroupPanel): GroupModelInternals =>
 const apiOf = (group: IDockviewGroupPanel): GroupApiInternals =>
   group.api as unknown as GroupApiInternals;
 
+/** The structural slice of dockview's `DockviewFloatingGroupPanel` a test
+ * asserts reconcile writes against — mirrors the engine's own private
+ * `FloatingWindowEntry` declaration (the class is not re-exported from
+ * dockview-core's entry point). */
+interface FloatingEntryProbe {
+  group: unknown;
+  overlay: { element: HTMLElement };
+  position(bounds: { left?: number; top?: number; width?: number; height?: number }): void;
+}
+
+/** Finds the live floating-window entry hosting `panelId`'s group, by the same
+ * membership rule (`FloatingGroupService.findByGroup`) the engine uses. */
+function floatingEntryOf(api: DockviewApi, panelId: string): FloatingEntryProbe {
+  const group = api.getPanel(panelId)!.group;
+  const entries = (api as unknown as { component: { floatingGroups: readonly FloatingEntryProbe[] } }).component
+    .floatingGroups;
+  const entry = entries.find((e) => e.group === group || e.overlay.element.contains(group.element));
+  if (!entry) throw new Error(`no floating window entry for panel "${panelId}"`);
+  return entry;
+}
+
+/** A `DOMRect` stub for jsdom (which never runs real layout) — stands in for
+ * the box a real gesture or reconcile would leave on the overlay element. */
+function domRectOf(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 let engine: DockviewEngine | null = null;
 // Hosts appended to `document.body` for focus-management tests (jsdom only
 // tracks `document.activeElement` for attached elements) are torn down here
@@ -705,12 +742,12 @@ test("a live drag/resize of an already-floating panel emits a resizeFloating op 
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  // jsdom never runs real layout, so `boundingBox`'s `getBoundingClientRect`
-  // reads are stubbed directly on the floating group's element to simulate
-  // the box a real drag/resize gesture would leave behind.
-  const groupEl = engine.debugApi!.getPanel("chat")!.group.element;
-  groupEl.getBoundingClientRect = () =>
-    ({ left: 50, top: 60, width: 220, height: 160, right: 270, bottom: 220, x: 50, y: 60, toJSON: () => ({}) }) as DOMRect;
+  // jsdom never runs real layout, so the overlay element's
+  // `getBoundingClientRect` (the box `#handleFloatingLayoutChange` reads — the
+  // floating window's OUTER frame) is stubbed directly to simulate the box a
+  // real drag/resize gesture would leave behind.
+  const overlayEl = floatingEntryOf(engine.debugApi!, "chat").overlay.element;
+  overlayEl.getBoundingClientRect = () => domRectOf(50, 60, 220, 160);
 
   componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   // `onDidLayoutChange` is dockview's `AsapEvent` — listeners run on the next microtask.
@@ -741,15 +778,73 @@ test("a resizeFloating op's own round trip through apply() does not re-emit (sel
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  const groupEl = engine.debugApi!.getPanel("chat")!.group.element;
-  groupEl.getBoundingClientRect = () =>
-    ({ left: 10, top: 10, width: 200, height: 150, right: 210, bottom: 160, x: 10, y: 10, toJSON: () => ({}) }) as DOMRect;
+  const overlayEl = floatingEntryOf(engine.debugApi!, "chat").overlay.element;
+  overlayEl.getBoundingClientRect = () => domRectOf(10, 10, 200, 150);
 
   componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   await Promise.resolve();
   await Promise.resolve();
 
   expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+});
+
+test("apply() repositions an already-floating widget when the tree rect changed from a non-engine source, with no resizeFloating echo", async () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const entry = floatingEntryOf(engine.debugApi!, "chat");
+  const positionSpy = vi.spyOn(entry, "position");
+  // The live widget reads as sitting at the tree's rect (as a real browser
+  // would after creation placed it there).
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(10, 10, 200, 150);
+
+  // The tree rect then changes from a NON-engine source (a keyboard move op,
+  // an arrangement restore, a layout reset — anything reduced through
+  // `applyOp` rather than dragged on the widget).
+  layout = applyOp(layout, { op: "resizeFloating", id: "chat", rect: { x: 42, y: 66, w: 300, h: 200 } });
+  engine.apply(layout.expanded, new Map());
+
+  // The reconcile pushed the tree's rect to the widget's overlay box.
+  expect(positionSpy).toHaveBeenCalledWith({ left: 42, top: 66, width: 300, height: 200 });
+
+  // No echo: once the widget sits at the reconciled rect, a layout-change
+  // pass emits nothing back.
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(42, 66, 300, 200);
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+});
+
+test("apply() leaves an already-floating widget untouched when the live box already matches the tree rect", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const entry = floatingEntryOf(engine.debugApi!, "chat");
+  const positionSpy = vi.spyOn(entry, "position");
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(10, 10, 200, 150);
+
+  engine.apply(layout.expanded, new Map());
+
+  expect(positionSpy).not.toHaveBeenCalled();
 });
 
 test("a genuine engine-side removal (outside apply()) still emits exactly one close op", () => {

@@ -435,6 +435,40 @@ class PanelTabRenderer implements ITabRenderer {
   }
 }
 
+/** The narrow structural slice of dockview's `DockviewFloatingGroupPanel` this
+ * engine reaches for an already-floating window's geometry: the overlay's
+ * element (live box reads) and `position` (the tree→widget reconcile write in
+ * `apply()`). Declared structurally because the class is not re-exported from
+ * dockview-core's entry point — an upgrade that renames either member fails at
+ * THIS declaration rather than passing an untyped value through. A property of
+ * the vendored dockview-core source (`FloatingGroupService`,
+ * `DockviewFloatingGroupPanel`, `Overlay.setBounds`): re-verify against that
+ * source on any dockview-core version bump. */
+interface FloatingWindowEntry {
+  /** The window's anchor group (`DockviewFloatingGroupPanel.group`). */
+  readonly group: IDockviewGroupPanel;
+  /** The window's overlay chrome (`DockviewFloatingGroupPanel.overlay`) — its
+   * element's rendered box IS the floating window's outer frame, titlebar
+   * included. */
+  readonly overlay: { readonly element: HTMLElement };
+  /** Repositions/resizes the overlay (`Overlay.setBounds` underneath, which
+   * also clamps the box to its minimum-in-viewport allowance). */
+  position(bounds: { left?: number; top?: number; width?: number; height?: number }): void;
+}
+
+/** The narrow structural slice of `DockviewComponent` (reachable from
+ * `DockviewApi`'s private `component` field) this engine reads floating-window
+ * state through: `floatingGroups` (`FloatingGroupService.floatingGroups`) and
+ * the root `element` a floating box is measured against. Same vendored-source
+ * re-verify note as `FloatingWindowEntry`. */
+interface DockviewComponentAccess {
+  /** Every currently-open floating window (`FloatingGroupService.floatingGroups`). */
+  readonly floatingGroups: readonly FloatingWindowEntry[];
+  /** The dockview root element (`DockviewComponent.element`) — the coordinate
+   * origin `boundingBox`-style reads are relative to. */
+  readonly element: HTMLElement;
+}
+
 /** Gesture contract: classify → veto or redispatch; dockview never self-mutates
  * from a drop. Every will-drop wire (`#handleWillDrop`, fed by both the
  * component-level `api.onWillDrop` and the per-group `group.model.onWillDrop`
@@ -1531,6 +1565,23 @@ export class DockviewEngine implements EngineAdapter {
             floating: { x: f.rect.x, y: f.rect.y, width: f.rect.w, height: f.rect.h },
           });
           this.#wireFloatingA11y(f.id, meta.get(f.id));
+        } else {
+          // Already floating: reconcile a tree-side rect change onto the live
+          // widget (see `#reconcileFloating`). The same sub-pixel tolerance
+          // `#handleFloatingLayoutChange` applies in the opposite direction
+          // keeps an unchanged widget untouched.
+          const entry = this.#floatingEntryFor(existing.group);
+          const live = entry ? this.#floatingOverlayRect(entry) : null;
+          if (
+            entry &&
+            live &&
+            (Math.abs(live.x - f.rect.x) >= 1 ||
+              Math.abs(live.y - f.rect.y) >= 1 ||
+              Math.abs(live.w - f.rect.w) >= 1 ||
+              Math.abs(live.h - f.rect.h) >= 1)
+          ) {
+            this.#reconcileFloating(entry, f.rect);
+          }
         }
         // Snapshot the tree's own rect as the baseline `#handleFloatingLayoutChange`
         // diffs against, whether this iteration created/relocated the panel or
@@ -1620,6 +1671,90 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
+  /** Finds the live floating-window entry (`DockviewComponent.floatingGroups`)
+   * hosting `group`, by membership — `FloatingGroupService.findByGroup`'s own
+   * rule: the anchor group itself, or any group whose element sits inside the
+   * window's nested gridview (a floating window can host several groups).
+   * `null` when the group is not floating (or no api/component exists yet).
+   * @param group The dockview group to locate a floating window for.
+   * @returns The hosting `FloatingWindowEntry`, or `null`.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // apply()'s floating loop and #handleFloatingLayoutChange
+   * declare const group: IDockviewGroupPanel;
+   * this.#floatingEntryFor(group);
+   * ```
+   */
+  #floatingEntryFor(group: IDockviewGroupPanel): FloatingWindowEntry | null {
+    const component = (this.#api as unknown as { component?: DockviewComponentAccess } | null)?.component;
+    if (!component) return null;
+    return (
+      component.floatingGroups.find((e) => e.group === group || e.overlay.element.contains(group.element)) ?? null
+    );
+  }
+
+  /** Reads a floating window's live OUTER box (overlay frame, titlebar
+   * included), relative to the dockview root element — the same coordinate
+   * space `addPanel`'s `floating` option places a new floating window in, so
+   * creation, this read, and `#reconcileFloating`'s write all speak one rect
+   * language. (The group-level `boundingBox` is deliberately NOT used: it
+   * measures the group's content element BELOW the titlebar, so a rect
+   * round-tripped through it drifts by `Overlay.headerHeight` on every
+   * gesture→persist→recreate cycle.)
+   * @param entry The floating window to measure.
+   * @returns The window's live `Rect`, or `null` when the component root is
+   * unavailable.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // apply()'s floating loop and #handleFloatingLayoutChange
+   * declare const entry: FloatingWindowEntry;
+   * this.#floatingOverlayRect(entry);
+   * ```
+   */
+  #floatingOverlayRect(entry: FloatingWindowEntry): Rect | null {
+    const component = (this.#api as unknown as { component?: DockviewComponentAccess } | null)?.component;
+    if (!component) return null;
+    const root = component.element.getBoundingClientRect();
+    const box = entry.overlay.element.getBoundingClientRect();
+    return {
+      x: Math.round(box.left - root.left),
+      y: Math.round(box.top - root.top),
+      w: Math.round(box.width),
+      h: Math.round(box.height),
+    };
+  }
+
+  /** Pushes the tree's rect onto an already-floating window's widget — the
+   * tree→widget half of floating-rect sync, for rect changes that did not
+   * originate from a widget gesture (a keyboard move/resize op's round trip,
+   * an arrangement restore, a layout reset). The write target is the overlay's
+   * OUTER box via `DockviewFloatingGroupPanel.position` — NOT
+   * `group.api.setSize`, whose size request is CONTENT-sized:
+   * `FloatingGroupService.add`'s `onDidChange` wiring inflates it by the
+   * titlebar (`Overlay.headerHeight`) before applying it to the overlay, so
+   * the two routes disagree by exactly that header. A programmatic write fires
+   * the overlay's `onDidChange` but never `onDidChangeEnd`, so no
+   * `onDidLayoutChange` follows and nothing echoes back through
+   * `#handleFloatingLayoutChange`; `apply()`'s caller-side `#lastFloatingRect`
+   * snapshot covers the rest. Vendored-source coupling: re-verify
+   * `Overlay.setBounds`/`DockviewFloatingGroupPanel.position` on any
+   * dockview-core version bump.
+   * @param entry The floating window to reconcile.
+   * @param rect The tree's rect to write onto the widget.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // apply()'s floating loop
+   * declare const entry: FloatingWindowEntry;
+   * this.#reconcileFloating(entry, { x: 10, y: 10, w: 200, h: 150 });
+   * ```
+   */
+  #reconcileFloating(entry: FloatingWindowEntry, rect: Rect): void {
+    entry.position({ left: rect.x, top: rect.y, width: rect.w, height: rect.h });
+  }
+
   /** Translates a live re-drag or re-resize of an ALREADY-floating panel
    * into a `resizeFloating` op, mirroring `#handleGroupDimensionsChange`'s role
    * for docked zones. Bound to `DockviewApi.onDidLayoutChange` rather than a
@@ -1659,14 +1794,13 @@ export class DockviewEngine implements EngineAdapter {
     for (const f of expanded.floating) {
       const panel = api.getPanel(f.id);
       if (!panel || panel.group.api.location.type !== "floating") continue;
-      const box = panel.group.api.boundingBox;
-      if (!box) continue;
-      const rect: Rect = {
-        x: Math.round(box.left),
-        y: Math.round(box.top),
-        w: Math.round(box.width),
-        h: Math.round(box.height),
-      };
+      // Read the window's OUTER overlay box (see `#floatingOverlayRect`), so a
+      // persisted rect round-trips byte-identically through create → gesture →
+      // persist → recreate instead of drifting by the titlebar's height each
+      // cycle.
+      const entry = this.#floatingEntryFor(panel.group);
+      const rect = entry ? this.#floatingOverlayRect(entry) : null;
+      if (!rect) continue;
       const last = this.#lastFloatingRect.get(f.id);
       if (
         last &&
