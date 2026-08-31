@@ -5,6 +5,7 @@ import { expect, test } from "vitest";
 import {
   extractModifierMatchBlock,
   extractRustModifierIdents,
+  extractRustTemplateKeywords,
   modifierParityDifference,
 } from "./check-notation-modifier-parity.mjs";
 import { NOTATION_KEYWORDS } from "../src/client/formula/src/template.ts";
@@ -12,6 +13,10 @@ import { NOTATION_KEYWORDS } from "../src/client/formula/src/template.ts";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const rustSource = readFileSync(
   join(repoRoot, "src", "server", "src", "dice", "notation", "parser.rs"),
+  "utf8",
+);
+const rustTemplateSource = readFileSync(
+  join(repoRoot, "src", "server", "src", "formula", "template.rs"),
   "utf8",
 );
 
@@ -59,4 +64,30 @@ test("a renamed anchor fails loudly rather than reporting parity over nothing", 
     .toThrow(/match id.as_str/);
   expect(() => extractModifierMatchBlock(`fn modifiers() { match id.as_str() { "kh" => k(), } }`))
     .toThrow(/catch-all/);
+});
+
+// The keyword vocabulary is ONE decision with THREE declarations: the server's notation
+// parser arms, the client template module's list, and the server formula twin's list. None
+// of the three can read another, so each pair is diffed here.
+
+test("the server formula twin reserves exactly the client template module's list", () => {
+  expect(extractRustTemplateKeywords(rustTemplateSource)).toEqual(NOTATION_KEYWORDS);
+});
+
+test("the server formula twin's list is checked against the parser arms too", () => {
+  const rustIdents = extractRustModifierIdents(rustSource);
+  expect(modifierParityDifference(rustIdents, extractRustTemplateKeywords(rustTemplateSource),
+    DICE_OPERATOR)).toEqual({ missingFromTemplate: [], unknownToServer: [] });
+});
+
+test("the template-twin extractor resolves the dice-operator constant and rejects junk", () => {
+  const source = `const DICE_OPERATOR: &str = "d";\n` +
+    `pub(crate) const NOTATION_KEYWORDS: [&str; 3] = [DICE_OPERATOR, "kh", "kl"];`;
+  expect(extractRustTemplateKeywords(source)).toEqual(["d", "kh", "kl"]);
+  expect(() => extractRustTemplateKeywords(`const NOTATION_KEYWORDS: [&str; 1] = ["kh"];`))
+    .toThrow(/DICE_OPERATOR/);
+  expect(() => extractRustTemplateKeywords(source.replace("NOTATION_KEYWORDS", "RENAMED")))
+    .toThrow(/NOTATION_KEYWORDS/);
+  expect(() => extractRustTemplateKeywords(source.replace(`"kh"`, "kh")))
+    .toThrow(/unrecognized entry/);
 });

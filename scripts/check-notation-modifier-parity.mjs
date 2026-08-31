@@ -61,3 +61,37 @@ export function modifierParityDifference(rustIdents, reservedKeywords, diceOpera
     unknownToServer: [...reserved].filter((word) => !rust.has(word)),
   };
 }
+
+const TEMPLATE_LIST_HEAD_RE = /NOTATION_KEYWORDS\s*:\s*\[&str;\s*\d+\]\s*=\s*\[/;
+const DICE_OPERATOR_DECL_RE = /const DICE_OPERATOR: &str = "([a-z]+)";/;
+
+// The server formula twin's reserved-keyword list, in declaration order, extracted from its
+// `NOTATION_KEYWORDS` const. The list's first member is the `DICE_OPERATOR` constant rather
+// than a literal, so the constant's own declaration is read and substituted — a rename of
+// either anchor throws rather than silently reporting parity over an empty or shifted set.
+export function extractRustTemplateKeywords(rustTemplateSource) {
+  const opDecl = rustTemplateSource.match(DICE_OPERATOR_DECL_RE);
+  if (!opDecl) {
+    throw new Error("`const DICE_OPERATOR` declaration not found in the template twin source");
+  }
+  const head = rustTemplateSource.match(TEMPLATE_LIST_HEAD_RE);
+  if (!head) {
+    throw new Error("`NOTATION_KEYWORDS` declaration not found in the template twin source");
+  }
+  const start = head.index + head[0].length;
+  const end = rustTemplateSource.indexOf("];", start);
+  if (end === -1) throw new Error("`NOTATION_KEYWORDS` declaration is unterminated");
+  const body = rustTemplateSource.slice(start, end);
+  return body
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((token) => token !== "")
+    .map((token) => {
+      if (token === "DICE_OPERATOR") return opDecl[1];
+      const literal = token.match(/^"([a-z]+)"$/);
+      if (!literal) {
+        throw new Error(`unrecognized entry '${token}' in the template twin's NOTATION_KEYWORDS`);
+      }
+      return literal[1];
+    });
+}
