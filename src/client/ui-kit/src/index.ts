@@ -33,3 +33,12 @@ export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
 export type { ChatApi, TemplatesApi } from "./appContext";
 export { default as TemplateControls } from "./TemplateControls.svelte";
 export { default as SheetHost } from "./SheetHost.svelte";
+export {
+  THEME_TOKEN_NAMES,
+  BUILTIN_THEMES,
+  DEFAULT_THEME_ID,
+  resolveTheme,
+  sanitizeCustomTheme,
+  sanitizeCustomThemes,
+} from "./theme";
+export type { ThemeDefinition, ThemeTokenName, CustomTheme } from "./theme";
