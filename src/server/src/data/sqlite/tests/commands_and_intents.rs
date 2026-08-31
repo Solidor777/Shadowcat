@@ -2684,10 +2684,96 @@ async fn system_defaults_config_seed_writes_apply() {
     r.apply_intent(&gm_ctx, w.id, vec![update], 3, WriteOrigin::ConfigSeed)
         .await
         .unwrap();
+    // Delete under ConfigSeed applies too — the gate reserves the op to this
+    // origin, it does not forbid the lifecycle (a deleted singleton resurrects
+    // on the next seed pass).
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Delete { doc: doc.clone() }],
+        4,
+        WriteOrigin::ConfigSeed,
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
-async fn config_seed_skips_capability_gates_but_not_occ() {
+async fn system_defaults_combat_transition_writes_are_rejected() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    // The OTHER capability-skipping origin is still rejected: the
+    // system-defaults gates key on ConfigSeed specifically, never on
+    // skips_capability_gates.
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(1, w.id, "system-defaults"),
+            }],
+            1,
+            WriteOrigin::CombatTransition,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+    let doc = singleton_test_doc(1, w.id, "system-defaults");
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        2,
+        WriteOrigin::ConfigSeed,
+    )
+    .await
+    .unwrap();
+    let stored =
+        serde_json::to_value(crate::data::engine::SystemDefaultsEngine::default()).unwrap();
+    let update = Operation::Update {
+        doc_id: doc.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine".into(),
+            old: stored,
+            new: serde_json::json!({ "scene": { "fog": true } }),
+        }],
+    };
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![update],
+            3,
+            WriteOrigin::CombatTransition,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Delete { doc: doc.clone() }],
+            4,
+            WriteOrigin::CombatTransition,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Forbidden));
+}
+
+#[tokio::test]
+async fn config_seed_skips_capability_gates_but_keeps_occ_and_validation() {
     use crate::data::membership::PermissionContext;
     let r = repo().await;
     let gm = r
@@ -2728,6 +2814,24 @@ async fn config_seed_skips_capability_gates_but_not_occ() {
         .await
         .unwrap_err();
     assert!(matches!(err, DataError::Conflict(_)));
+    // Engine validation still binds for this origin: an unknown field in the
+    // /engine body is BadEngine, not silently stored.
+    let stored =
+        serde_json::to_value(crate::data::engine::SystemDefaultsEngine::default()).unwrap();
+    let bad = Operation::Update {
+        doc_id: doc.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine".into(),
+            old: stored,
+            new: serde_json::json!({ "bogus": 1 }),
+        }],
+    };
+    let err = r
+        .apply_intent(&p_ctx, w.id, vec![bad], 3, WriteOrigin::ConfigSeed)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::BadEngine(_)));
 }
 
 // --- combat family ingress: singleton registry, one active combat per

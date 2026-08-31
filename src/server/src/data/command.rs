@@ -280,7 +280,9 @@ impl WriteOrigin {
 
     /// Whether this origin skips `apply_intent`'s ordinary per-op capability
     /// gates (the WRITE_FIELDS floor, the world-level create/delete
-    /// authorization, the per-path and declared-capability checks). Scope,
+    /// authorization, and the Update arm's per-path and declared-capability
+    /// checks; the Create arm's declared-capability loop runs for EVERY
+    /// origin and is satisfied there by the author's GM access). Scope,
     /// size, engine, containment, singleton, schema and OCC checks run for
     /// every origin. `ServerMessageRevision` deliberately does NOT skip: its
     /// writes pass through a scoped access grant instead.

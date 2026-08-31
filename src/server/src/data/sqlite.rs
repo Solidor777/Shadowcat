@@ -3224,8 +3224,7 @@ impl Repository for SqliteRepository {
                     // client-reachable origin is rejected outright —
                     // `WriteOrigin::ConfigSeed` (the world-config seed/refresh
                     // path) is the ONLY origin that may author it.
-                    if doc.doc_type == crate::data::engine::SYSTEM_DEFAULTS_DOC_TYPE
-                        && origin != WriteOrigin::ConfigSeed
+                    if doc.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
                     {
                         return Err(DataError::Forbidden);
                     }
@@ -3338,8 +3337,7 @@ impl Repository for SqliteRepository {
                     // `system-defaults` deletion is reserved to the server-side
                     // config-seed path — same rejection the Create arm applies,
                     // against the authoritative STORED doc_type.
-                    if cur.doc_type == crate::data::engine::SYSTEM_DEFAULTS_DOC_TYPE
-                        && origin != WriteOrigin::ConfigSeed
+                    if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
                     {
                         return Err(DataError::Forbidden);
                     }
@@ -3401,8 +3399,7 @@ impl Repository for SqliteRepository {
                     // arm's matching rejection): rejected against the
                     // authoritative STORED doc_type for every origin but the
                     // world-config seed/refresh path's `ConfigSeed`.
-                    if cur.doc_type == crate::data::engine::SYSTEM_DEFAULTS_DOC_TYPE
-                        && origin != WriteOrigin::ConfigSeed
+                    if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
                     {
                         return Err(DataError::Forbidden);
                     }
