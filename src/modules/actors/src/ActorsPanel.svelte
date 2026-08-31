@@ -189,6 +189,7 @@
       conditions: [],
       prototype: instanceOnDrop,
       vision: darkvision > 0 ? [{ mode: "darkvision" as const, range: darkvision }] : null,
+      light: null,
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);

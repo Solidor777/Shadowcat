@@ -60,6 +60,7 @@ function actorEngine(over: Partial<ActorEngine> = {}): ActorEngine {
     conditions: [],
     prototype: false,
     vision: null,
+    light: null,
     ...over,
   };
 }

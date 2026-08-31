@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -41,6 +41,13 @@ export interface EffectiveActor {
   /** Effective vision modes for this actor/token. Per-token override replaces actor base entirely;
    * defaults to [] when neither specifies vision. */
   visionModes: VisionAssignment[];
+  /** The effective carried light emission (the payload the server's illumination field reads at
+   * the token's live position). Per-token override replaces the actor's `light` wholesale;
+   * `enabled: false` on the override suppresses. `null` when neither the actor nor the token
+   * override carries an emission (a raw or dangling-link token resolves no `EffectiveActor` at
+   * all, so its absence here means "no carried light", matching the server's
+   * `SceneEcs::token_light_emission` precedence). */
+  light: LightEmission | null;
 }
 
 /** Fold a per-token `TokenOverrides` whitelist onto its actor's `ActorEngine` base to produce the
@@ -70,6 +77,8 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     conditions: base.conditions ?? [],
     // Override replaces actor base entirely (not merged); [] when neither present (fail-closed).
     visionModes: overrides?.vision ?? base.vision ?? [],
+    // Wholesale replacement like `visionModes`; an override with `enabled: false` suppresses.
+    light: overrides?.light ?? base.light ?? null,
   };
 }
 

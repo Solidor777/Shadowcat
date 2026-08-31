@@ -4,7 +4,7 @@ import {
   buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
-import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
+import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import {
   buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
@@ -184,6 +184,7 @@ const actorEngine: ActorEngine = {
   conditions: [],
   prototype: true,
   vision: null,
+  light: null,
 };
 
 test("buildSceneDoc makes a top-level world scene with a default square grid", () => {
@@ -386,10 +387,14 @@ describe("vision-modes registry", () => {
 });
 
 it("builds a light doc parented to its scene", () => {
-  const l = buildLightDoc("w1", "scene1", { x: 10, y: 20, color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true });
+  const l = buildLightDoc("w1", "scene1", {
+    x: 10,
+    y: 20,
+    emission: { color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
+  });
   expect(l.doc_type).toBe("light");
   expect(l.parent_id).toBe("scene1");
-  expect((l.engine as { brightRadius: number }).brightRadius).toBe(4);
+  expect((l.engine as LightEngine).emission.brightRadius).toBe(4);
   expect(l.system).toEqual({});
 });
 

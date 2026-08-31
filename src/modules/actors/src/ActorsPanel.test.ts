@@ -120,7 +120,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -154,7 +154,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -188,7 +188,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -271,6 +271,7 @@ describe("ActorsPanel — darkvision authoring", () => {
         conditions: [],
         prototype: false,
         vision: [{ mode: "darkvision", range: null }],
+        light: null,
       },
       "act1",
     );
@@ -429,7 +430,7 @@ describe("ActorsPanel — per-token face swap", () => {
     return buildActorDoc(
       "w1",
       "Goblin",
-      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
       "act1",
     );
   }
@@ -482,7 +483,7 @@ describe("ActorsPanel — live search + open sheet", () => {
     return buildActorDoc(
       "w1",
       name,
-      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
       id,
     );
   }

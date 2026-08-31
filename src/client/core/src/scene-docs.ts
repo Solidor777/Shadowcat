@@ -32,7 +32,9 @@ import type {
   VisionAssignment,
   ActorEngine,
   LightEngine,
+  LightEmission,
   Falloff,
+  FalloffCurve,
   RegionShape,
   RegionEngine,
   Faction,
@@ -112,7 +114,9 @@ export type {
   VisionAssignment,
   ActorEngine,
   LightEngine,
+  LightEmission,
   Falloff,
+  FalloffCurve,
   RegionShape,
   RegionEngine,
   Faction,
@@ -625,7 +629,7 @@ export function resolveViewedScene(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null,
+ *   prototype: false, vision: null, light: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * actor.doc_type; // "actor"
@@ -757,7 +761,7 @@ export function buildTokenFromActor(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null,
+ *   prototype: false, vision: null, light: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * setNameHidden(actor, true);
@@ -971,7 +975,8 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  * body (no default constant — no aliasing concern). `doc_type: "light"` is engine-defined.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this light is parented to.
- * @param engine The full `LightEngine` body (position, color, intensity, radii, falloff).
+ * @param engine The full `LightEngine` body: the position plus the nested `emission`
+ * (`LightEmission` — the same payload an actor/token-carried light uses).
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "light"`, parented to `sceneId`.
  * @example
@@ -979,8 +984,8 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  * import { buildLightDoc, type LightEngine } from "@shadowcat/core";
  *
  * const engine: LightEngine = {
- *   x: 0, y: 0, color: "#ffcc66", intensity: 1,
- *   brightRadius: 4, dimRadius: 8, falloff: null, enabled: true,
+ *   x: 0, y: 0,
+ *   emission: { color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
  * };
  * const light = buildLightDoc("world-1", "scene-1", engine);
  * light.doc_type; // "light"
