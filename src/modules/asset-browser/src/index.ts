@@ -1,5 +1,15 @@
 import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
 import AssetBrowserPanel from "./AssetBrowserPanel.svelte";
+import AssetPickOverlay from "./AssetPickOverlay.svelte";
+
+export {
+  folderChildren,
+  folderPathNames,
+  buildMoveOp,
+  isDescendantOrSelf,
+  buildFolderDoc,
+} from "./folderOps";
+export { UploadQueue } from "./uploadQueueModel.svelte";
 
 /** GM asset browser (folder tree / filter bar / thumbnail grid / preview
  * pane, uploads, bulk operations, and the pick-mode overlay). Requires the
@@ -20,6 +30,15 @@ export const assetBrowser: Module = {
       order: 1,
       component: AssetBrowserPanel,
       panel: { icon: "🖼️", labelKey: "assetBrowser.tab", gmOnly: true },
+    });
+    // Pick-mode modal: usable by ANY member (VisualKindEditor and the place
+    // tool call pickAsset), so this contribution is deliberately not GM-gated
+    // even though the managing panel above is.
+    ctx.contributions.contribute({
+      id: "asset-browser:pick-overlay",
+      contract: "shadowcat.surface:overlay",
+      order: 0,
+      component: AssetPickOverlay,
     });
   },
 };

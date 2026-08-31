@@ -10,6 +10,7 @@
   import BulkBar from "./BulkBar.svelte";
   import UploadQueue from "./UploadQueue.svelte";
   import { UploadQueue as UploadQueueModel } from "./uploadQueueModel.svelte";
+  import PickConfirmBar from "./PickConfirmBar.svelte";
 
   let {
     mode,
@@ -257,6 +258,7 @@
         {items}
         {selected}
         onSelectionChange={(ids) => (selected = ids)}
+        appendOnClick={mode === "pick" && initialFilters?.multiple === true}
         onOpen={(id) => {
           if (mode === "pick" && !initialFilters?.multiple) onConfirm?.([id]);
         }}
@@ -268,19 +270,11 @@
       <BulkBar {selected} onChanged={() => void reload()} />
     {/if}
     {#if mode === "pick"}
-      <footer class="pick-bar" data-testid="pick-bar">
-        <button type="button" data-testid="pick-cancel" onclick={() => onCancel?.()}>
-          {t("assetBrowser.pickCancel")}
-        </button>
-        <button
-          type="button"
-          data-testid="pick-confirm"
-          disabled={selected.length === 0}
-          onclick={() => onConfirm?.(selected)}
-        >
-          {t("assetBrowser.pickConfirm")}
-        </button>
-      </footer>
+      <PickConfirmBar
+        count={selected.length}
+        onConfirm={() => onConfirm?.(selected)}
+        onCancel={() => onCancel?.()}
+      />
     {/if}
   </div>
   <aside class="preview" data-testid="asset-browser-preview">
@@ -337,17 +331,5 @@
   .error {
     color: var(--text-muted);
     padding: 1rem;
-  }
-  .pick-bar {
-    flex: none;
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
-    padding: 0.375rem;
-    border-top: 1px solid var(--border);
-    button {
-      min-height: 2.25rem;
-      min-width: 44px;
-    }
   }
 </style>

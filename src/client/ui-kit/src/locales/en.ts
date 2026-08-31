@@ -76,6 +76,7 @@ export const en: Messages = {
   "assetBrowser.sortName": "Name",
   "assetBrowser.sortSize": "Size",
   "assetBrowser.pickConfirm": "Use selected",
+  "assetBrowser.pickTitle": "Pick assets",
   "assetBrowser.pickCancel": "Cancel",
   "assetBrowser.allAssets": "All assets",
   "assetBrowser.newFolder": "New folder…",

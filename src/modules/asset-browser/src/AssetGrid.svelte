@@ -9,6 +9,7 @@
     onSelectionChange,
     onOpen,
     onNearEnd,
+    appendOnClick = false,
   }: {
     /** The filtered listing, in server sort order. */
     items: Asset[];
@@ -20,6 +21,9 @@
     onOpen?: (id: string) => void;
     /** Fired when the viewport scrolls near the last row (load-more). */
     onNearEnd?: () => void;
+    /** Ordered multi-pick mode: a plain click APPENDS/toggles (preserving
+     * pick order, shown as tile badges) instead of replacing the selection. */
+    appendOnClick?: boolean;
   } = $props();
 
   const { assets: resolver, t } = getAppContext();
@@ -93,7 +97,7 @@
       onSelectionChange(items.slice(lo, hi + 1).map((a) => a.id));
       return;
     }
-    if (ev.ctrlKey || ev.metaKey) {
+    if (ev.ctrlKey || ev.metaKey || appendOnClick) {
       anchor = idx;
       onSelectionChange(
         selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id],
@@ -152,6 +156,9 @@
           ondblclick={() => onOpen?.(a.id)}
         >
           <img src={resolver.url(a.id, "thumb")} alt={a.original_name} loading="lazy" />
+          {#if appendOnClick && selected.includes(a.id)}
+            <span class="order-badge">{selected.indexOf(a.id) + 1}</span>
+          {/if}
         </button>
       {/each}
     </div>
@@ -172,6 +179,7 @@
     padding: 0.25rem;
   }
   .tile {
+    position: relative;
     min-width: 44px;
     min-height: 44px;
     aspect-ratio: 1;
@@ -188,6 +196,17 @@
       height: 100%;
       object-fit: cover;
       display: block;
+    }
+    .order-badge {
+      position: absolute;
+      top: 2px;
+      right: 2px;
+      min-width: 1.1rem;
+      border-radius: 0.55rem;
+      background: var(--accent, #46f);
+      color: var(--text-on-accent, #fff);
+      font-size: 0.7rem;
+      text-align: center;
     }
   }
   .empty {
