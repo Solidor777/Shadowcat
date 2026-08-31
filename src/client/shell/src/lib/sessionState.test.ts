@@ -1,6 +1,6 @@
 import { test, expect, vi, afterEach, beforeEach } from "vitest";
 import * as api from "./api";
-import { i18n } from "@shadowcat/ui-kit";
+import { i18n, theme, DEFAULT_THEME_ID, type PersistedTheme } from "@shadowcat/ui-kit";
 import {
   loadSessionState,
   getSessionState,
@@ -13,13 +13,22 @@ import {
   flushOnUnload,
   resetSessionState,
   pruneStaleWorlds,
+  readThemeMirror,
+  writeThemeMirror,
+  THEME_MIRROR_STORAGE_KEY,
 } from "./sessionState.svelte";
 
 // Module-level state (loaded/dirty/the cooldown timer) persists across tests otherwise — a
 // real-timer test's cooldown can still be armed up to COOLDOWN_MS into the next test.
 beforeEach(() => {
-  i18n.setLocale("en");
+  // Reset first: the singleton resets below fire the once-per-lifetime subscribers, and a
+  // still-`loaded` flag left by the previous test would let those fires schedule a real
+  // persist against stale state.
   resetSessionState();
+  i18n.setLocale("en");
+  theme.load(undefined);
+  localStorage.clear();
+  resetSessionState(); // drop dirty marks the subscriber fires above just made
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -364,4 +373,109 @@ test("flushOnUnload flushes a pending pruneStaleWorlds removal", async () => {
   expect(put).toHaveBeenLastCalledWith(expect.objectContaining({ worlds: { w2: null } }), {
     keepalive: true,
   });
+});
+
+test("load applies the saved theme to the ui-kit theme singleton", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: {
+      locale: "en",
+      lastWorld: null,
+      theme: { active: "slate-light", custom: {} },
+    },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(theme.active).toBe("slate-light");
+  expect(getSessionState().global.theme).toEqual({ active: "slate-light", custom: {} });
+});
+
+test("load canonicalizes a garbage saved theme to the default without throwing", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: {
+      locale: "en",
+      lastWorld: null,
+      theme: { active: "not-a-theme", custom: "junk" } as unknown as PersistedTheme,
+    },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(theme.active).toBe(DEFAULT_THEME_ID);
+  expect(getSessionState().global.theme).toEqual({ active: DEFAULT_THEME_ID, custom: {} });
+});
+
+test("a theme change persists ONLY global.theme through the debounced machinery", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: "w1" }, // locale/lastWorld untouched below
+    worlds: { w1: { panelLayout: { version: 1 } } },
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  theme.setActive("slate-light");
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.global).toEqual({ theme: { active: "slate-light", custom: {} } });
+  expect(patch?.worlds).toBeUndefined();
+});
+
+test("a theme change writes the localStorage mirror", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  theme.setActive("slate-light");
+  expect(localStorage.getItem(THEME_MIRROR_STORAGE_KEY)).toBe(
+    JSON.stringify({ active: "slate-light", custom: {} }),
+  );
+});
+
+test("load overwrites the localStorage mirror with the canonical persisted theme", async () => {
+  localStorage.setItem(THEME_MIRROR_STORAGE_KEY, "{not json");
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: {
+      locale: "en",
+      lastWorld: null,
+      theme: { active: "slate-light", custom: {} },
+    },
+    worlds: {},
+  });
+  await loadSessionState();
+  expect(localStorage.getItem(THEME_MIRROR_STORAGE_KEY)).toBe(
+    JSON.stringify({ active: "slate-light", custom: {} }),
+  );
+});
+
+test("readThemeMirror returns undefined when the mirror key is absent", () => {
+  expect(readThemeMirror(localStorage)).toBeUndefined();
+});
+
+test("readThemeMirror returns undefined for malformed JSON", () => {
+  localStorage.setItem(THEME_MIRROR_STORAGE_KEY, "{not json");
+  expect(readThemeMirror(localStorage)).toBeUndefined();
+});
+
+test("readThemeMirror returns undefined for a non-object payload", () => {
+  localStorage.setItem(THEME_MIRROR_STORAGE_KEY, "42");
+  expect(readThemeMirror(localStorage)).toBeUndefined();
+});
+
+test("writeThemeMirror and readThemeMirror round-trip a persisted theme", () => {
+  const value: PersistedTheme = {
+    active: "custom:mine",
+    custom: { mine: { label: "Mine", base: "slate-dark", tokens: { accent: "#123456" } } },
+  };
+  writeThemeMirror(localStorage, value);
+  expect(readThemeMirror(localStorage)).toEqual(value);
+});
+
+test("writeThemeMirror swallows a throwing storage instead of propagating", () => {
+  const throwing = {
+    setItem(): void {
+      throw new Error("quota exceeded");
+    },
+  };
+  expect(() =>
+    writeThemeMirror(throwing, { active: "slate-light", custom: {} }),
+  ).not.toThrow();
 });
