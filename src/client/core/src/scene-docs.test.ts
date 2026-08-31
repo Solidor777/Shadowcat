@@ -82,16 +82,18 @@ describe("resolveSceneSettings", () => {
     expect(r.gridDistance).toEqual({ perCell: 1.5, unit: "m" });
   });
 
-  it("builds a world-settings doc with world scope and null parent", () => {
+  it("builds a world-settings doc with world scope, null parent, and the empty overlay", () => {
     const ws = buildWorldSettingsDoc("w1");
     expect(ws.doc_type).toBe("world-settings");
     expect(ws.parent_id).toBeNull();
-    expect((ws.engine as { scene: unknown }).scene).toBeTruthy();
+    // The default engine body authors NO leaf: every setting falls through
+    // the chain until a GM writes an override.
+    expect(ws.engine).toEqual({});
   });
 
   it("fail-closed: partial world-settings wire doc (missing scene/pathfinding/animation) falls back to built-in defaults and does not throw", () => {
-    // Simulates a future partial wire payload where a set_pointer removed `scene`,
-    // leaving a non-null but structurally incomplete world-settings engine object.
+    // The overlay's ordinary shape: an engine object authoring no leaf
+    // resolves every setting through the chain, never throwing.
     const scene = buildSceneDoc("w1", {}, "scene-partial");
     const partialWs: WireDocument = {
       ...buildWorldSettingsDoc("w1", DEFAULT_WORLD_SETTINGS, "ws-partial"),
@@ -217,8 +219,7 @@ test("buildSceneDoc persists an explicit snapToGrid:false (not omitted as falsy)
   expect((doc.engine as SceneEngine).snapToGrid).toBe(false);
 });
 
-it("DEFAULT_WORLD_SETTINGS carries an unset combat chain and buildSceneDoc mirrors it", () => {
-  expect(DEFAULT_WORLD_SETTINGS.combat).toBeNull();
+it("buildSceneDoc's combat chain is unset by default and persists an authored override", () => {
   const scene = buildSceneDoc("world-1");
   expect((scene.engine as SceneEngine).combat).toBeNull();
   const ship = buildSceneDoc("world-1", { combat: { movementResource: "ship", enforcement: "hard" } });
@@ -676,27 +677,20 @@ describe("system defaults", () => {
     });
   });
 
-  it("resolveSettingProvenance reports the system/engine source, not \"world\", when a stored world value merely COINCIDES with the layer beneath it", () => {
-    // A world-settings doc is required-field-complete on the wire — every WorldSceneDefaults
-    // leaf is always present once the doc exists, even when nobody has genuinely overridden it.
-    // resolvePick's presence-only check would report "world" here unconditionally; the
-    // equality collapse must instead report the deeper layer that actually matches.
+  it("resolveSettingProvenance is STRUCTURAL: a present world leaf is a world override even when its value equals the layer beneath; an absent leaf reports the deeper layer", () => {
+    // The world layer is an overlay: presence IS the override signal, so a
+    // stored leaf reports "world" even when its value coincides with the
+    // system layer — no equality guessing.
     const sdDoc = buildSystemDefaultsDoc("w1", { scene: { fog: false } });
-    // Explicitly stores fog: false — coincidentally the same value the system doc supplies.
-    const wsMatchesSystem = buildWorldSettingsDoc(
-      "w1",
-      { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: false } },
-      "ws1",
-    );
+    const wsAuthoredFog = buildWorldSettingsDoc("w1", { scene: { fog: false } }, "ws1");
     const scene = buildSceneDoc("w1", {}, "s1");
-    const store = storeWith(sdDoc, wsMatchesSystem, scene);
+    const store = storeWith(sdDoc, wsAuthoredFog, scene);
     expect(resolveSettingProvenance(store, undefined, "scene.fog")).toEqual({
-      value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+      value: false, source: "world", systemOrEngine: { value: false, source: "system" },
     });
-    // No system doc: world's stored fog (the default's own true) coincides with the built-in
-    // engine default instead.
-    const wsMatchesEngine = buildWorldSettingsDoc("w1", undefined, "ws2");
-    const storeNoSystem = storeWith(wsMatchesEngine, scene);
+    // An empty world doc authors nothing: the leaf reports the engine layer.
+    const wsEmpty = buildWorldSettingsDoc("w1", undefined, "ws2");
+    const storeNoSystem = storeWith(wsEmpty, scene);
     expect(resolveSettingProvenance(storeNoSystem, undefined, "scene.fog")).toEqual({
       value: DEFAULT_WORLD_SETTINGS.scene.fog, source: "engine",
       systemOrEngine: { value: DEFAULT_WORLD_SETTINGS.scene.fog, source: "engine" },
