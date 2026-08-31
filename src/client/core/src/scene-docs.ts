@@ -995,6 +995,20 @@ export function buildLightDoc(worldId: string, sceneId: string, engine: LightEng
   return envelope(worldId, "light", sceneId, {}, id, engine, null);
 }
 
+/** The authoring default for a newly-enabled light emission (a standalone light placed by the
+ * light tool, an actor's carried light toggled on, a token's custom override): a warm torch —
+ * full intensity, bright 2 / dim 6 cells, no explicit falloff (the read-side default is
+ * linear), enabled. ONE shared default so every authoring surface stamps the same starting
+ * payload. Treat as immutable; spread-copy before mutating. */
+export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
+  color: "#ffd9a0",
+  intensity: 1,
+  brightRadius: 2,
+  dimRadius: 6,
+  falloff: null,
+  enabled: true,
+});
+
 // --- Region doc type ---
 
 /** A region document parented to `sceneId`. Visible to all by default; use

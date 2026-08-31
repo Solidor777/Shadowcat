@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
@@ -407,17 +407,9 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
   };
 }
 
-/** The emission payload a freshly placed light is stamped with — the documented placement
- * defaults: a warm torch (full intensity, bright 2 / dim 6 cells, no explicit falloff so the
- * read-side linear default applies, enabled). Editable after placement via the rail editor. */
-const NEW_LIGHT_EMISSION: LightEmission = {
-  color: "#ffd9a0",
-  intensity: 1,
-  brightRadius: 2,
-  dimRadius: 6,
-  falloff: null,
-  enabled: true,
-};
+/** The emission payload a freshly placed light is stamped with — the shared authoring default
+ * (`DEFAULT_LIGHT_EMISSION`), spread-copied per placement (the constant is frozen). */
+const NEW_LIGHT_EMISSION: LightEmission = { ...DEFAULT_LIGHT_EMISSION };
 
 /** Overlay ring stroke for a light's reach preview (amber, distinct from walls/selection). */
 const LIGHT_RING_COLOR = 0xe0b040;

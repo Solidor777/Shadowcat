@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, SystemTreeEditor, setField } from "@shadowcat/ui-kit";
-  import { getPointer, actorDisplayName, type WireDocument, type ActorEngine, type FactionRegistryEngine } from "@shadowcat/core";
+  import { getAppContext, SystemTreeEditor, setField, LightEmissionEditor } from "@shadowcat/ui-kit";
+  import { getPointer, actorDisplayName, DEFAULT_LIGHT_EMISSION, type WireDocument, type ActorEngine, type FactionRegistryEngine } from "@shadowcat/core";
 
   // Actor sheet: envelope `name` + engine-known fields (displayName, faction, shape, size)
   // as real controls + the opaque `system` body as a tree editor + the embedded-items
@@ -145,6 +145,12 @@
             if (Number.isNaN(h)) return;
             setEngine("size", { w: engine.size?.w ?? 1, h });
           }} /></label>
+      <label><input type="checkbox" aria-label={t("actors.carriedLight")} checked={engine.light != null} disabled={readOnly}
+        onchange={(e) => setEngine("light", (e.currentTarget as HTMLInputElement).checked ? { ...DEFAULT_LIGHT_EMISSION } : null)} />
+        {t("actors.carriedLight")}</label>
+      {#if engine.light}
+        <LightEmissionEditor value={engine.light} disabled={readOnly} onCommit={(next) => setEngine("light", next)} />
+      {/if}
     </div>
 
     {#if inventory.length > 0}

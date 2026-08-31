@@ -1,11 +1,12 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, type ActorEngine, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
+  import { getAppContext, LightEmissionEditor } from "@shadowcat/ui-kit";
+  import { buildActorDoc, setNameHidden, actorDisplayName, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
   import TokenRotationControl from "./TokenRotationControl.svelte";
+  import TokenLightControl from "./TokenLightControl.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -96,6 +97,9 @@
   let sizeW = $state(1);
   let sizeH = $state(1);
   let darkvision = $state(0);
+  /** The create form's pending carried light (`null` = the new actor emits nothing). Read via
+   * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingLight = $state<LightEmission | null>(null);
 
   // The visual-kind editor is a child component; it reports its current built visual (or null
   // when incomplete) via `onBuild`, and the host consumes it at create time + resets it after.
@@ -114,7 +118,8 @@
 
   /** The single selected token's id, if any — drives every per-token control below: the
    * face-swap palette (`FaceSwapPalette`), the ownership override control
-   * (`TokenOwnerControl`), and the rotation control (`TokenRotationControl`). */
+   * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), and the carried-light
+   * override control (`TokenLightControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
@@ -127,6 +132,41 @@
     const reg = ctx.documents.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined;
     return Object.entries(reg?.factions ?? {});
   });
+
+  /** The actor row's raw stored carried-light emission (`engine.light`), or `null`. This RAW
+   * read is the OCC pre-image for `commitLight`'s update — never a resolved/defaulted value. */
+  const lightOf = (a: WireDocument): LightEmission | null =>
+    (a.engine as ActorEngine | undefined)?.light ?? null;
+
+  /** Dispatch a whole-payload `/engine/light` update on actor `a` (the emission is one nested
+   * object, so one write carries every field's change). `old` is the raw stored emission.
+   * @param a The actor document.
+   * @param next The new emission, or `null` to remove the carried light entirely.
+   * @example
+   * ```
+   * // private helper; wired to the per-row light editor's onCommit
+   * declare const a: WireDocument;
+   * commitLight(a, null);
+   * ```
+   */
+  function commitLight(a: WireDocument, next: LightEmission | null): void {
+    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/light", old: lightOf(a), new: next }] }]);
+  }
+
+  /** The per-row carried-light toggle: on stamps the shared authoring default, off removes the
+   * emission.
+   * @param a The actor document.
+   * @param on Whether the actor should carry a light.
+   * @example
+   * ```
+   * // private helper; wired to the per-row checkbox's onchange
+   * declare const a: WireDocument;
+   * toggleLight(a, true);
+   * ```
+   */
+  function toggleLight(a: WireDocument, on: boolean): void {
+    commitLight(a, on ? { ...DEFAULT_LIGHT_EMISSION } : null);
+  }
 
   // Rows come from two sources — a store-resolved document and a search hit
   // (`WireSearchHit.document`, a full `WireDocument` clone) — and `permissions` is non-optional on
@@ -189,7 +229,7 @@
       conditions: [],
       prototype: instanceOnDrop,
       vision: darkvision > 0 ? [{ mode: "darkvision" as const, range: darkvision }] : null,
-      light: null,
+      light: pendingLight ? $state.snapshot(pendingLight) : null,
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);
@@ -202,6 +242,7 @@
     sizeW = 1;
     sizeH = 1;
     darkvision = 0;
+    pendingLight = null;
     visualEditor?.reset();
   }
 </script>
@@ -211,6 +252,7 @@
   <TokenOwnerControl tokenId={selectedTokenId} />
   <TokenRotationControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
+  <TokenLightControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
     type="search"
@@ -282,6 +324,19 @@
             value={(a.engine as VisionEngineShape | undefined)?.vision?.find((v) => v.mode === "darkvision")?.range ?? 0}
             onchange={(e) => { const range = Number(e.currentTarget.value); const cur = (a.engine as VisionEngineShape | undefined)?.vision ?? null; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: cur, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
           />
+          <!-- Per-row carried-light toggle + editor; commits whole-payload /engine/light updates. -->
+          <label>
+            <input
+              type="checkbox"
+              aria-label={t("actors.carriedLight")}
+              checked={lightOf(a) !== null}
+              onchange={(e) => toggleLight(a, e.currentTarget.checked)}
+            />
+            {t("actors.carriedLight")}
+          </label>
+          {#if lightOf(a)}
+            <LightEmissionEditor value={lightOf(a)!} onCommit={(next) => commitLight(a, next)} />
+          {/if}
         {/if}
       </li>
     {/each}
@@ -320,6 +375,18 @@
       <!-- value + onchange (not bind:value): bind:value on a number input reacts only to input events; the explicit handlers update state on change too. -->
       <input type="number" min="0" step="1" aria-label={t("actors.darkvision")} value={darkvision} onchange={(e) => (darkvision = Number(e.currentTarget.value))} oninput={(e) => (darkvision = Number(e.currentTarget.value))} />
     </label>
+    <label>
+      <input
+        type="checkbox"
+        aria-label={t("actors.carriedLight")}
+        checked={pendingLight !== null}
+        onchange={(e) => (pendingLight = e.currentTarget.checked ? { ...DEFAULT_LIGHT_EMISSION } : null)}
+      />
+      {t("actors.carriedLight")}
+    </label>
+    {#if pendingLight}
+      <LightEmissionEditor value={pendingLight} onCommit={(next) => (pendingLight = next)} />
+    {/if}
     <VisualKindEditor bind:this={visualEditor} conditionOptions={conditionOptions} onBuild={(v) => (pendingVisual = v)} />
     <button type="submit" disabled={!name || !pendingVisual}>{t("actors.create")}</button>
   </form>

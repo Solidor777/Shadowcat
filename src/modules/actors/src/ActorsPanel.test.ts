@@ -581,3 +581,95 @@ describe("ActorsPanel — live search + open sheet", () => {
     expect(screen.getByText("Goliath")).toBeTruthy();
   });
 });
+
+describe("ActorsPanel — carried light", () => {
+  const torchActor = () =>
+    buildActorDoc(
+      "w1",
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      "act1",
+    );
+
+  it("the per-row toggle stamps the shared default emission; the row editor commits whole-payload updates with the raw stored old", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(torchActor());
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    const toggle = within(listItem).getByLabelText("actors.carriedLight");
+    await fireEvent.click(toggle); // enable
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      {
+        op: "update",
+        doc_id: "act1",
+        changes: [
+          {
+            path: "/engine/light",
+            old: null, // raw stored value: absent
+            new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("a row with an emission renders the field editor, which dispatches /engine/light with the raw stored emission as old", async () => {
+    const dispatchIntent = vi.fn();
+    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+    const actor = buildActorDoc(
+      "w1",
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: torch },
+      "act1",
+    );
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(actor), dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.change(within(listItem).getByTestId("emission-dim"), { target: { value: "9" } });
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/light", old: torch, new: { ...torch, dimRadius: 9 } }] },
+    ]);
+    // Disabling via the editor's enabled checkbox keeps the payload (suppress ≠ remove).
+    await fireEvent.click(within(listItem).getByTestId("emission-enabled"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/light", old: torch, new: { ...torch, enabled: false } }] },
+    ]);
+  });
+
+  it("the create form stamps a carried light when its toggle is on", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png", byte_size: 100n, created_by: "u-self", created_at: 0n, storage_key: "k1", version: 1n, folder_id: null, tags: [], derived_tags: [], width: null, height: null, has_alpha: false, animated: false, original_content_type: "image/png", original_byte_size: 100n, original_retained: false, conversion_note: null },
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        world: "w1",
+        documents: new DocumentStore(),
+        dispatchIntent,
+        assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never,
+      }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Torchbearer" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    // The create-form carried-light toggle (no rows exist here, so this is unambiguous).
+    await fireEvent.click(screen.getByLabelText("actors.carriedLight"));
+    // The field editor appears once pendingLight is set.
+    await fireEvent.change(screen.getByTestId("emission-dim"), { target: { value: "9" } });
+
+    await fireEvent.click(screen.getByText("actors.create"));
+    const ops = dispatchIntent.mock.calls.at(-1)![0] as WireOperation[];
+    const op = ops[0] as { op: string; doc: WireDocument };
+    expect(op.op).toBe("create");
+    expect((op.doc.engine as { light: unknown }).light).toEqual({
+      color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 9, falloff: null, enabled: true,
+    });
+  });
+});

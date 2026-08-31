@@ -146,3 +146,40 @@ describe("ActorSheet edits", () => {
     ]);
   });
 });
+
+describe("ActorSheet carried light", () => {
+  it("toggling the carried-light checkbox writes /engine/light with the raw stored pre-image", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, light: null });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByLabelText("actors.carriedLight"));
+    expect(calls).toEqual([
+      [
+        {
+          op: "update",
+          doc_id: "a1",
+          changes: [
+            {
+              path: "/engine/light",
+              old: null,
+              new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
+  it("the field editor edits an existing emission through setEngine (whole-payload write)", async () => {
+    const calls: unknown[] = [];
+    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, light: torch });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.change(getByTestId("emission-bright"), { target: { value: "3" } });
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/light", old: torch, new: { ...torch, brightRadius: 3 } }] }],
+    ]);
+  });
+});
