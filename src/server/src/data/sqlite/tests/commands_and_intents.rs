@@ -2834,6 +2834,53 @@ async fn config_seed_skips_capability_gates_but_keeps_occ_and_validation() {
     assert!(matches!(err, DataError::BadEngine(_)));
 }
 
+#[tokio::test]
+async fn every_config_singleton_doc_type_is_singleton_gated() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    // The three config types outside the original gated set: a second Create
+    // must conflict exactly like the rest (the seed path's race backstop).
+    for (i, ty) in ["channel-registry", "light-gradation", "vision-modes"]
+        .iter()
+        .enumerate()
+    {
+        let base = (i as u128) * 10 + 1;
+        r.apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: singleton_test_doc(base, w.id, ty),
+            }],
+            base as i64,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        let err = r
+            .apply_intent(
+                &ctx,
+                w.id,
+                vec![Operation::Create {
+                    doc: singleton_test_doc(base + 1, w.id, ty),
+                }],
+                base as i64 + 1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DataError::Conflict(_)), "{ty} must be gated");
+    }
+}
+
 // --- combat family ingress: singleton registry, one active combat per
 // scene, combatant parentage ---
 

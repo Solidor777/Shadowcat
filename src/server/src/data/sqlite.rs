@@ -48,6 +48,9 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     SYSTEM_DEFAULTS_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
+    crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
+    crate::data::engine::LIGHT_GRADATION_DOC_TYPE,
+    crate::data::engine::VISION_MODES_DOC_TYPE,
 ];
 
 /// One-level merge of a single key into `map`: when both the existing

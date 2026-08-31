@@ -54,6 +54,12 @@ pub const WORLD_SETTINGS_DOC_TYPE: &str = "world-settings";
 pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
 /// Doc_type for the world's singleton condition registry config document.
 pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
+/// Doc_type for the world's singleton channel registry config document.
+pub const CHANNEL_REGISTRY_DOC_TYPE: &str = "channel-registry";
+/// Doc_type for the world's singleton vision-modes config document.
+pub const VISION_MODES_DOC_TYPE: &str = "vision-modes";
+/// Doc_type for the world's singleton light-gradation config document.
+pub const LIGHT_GRADATION_DOC_TYPE: &str = "light-gradation";
 /// Doc_type for a combat: a world document bound to one scene.
 pub const COMBAT_DOC_TYPE: &str = "combat";
 /// Doc_type for a combatant: always a child (`parent_id`) of a combat.
