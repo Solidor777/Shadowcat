@@ -55,7 +55,10 @@ pub struct Light {
 
 /// Illumination this light contributes at distance `dist_cells` (in CELLS), BEFORE occlusion.
 /// Full `intensity` within `bright_radius`; tapers across `(bright_radius, dim_radius]` by the
-/// curve; 0 beyond `dim_radius`. Disabled / non-finite / non-positive `dim_radius` ⇒ 0.
+/// curve; 0 beyond `dim_radius`. Disabled / non-finite / non-positive `dim_radius` ⇒ 0, and a
+/// non-finite `dist_cells` ⇒ 0 too — without that guard the `Falloff::None` arm (which ignores
+/// the taper parameter) would return a finite, positive level for EVERY cell of a NaN-positioned
+/// light.
 ///
 /// Returns a value in `[0, intensity]`. A caller composing multiple lights clamps the summed
 /// result to `[0, 1]` before band lookup. `intensity` must be finite (the document→`Light` parser
@@ -64,6 +67,7 @@ pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
     if !light.enabled
         || !light.dim_radius.is_finite()
         || light.dim_radius <= 0.0
+        || !dist_cells.is_finite()
         || dist_cells > light.dim_radius
     {
         return 0.0;
@@ -281,6 +285,11 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 /// Per-source fail-closed directions are preserved under composition: a disabled/non-finite/
 /// occluded source contributes exactly 0, and a zero-contributor cell is dark with tint
 /// `0x000000`.
+///
+/// Note on the tint channel: the weighted mix means a contributor's hue is visible in every
+/// shared cell even when a brighter source dominates the LEVEL — the per-cell tint in the
+/// `vision` payload is the only place this reaches, and it is display metadata, not a position
+/// or identity disclosure.
 pub fn cell_illumination(
     center: P,
     env_intensity: f64,

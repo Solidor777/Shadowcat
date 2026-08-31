@@ -38,6 +38,8 @@ vision: Array<VisionAssignment> | null,
 /**
  * Per-token light override: replaces the actor's `light` entirely when
  * present (wholesale, same shape as `vision`); an emission with
- * `enabled: false` suppresses this token's carried light.
+ * `enabled: false` suppresses this token's carried light. Authoring it is
+ * GM-only at ingress (`permission::carried_light_touched`): an emission joins the shared
+ * illumination field every viewer's mask reads, unlike the other owner-writable overrides.
  */
 light: LightEmission | null, };

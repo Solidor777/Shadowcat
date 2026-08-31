@@ -1810,3 +1810,62 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
         "the viewer's cell is dark once the torch leaves"
     );
 }
+
+#[test]
+fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
+    // Companion to `carried_light_move_invalidates_the_cached_visibility_mask` (which moves the
+    // carrier): here nothing moves — the actor's emission itself is edited — so only the
+    // `lights` snapshot member's value comparison can force the recompute.
+    let player = Uuid::from_u128(42);
+    let mut viewer = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    viewer.owner = Some(player);
+    let mut carrier = linked_token(12, 200, 150.0, 50.0);
+    carrier.owner = Some(Uuid::from_u128(7));
+    let mut ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            viewer,
+            carrier,
+        ],
+        0,
+    );
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    let scene = Uuid::from_u128(10);
+    assert!(ecs
+        .visible_cells_cached(player, scene, false)
+        .contains(&(0, 0)));
+    let recomputes = ecs.visible_cells_recompute_count();
+
+    // Toggling the actor's emission off (a set_actors write, deliberately NOT apply_op — the
+    // value-comparison cache contract covers this mutation path) darkens the viewer's cell.
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(
+            json!({ "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0,
+                "dimRadius": 4.0, "enabled": false }),
+        ),
+    )]);
+    let mask2 = ecs.visible_cells_cached(player, scene, false);
+    assert!(
+        ecs.visible_cells_recompute_count() > recomputes,
+        "an emission value change must recompute the mask"
+    );
+    assert!(
+        !mask2.contains(&(0, 0)),
+        "the suppressed torch no longer lights the viewer's cell"
+    );
+}

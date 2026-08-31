@@ -321,6 +321,126 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     }
 }
 
+/// The absolute JSON pointers whose values decide a document's carried-light emission — the
+/// exact set `SceneEcs::token_light_emission` reads: a TOKEN's `/engine/overrides/light` plus
+/// each embedded actor copy's `/embedded/actor/<i>/engine/light`; an ACTOR's `/engine/light`.
+/// Embedded indices are enumerated from both the current document and the write's new value,
+/// because an ancestor write can introduce a new embedded actor wholesale.
+fn carried_light_pointers(
+    doc_type: &str,
+    whole: &serde_json::Value,
+    path: &str,
+    new: &serde_json::Value,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    match doc_type {
+        "token" => {
+            out.push("/engine/overrides/light".to_string());
+            if let Some(arr) = whole.pointer("/embedded/actor").and_then(|v| v.as_array()) {
+                out.extend((0..arr.len()).map(|i| format!("/embedded/actor/{i}/engine/light")));
+            }
+            // The new subtree only carries embedded actors when the write covers `/embedded`.
+            let new_actors: Option<&Vec<serde_json::Value>> = if path == "/embedded" {
+                new.pointer("/actor").and_then(|v| v.as_array())
+            } else if path == "/embedded/actor" {
+                new.as_array()
+            } else {
+                None
+            };
+            if let Some(arr) = new_actors {
+                out.extend((0..arr.len()).map(|i| format!("/embedded/actor/{i}/engine/light")));
+            }
+        }
+        "actor" => out.push("/engine/light".to_string()),
+        _ => {}
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Normalize a pointer read for emission comparison: absent and explicit `null` are the same
+/// "no emission" state.
+fn non_null(value: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
+    value.filter(|v| !v.is_null())
+}
+
+/// Whether a field change (`path`, `remove`, `new`) applied to a document whose current JSON is
+/// `whole` creates, changes, or removes a carried-light emission. Value-aware: a DIRECT write at
+/// or below an emission pointer always counts (a removal of the override restores the actor's
+/// emission — a change); an ANCESTOR write (`/engine`, `/engine/overrides`, `/embedded/…`)
+/// counts only when the emission subtree actually differs.
+///
+/// This exists because a carried emission joins the SHARED illumination field every viewer's
+/// lit mask and movement gate read (`SceneEcs::scene_lights`) — unlike every other
+/// owner-writable field (name/visual/size/shape/vision are presentation or self-scoped), so an
+/// owner writing it would edit other players' secrecy masks. `apply_intent` refuses such writes
+/// from non-GMs.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::carried_light_touched;
+///
+/// let tok = serde_json::json!({ "engine": { "x": 0.0, "overrides": { "light": null } } });
+/// // Direct override writes always count.
+/// assert!(carried_light_touched("token", "/engine/overrides/light", false, &tok, &serde_json::json!({"enabled": true})));
+/// // An ancestor write counts only when the emission subtree changes.
+/// assert!(!carried_light_touched("token", "/engine/overrides", false, &tok, &serde_json::json!({"light": null})));
+/// assert!(carried_light_touched("token", "/engine/overrides", false, &tok, &serde_json::json!({"light": {"enabled": true}})));
+/// // Other doc_types never count.
+/// assert!(!carried_light_touched("scene", "/engine/light", false, &tok, &serde_json::json!({"enabled": true})));
+/// ```
+pub fn carried_light_touched(
+    doc_type: &str,
+    path: &str,
+    remove: bool,
+    whole: &serde_json::Value,
+    new: &serde_json::Value,
+) -> bool {
+    for e in carried_light_pointers(doc_type, whole, path, new) {
+        // Direct write at/below the emission pointer: always a touch (even a same-value write —
+        // conservative, and the caller's GM gate makes conservatism cheap).
+        if path == e || path.starts_with(&format!("{e}/")) {
+            return true;
+        }
+        // Ancestor write covering the pointer: compare the emission subtree old vs new.
+        if e.len() > path.len() && e.starts_with(path) && e.as_bytes()[path.len()] == b'/' {
+            let old_v = non_null(whole.pointer(&e));
+            let new_v = if remove {
+                // Removing the ancestor drops the whole subtree: a touch iff an emission existed.
+                None
+            } else {
+                non_null(new.pointer(&e[path.len()..]))
+            };
+            if old_v != new_v {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a document BODY being created carries a non-null carried-light emission
+/// (`apply_intent`'s Create arm — Create writes the whole body at once, so there is no field
+/// path to classify). Complements `carried_light_touched`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::carried_light_in_body;
+///
+/// let with = serde_json::json!({ "engine": { "light": { "enabled": true } } });
+/// let without = serde_json::json!({ "engine": { "light": null } });
+/// assert!(carried_light_in_body("actor", &with));
+/// assert!(!carried_light_in_body("actor", &without));
+/// ```
+pub fn carried_light_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bool {
+    carried_light_pointers(doc_type, doc_json, "/__none__", &serde_json::Value::Null)
+        .iter()
+        .any(|p| doc_json.pointer(p).is_some_and(|v| !v.is_null()))
+}
+
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedactionTarget {

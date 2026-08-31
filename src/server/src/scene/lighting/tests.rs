@@ -190,7 +190,15 @@ fn two_overlapping_dim_lights_cross_the_bright_threshold() {
         intensity: 0.4,
         ..lamp()
     };
-    let single = cell_illumination((0.0, 0.0), 0.0, 0, std::slice::from_ref(&a), &[vec![]], &[], 100.0);
+    let single = cell_illumination(
+        (0.0, 0.0),
+        0.0,
+        0,
+        std::slice::from_ref(&a),
+        &[vec![]],
+        &[],
+        100.0,
+    );
     assert_eq!(single.level, 0.4);
     let bands = sorted_bands(default_bands());
     assert_eq!(bands[band_index(&bands, single.level)].name, "dim");
@@ -286,6 +294,18 @@ fn non_finite_dim_radius_contributes_nothing() {
         ..lamp()
     };
     assert_eq!(light_illumination(&i, 1.0), 0.0);
+}
+
+#[test]
+fn non_finite_distance_contributes_nothing_even_for_flat_falloff() {
+    // A NaN/±inf distance must zero the contribution for EVERY curve — the `None` curve ignores
+    // the taper parameter, so without the guard it would light every cell of a NaN-positioned
+    // light (a scene-wide fail-open).
+    for falloff in [Falloff::None, Falloff::Linear, Falloff::Quadratic] {
+        let l = Light { falloff, ..lamp() };
+        assert_eq!(light_illumination(&l, f64::NAN), 0.0, "{falloff:?}");
+        assert_eq!(light_illumination(&l, f64::INFINITY), 0.0, "{falloff:?}");
+    }
 }
 
 #[test]

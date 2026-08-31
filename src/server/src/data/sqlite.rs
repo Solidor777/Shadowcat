@@ -21,8 +21,8 @@ use crate::data::engine::{
     SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
-    cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world, Access,
+    cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
+    declared_caps_for_path, required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
@@ -3297,6 +3297,20 @@ impl Repository for SqliteRepository {
                             return Err(DataError::Forbidden);
                         }
                     }
+                    // Create carries no field paths, so the carried-light GM gate
+                    // (see the Update arm below) checks the body directly: a non-GM may not
+                    // create a token/actor already carrying an emission, even in a world whose
+                    // `core:create` grant otherwise admits the Create itself.
+                    if !origin.skips_capability_gates()
+                        && ctx.world_role != WorldRole::Gm
+                        && carried_light_in_body(&doc.doc_type, &doc_json)
+                    {
+                        tracing::debug!(
+                            user = %ctx.user_id, doc_type = %doc.doc_type,
+                            "create denied: carried-light authoring is GM-only"
+                        );
+                        return Err(DataError::Forbidden);
+                    }
                     // Create is non-clobbering: an existing id is a conflict,
                     // not a silent overwrite (unlike upsert in apply_command).
                     if Self::load_document(&mut *tx, doc.id).await?.is_some() {
@@ -3558,6 +3572,29 @@ impl Repository for SqliteRepository {
                                     return Err(DataError::Forbidden);
                                 }
                             }
+                        }
+                        // Carried-light authoring is GM-only, value-aware
+                        // (`permission::carried_light_touched`): an emission joins the SHARED
+                        // illumination field every viewer's lit mask and movement gate read, so
+                        // unlike an owner's other writable fields (presentation/self-scoped),
+                        // writing one edits other players' secrecy masks. An ancestor write is
+                        // refused only when the emission subtree actually changes, so a whole-
+                        // `/engine/overrides` write that leaves `light` untouched stays legal.
+                        if !origin.skips_capability_gates()
+                            && ctx.world_role != WorldRole::Gm
+                            && carried_light_touched(
+                                &cur.doc_type,
+                                &ch.path,
+                                ch.remove,
+                                &whole,
+                                &ch.new,
+                            )
+                        {
+                            tracing::debug!(
+                                user = %ctx.user_id, path = %ch.path,
+                                "intent denied: carried-light authoring is GM-only"
+                            );
+                            return Err(DataError::Forbidden);
                         }
                         let actual = whole
                             .pointer(&ch.path)

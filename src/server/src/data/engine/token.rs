@@ -114,7 +114,9 @@ pub struct TokenOverrides {
     pub vision: Option<Vec<VisionAssignment>>,
     /// Per-token light override: replaces the actor's `light` entirely when
     /// present (wholesale, same shape as `vision`); an emission with
-    /// `enabled: false` suppresses this token's carried light.
+    /// `enabled: false` suppresses this token's carried light. Authoring it is
+    /// GM-only at ingress (`permission::carried_light_touched`): an emission joins the shared
+    /// illumination field every viewer's mask reads, unlike the other owner-writable overrides.
     #[serde(default)]
     pub light: Option<LightEmission>,
 }
@@ -283,7 +285,9 @@ pub struct ActorEngine {
     pub vision: Option<Vec<VisionAssignment>>,
     /// Light this actor's tokens carry: every token resolving this actor
     /// emits it at its live position unless the token's override replaces or
-    /// suppresses it (`TokenOverrides::light`).
+    /// suppresses it (`TokenOverrides::light`). Writing it is GM-only at ingress
+    /// (`permission::carried_light_touched`), since an emission edits the shared illumination
+    /// field every viewer's mask reads.
     #[serde(default)]
     pub light: Option<LightEmission>,
 }

@@ -58,6 +58,8 @@ vision: Array<VisionAssignment> | null,
 /**
  * Light this actor's tokens carry: every token resolving this actor
  * emits it at its live position unless the token's override replaces or
- * suppresses it (`TokenOverrides::light`).
+ * suppresses it (`TokenOverrides::light`). Writing it is GM-only at ingress
+ * (`permission::carried_light_touched`), since an emission edits the shared illumination
+ * field every viewer's mask reads.
  */
 light: LightEmission | null, };

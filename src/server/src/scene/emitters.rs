@@ -122,14 +122,21 @@ impl SceneEcs {
                 _ => {}
             }
         }
-        // Deterministic order (entity-query order is unspecified): sort by id-stable position.
-        // Uses total_cmp for a genuine total order — partial_cmp on f64 is a partial order
-        // (NaN breaks trichotomy and makes sort_by non-deterministic under NaN inputs).
+        // Deterministic order (entity-query order is unspecified). Position alone is NOT a
+        // unique key — a standalone light stacked exactly on a carrying token shares it — so
+        // the chain continues through every payload field; a collision beyond that would need
+        // two fully identical emissions, whose order is then genuinely irrelevant. total_cmp
+        // gives a genuine total order (partial_cmp on f64 is a partial order: NaN breaks
+        // trichotomy and makes sort_by non-deterministic under NaN inputs).
         out.sort_unstable_by(|a, b| {
             a.pos
                 .0
                 .total_cmp(&b.pos.0)
                 .then(a.pos.1.total_cmp(&b.pos.1))
+                .then(a.color.cmp(&b.color))
+                .then(a.intensity.total_cmp(&b.intensity))
+                .then(a.bright_radius.total_cmp(&b.bright_radius))
+                .then(a.dim_radius.total_cmp(&b.dim_radius))
         });
         out
     }
