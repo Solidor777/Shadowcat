@@ -155,7 +155,12 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
   /** A notice queued during construction, pending `flushPendingNotice()` —
    * see that method's doc comment for why `#rehydratePoppedOut` cannot call
    * `deps.onNotice` directly. */
-  #pendingNotice: { key: string; action?: PanelsNoticeAction } | null = null;
+  #pendingNotice: {
+    /** The notice's i18n key, resolved by the surfacer. */
+    key: string;
+    /** The declared call-to-action, when the notice carries one. */
+    action?: PanelsNoticeAction;
+  } | null = null;
 
   /** Decodes the persisted layout blob (falling back to a fresh
    * `defaultLayout` built from the role-filtered registry on garbage/absence —

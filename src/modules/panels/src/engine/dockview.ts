@@ -81,7 +81,12 @@ const FLOATING_MIN_SIZE = 100;
 function clampScreenRectToAvailable(rect: ScreenRect): ScreenRect {
   // `availLeft`/`availTop` are de-facto-standard but absent from the DOM lib's
   // `Screen` — read them through a widened view.
-  const screen = window.screen as Screen & { availLeft?: number; availTop?: number };
+  const screen = window.screen as Screen & {
+    /** Left edge of the available screen area (absent from the DOM lib's `Screen`). */
+    availLeft?: number;
+    /** Top edge of the available screen area (absent from the DOM lib's `Screen`). */
+    availTop?: number;
+  };
   const availLeft = screen.availLeft ?? 0;
   const availTop = screen.availTop ?? 0;
   const availWidth = screen.availWidth ?? screen.width ?? 0;
@@ -501,10 +506,28 @@ interface FloatingWindowEntry {
   /** The window's overlay chrome (`DockviewFloatingGroupPanel.overlay`) — its
    * element's rendered box IS the floating window's outer frame, titlebar
    * included. */
-  readonly overlay: { readonly element: HTMLElement };
+  readonly overlay: {
+    /** The overlay's root element (`Overlay`'s own element). */
+    readonly element: HTMLElement;
+  };
   /** Repositions/resizes the overlay (`Overlay.setBounds` underneath, which
-   * also clamps the box to its minimum-in-viewport allowance). */
-  position(bounds: { left?: number; top?: number; width?: number; height?: number }): void;
+   * also clamps the box to its minimum-in-viewport allowance).
+   * @param bounds The partial box to write; omitted members stay unchanged.
+   * @param bounds.left New left edge (px, relative to the dockview root).
+   * @param bounds.top New top edge (px, relative to the dockview root).
+   * @param bounds.width New width (px).
+   * @param bounds.height New height (px).
+   */
+  position(bounds: {
+    /** New left edge (px, relative to the dockview root). */
+    left?: number;
+    /** New top edge (px, relative to the dockview root). */
+    top?: number;
+    /** New width (px). */
+    width?: number;
+    /** New height (px). */
+    height?: number;
+  }): void;
 }
 
 /** The narrow structural slice of `DockviewComponent` (reachable from
@@ -1433,8 +1456,8 @@ export class DockviewEngine implements EngineAdapter {
    * fields `PopoutWindow.dimensions()` reads), NEVER the event payload: the
    * vendored `dockview-core@7.0.2` `onDidWindowMoveEnd` listener inside
    * `DockviewComponent`'s pop-out wiring fires its position event with
-   * `screenY` populated from `window.screenX` (an upstream defect, recorded
-   * in `docs/OPEN_BUGS.md`) — re-verify against the vendored source on any
+   * `screenY` populated from `window.screenX` — a confirmed upstream defect,
+   * so the payload is unusable — re-verify against the vendored source on any
    * dockview-core version bump. Both events fire with the window's full
    * current geometry implied, so one handler serves both. The subscriptions
    * are component-level (one pair in `#disposables` for the component's whole
@@ -1971,6 +1994,26 @@ export class DockviewEngine implements EngineAdapter {
     }
   }
 
+  /** The live `DockviewComponent` behind `#api` (its `component` field is not
+   * on the public `DockviewApi` typings), or `null` pre-`init`/post-`destroy`.
+   * The one sanctioned site for this cast — same vendored-source coupling as
+   * `DockviewComponentAccess`; re-verify on any dockview-core version bump.
+   * @returns The component access slice, or `null`.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #floatingEntryFor and #floatingOverlayRect
+   * this.#componentAccess();
+   * ```
+   */
+  #componentAccess(): DockviewComponentAccess | null {
+    const api = this.#api as unknown as {
+      /** The component instance; absent while the api is disposed. */
+      component?: DockviewComponentAccess;
+    } | null;
+    return api?.component ?? null;
+  }
+
   /** Finds the live floating-window entry (`DockviewComponent.floatingGroups`)
    * hosting `group`, by membership — `FloatingGroupService.findByGroup`'s own
    * rule: the anchor group itself, or any group whose element sits inside the
@@ -1987,12 +2030,17 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   #floatingEntryFor(group: IDockviewGroupPanel): FloatingWindowEntry | null {
-    const component = (this.#api as unknown as { component?: DockviewComponentAccess } | null)?.component;
+    const component = this.#componentAccess();
     if (!component) return null;
     // `element` exists on the concrete group class but not on its public
     // interface — read it structurally (same vendored-source coupling as
     // `FloatingWindowEntry`; re-verify on a dockview-core version bump).
-    const groupEl = (group as { readonly element?: HTMLElement }).element;
+    const groupEl = (
+      group as {
+        /** The group's DOM element (concrete class only). */
+        readonly element?: HTMLElement;
+      }
+    ).element;
     return (
       component.floatingGroups.find(
         (e) => e.group === group || (groupEl !== undefined && e.overlay.element.contains(groupEl)),
@@ -2020,7 +2068,7 @@ export class DockviewEngine implements EngineAdapter {
    * ```
    */
   #floatingOverlayRect(entry: FloatingWindowEntry): Rect | null {
-    const component = (this.#api as unknown as { component?: DockviewComponentAccess } | null)?.component;
+    const component = this.#componentAccess();
     if (!component) return null;
     const root = component.element.getBoundingClientRect();
     const box = entry.overlay.element.getBoundingClientRect();
