@@ -110,6 +110,23 @@ test("init mounts the stage and apply() adopts a two-panel tree's slot elements"
   expect(chatSlot.isSameNode(slotFor("chat"))).toBe(true);
 });
 
+test("init passes a style-free theme class so dockview's default theme literals never override the token bridge", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots([]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  // dockview falls back to `themeAbyss` when no theme option is given, and
+  // its `dockview-theme-abyss` class re-declares every --dv-* variable with
+  // dark literals on the shell element — beating the `.sc-dockview-root`
+  // token mapping (var() references) for the whole subtree under any
+  // non-dark active theme.
+  expect(host.querySelector(".dockview-theme-abyss")).toBeNull();
+  expect(host.querySelector(".sc-dockview-theme")).toBeTruthy();
+});
+
 test("apply() is idempotent: applying the same tree twice adds no duplicate panels", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");

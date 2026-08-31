@@ -1,11 +1,13 @@
 // Skin: imports dockview's base stylesheet, then maps its CSS custom
 // properties onto our design tokens so ALL docking chrome — tab strips, drop
 // overlays, tab-group chips, and the floating titlebar/window frame — follows
-// the active theme instead of dockview's shipped themes. We apply no
-// `dockview-theme-*` class, so every `--dv-*` custom property consumed without
-// a fallback is declared here; anything left unset would compute to its
-// initial value. Imported once, as a side effect, from the `dockview` module —
-// never paid for by `FakeEngine`-only hosts.
+// the active theme instead of dockview's shipped themes. The mapping lives on
+// `.sc-dockview-root` and works only because `DockviewEngine.init` passes a
+// style-free `sc-dockview-theme` class to `createDockview`: dockview's default
+// `dockview-theme-abyss` class re-declares every `--dv-*` variable with dark
+// literals on the shell element, which would override these var() references
+// for the whole subtree. Imported once, as a side effect, from the `dockview`
+// module — never paid for by `FakeEngine`-only hosts.
 // Referenced by relative path (not a bare "pkg/..." specifier) — dart-sass's
 // CLI/Vite compiler resolves plain npm-package specifiers only via the
 // newer Node "pkg:" importer scheme, which is not universally wired through

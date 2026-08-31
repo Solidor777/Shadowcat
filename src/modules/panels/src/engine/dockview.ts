@@ -689,6 +689,13 @@ export class DockviewEngine implements EngineAdapter {
     host.classList.add("sc-dockview-root");
 
     const api = createDockview(host, {
+      // dockview falls back to `themeAbyss` when no theme option is given,
+      // and its `dockview-theme-abyss` class re-declares every --dv-*
+      // variable with dark literals on the shell element — that would beat
+      // the `.sc-dockview-root` token mapping (var() references) for the
+      // whole subtree under any non-dark active theme. A named, style-free
+      // theme class keeps the cascade with the token bridge.
+      theme: { name: "shadowcat", className: "sc-dockview-theme" },
       createComponent: (options: CreateComponentOptions) =>
         options.name === "sc-stage"
           ? new AdoptingContentRenderer(() => stageEl, "sc-dockview-stage-content")
