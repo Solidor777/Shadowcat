@@ -116,6 +116,39 @@ test("two simultaneously popped-out ids cascade to distinct floating rects under
   eng.destroy();
 });
 
+// Keyboard-driven floating resize reaches this engine through the reducer
+// with NO engine-side code path of its own: `apply()` re-reads each floating
+// entry's `Rect` on every reconcile, so a `resizeFloating` op's round trip
+// (op → `applyOp` → `apply`) repositions the float container directly. This
+// pins that property against a future refactor of `apply()`'s floating loop.
+test("a resizeFloating op round-trip repositions FakeEngine's float container (no engine-specific resize path)", () => {
+  const host = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const eng = new FakeEngine();
+  eng.init(host, slotFor, document.createElement("div"));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  eng.apply(l.expanded, new Map());
+
+  // The controller loop: an engine-emitted op reduces onto the tree and the
+  // result re-applies.
+  eng.onOp((op) => {
+    l = applyOp(l, op);
+    eng.apply(l.expanded, new Map());
+  });
+  eng.emitOp({ op: "resizeFloating", id: "chat", rect: { x: 42, y: 18, w: 260, h: 190 } });
+
+  const el = eng.floatEl("chat")!;
+  expect({ left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height }).toEqual({
+    left: "42px",
+    top: "18px",
+    width: "260px",
+    height: "190px",
+  });
+  eng.destroy();
+});
+
 // THIRD copy of the cascade constants: `POPOUT_FALLBACK_BASE`/`STEP` inside
 // `apply()`, whose own comment asserts it mirrors `layout/tree`'s
 // SHEET_CASCADE_BASE/STEP and `PanelsController`'s own REHYDRATE_FLOAT_BASE/STEP.

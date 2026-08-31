@@ -334,6 +334,8 @@ export const en: Messages = {
     "Pop-out was blocked; opened as a floating window instead",
   "panels.popoutRestoredFloating":
     "Popped-out panels reopen as floating windows after reload",
+  "panels.floatingDialog":
+    "{panel} — floating window. Arrow keys move, Ctrl+arrow keys resize; hold Shift for larger steps. Escape closes.",
   "panels.moreViews": "More views",
   "panels.unknownPanel": "Unknown panel ({id})",
   "panels.crashed": "Panel crashed",

@@ -46,6 +46,18 @@ const ZONE_EDGE_DIRECTION: Record<ZoneId, "left" | "right" | "below"> = {
   bottom: "below",
 };
 
+/** Keyboard move/resize steps for a focused floating dialog (see
+ * `#handleFloatingKeydown`): the base arrow-key step, and the larger
+ * Shift-modified step. */
+const FLOATING_KEY_STEP = 8;
+/** The Shift-modified larger keyboard move/resize step. */
+const FLOATING_KEY_STEP_LARGE = 32;
+/** Floor a keyboard resize can shrink a floating window to — a zero/negative
+ * size would fail the layout codec's `isRect` non-negativity guard on the next
+ * persist (resetting the whole layout on the following load), and a tiny
+ * window is unreachable UI besides. */
+const FLOATING_MIN_SIZE = 100;
+
 /** Content renderer that adopts an externally-owned element (a panel slot,
  * or the shared stage element) into dockview's panel content container.
  * `resolve` is called once, lazily, at `init()` — matching every other
@@ -1027,7 +1039,8 @@ export class DockviewEngine implements EngineAdapter {
   /** Floating groups are non-modal dialogs (dockview's own `Overlay`
    * sets `role="dialog"`/`aria-modal="false"` — see `Overlay`'s constructor); this adds
    * the label + focus management dockview doesn't supply itself:
-   * `aria-label` = the panel's own label, DOM focus moves
+   * `aria-label` = the panel's own label plus the keyboard-interaction hint
+   * (`panels.floatingDialog`, consumed by `#handleFloatingKeydown`), DOM focus moves
    * into the dialog the moment it appears, and Escape (bubbled from
    * anywhere inside it) closes it via the same op channel a menu/drag
    * gesture uses. Called once per floating-panel CREATION (`apply()`'s
@@ -1051,15 +1064,92 @@ export class DockviewEngine implements EngineAdapter {
     const dialogEl = panel.group.element.closest<HTMLElement>('[role="dialog"]');
     if (!dialogEl) return;
     dialogEl.tabIndex = -1;
-    if (meta) dialogEl.setAttribute("aria-label", i18n.t(meta.labelKey));
+    if (meta) dialogEl.setAttribute("aria-label", i18n.t("panels.floatingDialog", { panel: i18n.t(meta.labelKey) }));
     const onKeydown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      event.stopPropagation();
-      for (const cb of this.#opListeners) cb({ op: "close", id });
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        for (const cb of this.#opListeners) cb({ op: "close", id });
+        return;
+      }
+      this.#handleFloatingKeydown(id, dialogEl, event);
     };
     dialogEl.addEventListener("keydown", onKeydown);
     this.#floatingEscapeSubs.set(id, () => dialogEl.removeEventListener("keydown", onKeydown));
     dialogEl.focus();
+  }
+
+  /** Keyboard move/resize for a focused floating dialog: plain arrows MOVE the
+   * window (`FLOATING_KEY_STEP` px; `FLOATING_KEY_STEP_LARGE` with Shift),
+   * Ctrl+arrows RESIZE it from the bottom/right edges (same steps, floored at
+   * `FLOATING_MIN_SIZE`). Every accepted keystroke emits ONE
+   * `LayoutOp.resizeFloating` through the same `#opListeners` channel a drag
+   * gesture uses (keydown auto-repeat included — one op per event), based off
+   * `#lastFloatingRect` (the tree's rect as last applied/emitted); the op's
+   * round trip through the controller and back into `apply()` is what actually
+   * moves the widget (the `apply()` floating loop's reconcile branch), so the
+   * engine never mutates the widget directly here. Only acts when the event
+   * TARGET is the dialog wrapper itself — a keydown bubbled up from an input
+   * or any other content inside the dialog belongs to that control, not to
+   * window movement.
+   * @param id The floating panel's id.
+   * @param dialogEl The dialog wrapper `#wireFloatingA11y` bound the keydown
+   * listener to.
+   * @param event The keydown event to interpret.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked only from
+   * // #wireFloatingA11y's keydown listener
+   * declare const dialogEl: HTMLElement;
+   * declare const event: KeyboardEvent;
+   * this.#handleFloatingKeydown("chat", dialogEl, event);
+   * ```
+   */
+  #handleFloatingKeydown(id: string, dialogEl: HTMLElement, event: KeyboardEvent): void {
+    if (event.target !== dialogEl) return;
+    const current = this.#lastFloatingRect.get(id);
+    if (!current) return;
+    const step = event.shiftKey ? FLOATING_KEY_STEP_LARGE : FLOATING_KEY_STEP;
+    const rect: Rect = { ...current };
+    if (event.ctrlKey) {
+      switch (event.key) {
+        case "ArrowRight":
+          rect.w = Math.max(FLOATING_MIN_SIZE, current.w + step);
+          break;
+        case "ArrowLeft":
+          rect.w = Math.max(FLOATING_MIN_SIZE, current.w - step);
+          break;
+        case "ArrowDown":
+          rect.h = Math.max(FLOATING_MIN_SIZE, current.h + step);
+          break;
+        case "ArrowUp":
+          rect.h = Math.max(FLOATING_MIN_SIZE, current.h - step);
+          break;
+        default:
+          return;
+      }
+    } else {
+      switch (event.key) {
+        case "ArrowRight":
+          rect.x += step;
+          break;
+        case "ArrowLeft":
+          rect.x -= step;
+          break;
+        case "ArrowDown":
+          rect.y += step;
+          break;
+        case "ArrowUp":
+          rect.y -= step;
+          break;
+        default:
+          return;
+      }
+    }
+    // The wrapper is focusable chrome, not a scroll container — keep the
+    // arrow press from scrolling whatever lies beneath.
+    event.preventDefault();
+    event.stopPropagation();
+    for (const cb of this.#opListeners) cb({ op: "resizeFloating", id, rect });
   }
 
   /** Reverses `#wireFloatingA11y` for `id` — disposes its Escape listener and
@@ -1689,8 +1779,14 @@ export class DockviewEngine implements EngineAdapter {
   #floatingEntryFor(group: IDockviewGroupPanel): FloatingWindowEntry | null {
     const component = (this.#api as unknown as { component?: DockviewComponentAccess } | null)?.component;
     if (!component) return null;
+    // `element` exists on the concrete group class but not on its public
+    // interface — read it structurally (same vendored-source coupling as
+    // `FloatingWindowEntry`; re-verify on a dockview-core version bump).
+    const groupEl = (group as { readonly element?: HTMLElement }).element;
     return (
-      component.floatingGroups.find((e) => e.group === group || e.overlay.element.contains(group.element)) ?? null
+      component.floatingGroups.find(
+        (e) => e.group === group || (groupEl !== undefined && e.overlay.element.contains(groupEl)),
+      ) ?? null
     );
   }
 

@@ -3,7 +3,7 @@ import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../la
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
-import { theme } from "@shadowcat/ui-kit";
+import { i18n, theme } from "@shadowcat/ui-kit";
 import type {
   DockviewApi,
   DockviewPopoutGroupOptions,
@@ -1048,7 +1048,7 @@ test("menu 'Float' command: the resulting floating dialog gets aria-label + focu
 
   const dialogEl = attachedHost.querySelector<HTMLElement>('[role="dialog"]');
   expect(dialogEl).toBeTruthy();
-  expect(dialogEl!.getAttribute("aria-label")).toBe("test.chatLabel");
+  expect(dialogEl!.getAttribute("aria-label")).toBe(i18n.t("panels.floatingDialog", { panel: "test.chatLabel" }));
   expect(document.activeElement).toBe(dialogEl);
 
   // Escape (bubbled from anywhere inside the dialog) closes it via the same
@@ -1063,6 +1063,86 @@ test("menu 'Float' command: the resulting floating dialog gets aria-label + focu
   layout = applyOp(layout, { op: "close", id: "chat" });
   engine.apply(layout.expanded, meta);
   expect(document.activeElement).not.toBe(dialogEl);
+});
+
+/** Mounts an engine with one panel floating at a known rect, returning the
+ * dialog wrapper + the emitted-op log. Each `press` round-trips the emitted
+ * op through the reducer + `apply()`, exactly as the real controller loop
+ * does, so successive keystrokes accumulate off the updated tree rect. */
+function floatingKeyboardSetup(): {
+  dialogEl: HTMLElement;
+  ops: LayoutOp[];
+  press: (init: KeyboardEventInit & { key: string }) => void;
+} {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  const eng = new DockviewEngine(silentLogger);
+  engine = eng;
+  eng.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  eng.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  eng.onOp((op) => ops.push(op));
+
+  const dialogEl = host.querySelector<HTMLElement>('[role="dialog"]')!;
+  const press = (init: KeyboardEventInit & { key: string }): void => {
+    const before = ops.length;
+    dialogEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+    const op = ops.length > before ? ops[ops.length - 1] : null;
+    if (op) {
+      layout = applyOp(layout, op);
+      eng.apply(layout.expanded, new Map());
+    }
+  };
+  return { dialogEl, ops, press };
+}
+
+test("floating dialog keyboard: arrows move 8px (Shift 32px), Ctrl+arrows resize the bottom/right edges (Ctrl+Shift 32px)", () => {
+  const { ops, press } = floatingKeyboardSetup();
+
+  press({ key: "ArrowRight" });
+  expect(ops[0]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 10, w: 200, h: 150 } });
+  press({ key: "ArrowRight" }); // accumulates off the round-tripped tree rect
+  expect(ops[1]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 26, y: 10, w: 200, h: 150 } });
+  press({ key: "ArrowDown", shiftKey: true });
+  expect(ops[2]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 26, y: 42, w: 200, h: 150 } });
+  press({ key: "ArrowLeft" });
+  expect(ops[3]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 200, h: 150 } });
+
+  press({ key: "ArrowRight", ctrlKey: true });
+  expect(ops[4]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 208, h: 150 } });
+  press({ key: "ArrowDown", ctrlKey: true, shiftKey: true });
+  expect(ops[5]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 208, h: 182 } });
+  press({ key: "ArrowUp", ctrlKey: true });
+  expect(ops[6]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 208, h: 174 } });
+  press({ key: "ArrowLeft", ctrlKey: true });
+  expect(ops[7]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 200, h: 174 } });
+});
+
+test("floating dialog keyboard: resize clamps at the minimum size instead of reaching zero/negative", () => {
+  const { ops, press } = floatingKeyboardSetup();
+
+  // 200 - 13*8 = 96 would undershoot the 100px floor; the clamp pins at 100.
+  for (let i = 0; i < 15; i++) press({ key: "ArrowLeft", ctrlKey: true });
+  const last = ops[ops.length - 1];
+  expect(last).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 10, y: 10, w: 100, h: 150 } });
+});
+
+test("floating dialog keyboard: a keydown whose target is inside the dialog's content (an input) emits no op", () => {
+  const { dialogEl, ops } = floatingKeyboardSetup();
+
+  const input = document.createElement("input");
+  dialogEl.appendChild(input);
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, ctrlKey: true }));
+
+  expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+  dialogEl.removeChild(input);
 });
 
 test("Tab on a panel-menu item closes the popup but does NOT force focus back to the tab's menu button (APG Menu Button pattern)", async () => {
