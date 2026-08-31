@@ -1,8 +1,9 @@
 <script lang="ts">
   // Global toast/banner host — mounted once alongside `TemplateModalHost`, not scoped to any
   // particular surface. Renders `activeNotifications()`, the UI-visible counterpart to `Logger`
-  // (see `AppContext.notify`). `info`-level notifications auto-dismiss (they're transient status
-  // confirmations a user doesn't need to act on); `warning`/`error` never do — these are exactly
+  // (see `AppContext.notify`). `info`-level notifications auto-dismiss UNLESS they carry an
+  // action (a call-to-action is a decision the user must be able to make at their own pace);
+  // `warning`/`error` never do — these are exactly
   // the class of message ("an operation partially applied") a user must not miss by looking away.
   import { notifications, activeNotifications } from "./notifications.svelte";
   import { t } from "./i18n.svelte";
@@ -18,7 +19,10 @@
 
   $effect(() => {
     for (const n of items) {
-      if (n.level !== "info" || scheduled.has(n.id)) continue;
+      // An action-carrying notification never auto-dismisses regardless of
+      // level: the action IS the user's decision to make ("Reopen windows"),
+      // and a vanished toast can't be clicked.
+      if (n.level !== "info" || n.action || scheduled.has(n.id)) continue;
       scheduled.add(n.id);
       setTimeout(() => notifications.dismiss(n.id), INFO_AUTO_DISMISS_MS);
     }

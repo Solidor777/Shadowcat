@@ -49,3 +49,19 @@ test("a notification without an action renders only its dismiss button", () => {
   render(NotificationHost);
   expect(screen.getAllByRole("button")).toHaveLength(1);
 });
+
+test("an info notification carrying an action is not auto-dismissed", async () => {
+  vi.useFakeTimers();
+  try {
+    const id = notifications.push("info", "Restore available.", {
+      label: "Reopen windows",
+      run: () => {},
+    });
+    render(NotificationHost);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(notifications.items.find((n) => n.id === id)).toBeDefined();
+    expect(screen.getByRole("button", { name: "Reopen windows" })).toBeTruthy();
+  } finally {
+    vi.useRealTimers();
+  }
+});
