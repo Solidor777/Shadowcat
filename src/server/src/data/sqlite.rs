@@ -2305,12 +2305,18 @@ impl SqliteRepository {
     /// Parent-placement checks the Create AND Move arms share — the one
     /// statement of "may a document of this type sit under this parent",
     /// covering the checks that need the database or the batch bookkeeping:
-    /// a `combatant`/`combat-history` parent must be a combat (batch-aware),
-    /// and an `asset_folder` parent must be a same-scope folder
-    /// (`check_asset_folder_parent`, batch-aware). `validate_containment`
-    /// (pure placement shape) runs separately at both callers.
+    /// a stored parent must belong to this command's world
+    /// (`check_command_scope`), a `combatant`/`combat-history` parent must be
+    /// a combat (batch-aware), and an `asset_folder` parent must be a
+    /// same-scope folder (`check_asset_folder_parent`, batch-aware). A parent
+    /// this same batch Creates is not in the database yet — it resolves
+    /// through the batch maps, and its own Create was scope-checked; a parent
+    /// that exists nowhere yet is left to the self-FK at apply time, so
+    /// batched parent+child creates still pass. `validate_containment` (pure
+    /// placement shape) runs separately at every caller.
     async fn check_parent_placement(
         tx: &mut sqlx::SqliteConnection,
+        world_id: Uuid,
         doc: &Document,
         batch_folders: &std::collections::HashMap<Uuid, Document>,
         batch_combats: &std::collections::HashSet<Uuid>,
@@ -2321,15 +2327,29 @@ impl SqliteRepository {
             let pid = doc.parent_id.expect(
                 "validate_containment requires a combatant/combat-history doc to carry a parent_id",
             );
+            let stored_parent = if batch_combats.contains(&pid) {
+                None
+            } else {
+                Self::load_document(&mut *tx, pid).await?
+            };
+            if let Some(parent) = &stored_parent {
+                check_command_scope(parent, world_id)?;
+            }
             let parent_is_combat = batch_combats.contains(&pid)
-                || Self::load_document(&mut *tx, pid)
-                    .await?
-                    .is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
+                || stored_parent.is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
             if !parent_is_combat {
                 return Err(DataError::OpFailed(format!(
                     "{} parent must be a combat document",
                     doc.doc_type
                 )));
+            }
+        } else if let Some(pid) = doc.parent_id {
+            // Every other doc_type: no parent-TYPE rule, but a stored parent
+            // still belongs to this command's world.
+            if !batch_folders.contains_key(&pid) && !batch_combats.contains(&pid) {
+                if let Some(parent) = Self::load_document(&mut *tx, pid).await? {
+                    check_command_scope(&parent, world_id)?;
+                }
             }
         }
         Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
@@ -2337,9 +2357,13 @@ impl SqliteRepository {
     }
 
     /// Rejects a Move that would parent `moved` beneath itself: walks the
-    /// ancestor chain upward from `new_parent` — through this batch's
-    /// not-yet-inserted Creates (`batch_folders`) and the stored tree alike —
-    /// refusing if `moved` appears anywhere in it (self-parent included).
+    /// ancestor chain upward from `new_parent`, resolving each hop against
+    /// this batch's not-yet-applied Moves first (`batch_moves` — the
+    /// prospective parent wins over the stored one, since the walk must see
+    /// the tree the batch will leave, and Phase 2 applies nothing until
+    /// every op has validated), then this batch's not-yet-inserted Creates
+    /// (`batch_folders`), then the stored tree — refusing if `moved` appears
+    /// anywhere in the chain (self-parent included).
     /// Bounded: a chain deeper than `MAX_MOVE_ANCESTRY` (or a stored cycle,
     /// which cannot arise but would otherwise loop) is refused, not walked.
     async fn check_move_acyclic(
@@ -2347,6 +2371,7 @@ impl SqliteRepository {
         moved: Uuid,
         new_parent: Option<Uuid>,
         batch_folders: &std::collections::HashMap<Uuid, Document>,
+        batch_moves: &std::collections::HashMap<Uuid, Option<Uuid>>,
     ) -> Result<(), DataError> {
         /// Depth bound for the ancestor walk; no legitimate tree approaches it.
         const MAX_MOVE_ANCESTRY: u32 = 1_000;
@@ -2364,11 +2389,15 @@ impl SqliteRepository {
                     "parent chain too deep to verify".into(),
                 ));
             }
-            cursor = match batch_folders.get(&pid) {
-                Some(batch_doc) => batch_doc.parent_id,
-                None => Self::load_document(&mut *tx, pid)
-                    .await?
-                    .and_then(|d| d.parent_id),
+            cursor = if let Some(prospective) = batch_moves.get(&pid) {
+                *prospective
+            } else {
+                match batch_folders.get(&pid) {
+                    Some(batch_doc) => batch_doc.parent_id,
+                    None => Self::load_document(&mut *tx, pid)
+                        .await?
+                        .and_then(|d| d.parent_id),
+                }
             };
         }
         Ok(())
@@ -2961,13 +2990,20 @@ impl Repository for SqliteRepository {
                         validation::validate_containment(&doc)?;
                         Self::check_parent_placement(
                             &mut tx,
+                            sequenced.world_id,
                             &doc,
                             &Default::default(),
                             &Default::default(),
                         )
                         .await?;
-                        Self::check_move_acyclic(&mut tx, *doc_id, *parent_id, &Default::default())
-                            .await?;
+                        Self::check_move_acyclic(
+                            &mut tx,
+                            *doc_id,
+                            *parent_id,
+                            &Default::default(),
+                            &Default::default(),
+                        )
+                        .await?;
                         doc.updated_at = sequenced.ts;
                         Self::upsert_document(&mut tx, &doc, seq).await?;
                         if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
@@ -3158,6 +3194,15 @@ impl Repository for SqliteRepository {
         // one, and `check_asset_folder_parent` walks through it for cycles.
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
             std::collections::HashMap::new();
+        // `batch_moves` records the PROSPECTIVE parent of each Move already
+        // validated in this batch. Phase 2 applies nothing until every op
+        // clears Phase 1, so a cycle walk that read only the stored tree
+        // would validate each Move against a tree no op has rewritten yet —
+        // two Moves that swap a pair of subtrees into a cycle would each
+        // pass alone. `check_move_acyclic` consults this map first, so it
+        // sees the tree the batch will actually leave.
+        let mut batch_moves: std::collections::HashMap<Uuid, Option<Uuid>> =
+            std::collections::HashMap::new();
         // `scene_owner` maps a scene id to the id of the `combat` document
         // that holds its active slot, AS OF THIS POINT in a single simulated
         // walk of `ops` in their actual batch order. The one-active-combat-
@@ -3331,13 +3376,21 @@ impl Repository for SqliteRepository {
                         validation::validate_containment(&post)?;
                         Self::check_parent_placement(
                             &mut tx,
+                            world_id,
                             &post,
                             &batch_folders,
                             &batch_combats,
                         )
                         .await?;
-                        Self::check_move_acyclic(&mut tx, *doc_id, *parent_id, &batch_folders)
-                            .await?;
+                        Self::check_move_acyclic(
+                            &mut tx,
+                            *doc_id,
+                            *parent_id,
+                            &batch_folders,
+                            &batch_moves,
+                        )
+                        .await?;
+                        batch_moves.insert(*doc_id, *parent_id);
                     }
                 }
                 Operation::Create { doc } => {
@@ -3346,8 +3399,14 @@ impl Repository for SqliteRepository {
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
                     validation::validate_containment(doc)?;
-                    Self::check_parent_placement(&mut tx, doc, &batch_folders, &batch_combats)
-                        .await?;
+                    Self::check_parent_placement(
+                        &mut tx,
+                        world_id,
+                        doc,
+                        &batch_folders,
+                        &batch_combats,
+                    )
+                    .await?;
                     if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
                         batch_folders.insert(doc.id, doc.clone());
                     }
@@ -3391,19 +3450,14 @@ impl Repository for SqliteRepository {
                     validation::validate_system_schema_tree(doc, &world_schemas)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
-                    // walk would loop). Reject it; and when the parent already
-                    // exists it must be in this world (an unborn same-command
-                    // parent is left to the FK at apply time, so batched
-                    // scene+children creates still pass).
-                    if let Some(pid) = doc.parent_id {
-                        if pid == doc.id {
-                            return Err(DataError::OpFailed(
-                                "document cannot be its own parent".into(),
-                            ));
-                        }
-                        if let Some(parent) = Self::load_document(&mut *tx, pid).await? {
-                            check_command_scope(&parent, world_id)?;
-                        }
+                    // walk would loop). Reject it. A stored parent's world
+                    // scope is `check_parent_placement`'s check above; an
+                    // unborn same-command parent is left to the FK at apply
+                    // time, so batched scene+children creates still pass.
+                    if doc.parent_id == Some(doc.id) {
+                        return Err(DataError::OpFailed(
+                            "document cannot be its own parent".into(),
+                        ));
                     }
                     let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
                     let access = resolve_access_world(

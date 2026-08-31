@@ -1,6 +1,7 @@
 //! `Operation::Move` through `apply_intent`: authorization, Create-validity
-//! placement, folder cycle rejection, OCC on the parent pre-image, the no-op
-//! short-circuit, derived-tag recomputation, and bundle survival.
+//! placement (including parent world scope), folder cycle rejection
+//! (including same-batch Move cycles), OCC on the parent pre-image, the
+//! no-op short-circuit, derived-tag recomputation, and bundle survival.
 
 use super::*;
 use crate::data::asset::{Asset, AssetMeta};
@@ -529,4 +530,138 @@ async fn same_batch_create_and_move_cannot_form_a_cycle() {
     assert!(matches!(err, DataError::OpFailed(_)));
     // Whole-batch rollback: B was not created either.
     assert!(r.get_document(b.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn generic_doc_cannot_move_to_a_cross_world_parent() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let actor = world_doc(11, w, serde_json::json!({}));
+    create_all(&r, &ctx, w, std::slice::from_ref(&actor)).await;
+
+    // A parent that exists — in ANOTHER world. No doc-type-specific placement
+    // rule covers an actor, so only the generic parent-scope check can refuse.
+    let other_gm = r
+        .create_user("gm-other2", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w2 = r.create_world_owned("W2b", other_gm, 0).await.unwrap();
+    let ctx2 = PermissionContext {
+        user_id: other_gm,
+        world_role: WorldRole::Gm,
+    };
+    let foreign = folder_doc(12, w2.id, "foreign2", None);
+    create_all(&r, &ctx2, w2.id, std::slice::from_ref(&foreign)).await;
+
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![move_op(actor.id, Some(foreign.id), None)],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+    assert_eq!(
+        r.get_document(actor.id).await.unwrap().unwrap().parent_id,
+        None
+    );
+}
+
+#[tokio::test]
+async fn combatant_cannot_move_to_a_cross_world_combat() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let c1 = combat_doc(1, w, Uuid::from_u128(100), false);
+    let fighter = combatant_doc(2, w, c1.id);
+    create_all(&r, &ctx, w, &[c1.clone(), fighter.clone()]).await;
+
+    let other_gm = r
+        .create_user("gm-other3", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w2 = r.create_world_owned("W2c", other_gm, 0).await.unwrap();
+    let ctx2 = PermissionContext {
+        user_id: other_gm,
+        world_role: WorldRole::Gm,
+    };
+    let c_foreign = combat_doc(3, w2.id, Uuid::from_u128(101), false);
+    create_all(&r, &ctx2, w2.id, std::slice::from_ref(&c_foreign)).await;
+
+    // The parent IS a combat — but in another world.
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![move_op(fighter.id, Some(c_foreign.id), Some(c1.id))],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+#[tokio::test]
+async fn same_batch_two_moves_cannot_form_a_cycle() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = folder_doc(1, w, "alpha", None);
+    let b = folder_doc(2, w, "beta", None);
+    create_all(&r, &ctx, w, &[a.clone(), b.clone()]).await;
+
+    // Each op alone is acyclic against pre-batch state; together they swap
+    // into a two-cycle. The walk must see the batch's PROSPECTIVE parents.
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![
+                move_op(a.id, Some(b.id), None),
+                move_op(b.id, Some(a.id), None),
+            ],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+    assert_eq!(r.get_document(a.id).await.unwrap().unwrap().parent_id, None);
+    assert_eq!(r.get_document(b.id).await.unwrap().unwrap().parent_id, None);
+}
+
+#[tokio::test]
+async fn replayed_two_move_batch_cannot_form_a_cycle() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = folder_doc(1, w, "alpha", None);
+    let b = folder_doc(2, w, "beta", None);
+    create_all(&r, &ctx, w, &[a.clone(), b.clone()]).await;
+
+    // The trusted loop applies ops sequentially in one tx, so the second walk
+    // reads the first write and must refuse the closing edge.
+    let err = r
+        .apply_command(UnsequencedCommand {
+            world_id: w,
+            author: ctx.user_id,
+            ts: 3,
+            ops: vec![
+                Operation::Move {
+                    doc_id: a.id,
+                    parent_id: Some(b.id),
+                    old_parent_id: None,
+                },
+                Operation::Move {
+                    doc_id: b.id,
+                    parent_id: Some(a.id),
+                    old_parent_id: None,
+                },
+            ],
+        })
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+    assert_eq!(r.get_document(a.id).await.unwrap().unwrap().parent_id, None);
 }
