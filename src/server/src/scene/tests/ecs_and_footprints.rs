@@ -402,8 +402,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         10,
         "light",
         json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
 
@@ -1885,16 +1884,14 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
                 10,
                 "light",
                 json!({
-                    "x": 50.0, "y": 50.0, "color": "#ffeeaa", "intensity": 1.0,
-                    "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
+                    "x": 50.0, "y": 50.0, "emission": { "color": "#ffeeaa", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true }
                 }),
             ),
             entity_doc_eng(
                 21,
                 10,
                 "light",
-                json!({ "x": 0.0, "y": 0.0, "color": "#fff",
-                "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": false }),
+                json!({ "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": false } }),
             ),
             entity_doc_eng(
                 22,
@@ -1929,8 +1926,7 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
                 10,
                 "light",
                 json!({
-                    "x": 50.0, "y": 50.0, "color": "#ffeeaa", "intensity": 1.0,
-                    "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
+                    "x": 50.0, "y": 50.0, "emission": { "color": "#ffeeaa", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true }
                 }),
             ),
             entity_doc_eng(
@@ -1945,8 +1941,7 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
                 30,
                 "light",
                 json!({
-                    "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 0.8,
-                    "brightRadius": 3.0, "dimRadius": 8.0, "enabled": true
+                    "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 0.8, "brightRadius": 3.0, "dimRadius": 8.0, "enabled": true }
                 }),
             ),
             entity_doc_eng(
@@ -2013,8 +2008,7 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         10,
         "light",
         json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), light], 0);
     let mask = lit.player_lit_mask(player);
@@ -2127,8 +2121,7 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         10,
         "light",
         json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok2, light], 0);
     let mask2 = lit.player_lit_mask(player2);

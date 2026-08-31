@@ -5,6 +5,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+pub(crate) mod emitters;
 pub mod explored;
 pub mod footprint;
 pub(crate) mod grid_shape;
@@ -1884,48 +1885,11 @@ impl SceneEcs {
         Some(builder.build())
     }
 
-    /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
-    /// are dropped here (they contribute nothing). `falloff` defaults to Linear; missing radii → 0.
-    pub(crate) fn scene_lights(&self, scene: Uuid) -> Vec<crate::scene::lighting::Light> {
-        use crate::scene::lighting::{Falloff, Light};
-        let mut out = Vec::new();
-        for e in self.world.query::<&SceneEntity>().iter() {
-            if e.doc.doc_type != "light" || e.doc.parent_id != Some(scene) {
-                continue;
-            }
-            let Some(le) = self.engine_as_cached::<eng::LightEngine>(e.doc.id, &e.doc) else {
-                continue;
-            };
-            if !le.enabled {
-                continue;
-            }
-            let falloff = match le.falloff.as_ref().map(|f| f.curve.as_str()) {
-                Some("quadratic") => Falloff::Quadratic,
-                Some("none") => Falloff::None,
-                _ => Falloff::Linear,
-            };
-            out.push(Light {
-                pos: (le.x, le.y),
-                color: parse_hex_color(&le.color),
-                intensity: le.intensity.clamp(0.0, 1.0),
-                bright_radius: le.bright_radius,
-                dim_radius: le.dim_radius,
-                falloff,
-                enabled: true, // INVARIANT: only enabled lights reach this push (`le.enabled` filters the rest).
-            });
-        }
-        // Deterministic order (entity-query order is unspecified): sort by id-stable position.
-        // Uses total_cmp for a genuine total order — partial_cmp on f64 is a partial order
-        // (NaN breaks trichotomy and makes sort_by non-deterministic under NaN inputs).
-        out.sort_unstable_by(|a, b| {
-            a.pos
-                .0
-                .total_cmp(&b.pos.0)
-                .then(a.pos.1.total_cmp(&b.pos.1))
-        });
-        out
-    }
-
+    /// The scene's full emitter set (standalone `light` docs ∪ token-carried emissions), parsed
+    /// into `lighting::Light`. Implemented in `scene::emitters` — the ONE read path into the
+    /// illumination field's light set; disabled emissions contribute nothing and are dropped
+    /// there.
+    ///
     /// The user this token effectively belongs to — the SAME rule the write-authz
     /// path enforces (`permission::effective_owner`): the token's own `owner`
     /// override, else its LINKED actor's owner, joined live through `self.actors`

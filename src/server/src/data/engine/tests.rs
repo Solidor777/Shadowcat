@@ -34,8 +34,7 @@ fn region_minimal_body_is_valid() {
 #[test]
 fn light_minimal_body_is_valid() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
-        "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_ok());
 }
@@ -173,8 +172,7 @@ fn region_unknown_field_is_rejected() {
 #[test]
 fn light_unknown_field_is_rejected() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
-        "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true, "bogus": 1
+        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }, "bogus": 1
     });
     assert!(validate_engine("light", Some(&v)).is_err());
 }
@@ -339,10 +337,48 @@ fn region_wrong_typed_field_is_rejected() {
 #[test]
 fn light_wrong_typed_intensity_is_rejected() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "color": "#fff", "intensity": "1",
-        "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": "1", "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_err());
+}
+
+#[test]
+fn light_falloff_curve_is_a_closed_enum() {
+    for curve in ["linear", "quadratic", "none"] {
+        let v = json!({
+            "x": 0.0, "y": 0.0,
+            "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+                "falloff": { "curve": curve }, "enabled": true }
+        });
+        assert!(validate_engine("light", Some(&v)).is_ok(), "curve {curve}");
+    }
+    let v = json!({
+        "x": 0.0, "y": 0.0,
+        "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+            "falloff": { "curve": "cubic" }, "enabled": true }
+    });
+    assert!(validate_engine("light", Some(&v)).is_err());
+}
+
+#[test]
+fn actor_and_token_override_carried_light_bodies_are_valid() {
+    let emission = json!({
+        "color": "#ffeeaa", "intensity": 0.8, "brightRadius": 2.0, "dimRadius": 6.0,
+        "enabled": true
+    });
+    let actor = json!({
+        "displayName": "Torchbearer", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "light": emission
+    });
+    assert!(validate_engine("actor", Some(&actor)).is_ok());
+    let token = json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "overrides": { "light": { "color": "#ffeeaa", "intensity": 0.0, "brightRadius": 0.0,
+            "dimRadius": 0.0, "enabled": false } }
+    });
+    assert!(validate_engine("token", Some(&token)).is_ok());
 }
 
 #[test]

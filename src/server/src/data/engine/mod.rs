@@ -33,10 +33,10 @@ pub use registries::{
     FactionRegistryEngine, FactionStance,
 };
 pub use scene::{
-    AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, Grid, GridDistance,
-    LightEngine, LightGradationEngine, LightMode, MovementModel, MovementRestriction, Pathfinding,
-    SceneDimensions, SceneEngine, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
-    VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine,
+    AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, FalloffCurve, Grid,
+    GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode, MovementModel,
+    MovementRestriction, Pathfinding, SceneDimensions, SceneEngine, SceneLightingOverrides,
+    SceneVisionOverrides, VisionMode, VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,

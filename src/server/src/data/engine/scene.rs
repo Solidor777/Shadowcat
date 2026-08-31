@@ -363,9 +363,10 @@ impl Default for AnimationSettings {
     }
 }
 
-/// A placed light source: position, photometric properties, and an optional
-/// falloff curve (mirrors the client's `LightEngine`). `brightRadius`/
-/// `dimRadius` are in grid cells.
+/// A placed standalone light source: a position plus its emission payload
+/// (mirrors the client's `LightEngine`). The emission shape lives exactly
+/// once, in `LightEmission` — a carried emission is the same payload resolved
+/// at a token's live position.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -374,6 +375,18 @@ pub struct LightEngine {
     pub x: f64,
     /// Position y, scene units.
     pub y: f64,
+    /// The light's photometric payload.
+    pub emission: LightEmission,
+}
+
+/// A light emitter's photometric payload — everything about a light except
+/// where it is: shared by standalone `light` documents (`LightEngine.emission`)
+/// and token/actor-carried emissions (`ActorEngine.light`,
+/// `TokenOverrides.light`). `brightRadius`/`dimRadius` are in grid cells.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LightEmission {
     /// `#rrggbb` light color.
     pub color: String,
     /// Emission strength 0..=1 at the source.
@@ -385,19 +398,34 @@ pub struct LightEngine {
     /// Brightness falloff curve; absent = linear (read-side default).
     #[serde(default)]
     pub falloff: Option<Falloff>,
-    /// GM toggle; a disabled light emits nothing.
+    /// GM toggle; a disabled emission contributes nothing (the suppress path
+    /// for a carried emission, the on/off switch for a standalone light).
     pub enabled: bool,
 }
 
-/// `curve` defaults to "linear" (read-side, unchanged) when absent. Kept a
-/// `String` in v1 (asserted by the battery), matching `"linear" | "quadratic"
-/// | "none"`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+/// A falloff curve wrapper. `curve` defaults to `FalloffCurve::Linear`
+/// (read-side) when the whole `falloff` key is absent from `LightEmission`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Falloff {
-    /// "linear" | "quadratic" | "none" — kept a `String` in v1.
-    pub curve: String,
+    /// The taper curve across the dim band.
+    pub curve: FalloffCurve,
+}
+
+/// Photometric falloff curve identifier across the dim band
+/// `(brightRadius, dimRadius]`, mirroring `lighting::Falloff`'s variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "camelCase")]
+pub enum FalloffCurve {
+    /// Smooth linear taper from full intensity at the bright edge to 0 at the dim edge.
+    Linear,
+    /// Smooth quadratic taper (faster than linear).
+    Quadratic,
+    /// No gradient: a flat dim-band step (`0.5 × intensity`) — bright/dim radii feed the
+    /// gradation bands directly.
+    None,
 }
 
 /// A named vision mode that tokens/actors may possess (mirrors the client's

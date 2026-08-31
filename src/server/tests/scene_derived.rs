@@ -143,20 +143,10 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
                     // "light" is engine-defined; see the world-settings
                     // comment above for why `engine` and `system` diverge.
                     "engine": {
-                        "x": 50.0, "y": 50.0,
-                        "color": "#ffffff",
-                        "intensity": 1.0,
-                        "brightRadius": 3.0,
-                        "dimRadius": 6.0,
-                        "enabled": true
+                        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
                     },
                     "system": {
-                        "x": 50.0, "y": 50.0,
-                        "color": "#ffffff",
-                        "intensity": 1.0,
-                        "brightRadius": 3.0,
-                        "dimRadius": 6.0,
-                        "enabled": true
+                        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
                     },
                     "created_at": 0,
                     "updated_at": 0,

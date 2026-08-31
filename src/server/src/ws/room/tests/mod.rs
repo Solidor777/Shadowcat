@@ -693,8 +693,7 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     light.parent_id = Some(scene_id);
     light.owner = Some(gm_ctx.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room.publish(
@@ -816,8 +815,7 @@ async fn room_with_gm_and_lit_corner() -> PlaceHandle {
     light.parent_id = Some(scene_id);
     light.owner = Some(gm_ctx.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room.publish(
@@ -999,8 +997,7 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     light.parent_id = Some(scene_id);
     light.owner = Some(gm_ctx.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room.publish(
@@ -1381,8 +1378,7 @@ async fn get_or_create_hydrates_config_and_actors_from_db() {
     light.parent_id = Some(scene_id);
     light.owner = Some(gm.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room1
@@ -1730,8 +1726,7 @@ async fn movement_scene_with_speed(
         light.parent_id = Some(scene_id);
         light.owner = Some(gm.user_id);
         light.system = json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true }
         });
         light.engine = Some(light.system.clone());
         room.publish(
@@ -2043,8 +2038,7 @@ async fn movement_scene_with_second_scene(
         light.parent_id = Some(scene_b);
         light.owner = Some(h.gm.user_id);
         light.system = json!({
-            "x": 250.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 250.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         });
         light.engine = Some(light.system.clone());
         h.room
@@ -3151,8 +3145,7 @@ async fn movement_scene_continuous(restriction: &str, with_light: bool) -> Movem
         light.parent_id = Some(scene_id);
         light.owner = Some(gm.user_id);
         light.system = json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true }
         });
         light.engine = Some(light.system.clone());
         room.publish(

@@ -154,8 +154,7 @@ pub(super) fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         }),
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);

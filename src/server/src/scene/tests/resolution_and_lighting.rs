@@ -313,8 +313,7 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
         10,
         "light",
         json!({
-            "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
         }),
     );
     let mut ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
@@ -384,8 +383,7 @@ fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         }),
     );
     let scene_id = Uuid::from_u128(10);
@@ -484,8 +482,7 @@ fn scene_with_boundary_crossing_light() -> (SceneEcs, Uuid, Uuid) {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 0.5, "dimRadius": 1.4, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 0.5, "dimRadius": 1.4, "enabled": true }
         }),
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
@@ -982,8 +979,7 @@ fn visible_cells_strict_parity_los_restriction_with_occluding_wall() {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
         }),
     );
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall, light], 0);
@@ -1065,8 +1061,7 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
         10,
         "light",
         json!({
-            "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
         }),
     );
     let mut ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
@@ -1555,5 +1550,197 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
         "changing scene bounds must invalidate the cached navmesh"
+    );
+}
+
+// --- Carried light emissions (`scene::emitters`) ---
+
+/// A torch emission body (`eng::LightEmission` wire shape) for the carried-light fixtures.
+fn torch() -> serde_json::Value {
+    json!({ "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 4.0,
+            "enabled": true })
+}
+
+/// An actor body carrying the given emission (or none), built on the shared actor fixture.
+fn actor_with_light(light: serde_json::Value) -> serde_json::Value {
+    let mut body = actor_body(json!([]));
+    body["light"] = light;
+    body
+}
+
+/// A linked-token fixture at `(x, y)` referencing actor `Uuid::from_u128(actor_id)`.
+fn linked_token(id: u128, actor_id: u128, x: f64, y: f64) -> Document {
+    entity_doc_eng(
+        id,
+        10,
+        "token",
+        json!({ "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                "actor_id": Uuid::from_u128(actor_id).to_string() }),
+    )
+}
+
+#[test]
+fn carried_light_joins_the_emitter_set_and_moves_with_the_token() {
+    let scene = Uuid::from_u128(10);
+    let mut ecs = SceneEcs::from_documents(
+        vec![doc(10, None, "scene"), linked_token(11, 200, 50.0, 50.0)],
+        0,
+    );
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+
+    let lights = ecs.scene_lights(scene);
+    assert_eq!(lights.len(), 1, "the linked actor's emission is carried");
+    assert_eq!(lights[0].pos, (50.0, 50.0));
+    assert_eq!(lights[0].color, 0xFFCC66);
+    assert_eq!(lights[0].dim_radius, 4.0);
+
+    // The emission is resolved at the token's LIVE position: a position write moves the light.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![FieldChange {
+            path: "/engine/x".to_string(),
+            old: json!(50.0),
+            new: json!(450.0),
+            remove: false,
+        }],
+    });
+    let lights = ecs.scene_lights(scene);
+    assert_eq!(lights.len(), 1);
+    assert_eq!(lights[0].pos, (450.0, 50.0), "the carried light moved");
+}
+
+#[test]
+fn carried_light_override_replaces_and_suppresses() {
+    let scene = Uuid::from_u128(10);
+    let mut tok = linked_token(11, 200, 50.0, 50.0);
+    // A per-token override REPLACES the actor's emission wholesale (same precedence as vision).
+    tok.engine.as_mut().unwrap()["overrides"] = json!({ "light": { "color": "#0000ff", "intensity": 0.5, "brightRadius": 1.0,
+                "dimRadius": 3.0, "enabled": true } });
+    let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    let lights = ecs.scene_lights(scene);
+    assert_eq!(lights.len(), 1);
+    assert_eq!(
+        lights[0].color, 0x0000FF,
+        "the override replaces, not merges"
+    );
+    assert_eq!(lights[0].dim_radius, 3.0);
+
+    // `enabled: false` on the override is the suppress path: no contribution at all.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![FieldChange {
+            path: "/engine/overrides/light/enabled".to_string(),
+            old: json!(true),
+            new: json!(false),
+            remove: false,
+        }],
+    });
+    assert!(
+        ecs.scene_lights(scene).is_empty(),
+        "a disabled override suppresses the actor's emission"
+    );
+}
+
+#[test]
+fn carried_light_dangling_link_and_raw_token_emit_nothing() {
+    let scene = Uuid::from_u128(10);
+    let dangling = linked_token(11, 200, 50.0, 50.0); // no such actor in the side table
+    let raw = entity_doc_eng(
+        12,
+        10,
+        "token",
+        json!({ "x": 150.0, "y": 150.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), dangling, raw], 0);
+    assert!(
+        ecs.scene_lights(scene).is_empty(),
+        "a dangling link emits nothing (overrides ignored), a raw token carries no emission"
+    );
+}
+
+#[test]
+fn instanced_token_reads_its_embedded_actor_uncached() {
+    let scene = Uuid::from_u128(10);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.embedded.insert(
+        "actor".into(),
+        vec![{
+            let mut a = doc(99, None, "actor");
+            a.engine = Some(actor_with_light(torch()));
+            a
+        }],
+    );
+    let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+    assert_eq!(
+        ecs.scene_lights(scene).len(),
+        1,
+        "an instanced token emits its embedded actor's light"
+    );
+
+    // The embedded read is deliberately UNCACHED: an `/embedded/actor/0/...` write must be
+    // visible on the very next read (caching under the embedded doc's own id would go stale —
+    // `apply_op` invalidates the token's id, not the child's).
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![FieldChange {
+            path: "/embedded/actor/0/engine/light/enabled".to_string(),
+            old: json!(true),
+            new: json!(false),
+            remove: false,
+        }],
+    });
+    assert!(
+        ecs.scene_lights(scene).is_empty(),
+        "an embedded-actor emission write takes effect immediately"
+    );
+}
+
+#[test]
+fn carried_light_participates_in_the_lit_mask() {
+    // A fully dark scene (env intensity 0, lighting on): with no carried light the owned token
+    // sees nothing; the actor's torch lights the cells around the token's live position.
+    let player = Uuid::from_u128(42);
+    let mut tok = linked_token(11, 200, 50.0, 50.0);
+    tok.owner = Some(player);
+    let mut ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            tok,
+        ],
+        0,
+    );
+    // No world config: the engine default is lighting on, environmentLight, ambient 0 (dark).
+    let scene = Uuid::from_u128(10);
+    assert!(
+        ecs.visible_cells(player, scene, false).is_empty(),
+        "a dark scene with no emitter admits no cells"
+    );
+
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    assert!(
+        !ecs.visible_cells(player, scene, false).is_empty(),
+        "the carried torch lights the token's surroundings"
     );
 }

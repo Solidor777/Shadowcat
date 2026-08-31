@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::engine::scene::LightEmission;
+
 /// A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
 /// is the token CENTER. `visual` is set only on raw (actorless) tokens —
 /// actor-backed tokens resolve their visual via the linked/embedded actor.
@@ -110,6 +112,11 @@ pub struct TokenOverrides {
     /// when present.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Per-token light override: replaces the actor's `light` entirely when
+    /// present (wholesale, same shape as `vision`); an emission with
+    /// `enabled: false` suppresses this token's carried light.
+    #[serde(default)]
+    pub light: Option<LightEmission>,
 }
 
 /// A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
@@ -274,4 +281,9 @@ pub struct ActorEngine {
     /// + range in grid cells.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Light this actor's tokens carry: every token resolving this actor
+    /// emits it at its live position unless the token's override replaces or
+    /// suppresses it (`TokenOverrides::light`).
+    #[serde(default)]
+    pub light: Option<LightEmission>,
 }

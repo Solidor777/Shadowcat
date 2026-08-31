@@ -276,8 +276,7 @@ fn scene_with_lit_player_token_continuous() -> (SceneEcs, Uuid, Uuid) {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         }),
     );
     let scene = entity_doc_top_eng(
@@ -714,8 +713,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         }),
     );
     let scene = entity_doc_top_eng(
@@ -1875,9 +1873,7 @@ fn hex_lit_scene() -> (SceneEcs, Uuid, Uuid) {
         10,
         "light",
         json!({
-            "x": 0.0, "y": 0.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": HEX_LIGHT_BRIGHT_CELLS, "dimRadius": HEX_LIGHT_DIM_CELLS,
-            "enabled": true
+            "x": 0.0, "y": 0.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": HEX_LIGHT_BRIGHT_CELLS, "dimRadius": HEX_LIGHT_DIM_CELLS, "enabled": true }
         }),
     );
     let scene = entity_doc_top_eng(
