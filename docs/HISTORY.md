@@ -1901,6 +1901,36 @@ literal — provenance is structural (a present world leaf IS the override). Cli
 deleted. Integration suites moved to the production-shaped world: the first join's seed
 command occupies seq 1, and absolute event-count assertions became post-seed baselines.
 
+#### M14c-4 — Dice references + chat channel ✅
+**COMPLETE.** Branch `m14c-4-dice-references`, executed mainline (Kimi) from
+[`superpowers/specs/2026-08-31-m14c-4-dice-references-chat-channel-design.md`](superpowers/specs/2026-08-31-m14c-4-dice-references-chat-channel-design.md)
+and its plan; two buddy-check checkpoints (both converged, one debate round each, nothing unresolved) plus the
+final two-reviewer branch review. Fourth of six.
+
+The server resolves dice-notation references itself. `formula::template` is the Rust behavioural twin of the
+TS template rewrite (recognizer chain + `claimNotationFunction`, `1d` synthesis, labeled substitution, UTF-16
+positions), pinned by a new `templates` section of the shared conformance corpus (25 cases both suites read;
+sabotage/mutation evidence recorded per commit). One design change the campaign found in flight:
+the template grammar learned the notation `fn_call` vocabulary — every roll now runs through the
+scan, so `floor(101d6/2)` would otherwise read `floor` as a stat reference and regress;
+both twins, the corpus, and the parity gate (now three declarations for modifiers AND for
+the function list) moved in one commit. `chat::rolls::execute_roll`/`validate_formula`
+substitute references pre-parse: chat rolls bind to the send's already-validated
+`actor_owner` (a token's embedded actor copy, else its linked actor — one shared
+`embedded_actor_copy` extraction, the combat precedence rule), `CombatRoll` binds per-entry
+through `combat::eval::formula_host`; unbound ⇒ `unknown-ref` refusal; buttons validate
+structurally with a placeholder zero and store the raw template, resolving per clicker at
+click (the composer's sticky speak-as lifted to ui-kit session state `SpeakAs` so the card
+resolves the clicker's binding). The stored `RollEmbed.formula` keeps the author's template;
+recalc re-derives from the stored `spec`/`raw`, never re-resolves. `MessageEngine.channel`
+is validated against the world's channel registry at ingest (chat + `CombatRoll`;
+`ChannelRegistryEngine::validate` wired into `normalize_engine`; ~105 re-fixtured tests
+re-anchored, one e2e caught at review). Two review fold-ins: `js_number` normalizes `-0`
+(JS parity, corpus-pinned — serde_json preserves `-0.0`); the spec was amended in-range to
+the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/authoring docs;
+GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
+
+
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md` and plan
