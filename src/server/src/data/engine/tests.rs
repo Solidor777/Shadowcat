@@ -144,6 +144,17 @@ fn channel_registry_rejects_an_empty_channels_map_but_the_seed_validates() {
 }
 
 #[test]
+fn channel_registry_rejects_an_empty_name_and_an_overlong_key() {
+    let empty_name = json!({ "channels": { "general": { "name": "  " } } });
+    assert!(validate_engine("channel-registry", Some(&empty_name)).is_err());
+    // A key one past the cap could never be posted to (the ingest cap would
+    // refuse the channel string first), so it is rejected here.
+    let long_key: String = "x".repeat(crate::data::engine::MAX_CHANNEL_CHARS + 1);
+    let overlong = json!({ "channels": { long_key: { "name": "X" } } });
+    assert!(validate_engine("channel-registry", Some(&overlong)).is_err());
+}
+
+#[test]
 fn faction_registry_minimal_body_is_valid() {
     assert!(validate_engine("faction-registry", Some(&json!({ "factions": {} }))).is_ok());
 }

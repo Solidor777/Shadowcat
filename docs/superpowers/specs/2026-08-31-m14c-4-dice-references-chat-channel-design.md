@@ -108,7 +108,15 @@ New unit `src/server/src/formula/template.rs` (+ sibling `template/tests.rs`), d
 ## 4. Roll-path wiring
 
 `execute_roll(formula, ctx, host: Option<&Document>)`,
-`execute_roll_with_seed(formula, ctx, host, seed)`, `validate_formula(formula, ctx, host)`:
+`execute_roll_with_seed(formula, ctx, host, seed)`, and — as built, deviating
+from this spec's draft interface and recorded here — `validate_formula(formula, ctx)` with NO
+host parameter: the placeholder zero resolver is hardcoded inside it, because a button's
+references are per-clicker and the placeholder is the only correct resolver at ingest; a host
+parameter would invite a wrong call. Also recorded as a decision, not a side effect: routing
+every roll through the template scan means EVERY roll formula is now bounded by
+`MAX_FORMULA_LENGTH` (512 UTF-16 code units) — before this change, reference-free notation up
+to the message cap rolled fine. Fail-closed and deliberate; a >512-char roll is refused with
+the template cap error.
 
 1. `resolve_notation_template(formula, &resolver)` where `resolver` is
    `SystemLeafResolver::new(doc)` for `Some(doc)`, else `NoHostResolver`.
@@ -126,11 +134,13 @@ test's iteration. Resolution failure ⇒ the standard refusal shape on every pat
 
 Call-site deltas:
 
-- **`handle_send_message`** — `/roll` and inline `[[...]]` chunks resolve against
-  `host_for_actor_owner(actor_owner)` (computed at most once, lazily, beside the existing lazy
-  `dice_ctx`); button chunks call `validate_formula(formula, ctx, PLACEHOLDER)` where the
-  placeholder path is a zero-resolver over the template scan (R5), so ingest catches structural
-  breakage without binding the stored button to the author's stats.
+- **`handle_send_message`** — the `/roll` branch resolves the host EAGERLY when `actor_owner` is
+  present (a slash-roll always executes, so the read is never wasted on a roll-free message);
+  the inline-chunk path computes the host LAZILY at most once, beside the existing lazy `dice_ctx`, only
+  when a roll chunk actually appears. `/roll` and inline `[[...]]` chunks pass the real host; button chunks call
+  `validate_formula`, whose placeholder-zero resolver is internal (no host parameter — R5 makes it the only
+  correct resolver at ingest), so ingest catches structural breakage without binding the stored button to
+  the author's stats.
 - **`combat::build_ops`'s `CombatRoll` arm** — per entry, `host =
   combat::eval::formula_host(&snap.hosts, combatant_kind)` and `execute_roll(&entry.notation,
   dice_ctx, host)`. `CombatRollEntry.notation`'s doc comment is rewritten: raw template text,
@@ -157,12 +167,15 @@ Call-site deltas:
 
 ## 6. Channel validation
 
-- New `pub(crate) async fn validate_channel(repo, world_id, channel) -> Result<(),
-  SendMessageError>` in `chat` (home of every other send-time rule): loads the world's
-  `channel-registry` singleton; `Ok` iff `channel` is a key of `channels`. Absent doc, query
-  error, or a body failing decode ⇒ `SendMessageError::Data` (fail-closed, generic wording).
-  Unknown key ⇒ `SendMessageError::UnknownChannel` — a validation-class variant, so its `Display`
-  is a specific player-presentable reason under the existing `[sec]` classification.
+- New `pub async fn channel_registered(repo, world, channel) -> Result<bool, DataError>` in
+  `chat::settings` — as built (the draft said `chat::validate_channel -> Result<(), SendMessageError>`;
+  the query layer does not know send-error types, and the two callers map distinctly): `Ok(true)`
+  iff `channel` is a key of the registry's `channels`; unknown key ⇒ `Ok(false)`, which
+  `handle_send_message` renders as `SendMessageError::UnknownChannel` and the `CombatRoll` arm as
+  a `CombatError` arm with its own safe wording (same precedent as `DuplicateRoll`: the caller
+  supplied the channel). Absent doc, query
+  error, missing or undecodable body ⇒ `Err` — mapped by both callers to their internal-class
+  error (`SendMessageError::Data` / `CombatError::Data`, fail-closed, generic wording).
 - Called from `handle_send_message` AFTER `rate.check` and BEFORE the attribution gate (a cheaper
   rejection than the ownership queries), and from the `CombatRoll` arm of `combat::build_ops`
   before any roll executes (mapped to a new `CombatError` arm with its own safe wording — same

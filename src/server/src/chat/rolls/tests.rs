@@ -458,7 +458,16 @@ fn roll_error_display_has_no_debug_artifacts() {
         RollError::Unterminated,
         RollError::DuplicateTierOffset(5),
         RollError::MalformedDocLink,
+        RollError::Reference(crate::formula::FormulaError::new(
+            crate::formula::FormulaErrorKind::UnknownRef,
+            "unknown reference 'stats.str'",
+        )),
     ];
+    assert_eq!(
+        variants.len(),
+        10,
+        "update this test if a RollError variant is added or removed"
+    );
     for v in variants {
         let rendered = v.to_string();
         assert!(!rendered.contains("Some("), "{rendered}");
