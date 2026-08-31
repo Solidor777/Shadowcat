@@ -1146,9 +1146,9 @@ async function popOutViaMenu(driver: (panel: IDockviewPanel, options?: DockviewP
   return { ops, notices };
 }
 
-test("pop-out: a successful driver emits a popOut op (no float, no notice)", async () => {
+test("pop-out: a successful driver emits a popOut op carrying a minted window key (no float, no notice)", async () => {
   const { ops, notices } = await popOutViaMenu(() => Promise.resolve(true));
-  expect(ops).toContainEqual({ op: "popOut", id: "chat" });
+  expect(ops).toContainEqual(expect.objectContaining({ op: "popOut", id: "chat", key: expect.any(String), rect: null }));
   expect(ops.some((o) => o.op === "float")).toBe(false);
   expect(notices).toEqual([]);
 });
@@ -1166,7 +1166,7 @@ test("pop-out rejected: a throwing driver falls back to a float op + a notice", 
   expect(notices).toEqual(["panels.popoutBlocked"]);
 });
 
-test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-removed", () => {
+test("apply seeds seenPanelIds with the tree's popout windows so a live popout is never orphan-removed", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -1179,7 +1179,7 @@ test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-r
   engine.apply(l.expanded, new Map());
   expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
 
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   engine.apply(l.expanded, new Map());
   // The panel is NOT torn out of dockview's model by the orphan-removal loop.
   expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
@@ -1254,10 +1254,10 @@ test("a successful pop-out seeds its origin group so the next apply() does not o
   );
   expect(api.getGroup(originGroupId)?.model.panels.length).toBe(0);
 
-  // Reconcile the SAME popped-out tree: chat still marked poppedOut.
+  // Reconcile the SAME popped-out tree: chat still marked popped-out.
   let l = defaultLayout([{ id: "chat" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   engine!.apply(l.expanded, new Map());
 
   // The empty origin group is seeded into seenGroupIds and survives the
@@ -1377,7 +1377,7 @@ test("onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses po
 
   let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   l = applyOp(l, { op: "dock", id: "assets", zone: "bottom", group: "new" });
   engine!.apply(l.expanded, new Map());
 

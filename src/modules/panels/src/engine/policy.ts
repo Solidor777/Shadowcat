@@ -73,8 +73,14 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * mapping — and its parity with `classifyDrop` — is testable with zero
  * dockview dependency.
  *
+ * `"popOut"` is deliberately OUT of this function's domain: a `LayoutOp.popOut`
+ * carries the engine-minted window `key`, which exists only after the
+ * gesture-time `addPopoutGroup` succeeds — the command is imperative, handled
+ * by `DockviewEngine.#requestPopOut`, and never reduces declaratively through
+ * `apply()` the way these other commands do.
+ *
  * Vetoes `id === STAGE_ID` up front, mirroring `classifyDrop`'s own stage
- * veto — belt-and-suspenders alongside `DockviewEngine.#handleMenuCommand`
+ * veto — belt-and-suspenders alongside `DockviewEngine.#handleMenuCommand`'s
  * guard and `DockviewEngine`'s headerless stage group (which never gives the stage a menu
  * button to invoke this with in the first place): a menu-command chokepoint
  * with the identical shape as the drag chokepoint, not the sole guard.
@@ -88,7 +94,7 @@ export const MENU_FLOAT_RECT: Rect = { x: 96, y: 96, w: 360, h: 280 };
  * opForMenuCommand("dockRight", "chat");
  * ```
  */
-export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResult {
+export function opForMenuCommand(command: Exclude<MenuCommand, "popOut">, id: string): ClassifyResult {
   if (id === STAGE_ID) {
     return veto("the stage panel is not a menu-command subject");
   }
@@ -103,8 +109,6 @@ export function opForMenuCommand(command: MenuCommand, id: string): ClassifyResu
       return { op: "float", id, rect: MENU_FLOAT_RECT };
     case "minimize":
       return { op: "minimize", id };
-    case "popOut":
-      return { op: "popOut", id };
     case "close":
       return { op: "close", id };
   }

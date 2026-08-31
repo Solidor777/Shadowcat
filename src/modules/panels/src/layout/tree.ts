@@ -241,11 +241,40 @@ export type LayoutOp =
       id: string;
     }
   | {
-      /** Mark `id` as rendered in a popped-out child window; a no-op if already
+      /** Mark `id` as rendered in popped-out window `key`; a no-op if already
        * popped-out — see `applyOp`'s `"popOut"` case. */
       op: "popOut";
       /** The panel being popped out. */
       id: string;
+      /** The window's identity, minted by the engine at pop-out time (a fresh
+       * key per gesture; a repeat key revives the retained dormant record —
+       * see `applyOp`'s `"popOut"` case). */
+      key: string;
+      /** The window's screen rect as known at pop-out time, or null when not
+       * (yet) observed. */
+      rect: ScreenRect | null;
+    }
+  | {
+      /** Record popped-out window `key`'s latest observed screen rect; a no-op
+       * when no window `key` exists or the stored rect deep-equals `rect` —
+       * see `applyOp`'s `"updatePopoutGeometry"` case. */
+      op: "updatePopoutGeometry";
+      /** The window whose rect is updated. */
+      key: string;
+      /** The window's new screen rect (null clears the record). */
+      rect: ScreenRect | null;
+    }
+  | {
+      /** Move `id` into EXISTING live window `key`'s panel list (a drag into an
+       * already-open pop-out window); a no-op when no such window exists, when
+       * the entry is dormant (a retained record has no live window to join), or
+       * when `id` is already one of its panels — see `applyOp`'s
+       * `"popOutInto"` case. */
+      op: "popOutInto";
+      /** The panel joining the window. */
+      id: string;
+      /** The window to join. */
+      key: string;
     }
   | {
       /** Return a popped-out `id` to a new docked `"right"` group; a no-op if `id` is not
@@ -415,7 +444,7 @@ export function locate(l: PanelLayoutV1, id: string): PanelLocation {
  * @example
  * ```
  * // private function; not part of the public API — called by every op in applyOp
- * // that relocates a panel (open, dock, float, minimize, popOut, popIn)
+ * // that relocates a panel (open, dock, float, minimize, popOut, popOutInto, popIn)
  * declare const layout: import("./tree").PanelLayoutV1;
  * detach(layout, "chat");
  * ```
@@ -684,9 +713,46 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       const loc = locate(l, o.id);
       if (loc.where === "popped-out") return l;
       const [l1] = detach(l, o.id);
-      // The op names no window, so the new single-panel window is keyed by
-      // its sole panel id.
-      const popouts: PopoutWindowLayout[] = [...l1.expanded.popouts, { key: o.id, panels: [o.id], rect: null }];
+      // A repeat `key` REPLACES that window's entry: the engine mints a fresh
+      // key per gesture-time pop-out, so an entry already carrying the key is
+      // the retained dormant record a restore gesture re-opens — its panel
+      // list is redefined to `[o.id]` (the other recorded panels are placed by
+      // their own ops) and the dormant marker clears.
+      const entry: PopoutWindowLayout = { key: o.key, panels: [o.id], rect: o.rect };
+      const existing = l1.expanded.popouts.findIndex((w) => w.key === o.key);
+      const popouts =
+        existing === -1 ? [...l1.expanded.popouts, entry] : l1.expanded.popouts.map((w, i) => (i === existing ? entry : w));
+      return { ...l1, expanded: { ...l1.expanded, popouts } };
+    }
+
+    case "updatePopoutGeometry": {
+      const index = l.expanded.popouts.findIndex((w) => w.key === o.key);
+      if (index === -1) return l;
+      const current = l.expanded.popouts[index].rect;
+      const next = o.rect;
+      const unchanged =
+        (current === null && next === null) ||
+        (current !== null &&
+          next !== null &&
+          current.left === next.left &&
+          current.top === next.top &&
+          current.width === next.width &&
+          current.height === next.height);
+      if (unchanged) return l;
+      const popouts = l.expanded.popouts.map((w, i) => (i === index ? { ...w, rect: next } : w));
+      return { ...l, expanded: { ...l.expanded, popouts } };
+    }
+
+    case "popOutInto": {
+      const window = l.expanded.popouts.find((w) => w.key === o.key);
+      // A dormant entry is a retained arrangement record, not a live window —
+      // there is nothing to join until a `popOut` op revives it.
+      if (!window || window.dormant === true || window.panels.includes(o.id)) return l;
+      const [l1] = detach(l, o.id);
+      // Re-find by key post-detach: detaching `id` from another window may
+      // have rebuilt (or dropped) entries, but never the target — `id` is not
+      // one of its panels (checked above).
+      const popouts = l1.expanded.popouts.map((w) => (w.key === o.key ? { ...w, panels: [...w.panels, o.id] } : w));
       return { ...l1, expanded: { ...l1.expanded, popouts } };
     }
 
@@ -694,7 +760,8 @@ export function applyOp(l: PanelLayoutV1, o: LayoutOp): PanelLayoutV1 {
       // Returns a popped-out panel to a new docked "right" group (mirrors
       // "restore"). Emitted by the engine when a popout window closes; the
       // menu's dock/float/minimize commands pop a panel in via their own ops
-      // (detach handles the "popped-out" source location).
+      // (detach handles the "popped-out" source location, dropping the window
+      // entry entirely when its `panels` list empties).
       const loc = locate(l, o.id);
       if (loc.where !== "popped-out") return l;
       const [l1] = detach(l, o.id);

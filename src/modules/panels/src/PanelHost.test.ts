@@ -150,7 +150,7 @@ test("mount-counter: a docked panel's component mounts exactly once across the f
   // Pop-out leg: dock⇄float⇄...⇄pop-out⇄pop-in never re-mounts. The
   // FakeEngine degrades pop-out to a floating window, so the slot is re-parented
   // (adopted), never recreated.
-  engine.emitOp({ op: "popOut", id: "chat:panel" });
+  engine.emitOp({ op: "popOut", id: "chat:panel", key: "w-chat", rect: null });
   await Promise.resolve();
   expect(mounts).toBe(1);
 
@@ -498,7 +498,7 @@ test("live region: opening a panel that starts popped-out announces its docked d
   const liveRegion = container.querySelector('[role="status"]')!;
 
   // Pop out LIVE (via a gesture, post-mount) rather than seeding a
-  // persisted `poppedOut` id — `PanelsController`'s constructor-time
+  // persisted popout window — `PanelsController`'s constructor-time
   // `#rehydratePoppedOut` would otherwise convert a persisted popped-out id
   // straight to floating before this test ever gets to open it, hiding the
   // "popped-out" prior state this test needs to exercise. Popped-out is the
@@ -507,7 +507,7 @@ test("live region: opening a panel that starts popped-out announces its docked d
   // own popped-out window is a real placement change, same as reopening a
   // minimized or closed one — a guard keyed on only two of the three would
   // silently miss it.
-  engine.emitOp({ op: "popOut", id: "chat:panel" });
+  engine.emitOp({ op: "popOut", id: "chat:panel", key: "w-chat", rect: null });
   await Promise.resolve();
   // The "popOut" op itself narrates too (an existing, unchanged case in
   // `describeOp`'s switch) — confirms the panel is actually popped-out
@@ -706,7 +706,7 @@ test("a reload-restored popout's notice reaches the live region", async () => {
   // `panels.popoutRestoredFloating` at construction.
   let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
-  saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
+  saved = applyOp(saved, { op: "popOut", id: "chat:panel", key: "w-chat", rect: null });
 
   const engine = new FakeEngine();
   const context = setAppContextForTest({
@@ -740,7 +740,7 @@ test("PanelHost's post-mount effect — not PanelsController's constructor — i
 
   let saved = defaultLayout([{ id: "chat:panel", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "chat:panel", zone: "right", group: "new" });
-  saved = applyOp(saved, { op: "popOut", id: "chat:panel" });
+  saved = applyOp(saved, { op: "popOut", id: "chat:panel", key: "w-chat", rect: null });
 
   const notices: string[] = [];
   // Built OUTSIDE `PanelHost`, mirroring its own construction args exactly

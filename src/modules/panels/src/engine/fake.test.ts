@@ -42,7 +42,7 @@ test("poppedOut degrades to a floating window (bespoke-fallback engine has no cr
 
   let l = defaultLayout([{ id: "chat" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   eng.apply(l.expanded, new Map());
 
   // Rendered as a float window, so the slot stays adopted (never lost).
@@ -99,9 +99,9 @@ test("two simultaneously popped-out ids cascade to distinct floating rects under
 
   let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   l = applyOp(l, { op: "dock", id: "assets", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "assets" });
+  l = applyOp(l, { op: "popOut", id: "assets", key: "w-assets", rect: null });
   eng.apply(l.expanded, new Map());
 
   const chatEl = eng.floatEl("chat")!;
@@ -148,7 +148,7 @@ test.each([0, 1, 3, 5, 7])(
     let popped = defaultLayout([]);
     for (const id of ids) {
       popped = applyOp(popped, { op: "open", id, placement: { kind: "docked", zone: "right" } });
-      popped = applyOp(popped, { op: "popOut", id });
+      popped = applyOp(popped, { op: "popOut", id, key: `w-${id}`, rect: null });
     }
     eng.apply(popped.expanded, new Map());
     const el = eng.floatEl(probe)!;

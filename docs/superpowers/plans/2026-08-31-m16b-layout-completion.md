@@ -70,8 +70,8 @@ verbatim directive paragraph + the report-delivery requirement.
 - Tests: `layout/tree.test.ts` — incl. same-reference no-op assertions for every op's
   change-nothing path, and prune dropping unknown ids from `panels`.
 
-- [ ] Failing tests first (op effects + no-op identity + window lifecycle).
-- [ ] Implement. Gates + commit.
+- [x] Failing tests first (op effects + no-op identity + window lifecycle).
+- [x] Implement. Gates + commit.
 
 ### Task 3: Controller — rehydrate with grouping adjacency + retained arrangement
 

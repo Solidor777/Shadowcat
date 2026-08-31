@@ -312,10 +312,10 @@ describe("decodeLayout referential consistency", () => {
 test("decode round-trips popouts windows", () => {
   let l = defaultLayout([{ id: "chat" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   const { layout, reset } = decodeLayout(l, new Set(["chat"]), () => defaultLayout([]));
   expect(reset).toBe(false);
-  expect(layout.expanded.popouts).toEqual([{ key: "chat", panels: ["chat"], rect: null }]);
+  expect(layout.expanded.popouts).toEqual([{ key: "w-chat", panels: ["chat"], rect: null }]);
 });
 
 // Back-compat: a blob saved before the tree tracked window grouping carries the

@@ -259,7 +259,7 @@ test("late registrations against an empty-registry construction restore their SA
 test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a notice", () => {
   let saved = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
-  saved = applyOp(saved, { op: "popOut", id: "chat" });
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w-chat", rect: null });
 
   const contributions = new ContributionRegistry();
   contributions.contribute({
@@ -320,9 +320,9 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
     { id: "assets", placement: { kind: "docked", zone: "right" } },
   ]);
   saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
-  saved = applyOp(saved, { op: "popOut", id: "chat" });
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   saved = applyOp(saved, { op: "dock", id: "assets", zone: "right", group: "new" });
-  saved = applyOp(saved, { op: "popOut", id: "assets" });
+  saved = applyOp(saved, { op: "popOut", id: "assets", key: "w-assets", rect: null });
 
   const setPanelLayout = vi.fn();
   const ctrl = new PanelsController({
@@ -380,7 +380,7 @@ function rectViaRehydration(alreadyFloating: number): Rect {
   let saved = defaultLayout([]);
   for (const id of ids) saved = applyOp(saved, { op: "open", id, placement: { kind: "floating" } });
   saved = applyOp(saved, { op: "open", id: "probe", placement: { kind: "docked", zone: "right" } });
-  saved = applyOp(saved, { op: "popOut", id: "probe" });
+  saved = applyOp(saved, { op: "popOut", id: "probe", key: "w-probe", rect: null });
 
   const ctrl = new PanelsController({
     contributions,

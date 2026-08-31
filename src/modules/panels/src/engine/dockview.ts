@@ -764,22 +764,25 @@ export class DockviewEngine implements EngineAdapter {
    */
   #handleMenuCommand(id: string, cmd: MenuCommand, invoker: HTMLElement): void {
     if (id === STAGE_ID) return;
-    const result = opForMenuCommand(cmd, id);
-    if ("veto" in result) {
-      this.#logger.warn(`panels: vetoed menu command (${result.reason})`, { id, cmd });
-      return;
-    }
-    if (cmd === "float") this.#floatInvokers.set(id, invoker);
     if (cmd === "popOut") {
       // Pop-out is imperative + gesture-timed: `window.open` (inside
       // addPopoutGroup, synchronous before its first await) must run in THIS
       // click's tick or the browser blocks it. The tree op is emitted only
       // after the async open resolves — unlike every other menu command, which
       // reduces declaratively through `apply()`. Same gesture-timing reason
-      // `#floatInvokers` is captured synchronously above.
+      // `#floatInvokers` is captured synchronously below. Intercepted BEFORE
+      // `opForMenuCommand`: a `LayoutOp.popOut` carries the window key minted
+      // by the successful open, so the declarative mapping has nothing to
+      // produce here (see `opForMenuCommand`'s own doc).
       this.#requestPopOut(id);
       return;
     }
+    const result = opForMenuCommand(cmd, id);
+    if ("veto" in result) {
+      this.#logger.warn(`panels: vetoed menu command (${result.reason})`, { id, cmd });
+      return;
+    }
+    if (cmd === "float") this.#floatInvokers.set(id, invoker);
     for (const cb of this.#opListeners) cb(result);
   }
 
@@ -799,6 +802,10 @@ export class DockviewEngine implements EngineAdapter {
   #requestPopOut(id: string): void {
     const api = this.#api;
     if (!api) return;
+    // Second STAGE_ID layer alongside `#handleMenuCommand`'s early return (the
+    // stage has no menu button at all — its group is headerless — so neither
+    // should ever fire for it).
+    if (id === STAGE_ID) return;
     const panel = api.getPanel(id);
     if (!panel) return;
     // In-flight guard: dockview's `mutation()` bracket around `addPopoutGroup`
@@ -810,6 +817,10 @@ export class DockviewEngine implements EngineAdapter {
       return;
     }
     this.#pendingPopouts.add(id);
+    // The tree's window identity, minted here (a fresh key per pop-out
+    // gesture) and carried by the `popOut` op on success — the tree never
+    // interprets it; ops address the window by it.
+    const key = crypto.randomUUID();
     // Origin group captured BEFORE the driver re-parents the panel: after a
     // successful pop-out `panel.group.id` is the POPOUT group's own id, so the
     // origin must be read now (see `#poppedOutOriginGroups`).
@@ -860,7 +871,7 @@ export class DockviewEngine implements EngineAdapter {
               }),
             ]);
           }
-          for (const cb of this.#opListeners) cb({ op: "popOut", id });
+          for (const cb of this.#opListeners) cb({ op: "popOut", id, key, rect: null });
         } else {
           for (const cb of this.#opListeners) cb({ op: "float", id, rect: MENU_FLOAT_RECT });
           this.#emitNotice("panels.popoutBlocked");
