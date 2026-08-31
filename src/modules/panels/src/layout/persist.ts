@@ -317,7 +317,10 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
  */
 function withPopouts(l: PanelLayoutV1): PanelLayoutV1 {
   if (Array.isArray(l.expanded.popouts)) return l;
-  const legacy = (l.expanded as { poppedOut?: unknown }).poppedOut;
+  // Read the legacy wire field through the same untyped-record idiom the
+  // structural guards use: `poppedOut` exists only in pre-`popouts` blobs, so
+  // it is deliberately not part of the `ExpandedLayout` type.
+  const legacy = (l.expanded as unknown as Record<string, unknown>).poppedOut;
   const popouts: PopoutWindowLayout[] = isStringArray(legacy)
     ? legacy.map((id) => ({ key: `legacy-${id}`, panels: [id], rect: null }))
     : [];
