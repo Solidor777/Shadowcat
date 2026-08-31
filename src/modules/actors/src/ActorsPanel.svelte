@@ -134,7 +134,16 @@
   });
 
   /** The actor row's raw stored carried-light emission (`engine.light`), or `null`. This RAW
-   * read is the OCC pre-image for `commitLight`'s update — never a resolved/defaulted value. */
+   * read is the OCC pre-image for `commitLight`'s update — never a resolved/defaulted value.
+   * @param a The actor document to read.
+   * @returns The raw stored emission, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row light toggle + editor
+   * declare const a: WireDocument;
+   * lightOf(a); // a.engine.light ?? null
+   * ```
+   */
   const lightOf = (a: WireDocument): LightEmission | null =>
     (a.engine as ActorEngine | undefined)?.light ?? null;
 

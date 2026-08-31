@@ -230,7 +230,12 @@ export class ToolController {
    * empty-canvas click; `ToolRail` renders the matching editor while it is set. One shared
    * selection source for both tools, so the editor can never disagree with the canvas about
    * which entity is being edited. */
-  editingEntity = $state<{ kind: "light" | "wall"; id: string } | null>(null);
+  editingEntity = $state<{
+    /** Which kind of scene entity is being edited. */
+    kind: "light" | "wall";
+    /** The edited document's id. */
+    id: string;
+  } | null>(null);
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -467,8 +472,23 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
   let moved = false;
 
   /** The light document's position and emission, read RAW from the store, or `null` when the
-   * document is gone or malformed. */
-  const readLight = (id: string): { pos: Point; em: LightEmission } | null => {
+   * document is gone or malformed.
+   * @param id The light document id.
+   * @returns The raw stored position + emission, or `null`.
+   * @example
+   * ```
+   * // private helper; read by the drag gesture + ring overlay
+   * declare function readLight(id: string): { pos: Point; em: LightEmission } | null;
+   * declare const id: string;
+   * readLight(id); // { pos, em } | null
+   * ```
+   */
+  const readLight = (id: string): {
+    /** The raw stored position, scene coords. */
+    pos: Point;
+    /** The raw stored emission payload. */
+    em: LightEmission;
+  } | null => {
     const eng = ctx.documents.get(id)?.engine as LightEngine | undefined;
     if (!eng || !Number.isFinite(eng.x) || !Number.isFinite(eng.y)) return null;
     return { pos: { x: eng.x, y: eng.y }, em: eng.emission };

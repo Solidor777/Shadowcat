@@ -90,7 +90,16 @@ export function topLightAt(lights: WireDocument[], p: Point): string | null {
  * `WALL_WIDTH` stroke so the pick target is forgiving). */
 const WALL_PICK_TOLERANCE = 8;
 
-/** Distance from point `p` to the segment `a`–`b` (scene coords). */
+/** Distance from point `p` to the segment `a`–`b` (scene coords).
+ * @param p The point to measure from.
+ * @param a The segment's first endpoint.
+ * @param b The segment's second endpoint.
+ * @returns The perpendicular (or endpoint) distance, in scene units.
+ * @example
+ * ```
+ * pointSegDistance({ x: 5, y: 5 }, { x: 0, y: 0 }, { x: 10, y: 0 }); // 5
+ * ```
+ */
 function pointSegDistance(p: Point, a: Point, b: Point): number {
   const abx = b.x - a.x;
   const aby = b.y - a.y;
@@ -120,7 +129,16 @@ export function topWallAt(walls: WireDocument[], p: Point): string | null {
   for (const w of walls) {
     const seg = (w.engine as {
       /** The wall's segment; absent ⇒ unpickable. */
-      seg?: { x1: number; y1: number; x2: number; y2: number };
+      seg?: {
+        /** First endpoint x. */
+        x1: number;
+        /** First endpoint y. */
+        y1: number;
+        /** Second endpoint x. */
+        x2: number;
+        /** Second endpoint y. */
+        y2: number;
+      };
     } | undefined)?.seg;
     if (!seg) continue;
     const { x1, y1, x2, y2 } = seg;

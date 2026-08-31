@@ -190,7 +190,7 @@ fn two_overlapping_dim_lights_cross_the_bright_threshold() {
         intensity: 0.4,
         ..lamp()
     };
-    let single = cell_illumination((0.0, 0.0), 0.0, 0, &[a.clone()], &[vec![]], &[], 100.0);
+    let single = cell_illumination((0.0, 0.0), 0.0, 0, std::slice::from_ref(&a), &[vec![]], &[], 100.0);
     assert_eq!(single.level, 0.4);
     let bands = sorted_bands(default_bands());
     assert_eq!(bands[band_index(&bands, single.level)].name, "dim");
