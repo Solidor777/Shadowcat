@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, type WireDocument } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
   import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -150,6 +150,58 @@
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
+  const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
+  /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
+  type TriggerEffectType = RegionTrigger["effect"]["type"];
+  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice"];
+  const noticeAudiences: NoticeAudience[] = ["public", "gm_only", "owner"];
+
+  /** Append a blank trigger row (a `condition_add` on `enter`) to the region tool's authored
+   * list, persisted onto the next region the tool creates.
+   * @example
+   * ```
+   * addRegionTrigger();
+   * ```
+   */
+  function addRegionTrigger(): void {
+    controller.regionTriggers.push({ on: "enter", effect: { type: "condition_add", condition: "" } });
+  }
+
+  /** Re-seat a row's effect when its type select changes. Each effect kind carries disjoint
+   * fields, so a kind switch starts that row's payload fresh rather than carrying stale keys.
+   * @param trig The trigger row being edited.
+   * @param type The newly selected `TriggerEffect` discriminant.
+   * @example
+   * ```
+   * declare const trig: RegionTrigger;
+   * setRegionTriggerEffectType(trig, "chat_notice");
+   * ```
+   */
+  function setRegionTriggerEffectType(trig: RegionTrigger, type: string): void {
+    if (trig.effect.type === type) return;
+    switch (type) {
+      case "condition_remove": trig.effect = { type: "condition_remove", condition: "" }; break;
+      case "resource_delta": trig.effect = { type: "resource_delta", resource: "", amount: 0 }; break;
+      case "chat_notice": trig.effect = { type: "chat_notice", text: "", audience: "gm_only" }; break;
+      default: trig.effect = { type: "condition_add", condition: "" };
+    }
+  }
+
+  /** Parse an amount field into a `Formula`: a finite numeric literal stays a number, anything
+   * else is kept as formula source text (the server parse-checks it at ingress).
+   * @param trig The trigger row being edited (a no-op unless it is a `resource_delta`).
+   * @param raw The raw text the amount input reports.
+   * @example
+   * ```
+   * declare const trig: RegionTrigger;
+   * setRegionTriggerAmount(trig, "1d6");
+   * ```
+   */
+  function setRegionTriggerAmount(trig: RegionTrigger, raw: string): void {
+    if (trig.effect.type !== "resource_delta") return;
+    const n = Number(raw);
+    trig.effect.amount = raw.trim() !== "" && Number.isFinite(n) ? n : raw;
+  }
 </script>
 
 <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
@@ -226,6 +278,39 @@
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}
         </label>
+        {#each controller.regionTriggers as trig, i (i)}
+          <div class="trigger-row">
+            <select data-testid="region-trigger-on" aria-label={t("tools.triggerOn")} bind:value={trig.on}>
+              {#each triggerEvents as ev (ev)}<option value={ev}>{ev}</option>{/each}
+            </select>
+            <select
+              data-testid="region-trigger-effect"
+              aria-label={t("tools.triggerEffect")}
+              value={trig.effect.type}
+              onchange={(e) => setRegionTriggerEffectType(trig, e.currentTarget.value)}
+            >
+              {#each triggerEffectTypes as et (et)}<option value={et}>{et}</option>{/each}
+            </select>
+            {#if trig.effect.type === "condition_add" || trig.effect.type === "condition_remove"}
+              <input data-testid="region-trigger-condition" aria-label={t("tools.triggerCondition")} bind:value={trig.effect.condition} />
+            {:else if trig.effect.type === "resource_delta"}
+              <input data-testid="region-trigger-resource" aria-label={t("tools.triggerResource")} bind:value={trig.effect.resource} />
+              <input
+                data-testid="region-trigger-amount"
+                aria-label={t("tools.triggerAmount")}
+                value={String(trig.effect.amount)}
+                onchange={(e) => setRegionTriggerAmount(trig, e.currentTarget.value)}
+              />
+            {:else if trig.effect.type === "chat_notice"}
+              <input data-testid="region-trigger-text" aria-label={t("tools.triggerText")} bind:value={trig.effect.text} />
+              <select data-testid="region-trigger-audience" aria-label={t("tools.triggerAudience")} bind:value={trig.effect.audience}>
+                {#each noticeAudiences as a (a)}<option value={a}>{a}</option>{/each}
+              </select>
+            {/if}
+            <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
+          </div>
+        {/each}
+        <button type="button" data-testid="region-trigger-add" onclick={addRegionTrigger}>{t("tools.addTrigger")}</button>
       </div>
     {/if}
   {/if}
@@ -269,6 +354,16 @@
     @media (pointer: coarse) {
       min-height: 44px;
     }
+  }
+  .trigger-row {
+    display: flex;
+    flex-direction: row;
+    gap: var(--space-1);
+    align-items: center;
+  }
+  .trigger-row input {
+    min-width: 0;
+    flex: 1;
   }
 
   /* Compact bottom strip: lay tools out horizontally with overflow scroll

@@ -281,6 +281,53 @@ test("exposes the viewed scene's committed token positions as data-token-positio
   await vi.waitFor(() => expect(host.dataset.tokenPositions).toBe("t-a:100,50;t-b:250,-125"));
 });
 
+test("exposes each viewed-scene token's resolved visual kind as data-token-visuals", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, actor_id: null, overrides: null, face: null },
+          "t-gen",
+        ),
+      },
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          "t-img",
+        ),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  // Id-sorted `id:kind` pairs, resolved through the same resolveTokenVisual the render layer
+  // draws from: a generated visual reports its own kind, not its art's.
+  expect(host.dataset.tokenVisuals).toBe("t-gen:generated;t-img:image");
+});
+
 test("exposes the server's move-resolution outcome as data-last-move-outcome", async () => {
   const createBackend = vi.fn(async () => fakeBackend());
   let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;

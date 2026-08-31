@@ -29,12 +29,19 @@ import type {
   TokenVisual,
   RenderVisual,
   AnimatedSource,
+  GeneratedCrop,
+  GeneratedBorder,
+  GeneratedBackground,
   VisionAssignment,
   ActorEngine,
   LightEngine,
   Falloff,
   RegionShape,
   RegionEngine,
+  RegionTrigger,
+  TriggerEvent,
+  TriggerEffect,
+  NoticeAudience,
   Faction,
   FactionStance,
   FactionRegistryEngine,
@@ -109,12 +116,19 @@ export type {
   TokenVisual,
   RenderVisual,
   AnimatedSource,
+  GeneratedCrop,
+  GeneratedBorder,
+  GeneratedBackground,
   VisionAssignment,
   ActorEngine,
   LightEngine,
   Falloff,
   RegionShape,
   RegionEngine,
+  RegionTrigger,
+  TriggerEvent,
+  TriggerEffect,
+  NoticeAudience,
   Faction,
   FactionStance,
   FactionRegistryEngine,
@@ -1006,6 +1020,7 @@ export function buildLightDoc(worldId: string, sceneId: string, engine: LightEng
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true,
+ *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1034,7 +1049,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
- *   behavior: "impassable", cost: 1, enabled: true,
+ *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);

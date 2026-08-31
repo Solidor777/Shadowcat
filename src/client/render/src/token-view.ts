@@ -1,7 +1,7 @@
 import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, FootprintLookup } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec, ResolvedAnimatedSource } from "./types";
+import type { TokenNodeSpec, ResolvedAnimatedSource, ResolvedArtVisual } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
@@ -227,8 +227,9 @@ export class TokenView {
 
   /** Advance both independent per-frame facilities: `animator.tick` (transform tweens — polyline
    * walks and sample playback) pushes each changed id's latest transform to the backend, and
-   * `backend.tickTokenAnimations` (frame-index playback for a token's `kind:"animated"` visual —
-   * see `computeAnimatedFrame`) advances independently of any transform
+   * `backend.tickTokenAnimations` (frame-index playback for a token's animated payload — a
+   * `kind:"animated"` visual, or a generated visual's animated `art`; see `computeAnimatedFrame`)
+   * advances independently of any transform
    * tween, so an animated-sprite token still cycles frames while stationary.
    * @param dtMs Elapsed render-frame time in ms since the last tick.
    * @example
@@ -297,12 +298,30 @@ export class TokenView {
       : { type: "sheet", url: this.assets.url(source.asset), rows: source.rows, cols: source.cols, count: source.count ?? undefined };
   }
 
+  /** Resolve an image/animated `RenderVisual` arm (raw asset ids) into its `ResolvedArtVisual`
+   * (already-URL'd) — the shared tail of `toSpec`'s top-level and generated-`art` resolution, so
+   * both paths apply the SAME `assets.url(...)` resolution and never diverge.
+   * @param art The resolved image/animated visual arm, pre-URL-resolution.
+   * @returns The same visual with every asset id replaced by its resolved serve URL.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const art: Extract<RenderVisual, { kind: "image" | "animated" }>;
+   * this.resolveArtVisual(art);
+   * ```
+   */
+  private resolveArtVisual(art: Extract<RenderVisual, { /** Narrows `RenderVisual` to its drawable (non-`"generated"`) union members. */ kind: "image" | "animated" }>): ResolvedArtVisual {
+    return art.kind === "image"
+      ? { kind: "image", url: this.assets.url(art.asset) }
+      : { kind: "animated", source: this.resolveSource(art.source), fps: art.fps, loop: art.loop };
+  }
+
   /** Project a `token` doc into a renderable `TokenNodeSpec`: resolves the effective actor
-   * (`resolveTokenActor`), the visual (`resolveTokenVisual`, image or animated, URL-resolved via
-   * `resolveSource`), the faction border color (via the world `faction-registry` doc; `null` when
-   * the effective actor has no faction or the faction has no registered color), condition badges
-   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`, reading the server's
-   * resolved extent rather than computing one). Fails closed to `null`
+   * (`resolveTokenActor`), the visual (`resolveTokenVisual` — image, animated, or generated,
+   * URL-resolved via `resolveArtVisual`/`resolveSource`), the faction border color (via the world
+   * `faction-registry` doc; `null` when the effective actor has no faction or the faction has no
+   * registered color), condition badges (`resolveConditions`), and the footprint box/shape
+   * (`resolveTokenBox`, reading the server's resolved extent rather than computing one). Fails closed to `null`
    * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
    * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
    * @param doc The `token` document to project.
@@ -320,10 +339,22 @@ export class TokenView {
     const eff = resolveTokenActor(doc, this.store);
     const visual = resolveTokenVisual(doc, this.store, eff);
     if (!visual) return null;
-    const resolvedVisual: TokenNodeSpec["visual"] =
-      visual.kind === "image"
-        ? { kind: "image", url: this.assets.url(visual.asset) }
-        : { kind: "animated", source: this.resolveSource(visual.source), fps: visual.fps, loop: visual.loop };
+    let resolvedVisual: TokenNodeSpec["visual"];
+    if (visual.kind === "generated") {
+      // `resolveTokenVisual` already fails closed on a nested `generated`; the re-check here
+      // narrows `art` for the type system (a garbled doc casting past the guard can still
+      // carry one, and the backend must never resolve asset ids for a shape it cannot draw).
+      if (visual.art.kind === "generated") return null;
+      resolvedVisual = {
+        kind: "generated",
+        art: this.resolveArtVisual(visual.art),
+        crop: visual.crop,
+        border: visual.border ? { color: parseColor(visual.border.color), width: visual.border.width } : undefined,
+        background: visual.background ? { color: parseColor(visual.background.color) } : undefined,
+      };
+    } else {
+      resolvedVisual = this.resolveArtVisual(visual);
+    }
     // Faction border color resolves through the world faction registry; null = no border.
     let borderColor: number | null = null;
     if (eff?.faction) {

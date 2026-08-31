@@ -513,6 +513,71 @@ fn animated_source_sheet_round_trips() {
     assert!(matches!(src, AnimatedSource::Sheet { .. }));
 }
 
+#[test]
+fn render_visual_generated_round_trips() {
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": "a.png" },
+        "crop": "circle",
+        "border": { "color": "#ff8800", "width": 0.06 },
+        "background": { "color": "#102030" }
+    });
+    let v: RenderVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(
+        v,
+        RenderVisual::Generated {
+            crop: GeneratedCrop::Circle,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+}
+
+#[test]
+fn render_visual_generated_omitted_border_and_background_serialize_as_null() {
+    // `Option` fields re-serialize as explicit `null` (the client's `T | null`
+    // contract), never as an omitted key.
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "animated", "source": { "type": "frames", "frames": ["a"] }, "fps": 4.0, "loop": true },
+        "crop": "square"
+    });
+    let v: RenderVisual = serde_json::from_value(src).unwrap();
+    let stored = serde_json::to_value(&v).unwrap();
+    assert_eq!(stored["border"], serde_json::Value::Null);
+    assert_eq!(stored["background"], serde_json::Value::Null);
+    let back: RenderVisual = serde_json::from_value(stored).unwrap();
+    assert_eq!(v, back);
+}
+
+#[test]
+fn token_visual_generated_round_trips() {
+    // An actor's whole visual can be a generated composition (the same payload
+    // shape `RenderVisual::Generated` carries per-face).
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": "a.png" },
+        "crop": "circle",
+        "border": null,
+        "background": { "color": "#102030" }
+    });
+    let v: TokenVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(v, TokenVisual::Generated { .. }));
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+}
+
+#[test]
+fn generated_crop_literal_set_deserializes() {
+    for (literal, expected) in [
+        ("circle", GeneratedCrop::Circle),
+        ("square", GeneratedCrop::Square),
+    ] {
+        let v: GeneratedCrop = serde_json::from_value(json!(literal)).unwrap();
+        assert_eq!(v, expected);
+    }
+    assert!(serde_json::from_value::<GeneratedCrop>(json!("hex")).is_err());
+}
+
 // --- literal-set assertions (client writers emit these strings today) ---
 
 #[test]
@@ -1083,4 +1148,72 @@ fn asset_folder_is_engine_type_with_sort_only() {
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3 }))).is_ok());
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3, "name": "x" }))).is_err());
     assert!(validate_engine("asset_folder", None).is_err());
+}
+
+#[test]
+fn region_without_triggers_loads_and_normalizes_with_an_empty_list() {
+    // A document written before triggers existed carries no `triggers` key: serde's default
+    // admits it, and normalization re-serializes the key back as an explicit empty list.
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(n.get("triggers"), Some(&json!([])));
+}
+
+#[test]
+fn region_trigger_payload_round_trips_all_effect_kinds() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "arrest", "effect": { "type": "condition_remove", "condition": "prone" } },
+            { "on": "enter", "effect": { "type": "resource_delta", "resource": "hp", "amount": -3.0 } },
+            { "on": "enter", "effect": { "type": "resource_delta", "resource": "hp", "amount": "con + 1" } },
+            { "on": "arrest", "effect": { "type": "chat_notice", "text": "It snaps shut.", "audience": "owner" } }
+        ]
+    });
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(n, v, "a valid trigger payload must round-trip byte-identically");
+}
+
+#[test]
+fn region_trigger_validation_rejects_malformed_payloads() {
+    let base = |effect: serde_json::Value| {
+        json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": 1.0, "enabled": true,
+            "triggers": [ { "on": "enter", "effect": effect } ]
+        })
+    };
+    // An empty condition/resource id.
+    assert!(validate_engine("region", Some(&base(json!({ "type": "condition_add", "condition": "" })))).is_err());
+    assert!(validate_engine("region", Some(&base(json!({ "type": "resource_delta", "resource": "", "amount": 1.0 })))).is_err());
+    // An over-cap id (`MAX_TRIGGER_ID_CHARS`).
+    let long_id = "x".repeat(MAX_TRIGGER_ID_CHARS + 1);
+    assert!(validate_engine("region", Some(&base(json!({ "type": "condition_add", "condition": long_id })))).is_err());
+    // An amount that is not formula source.
+    assert!(validate_engine("region", Some(&base(json!({ "type": "resource_delta", "resource": "hp", "amount": "1 +" })))).is_err());
+    // An over-cap notice text (`chat::MAX_MESSAGE_CHARS`).
+    let long_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(validate_engine("region", Some(&base(json!({ "type": "chat_notice", "text": long_text, "audience": "public" })))).is_err());
+    // An unknown effect type, event, audience, or trigger field — serde closes these.
+    assert!(validate_engine("region", Some(&base(json!({ "type": "explode" })))).is_err());
+    assert!(validate_engine("region", Some(&json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [ { "on": "leave", "effect": { "type": "condition_add", "condition": "x" } } ]
+    }))).is_err());
+    assert!(validate_engine("region", Some(&base(json!({ "type": "chat_notice", "text": "t", "audience": "everyone" })))).is_err());
+    assert!(validate_engine("region", Some(&json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [ { "on": "enter", "effect": { "type": "condition_add", "condition": "x" }, "extra": 1 } ]
+    }))).is_err());
+    // The same payloads at exactly the cap are admitted.
+    let cap_id = "x".repeat(MAX_TRIGGER_ID_CHARS);
+    assert!(validate_engine("region", Some(&base(json!({ "type": "condition_add", "condition": cap_id })))).is_ok());
 }

@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type RegionTrigger, type RegionEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
@@ -225,6 +225,10 @@ export class ToolController {
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
+  /** Region-tool authored triggers, deep-copied onto the next region the tool persists (an
+   * empty list persists a plain movement-only region). Editing a row in the rail must never
+   * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
+  regionTriggers = $state<RegionTrigger[]>([]);
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -414,7 +418,7 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
  * @param controller Supplies the configured `regionShapeMode`/`regionBehavior`/`regionCost`/
- * `regionSecret`.
+ * `regionSecret`/`regionTriggers`.
  * @returns A `SceneTool` implementing the drag-to-author gesture.
  * @example
  * ```
@@ -450,12 +454,16 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
         mode === "polygon" ? freehand.length >= 6 : Math.hypot(b.x - anchor.x, b.y - anchor.y) >= 1;
       if (scene && hasExtentForRegion) {
         const shapePoints = regionShapeGeometry(mode, anchor, b, freehand);
-        const doc = buildRegionDoc(ctx.world, scene.id, {
+        const engine: RegionEngine = {
           shape: { kind: mode, points: shapePoints },
           behavior: controller.regionBehavior,
           cost: Math.max(1, controller.regionCost),
           enabled: true,
-        });
+          // Deep copy: the rail's list stays editable for the NEXT region, and a later
+          // row edit must never mutate the doc this persist already handed out.
+          triggers: structuredClone(controller.regionTriggers),
+        };
+        const doc = buildRegionDoc(ctx.world, scene.id, engine);
         if (controller.regionSecret) setRegionVisibility(doc, true);
         ctx.dispatchIntent([{ op: "create", doc }]);
       }

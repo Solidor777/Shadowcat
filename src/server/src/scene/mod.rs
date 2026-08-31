@@ -567,6 +567,37 @@ fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     engine_tier_visible_to(doc, &access)
 }
 
+/// The WORLD-DEFAULT form of `engine_geometry_visible_to`: would a world member carrying no
+/// per-user grant and no ownership receive this document's `/engine` band? Same whole-world
+/// question class as `combat::transition::is_hidden` — never a per-caller gate, so the two
+/// egress gates are still evaluated through the ONE shared predicate pair rather than restated
+/// here. A per-user grant that individually admits someone is invisible to this predicate, which
+/// therefore only ever under-discloses (a region notice forced GM-only though one granted member
+/// could have read it) — the safe direction, mirroring `is_hidden`'s documented residual.
+fn engine_geometry_visible_to_world(doc: &Document) -> bool {
+    let access = crate::data::permission::resolve_access(
+        Uuid::nil(),
+        crate::data::document::WorldRole::Player,
+        doc,
+        crate::data::permission::effective_owner(doc, None),
+    );
+    engine_geometry_visible_to(doc, &access)
+}
+
+/// FNV-1a over the region document's serialized `engine` band. Identifies the document version
+/// a `regions::TriggerRegion` row was derived from: equal engines hash equally (serde_json's
+/// default key ordering is canonical), and a region edit yields a new hash. Identity only —
+/// never a security or secrecy decision.
+fn region_engine_hash(doc: &Document) -> u64 {
+    let text = doc.engine.as_ref().map(ToString::to_string).unwrap_or_default();
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// Exact, order-independent key for a routing wall set — the third component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
@@ -1882,6 +1913,54 @@ impl SceneEcs {
             builder.add(&shape, behavior, cost, cell, &*grid);
         }
         Some(builder.build())
+    }
+
+    /// The trigger-bearing region identity table for `scene`: one `regions::TriggerRegion` row
+    /// per ENABLED region carrying at least one trigger, each row's cells rasterized through the
+    /// SAME `regions::rasterize` the composed `region_field` above uses — one geometry
+    /// derivation feeds both consumers, so this table and the authoritative field cannot
+    /// disagree about a region's coverage (the parity battery pins that agreement). There is no
+    /// per-requester form: triggers fire on the server's authoritative view, springing secret
+    /// regions exactly as `move_exec` does; secrecy is enforced on the effect side (a
+    /// not-visible-to-all region's notices are forced GM-only), never by filtering this table.
+    /// Recomputed on demand from the same ECS entities `region_field` reads, so a region-doc
+    /// mutation applied through `apply_op` is reflected on the next call — the `engine_hash`
+    /// row component identifies which document version a row was derived from.
+    ///
+    /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
+    /// Rows are sorted by region id so downstream effect application order is deterministic
+    /// (entity-query order is unspecified).
+    pub(crate) fn trigger_regions(&self, scene: Uuid) -> Option<Vec<regions::TriggerRegion>> {
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        let mut out = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
+                continue;
+            }
+            let Some(region_eng) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
+                continue;
+            };
+            if !region_eng.enabled || region_eng.triggers.is_empty() {
+                continue;
+            }
+            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
+                continue;
+            };
+            let Some(cells) = regions::rasterize(&shape, cell, &*grid) else {
+                continue;
+            };
+            out.push(regions::TriggerRegion {
+                region_id: doc.id,
+                engine_hash: region_engine_hash(doc),
+                visible_to_all: engine_geometry_visible_to_world(doc),
+                triggers: region_eng.triggers,
+                cells: cells.into_iter().collect(),
+            });
+        }
+        out.sort_by_key(|r| r.region_id);
+        Some(out)
     }
 
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights

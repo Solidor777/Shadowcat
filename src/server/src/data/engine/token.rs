@@ -184,10 +184,24 @@ pub enum TokenVisual {
         #[serde(default, rename = "faceMap")]
         face_map: Option<BTreeMap<String, String>>,
     },
+    /// A generated visual — see `RenderVisual::Generated`, whose payload this
+    /// mirrors so an actor's whole visual can be a generated composition.
+    Generated {
+        /// The art being framed — an `Image` or `Animated` visual only.
+        art: Box<RenderVisual>,
+        /// The shape the art is cropped to.
+        crop: GeneratedCrop,
+        /// Decorative ring drawn around the cropped art, or `None` for none.
+        #[serde(default)]
+        border: Option<GeneratedBorder>,
+        /// Fill drawn behind the cropped art, or `None` for none.
+        #[serde(default)]
+        background: Option<GeneratedBackground>,
+    },
 }
 
-/// The two kinds the render layer actually draws — the render/resolution
-/// boundary. A face's own visual is always one of these — no nesting
+/// The kinds the render layer actually draws — the render/resolution
+/// boundary. A face's own visual is always one of these — no `faces` nesting
 /// (a face can never itself be `{kind:"faces"}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -208,6 +222,58 @@ pub enum RenderVisual {
         #[serde(rename = "loop")]
         loop_: bool,
     },
+    /// A generated token visual: existing art framed by a shape crop, an
+    /// optional decorative border ring, and an optional background fill. The
+    /// decorative ring is authored data, distinct from the faction ring the
+    /// render layer draws from the faction registry.
+    Generated {
+        /// The art being framed — an `Image` or `Animated` visual only; a
+        /// nested `Generated` (or anything else) fails closed to no visual at
+        /// the resolution boundary (`resolveTokenVisual`), which is the read-side
+        /// guard compensating for this field's unrestricted serde shape.
+        art: Box<RenderVisual>,
+        /// The shape the art is cropped to.
+        crop: GeneratedCrop,
+        /// Decorative ring drawn around the cropped art, or `None` for none.
+        #[serde(default)]
+        border: Option<GeneratedBorder>,
+        /// Fill drawn behind the cropped art, or `None` for none.
+        #[serde(default)]
+        background: Option<GeneratedBackground>,
+    },
+}
+
+/// The crop shape of a generated token visual (`RenderVisual::Generated`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "lowercase")]
+pub enum GeneratedCrop {
+    /// The inscribed ellipse of the token's extent.
+    Circle,
+    /// The token's extent rectangle.
+    Square,
+}
+
+/// A generated token visual's decorative border ring
+/// (`RenderVisual::Generated`), distinct from the faction ring.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedBorder {
+    /// Ring color, a css `#rrggbb` string.
+    pub color: String,
+    /// Ring width, in token-fraction px.
+    pub width: f64,
+}
+
+/// A generated token visual's background fill (`RenderVisual::Generated`),
+/// drawn behind the cropped art in the crop shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedBackground {
+    /// Fill color, a css `#rrggbb` string.
+    pub color: String,
 }
 
 /// An animated visual's frame source: an ordered list of individually

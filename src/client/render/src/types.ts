@@ -85,6 +85,29 @@ export type ResolvedAnimatedSource =
       count?: number;
     };
 
+/** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is
+ * both a `TokenNodeSpec.visual` arm in its own right and the `art` payload of a resolved
+ * `"generated"` visual (whose frame composes around exactly these two drawable kinds). */
+export type ResolvedArtVisual =
+  | {
+      /** Discriminant: a static image visual. */
+      kind: "image";
+      /** Resolved image serve URL (already asset-id-resolved). */
+      url: string;
+    }
+  | {
+      /** Discriminant: a tick-driven animated visual. */
+      kind: "animated";
+      /** Resolved frame/sheet source — see `ResolvedAnimatedSource`. */
+      source: ResolvedAnimatedSource;
+      /** Playback rate, in frames per second — the `fps` `computeAnimatedFrame` scales
+       * `elapsedMs` by. */
+      fps: number;
+      /** `true` wraps at the end of the sequence; `false` holds the final frame — see
+       * `computeAnimatedFrame`. */
+      loop: boolean;
+    };
+
 /** A resolved token render node: transform + size + resolved visual + faction border + footprint shape. */
 export interface TokenNodeSpec {
   /** Center's scene x-coordinate — from `resolveTokenBox`. */
@@ -99,25 +122,33 @@ export interface TokenNodeSpec {
   h: number;
   /** Facing, in degrees — see `TokenTransform.rotation`. */
   rotation: number;
-  /** The resolved, already-URL'd visual to draw: image, or a tick-driven animation. */
+  /** The resolved, already-URL'd visual to draw: an art visual (see `ResolvedArtVisual`), or a
+   * generated composition framing one. */
   visual:
+    | ResolvedArtVisual
     | {
-        /** Discriminant: a static image visual. */
-        kind: "image";
-        /** Resolved image serve URL (already asset-id-resolved). */
-        url: string;
-      }
-    | {
-        /** Discriminant: a tick-driven animated visual. */
-        kind: "animated";
-        /** Resolved frame/sheet source — see `ResolvedAnimatedSource`. */
-        source: ResolvedAnimatedSource;
-        /** Playback rate, in frames per second — the `fps` `computeAnimatedFrame` scales
-         * `elapsedMs` by. */
-        fps: number;
-        /** `true` wraps at the end of the sequence; `false` holds the final frame — see
-         * `computeAnimatedFrame`. */
-        loop: boolean;
+        /** Discriminant: a generated composition — `art` cropped to `crop`, over an optional
+         * background fill, ringed by an optional decorative border. */
+        kind: "generated";
+        /** The art being framed — never itself `"generated"` (`resolveTokenVisual` fails closed
+         * on nesting before a spec reaches the backend). */
+        art: ResolvedArtVisual;
+        /** The shape `art` is cropped to: the inscribed ellipse of the token extent
+         * (`"circle"`), or the extent rect (`"square"`). */
+        crop: "circle" | "square";
+        /** Decorative ring drawn around the cropped art, or absent for none — authored data,
+         * distinct from the outer faction border (`borderColor`). */
+        border?: {
+          /** Ring color, packed `0xRRGGBB` (already `parseColor`-resolved). */
+          color: number;
+          /** Ring width, in token-fraction px. */
+          width: number;
+        };
+        /** Fill drawn behind the cropped art (in the crop shape), or absent for none. */
+        background?: {
+          /** Fill color, packed `0xRRGGBB` (already `parseColor`-resolved). */
+          color: number;
+        };
       };
   /** Faction border color (0xRRGGBB), or null for no border. */
   borderColor: number | null;

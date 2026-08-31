@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -225,7 +225,15 @@
           })
           .sort()
           .join(";");
-        host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
+        // Read-only observability signal: each viewed-scene token's RESOLVED visual kind
+        // (`resolveTokenVisual` — the same read the render layer draws from) as `id:kind`,
+        // id-sorted like data-token-positions; `none` when the visual fails closed (the token
+        // then also doesn't draw). Lets an assertion confirm an authored visual shape reaches
+        // the render boundary without inspecting WebGL pixels directly.
+        host.dataset.tokenVisuals = sceneTokens
+          .map((t) => `${t.id}:${resolveTokenVisual(t, documents)?.kind ?? "none"}`)
+          .sort()
+          .join(";");
         host.dataset.wallCount = String(documents.query("wall").length);
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an

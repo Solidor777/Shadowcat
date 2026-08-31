@@ -24,8 +24,9 @@ interface TokenNode {
   /** Inner node that rotates with the token (`.angle = tokenSpec.rotation`); holds `visual` +
    * `border`. */
   visualContainer: Container;
-  /** The art sprite — a plain `Sprite` for an image visual, an `AnimatedSprite` while
-   * `tokenSpec.visual.kind === "animated"`. */
+  /** The art sprite — a plain `Sprite` for an image visual, an `AnimatedSprite` while the
+   * drawable payload is animated (an `"animated"` visual, or a `"generated"` visual whose `art`
+   * is animated). */
   visual: Sprite | AnimatedSprite;
   /** Faction-border outline, redrawn by `updateTokenBorder`; cleared (no stroke) when
    * `tokenSpec.borderColor` is `null`. */
@@ -50,13 +51,27 @@ interface TokenNode {
      * `tickTokenAnimations`. */
     elapsedMs: number;
   } | null;
+  /** The generated-visual frame Graphics, present only while the last-applied visual was
+   * `kind:"generated"` (created by `ensureGeneratedFrame`, torn down by
+   * `updateTokenGeneratedFrame` on a swap away): the `background` fill under the art, the `mask`
+   * cropping it (assigned to `node.visual.mask`; a mask object must be in the display list but is
+   * not itself rendered), and the decorative `ring` above the art — distinct from `border`, the
+   * faction ring `updateTokenBorder` draws. */
+  generated: {
+    /** Background fill, the visualContainer's bottom-most child while present. */
+    background: Graphics;
+    /** Crop-shape mask applied to `node.visual` — geometry only, never rendered. */
+    mask: Graphics;
+    /** Decorative ring stroke around the crop shape, above the art. */
+    ring: Graphics;
+  } | null;
 }
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
  * @param v A token's resolved visual tokenSpec (image URL, or an animated source + fps/loop).
- * @returns A string key equal for equal specs; an `"image:"`- vs `"animated:"`-prefixed key never
- * collides across kinds.
+ * @returns A string key equal for equal specs; the kind prefix (`"image:"`/`"animated:"`/
+ * `"generated:"`) never collides across kinds.
  * @example
  * ```
  * // module-private helper; not exported from @shadowcat/render
@@ -64,7 +79,11 @@ interface TokenNode {
  * ```
  */
 function visualSourceKey(v: TokenNodeSpec["visual"]): string {
-  return v.kind === "image" ? `image:${v.url}` : `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
+  if (v.kind === "image") return `image:${v.url}`;
+  if (v.kind === "animated") return `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
+  // A generated visual's identity is its frame (crop/border/background) plus its art's own key
+  // (one recursion level — `art` is never itself `"generated"`).
+  return `generated:${visualSourceKey(v.art)}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
 }
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
@@ -425,7 +444,8 @@ export class PixiBackend implements DisplayBackend {
   }
 
   /** `DisplayBackend.setToken`: upsert a token render node — create one (`createTokenNode`) if
-   * `id` is new, then update its transform, visual (image or animated), border, and badges in
+   * `id` is new, then update its transform, visual (image, animated, or generated), border, and
+   * badges in
    * place. `visualContainer.angle` rotates the art + border only; `container`'s own position is
    * the token center and its badge children never rotate (see `TokenNode`'s field doc).
    * @param id The token document id.
@@ -448,6 +468,7 @@ export class PixiBackend implements DisplayBackend {
     node.container.position.set(tokenSpec.x, tokenSpec.y);
     node.visualContainer.angle = tokenSpec.rotation; // degrees; rotates art + border, not badges
     this.updateTokenVisual(id, node, tokenSpec);
+    this.updateTokenGeneratedFrame(node, tokenSpec);
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
   }
@@ -474,7 +495,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null };
     this.tokens.set(id, node);
     return node;
   }
@@ -512,33 +533,105 @@ export class PixiBackend implements DisplayBackend {
     node.visual.height = tokenSpec.h;
     if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
     node.sourceKey = key;
-    if (tokenSpec.visual.kind === "image") {
+    // A generated visual's drawable payload is its `art`; the frame around it is
+    // `updateTokenGeneratedFrame`'s concern, drawn unconditionally per setToken.
+    const art = tokenSpec.visual.kind === "generated" ? tokenSpec.visual.art : tokenSpec.visual;
+    if (art.kind === "image") {
       if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
       node.anim = null;
       const sprite = node.visual;
-      const url = tokenSpec.visual.url;
+      const url = art.url;
       void Assets.load(url).then((texture) => {
         if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
       });
     } else {
-      // Hoist the narrowed "animated" variant into its own binding: `tokenSpec.visual` re-read inside
-      // an async closure loses the enclosing if/else narrowing (a fresh property read on a union),
-      // so a plain `tokenSpec.visual.fps` there does not typecheck without this.
-      const visual = tokenSpec.visual;
       if (!(node.visual instanceof AnimatedSprite)) this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
       const sprite = node.visual as AnimatedSprite;
       sprite.autoUpdate = false; // driven by tickTokenAnimations, not Pixi's shared ticker
-      node.anim = { fps: visual.fps, loop: visual.loop, frameCount: 1, elapsedMs: 0 };
-      const source = visual.source;
+      node.anim = { fps: art.fps, loop: art.loop, frameCount: 1, elapsedMs: 0 };
+      const source = art.source;
       void this.loadAnimatedTextures(source).then((textures) => {
         if (this.tokens.get(id) !== node || node.visual !== sprite || node.sourceKey !== key || textures.length === 0) return;
         sprite.textures = textures;
         sprite.gotoAndStop(0);
-        node.anim = { fps: visual.fps, loop: visual.loop, frameCount: textures.length, elapsedMs: 0 };
+        node.anim = { fps: art.fps, loop: art.loop, frameCount: textures.length, elapsedMs: 0 };
       });
     }
     node.visual.width = tokenSpec.w;
     node.visual.height = tokenSpec.h;
+  }
+
+  /** Create a node's generated-visual frame (`TokenNode.generated`) on first use: the
+   * `background` Graphics inserted UNDER the art sprite, the `mask` right above it (a mask object
+   * must sit in the display list but is never itself rendered — it only defines the crop), and
+   * the decorative `ring` above that, keeping the faction `border` Graphics topmost. A no-op
+   * return of the existing frame on repeat calls.
+   * @param node The token render node whose frame to ensure.
+   * @returns The node's (newly created or existing) generated-visual frame.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * this.ensureGeneratedFrame(node);
+   * ```
+   */
+  private ensureGeneratedFrame(node: TokenNode): NonNullable<TokenNode["generated"]> {
+    if (node.generated) return node.generated;
+    const background = new Graphics();
+    const mask = new Graphics();
+    const ring = new Graphics();
+    const vc = node.visualContainer;
+    vc.addChildAt(background, 0);
+    vc.addChildAt(mask, vc.getChildIndex(node.visual) + 1);
+    vc.addChildAt(ring, vc.getChildIndex(mask) + 1);
+    node.generated = { background, mask, ring };
+    return node.generated;
+  }
+
+  /** Draw (or tear down) a node's generated-visual frame on every `setToken` — unconditional,
+   * like `updateTokenBorder`, so a size-only re-push (unchanged `sourceKey`) still re-derives the
+   * frame geometry from the current extent. For `visual.kind === "generated"`: the `background`
+   * fills the crop shape with `background.color` (cleared when no background is authored), the
+   * `mask` carries the crop shape (`circle` = the inscribed ellipse of the token extent,
+   * `square` = the extent rect) and is assigned to `node.visual.mask`, and the `ring` strokes the
+   * crop shape with `border.width` — a fraction of the token's SMALLER extent, scaled to px here
+   * so the ring keeps its authored proportion at any token size (cleared when no border is
+   * authored). For any other visual kind: an existing frame drops `node.visual.mask` and is
+   * destroyed. The frame lives inside `visualContainer`, so it rotates with the art exactly as
+   * the plain sprite does.
+   * @param node The token render node whose frame to redraw.
+   * @param tokenSpec The resolved token tokenSpec; only `.visual`/`.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenGeneratedFrame(node, tokenSpec);
+   * ```
+   */
+  private updateTokenGeneratedFrame(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const visual = tokenSpec.visual;
+    if (visual.kind !== "generated") {
+      if (node.generated) {
+        node.visual.mask = null;
+        node.generated.background.destroy();
+        node.generated.mask.destroy();
+        node.generated.ring.destroy();
+        node.generated = null;
+      }
+      return;
+    }
+    const frame = this.ensureGeneratedFrame(node);
+    const hw = tokenSpec.w / 2;
+    const hh = tokenSpec.h / 2;
+    const shape = (g: Graphics): Graphics => (visual.crop === "circle" ? g.ellipse(0, 0, hw, hh) : g.rect(-hw, -hh, tokenSpec.w, tokenSpec.h));
+    frame.background.clear();
+    if (visual.background) shape(frame.background).fill(visual.background.color);
+    frame.mask.clear();
+    shape(frame.mask).fill(0xffffff);
+    node.visual.mask = frame.mask;
+    frame.ring.clear();
+    if (visual.border) shape(frame.ring).stroke({ width: visual.border.width * Math.min(tokenSpec.w, tokenSpec.h), color: visual.border.color });
   }
 
   /** Swap `node.visual` for `next`: re-anchors `next` to `(0.5,0.5)`, removes and destroys the old

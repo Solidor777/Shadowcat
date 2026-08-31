@@ -1,7 +1,7 @@
 import { test, expect, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
-import type { WireDocument, WireOperation, FootprintLookup } from "@shadowcat/core";
+import type { WireDocument, WireOperation, FootprintLookup, TokenVisual } from "@shadowcat/core";
 
 function tokenDoc(id: string, x: number, y: number, asset: string): WireDocument {
   return {
@@ -261,6 +261,88 @@ test("renders an animated grid-sheet visual with a null count coalesced to undef
     fps: 12,
     loop: false,
   });
+});
+
+test("renders a generated visual with resolved art URL and parsed frame colors", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Framed",
+    { displayName: "Framed", visual: { kind: "generated", art: { kind: "image", asset: "portrait" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "generated",
+    art: { kind: "image", url: assets.url("portrait") },
+    crop: "circle",
+    border: { color: 0xff8800, width: 0.06 },
+    background: { color: 0x102030 },
+  });
+});
+
+test("renders a generated visual with animated art and no authored frame fields", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Framed Wisp",
+    { displayName: "Framed Wisp", visual: { kind: "generated", art: { kind: "animated", source: { type: "frames", frames: ["f1", "f2"] }, fps: 6, loop: true }, crop: "square", border: null, background: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "generated",
+    art: { kind: "animated", source: { type: "frames", urls: [assets.url("f1"), assets.url("f2")] }, fps: 6, loop: true },
+    crop: "square",
+    border: undefined,
+    background: undefined,
+  });
+});
+
+test("renders a generated face selected from a faces visual", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const actor = buildActorDoc(
+    "w1",
+    "Many",
+    { displayName: "Many", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, framed: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: null, background: null } }, default: "framed", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  new TokenView(store, assets, backend).reconcile();
+  expect(backend.tokens.get("tok1")!.visual).toEqual({
+    kind: "generated",
+    art: { kind: "image", url: assets.url("p1") },
+    crop: "circle",
+    border: undefined,
+    background: undefined,
+  });
+});
+
+test("a generated visual with nested generated art is skipped, not crashed", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const nested: TokenVisual = { kind: "generated", art: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: null, background: null }, crop: "circle", border: null, background: null };
+  const actor = buildActorDoc(
+    "w1",
+    "Nested",
+    { displayName: "Nested", visual: nested, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: actor }, { op: "create", doc: token }]));
+  expect(() => new TokenView(store, new AssetResolver(), backend).reconcile()).not.toThrow();
+  expect(backend.tokens.has("tok1")).toBe(false);
 });
 
 test("a token whose visual fails to resolve (empty faces) is skipped, not crashed", () => {

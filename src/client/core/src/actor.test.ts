@@ -318,6 +318,62 @@ describe("resolveTokenVisual", () => {
     expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
   });
 
+  it("accepts a generated visual with image art", () => {
+    const generated: TokenVisual = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } };
+    const actor = actorWith(generated);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(generated);
+  });
+
+  it("accepts a generated visual with animated art", () => {
+    const generated: TokenVisual = { kind: "generated", art: { kind: "animated", source: { type: "frames", frames: ["f1"] }, fps: 4, loop: true }, crop: "square", border: null, background: null };
+    const actor = actorWith(generated);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(generated);
+  });
+
+  it("accepts a generated face selected out of a faces visual", () => {
+    const framed = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: null, background: null } as const;
+    const actor = actorWith({ kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, framed }, default: "framed", faceMap: null });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(framed);
+  });
+
+  it("fails closed on a nested generated art", () => {
+    const nested: TokenVisual = { kind: "generated", art: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: null, background: null }, crop: "circle", border: null, background: null };
+    const actor = actorWith(nested);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual with missing art (garbled wire data)", () => {
+    const noArt = { kind: "generated", crop: "circle", border: null, background: null } as unknown as TokenVisual;
+    const actor = actorWith(noArt);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual whose art has a malformed AnimatedSource", () => {
+    const badArt: TokenVisual = { kind: "generated", art: { kind: "animated", source: { type: "frames", frames: [] }, fps: 8, loop: true }, crop: "circle", border: null, background: null };
+    const actor = actorWith(badArt);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual with an unknown crop (garbled wire data)", () => {
+    const badCrop = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "hex", border: null, background: null } as unknown as TokenVisual;
+    const actor = actorWith(badCrop);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual with a non-positive border width", () => {
+    const badBorder: TokenVisual = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0 }, background: null };
+    const actor = actorWith(badBorder);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
   it("fails closed on a malformed nested faces value (defense in depth against garbled wire data)", () => {
     const nested = { kind: "faces", faces: {}, default: "x" } as unknown as { kind: "image"; asset: string };
     const actor = actorWith({ kind: "faces", faces: { bad: nested }, default: "bad", faceMap: null });

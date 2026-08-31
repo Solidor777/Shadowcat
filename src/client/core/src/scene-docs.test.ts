@@ -400,6 +400,10 @@ describe("buildRegionDoc", () => {
       behavior: "terrain",
       cost: 2,
       enabled: true,
+      triggers: [
+        { on: "enter", effect: { type: "condition_add", condition: "prone" } },
+        { on: "arrest", effect: { type: "resource_delta", resource: "hp", amount: -3 } },
+      ],
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -415,6 +419,7 @@ describe("buildRegionDoc", () => {
       behavior: "arrest",
       cost: 1,
       enabled: true,
+      triggers: [],
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
