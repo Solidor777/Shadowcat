@@ -171,13 +171,27 @@ describe("ChatPanel — GM channel editor visibility", () => {
     expect(change.new).toEqual({ general: { name: "General" } });
     expect(Object.prototype.hasOwnProperty.call(change.new, "ooc")).toBe(false);
   });
+
+  it("removing the LAST channel is refused client-side with a notification, no dispatch", async () => {
+    const dispatchIntent = vi.fn();
+    const notify = vi.fn();
+    const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" } }, "creg1"));
+    render(ChatPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, store, dispatchIntent, notify, contributions: new ContributionRegistry() }) });
+    await fireEvent.click(screen.getByLabelText("chat.channels.edit"));
+    await fireEvent.click(screen.getByText("chat.channels.remove"));
+    // An empty registry wedges all chat (ingest validates membership), so the
+    // panel refuses before dispatching — the server would reject the write too.
+    expect(dispatchIntent).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledWith("chat.channels.lastChannel", "warning");
+  });
 });
 
 describe("ChatPanel — composer instantiation", () => {
   it("the composer stub receives the correct postTarget props for the active view", async () => {
-    const store = storeWith(buildChannelRegistryDoc("w1", { ooc: { name: "OOC" } }, "creg1"));
+    const store = storeWith(buildChannelRegistryDoc("w1", { general: { name: "General" }, ooc: { name: "OOC" } }, "creg1"));
     render(ChatPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: store, store, contributions: registryWithCardAndComposer() }) });
     const composer = screen.getByTestId("composer");
+    // The All view posts to the registry's lowest-sorted channel id ("general" < "ooc").
     expect(composer.getAttribute("data-channel")).toBe("general");
     expect(composer.getAttribute("data-audience")).toBe("public");
 

@@ -237,6 +237,7 @@ export const en: Messages = {
   "chat.channels.name": "Channel name",
   "chat.channels.newName": "New channel",
   "chat.channels.remove": "Remove",
+  "chat.channels.lastChannel": "The last channel can't be removed.",
   "chat.newMessages": "New messages ↓",
   "chat.composer.placeholder": "Message #{name}",
   "chat.composer.placeholderGm": "Message the GM",

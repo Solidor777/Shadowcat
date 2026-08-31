@@ -34,9 +34,10 @@
     return ctx.role === "gm" ? all : all.filter((doc) => doc.owner === ctx.selfId);
   });
 
-  // Sticky per session (component-local `$state`, not persisted). Empty string is the
-  // sentinel for "Myself" (the default, no-attribution option).
-  let selectedActorId = $state("");
+  // The sticky speak-as selection lives in session state (`ctx.speakAs`, ui-kit's `SpeakAs`) so
+  // every roll-producing surface — this composer and the chat card's roll buttons — resolves
+  // the same binding; dice references in a roll resolve server-side against it. Empty string
+  // is the sentinel for "Myself" (the default, no-attribution option).
 
   // Prunes a dangling selection: if the selected actor leaves `speakableActors`
   // (deleted, or ownership transferred away from the current user), the select
@@ -44,8 +45,8 @@
   // the now-nonexistent actor_id. Resets to "" (Myself) whenever the current
   // selection no longer resolves to a live, speakable actor doc.
   $effect(() => {
-    if (selectedActorId && !speakableActors.some((a) => a.id === selectedActorId)) {
-      selectedActorId = "";
+    if (ctx.speakAs.actorId && !speakableActors.some((a) => a.id === ctx.speakAs.actorId)) {
+      ctx.speakAs.actorId = "";
     }
   });
 
@@ -201,8 +202,8 @@
     const pendingToken = ctx.speakAsToken.consume();
     const actorOwner: WireActorOwnerRef | undefined = pendingToken
       ? { kind: "token_instance", token_id: pendingToken }
-      : selectedActorId
-        ? { kind: "actor", actor_id: selectedActorId }
+      : ctx.speakAs.actorId
+        ? { kind: "actor", actor_id: ctx.speakAs.actorId }
         : undefined;
     // Clear the input optimistically; a server rejection surfaces inline via `errorMsg`
     // (correlated by request_id under the seam) instead of the message vanishing.
@@ -254,7 +255,7 @@
 {/if}
 <div class="composer">
   <label class="visually-hidden" for="chat-composer-speak-as">{t("chat.composer.speakAs")}</label>
-  <select id="chat-composer-speak-as" bind:value={selectedActorId}>
+  <select id="chat-composer-speak-as" bind:value={ctx.speakAs.actorId}>
     <option value="">{t("chat.composer.myself")}</option>
     {#each speakableActors as actor (actor.id)}
       <option value={actor.id}>{actorDisplayName({ name: actor.name, displayName: (actor.engine as { /** The actor's authored display name, if any. */ displayName?: string } | undefined)?.displayName })}</option>

@@ -413,6 +413,15 @@ export function checkNotationKey(key: string): NotationKeyCheck {
  * `resolveNotationTemplate("]", () => 7)` returns `{ notation: "]" }` unchanged.
  * INVARIANT: never throws; every failure path returns a FormulaError.
  *
+ * **Preview/authoring aid only — never how a roll is SENT.** The wire carries the RAW
+ * template and the server resolves references authoritatively at ingest (against the send's
+ * actor binding — the roller's speak-as), so a system module sends `1d20 + str`, not this
+ * function's output. This function remains for two client-side jobs: previewing to the
+ * author what a template will roll as against locally-visible data, and validating stat
+ * keys at authoring time (`checkNotationKey`). Pre-substituted text still rolls correctly
+ * (a `3[str]` literal is already plain notation), so nothing breaks — but substituting
+ * here first buys nothing and forfeits the server's fresher, authoritative read.
+ *
  * `emitClaim` is not a pass-through for the non-identifier branch: it may prepend a synthesized
  * count. Every identifier substitution is labeled, positive or negative.
  *
