@@ -900,14 +900,11 @@ impl SceneEcs {
     }
 
     /// The validated world-settings engine body, or `None` when the doc is absent or its stored
-    /// `engine` fails to deserialize into `WorldSettingsEngine`. Ingress validation
-    /// (`data::engine::validate_engine`) already requires every persisted "world-settings" doc's
-    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this
-    /// enforces, at write time, the same `scene`+`pathfinding`+`animation`-all-present structural
-    /// completeness the TS mirror (`ws?.scene && ws?.pathfinding && ws?.animation`) still checks
-    /// at read time. A doc that never passed that ingress gate (e.g. a
-    /// test fixture built directly) falls back to built-in
-    /// defaults. Used by every resolver that reads world-settings so partial/
+    /// `engine` fails to deserialize into `WorldSettingsEngine`. Every leaf is optional
+    /// (`Option`-lifted overlay, the same shape `validated_system_defaults_engine` decodes), so
+    /// a partial doc still decodes and contributes only the leaves it declares; `None` means "no
+    /// doc" or a malformed body, and every reader falls through to the system layer, then the
+    /// engine literals. Used by every resolver that reads world-settings so partial/
     /// malformed-doc handling stays consistent across all of them.
     fn validated_world_settings_engine(&self) -> Option<eng::WorldSettingsEngine> {
         let doc = self.world_settings.as_ref()?;
@@ -927,57 +924,56 @@ impl SceneEcs {
     /// Resolve a scene's effective lighting/vision settings: engine literal < system-defaults <
     /// world < scene. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
-        // World layer: `validated_world_settings_engine` already enforces the
-        // scene+pathfinding+animation-all-present structural guard at write time (ingress),
-        // so a `None` here means the same "fall back to built-ins" case this guard covers.
+        // World and system layers share one overlay shape: each contributes
+        // only the leaves it declares.
         let ws = self.validated_world_settings_engine();
-        let ws_scene = ws.as_ref().map(|w| &w.scene);
-        // System-defaults layer: every leaf is optional (Option-lifted overlay), so a partial
-        // doc contributes only the leaves it declares.
+        let ws_scene = ws.as_ref().and_then(|w| w.scene.as_ref());
         let sd = self.validated_system_defaults_engine();
         let sd_scene = sd.as_ref().and_then(|s| s.scene.as_ref());
-        // Engine literal < system-defaults < world (mirror DEFAULT_WORLD_SETTINGS.scene /
-        // WorldSettingsEngine::default for the innermost fallback).
+        // Engine literal < system-defaults < world. The innermost fallback is
+        // the ONE shared source `WorldSceneDefaults::default` (the client's
+        // `DEFAULT_WORLD_SETTINGS` mirrors it) — never a per-field literal.
+        let d = eng::WorldSceneDefaults::default();
         let d_los = ws_scene
-            .map(|s| s.los_restriction)
+            .and_then(|s| s.los_restriction)
             .or(sd_scene.and_then(|s| s.los_restriction))
-            .unwrap_or(true);
+            .unwrap_or(d.los_restriction);
         let d_fog = ws_scene
-            .map(|s| s.fog)
+            .and_then(|s| s.fog)
             .or(sd_scene.and_then(|s| s.fog))
-            .unwrap_or(true);
+            .unwrap_or(d.fog);
         let d_obs = ws_scene
-            .map(|s| s.observer_vision)
+            .and_then(|s| s.observer_vision)
             .or(sd_scene.and_then(|s| s.observer_vision))
-            .unwrap_or(false);
+            .unwrap_or(d.observer_vision);
         let d_lit = ws_scene
-            .map(|s| s.lighting_enabled)
+            .and_then(|s| s.lighting_enabled)
             .or(sd_scene.and_then(|s| s.lighting_enabled))
-            .unwrap_or(true);
+            .unwrap_or(d.lighting_enabled);
         let d_mode = ws_scene
-            .map(|s| s.light_mode)
+            .and_then(|s| s.light_mode)
             .or(sd_scene.and_then(|s| s.light_mode))
-            .unwrap_or(eng::LightMode::EnvironmentLight);
+            .unwrap_or(d.light_mode);
         let d_env_color = ws_scene
-            .map(|s| s.environment.color.clone())
+            .and_then(|s| s.environment.as_ref().map(|e| e.color.clone()))
             .or_else(|| sd_scene.and_then(|s| s.environment.as_ref().map(|e| e.color.clone())))
-            .unwrap_or_else(|| "#0a0e1a".to_string());
+            .unwrap_or_else(|| d.environment.color.clone());
         let d_env_int = ws_scene
-            .map(|s| s.environment.intensity)
+            .and_then(|s| s.environment.as_ref().map(|e| e.intensity))
             .or_else(|| sd_scene.and_then(|s| s.environment.as_ref().map(|e| e.intensity)))
-            .unwrap_or(0.0);
+            .unwrap_or(d.environment.intensity);
         let d_move = ws_scene
-            .map(|s| s.movement_restriction)
+            .and_then(|s| s.movement_restriction)
             .or(sd_scene.and_then(|s| s.movement_restriction))
-            .unwrap_or(eng::MovementRestriction::Visible);
+            .unwrap_or(d.movement_restriction);
         let d_model = ws_scene
-            .map(|s| s.movement_model)
+            .and_then(|s| s.movement_model)
             .or(sd_scene.and_then(|s| s.movement_model))
-            .unwrap_or(eng::MovementModel::GridStepped);
+            .unwrap_or(d.movement_model);
         let d_lenient = ws_scene
-            .map(|s| s.partial_cell_leniency)
+            .and_then(|s| s.partial_cell_leniency)
             .or(sd_scene.and_then(|s| s.partial_cell_leniency))
-            .unwrap_or(true);
+            .unwrap_or(d.partial_cell_leniency);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1050,19 +1046,18 @@ impl SceneEcs {
     }
 
     /// The world's pathfinding diagonal-cost rule. World-scoped (no per-scene override; the scene doc
-    /// overrides only vision/lighting/grid). Reads `world-settings.pathfinding.diagonalRule`;
-    /// when absent or structurally incomplete, falls through to `system-defaults.pathfinding
-    /// .diagonalRule`, and from there to `Chebyshev` — consistent with `resolve_scene`'s
-    /// engine literal < system-defaults < world < scene handling of the same partial-doc case.
+    /// overrides only vision/lighting/grid). Chain: `world-settings.pathfinding.diagonalRule`
+    /// (an authored overlay leaf) < `system-defaults.pathfinding.diagonalRule` < the
+    /// `Pathfinding::default` engine literal — consistent with `resolve_scene`'s per-leaf fold.
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
         self.validated_world_settings_engine()
-            .map(|w| conv_diagonal_rule(w.pathfinding.diagonal_rule))
+            .and_then(|w| w.pathfinding.and_then(|p| p.diagonal_rule))
             .or_else(|| {
                 self.validated_system_defaults_engine()
                     .and_then(|s| s.pathfinding.and_then(|p| p.diagonal_rule))
-                    .map(conv_diagonal_rule)
             })
-            .unwrap_or(pathfinding::DiagonalRule::Chebyshev)
+            .map(conv_diagonal_rule)
+            .unwrap_or_else(|| conv_diagonal_rule(eng::Pathfinding::default().diagonal_rule))
     }
 
     /// Resolves `scene`'s `GridShape` implementation from its own `engine.grid.kind`. `"hex"`
@@ -1198,19 +1193,19 @@ impl SceneEcs {
     }
 
     /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
-    /// mirrors `resolved_diagonal_rule`'s structural guard). Reads
-    /// `world-settings.animation.speedCellsPerSec`; when absent or structurally incomplete,
-    /// falls through to `system-defaults.animation.speedCellsPerSec`, and from there to 6.
-    /// The floor of 0.001 prevents a zero/negative config from causing a division-by-zero in
-    /// the duration formula.
+    /// mirrors `resolved_diagonal_rule`'s fold). Chain:
+    /// `world-settings.animation.speedCellsPerSec` (an authored overlay leaf) <
+    /// `system-defaults.animation.speedCellsPerSec` < the `AnimationSettings::default` engine
+    /// literal. The floor of 0.001 prevents a zero/negative config from causing a
+    /// division-by-zero in the duration formula.
     pub(crate) fn resolved_animation_speed(&self) -> f64 {
         self.validated_world_settings_engine()
-            .map(|w| w.animation.speed_cells_per_sec)
+            .and_then(|w| w.animation.and_then(|a| a.speed_cells_per_sec))
             .or_else(|| {
                 self.validated_system_defaults_engine()
                     .and_then(|s| s.animation.and_then(|a| a.speed_cells_per_sec))
             })
-            .unwrap_or(6.0)
+            .unwrap_or(eng::AnimationSettings::default().speed_cells_per_sec)
             .max(0.001)
     }
 

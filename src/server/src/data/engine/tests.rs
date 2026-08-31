@@ -84,6 +84,27 @@ fn world_settings_minimal_body_is_valid() {
 }
 
 #[test]
+fn world_settings_partial_overlay_body_is_valid() {
+    // The world layer is an optional overlay: a single authored leaf is a
+    // complete, valid body — absent leaves fall through the resolution chain.
+    let v = json!({ "scene": { "fog": false } });
+    assert!(validate_engine("world-settings", Some(&v)).is_ok());
+    // The old full-required shape remains valid (full ⊃ optional).
+    let full = json!({
+        "scene": {
+            "losRestriction": true, "fog": true, "lightingEnabled": true,
+            "lightMode": "environmentLight",
+            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+            "observerVision": false, "movementRestriction": "visible",
+            "movementModel": "grid-stepped", "partialCellLeniency": true
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" }
+    });
+    assert!(validate_engine("world-settings", Some(&full)).is_ok());
+}
+
+#[test]
 fn vision_modes_minimal_body_is_valid() {
     let v = json!({ "modes": {} });
     assert!(validate_engine("vision-modes", Some(&v)).is_ok());
@@ -541,27 +562,41 @@ fn region_behavior_literal_set_deserializes() {
     }
 }
 
-/// Drift guard: `WorldSettingsEngine::default()` must serialize to the
-/// SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
+/// Drift guard: the engine-literal fallbacks (`WorldSceneDefaults::default`,
+/// `Pathfinding::default`, `AnimationSettings::default`) must serialize to
+/// the SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
+/// `WorldSettingsEngine::default()` itself is the EMPTY overlay (what the
+/// world-config seed authors) — every member serializes as null.
 #[test]
-fn world_settings_default_matches_client_default() {
-    let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+fn engine_literal_defaults_match_client_default() {
     assert_eq!(
-        v,
+        serde_json::to_value(WorldSceneDefaults::default()).unwrap(),
         json!({
-            "scene": {
-                "losRestriction": true,
-                "fog": true,
-                "lightingEnabled": true,
-                "lightMode": "environmentLight",
-                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
-                "observerVision": false,
-                "movementRestriction": "visible",
-                "movementModel": "grid-stepped",
-                "partialCellLeniency": true,
-            },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" },
+            "losRestriction": true,
+            "fog": true,
+            "lightingEnabled": true,
+            "lightMode": "environmentLight",
+            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "movementModel": "grid-stepped",
+            "partialCellLeniency": true,
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Pathfinding::default()).unwrap(),
+        json!({ "diagonalRule": "chebyshev" })
+    );
+    assert_eq!(
+        serde_json::to_value(AnimationSettings::default()).unwrap(),
+        json!({ "speedCellsPerSec": 6.0, "easing": "easeInOut" })
+    );
+    assert_eq!(
+        serde_json::to_value(WorldSettingsEngine::default()).unwrap(),
+        json!({
+            "scene": null,
+            "pathfinding": null,
+            "animation": null,
             "activeScene": null,
             "combat": null,
         })

@@ -274,70 +274,91 @@ impl SceneEngine {
     }
 }
 
-/// The engine body of a "world-settings" config document
-/// (mirrors the client's `WorldSettingsEngine`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+/// The engine body of a "world-settings" config document: the world layer of
+/// the settings chain, an `Option`-lifted overlay (mirrors the client's
+/// `WorldSettingsEngine`). Every leaf is optional; absent and `null` both
+/// mean "fall through" to `system-defaults`, then to the engine literals on
+/// `WorldSceneDefaults::default`/`Pathfinding::default`/
+/// `AnimationSettings::default`. Derived `Default` is the empty overlay —
+/// what the world-config seed authors.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase", default)]
 pub struct WorldSettingsEngine {
-    /// World-level scene defaults (scenes override per field).
-    pub scene: WorldSceneDefaults,
-    /// Pathfinding settings.
-    pub pathfinding: Pathfinding,
-    /// Move-animation settings.
-    pub animation: AnimationSettings,
-    /// The scene players render. `None`/absent/dangling ⇒ the first scene
-    /// (legacy behavior). Deliberately NOT part of the structural-
-    /// completeness triple `resolve_scene` checks, so a world-settings doc written before
-    /// this field existed is still "complete" and keeps its authored
-    /// settings.
-    #[serde(default)]
+    /// World-level scene-defaults overlay (scenes override per field).
+    #[ts(optional = nullable)]
+    pub scene: Option<super::system_defaults::SceneDefaultsOverlay>,
+    /// Pathfinding overlay.
+    #[ts(optional = nullable)]
+    pub pathfinding: Option<super::system_defaults::PathfindingOverlay>,
+    /// Move-animation overlay.
+    #[ts(optional = nullable)]
+    pub animation: Option<super::system_defaults::AnimationOverlay>,
+    /// The scene players render. `None`/absent/dangling ⇒ the first scene.
+    #[ts(optional = nullable)]
     pub active_scene: Option<Uuid>,
     /// Combat-rule overrides (movement resource / interpretation / enforcement /
     /// turn control); absent fields fall through the chain
     /// (`combat::resolve_combat_rules`).
-    #[serde(default)]
+    #[ts(optional = nullable)]
     pub combat: Option<super::combat::CombatDefaults>,
 }
 
 impl WorldSettingsEngine {
-    /// Every combat lifecycle formula present parses.
+    /// The overlay range checks shared with `SystemDefaultsEngine::validate`
+    /// (animation speed, environment intensity), plus every combat lifecycle
+    /// formula present parses.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        match &self.combat {
-            Some(c) => c.validate("combat"),
-            None => Ok(()),
+        if let Some(c) = &self.combat {
+            c.validate("combat")?;
+        }
+        if let Some(a) = &self.animation {
+            a.validate()?;
+        }
+        if let Some(s) = &self.scene {
+            s.validate()?;
+        }
+        Ok(())
+    }
+}
+
+/// The engine-literal innermost fallback of the settings chain — the ONE
+/// source every resolver's final `unwrap_or` reads. The client's
+/// `DEFAULT_WORLD_SETTINGS` mirrors these values, asserted by a unit test.
+impl Default for WorldSceneDefaults {
+    fn default() -> Self {
+        WorldSceneDefaults {
+            los_restriction: true,
+            fog: true,
+            lighting_enabled: true,
+            light_mode: LightMode::EnvironmentLight,
+            environment: EnvironmentLight {
+                color: "#0a0e1a".to_string(),
+                intensity: 0.0,
+            },
+            observer_vision: false,
+            movement_restriction: MovementRestriction::Visible,
+            movement_model: MovementModel::GridStepped,
+            partial_cell_leniency: true,
         }
     }
 }
 
-/// MUST equal the client's `DEFAULT_WORLD_SETTINGS` —
-/// asserted by a unit test (`server-mirrors-client` rule).
-impl Default for WorldSettingsEngine {
+/// Engine-literal pathfinding fallback (see `WorldSceneDefaults::default`).
+impl Default for Pathfinding {
     fn default() -> Self {
-        WorldSettingsEngine {
-            scene: WorldSceneDefaults {
-                los_restriction: true,
-                fog: true,
-                lighting_enabled: true,
-                light_mode: LightMode::EnvironmentLight,
-                environment: EnvironmentLight {
-                    color: "#0a0e1a".to_string(),
-                    intensity: 0.0,
-                },
-                observer_vision: false,
-                movement_restriction: MovementRestriction::Visible,
-                movement_model: MovementModel::GridStepped,
-                partial_cell_leniency: true,
-            },
-            pathfinding: Pathfinding {
-                diagonal_rule: DiagonalRule::Chebyshev,
-            },
-            animation: AnimationSettings {
-                speed_cells_per_sec: 6.0,
-                easing: EasingMode::EaseInOut,
-            },
-            active_scene: None,
-            combat: None,
+        Pathfinding {
+            diagonal_rule: DiagonalRule::Chebyshev,
+        }
+    }
+}
+
+/// Engine-literal animation fallback (see `WorldSceneDefaults::default`).
+impl Default for AnimationSettings {
+    fn default() -> Self {
+        AnimationSettings {
+            speed_cells_per_sec: 6.0,
+            easing: EasingMode::EaseInOut,
         }
     }
 }
