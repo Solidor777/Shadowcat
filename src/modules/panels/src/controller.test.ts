@@ -259,7 +259,7 @@ test("late registrations against an empty-registry construction restore their SA
 test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a notice", () => {
   let saved = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
   saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
-  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w-chat", rect: null });
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w-chat", rect: { left: 500, top: 100, width: 900, height: 700 } });
 
   const contributions = new ContributionRegistry();
   contributions.contribute({
@@ -281,8 +281,14 @@ test("rehydratePoppedOut: a persisted popped-out id comes back as floating + a n
     onNotice: (key) => notices.push(key),
   });
 
-  expect(ctrl.layout.expanded.popouts).toEqual([]);
   expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
+  // The window entry is RETAINED, marked dormant (rect and panel set intact) —
+  // the arrangement record a later restore gesture re-opens.
+  expect(ctrl.layout.expanded.popouts).toEqual([
+    { key: "w-chat", panels: ["chat"], rect: { left: 500, top: 100, width: 900, height: 700 }, dormant: true },
+  ]);
+  // A dormant entry is a record, not a live window: the panel locates floating.
+  expect(locate(ctrl.layout, "chat").where).toBe("floating");
   // The notice is QUEUED, not fired, at construction
   // — `deps.onNotice` must not be invoked until a post-mount caller (`PanelHost`'s
   // `$effect`) calls `flushPendingNotice()`. Firing it here, synchronously
@@ -334,11 +340,107 @@ test("rehydratePoppedOut: two persisted popped-out ids cascade to distinct float
     logger: silentLogger,
   });
 
-  expect(ctrl.layout.expanded.popouts).toEqual([]);
+  expect(ctrl.layout.expanded.popouts).toEqual([
+    { key: "w-chat", panels: ["chat"], rect: null, dormant: true },
+    { key: "w-assets", panels: ["assets"], rect: null, dormant: true },
+  ]);
   const rects = ctrl.layout.expanded.floating.map((f) => ({ x: f.rect.x, y: f.rect.y }));
   expect(rects).toHaveLength(2);
   expect(rects[0]).not.toEqual(rects[1]);
   expect(setPanelLayout).toHaveBeenCalledWith(encodeLayout(ctrl.layout));
+});
+
+// Panels that shared ONE saved pop-out window must rehydrate to ADJACENT
+// cascade steps (nothing interleaved between them), so the reload's floating
+// stack still reads as that window's group. Offsets below are the cascade
+// base + step already pinned by the "cascade parity at index %i" gate.
+test("rehydratePoppedOut: one saved window's panels cascade adjacently, behind an already-floating panel", () => {
+  const contributions = new ContributionRegistry();
+  for (const id of ["pre", "chat", "assets", "actors"]) {
+    contributions.contribute({
+      id,
+      contract: PANEL_CONTRACT,
+      component: {},
+      panel: { icon: id, labelKey: `${id}.tab`, defaultPlacement: { kind: "docked", zone: "right" } },
+    });
+  }
+
+  let saved = defaultLayout([]);
+  saved = applyOp(saved, { op: "open", id: "pre", placement: { kind: "floating" } });
+  saved = applyOp(saved, { op: "open", id: "chat", placement: { kind: "docked", zone: "right" } });
+  saved = applyOp(saved, { op: "open", id: "assets", placement: { kind: "docked", zone: "right" } });
+  saved = applyOp(saved, { op: "open", id: "actors", placement: { kind: "docked", zone: "right" } });
+  // One window holding chat+assets (tab order), a second holding actors.
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w1", rect: null });
+  saved = applyOp(saved, { op: "popOutInto", id: "assets", key: "w1" });
+  saved = applyOp(saved, { op: "popOut", id: "actors", key: "w2", rect: { left: 40, top: 50, width: 600, height: 500 } });
+
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  // "pre" already floated at cascade index 0; rehydration continues from
+  // index 1: chat (w1's first panel), assets (w1's second — the ADJACENT
+  // step), then actors (w2).
+  const rectOf = (id: string) => ctrl.layout.expanded.floating.find((f) => f.id === id)!.rect;
+  expect(rectOf("pre")).toEqual({ x: 96, y: 96, w: 420, h: 520 });
+  expect(rectOf("chat")).toEqual({ x: 124, y: 124, w: 420, h: 520 });
+  expect(rectOf("assets")).toEqual({ x: 152, y: 152, w: 420, h: 520 });
+  expect(rectOf("actors")).toEqual({ x: 180, y: 180, w: 420, h: 520 });
+  // Both windows retained as dormant arrangement records, rects intact.
+  expect(ctrl.layout.expanded.popouts).toEqual([
+    { key: "w1", panels: ["chat", "assets"], rect: null, dormant: true },
+    { key: "w2", panels: ["actors"], rect: { left: 40, top: 50, width: 600, height: 500 }, dormant: true },
+  ]);
+});
+
+// A blob saved before the tree tracked window grouping (legacy `poppedOut`
+// id array) decodes via the deterministic migration, then rehydrates exactly
+// like a current-shape blob: floated panels, retained dormant records.
+test("rehydratePoppedOut: a legacy poppedOut blob migrates, floats, and retains dormant windows", () => {
+  const contributions = new ContributionRegistry();
+  for (const id of ["chat", "assets"]) {
+    contributions.contribute({
+      id,
+      contract: PANEL_CONTRACT,
+      component: {},
+      panel: { icon: id, labelKey: `${id}.tab`, defaultPlacement: { kind: "docked", zone: "right" } },
+    });
+  }
+  const legacy = {
+    version: 1,
+    expanded: {
+      zones: {
+        right: { groups: [], size: 320 },
+        bottom: { groups: [], size: 240 },
+        left: { groups: [], size: 320 },
+      },
+      floating: [],
+      minimized: [],
+      poppedOut: ["chat", "assets"],
+    },
+    compact: { activeView: null, order: ["chat", "assets"] },
+  };
+
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => legacy,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  expect(ctrl.layout.expanded.floating.map((f) => f.id)).toEqual(["chat", "assets"]);
+  expect(ctrl.layout.expanded.popouts).toEqual([
+    { key: "legacy-chat", panels: ["chat"], rect: null, dormant: true },
+    { key: "legacy-assets", panels: ["assets"], rect: null, dormant: true },
+  ]);
 });
 
 // Anti-drift gate for a deliberately-forked constant pair. `layout/tree`'s

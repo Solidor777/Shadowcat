@@ -88,7 +88,7 @@ verbatim directive paragraph + the report-delivery requirement.
 - Tests: `controller.test.ts` — existing cascade tests must stay green; new: grouping-adjacent
   cascade order, retained arrangement, legacy-blob rehydrate.
 
-- [ ] Failing tests first. Implement. Gates + commit.
+- [x] Failing tests first. Implement. Gates + commit.
 
 ## Phase 2 — Engine wiring (DockviewEngine)
 

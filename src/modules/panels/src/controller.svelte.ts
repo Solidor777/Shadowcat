@@ -9,7 +9,7 @@ import { PANEL_CONTRACT, type Contribution, type ContributionRegistry, type Logg
 import type { WorldRole } from "@shadowcat/types";
 import type { PanelsApi, PanelsChipsView } from "@shadowcat/ui-kit";
 import { createSubscriber } from "svelte/reactivity";
-import { applyOp, defaultLayout, locate, placeNewRegistrations, prune, type LayoutOp, type PanelLayoutV1 } from "./layout/tree";
+import { applyOp, defaultLayout, locate, placeNewRegistrations, prune, type LayoutOp, type PanelLayoutV1, type PopoutWindowLayout } from "./layout/tree";
 import { decodeLayout, encodeLayout } from "./layout/persist";
 
 /** gmOnly filtering is ADVISORY ONLY: it hides a panel from this client's own
@@ -183,9 +183,14 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
   }
 
   /** Popouts cannot be reopened without a user gesture (a page load is not one
-   * — the browser blocks it), so every persisted popped-out id rehydrates to a
-   * floating window at construction, before the first `apply()`. The tree's
-   * `popouts` records persist across sessions; the live `Window` never does.
+   * — the browser blocks it), so every persisted pop-out window's panels
+   * rehydrate to floating at construction, before the first `apply()`. The
+   * tree's `popouts` records persist across sessions; the live `Window` never
+   * does. Panels float window-by-window (each window's `panels` in tab order)
+   * so one saved window's panels cascade ADJACENTLY, and each converted
+   * window's entry is RETAINED — marked `dormant`, rect and panel set intact —
+   * as the arrangement record a later restore gesture re-opens (see
+   * `PopoutWindowLayout.dormant`).
    * Runs once; persists + queues a notice only if it actually converted
    * anything — see `flushPendingNotice` for why the notice is QUEUED here
    * rather than fired through `deps.onNotice` directly (this method runs
@@ -198,18 +203,35 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * ```
    */
   #rehydratePoppedOut(): void {
-    const ids = this.#layout.expanded.popouts.filter((w) => w.dormant !== true).flatMap((w) => w.panels);
-    if (ids.length === 0) return;
+    const live = this.#layout.expanded.popouts.filter((w) => w.dormant !== true);
+    if (live.length === 0) return;
     let l = this.#layout;
-    for (const id of ids) {
-      // Cascade off the CURRENT floating count each iteration (not the loop
-      // index) so rehydrated popouts interleave correctly with any panel
-      // that was already floating before rehydration ran.
-      const n = l.expanded.floating.length;
-      const off = (n % 6) * REHYDRATE_FLOAT_STEP;
-      const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
-      l = applyOp(l, { op: "float", id, rect });
+    for (const w of live) {
+      for (const id of w.panels) {
+        // Cascade off the CURRENT floating count each iteration (not the loop
+        // index) so rehydrated popouts interleave correctly with any panel
+        // that was already floating before rehydration ran.
+        const n = l.expanded.floating.length;
+        const off = (n % 6) * REHYDRATE_FLOAT_STEP;
+        const rect = { x: REHYDRATE_FLOAT_BASE.x + off, y: REHYDRATE_FLOAT_BASE.y + off, w: REHYDRATE_FLOAT_BASE.w, h: REHYDRATE_FLOAT_BASE.h };
+        l = applyOp(l, { op: "float", id, rect });
+      }
     }
+    // Retain the arrangement record: each converted window's entry is written
+    // back marked dormant. Its panels are now floating, so `locate` never
+    // resolves them through the entry; the entry exists purely as the saved
+    // grouping/rect a restore gesture reads. A direct tree write, not an op:
+    // this is construction-time normalization (like the constructor's own
+    // decode assignment), not a user/engine gesture. A same-keyed entry still
+    // present above (a crafted blob that listed an already-floating panel —
+    // its `float` no-op'd, leaving the window undrained) is replaced by this
+    // record, never duplicated.
+    const liveKeys = new Set(live.map((w) => w.key));
+    const popouts = [
+      ...l.expanded.popouts.filter((w) => !liveKeys.has(w.key)),
+      ...live.map((w): PopoutWindowLayout => ({ ...w, dormant: true })),
+    ];
+    l = { ...l, expanded: { ...l.expanded, popouts } };
     this.#layout = l;
     this.#persist(l);
     this.#pendingNotice = "panels.popoutRestoredFloating";
