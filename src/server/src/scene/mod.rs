@@ -1885,11 +1885,6 @@ impl SceneEcs {
         Some(builder.build())
     }
 
-    /// The scene's full emitter set (standalone `light` docs ∪ token-carried emissions), parsed
-    /// into `lighting::Light`. Implemented in `scene::emitters` — the ONE read path into the
-    /// illumination field's light set; disabled emissions contribute nothing and are dropped
-    /// there.
-    ///
     /// The user this token effectively belongs to — the SAME rule the write-authz
     /// path enforces (`permission::effective_owner`): the token's own `owner`
     /// override, else its LINKED actor's owner, joined live through `self.actors`

@@ -524,5 +524,90 @@ pub fn apply_field_change(v: &mut Value, ch: &FieldChange) -> Result<(), DataErr
     }
 }
 
+/// Largest integer magnitude an `f64` represents exactly (2^53); beyond this,
+/// adjacent integers alias to the same `f64`, so a Number/variant comparison
+/// falling back to `as f64` would silently equate genuinely different values.
+pub(crate) const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
+
+/// Structural equality for stored-vs-written JSON value comparisons where a client
+/// round-trip may have shifted the `Number` variant: `SqliteRepository::apply_intent`'s
+/// Phase-1 OCC pre-image check (`actual` vs `FieldChange.old`) and
+/// `permission::carried_light_touched`'s ancestor-write subtree comparison. `serde_json::Value::Number`
+/// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
+/// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
+/// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
+/// `JSON.parse`/re-serialize for a whole-number value, so an echoed pre-image
+/// comes back as `PosInt(100)`. Raw `==` treats these as unequal, causing a
+/// spurious refusal on an otherwise faithful write (e.g. an ordinary token
+/// drag after a server-executed `execute_move`, or the `ActorsPanel` vision-range
+/// editor's nested `range` field). This function recurses into `Object`/`Array`
+/// structure and treats mismatched-variant Number leaves as equal when they
+/// represent the same value. Two Numbers that BOTH parse as integers (either
+/// PosInt/NegInt variant) are compared EXACTLY as `i128`, with no magnitude
+/// limit -- this case never touches `f64`, so distinct large integers (past
+/// 2^53) never alias into a false match. The `|n| <= 2^53` exactness guard
+/// applies ONLY to the genuinely mixed case, one side an integer and the other
+/// a `Float`, where an `f64` comparison is unavoidable because the Float side
+/// has no exact integer form; outside that range, or for any non-Number
+/// mismatch, it falls back to serde's derived `PartialEq`.
+pub(crate) fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match (a, b) {
+        (Value::Object(ma), Value::Object(mb)) => {
+            ma.len() == mb.len()
+                && ma
+                    .iter()
+                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_semantically_eq(va, vb)))
+        }
+        (Value::Array(xa), Value::Array(xb)) => {
+            xa.len() == xb.len()
+                && xa
+                    .iter()
+                    .zip(xb.iter())
+                    .all(|(va, vb)| values_semantically_eq(va, vb))
+        }
+        (Value::Number(na), Value::Number(nb)) => {
+            if na == nb {
+                return true;
+            }
+            // Variants differ (one PosInt/NegInt, the other Float, or the pair
+            // straddles PosInt/NegInt with mismatched sign representation).
+            // Compare numerically only when any integer operand is exactly
+            // representable as f64; otherwise trust the exact comparison above.
+            let ia = na
+                .as_i64()
+                .map(|v| v as i128)
+                .or_else(|| na.as_u64().map(|v| v as i128));
+            let ib = nb
+                .as_i64()
+                .map(|v| v as i128)
+                .or_else(|| nb.as_u64().map(|v| v as i128));
+            match (ia, ib) {
+                // Both sides parse as integers (PosInt/NegInt pair): i128 holds
+                // every i64/u64 value without loss, so compare exactly. Never
+                // fall through to f64 here -- two distinct integers past 2^53
+                // (e.g. 2^62 vs 2^62 + 1) alias to the same f64 and would
+                // falsely compare equal, which is an OCC bypass (a stale
+                // pre-image would match a genuinely different stored value).
+                (Some(va), Some(vb)) => va == vb,
+                // Genuinely mixed case: one side is an integer, the other a
+                // Float. f64 comparison is unavoidable here since the Float
+                // side has no exact integer representation; only exact when
+                // the integer side is within f64's exact range.
+                (Some(v), None) | (None, Some(v))
+                    if v.unsigned_abs() > MAX_EXACT_F64_INT as u128 =>
+                {
+                    false
+                }
+                _ => match (na.as_f64(), nb.as_f64()) {
+                    (Some(fa), Some(fb)) => fa == fb,
+                    _ => false,
+                },
+            }
+        }
+        _ => a == b,
+    }
+}
+
 #[cfg(test)]
 mod tests;

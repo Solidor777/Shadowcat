@@ -23,6 +23,19 @@
 
   const falloffCurves: FalloffCurve[] = ["linear", "quadratic", "none"];
 
+  /**
+   * Locale label for a falloff curve option.
+   * @param f The curve id.
+   * @returns The localized display label.
+   * @example
+   * ```
+   * // private helper; wired to the falloff select's options
+   * falloffLabel("quadratic"); // localized "Quadratic"
+   * ```
+   */
+  const falloffLabel = (f: FalloffCurve): string =>
+    f === "linear" ? t("tools.falloffLinear") : f === "quadratic" ? t("tools.falloffQuadratic") : t("tools.falloffNone");
+
   /** Commit one field of the emission, preserving the rest.
    * @param patch The field(s) to change.
    * @example
@@ -116,7 +129,7 @@
     {disabled}
     onchange={(e) => commit({ falloff: { curve: e.currentTarget.value as FalloffCurve } })}
   >
-    {#each falloffCurves as f (f)}<option value={f}>{f}</option>{/each}
+    {#each falloffCurves as f (f)}<option value={f}>{falloffLabel(f)}</option>{/each}
   </select>
 </div>
 

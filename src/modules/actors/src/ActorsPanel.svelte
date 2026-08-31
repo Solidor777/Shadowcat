@@ -384,17 +384,19 @@
       <!-- value + onchange (not bind:value): bind:value on a number input reacts only to input events; the explicit handlers update state on change too. -->
       <input type="number" min="0" step="1" aria-label={t("actors.darkvision")} value={darkvision} onchange={(e) => (darkvision = Number(e.currentTarget.value))} oninput={(e) => (darkvision = Number(e.currentTarget.value))} />
     </label>
-    <label>
-      <input
-        type="checkbox"
-        aria-label={t("actors.carriedLight")}
-        checked={pendingLight !== null}
-        onchange={(e) => (pendingLight = e.currentTarget.checked ? { ...DEFAULT_LIGHT_EMISSION } : null)}
-      />
-      {t("actors.carriedLight")}
-    </label>
-    {#if pendingLight}
-      <LightEmissionEditor value={pendingLight} onCommit={(next) => (pendingLight = next)} />
+    {#if ctx.role === "gm"}
+      <label>
+        <input
+          type="checkbox"
+          aria-label={t("actors.carriedLight")}
+          checked={pendingLight !== null}
+          onchange={(e) => (pendingLight = e.currentTarget.checked ? { ...DEFAULT_LIGHT_EMISSION } : null)}
+        />
+        {t("actors.carriedLight")}
+      </label>
+      {#if pendingLight}
+        <LightEmissionEditor value={pendingLight} onCommit={(next) => (pendingLight = next)} />
+      {/if}
     {/if}
     <VisualKindEditor bind:this={visualEditor} conditionOptions={conditionOptions} onBuild={(v) => (pendingVisual = v)} />
     <button type="submit" disabled={!name || !pendingVisual}>{t("actors.create")}</button>

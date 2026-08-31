@@ -32,8 +32,10 @@ pub enum Falloff {
     None,
 }
 
-/// A placed light's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
-/// Mirrors the client `LightEngine`.
+/// A light source's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
+/// The value fields mirror `LightEmission` (used by both standalone `LightEngine` docs and
+/// token-carried emissions); `pos` is the source's scene-unit position (the document's `x`/`y`,
+/// or the carrying token's live position).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
     /// Position in scene units.

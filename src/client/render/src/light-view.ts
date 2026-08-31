@@ -95,6 +95,7 @@ function toSpec(doc: WireDocument): ShapeNodeSpec | null {
   if (!eng) return null;
   const { x, y } = eng;
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  if (!eng.emission) return null;
   return {
     layer: "walls",
     points: circlePoints(x, y, MARKER_RADIUS),

@@ -322,10 +322,15 @@ pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
 }
 
 /// The absolute JSON pointers whose values decide a document's carried-light emission — the
-/// exact set `SceneEcs::token_light_emission` reads: a TOKEN's `/engine/overrides/light` plus
+/// payload set `SceneEcs::token_light_emission` reads: a TOKEN's `/engine/overrides/light` plus
 /// each embedded actor copy's `/embedded/actor/<i>/engine/light`; an ACTOR's `/engine/light`.
 /// Embedded indices are enumerated from both the current document and the write's new value,
 /// because an ancestor write can introduce a new embedded actor wholesale.
+///
+/// Deliberately NOT in this set: `/engine/actor_id`, the join key. Retargeting a token's link to
+/// an actor that carries an emission acquires that emission without tripping the gate — that is
+/// the ordinary link flow (the token also takes the actor's name/visual/vision), and only
+/// emissions a GM already authored are acquirable through it.
 fn carried_light_pointers(
     doc_type: &str,
     whole: &serde_json::Value,
@@ -413,7 +418,16 @@ pub fn carried_light_touched(
             } else {
                 non_null(new.pointer(&e[path.len()..]))
             };
-            if old_v != new_v {
+            // Numeric-aware: a whole-number `f64` round-tripped through a JS client
+            // shifts serde_json Number variant, so a faithful echo of a GM-authored
+            // emission must NOT read as a change (`values_semantically_eq`, the same
+            // comparison the OCC pre-image check uses).
+            let equal = match (old_v, new_v) {
+                (None, None) => true,
+                (Some(a), Some(b)) => crate::data::command::values_semantically_eq(a, b),
+                _ => false,
+            };
+            if !equal {
                 return true;
             }
         }
