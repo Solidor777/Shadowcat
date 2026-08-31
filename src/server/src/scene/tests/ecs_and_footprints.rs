@@ -1996,7 +1996,7 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
     tok.owner = Some(player);
     let dark = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
     assert!(
-        dark.player_lit_mask(player)
+        dark.player_lit_mask(player, &dark.resolved_bands())
             .iter()
             .all(|s| s.cells.is_empty()),
         "dark scene + normal vision → empty lit mask"
@@ -2011,7 +2011,7 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), light], 0);
-    let mask = lit.player_lit_mask(player);
+    let mask = lit.player_lit_mask(player, &lit.resolved_bands());
     let s = mask
         .iter()
         .find(|s| s.scene == scene)
@@ -2037,7 +2037,8 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
     );
     ntok.owner = Some(player);
-    let ab = SceneEcs::from_documents(vec![bright_scene, ntok], 0).player_lit_mask(player);
+    let bright_ecs = SceneEcs::from_documents(vec![bright_scene, ntok], 0);
+    let ab = bright_ecs.player_lit_mask(player, &bright_ecs.resolved_bands());
     let s = ab.iter().find(|s| s.scene == scene).expect("scene present");
     assert!(
         s.cells
@@ -2064,8 +2065,8 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         )],
     );
     dv.owner = Some(player);
-    let dvmask =
-        SceneEcs::from_documents(vec![doc(10, None, "scene"), dv], 0).player_lit_mask(player);
+    let dv_ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), dv], 0);
+    let dvmask = dv_ecs.player_lit_mask(player, &dv_ecs.resolved_bands());
     assert!(
         dvmask.iter().any(|s| !s.cells.is_empty()),
         "darkvision sees in the dark within range"
@@ -2093,7 +2094,7 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         }],
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
-    let mask = ecs.player_lit_mask(player);
+    let mask = ecs.player_lit_mask(player, &ecs.resolved_bands());
     assert_eq!(mask.len(), 1);
     assert!(
         !mask[0].cells.is_empty(),
@@ -2124,7 +2125,7 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok2, light], 0);
-    let mask2 = lit.player_lit_mask(player2);
+    let mask2 = lit.player_lit_mask(player2, &lit.resolved_bands());
     assert!(
         mask2[0].cells.iter().any(|(_, _, _, _, h)| h.is_none()),
         "a normally-lit cell seen by normal vision carries no hint"

@@ -2487,7 +2487,12 @@ impl SceneEcs {
     /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? Observer-tier
     /// tokens : ∅). Fail-closed: a source-less player gets empty cells. GM is handled by the caller
     /// (mode:"all"); this is the masked path only.
-    pub fn player_lit_mask(&self, user: Uuid) -> Vec<LitScene> {
+    ///
+    /// `bands` is the caller-resolved gradation (`resolved_bands`), passed in so the sole
+    /// production caller (`compute_derived`) resolves the gradation ONCE and the `vision`
+    /// payload's `bands` array is the same resolution the mask's band indices were computed
+    /// against — never a second read that could disagree.
+    pub fn player_lit_mask(&self, user: Uuid, bands: &[Band]) -> Vec<LitScene> {
         // 0. Pre-resolve scene settings for every scene that has a token, so resolve_scene is
         //    called exactly once per scene rather than once per token. Collect
         //    scene ids in a first pass (drops the query borrow before the resolve calls).
@@ -2561,7 +2566,6 @@ impl SceneEcs {
 
         // 2. Per scene, accumulate visible cells across that scene's sources.
         let grid = self.scene_grid_sizes();
-        let bands = self.resolved_bands();
         use std::collections::BTreeMap;
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
@@ -2698,7 +2702,7 @@ impl SceneEcs {
                         }
                     }
                     if cell_visible(&src.floors, cl.level, dist_cells) {
-                        let band = crate::scene::lighting::band_index(&bands, cl.level);
+                        let band = crate::scene::lighting::band_index(bands, cl.level);
                         let slot = entry.1.entry((i, j)).or_insert((
                             cl.level,
                             band,
@@ -3345,15 +3349,17 @@ pub fn compute_derived(
                 // `renderHints` is a deterministic string table (first-seen order over the
                 // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
                 // hint_idx is the index into `renderHints`, or -1 for None.
-                // TODO: thread the bands player_lit_mask already resolved to avoid this second resolve.
-                let bands_json: Vec<serde_json::Value> = ecs
-                    .resolved_bands()
-                    .into_iter()
+                // The gradation is resolved ONCE here and passed into the mask computation, so
+                // the payload's `bands` array and the mask's band indices are the same
+                // resolution by construction.
+                let bands = ecs.resolved_bands();
+                let bands_json: Vec<serde_json::Value> = bands
+                    .iter()
                     .map(|b| serde_json::json!({ "name": b.name, "min": b.min_illumination }))
                     .collect();
                 // Build the hint table and 5-int cell packing in a plain loop to avoid a
                 // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
-                let mask = ecs.player_lit_mask(ctx.user_id);
+                let mask = ecs.player_lit_mask(ctx.user_id, &bands);
                 let mut hints: Vec<String> = Vec::new();
                 let mut lit: Vec<serde_json::Value> = Vec::new();
                 for s in mask {

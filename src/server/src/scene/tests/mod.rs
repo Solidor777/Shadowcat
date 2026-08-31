@@ -166,7 +166,7 @@ pub(super) fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
 pub(super) fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
     let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
     let egress: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user)
+        .player_lit_mask(user, &ecs.resolved_bands())
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -191,7 +191,7 @@ pub(super) fn mask_cells(
     user: Uuid,
     scene: Uuid,
 ) -> std::collections::BTreeSet<(i32, i32)> {
-    ecs.player_lit_mask(user)
+    ecs.player_lit_mask(user, &ecs.resolved_bands())
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))

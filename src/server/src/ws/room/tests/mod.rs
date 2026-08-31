@@ -1409,7 +1409,7 @@ async fn get_or_create_hydrates_config_and_actors_from_db() {
         ecs.world_settings_doc().is_some(),
         "world-settings hydrated from DB by get_or_create"
     );
-    let mask = ecs.player_lit_mask(p);
+    let mask = ecs.player_lit_mask(p, &ecs.resolved_bands());
     assert!(
         mask.iter().any(|s| !s.cells.is_empty()),
         "player lit mask non-empty after cold-start hydration (config + token + light from DB)"

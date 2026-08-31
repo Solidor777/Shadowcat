@@ -388,7 +388,7 @@ fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
     );
     let scene_id = Uuid::from_u128(10);
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
-    let mask = ecs.player_lit_mask(player);
+    let mask = ecs.player_lit_mask(player, &ecs.resolved_bands());
     let lit_cells: Vec<_> = mask.iter().flat_map(|s| s.cells.iter()).collect();
     assert!(
         !lit_cells.is_empty(),
@@ -497,7 +497,7 @@ fn visible_cells_strict_equals_player_lit_mask_cells() {
     let (ecs, user, scene) = scene_with_lit_player_token();
     let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
     let egress: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user)
+        .player_lit_mask(user, &ecs.resolved_bands())
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))

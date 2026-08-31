@@ -1484,7 +1484,7 @@ fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
 fn player_lit_mask_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
     let cells: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user)
+        .player_lit_mask(user, &ecs.resolved_bands())
         .into_iter()
         .filter(|s| s.scene == scene_id)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -1565,7 +1565,7 @@ fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded(
 fn player_lit_mask_routes_through_grid_shape_cell_center_not_hardcoded() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
     let got: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user)
+        .player_lit_mask(user, &ecs.resolved_bands())
         .into_iter()
         .filter(|s| s.scene == scene_id)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -2002,7 +2002,7 @@ fn an_over_cap_lit_mask_scan_yields_a_bounded_cell_set_not_an_empty_one() {
     // `player_lit_mask`'s own scan.
     let (ecs, user, scene) = over_cap_scan_scene();
     let cells: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user)
+        .player_lit_mask(user, &ecs.resolved_bands())
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
