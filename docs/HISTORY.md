@@ -1872,6 +1872,35 @@ removed end to end; scene-tools test doubles carry `truncated`. Accepted residua
 change between a preview and the move, so a preview is advisory — the executor re-resolves at
 move time.
 
+#### M14c-3 — World-config authority ✅
+**COMPLETE.** Branch `m14c-3-world-config`, executed mainline (Fable) from
+[`superpowers/specs/2026-08-30-m14c-3-world-config-authority-design.md`](superpowers/specs/2026-08-30-m14c-3-world-config-authority-design.md)
+and its plan; one buddy-check checkpoint (the `ConfigSeed` ingress gate, converged) plus the
+final two-reviewer branch review. Third of six.
+
+Every world-config singleton is now server-authored. A new server-only
+`WriteOrigin::ConfigSeed` commits seed ops built by `data::world_seed::missing_config_ops` —
+ONE ops-builder deciding what is absent or drifted, with callers differing only in commit
+transport: `create_world` seeds all ten config singletons at creation (author = the creator);
+the WS world-join path lazily reseeds whatever is missing (`ws::conn::reseed_world_config`,
+attributed to the world's first GM by sorted user id; a lost seed race is swallowed, a world
+with no GM is skipped); and `set_world_enabled_modules` runs the same pass to refresh
+`system-defaults`. The engine seed bodies moved to Rust (`FactionRegistryEngine::seed` and
+siblings; `SINGLETON_DOC_TYPES` now gates all ten config types). A system package declares its
+defaults in `module.json` `systemDefaults` (validated against `SystemDefaultsEngine` at scan,
+warn-and-ignore on invalid; at most one enabled `shadowcat.system` provider per world; client
+writes to the `system-defaults` singleton are rejected outright — `ConfigSeed` is the only
+origin that may author it). `WorldSettingsEngine` became an `Option`-lifted overlay sharing
+`SystemDefaultsEngine`'s member shapes: the engine literals live once on
+`WorldSceneDefaults::default`/`Pathfinding::default`/`AnimationSettings::default` (the
+client's `DEFAULT_WORLD_SETTINGS` is the asserted mirror), `resolve_scene` folds per leaf, and
+the settings UI's reset CLEARS the leaf (writes null) instead of writing a client-resolved
+literal — provenance is structural (a present world leaf IS the override). Client seed paths
+(the game-settings five-singleton seed, the chat/faction/condition registry seeds,
+`systemDefaultsUpsertOps`, `Module.systemDefaults`, `seedResourceRegistryIfAbsent`) are
+deleted. Integration suites moved to the production-shaped world: the first join's seed
+command occupies seq 1, and absolute event-count assertions became post-seed baselines.
+
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md` and plan
