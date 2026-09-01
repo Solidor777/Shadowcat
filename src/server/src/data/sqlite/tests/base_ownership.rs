@@ -371,3 +371,132 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
         "a stale-schema base fails re-validation on rewrite, got {err:?}"
     );
 }
+
+/// A doc with one embedded item, created through the ordinary client write
+/// path (whose Create arm strips any child `base`). Returns the stored root.
+async fn seeded_doc_with_embedded_item(
+    r: &SqliteRepository,
+    world: Uuid,
+    gm_ctx: &PermissionContext,
+) -> Document {
+    let mut doc = world_doc(1, world, serde_json::json!({}));
+    let child = world_doc(2, world, serde_json::json!({ "qty": 1 }));
+    doc.embedded.insert("items".into(), vec![child]);
+    r.apply_intent(
+        gm_ctx,
+        world,
+        vec![Operation::Create { doc }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap()
+}
+
+/// A client-origin Update that would leave a `base` on an embedded child —
+/// here a direct `/embedded/items/0/base` leaf write — is rejected fail-closed
+/// even for a GM: the capability gate passes (`/embedded` is writable), the
+/// POST-IMAGE check refuses.
+#[tokio::test]
+async fn client_update_cannot_write_base_onto_an_embedded_child_leaf() {
+    let (r, world, gm_ctx) = gm_setup().await;
+    let stored = seeded_doc_with_embedded_item(&r, world, &gm_ctx).await;
+    assert!(stored.embedded["items"][0].base.is_none());
+
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            world,
+            vec![Operation::Update {
+                doc_id: stored.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/embedded/items/0/base".into(),
+                    old: serde_json::Value::Null,
+                    new: forged_base(),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::Forbidden),
+        "an embedded child never carries a base, got {err:?}"
+    );
+    assert!(
+        r.get_document(stored.id).await.unwrap().unwrap().embedded["items"][0]
+            .base
+            .is_none(),
+        "nothing was written"
+    );
+}
+
+/// The wholesale form of the same smuggle: a client-origin whole-collection
+/// `/embedded/items` replacement carrying a base-bearing child is rejected on
+/// the post-image, same as the leaf write.
+#[tokio::test]
+async fn client_update_cannot_replace_a_collection_with_a_base_bearing_child() {
+    let (r, world, gm_ctx) = gm_setup().await;
+    let stored = seeded_doc_with_embedded_item(&r, world, &gm_ctx).await;
+    let before = serde_json::to_value(&stored.embedded["items"]).unwrap();
+    let mut smuggled = before.clone();
+    smuggled[0]["base"] = forged_base();
+
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            world,
+            vec![Operation::Update {
+                doc_id: stored.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/embedded/items".into(),
+                    old: before,
+                    new: smuggled,
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::Forbidden),
+        "a whole-collection replacement may not smuggle a child base, got {err:?}"
+    );
+}
+
+/// Control: ordinary client embedded edits — none of which carry a `base` —
+/// pass the same post-image check untouched.
+#[tokio::test]
+async fn client_update_of_an_embedded_child_without_base_passes() {
+    let (r, world, gm_ctx) = gm_setup().await;
+    let stored = seeded_doc_with_embedded_item(&r, world, &gm_ctx).await;
+
+    r.apply_intent(
+        &gm_ctx,
+        world,
+        vec![Operation::Update {
+            doc_id: stored.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/embedded/items/0/system".into(),
+                old: serde_json::json!({ "qty": 1 }),
+                new: serde_json::json!({ "qty": 2 }),
+            }],
+        }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let after = r.get_document(stored.id).await.unwrap().unwrap();
+    assert_eq!(
+        after.embedded["items"][0].system,
+        serde_json::json!({ "qty": 2 })
+    );
+    assert!(after.embedded["items"][0].base.is_none());
+}

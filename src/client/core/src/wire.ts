@@ -603,9 +603,10 @@ export const mergePullStatusSchemaImpl = z.union([
 /** Validator for a `WireMergePullStatus`. */
 export const MergePullStatusSchema: z.ZodType<WireMergePullStatus> = mergePullStatusSchemaImpl;
 
-/** How one instance fared in a `merge_push`. `excluded` covers BOTH "not visible to the
- * pusher" and "visible but not writable by the pusher" without disclosing which — mirroring
- * redaction's existence-hiding. Mirrors `ws::protocol::PushInstanceStatus`. */
+/** How one instance fared in a `merge_push`. `excluded` means exactly one thing: the
+ * instance is VISIBLE to the pusher but not writable by them per the per-path derivation.
+ * An instance the pusher cannot see at all is omitted from the outcome — no entry, name,
+ * or count — mirroring redaction's existence-hiding. Mirrors `ws::protocol::PushInstanceStatus`. */
 export type WirePushInstanceStatus = "applied" | { conflicts: WireMergeConflict[] } | "excluded";
 
 // Unannotated impl const — see the module-level note above the `z` import.
@@ -623,9 +624,9 @@ export const PushInstanceStatusSchema: z.ZodType<WirePushInstanceStatus> =
 export type WirePushInstanceOutcome = {
   /** The instance this entry reports. */
   instance_id: string;
-  /** The pusher-VISIBLE display name for the modal's group label; `null` when the pusher
-   * cannot see the instance at all — an `excluded` entry never carries a name the pusher is
-   * not otherwise entitled to read. */
+  /** The pusher-VISIBLE display name for the modal's group label; `null` only when
+   * redaction itself withholds it — an entry never carries a name the pusher is not
+   * otherwise entitled to read. */
   name: string | null;
   /** What happened to this instance. */
   status: WirePushInstanceStatus;
@@ -654,7 +655,9 @@ export type WireMergeOutcome =
       status: WireMergePullStatus;
     }
   | {
-      /** Outcome of a `merge_push`: one entry per same-world instance of the template. */
+      /** Outcome of a `merge_push`: one entry per same-world instance of the template
+       * VISIBLE to the pusher (an invisible instance is omitted entirely —
+       * existence-hiding parity with redaction). */
       kind: "push";
       /** The template pushed. */
       template_id: string;

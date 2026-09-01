@@ -640,6 +640,31 @@ fn merge_intents_and_replies_round_trip() {
 }
 
 #[test]
+fn merge_unknown_resolution_serializes_snake_case_and_round_trips() {
+    let err = ServerMsg::MergeError {
+        request_id: Uuid::from_u128(7),
+        reason: MergeErrorKind::UnknownResolution(MergeOutcome::Pull {
+            child_id: Uuid::from_u128(2),
+            status: MergePullStatus::Applied,
+        }),
+    };
+    let j = serde_json::to_value(&err).unwrap();
+    assert_eq!(j["type"], "merge_error");
+    assert_eq!(
+        j["reason"]["unknown_resolution"]["kind"], "pull",
+        "the wire spelling is pinned: {j}"
+    );
+    let back: ServerMsg = serde_json::from_value(j).unwrap();
+    assert!(matches!(
+        back,
+        ServerMsg::MergeError {
+            reason: MergeErrorKind::UnknownResolution(_),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn combat_resource_set_op_round_trips() {
     let m = ClientMsg::CombatResource {
         request_id: Uuid::from_u128(1),

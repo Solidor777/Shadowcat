@@ -3787,6 +3787,24 @@ impl Repository for SqliteRepository {
                         ));
                     }
                     check_command_scope(&doc, world_id)?;
+                    // Embedded children NEVER carry `base` (the Create arm's
+                    // `derive_create_base` strips it recursively), but a
+                    // client-origin Update can still land one on the
+                    // post-image — a `/embedded/<coll>/<i>/base` leaf write or
+                    // a whole-collection replacement carrying base-bearing
+                    // children — so the merged post-image is checked here,
+                    // fail-closed, BEFORE the shape/engine walks below (the
+                    // invariant is simpler than anything they check). Server-
+                    // authored origins skip it: `WriteOrigin::TemplateMerge`'s
+                    // whole-collection rewrites carry restamped/merged
+                    // children, which never carry `base` by construction
+                    // (`merge::plan::plan_to_update`), as do the other trusted
+                    // origins' embedded writes.
+                    if !origin.is_server_authored()
+                        && crate::merge::bands::embedded_carries_base(&doc)
+                    {
+                        return Err(DataError::Forbidden);
+                    }
                     // Body cap re-checked post-merge: the merged result, not the
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;

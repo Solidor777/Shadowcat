@@ -537,6 +537,55 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
   }
 });
 
+describe("parseServerMsg — merge frames with realistic payloads", () => {
+  // A full `MergeConflict` entry: camelCase `parentKind`, `base` ABSENT (not null) —
+  // the snapshot never held a value at the conflict path.
+  const conflict = { path: "/system/hp", parent: 12, child: 11, parentKind: "set" };
+  const pullOutcome = {
+    kind: "pull",
+    child_id: "00000000-0000-0000-0000-0000000000c1",
+    status: { conflicts: [conflict] },
+  };
+
+  it("parses a merge_result carrying a conflict set", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "merge_result", request_id: "r", outcome: pullOutcome }),
+    );
+    expect(m?.type).toBe("merge_result");
+    if (m?.type !== "merge_result") return;
+    expect(m.outcome.kind).toBe("pull");
+    if (m.outcome.kind !== "pull" || m.outcome.status === "applied") return;
+    expect(m.outcome.status.conflicts).toHaveLength(1);
+    const c = m.outcome.status.conflicts[0];
+    expect(c.parentKind).toBe("set");
+    expect(c.parent).toBe(12);
+    expect(c.child).toBe(11);
+    expect("base" in c).toBe(false);
+  });
+
+  it("parses stale_resolutions and unknown_resolution error frames carrying the fresh outcome", () => {
+    for (const key of ["stale_resolutions", "unknown_resolution"] as const) {
+      const m = parseServerMsg(
+        JSON.stringify({
+          type: "merge_error",
+          request_id: "r",
+          reason: { [key]: pullOutcome },
+        }),
+      );
+      expect(m?.type).toBe("merge_error");
+      if (m?.type !== "merge_error") continue;
+      const reason = m.reason;
+      expect(typeof reason).toBe("object");
+      if (typeof reason !== "object") continue;
+      const carried =
+        typeof reason === "object" && key in reason
+          ? (reason as Record<string, unknown>)[key]
+          : undefined;
+      expect(carried).toEqual(pullOutcome);
+    }
+  });
+});
+
 describe("DocumentSchema — envelope name + engine band", () => {
   const base = {
     id: "00000000-0000-0000-0000-000000000001",

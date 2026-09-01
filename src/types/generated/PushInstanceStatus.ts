@@ -2,8 +2,10 @@
 import type { MergeConflict } from "./MergeConflict";
 
 /**
- * How one instance fared in a `MergePush`. `Excluded` covers BOTH "not visible to
- * the pusher" and "visible but not writable by the pusher" without disclosing
- * which — mirroring redaction's existence-hiding.
+ * How one instance fared in a `MergePush`. `Excluded` means exactly one thing:
+ * the instance is VISIBLE to the pusher but not writable by them per the
+ * per-path derivation. An instance the pusher cannot see at all is omitted
+ * from the outcome — no entry, name, or count — mirroring redaction's
+ * existence-hiding.
  */
 export type PushInstanceStatus = "applied" | { "conflicts": Array<MergeConflict> } | "excluded";

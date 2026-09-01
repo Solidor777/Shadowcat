@@ -305,8 +305,11 @@ pub enum ClientMsg {
         resolutions: Option<Vec<String>>,
     },
     /// Push the named template into every same-world instance of it. Same reply
-    /// protocol as `MergePull`; the outcome reports each instance individually
-    /// (`PushInstanceOutcome`). `resolutions` keys on the INSTANCE id; an instance
+    /// protocol as `MergePull`; the outcome reports each VISIBLE instance
+    /// individually (`PushInstanceOutcome`) — an instance the pusher cannot see is
+    /// omitted entirely, and every conflict set (pull or push) is filtered to the
+    /// paths the requester may see in both documents, hidden ones auto-resolving
+    /// child-wins. `resolutions` keys on the INSTANCE id; an instance
     /// absent from the map keeps the child side of every one of its conflicts
     /// (all-mine), mirroring `MergePull`'s empty list.
     MergePush {
@@ -478,9 +481,11 @@ pub enum MergeRevertStatus {
     Applied,
 }
 
-/// How one instance fared in a `MergePush`. `Excluded` covers BOTH "not visible to
-/// the pusher" and "visible but not writable by the pusher" without disclosing
-/// which — mirroring redaction's existence-hiding.
+/// How one instance fared in a `MergePush`. `Excluded` means exactly one thing:
+/// the instance is VISIBLE to the pusher but not writable by them per the
+/// per-path derivation. An instance the pusher cannot see at all is omitted
+/// from the outcome — no entry, name, or count — mirroring redaction's
+/// existence-hiding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -488,9 +493,10 @@ pub enum PushInstanceStatus {
     /// The merge was conflict-free (or fully resolved) and committed.
     Applied,
     /// The merge has unresolved conflicts; nothing was written for this instance.
-    /// The conflict set is this instance's modal group.
+    /// The conflict set is this instance's modal group, filtered to the conflict
+    /// paths the pusher may see in BOTH the instance and the template.
     Conflicts(Vec<MergeConflict>),
-    /// The pusher may not merge this instance (not visible, or not writable per the
+    /// The pusher may not merge this instance (visible, but not writable per the
     /// same per-path derivation the write path applies); nothing was written.
     Excluded,
 }
@@ -502,9 +508,9 @@ pub struct PushInstanceOutcome {
     /// The instance this entry reports.
     pub instance_id: Uuid,
     /// The pusher-VISIBLE display name (the redacted view's `name`, which a `/name`
-    /// override may already have nulled) for the modal's group label. `None` when the
-    /// pusher cannot see the instance at all — an `Excluded` entry never carries a
-    /// name the pusher is not otherwise entitled to read.
+    /// override may already have nulled) for the modal's group label. `None` only
+    /// when redaction itself withholds it — an entry never carries a name the
+    /// pusher is not otherwise entitled to read.
     pub name: Option<String>,
     /// What happened to this instance.
     pub status: PushInstanceStatus,
@@ -522,7 +528,9 @@ pub enum MergeOutcome {
         /// Applied or conflicted (nothing written).
         status: MergePullStatus,
     },
-    /// Outcome of a `MergePush`: one entry per same-world instance of the template.
+    /// Outcome of a `MergePush`: one entry per same-world instance of the template
+    /// VISIBLE to the pusher (an invisible instance is omitted entirely —
+    /// existence-hiding parity with redaction).
     Push {
         /// The template pushed.
         template_id: Uuid,

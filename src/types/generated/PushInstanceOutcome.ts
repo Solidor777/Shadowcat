@@ -11,9 +11,9 @@ export type PushInstanceOutcome = {
 instance_id: string, 
 /**
  * The pusher-VISIBLE display name (the redacted view's `name`, which a `/name`
- * override may already have nulled) for the modal's group label. `None` when the
- * pusher cannot see the instance at all — an `Excluded` entry never carries a
- * name the pusher is not otherwise entitled to read.
+ * override may already have nulled) for the modal's group label. `None` only
+ * when redaction itself withholds it — an entry never carries a name the
+ * pusher is not otherwise entitled to read.
  */
 name: string | null, 
 /**

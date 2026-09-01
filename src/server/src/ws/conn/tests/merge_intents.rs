@@ -7,11 +7,12 @@
 use super::*;
 use crate::auth::role::ServerRole;
 use crate::data::command::{FieldChange, Operation};
-use crate::data::document::{DocRole, Document, Source, WorldRole};
+use crate::data::document::{DocRole, Document, Source, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::filter_command;
+use crate::data::DataError;
 use crate::merge::MergeBase;
-use crate::ws::conn::merge_intents::handle_merge_intent;
+use crate::ws::conn::merge_intents::{commit_error, handle_merge_intent};
 use crate::ws::protocol::{
     MergeErrorKind, MergeOutcome, MergePullStatus, MergeRevertStatus, PushInstanceStatus,
 };
@@ -740,10 +741,10 @@ async fn push_matrix(h: &Harness) -> (Uuid, Uuid, Uuid, Uuid, Uuid) {
 
 /// One player's push across the four-instance matrix: the writable clean
 /// instance applies immediately, the writable conflicted one reports its
-/// conflict set unwritten, and the two unreachable ones are `Excluded` — the
-/// not-visible one's entry withholds its name (existence-hiding parity with
-/// redaction), the visible-but-not-writable one's carries the pusher-visible
-/// name.
+/// conflict set unwritten, the visible-but-not-writable one is `Excluded`
+/// (carrying the pusher-visible name), and the not-visible one is OMITTED from
+/// the outcome entirely — no entry, name, or count (true existence-hiding
+/// parity with redaction: the pusher's store never contained it).
 #[tokio::test]
 async fn push_mixed_visibility_and_capability_outcomes() {
     let h = merge_harness().await;
@@ -769,7 +770,11 @@ async fn push_mixed_visibility_and_capability_outcomes() {
     else {
         panic!("expected a MergeResult::Push");
     };
-    assert_eq!(instances.len(), 4);
+    assert_eq!(
+        instances.len(),
+        3,
+        "the invisible instance has no entry at all"
+    );
     let entry = |id: Uuid| instances.iter().find(|e| e.instance_id == id).unwrap();
 
     assert!(matches!(entry(clean).status, PushInstanceStatus::Applied));
@@ -796,11 +801,9 @@ async fn push_mixed_visibility_and_capability_outcomes() {
     ));
     assert_eq!(entry(visible_locked).name.as_deref(), Some("VisibleLocked"));
 
-    assert!(matches!(entry(hidden).status, PushInstanceStatus::Excluded));
-    assert_eq!(
-        entry(hidden).name,
-        None,
-        "a hidden instance discloses no name"
+    assert!(
+        instances.iter().all(|e| e.instance_id != hidden),
+        "a hidden instance is omitted — no id, no name, no count beyond the visible set"
     );
     assert_eq!(
         h.get(hidden).await.system,
@@ -856,7 +859,8 @@ async fn push_resolutions_second_call_applies() {
 
 /// A resolutions map key that names no visible push target (here: the hidden
 /// instance, whose existence is never disclosed) is `UnknownResolution` — the
-/// same refusal an outright-unknown id gets.
+/// same refusal an outright-unknown id gets — and the carried fresh outcome
+/// discloses nothing about it: no entry at all.
 #[tokio::test]
 async fn push_resolutions_for_an_invisible_instance_is_unknown_resolution() {
     let h = merge_harness().await;
@@ -885,10 +889,8 @@ async fn push_resolutions_for_an_invisible_instance_is_unknown_resolution() {
         panic!("expected UnknownResolution carrying a Push outcome");
     };
     assert!(
-        instances
-            .iter()
-            .any(|e| e.instance_id == hidden && e.name.is_none()),
-        "the fresh outcome still withholds the hidden instance's name"
+        instances.iter().all(|e| e.instance_id != hidden),
+        "the fresh outcome omits the hidden instance entirely"
     );
 }
 
@@ -1121,4 +1123,373 @@ async fn merge_commits_broadcast_and_redact_like_a_client_update() {
         "the gm_only subtree is stripped from the whole-band change"
     );
     assert_eq!(by_system.new["hp"], json!(12), "the visible half survives");
+}
+
+/// The hidden-conflict fixture: a template and a player-owned instance whose
+/// `/system/secret` is `gm_only`-overridden on BOTH documents, both sides
+/// having diverged from the snapshot (`S1` → template `S2`, child `S3`).
+/// Returns (template_id, child_id).
+async fn hidden_conflict_pair(h: &Harness, template_id: Uuid, child_id: Uuid) -> (Uuid, Uuid) {
+    let mut template = template_doc(
+        h.world_id,
+        template_id,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "secret": "S1" }),
+    );
+    template
+        .permissions
+        .property_overrides
+        .insert("/system/secret".into(), Visibility::GmOnly);
+    h.create(template).await;
+    let mut child = instance_doc(
+        h.world_id,
+        child_id,
+        template_id,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "secret": "S1" }),
+    );
+    child
+        .permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    child
+        .permissions
+        .property_overrides
+        .insert("/system/secret".into(), Visibility::GmOnly);
+    h.create(child).await;
+    h.set_system(template_id, json!({ "hp": 10, "secret": "S2" }))
+        .await;
+    h.set_system(child_id, json!({ "hp": 10, "secret": "S3" }))
+        .await;
+    (template_id, child_id)
+}
+
+/// A conflict on a path hidden from the requester in either document is
+/// removed from the replied conflict set and auto-resolves child-wins: a
+/// non-GM owner pulling with a `gm_only` conflict on both documents gets an
+/// Applied reply whose frame carries neither side's hidden value, and the
+/// committed document keeps the child's side.
+#[tokio::test]
+async fn pull_hides_a_gm_only_conflict_from_a_non_gm_owner_and_applies_child_wins() {
+    let h = merge_harness().await;
+    let (_, child) =
+        hidden_conflict_pair(&h, Uuid::from_u128(0xE501), Uuid::from_u128(0xE502)).await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2") && !wire.contains("S3"),
+        "the hidden values never appear in the frame: {wire}"
+    );
+    assert!(
+        matches!(pull_status(reply), MergePullStatus::Applied),
+        "the hidden conflict leaves the visible set empty, so the pull applies"
+    );
+    assert_eq!(
+        h.get(child).await.system,
+        json!({ "hp": 10, "secret": "S3" }),
+        "the hidden conflict auto-resolved child-wins in the committed document"
+    );
+}
+
+/// Same pair, GM requester: a GM sees every property tier, so the conflict is
+/// reported normally and nothing is written on the first call.
+#[tokio::test]
+async fn pull_reports_the_gm_only_conflict_to_a_gm() {
+    let h = merge_harness().await;
+    let (_, child) =
+        hidden_conflict_pair(&h, Uuid::from_u128(0xE511), Uuid::from_u128(0xE512)).await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let MergePullStatus::Conflicts(conflicts) = pull_status(reply) else {
+        panic!("a GM sees the hidden conflict");
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].path, "/system/secret");
+    assert_eq!(
+        h.get(child).await.system,
+        json!({ "hp": 10, "secret": "S3" }),
+        "a conflicted first call writes nothing"
+    );
+}
+
+/// Push, hidden-conflict half: the instance's `/system/secret` is
+/// `owner_or_gm`-overridden and the pusher is the TEMPLATE's owner — neither
+/// the instance's owner nor a GM — so the conflict is withheld from the reply
+/// and the child-wins default lands in the committed document. The GM control
+/// on a fresh pair sees the conflict normally.
+#[tokio::test]
+async fn push_hides_an_owner_or_gm_conflict_from_a_non_owner_pusher() {
+    let h = merge_harness().await;
+    let (template, visible) = (Uuid::from_u128(0xE521), Uuid::from_u128(0xE522));
+    let mut tmpl = template_doc(
+        h.world_id,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "secret": "S1" }),
+    );
+    tmpl.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    tmpl.permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default()
+        .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    h.create(tmpl).await;
+    let mut inst = instance_doc(
+        h.world_id,
+        visible,
+        template,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "secret": "S1" }),
+    );
+    inst.permissions
+        .property_overrides
+        .insert("/system/secret".into(), Visibility::OwnerOrGm);
+    h.create(inst).await;
+    h.set_system(template, json!({ "hp": 10, "secret": "S2" }))
+        .await;
+    h.set_system(visible, json!({ "hp": 10, "secret": "S3" }))
+        .await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePush {
+            request_id: Uuid::from_u128(1),
+            template_id: template,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2") && !wire.contains("S3"),
+        "the hidden values never appear in the frame: {wire}"
+    );
+    let ServerMsg::MergeResult {
+        outcome: MergeOutcome::Push { instances, .. },
+        ..
+    } = reply
+    else {
+        panic!("expected a MergeResult::Push");
+    };
+    assert_eq!(instances.len(), 1);
+    assert!(
+        matches!(instances[0].status, PushInstanceStatus::Applied),
+        "the hidden conflict leaves the visible set empty, so the push applies"
+    );
+    assert_eq!(
+        h.get(visible).await.system,
+        json!({ "hp": 10, "secret": "S3" }),
+        "the child-wins default landed in the committed document"
+    );
+
+    // GM control on a fresh pair: the same divergence is a reported conflict.
+    let (template2, visible2) = (Uuid::from_u128(0xE523), Uuid::from_u128(0xE524));
+    let mut tmpl2 = template_doc(
+        h.world_id,
+        template2,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "secret": "S1" }),
+    );
+    tmpl2
+        .permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    h.create(tmpl2).await;
+    let mut inst2 = instance_doc(
+        h.world_id,
+        visible2,
+        template2,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "secret": "S1" }),
+    );
+    inst2
+        .permissions
+        .property_overrides
+        .insert("/system/secret".into(), Visibility::OwnerOrGm);
+    h.create(inst2).await;
+    h.set_system(template2, json!({ "hp": 10, "secret": "S2" }))
+        .await;
+    h.set_system(visible2, json!({ "hp": 10, "secret": "S3" }))
+        .await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::MergePush {
+            request_id: Uuid::from_u128(2),
+            template_id: template2,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let ServerMsg::MergeResult {
+        outcome: MergeOutcome::Push { instances, .. },
+        ..
+    } = reply
+    else {
+        panic!("expected a MergeResult::Push");
+    };
+    let PushInstanceStatus::Conflicts(conflicts) = &instances[0].status else {
+        panic!("a GM pusher sees the owner_or_gm conflict");
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].path, "/system/secret");
+}
+
+/// A server-origin merge whose plan rewrites a WHOLE embedded collection
+/// commits through the write path's post-image checks: the restamped children
+/// `plan_to_update` emits never carry a `base`.
+#[tokio::test]
+async fn template_merge_whole_collection_write_carries_no_embedded_base() {
+    let h = merge_harness().await;
+    let (template, child) =
+        player_pullable(&h, Uuid::from_u128(0xE531), Uuid::from_u128(0xE532)).await;
+
+    // Post-stamp, the template gains an embedded item — the pull's
+    // `/embedded/items` whole-collection write restamps it into the instance.
+    let item = {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            h.world_id,
+            Uuid::from_u128(0xE533),
+            "item",
+        );
+        d.system = json!({ "qty": 1 });
+        d
+    };
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: template,
+                changes: vec![FieldChange {
+                    path: "/embedded/items".into(),
+                    old: serde_json::Value::Null,
+                    new: json!([serde_json::to_value(&item).unwrap()]),
+                    remove: false,
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    assert!(matches!(pull_status(reply), MergePullStatus::Applied));
+    let items = &h.get(child).await.embedded["items"];
+    assert_eq!(items.len(), 1, "the template-added child was restamped in");
+    assert!(
+        items[0].base.is_none(),
+        "a restamped/merged embedded child never carries a base"
+    );
+}
+
+/// `commit_error`'s mapping, directly: an OCC pre-image mismatch recomputes
+/// the merge via `fresh` and replies `StaleResolutions` carrying that outcome
+/// (or, when the recompute itself fails, ITS reason); `Forbidden` passes
+/// through untouched; anything else collapses to `Internal`.
+#[tokio::test]
+async fn commit_error_maps_write_failures_to_the_merge_error_vocabulary() {
+    let outcome = || MergeOutcome::Revert {
+        child_id: Uuid::from_u128(1),
+        status: MergeRevertStatus::Applied,
+    };
+
+    let reply = commit_error(
+        Uuid::from_u128(9),
+        DataError::Conflict("stale pre-image".into()),
+        || async { Ok(outcome()) },
+    )
+    .await;
+    let ServerMsg::MergeError {
+        reason: MergeErrorKind::StaleResolutions(o),
+        ..
+    } = reply
+    else {
+        panic!("an OCC conflict maps to StaleResolutions, got {reply:?}");
+    };
+    assert_eq!(o, outcome(), "carries the recomputed outcome");
+
+    let reply = commit_error(
+        Uuid::from_u128(9),
+        DataError::Conflict("stale pre-image".into()),
+        || async { Err(MergeErrorKind::NotFound) },
+    )
+    .await;
+    assert!(
+        matches!(error_reason(reply), MergeErrorKind::NotFound),
+        "a failed recompute surfaces its own reason"
+    );
+
+    let reply = commit_error(Uuid::from_u128(9), DataError::Forbidden, || async {
+        Ok(outcome())
+    })
+    .await;
+    assert!(
+        matches!(error_reason(reply), MergeErrorKind::Forbidden),
+        "Forbidden passes through"
+    );
+
+    let reply = commit_error(Uuid::from_u128(9), DataError::NotFound, || async {
+        Ok(outcome())
+    })
+    .await;
+    assert!(
+        matches!(error_reason(reply), MergeErrorKind::Internal),
+        "any other failure collapses to Internal"
+    );
 }

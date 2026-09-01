@@ -25,14 +25,14 @@ use crate::data::command::{Operation, WriteOrigin};
 use crate::data::document::{world_of, CapabilityRequirement, Document, WorldCapDefaults};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
-    cap, declared_caps_for_path, filter_properties, required_cap_for_path, resolve_access_world,
-    Access,
+    cap, collect_overrides, declared_caps_for_path, filter_properties, paths_overlap,
+    required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::DataError;
 use crate::merge::{
     apply_resolutions, compute_pull, compute_revert, plan_to_update, MergeBands, MergeConflict,
-    MergeError, MergePlan,
+    MergePlan,
 };
 use crate::ws::protocol::{
     ClientMsg, MergeErrorKind, MergeOutcome, MergePullStatus, MergeRevertStatus,
@@ -122,6 +122,69 @@ fn on_merge_surface(path: &str) -> bool {
         .any(|band| path == *band || path.starts_with(&format!("{band}/")))
 }
 
+/// The absolute override pointers of `doc` that `access` may NOT see, walked by
+/// the ONE egress traversal (`permission::collect_overrides` — the same walk
+/// broadcast redaction and commit-time snapshot construction use, positional
+/// embedded addressing included) and filtered by the same tier predicate
+/// (`Access::can_see`). Fails closed to `Internal`: an unclassifiable override
+/// pointer means the visibility question cannot be answered, so nothing about
+/// the document's conflicts may be disclosed.
+fn hidden_overrides(doc: &Document, access: &Access) -> Result<Vec<String>, MergeErrorKind> {
+    let mut overrides = Vec::new();
+    collect_overrides(doc, "", &mut overrides).map_err(|e| {
+        tracing::warn!(doc_id = %doc.id, error = %e, "merge: override walk failed; failing closed");
+        MergeErrorKind::Internal
+    })?;
+    Ok(overrides
+        .into_iter()
+        .filter(|(_, v)| !access.can_see(*v))
+        .map(|(p, _)| p)
+        .collect())
+}
+
+/// Filter `plan`'s conflict set down to the conflicts THIS requester may see:
+/// a conflict whose payload could carry a value hidden from the requester in
+/// EITHER document — its path overlapping a hidden override subtree in either
+/// direction (`paths_overlap`, the egress family's subtree predicate: a
+/// descendant path names hidden data directly, an ancestor path — a wholesale
+/// array or embedded-child conflict — CARRIES the hidden subtree in its
+/// `parent`/`child` values) — is removed from the replied set. Removal IS the
+/// resolution: the child-wins default already sits in `merged_bands`, and the
+/// filtered set is what `check_resolutions` and `apply_resolutions` see, so a
+/// hidden conflict can neither be reported nor resolved away from the child
+/// side. The merge COMPUTATION and the committed write stay over unredacted
+/// data (the write side is authoritative); only the egress conflict set is
+/// filtered. A GM sees everything, so a GM's set is unchanged.
+fn filter_conflicts(
+    plan: &mut MergePlan,
+    child: &Document,
+    child_access: &Access,
+    template: &Document,
+    template_access: &Access,
+) -> Result<(), MergeErrorKind> {
+    let mut hidden = hidden_overrides(child, child_access)?;
+    hidden.extend(hidden_overrides(template, template_access)?);
+    plan.conflicts
+        .retain(|c| !hidden.iter().any(|ov| paths_overlap(&c.path, ov)));
+    Ok(())
+}
+
+/// `compute_pull` plus `filter_conflicts`: the merged bands and the conflict
+/// set as THIS requester may observe them. The one construction both `pull`
+/// (and its fresh-outcome recompute) and `push`'s per-instance planning use, so
+/// the report path and the resolutions path can never disagree on what the
+/// current conflict set is.
+fn visible_pull_plan(
+    child: &Document,
+    child_access: &Access,
+    template: &Document,
+    template_access: &Access,
+) -> Result<MergePlan, MergeErrorKind> {
+    let mut plan = compute_pull(child, template).map_err(|_| MergeErrorKind::CorruptBase)?;
+    filter_conflicts(&mut plan, child, child_access, template, template_access)?;
+    Ok(plan)
+}
+
 /// The two ways a submitted resolutions set can fail against a recomputed plan;
 /// both reply with the fresh outcome attached, so this marker carries only the
 /// distinction (`MergeErrorKind`'s diagnostic half).
@@ -162,8 +225,8 @@ fn merge_error(request_id: Uuid, reason: MergeErrorKind) -> ServerMsg {
 /// `StaleResolutions` — the same rejection an interleaving edit between the two
 /// calls produces. `Forbidden` passes through; anything else is logged and
 /// collapsed to `Internal` (details never echoed, the `WsErrorCode::Internal`
-/// posture).
-async fn commit_error<F, Fut>(request_id: Uuid, e: DataError, fresh: F) -> ServerMsg
+/// posture). `pub(crate)` so the mapping is unit-testable without a live room.
+pub(crate) async fn commit_error<F, Fut>(request_id: Uuid, e: DataError, fresh: F) -> ServerMsg
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Result<MergeOutcome, MergeErrorKind>>,
@@ -226,6 +289,10 @@ struct PullDocs {
     template: Document,
     /// The requester's resolved access on the child (the per-path derivation's input).
     child_access: Access,
+    /// The requester's resolved access on the template — the template half of the
+    /// conflict-set visibility filter (`filter_conflicts` evaluates per-path
+    /// visibility against BOTH documents).
+    template_access: Access,
 }
 
 /// Load and gate the pull/revert document pair.
@@ -283,6 +350,7 @@ async fn load_pull_docs(
         child,
         template,
         child_access,
+        template_access,
     })
 }
 
@@ -346,11 +414,14 @@ async fn pull(
         Ok(d) => d,
         Err(reason) => return merge_error(request_id, reason),
     };
-    let plan = match compute_pull(&docs.child, &docs.template) {
+    let plan = match visible_pull_plan(
+        &docs.child,
+        &docs.child_access,
+        &docs.template,
+        &docs.template_access,
+    ) {
         Ok(p) => p,
-        Err(MergeError::CorruptBase) => {
-            return merge_error(request_id, MergeErrorKind::CorruptBase)
-        }
+        Err(reason) => return merge_error(request_id, reason),
     };
     let bands = match resolved_bands(&plan, resolutions) {
         Ok(b) => b,
@@ -395,8 +466,12 @@ async fn pull(
                     .await
                     .map_err(|_| MergeErrorKind::Internal)?;
                 let docs = load_pull_docs(room, repo, ctx, &inputs, child_id).await?;
-                let plan = compute_pull(&docs.child, &docs.template)
-                    .map_err(|_| MergeErrorKind::CorruptBase)?;
+                let plan = visible_pull_plan(
+                    &docs.child,
+                    &docs.child_access,
+                    &docs.template,
+                    &docs.template_access,
+                )?;
                 Ok(pull_outcome(child_id, &plan))
             })
             .await
@@ -452,15 +527,6 @@ async fn revert(
     }
 }
 
-/// One instance's computed push state.
-enum PushSlot {
-    /// Not visible to the pusher (existence-hiding: no name disclosed).
-    Excluded,
-    /// Visible; the raw (child-wins) plan and the pusher's access, awaiting the
-    /// per-call update computation and per-path derivation.
-    Planned(Box<PlannedInstance>),
-}
-
 /// A visible instance's phase-1 state.
 struct PlannedInstance {
     /// The instance document as loaded.
@@ -470,11 +536,16 @@ struct PlannedInstance {
     name: Option<String>,
     /// The pusher's resolved access on the instance.
     access: Access,
-    /// The raw computed plan: child-wins bands plus the CURRENT conflict set.
+    /// The computed plan: child-wins bands plus the CURRENT conflict set,
+    /// already filtered to the conflicts this pusher may see
+    /// (`visible_pull_plan` against BOTH the instance and the template).
     plan: MergePlan,
 }
 
-/// Phase 1 of a push: load every same-world instance and compute its raw plan.
+/// Phase 1 of a push: load every same-world instance and compute its plan.
+/// An instance the pusher cannot READ is OMITTED from the outcome entirely —
+/// true existence-hiding parity with redaction (the pusher's store never
+/// contained it), so the reply carries no entry, name, or count for it.
 /// `MergeErrorKind::CorruptBase` aborts the WHOLE intent here, before anything is
 /// written — a corrupt snapshot means the instance needs human attention, and a
 /// partial push across its siblings would make that state harder to reason about.
@@ -484,7 +555,8 @@ async fn plan_push(
     ctx: &PermissionContext,
     inputs: &AuthInputs,
     template: &Document,
-) -> Result<Vec<(Uuid, PushSlot)>, MergeErrorKind> {
+    template_access: &Access,
+) -> Result<Vec<(Uuid, PlannedInstance)>, MergeErrorKind> {
     let instances = repo
         .instances_of(room.world_id, template.id)
         .await
@@ -492,14 +564,13 @@ async fn plan_push(
             tracing::warn!(error = %e, "merge: instance query failed");
             MergeErrorKind::Internal
         })?;
-    let mut slots = Vec::with_capacity(instances.len());
+    let mut planned = Vec::with_capacity(instances.len());
     for doc in instances {
         let access = inputs
             .access(repo, ctx, &doc)
             .await
             .map_err(|_| MergeErrorKind::Internal)?;
         if !access.has(cap::READ) {
-            slots.push((doc.id, PushSlot::Excluded));
             continue;
         }
         let name = match filter_properties(&doc, &access) {
@@ -509,54 +580,46 @@ async fn plan_push(
                 None
             }
         };
-        let plan = compute_pull(&doc, template).map_err(|_| MergeErrorKind::CorruptBase)?;
-        slots.push((
+        let plan = visible_pull_plan(&doc, &access, template, template_access)?;
+        planned.push((
             doc.id,
-            PushSlot::Planned(Box::new(PlannedInstance {
+            PlannedInstance {
                 doc,
                 name,
                 access,
                 plan,
-            })),
+            },
         ));
     }
-    Ok(slots)
+    Ok(planned)
 }
 
-/// The push outcome a phase-1 slot set describes WITHOUT writing anything:
+/// The push outcome a phase-1 instance set describes WITHOUT writing anything:
 /// `Conflicts` for a conflicted instance, `Applied` for a clean one ("currently
-/// conflict-free" — `MergePullStatus`'s contract covers the uncommitted reading),
-/// `Excluded` for an invisible one. A VISIBLE instance whose child-wins update
-/// fails the per-path derivation is `Excluded` here too, mirroring the client
-/// flow, which kept such instances out of the conflict modal entirely.
+/// conflict-free" — `MergePullStatus`'s contract covers the uncommitted reading).
+/// A VISIBLE instance whose child-wins update fails the per-path derivation is
+/// `Excluded`, mirroring the client flow, which kept such instances out of the
+/// conflict modal entirely.
 fn push_outcome(
     template_id: Uuid,
-    slots: &[(Uuid, PushSlot)],
+    instances: &[(Uuid, PlannedInstance)],
     inputs: &AuthInputs,
     template: &Document,
 ) -> MergeOutcome {
-    let instances = slots
+    let instances = instances
         .iter()
-        .map(|(id, slot)| {
-            let (name, status) = match slot {
-                PushSlot::Excluded => (None, PushInstanceStatus::Excluded),
-                PushSlot::Planned(p) => {
-                    let update = plan_to_update(&p.doc, template, &p.plan.merged_bands);
-                    if !update_authorized(&update, &p.access, inputs) {
-                        (p.name.clone(), PushInstanceStatus::Excluded)
-                    } else if p.plan.conflicts.is_empty() {
-                        (p.name.clone(), PushInstanceStatus::Applied)
-                    } else {
-                        (
-                            p.name.clone(),
-                            PushInstanceStatus::Conflicts(p.plan.conflicts.clone()),
-                        )
-                    }
-                }
+        .map(|(id, p)| {
+            let update = plan_to_update(&p.doc, template, &p.plan.merged_bands);
+            let status = if !update_authorized(&update, &p.access, inputs) {
+                PushInstanceStatus::Excluded
+            } else if p.plan.conflicts.is_empty() {
+                PushInstanceStatus::Applied
+            } else {
+                PushInstanceStatus::Conflicts(p.plan.conflicts.clone())
             };
             PushInstanceOutcome {
                 instance_id: *id,
-                name,
+                name: p.name.clone(),
                 status,
             }
         })
@@ -567,15 +630,14 @@ fn push_outcome(
     }
 }
 
-/// Validate a resolutions MAP against the phase-1 slots: every key must name a
+/// Validate a resolutions MAP against the phase-1 set: every key must name a
 /// visible push target, and every path a current conflict of that instance.
 fn check_push_resolutions(
     resolutions: &BTreeMap<Uuid, Vec<String>>,
-    slots: &[(Uuid, PushSlot)],
+    instances: &[(Uuid, PlannedInstance)],
 ) -> Result<(), ResolutionsRejection> {
     for (id, paths) in resolutions {
-        let Some((_, PushSlot::Planned(p))) = slots.iter().find(|(slot_id, _)| slot_id == id)
-        else {
+        let Some((_, p)) = instances.iter().find(|(slot_id, _)| slot_id == id) else {
             return Err(ResolutionsRejection::Unknown);
         };
         check_resolutions(&paths.iter().cloned().collect(), &p.plan.conflicts)?;
@@ -585,9 +647,11 @@ fn check_push_resolutions(
 
 /// `MergePush`: push the template into every same-world instance of it — the
 /// pusher must be the template's effective owner (or GM) holding READ plus
-/// `/embedded` write on it; each instance must be visible to the pusher and pass
-/// the per-path derivation against the actual computed Update, else it reports
-/// `Excluded` (which never discloses not-visible vs not-writable).
+/// `/embedded` write on it; each instance must be VISIBLE to the pusher (an
+/// invisible one is omitted from the outcome entirely — existence-hiding
+/// parity with redaction, not an `Excluded` entry) and pass the per-path
+/// derivation against the actual computed Update, else it reports `Excluded`
+/// (visible but not writable — the one thing `Excluded` means).
 async fn push(
     room: &Room,
     repo: &dyn Repository,
@@ -625,21 +689,25 @@ async fn push(
     // Owner-or-GM of the TEMPLATE plus `/embedded` writability on it — the one
     // capability every push can require (merged embedded collections add/remove
     // children on instances), read off the shared `required_cap_for_path`
-    // predicate rather than restated.
-    let embedded_cap = required_cap_for_path("/embedded").expect("/embedded maps to a capability");
+    // predicate rather than restated. The mapping is a constant structural
+    // invariant, but a request path fails closed (`Internal`), never panics.
+    let Some(embedded_cap) = required_cap_for_path("/embedded") else {
+        tracing::warn!("merge: `/embedded` maps to no capability");
+        return merge_error(request_id, MergeErrorKind::Internal);
+    };
     if !(template_access.is_owner
         && template_access.has(cap::READ)
         && template_access.has(embedded_cap))
     {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
-    let slots = match plan_push(room, repo, ctx, &inputs, &template).await {
+    let instances = match plan_push(room, repo, ctx, &inputs, &template, &template_access).await {
         Ok(s) => s,
         Err(reason) => return merge_error(request_id, reason),
     };
     if let Some(map) = &resolutions {
-        if let Err(rejection) = check_push_resolutions(map, &slots) {
-            let fresh = push_outcome(template_id, &slots, &inputs, &template);
+        if let Err(rejection) = check_push_resolutions(map, &instances) {
+            let fresh = push_outcome(template_id, &instances, &inputs, &template);
             let reason = match rejection {
                 ResolutionsRejection::Unknown => MergeErrorKind::UnknownResolution(fresh),
                 ResolutionsRejection::Stale => MergeErrorKind::StaleResolutions(fresh),
@@ -650,16 +718,8 @@ async fn push(
     // Phase 2: per instance, compute THIS call's update (child-wins on a first
     // call, resolutions folded in on a second), derive authorization against it,
     // then commit — or, on a first call with conflicts, report without writing.
-    let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(slots.len());
-    for (id, slot) in slots {
-        let PushSlot::Planned(p) = slot else {
-            outcomes.push(PushInstanceOutcome {
-                instance_id: id,
-                name: None,
-                status: PushInstanceStatus::Excluded,
-            });
-            continue;
-        };
+    let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(instances.len());
+    for (id, p) in instances {
         let theirs = resolutions
             .as_ref()
             .and_then(|m| m.get(&id))
@@ -705,8 +765,9 @@ async fn push(
                     let inputs = AuthInputs::load(repo, room.world_id)
                         .await
                         .map_err(|_| MergeErrorKind::Internal)?;
-                    let slots = plan_push(room, repo, ctx, &inputs, &template).await?;
-                    Ok(push_outcome(template_id, &slots, &inputs, &template))
+                    let instances =
+                        plan_push(room, repo, ctx, &inputs, &template, &template_access).await?;
+                    Ok(push_outcome(template_id, &instances, &inputs, &template))
                 })
                 .await;
             }

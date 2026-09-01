@@ -223,3 +223,15 @@ fn clear_base_tree(doc: &mut Document) {
         }
     }
 }
+
+/// Whether any embedded descendant of `doc` carries a `base`, at any depth —
+/// the post-image shape `apply_intent`'s Update arm rejects for client
+/// origins (an embedded child never carries one; see `derive_create_base`).
+/// Server merge emission satisfies this by construction: `restamp_subtree`
+/// and the merge's own carry-over never put a `base` on a merged child.
+pub fn embedded_carries_base(doc: &Document) -> bool {
+    doc.embedded
+        .values()
+        .flatten()
+        .any(|c| c.base.is_some() || embedded_carries_base(c))
+}
