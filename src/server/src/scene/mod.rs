@@ -584,20 +584,6 @@ fn engine_geometry_visible_to_world(doc: &Document) -> bool {
     engine_geometry_visible_to(doc, &access)
 }
 
-/// FNV-1a over the region document's serialized `engine` band. Identifies the document version
-/// a `regions::TriggerRegion` row was derived from: equal engines hash equally (serde_json's
-/// default key ordering is canonical), and a region edit yields a new hash. Identity only —
-/// never a security or secrecy decision.
-fn region_engine_hash(doc: &Document) -> u64 {
-    let text = doc.engine.as_ref().map(ToString::to_string).unwrap_or_default();
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in text.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
 /// Exact, order-independent key for a routing wall set — the third component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
@@ -1924,8 +1910,7 @@ impl SceneEcs {
     /// regions exactly as `move_exec` does; secrecy is enforced on the effect side (a
     /// not-visible-to-all region's notices are forced GM-only), never by filtering this table.
     /// Recomputed on demand from the same ECS entities `region_field` reads, so a region-doc
-    /// mutation applied through `apply_op` is reflected on the next call — the `engine_hash`
-    /// row component identifies which document version a row was derived from.
+    /// mutation applied through `apply_op` is reflected on the next call.
     ///
     /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
     /// Rows are sorted by region id so downstream effect application order is deterministic
@@ -1953,7 +1938,6 @@ impl SceneEcs {
             };
             out.push(regions::TriggerRegion {
                 region_id: doc.id,
-                engine_hash: region_engine_hash(doc),
                 visible_to_all: engine_geometry_visible_to_world(doc),
                 triggers: region_eng.triggers,
                 cells: cells.into_iter().collect(),

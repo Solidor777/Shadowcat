@@ -461,7 +461,9 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
           enabled: true,
           // Deep copy: the rail's list stays editable for the NEXT region, and a later
           // row edit must never mutate the doc this persist already handed out.
-          triggers: structuredClone(controller.regionTriggers),
+          // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
+          // array wraps its contents in is not cloneable.
+          triggers: $state.snapshot(controller.regionTriggers),
         };
         const doc = buildRegionDoc(ctx.world, scene.id, engine);
         if (controller.regionSecret) setRegionVisibility(doc, true);

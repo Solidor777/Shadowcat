@@ -547,6 +547,21 @@ pub struct Room {
     resync_floor_enforced_flag: bool,
 }
 
+/// One firing report: the token that entered, the scene it happened in, the cells it
+/// entered (`MoveOutcome::entered_cells` for a move, the new footprint cells for a
+/// placement), and the arrest stop position when the walk was region-arrested.
+pub(crate) struct TriggerReport {
+    /// The scene the entry happened in (derived from the token, never the request).
+    pub scene: Uuid,
+    /// The entering token.
+    pub token: Uuid,
+    /// The entered cells: a move's deduped transition sequence, or a placement's
+    /// footprint cells at the new position.
+    pub entered: Vec<(i32, i32)>,
+    /// The arrest stop position, `Some` only when the walk was region-arrested.
+    pub arrest_stop: Option<(f64, f64)>,
+}
+
 impl Room {
     /// A room seeded at `seed_seq` with a hydrated scene read-model.
     ///
@@ -1329,10 +1344,12 @@ impl Room {
         self.fire_region_triggers(
             repo,
             ctx,
-            token_scene,
-            token,
-            &outcome.entered_cells,
-            outcome.arrested.then_some(outcome.stop),
+            TriggerReport {
+                scene: token_scene,
+                token,
+                entered: outcome.entered_cells.clone(),
+                arrest_stop: outcome.arrested.then_some(outcome.stop),
+            },
             ts,
         )
         .await;
@@ -1430,12 +1447,16 @@ impl Room {
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
-        scene: Uuid,
-        token: Uuid,
-        entered: &[(i32, i32)],
-        arrest_stop: Option<(f64, f64)>,
+        report: TriggerReport,
         ts: i64,
     ) {
+        let TriggerReport {
+            scene,
+            token,
+            entered,
+            arrest_stop,
+        } = report;
+        let entered: &[(i32, i32)] = &entered;
         use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
         use crate::combat::transition::{resource as resource_transition, ResourceOp};
         use crate::combat::CombatError;
@@ -1501,7 +1522,8 @@ impl Room {
         let needs_conditions = fired.iter().any(|(_, t)| {
             matches!(
                 t.effect,
-                eng::TriggerEffect::ConditionAdd { .. } | eng::TriggerEffect::ConditionRemove { .. }
+                eng::TriggerEffect::ConditionAdd { .. }
+                    | eng::TriggerEffect::ConditionRemove { .. }
             )
         });
         if needs_conditions {
@@ -1528,11 +1550,11 @@ impl Room {
                 let mut dirty = false;
                 for (_, trigger) in &fired {
                     match &trigger.effect {
-                        eng::TriggerEffect::ConditionAdd { condition } => {
-                            if !conditions.contains(condition) {
-                                conditions.push(condition.clone());
-                                dirty = true;
-                            }
+                        eng::TriggerEffect::ConditionAdd { condition }
+                            if !conditions.contains(condition) =>
+                        {
+                            conditions.push(condition.clone());
+                            dirty = true;
                         }
                         eng::TriggerEffect::ConditionRemove { condition } => {
                             let before = conditions.len();
@@ -1571,7 +1593,8 @@ impl Room {
                 Some((combat_id, _)) => {
                     match crate::combat::load_snapshot(repo, self.world_id, combat_id).await {
                         Err(_) => {
-                            failures.push("the scene's active combat could not be loaded".to_string());
+                            failures
+                                .push("the scene's active combat could not be loaded".to_string());
                         }
                         Ok(snap) => {
                             let combatant = snap
@@ -1768,8 +1791,8 @@ impl Room {
         tokens: Vec<Uuid>,
         ts: i64,
     ) {
-        // (token, scene, footprint cells), resolved post-commit under one read guard.
-        let mut reports: Vec<(Uuid, Uuid, Vec<(i32, i32)>)> = Vec::new();
+        // One report per candidate token, resolved post-commit under one read guard.
+        let mut reports: Vec<TriggerReport> = Vec::new();
         {
             let ecs = self.scene.read().await;
             let mut seen = std::collections::HashSet::new();
@@ -1787,13 +1810,18 @@ impl Room {
                     continue;
                 };
                 let grid = ecs.resolve_grid_shape(scene, cell);
-                let cells = grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell);
-                reports.push((token, scene, cells));
+                let cells =
+                    grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell);
+                reports.push(TriggerReport {
+                    scene,
+                    token,
+                    entered: cells,
+                    arrest_stop: None,
+                });
             }
         }
-        for (token, scene, cells) in reports {
-            self.fire_region_triggers(repo, ctx, scene, token, &cells, None, ts)
-                .await;
+        for report in reports {
+            self.fire_region_triggers(repo, ctx, report, ts).await;
         }
     }
 

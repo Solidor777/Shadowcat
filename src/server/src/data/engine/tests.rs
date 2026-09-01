@@ -1177,7 +1177,10 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
         ]
     });
     let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
-    assert_eq!(n, v, "a valid trigger payload must round-trip byte-identically");
+    assert_eq!(
+        n, v,
+        "a valid trigger payload must round-trip byte-identically"
+    );
 }
 
 #[test]
@@ -1190,16 +1193,44 @@ fn region_trigger_validation_rejects_malformed_payloads() {
         })
     };
     // An empty condition/resource id.
-    assert!(validate_engine("region", Some(&base(json!({ "type": "condition_add", "condition": "" })))).is_err());
-    assert!(validate_engine("region", Some(&base(json!({ "type": "resource_delta", "resource": "", "amount": 1.0 })))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(json!({ "type": "condition_add", "condition": "" })))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "resource_delta", "resource": "", "amount": 1.0 })
+        ))
+    )
+    .is_err());
     // An over-cap id (`MAX_TRIGGER_ID_CHARS`).
     let long_id = "x".repeat(MAX_TRIGGER_ID_CHARS + 1);
-    assert!(validate_engine("region", Some(&base(json!({ "type": "condition_add", "condition": long_id })))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "condition_add", "condition": long_id })
+        ))
+    )
+    .is_err());
     // An amount that is not formula source.
-    assert!(validate_engine("region", Some(&base(json!({ "type": "resource_delta", "resource": "hp", "amount": "1 +" })))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "resource_delta", "resource": "hp", "amount": "1 +" })
+        ))
+    )
+    .is_err());
     // An over-cap notice text (`chat::MAX_MESSAGE_CHARS`).
     let long_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
-    assert!(validate_engine("region", Some(&base(json!({ "type": "chat_notice", "text": long_text, "audience": "public" })))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "chat_notice", "text": long_text, "audience": "public" })
+        ))
+    )
+    .is_err());
     // An unknown effect type, event, audience, or trigger field — serde closes these.
     assert!(validate_engine("region", Some(&base(json!({ "type": "explode" })))).is_err());
     assert!(validate_engine("region", Some(&json!({
@@ -1207,7 +1238,13 @@ fn region_trigger_validation_rejects_malformed_payloads() {
         "behavior": "terrain", "cost": 1.0, "enabled": true,
         "triggers": [ { "on": "leave", "effect": { "type": "condition_add", "condition": "x" } } ]
     }))).is_err());
-    assert!(validate_engine("region", Some(&base(json!({ "type": "chat_notice", "text": "t", "audience": "everyone" })))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "chat_notice", "text": "t", "audience": "everyone" })
+        ))
+    )
+    .is_err());
     assert!(validate_engine("region", Some(&json!({
         "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
         "behavior": "terrain", "cost": 1.0, "enabled": true,
@@ -1215,5 +1252,11 @@ fn region_trigger_validation_rejects_malformed_payloads() {
     }))).is_err());
     // The same payloads at exactly the cap are admitted.
     let cap_id = "x".repeat(MAX_TRIGGER_ID_CHARS);
-    assert!(validate_engine("region", Some(&base(json!({ "type": "condition_add", "condition": cap_id })))).is_ok());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "condition_add", "condition": cap_id })
+        ))
+    )
+    .is_ok());
 }

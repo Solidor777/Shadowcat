@@ -359,14 +359,9 @@ fn parse_region_shape_malformed_is_none() {
 // -----------------------------------------------------------------------
 
 /// A `TriggerRegion` fixture covering `cells` with `triggers`, id derived from `id`.
-fn trigger_region(
-    id: u128,
-    cells: &[(i32, i32)],
-    triggers: Vec<RegionTrigger>,
-) -> TriggerRegion {
+fn trigger_region(id: u128, cells: &[(i32, i32)], triggers: Vec<RegionTrigger>) -> TriggerRegion {
     TriggerRegion {
         region_id: Uuid::from_u128(id),
-        engine_hash: 0,
         visible_to_all: true,
         triggers,
         cells: cells.iter().copied().collect(),
@@ -400,11 +395,7 @@ fn fired_triggers_enter_matches_only_covered_entered_cells() {
 
 #[test]
 fn fired_triggers_arrest_fires_only_on_arrest_inside_the_region() {
-    let regions = vec![trigger_region(
-        1,
-        &[(2, 0)],
-        vec![on(TriggerEvent::Arrest)],
-    )];
+    let regions = vec![trigger_region(1, &[(2, 0)], vec![on(TriggerEvent::Arrest)])];
     // Entering the region without an arrest report does not fire an arrest trigger.
     assert!(fired_triggers(&regions, &[(2, 0)], None).is_empty());
     // An arrest outside the region does not fire it either.
@@ -424,5 +415,9 @@ fn fired_triggers_fires_each_trigger_once_per_report() {
         vec![on(TriggerEvent::Enter), on(TriggerEvent::Enter)],
     )];
     let fired = fired_triggers(&regions, &[(1, 0), (2, 0)], None);
-    assert_eq!(fired.len(), 2, "one firing per authored trigger, not per cell");
+    assert_eq!(
+        fired.len(),
+        2,
+        "one firing per authored trigger, not per cell"
+    );
 }

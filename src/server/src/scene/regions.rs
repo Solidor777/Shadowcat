@@ -268,9 +268,11 @@ impl RegionField {
         })
     }
 
-    /// Read-only iteration over the composed per-cell effects. The parity assertion between
-    /// this field and the `TriggerRegion` identity rows needs to compare coverage sets, which
-    /// the single-cell predicates above cannot express; never a mutation seam.
+    /// Read-only iteration over the composed per-cell effects, existing for the parity
+    /// assertion between this field and the `TriggerRegion` identity rows — comparing
+    /// coverage sets is what the single-cell predicates above cannot express; never a
+    /// mutation seam.
+    #[cfg(test)]
     pub(crate) fn iter_cells(&self) -> impl Iterator<Item = (Cell, RegionEffect)> + '_ {
         self.cells.iter().map(|(c, e)| (*c, *e))
     }
@@ -352,10 +354,6 @@ pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Op
 pub(crate) struct TriggerRegion {
     /// The region document's id.
     pub region_id: Uuid,
-    /// Hash of the region document's serialized `engine` band — identifies
-    /// the document version this row was derived from, so a consumer can
-    /// tell two derivations apart (a region edit yields a new hash).
-    pub engine_hash: u64,
     /// World-default visibility of the region's `/engine` band
     /// (`engine_geometry_visible_to_world`). `false` forces every
     /// `ChatNotice` this region fires to `NoticeAudience::GmOnly`, since a
