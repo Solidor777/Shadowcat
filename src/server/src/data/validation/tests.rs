@@ -364,7 +364,7 @@ fn validate_engine_tree_drops_unknown_keys_smuggled_into_a_tagged_enum() {
     );
 }
 
-// --- base: independent size cap + engine-validation exemption ---
+// --- base: independent size cap + the `MergeBase` walk ---
 
 #[test]
 fn oversized_base_is_rejected() {
@@ -383,24 +383,285 @@ fn small_base_passes() {
     assert!(validate_system_size(&doc).is_ok());
 }
 
+/// A complete, valid `MergeBase` value for a wall-engine document; the
+/// embedded collection carries one record keyed by `child_source_id`. The
+/// root engine is the NORMALIZED `WallEngine` form (the optional `blocks_*`
+/// fields materialize as explicit nulls through `normalize_engine_opt`'s
+/// re-serialization), so a valid snapshot survives the walk untouched.
+fn valid_wall_base(child_source_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": "Old",
+        "engine": {
+            "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
+            "blocksSight": null, "blocksLight": null, "blocksMove": null
+        },
+        "system": { "hp": 1 },
+        "embedded": {
+            "items": [{
+                "sourceId": child_source_id,
+                "name": "Child",
+                "engine": null,
+                "system": {},
+                "embedded": {}
+            }]
+        }
+    })
+}
+
 #[test]
-fn base_holding_stale_engine_is_exempt_from_engine_validation() {
-    // base is a historical snapshot that may predate the current engine schema; it must
-    // store even when it carries an engine shape that is invalid for this doc_type.
+fn validate_engine_tree_accepts_and_preserves_a_valid_base() {
     let mut doc = doc_with_engine(valid_wall_engine());
-    doc.base = Some(serde_json::json!({
-        "name": "Old", "engine": { "seg": { "x1": "not-a-number" } },
-        "system": {}, "embedded": {}
+    let base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    doc.base = Some(base.clone());
+    validate_engine_tree(&mut doc).unwrap();
+    assert_eq!(doc.base.unwrap(), base, "a valid base round-trips verbatim");
+}
+
+#[test]
+fn validate_engine_tree_normalizes_the_root_base_engine_band() {
+    // The base walk runs the same carry-forward normalization as the live
+    // band: an ingress-absent optional field (`faction`) must persist as an
+    // explicit `null` inside the snapshot too.
+    let mut doc = doc_with_system(serde_json::json!({}));
+    doc.doc_type = "actor".into();
+    doc.engine = Some(serde_json::json!({
+        "displayName": "Goblin",
+        "visual": { "kind": "image", "asset": "a.png" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": null,
+        "conditions": [],
+        "prototype": true
     }));
+    doc.base = Some(serde_json::json!({
+        "name": "Old",
+        "engine": {
+            "displayName": "Goblin",
+            "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 },
+            "shape": "square",
+            "conditions": [],
+            "prototype": true
+            // "faction" intentionally omitted
+        },
+        "system": {},
+        "embedded": {}
+    }));
+    validate_engine_tree(&mut doc).unwrap();
+    let base = doc.base.unwrap();
+    assert_eq!(base["engine"]["faction"], serde_json::Value::Null);
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_non_object_base() {
+    let mut doc = doc_with_engine(valid_wall_engine());
+    doc.base = Some(serde_json::json!(42));
+    assert!(matches!(
+        validate_engine_tree(&mut doc),
+        Err(DataError::SchemaViolation { .. })
+    ));
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_base_missing_a_band_key() {
+    // Absent keys must be REJECTED, never coalesced by serde defaults: a
+    // coalesced record reads as unchanged against a null band, which would
+    // let a merge silently drop a template-deleted child.
+    for missing in ["name", "engine", "system", "embedded"] {
+        let mut doc = doc_with_engine(valid_wall_engine());
+        let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+        base.as_object_mut().unwrap().remove(missing);
+        doc.base = Some(base);
+        assert!(
+            matches!(
+                validate_engine_tree(&mut doc),
+                Err(DataError::SchemaViolation { .. })
+            ),
+            "a base missing '{missing}' must be rejected"
+        );
+    }
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_base_with_an_unknown_key() {
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base.as_object_mut()
+        .unwrap()
+        .insert("smuggled".into(), serde_json::json!(1));
+    doc.base = Some(base);
+    assert!(matches!(
+        validate_engine_tree(&mut doc),
+        Err(DataError::SchemaViolation { .. })
+    ));
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_base_with_wrong_typed_members() {
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base["name"] = serde_json::json!(7);
+    doc.base = Some(base.clone());
     assert!(
-        validate_engine_tree(&mut doc).is_ok(),
-        "base must not be walked by validate_engine_tree"
+        matches!(
+            validate_engine_tree(&mut doc),
+            Err(DataError::SchemaViolation { .. })
+        ),
+        "a non-string non-null name must be rejected"
     );
-    // And the stale base survives untouched.
+
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = base;
+    base["name"] = serde_json::json!("Old");
+    base["embedded"] = serde_json::json!([]);
+    doc.base = Some(base);
+    assert!(
+        matches!(
+            validate_engine_tree(&mut doc),
+            Err(DataError::SchemaViolation { .. })
+        ),
+        "a non-object embedded map must be rejected"
+    );
+}
+
+#[test]
+fn validate_engine_tree_rejects_an_embedded_base_record_missing_a_key() {
+    // The data-losing direction: an `EmbeddedBaseChild` record absent any of
+    // its keys must not be admitted.
+    for missing in ["sourceId", "name", "engine", "system", "embedded"] {
+        let mut doc = doc_with_engine(valid_wall_engine());
+        let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+        base["embedded"]["items"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(missing);
+        doc.base = Some(base);
+        assert!(
+            matches!(
+                validate_engine_tree(&mut doc),
+                Err(DataError::SchemaViolation { .. })
+            ),
+            "an embedded base record missing '{missing}' must be rejected"
+        );
+    }
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_non_string_source_id() {
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base["embedded"]["items"][0]["sourceId"] = serde_json::json!(7);
+    doc.base = Some(base);
+    assert!(matches!(
+        validate_engine_tree(&mut doc),
+        Err(DataError::SchemaViolation { .. })
+    ));
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_stale_schema_root_base_engine() {
+    // The walk is not a pass-through: a snapshot whose root engine band is
+    // invalid under the doc's CURRENT schema is rejected at ingest/rewrite.
+    // (A legacy row carrying one still READS — validation is ingest-time
+    // only; the read-path half is pinned in the repository tests.)
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base["engine"] = serde_json::json!({ "seg": { "x1": "not-a-number" } });
+    doc.base = Some(base);
+    assert!(matches!(
+        validate_engine_tree(&mut doc),
+        Err(DataError::BadEngine(_))
+    ));
+}
+
+#[test]
+fn validate_engine_tree_normalizes_a_correlated_embedded_child_engine() {
+    // An embedded base record correlated to a LIVE child (by `sourceId` ==
+    // the child's `source.id`) is normalized under the CHILD's doc_type.
+    let child_id = Uuid::from_u128(201);
+    let template_child_id = Uuid::from_u128(202);
+    let mut child = doc_with_system(serde_json::json!({}));
+    child.id = child_id;
+    child.source = Some(crate::data::document::Source {
+        id: template_child_id,
+        pack: None,
+        version: 1,
+    });
+    child.engine = Some(serde_json::json!({
+        "displayName": "Goblin",
+        "visual": { "kind": "image", "asset": "a.png" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": null,
+        "conditions": [],
+        "prototype": true
+    }));
+    let mut parent = doc_with_engine(valid_wall_engine());
+    parent.embedded.insert("items".into(), vec![child]);
+    parent.base = Some(serde_json::json!({
+        "name": "Old",
+        "engine": { "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } },
+        "system": {},
+        "embedded": {
+            "items": [{
+                "sourceId": template_child_id.to_string(),
+                "name": "Child",
+                "engine": {
+                    "displayName": "Goblin",
+                    "visual": { "kind": "image", "asset": "a.png" },
+                    "size": { "w": 1.0, "h": 1.0 },
+                    "shape": "square",
+                    "conditions": [],
+                    "prototype": true
+                    // "faction" intentionally omitted
+                },
+                "system": {},
+                "embedded": {}
+            }]
+        }
+    }));
+    validate_engine_tree(&mut parent).unwrap();
+    let base = parent.base.unwrap();
     assert_eq!(
-        doc.base.unwrap()["engine"]["seg"]["x1"],
-        serde_json::json!("not-a-number")
+        base["embedded"]["items"][0]["engine"]["faction"],
+        serde_json::Value::Null,
+        "the correlated record's engine is normalized under the live child's doc_type"
     );
+}
+
+#[test]
+fn validate_engine_tree_shape_checks_but_does_not_normalize_a_historical_record() {
+    // No live counterpart for the record's `sourceId`: the record is
+    // historical (the template child is gone), so it is shape-checked only —
+    // its engine band must survive untouched even when no doc_type could
+    // normalize it.
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000ff");
+    base["embedded"]["items"][0]["engine"] = serde_json::json!({ "not": "any-engine-shape" });
+    doc.base = Some(base.clone());
+    validate_engine_tree(&mut doc).unwrap();
+    assert_eq!(doc.base.unwrap(), base);
+}
+
+#[test]
+fn validate_engine_tree_recurses_into_nested_base_records() {
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base["embedded"]["items"][0]["embedded"] = serde_json::json!({
+        "nested": [{
+            "sourceId": "00000000-0000-0000-0000-0000000000c2",
+            "name": "Grandchild"
+            // remaining keys intentionally absent: must be rejected at depth
+        }]
+    });
+    doc.base = Some(base);
+    let err = validate_engine_tree(&mut doc).unwrap_err();
+    match err {
+        DataError::SchemaViolation { pointer, .. } => {
+            assert_eq!(pointer, "/base/embedded/items/0/embedded/nested/0");
+        }
+        other => panic!("expected SchemaViolation, got {other:?}"),
+    }
 }
 
 // --- validate_value_against_schema: accept/reject matrix ---

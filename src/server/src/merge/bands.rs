@@ -34,7 +34,12 @@ pub struct MergeBands {
 /// correlation key (the child's `source.id` at sync time — the template
 /// child's id). Recurses (finite-depth embedding). The stored JSON spells
 /// the key `sourceId` (camelCase), the shape every existing snapshot was
-/// written in. Mirrors the client `EmbeddedBaseChild`.
+/// written in. The serde defaults exist so a pre-validation legacy row
+/// still parses on READ; at ingest `validate_engine_tree` REJECTS a record
+/// with an absent key rather than letting the defaults coalesce it (a
+/// coalesced record reads as unchanged against a `null` band — the
+/// data-losing direction for a template-deleted child). Mirrors the client
+/// `EmbeddedBaseChild`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
@@ -61,9 +66,11 @@ pub struct EmbeddedBaseChild {
 
 /// The merge snapshot stored at `Document.base`: top-level bands plus
 /// recursive embedded content keyed for provenance correlation. Every field
-/// defaults so a partial or historical record still parses (a missing band
+/// defaults so a historical record still parses on READ (a missing band
 /// reads as `null`/empty, exactly what the client engine's `?? null`
-/// coalescing produces). Mirrors the client `MergeBase`.
+/// coalescing produces); the write path never admits such a record —
+/// `validate_engine_tree` requires every key present at ingest. Mirrors the
+/// client `MergeBase`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct MergeBase {
@@ -183,4 +190,36 @@ pub(crate) fn bands_merge_base(d: &Document) -> MergeBase {
 /// instances point to). Twin of the client `snapshotBase`.
 pub fn snapshot_base(doc: &Document) -> MergeBase {
     bands_merge_base(doc)
+}
+
+/// The Create-write `base` rule: `base` is server-owned, so the write path
+/// DERIVES it rather than trusting the submitted value — a stamped instance
+/// (`source` set) snapshots its OWN bands (`snapshot_base`); any other
+/// document stores no base. Any client-supplied `base` is discarded, and an
+/// embedded child never carries one (a submitted one is cleared recursively).
+/// `apply_intent`'s Create branch calls this BEFORE validation, so the
+/// derived value is what `validate_engine_tree` shape-checks and normalizes
+/// and what gets stored, broadcast and logged.
+pub fn derive_create_base(doc: &mut Document) {
+    let derived = doc
+        .source
+        .as_ref()
+        .map(|_| serde_json::to_value(snapshot_base(doc)).expect("MergeBase serializes to JSON"));
+    doc.base = derived;
+    for children in doc.embedded.values_mut() {
+        for child in children {
+            clear_base_tree(child);
+        }
+    }
+}
+
+/// `derive_create_base`'s recursive half: an embedded child never carries
+/// `base`, at any depth.
+fn clear_base_tree(doc: &mut Document) {
+    doc.base = None;
+    for children in doc.embedded.values_mut() {
+        for child in children {
+            clear_base_tree(child);
+        }
+    }
 }

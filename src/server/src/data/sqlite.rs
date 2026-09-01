@@ -3128,6 +3128,18 @@ impl Repository for SqliteRepository {
             match op {
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
+                    // `base` is server-owned: derive it from the document's
+                    // OWN bands BEFORE any validation runs, so the derived
+                    // value is what gets validated, normalized, stored,
+                    // broadcast and logged — a stamped instance (`source`
+                    // set) snapshots itself, any other document stores no
+                    // base, and embedded children never carry one. Any
+                    // client-supplied `base` is discarded here.
+                    // `apply_command` (the trusted undo/replay substrate)
+                    // deliberately does NOT re-derive: it applies the
+                    // already-derived logged op verbatim, and every
+                    // production Create reaches storage through this arm.
+                    crate::merge::bands::derive_create_base(doc);
                     // A combatant's stored resource numbers derive from actor
                     // formulas that may read hidden leaves, so their egress
                     // defaults to the trusted tier: stamp the override when
@@ -3493,41 +3505,61 @@ impl Repository for SqliteRepository {
                         // (`permission::required_cap_for_path`): an
                         // immutable envelope field (id, scope, source, ...) maps
                         // to no capability and is rejected for everyone.
-                        // /system, /engine, /name, /base -> write_fields;
+                        // /system, /engine, /name -> write_fields;
                         // /embedded -> manage_embedded; /permissions AND /owner
                         // -> edit_permissions. /owner is NOT immutable — it is
                         // an access-control field, writable by a GM (or an
                         // explicit edit_permissions grant) but never by an owner,
                         // since the DocRole::Owner floor excludes that cap.
-                        let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
+                        // `/base` maps to no capability too: it is server-owned
+                        // (`permission::WRITABLE_BANDS`), derived at Create and
+                        // refreshed by server merge writes only.
+                        let need = required_cap_for_path(&ch.path);
+                        // The one server-owned field write through this gate: a
+                        // merge handler's whole-band `/base` refresh under
+                        // `WriteOrigin::TemplateMerge`. The handler already
+                        // derived authorization against the computed Update, so
+                        // the capability mapping does not apply to it — OCC and
+                        // every structural check below still run. `/base/...`
+                        // sub-paths stay rejected for every origin: merge
+                        // emission is whole-band only
+                        // (`merge::plan::plan_to_update`).
+                        let merge_base_refresh = need.is_none()
+                            && origin == WriteOrigin::TemplateMerge
+                            && ch.path == "/base";
                         // A capability-skipping origin (`WriteOrigin::
                         // skips_capability_gates`) skips only the
                         // actor-holds-`need` test below, never
-                        // `required_cap_for_path`'s mapping above: an immutable
-                        // envelope path (`None`) is still rejected for every
-                        // origin, those included.
-                        if !origin.skips_capability_gates() && !access.has(need) {
-                            // A `ServerMessageRevision` write to a message doc may
-                            // ALSO write exactly `/permissions/property_overrides`
-                            // (never any other `/permissions` subpath) without
-                            // holding `cap::EDIT_PERMISSIONS` -- `handle_recalc_roll`
-                            // needs this to register a freshly-appended
-                            // `RecalcEntry`'s gm_only override pointer. Granting
-                            // `EDIT_PERMISSIONS` to this origin instead would ALSO
-                            // authorize rewriting `default`/`gm_role`/`users` -- the
-                            // message's own audience-enforcement fields -- which
-                            // this origin's `all: false` scoping deliberately
-                            // excludes (see the `ServerMessageRevision` access-grant
-                            // construction above). This exact-path admission widens
-                            // nothing for any other doc_type/origin/path.
-                            let is_recalc_override_write = is_server_message_revision
-                                && ch.path == "/permissions/property_overrides";
-                            if !is_recalc_override_write {
-                                tracing::debug!(
-                                    user = %ctx.user_id, path = %ch.path, capability = need,
-                                    "intent denied: missing capability"
-                                );
-                                return Err(DataError::Forbidden);
+                        // `required_cap_for_path`'s mapping: an immutable
+                        // envelope path (`None`, the merge refresh excepted) is
+                        // still rejected for every origin, those included.
+                        if need.is_none() && !merge_base_refresh {
+                            return Err(DataError::Forbidden);
+                        }
+                        if let Some(need) = need {
+                            if !origin.skips_capability_gates() && !access.has(need) {
+                                // A `ServerMessageRevision` write to a message doc may
+                                // ALSO write exactly `/permissions/property_overrides`
+                                // (never any other `/permissions` subpath) without
+                                // holding `cap::EDIT_PERMISSIONS` -- `handle_recalc_roll`
+                                // needs this to register a freshly-appended
+                                // `RecalcEntry`'s gm_only override pointer. Granting
+                                // `EDIT_PERMISSIONS` to this origin instead would ALSO
+                                // authorize rewriting `default`/`gm_role`/`users` -- the
+                                // message's own audience-enforcement fields -- which
+                                // this origin's `all: false` scoping deliberately
+                                // excludes (see the `ServerMessageRevision` access-grant
+                                // construction above). This exact-path admission widens
+                                // nothing for any other doc_type/origin/path.
+                                let is_recalc_override_write = is_server_message_revision
+                                    && ch.path == "/permissions/property_overrides";
+                                if !is_recalc_override_write {
+                                    tracing::debug!(
+                                        user = %ctx.user_id, path = %ch.path, capability = need,
+                                        "intent denied: missing capability"
+                                    );
+                                    return Err(DataError::Forbidden);
+                                }
                             }
                         }
                         // Declarative requirements are additive: a module/world

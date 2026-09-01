@@ -101,6 +101,8 @@ export function resolveCaps(
 /** The structural base capability for a field path (mirrors the server's
  * `data::permission::required_cap_for_path`). `/name` is a leaf (a display string,
  * not a container): `/name/...` does NOT match — there is no sub-path to write.
+ * `/base` maps to no capability (server-owned: derived at Create, refreshed by
+ * server merge writes) — same posture as `/source`.
  * Not exported — folded into `canWritePath`'s public surface.
  * @param path A JSON pointer into the document (e.g. `/system/hp`).
  * @returns The required base capability, or `null` if `path` maps to no known gate
@@ -109,6 +111,7 @@ export function resolveCaps(
  * ```
  * // internal helper; not part of the public API (see canWritePath for the public entry point)
  * baseCapForPath("/system/hp"); // "core:write_fields"
+ * baseCapForPath("/base"); // null — server-owned
  * ```
  */
 function baseCapForPath(path: string): string | null {
@@ -117,9 +120,7 @@ function baseCapForPath(path: string): string | null {
     path.startsWith("/system/") ||
     path === "/engine" ||
     path.startsWith("/engine/") ||
-    path === "/name" ||
-    path === "/base" ||
-    path.startsWith("/base/")
+    path === "/name"
   ) {
     return "core:write_fields";
   }

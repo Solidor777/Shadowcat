@@ -72,7 +72,10 @@ pub enum DataError {
     /// An `engine` band failed typed ingress validation.
     #[error("invalid engine body: {0}")]
     BadEngine(String),
-    /// A `system` band violated a declared tier-2 structural schema.
+    /// A structurally-checked band failed shape validation: a `system`
+    /// subtree against a declared tier-2 structural schema, or the
+    /// server-owned `base` snapshot against the `MergeBase` shape
+    /// (`validation::validate_engine_tree`'s base walk).
     #[error("schema violation at {pointer}: {reason}")]
     SchemaViolation {
         /// JSON pointer to the violating node.

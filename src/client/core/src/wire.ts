@@ -336,9 +336,11 @@ export type WireDocument = {
    * content version at stamp time), or `null` for a document with no source. Mirrors
    * `crate::data::document::Source`. */
   source: z.infer<typeof SourceSchema> | null;
-  /** Opaque mergeable-content snapshot at last sync (`MergeBase`). Present on any
-   * document stamped from a template (top-level or embedded, per `source`) — not restricted
-   * to embedded children; absent/undefined on a document that was never stamped. */
+  /** Server-owned merge snapshot at last sync (`MergeBase`, defined server-side in
+   * `merge::bands` and mirrored in generated TS). Derived by the server at Create and
+   * refreshed by server merge writes — not client-writable (`/base` maps to no
+   * capability, the same posture as `/source`). Present on any document stamped from a
+   * template (top-level, per `source`); embedded children never carry one. */
   base?: unknown;
   /** This document's OWN `/owner` field, or `null` if unowned. Gated by `EDIT_PERMISSIONS`
    * server-side (not the bare `Owner` role), so an owner can never reassign it. A linked

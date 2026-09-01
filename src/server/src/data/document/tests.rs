@@ -312,7 +312,9 @@ fn document_round_trips_base_snapshot_and_defaults_none() {
     assert!(doc.base.is_none());
 
     // A present base round-trips verbatim, even holding an engine shape that is
-    // invalid for the current doc_type (base is an opaque historical snapshot).
+    // invalid for the current doc_type: serde round-tripping is not validation —
+    // the `MergeBase` shape/engine checks are ingest-time, in
+    // `validate_engine_tree`, and a historical row must still deserialize.
     let mut with_base = sample_doc();
     with_base.base = Some(serde_json::json!({
         "name": "Old", "engine": { "not": "a-valid-token-engine" },

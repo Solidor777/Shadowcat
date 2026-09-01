@@ -25,16 +25,12 @@ fn name_requires_write_fields_but_is_a_leaf() {
 }
 
 #[test]
-fn base_whole_and_subpaths_require_write_fields() {
-    assert_eq!(required_cap_for_path("/base"), Some(cap::WRITE_FIELDS));
-    assert_eq!(
-        required_cap_for_path("/base/system/hp"),
-        Some(cap::WRITE_FIELDS)
-    );
-    assert_eq!(
-        required_cap_for_path("/base/embedded/actor/0/name"),
-        Some(cap::WRITE_FIELDS)
-    );
+fn base_is_server_owned_and_maps_to_no_capability() {
+    // `/base` left the client-writable set: the server derives it at Create and
+    // refreshes it via merge writes, so — like `/source` — no capability reaches it.
+    assert_eq!(required_cap_for_path("/base"), None);
+    assert_eq!(required_cap_for_path("/base/system/hp"), None);
+    assert_eq!(required_cap_for_path("/base/embedded/actor/0/name"), None);
 }
 
 #[test]
@@ -52,11 +48,12 @@ fn owner_requires_edit_permissions_and_is_a_leaf() {
 }
 
 #[test]
-fn the_write_fields_band_set_equals_the_redactable_band_set() {
+fn the_writable_band_set_is_the_redactable_set_minus_server_owned_base() {
     // The two functions are not per-string equal and must not be tested that way
     // (`/system/` is `WRITE_FIELDS` for one and unclassifiable for the other). What
-    // must hold is that they admit the same BAND SET, so a fifth band cannot become
-    // redactable without also becoming writable under the same capability.
+    // must hold is their BAND SETS: every client-writable band is redactable, and the
+    // redactable set carries exactly one extra band — `base`, redactable at egress but
+    // server-owned, so writable by no client capability.
     //
     // The universe is HARDCODED, never derived from `REDACTABLE_BANDS`: probing only
     // the constant's own contents would make the assertion definitionally true for any
@@ -87,13 +84,14 @@ fn the_write_fields_band_set_equals_the_redactable_band_set() {
         .filter(|f| redaction_target(&format!("/{f}")).is_some())
         .collect();
     assert_eq!(
-        writable, redactable,
-        "the WRITE_FIELDS set and the redactable set diverged"
+        writable,
+        ["name", "engine", "system"],
+        "the client-writable content band set changed"
     );
     assert_eq!(
-        writable,
+        redactable,
         ["name", "engine", "system", "base"],
-        "both sets changed together but are no longer the four content bands"
+        "the redactable content band set changed"
     );
 }
 

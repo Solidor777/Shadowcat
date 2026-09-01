@@ -22,7 +22,7 @@ use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 pub mod cap {
     /// See the document at all (whole-doc egress gate).
     pub const READ: &str = "core:read";
-    /// Write `/name`, `/engine/…`, `/system/…`, `/base` field paths.
+    /// Write `/name`, `/engine/…`, `/system/…` field paths.
     pub const WRITE_FIELDS: &str = "core:write_fields";
     /// Add/remove/replace embedded child documents.
     pub const MANAGE_EMBEDDED: &str = "core:manage_embedded";
@@ -254,10 +254,21 @@ pub fn mirror_current_snapshot<'a>(
 /// The four CONTENT bands of a `Document`. Redaction operates on these and never on
 /// the structural envelope (`id`, `scope`, `doc_type`, `schema_version`, `source`,
 /// `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`), whose
-/// fields are either required or carry access-control meaning. Exactly the set
-/// `required_cap_for_path` maps to `cap::WRITE_FIELDS` — which reads THIS array rather
-/// than re-spelling it, so the writable set and the redactable set cannot drift apart.
+/// fields are either required or carry access-control meaning. This is the
+/// EGRESS-side set; the client-writable subset is `WRITABLE_BANDS`. `base` is
+/// redactable (a snapshot may echo content hidden elsewhere in the document) but
+/// server-owned, so it is deliberately NOT in the write-side set.
 pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
+
+/// The CLIENT-writable content bands: exactly the set `required_cap_for_path`
+/// maps to `cap::WRITE_FIELDS`. A strict subset of `REDACTABLE_BANDS` — `base`
+/// left the client-writable set when the server took ownership of it (derived
+/// at Create by `merge::bands::derive_create_base`; refreshed whole-band by
+/// server merge writes under `WriteOrigin::TemplateMerge`), so `/base` maps to
+/// no capability, the same posture as `/source`. The two lists are stated
+/// separately so that asymmetry is a deliberate, visible decision rather than
+/// a shared constant both sides read for different meanings.
+const WRITABLE_BANDS: [&str; 3] = ["name", "engine", "system"];
 
 /// Whether a content band is a CONTAINER, i.e. has an interior a JSON pointer can descend
 /// into. `name` is a display string — a leaf — so `/name/...` names nothing at all. Both
@@ -268,20 +279,22 @@ fn band_has_interior(band: &str) -> bool {
     band != "name"
 }
 
-/// Whether `path` writes a content band whole, or writes into one.
+/// Whether `path` writes a CLIENT-writable content band whole, or writes into one.
 ///
-/// Derived from `REDACTABLE_BANDS`: the band SET is stated once, so adding a fifth band
-/// cannot make a path redactable without also making it writable under `cap::WRITE_FIELDS`.
-/// Only the set and the leaf rule are shared with `redaction_target`; the residual-segment
-/// rule is not, and must not be — an empty residual (`/system/`) is a writable path here and
-/// an unclassifiable override key there, because a `FieldChange` path and a
-/// `property_overrides` key are different fields on different structures with different
-/// validators.
+/// Derived from `WRITABLE_BANDS`, the write-side band list: `base` is absent by
+/// design — redactable at egress but server-owned, so a `/base` path maps to no
+/// capability and is rejected for every client origin. Only the leaf rule
+/// (`band_has_interior`) remains shared with `redaction_target`; the band set is
+/// not, and must not be — the redactable set legitimately contains one more band
+/// than the writable set. The residual-segment rule is likewise unshared: an
+/// empty residual (`/system/`) is a writable path here and an unclassifiable
+/// override key there, because a `FieldChange` path and a `property_overrides`
+/// key are different fields on different structures with different validators.
 fn writes_a_content_band(path: &str) -> bool {
     let Some(rest) = path.strip_prefix('/') else {
         return false;
     };
-    REDACTABLE_BANDS.iter().any(|band| {
+    WRITABLE_BANDS.iter().any(|band| {
         rest == *band
             || (band_has_interior(band)
                 && rest
@@ -300,6 +313,7 @@ fn writes_a_content_band(path: &str) -> bool {
 /// assert_eq!(required_cap_for_path("/system/hp"), Some(cap::WRITE_FIELDS));
 /// assert_eq!(required_cap_for_path("/permissions/default"), Some(cap::EDIT_PERMISSIONS));
 /// assert_eq!(required_cap_for_path("/source"), None); // immutable: no cap reaches it
+/// assert_eq!(required_cap_for_path("/base"), None); // server-owned: no cap reaches it
 /// ```
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     if writes_a_content_band(path) {
@@ -348,15 +362,17 @@ pub enum RedactionTarget {
 /// can silently diverge on an input neither author checked, and reading one shared
 /// function is what prevents that.
 ///
-/// Two things are shared with `required_cap_for_path` as symbols rather than by
-/// inspection: the band set (`REDACTABLE_BANDS`) and the leaf rule (`band_has_interior`,
-/// which is why `/name/...` classifies as `None`). Everything else is deliberately
-/// unshared, because the two classify different input domains: `required_cap_for_path`
-/// classifies a `FieldChange` path, `redaction_target` classifies a `property_overrides`
-/// map key. Same JSON-pointer syntax, different fields on different structures, gated by
-/// different validators — so they are NOT required to agree string-for-string, and do not
-/// (`/system/` is a writable path there and unclassifiable here). Only the band set and
-/// the leaf rule must agree, and those are single symbols.
+/// One thing is shared with `required_cap_for_path` as a symbol rather than by
+/// inspection: the leaf rule (`band_has_interior`, which is why `/name/...`
+/// classifies as `None`). The band set is deliberately NOT shared: redaction
+/// reads `REDACTABLE_BANDS` (egress), the write side reads `WRITABLE_BANDS` —
+/// `base` is redactable but server-owned, so it is in the former and not the
+/// latter. Everything else is deliberately unshared, because the two classify
+/// different input domains: `required_cap_for_path` classifies a `FieldChange`
+/// path, `redaction_target` classifies a `property_overrides` map key. Same
+/// JSON-pointer syntax, different fields on different structures, gated by
+/// different validators — so they are NOT required to agree string-for-string,
+/// and do not (`/system/` is a writable path there and unclassifiable here).
 /// # Examples
 ///
 /// ```

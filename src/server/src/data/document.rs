@@ -471,13 +471,18 @@ pub struct Document {
     /// path can re-target a document at a different template.
     #[serde(default)]
     pub source: Option<Source>,
-    /// Opaque snapshot of this child's mergeable content (`name`/`engine`/`system`/
-    /// `embedded`) at last sync (stamp or a successful pull/push/revert). Present only
-    /// on stamped children. The server NEVER interprets it: exempt from
-    /// `validate_engine_tree` (the tree walker only ever visits `engine`); will be
-    /// size-capped by `validate_system_size` and writable at `/base` under
-    /// `cap::WRITE_FIELDS` (see follow-up task). Client-owned shape (`MergeBase`,
-    /// `@shadowcat/core`).
+    /// Server-owned merge snapshot of this document's mergeable content
+    /// (`name`/`engine`/`system`/`embedded`) at last sync (stamp, or a
+    /// successful pull/push/revert). Present only on stamped instances
+    /// (`source` set); embedded children never carry one. Derived by the
+    /// server at Create (`merge::bands::derive_create_base` — any
+    /// client-supplied value is discarded) and refreshed whole-band by server
+    /// merge writes under `WriteOrigin::TemplateMerge`; NOT client-writable —
+    /// `required_cap_for_path` maps `/base` to no capability, the same
+    /// posture as `/source`. Shape-checked as a `merge::bands::MergeBase`
+    /// (mirrored in generated TS) and engine-normalized at ingest by
+    /// `validate_engine_tree`; size-capped by `validate_system_size`; egress
+    /// is hardcoded `OwnerOrGm` (`filter_properties`).
     #[serde(default)]
     #[ts(type = "unknown")]
     pub base: Option<serde_json::Value>,

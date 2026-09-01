@@ -5,7 +5,12 @@
  * correlation key (the child's `source.id` at sync time — the template
  * child's id). Recurses (finite-depth embedding). The stored JSON spells
  * the key `sourceId` (camelCase), the shape every existing snapshot was
- * written in. Mirrors the client `EmbeddedBaseChild`.
+ * written in. The serde defaults exist so a pre-validation legacy row
+ * still parses on READ; at ingest `validate_engine_tree` REJECTS a record
+ * with an absent key rather than letting the defaults coalesce it (a
+ * coalesced record reads as unchanged against a `null` band — the
+ * data-losing direction for a template-deleted child). Mirrors the client
+ * `EmbeddedBaseChild`.
  */
 export type EmbeddedBaseChild = { 
 /**

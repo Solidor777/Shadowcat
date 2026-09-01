@@ -704,7 +704,15 @@ async fn filter_command_update_drops_base_field_change_for_non_owner_non_gm() {
     );
     d.scope = Scope::World { world_id: w.id };
     d.owner = Some(owner);
-    d.base = Some(serde_json::json!({ "system": { "hp": 5 } }));
+    // A stamped instance: the Create write path derives `base` from the
+    // document's own bands (`merge::bands::derive_create_base`), so the
+    // stored row genuinely carries a snapshot for the redaction below to
+    // gate.
+    d.source = Some(crate::data::document::Source {
+        id: Uuid::from_u128(55),
+        pack: None,
+        version: 1,
+    });
     r.apply_intent(
         &gm_ctx,
         w.id,
