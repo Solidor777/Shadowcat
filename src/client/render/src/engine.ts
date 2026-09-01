@@ -745,6 +745,21 @@ export class RenderEngine implements SceneToolHost {
    */
   toLightingForTest(p: unknown): LightingInput | null { return this.toLighting(p); }
 
+  /** The badge chips the token view last projected for `id` (delegates to
+   * `TokenView.badgesForTest`), or `null` when the token is untracked. Read-only observability
+   * seam for the host stage's debug surface and tests.
+   * @param id The token document id to read badges for.
+   * @returns The current badge chip texts, or `null` when the token is untracked.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.badgesForTest("token-1");
+   * ```
+   */
+  badgesForTest(id: string): string[] | null { return this.tokens.badgesForTest(id); }
+
   /** Module-facing shader-filter seam. Forwards to the backend; no engine consumer
    * currently calls it.
    * @param layerId The target core-layer id (e.g. `"tokens"`); the backend defines what an

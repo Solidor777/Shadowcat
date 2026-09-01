@@ -127,7 +127,14 @@
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
-        onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
+        onDerivedApplied: (input) => {
+          host.dataset.sceneDerived = "1";
+          host.dataset.visionMode = input.mode;
+          // Read-only observability signal: the applied frame's creature-sense token ids,
+          // id-sorted so the string is order-independent. This is the set `TokenView` raises
+          // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
+          host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
+        },
       });
       const e = engine;
       // setViewport (resize + initial grid) then start (camera + reconcile +
@@ -227,6 +234,16 @@
           .join(";");
         host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
         host.dataset.wallCount = String(documents.query("wall").length);
+        // Read-only observability signal: each viewed-scene token's last-projected badge chips
+        // (condition glyphs, then the elevation chip) as `id:chip,chip`, id-sorted — the same
+        // string list `PixiBackend` turns into the canvas's upright Text nodes, so an e2e can
+        // confirm a badge reached the render layer without inspecting WebGL pixels. Reads AFTER
+        // the engine's own store subscription (registered in `start`, before this one) has
+        // reconciled the specs this commit.
+        host.dataset.tokenBadges = sceneTokens
+          .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
+          .sort()
+          .join(";");
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
         // e2e assertion can confirm the authored background reached the render layer

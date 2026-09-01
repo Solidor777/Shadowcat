@@ -85,6 +85,26 @@ export class TokenView {
     this.dragging = id;
   }
 
+  /** The badge chips the last `toSpec` projection produced for `id` (condition glyphs, then the
+   * elevation chip), or `null` when no spec is tracked for it. Read-only observability seam for
+   * the stage's debug surface and tests — the live spec contents, not a recompute.
+   * @param id The token document id to read badges for.
+   * @returns The current badge chip texts, or `null` when the token is untracked.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.badgesForTest("token-1"); // null until reconcile() projects the token
+   * ```
+   */
+  badgesForTest(id: string): string[] | null {
+    const badges = this.specs.get(id)?.badges;
+    return badges ? [...badges] : null;
+  }
+
   /** Update the per-step world distance used to compute tween durations — the world distance
    * between adjacent cell centres (`Grid.worldUnitsPerCell`), NOT the grid's indexing scale
    * (`GridSpec.size`), which diverges from it by `sqrt(3)` on hex. Affects only FUTURE tweens
@@ -309,8 +329,9 @@ export class TokenView {
   /** Project a `token` doc into a renderable `TokenNodeSpec`: resolves the effective actor
    * (`resolveTokenActor`), the visual (`resolveTokenVisual`, image or animated, URL-resolved via
    * `resolveSource`), the faction border color (via the world `faction-registry` doc; `null` when
-   * the effective actor has no faction or the faction has no registered color), condition badges
-   * (`resolveConditions`), the footprint box/shape (`resolveTokenBox`, reading the server's
+   * the effective actor has no faction or the faction has no registered color), the badge chips
+   * (condition glyphs from `resolveConditions`, then an elevation chip when the token sits off
+   * the ground plane), the footprint box/shape (`resolveTokenBox`, reading the server's
    * resolved extent rather than computing one), and the creature-sense flag (`perceived` set
    * membership — read fresh per call so a derived-frame reconcile re-projects it immediately).
    * Fails closed to `null`
@@ -344,6 +365,12 @@ export class TokenView {
     }
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
+    // Elevation chip: any non-ground elevation shows as an upright badge (`↑n`/`↓n`), mirroring
+    // `elevation_or_ground`'s read — absent and non-finite both mean grounded (no chip).
+    const elev = s.elevation;
+    if (elev != null && Number.isFinite(elev) && elev !== 0) {
+      badges.push(elev > 0 ? `↑${elev}` : `↓${-elev}`);
+    }
     const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
     return {
       x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,

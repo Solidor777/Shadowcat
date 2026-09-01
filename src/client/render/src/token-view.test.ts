@@ -146,6 +146,39 @@ test("a token whose actor has no conditions has empty badges", () => {
   expect(backend.tokens.get("tok2")!.badges).toEqual([]);
 });
 
+/** A raw token doc at ground with the given stored elevation (raw = what the wire carries). */
+function elevatedToken(id: string, elevation: number | null): WireDocument {
+  const doc = tokenDoc(id, 0, 0, "img1");
+  (doc.engine as { elevation?: number | null }).elevation = elevation;
+  return doc;
+}
+
+test("a token off the ground plane gains an elevation chip after its condition glyphs", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [
+    { op: "create", doc: elevatedToken("t-up", 10) },
+    { op: "create", doc: elevatedToken("t-down", -2.5) },
+  ]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("t-up")!.badges).toEqual(["↑10"]);
+  expect(backend.tokens.get("t-down")!.badges).toEqual(["↓2.5"]);
+});
+
+test("grounded (0 / absent / non-finite stored) tokens get no elevation chip", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  store.applyCommand(cmd(1, [
+    { op: "create", doc: elevatedToken("t-zero", 0) },
+    { op: "create", doc: elevatedToken("t-absent", null) },
+    { op: "create", doc: elevatedToken("t-nan", NaN) },
+  ]));
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("t-zero")!.badges).toEqual([]);
+  expect(backend.tokens.get("t-absent")!.badges).toEqual([]);
+  expect(backend.tokens.get("t-nan")!.badges).toEqual([]);
+});
+
 test("reconciles a token to the server's resolved extent, with the shape still read from the actor", () => {
   // The store carries a 2x2 actor on a 100-unit square grid — the inputs a size formula would
   // multiply into 200x200 — while the wire states 173.2x200 (a hex extent). The pushed spec

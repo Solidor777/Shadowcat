@@ -129,7 +129,9 @@ export interface TokenNodeSpec {
       };
   /** Faction border color (0xRRGGBB), or null for no border. */
   borderColor: number | null;
-  /** Condition marker glyphs (emoji), rendered as upright chips along the token's top edge. */
+  /** Upright marker chips along the token's top edge: condition glyphs (emoji) from
+   * `resolveConditions`, then an elevation chip (`↑n`/`↓n`) when the token is off the ground
+   * plane (`TokenView.toSpec`). */
   badges: string[];
   /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";

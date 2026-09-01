@@ -30,7 +30,8 @@ interface TokenNode {
   /** Faction-border outline, redrawn by `updateTokenBorder`; cleared (no stroke) when
    * `tokenSpec.borderColor` is `null`. */
   border: Graphics;
-  /** Condition-marker glyph chips, one `Text` per `tokenSpec.badges` entry, in order. */
+  /** Marker chips, one `Text` per `tokenSpec.badges` entry, in order (condition glyphs, then
+   * the elevation chip when the token is off the ground plane). */
   badges: Text[];
   /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
@@ -638,7 +639,7 @@ export class PixiBackend implements DisplayBackend {
     else node.border.rect(-hw, -hh, tokenSpec.w, tokenSpec.h).stroke({ width: 3, color: tokenSpec.borderColor });
   }
 
-  /** Redraw `node`'s condition-marker badges: emoji glyph chips laid out left-to-right along the
+  /** Redraw `node`'s marker badges: chips laid out left-to-right along the
    * token's top edge, sized to `max(12, min(w,h)*0.28)`px and positioned relative to the
    * non-rotating outer `container`'s own origin (so they stay upright regardless of
    * `visualContainer`'s rotation — see `TokenNode`'s field doc). Guarded by a joined `badgeKey`:
