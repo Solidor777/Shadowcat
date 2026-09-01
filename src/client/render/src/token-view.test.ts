@@ -1,5 +1,5 @@
 import { test, expect, it, vi } from "vitest";
-import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation, FootprintLookup } from "@shadowcat/core";
 
@@ -40,7 +40,7 @@ test("reconcile creates a token node at its center transform with the resolved u
   const backend = new MockBackend();
   store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 100, 50, "img1") }]));
   new TokenView(store, assets, backend).reconcile();
-  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: assets.url("img1") }, borderColor: null, badges: [], shape: "square" });
+  expect(backend.tokens.get("t1")).toEqual({ x: 100, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", url: assets.url("img1") }, borderColor: null, badges: [], shape: "square", perceived: false });
 });
 
 test("a moved token tweens via tick toward the new position", () => {
@@ -350,4 +350,22 @@ it("animateAlongPath walks the route polyline", () => {
   view.tick(500);
   expect(backend.lastTokenX("tok1")).toBeCloseTo(300, 0); // at the corner
   expect(backend.lastTokenY("tok1")).toBeCloseTo(0, 0);
+});
+
+test("the perceived lookup flags matching tokens; leaving the set restores the flag on the next reconcile", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let perceived: ReadonlySet<string> = new Set(["t1"]);
+  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => EMPTY_FOOTPRINTS, () => perceived);
+  store.applyCommand(cmd(1, [
+    { op: "create", doc: tokenDoc("t1", 0, 0, "img1") },
+    { op: "create", doc: tokenDoc("t2", 0, 0, "img1") },
+  ]));
+  view.reconcile();
+  expect(backend.tokens.get("t1")!.perceived).toBe(true);
+  expect(backend.tokens.get("t2")!.perceived).toBe(false);
+
+  perceived = new Set();
+  view.reconcile();
+  expect(backend.tokens.get("t1")!.perceived).toBe(false);
 });

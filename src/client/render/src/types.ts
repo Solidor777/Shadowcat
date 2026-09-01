@@ -50,6 +50,13 @@ export interface VisibilityInput {
   /** Polygons rendered as the dimmed-memory (explored, not currently visible) fog state — see
    * the interface doc. */
   explored: Polygon[];
+  /** Ids of tokens the recipient perceives ONLY through a creature sense (tremorsense & kin),
+   * scene-filtered by `RenderEngine.toVisibility` exactly like `visible`/`explored`. Empty for
+   * `mode:"all"` and on any missing/garbled `perceived` payload key — fail-closed, an absent
+   * list never widens the render. The compositor ignores this field (it paints fog only);
+   * `RenderEngine.applyDerived` consumes it, and `TokenView.toSpec`/`PixiBackend.setToken`
+   * raise a listed token's node above the fog/lighting overlays. */
+  perceived: string[];
 }
 
 /** A token's animatable transform (scene coords; `(x,y)` = center). */
@@ -85,7 +92,8 @@ export type ResolvedAnimatedSource =
       count?: number;
     };
 
-/** A resolved token render node: transform + size + resolved visual + faction border + footprint shape. */
+/** A resolved token render node: transform + size + resolved visual + faction border + footprint
+ * shape + the perceived (creature-sense) flag. */
 export interface TokenNodeSpec {
   /** Center's scene x-coordinate — from `resolveTokenBox`. */
   x: number;
@@ -125,6 +133,12 @@ export interface TokenNodeSpec {
   badges: string[];
   /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";
+  /** `true` = the token is perceived ONLY through a creature sense (tremorsense & kin), so its
+   * node renders THROUGH fog and darkness: `PixiBackend.setToken` parents it to the dedicated
+   * above-`mask` container instead of the `tokens` layer (same node re-parented — never a
+   * duplicate copy), and back when the token leaves the perceived set. Terrain fog itself is
+   * untouched (no fog holes). */
+  perceived: boolean;
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

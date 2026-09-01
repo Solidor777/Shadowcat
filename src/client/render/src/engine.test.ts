@@ -113,7 +113,7 @@ test("subscribeScene: an identity frame at/under the watermark applies immediate
   });
   engine.start();
   onUpdate({ payload: { mode: "all" }, computedAtSeq: 0 }); // appliedSeq 0 >= 0
-  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] }); // GM no-fog
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] }); // GM no-fog
   expect(applied).toBe(1);
 });
 
@@ -139,7 +139,7 @@ test("a masked vision frame parses the active scene's polygons into the Visibili
   });
   engine.start();
   onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
 });
 
 test("a polygon for another scene is filtered out (no cross-scene fog hole)", () => {
@@ -154,7 +154,7 @@ test("a polygon for another scene is filtered out (no cross-scene fog hole)", ()
   engine.start();
   // A polygon tagged for scene s2 (a token the player owns elsewhere) must not cut s1's fog.
   onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s2", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] }); // full fog, no hole
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [], perceived: [] }); // full fog, no hole
 });
 
 test("a garbled/unknown-mode vision payload fails CLOSED to full fog (not see-all)", () => {
@@ -169,10 +169,10 @@ test("a garbled/unknown-mode vision payload fails CLOSED to full fog (not see-al
   engine.start();
   // Only an explicit mode:"all" may clear fog; an unknown/garbled mode must mask everything.
   onUpdate({ payload: { mode: "wat", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [], perceived: [] });
   // A null payload likewise → full fog, never see-all.
   onUpdate({ payload: null, computedAtSeq: 2 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [], perceived: [] });
 });
 
 test("a masked frame rasterizes the active scene's explored cells into dimmed-memory rects", () => {
@@ -204,6 +204,7 @@ test("a masked frame rasterizes the active scene's explored cells into dimmed-me
       { points: [0, 0, 100, 0, 100, 100, 0, 100] }, // cell (0,0)
       { points: [100, 0, 200, 0, 200, 100, 100, 100] }, // cell (1,0)
     ],
+    perceived: [],
   });
 });
 
@@ -261,13 +262,13 @@ test("setFogPreview renders a GM no-fog frame as full fog and restores on toggle
   engine.start();
   // A GM frame: no fog.
   onUpdate({ payload: { mode: "all" }, computedAtSeq: 0 });
-  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
   // Preview on → the same frame renders as full fog (masked, empty) without a new derived frame.
   engine.setFogPreview(true);
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [], perceived: [] });
   // Preview off → restores no-fog.
   engine.setFogPreview(false);
-  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
   expect(modes).toEqual(["all", "masked", "all"]);
 });
 
@@ -285,7 +286,7 @@ test("setViewAsUser re-subscribes vision with as_user and resets the watermark",
   engine.start();
   expect(opts[0]).toBeUndefined(); // own view (no as_user)
   onUpdate({ payload: { mode: "all" }, computedAtSeq: 1 });
-  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
 
   // View as a player → the old subscription is torn down and a new one carries as_user.
   engine.setViewAsUser("u1");
@@ -294,7 +295,7 @@ test("setViewAsUser re-subscribes vision with as_user and resets the watermark",
   // The new view's first frame applies even at the SAME seq (watermark reset — a view switch is a
   // fresh stream, not a regression of the prior one).
   onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
 
   // Back to "see all" (null) → re-subscribe without as_user.
   engine.setViewAsUser(null);
@@ -320,7 +321,7 @@ test("subscribeScene: a frame above the watermark defers until the store advance
       embedded: {}, parent_id: null, engine: { grid: { kind: "square", size: 100, distance: null }, background: null, bounds: null, snapToGrid: null, vision: null, lighting: null }, system: {}, created_at: 0, updated_at: 0,
     } }],
   });
-  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
 });
 
 test("destroy unsubscribes the scene subscription", () => {
@@ -358,7 +359,7 @@ test("a lower-seq derived frame never supersedes a higher-seq pending one (lates
   store.applyCommand(create(3)); // appliedSeq 3 < pending 5 → no flush
   expect(backend.visibility).toBeNull();
   store.applyCommand(create(5)); // appliedSeq 5 >= 5 → the seq-5 frame flushes
-  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
 });
 
 test("a frame at/below the last-applied seq is ignored (no regression)", () => {
@@ -734,7 +735,7 @@ test("animateSamples' moverVision progressively sweeps the fog, reverting to der
   engine.start();
   // Baseline derived (subscription) vision: a small polygon.
   onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 10, 0, 10, 10] }] }, computedAtSeq: 1 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
 
   // Mover's own MoveStream: two moverVision samples, small polygon → larger polygon.
   engine.animateSamples(
@@ -749,15 +750,15 @@ test("animateSamples' moverVision progressively sweeps the fog, reverting to der
     ],
   );
   // At clock 0, the first (small) moverVision sample feeds the fog.
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [], perceived: [] });
 
   // Advance the clock past the second sample's tMs (500 < 1000, animation still in flight).
   backend.runTicker(500);
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [], perceived: [] });
 
   // Animation completes (elapsed reaches durationMs): fog reverts to the last derived vision.
   backend.runTicker(500);
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
 });
 
 test("animateSamples with no moverVision (observer) leaves the fog untouched", () => {
@@ -806,8 +807,8 @@ test("a single in-flight sweep cross-fades the fog between consecutive samples (
   );
   // Immediately (elapsed 0, exactly tCur): factor 0, fully the first sample.
   expect(backend.visibilityBlend).toEqual({
-    from: { mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] },
-    to: { mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] },
+    from: { mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [], perceived: [] },
+    to: { mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [], perceived: [] },
     factor: 0,
   });
 
@@ -820,7 +821,7 @@ test("a single in-flight sweep cross-fades the fog between consecutive samples (
   // At exactly tMs=500 there is no further "next" sample (only two total): the sweep falls
   // back to the plain snap, clearing any stale blend record.
   backend.runTicker(300);
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [], perceived: [] });
 });
 
 test("a concurrent derived frame does not clobber an in-flight vision-sweep (no flicker)", () => {
@@ -842,7 +843,7 @@ test("a concurrent derived frame does not clobber an in-flight vision-sweep (no 
     "tok1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }], 1000, 0, () => 0,
     [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
   );
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [], perceived: [] });
 
   // Bump the store to seq 2 so the seq-2 derived frame below applies IMMEDIATELY (not deferred
   // behind the appliedSeq watermark) — isolates the sweep-suppression behavior under test.
@@ -850,11 +851,11 @@ test("a concurrent derived frame does not clobber an in-flight vision-sweep (no 
   // A new derived (subscription) frame arrives mid-sweep, at a higher seq — normally this would
   // re-render immediately, but a sweep is in flight so the compositor must not be touched yet.
   onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [0, 0, 99, 0, 99, 99] }] }, computedAtSeq: 2 });
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [] }); // unchanged: still the sweep
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20] }], explored: [], perceived: [] }); // unchanged: still the sweep
 
   // The sweep completes: reverts to the LATEST derived vision (the seq=2 frame), not a stale one.
   backend.runTicker(1000);
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 99, 0, 99, 99] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 99, 0, 99, 99] }], explored: [], perceived: [] });
 });
 
 test("animateSamples' moverVision seeds a server-aligned catch-up mid-sample (startServerMs in the past)", () => {
@@ -886,7 +887,7 @@ test("animateSamples' moverVision seeds a server-aligned catch-up mid-sample (st
     ],
   );
   // Applied immediately at call time (before any tick): the mid-sample (tMs=500), not tMs=0.
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 50, 0, 50, 50] }], explored: [], perceived: [] });
 });
 
 test("concurrent sweeps for different tokens do not clobber each other; each settles independently", () => {
@@ -918,6 +919,7 @@ test("concurrent sweeps for different tokens do not clobber each other; each set
     mode: "masked",
     visible: [{ points: [0, 0, 20, 0, 20, 20] }, { points: [100, 100, 120, 100, 120, 120] }],
     explored: [],
+    perceived: [],
   });
 
   // tokA's 500ms sweep completes; tokB's 1000ms sweep is still in flight — the fog must NOT
@@ -927,11 +929,12 @@ test("concurrent sweeps for different tokens do not clobber each other; each set
     mode: "masked",
     visible: [{ points: [100, 100, 120, 100, 120, 120] }],
     explored: [],
+    perceived: [],
   });
 
   // tokB's sweep also completes: NOW the fog reverts to the last derived vision.
   backend.runTicker(500);
-  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [] });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
 });
 
 test("toLighting parses lit cells for the active scene and fails safe", () => {
@@ -1059,7 +1062,7 @@ describe("multi-scene render filtering", () => {
     // payload to sB → the sA polygon is dropped → full fog (fail-closed, no cross-scene hole).
     viewed = "sB";
     engine.reapplyViewedScene();
-    expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+    expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [], perceived: [] });
 
     // Store advances past seq 5 → the deferred frame flushes. It must re-filter against the CURRENT
     // scene (sB), NOT replay the stale sA-filtered input. Pins: scene B's fog still stands (no sA
@@ -1068,7 +1071,7 @@ describe("multi-scene render filtering", () => {
       seq: 5, world_id: "w1", author: "u", ts: 0,
       ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "sC") }],
     });
-    expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [] });
+    expect(backend.visibility).toEqual({ mode: "masked", visible: [], explored: [], perceived: [] });
     engine.destroy();
   });
 
@@ -1097,7 +1100,7 @@ describe("multi-scene render filtering", () => {
     // above); seq 7 then arrives and takes the immediate-apply branch, advancing lastAppliedSeq to 7.
     store.appliedSeq = 7;
     onUpdate({ payload: { mode: "all" }, computedAtSeq: 7 });
-    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] });
+    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
 
     // (c) A later store commit (any commit — flushPendingDerived runs on every one) re-checks the
     // still-set pendingDerived(5). It must be discarded (5 <= lastAppliedSeq 7), never applied: the
@@ -1106,12 +1109,12 @@ describe("multi-scene render filtering", () => {
       seq: 8, world_id: "w1", author: "a", ts: 0,
       ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "s1") }],
     });
-    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [] }); // unchanged, not the stale masked payload
+    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] }); // unchanged, not the stale masked payload
 
     // A genuinely-newer frame at seq 8 must still apply normally afterward (monotonic forward
     // progress is unaffected by the discard).
     onUpdate({ payload: { mode: "masked", polygons: [{ scene: "s1", points: [1, 1, 11, 1, 11, 11] }] }, computedAtSeq: 8 });
-    expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [1, 1, 11, 1, 11, 11] }], explored: [] });
+    expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [1, 1, 11, 1, 11, 11] }], explored: [], perceived: [] });
     engine.destroy();
   });
 });
@@ -1140,4 +1143,142 @@ test("the engine renders a token at the footprint lookup it was constructed with
   expect(backend.tokens.get("t1")!.w).toBe(346.4);
   expect(backend.tokens.get("t1")!.h).toBe(400);
   engine.destroy();
+});
+
+describe("perceived (creature-sense) channel", () => {
+  function perceivedEngine(store: DocumentStore, viewed?: () => string | null) {
+    const backend = new MockBackend();
+    let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      viewedSceneId: viewed,
+      subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    });
+    engine.start();
+    return { backend, engine, onUpdate: (f: { payload: unknown; computedAtSeq: number }) => onUpdate(f) };
+  }
+
+  it("parses a masked payload's perceived ids, filtered to the viewed scene like polygons", () => {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    const { backend, onUpdate } = perceivedEngine(store);
+    onUpdate({
+      payload: {
+        mode: "masked", polygons: [],
+        perceived: [
+          { scene: "s1", tokens: ["t1", "t2"] },
+          { scene: "s2", tokens: ["t3"] }, // another scene → filtered out, same rule as polygons
+        ],
+      },
+      computedAtSeq: 1,
+    });
+    expect(backend.visibility?.perceived).toEqual(["t1", "t2"]);
+  });
+
+  it("fails closed to an empty perceived list on a garbled key or non-string ids", () => {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    const { backend, onUpdate } = perceivedEngine(store, () => "s1");
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: "nope" }, computedAtSeq: 1 });
+    expect(backend.visibility?.perceived).toEqual([]);
+    // Each later frame needs the store watermark at its seq, or it defers instead of applying.
+    store.applyCommand(sceneCmd(2, "sA"));
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [{ scene: "s1" }] }, computedAtSeq: 2 });
+    expect(backend.visibility?.perceived).toEqual([]);
+    // Non-string ids are dropped individually; the well-formed id survives.
+    store.applyCommand(sceneCmd(3, "sB"));
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [{ scene: "s1", tokens: [1, null, "t1"] }] }, computedAtSeq: 3 });
+    expect(backend.visibility?.perceived).toEqual(["t1"]);
+  });
+
+  it("a mode:\"all\" (GM) frame carries no perceived ids, even if the key is present", () => {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    const { backend, onUpdate } = perceivedEngine(store);
+    onUpdate({ payload: { mode: "all", perceived: [{ scene: "s1", tokens: ["t1"] }] }, computedAtSeq: 1 });
+    expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
+  });
+
+  it("marks a listed token's spec perceived:true (raised above fog) and restores it when the set empties — no store commit needed", () => {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    store.applyCommand(tokenCmd(2, "t1", 0));
+    store.applyCommand(tokenCmd(3, "t2", 0));
+    const { backend, onUpdate } = perceivedEngine(store);
+    expect(backend.tokens.get("t1")!.perceived).toBe(false);
+
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [{ scene: "s1", tokens: ["t1"] }] }, computedAtSeq: 3 });
+    expect(backend.tokens.get("t1")!.perceived).toBe(true);
+    expect(backend.tokens.get("t2")!.perceived).toBe(false);
+
+    // A later frame that no longer lists t1 lowers it immediately (applyDerived reconciles the
+    // token views; a derived frame carries no document change to trigger one otherwise).
+    store.applyCommand(tokenCmd(4, "t3", 0)); // bump the watermark so the seq-4 frame applies
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [] }, computedAtSeq: 4 });
+    expect(backend.tokens.get("t1")!.perceived).toBe(false);
+  });
+
+  it("applies a deferred frame's perceived ids on flush-at-watermark", () => {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    store.applyCommand(tokenCmd(2, "t1", 0));
+    const { backend, onUpdate } = perceivedEngine(store);
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [{ scene: "s1", tokens: ["t1"] }] }, computedAtSeq: 9 }); // deferred: appliedSeq 2 < 9
+    expect(backend.tokens.get("t1")!.perceived).toBe(false);
+    store.applyCommand(sceneCmd(9, "sX")); // watermark catches up → flush
+    expect(backend.tokens.get("t1")!.perceived).toBe(true);
+  });
+
+  it("re-filters the deferred payload's perceived ids against the NEW scene on a mid-deferral switch", () => {
+    const store = new DocumentStore();
+    store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [
+      { op: "create", doc: buildSceneDoc("w1", {}, "sA") },
+      { op: "create", doc: buildSceneDoc("w1", {}, "sB") },
+    ] });
+    let viewed = "sA";
+    const { backend, engine, onUpdate } = perceivedEngine(store, () => viewed);
+    onUpdate({
+      payload: {
+        mode: "masked", polygons: [],
+        perceived: [{ scene: "sA", tokens: ["t-a"] }, { scene: "sB", tokens: ["t-b"] }],
+      },
+      computedAtSeq: 5,
+    }); // deferred: appliedSeq 1 < 5
+    expect(backend.visibility).toBeNull();
+
+    viewed = "sB";
+    engine.reapplyViewedScene(); // re-filters the cached raw payload to sB
+    expect(backend.visibility?.perceived).toEqual(["t-b"]);
+
+    store.applyCommand({ seq: 5, world_id: "w1", author: "u", ts: 0, ops: [
+      { op: "create", doc: buildSceneDoc("w1", {}, "sC") },
+    ] }); // flush: re-parses the raw payload against the CURRENT scene (sB), never sA
+    expect(backend.visibility?.perceived).toEqual(["t-b"]);
+    engine.destroy();
+  });
+
+  it("a vision sweep neither drops nor freezes the perceived set", () => {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    store.applyCommand(tokenCmd(2, "t1", 0));
+    const { backend, engine, onUpdate } = perceivedEngine(store);
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [{ scene: "s1", tokens: ["t1"] }] }, computedAtSeq: 2 });
+    expect(backend.tokens.get("t1")!.perceived).toBe(true);
+
+    // Starting a mover fog-sweep replaces the fog input only — the perceived set stands.
+    engine.animateSamples(
+      "t1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }], 1000, 0, () => 0,
+      [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+    );
+    expect(backend.tokens.get("t1")!.perceived).toBe(true);
+
+    // A new derived frame mid-sweep still re-projects the set (sweep suppression covers the
+    // fog compositor only, never the perceived re-parenting).
+    store.applyCommand(tokenCmd(4, "tX", 0)); // bump the watermark so seq 4 applies immediately
+    onUpdate({ payload: { mode: "masked", polygons: [], perceived: [] }, computedAtSeq: 4 });
+    expect(backend.tokens.get("t1")!.perceived).toBe(false);
+
+    backend.runTicker(1000); // sweep completes — perceived reflects the latest applied frame
+    expect(backend.tokens.get("t1")!.perceived).toBe(false);
+  });
 });

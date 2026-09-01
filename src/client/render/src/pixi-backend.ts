@@ -118,6 +118,12 @@ export class PixiBackend implements DisplayBackend {
   private readonly shapes = new Map<string, Graphics>();
   /** Token document id → its render node, populated by `createTokenNode`. */
   private readonly tokens = new Map<string, TokenNode>();
+  /** Dedicated container stacked directly ABOVE the `mask` layer (and therefore the `lighting`
+   * layer) but below `overlays`: a token whose spec's `perceived` flag is set is re-parented here
+   * by `setToken` so it renders THROUGH fog and darkness, without touching the fog sheets
+   * themselves (no fog holes — terrain stays covered). Not registered in `this.layers`: it is a
+   * display container, not a named core layer. */
+  private readonly perceivedTokens = new Container();
   /** The current background sprite, or `null` before the first `setBackground` call/after a
    * clear. */
   private background: Sprite | null = null;
@@ -148,6 +154,10 @@ export class PixiBackend implements DisplayBackend {
    */
   constructor(private readonly app: Application) {
     this.app.stage.addChild(this.world);
+    this.perceivedTokens.label = "perceived";
+    // Parented immediately so a perceived token pushed before `ensureLayers` still has a home;
+    // `ensureLayers` re-appends it directly after the `mask` layer to fix its z-slot.
+    this.world.addChild(this.perceivedTokens);
     // Screen-space, added directly to the stage (not `world`) so the captured, already
     // camera-transformed fog snapshots display 1:1 without a second transform on top.
     this.fogBlendFrom.visible = false;
@@ -211,10 +221,13 @@ export class PixiBackend implements DisplayBackend {
         c.addChild(this.pingGraphics);
       }
     }
-    // Re-parent in z-order (addChild appends; order array is authoritative).
+    // Re-parent in z-order (addChild appends; order array is authoritative). `perceivedTokens`
+    // rides directly on top of the `mask` layer so a perceived token renders through fog and
+    // lighting while still sitting under `overlays`.
     for (const id of orderedIds) {
       const c = this.layers.get(id);
       if (c) this.world.addChild(c); // moving to top in order yields final stack
+      if (id === "mask") this.world.addChild(this.perceivedTokens);
     }
   }
 
@@ -311,7 +324,7 @@ export class PixiBackend implements DisplayBackend {
    * import { PixiBackend } from "@shadowcat/render";
    *
    * declare const backend: PixiBackend;
-   * backend.setVisibility({ mode: "all", visible: [], explored: [] });
+   * backend.setVisibility({ mode: "all", visible: [], explored: [], perceived: [] });
    * ```
    */
   setVisibility(input: VisibilityInput): void {
@@ -355,8 +368,8 @@ export class PixiBackend implements DisplayBackend {
    *
    * declare const backend: PixiBackend;
    * backend.setVisibilityBlend(
-   *   { mode: "masked", visible: [], explored: [] },
-   *   { mode: "masked", visible: [], explored: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
    *   0.5,
    * );
    * ```
@@ -403,7 +416,7 @@ export class PixiBackend implements DisplayBackend {
    * @example
    * ```
    * // private method; not part of the public API
-   * this.captureFog({ mode: "all", visible: [], explored: [] }, 800, 600, 1, null);
+   * this.captureFog({ mode: "all", visible: [], explored: [], perceived: [] }, 800, 600, 1, null);
    * ```
    */
   private captureFog(input: VisibilityInput, width: number, height: number, resolution: number, existing: RenderTexture | null): RenderTexture {
@@ -427,9 +440,13 @@ export class PixiBackend implements DisplayBackend {
   /** `DisplayBackend.setToken`: upsert a token render node — create one (`createTokenNode`) if
    * `id` is new, then update its transform, visual (image or animated), border, and badges in
    * place. `visualContainer.angle` rotates the art + border only; `container`'s own position is
-   * the token center and its badge children never rotate (see `TokenNode`'s field doc).
+   * the token center and its badge children never rotate (see `TokenNode`'s field doc). The
+   * `perceived` flag picks the container's parent: the above-`mask` `perceivedTokens` container
+   * when set (the token renders through fog/darkness), the `tokens` layer otherwise — the SAME
+   * node is re-parented, never duplicated, and a flip in either direction takes effect on this
+   * call.
    * @param id The token document id.
-   * @param tokenSpec The resolved token render tokenSpec (transform, size, visual, border, badges, shape).
+   * @param tokenSpec The resolved token render tokenSpec (transform, size, visual, border, badges, shape, perceived).
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
@@ -438,13 +455,15 @@ export class PixiBackend implements DisplayBackend {
    * backend.setToken("00000000-0000-0000-0000-000000000001", {
    *   x: 0, y: 0, w: 70, h: 70, rotation: 0,
    *   visual: { kind: "image", url: "https://example.test/token.png" },
-   *   borderColor: null, badges: [], shape: "square",
+   *   borderColor: null, badges: [], shape: "square", perceived: false,
    * });
    * ```
    */
   setToken(id: string, tokenSpec: TokenNodeSpec): void {
     let node = this.tokens.get(id);
     if (!node) node = this.createTokenNode(id);
+    const parent = tokenSpec.perceived ? this.perceivedTokens : this.layers.get("tokens");
+    if (parent && node.container.parent !== parent) parent.addChild(node.container);
     node.container.position.set(tokenSpec.x, tokenSpec.y);
     node.visualContainer.angle = tokenSpec.rotation; // degrees; rotates art + border, not badges
     this.updateTokenVisual(id, node, tokenSpec);
@@ -1026,7 +1045,7 @@ function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void 
  * // module-private helper; not exported from @shadowcat/render
  * import { Graphics } from "pixi.js";
  * const dark = new Graphics(), dim = new Graphics(), eh = new Graphics(), vh = new Graphics();
- * paintFogSheets(dark, dim, eh, vh, { mode: "all", visible: [], explored: [] });
+ * paintFogSheets(dark, dim, eh, vh, { mode: "all", visible: [], explored: [], perceived: [] });
  * ```
  */
 function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, visibleHoles: Graphics, input: VisibilityInput): void {

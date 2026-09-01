@@ -154,8 +154,8 @@ export class MockBackend implements DisplayBackend {
    * import { MockBackend } from "@shadowcat/render";
    *
    * const backend = new MockBackend();
-   * backend.setVisibility({ mode: "all", visible: [], explored: [] });
-   * backend.visibility; // { mode: "all", visible: [], explored: [] }
+   * backend.setVisibility({ mode: "all", visible: [], explored: [], perceived: [] });
+   * backend.visibility; // { mode: "all", visible: [], explored: [], perceived: [] }
    * ```
    */
   setVisibility(input: VisibilityInput): void {
@@ -180,8 +180,8 @@ export class MockBackend implements DisplayBackend {
    *
    * const backend = new MockBackend();
    * backend.setVisibilityBlend(
-   *   { mode: "masked", visible: [], explored: [] },
-   *   { mode: "masked", visible: [], explored: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
    *   0.5,
    * );
    * backend.visibilityBlend?.factor; // 0.5
@@ -225,8 +225,9 @@ export class MockBackend implements DisplayBackend {
     };
   }
   /** `DisplayBackend.setToken`: upserts `spec` verbatim into `this.tokens`, keyed by `id`. Unlike
-   * `PixiBackend.setToken`, this does not simulate texture loading, rotation, or badge diffing —
-   * `this.tokens.get(id)` always reflects the LAST spec passed, immediately.
+   * `PixiBackend.setToken`, this does not simulate texture loading, rotation, badge diffing, or the
+   * perceived-flag re-parenting — `this.tokens.get(id)` always reflects the LAST spec passed,
+   * immediately, including its `perceived` flag.
    * @param id The token document id.
    * @param spec The resolved token render spec to record.
    * @example
@@ -237,7 +238,7 @@ export class MockBackend implements DisplayBackend {
    * backend.setToken("00000000-0000-0000-0000-000000000001", {
    *   x: 0, y: 0, w: 70, h: 70, rotation: 0,
    *   visual: { kind: "image", url: "https://example.test/token.png" },
-   *   borderColor: null, badges: [], shape: "square",
+   *   borderColor: null, badges: [], shape: "square", perceived: false,
    * });
    * ```
    */
@@ -471,7 +472,7 @@ export class MockBackend implements DisplayBackend {
    * backend.setToken("00000000-0000-0000-0000-000000000001", {
    *   x: 42, y: 0, w: 70, h: 70, rotation: 0,
    *   visual: { kind: "image", url: "https://example.test/token.png" },
-   *   borderColor: null, badges: [], shape: "square",
+   *   borderColor: null, badges: [], shape: "square", perceived: false,
    * });
    * backend.lastTokenX("00000000-0000-0000-0000-000000000001"); // 42
    * ```

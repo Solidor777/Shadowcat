@@ -173,7 +173,14 @@ export class RenderEngine implements SceneToolHost {
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
   /** The last derived visibility, re-rendered when the GM fog preview toggles. */
-  private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [] };
+  private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [], perceived: [] };
+  /** Ids of tokens the latest applied `vision` frame reports as perceived ONLY through a
+   * creature sense (tremorsense & kin), taken from the scene-filtered `VisibilityInput.perceived`.
+   * Read by `TokenView.toSpec` through the constructor-injected lookup. Written only by
+   * {@link applyDerived} and {@link reapplyViewedScene} — a vision sweep
+   * (`applyVisionSweep`/`tickVisionSweep`) replaces the FOG input only and never touches this
+   * set, so a perceived token stays raised above the fog for the whole sweep. */
+  private perceived: ReadonlySet<string> = new Set();
   /** GM-only client preview: when true a no-fog (`mode:"all"`) frame renders as full fog, so the
    * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view, client-only
    * with no server path — it can never reveal more than the frame already carries. */
@@ -235,7 +242,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
@@ -426,18 +433,23 @@ export class RenderEngine implements SceneToolHost {
    * outside frame handling, neither a frame application: {@link setViewAsUser} resets
    * `lastAppliedSeq` to `-1` (a view-switch watermark reset) without touching `lastInput`, and
    * {@link reapplyViewedScene} writes `lastInput` directly (a scene-switch re-filter of the
-   * already-cached raw payload) without touching `lastAppliedSeq`.
+   * already-cached raw payload) without touching `lastAppliedSeq`. Also re-projects the
+   * creature-sense `perceived` id set into the token views: a derived frame carries no document
+   * change, so without the reconcile here a perceived add/remove would wait for an unrelated
+   * store commit to reach `PixiBackend.setToken`.
    * @param input The resolved `VisibilityInput` (already scene-filtered by `toVisibility`).
    * @param seq The frame's `computedAtSeq`, recorded as the new watermark.
    * @example
    * ```
    * // private method; not part of the public API
-   * this.applyDerived({ mode: "masked", visible: [], explored: [] }, 7);
+   * this.applyDerived({ mode: "masked", visible: [], explored: [], perceived: [] }, 7);
    * ```
    */
   private applyDerived(input: VisibilityInput, seq: number): void {
     this.lastAppliedSeq = seq;
     this.lastInput = input;
+    this.perceived = new Set(input.perceived);
+    this.tokens.reconcile();
     this.renderVisibility();
   }
 
@@ -456,7 +468,7 @@ export class RenderEngine implements SceneToolHost {
   private renderVisibility(): void {
     const eff: VisibilityInput =
       this.fogPreview && this.lastInput.mode === "all"
-        ? { mode: "masked", visible: [], explored: [] }
+        ? { mode: "masked", visible: [], explored: [], perceived: [] }
         : this.lastInput;
     if (this.visionSweeps.size === 0) this.compositor.setVisibility(eff);
     this.opts.onDerivedApplied?.(eff);
@@ -498,6 +510,14 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   reapplyViewedScene(): void {
+    // Re-filter the cached raw payload FIRST: `TokenView.toSpec` reads the `perceived` set
+    // through the injected lookup, so it must reflect the newly-viewed scene before the token
+    // reconcile below runs.
+    if (this.lastRawPayload !== undefined) {
+      this.lighting.setTarget(this.toLighting(this.lastRawPayload));
+      this.lastInput = this.toVisibility(this.lastRawPayload);
+      this.perceived = new Set(this.lastInput.perceived);
+    }
     this.reconciler.reconcile();
     this.tokens.reconcile();
     this.drawings.reconcile();
@@ -506,8 +526,6 @@ export class RenderEngine implements SceneToolHost {
     this.regions.reconcile();
     this.lights.reconcile();
     if (this.lastRawPayload !== undefined) {
-      this.lighting.setTarget(this.toLighting(this.lastRawPayload));
-      this.lastInput = this.toVisibility(this.lastRawPayload);
       this.renderVisibility();
     }
   }
@@ -537,15 +555,18 @@ export class RenderEngine implements SceneToolHost {
    * `{mode:"masked", polygons:[{scene,points:[x,y,…]},…]}` → fog outside those polygons; empty ⇒
    * full fog. Each polygon is filtered to the active scene so a polygon for a token in another
    * scene cannot punch a hole into this scene's fog (scene coordinates are scene-local and reused
-   * across scenes).
+   * across scenes). The `perceived` key (`[{scene, tokens:[id,…]}]`, creature-sense-only token
+   * ids) gets the same active-scene filter and the same fail-closed default: missing or garbled
+   * ⇒ an empty list, never a widened render.
    * @param payload The raw `vision` channel payload — untyped: this layer trusts nothing about
    * its shape and validates every field structurally below.
    * @returns A `VisibilityInput` scene-filtered against {@link viewedScene}; full fog
-   * (`{mode:"masked", visible:[], explored:[]}`) on any missing, garbled, or unknown-mode input.
+   * (`{mode:"masked", visible:[], explored:[], perceived:[]}`) on any missing, garbled, or
+   * unknown-mode input.
    * @example
    * ```
    * // private method; not part of the public API
-   * const input = this.toVisibility({ mode: "all" }); // {mode:"all", visible:[], explored:[]}
+   * const input = this.toVisibility({ mode: "all" }); // {mode:"all", visible:[], explored:[], perceived:[]}
    * ```
    */
   private toVisibility(payload: unknown): VisibilityInput {
@@ -569,12 +590,19 @@ export class RenderEngine implements SceneToolHost {
             /** Flat `[i0,j0,i1,j1,…]` cell-index pairs — see `cellsToRects`. */
             cells?: number[];
           }[];
+          /** Per-scene creature-sense (tremorsense & kin) token-id groups — see the method doc. */
+          perceived?: {
+            /** The scene id this id group belongs to — filtered against the active scene. */
+            scene?: string;
+            /** Token ids perceived only through a creature sense in that scene. */
+            tokens?: unknown[];
+          }[];
         }
       | null
       | undefined;
-    if (p?.mode === "all") return { mode: "all", visible: [], explored: [] };
+    if (p?.mode === "all") return { mode: "all", visible: [], explored: [], perceived: [] };
     // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
-    if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [] };
+    if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [], perceived: [] };
     const activeScene = this.viewedScene();
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
     const visible = polygons
@@ -608,7 +636,22 @@ export class RenderEngine implements SceneToolHost {
           Array.isArray(g.cells),
       )
       .flatMap((g) => cellsToRects(g.cells, this.grid));
-    return { mode: "masked", visible, explored };
+    // `perceived` ids get the same active-scene filter as `visible`/`explored`; missing/garbled
+    // groups → no perceived ids (fail-safe: fewer reveals, never more). Non-string ids are
+    // dropped individually rather than failing the whole group — either way the result only
+    // ever under-collects.
+    const perceivedGroups = Array.isArray(p.perceived) ? p.perceived : [];
+    const perceived = perceivedGroups
+      .filter(
+        (g): g is {
+          /** The scene id this id group belongs to. */
+          scene?: string;
+          /** Token ids perceived only through a creature sense in that scene. */
+          tokens: unknown[];
+        } => !!g && g.scene === activeScene && Array.isArray(g.tokens),
+      )
+      .flatMap((g) => g.tokens.filter((t): t is string => typeof t === "string"));
+    return { mode: "masked", visible, explored, perceived };
   }
 
   /** Parse the `vision` payload's lighting dimension into a LightingInput for the ACTIVE scene, or
@@ -1089,8 +1132,9 @@ export class RenderEngine implements SceneToolHost {
   /** For a SINGLE in-flight sweep, the `(from, to, factor)` cross-fade triple between the
    * chosen sample and the next one (smallest `tMs` strictly greater than the chosen sample's) —
    * or `null` when there is no next sample (elapsed at/after the last sample: nothing to fade
-   * toward, caller snaps instead). `explored` is carried from the last derived frame in both
-   * endpoints — only `visible` cross-fades.
+   * toward, caller snaps instead). `explored` and `perceived` are carried from the last derived
+   * frame in both endpoints — only `visible` cross-fades, and the creature-sense id set is not
+   * part of the sweep at all.
    * @param sweep The in-flight sweep state.
    * @param sweep.samples The sweep's ordered vision samples.
    * @param sweep.elapsed Milliseconds elapsed since the sweep started.
@@ -1123,8 +1167,8 @@ export class RenderEngine implements SceneToolHost {
     }
     if (!next) return null;
     return {
-      from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored },
-      to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored },
+      from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored, perceived: this.lastInput.perceived },
+      to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored, perceived: this.lastInput.perceived },
       factor: computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs),
     };
   }
@@ -1155,7 +1199,7 @@ export class RenderEngine implements SceneToolHost {
     for (const sweep of this.visionSweeps.values()) {
       visible.push(...this.samplePolygons(this.chosenSample(sweep)));
     }
-    this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored });
+    this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored, perceived: this.lastInput.perceived });
   }
 
   /** Routes a DOM pointerdown (screen coords) to the active tool first, falling back to camera

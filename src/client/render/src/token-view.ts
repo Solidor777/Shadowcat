@@ -7,6 +7,11 @@ import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
 import { sceneScopedDocs } from "./scene-scope";
 
+/** The default creature-sense lookup for `TokenView` constructors that take none: no token is
+ * ever perceived-only, so every spec's `perceived` flag resolves `false`. A shared frozen-at-
+ * birth empty set — never mutated, so one instance serves every defaulting view. */
+const NO_PERCEIVED: ReadonlySet<string> = new Set();
+
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
 export class TokenView {
@@ -41,6 +46,9 @@ export class TokenView {
    * @param footprints Resolves the server's current footprint lookup, read fresh per `toSpec` so a
    * newly-arrived frame is picked up on the next reconcile. Defaults to `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`.
+   * @param perceived Resolves the engine's current creature-sense id set (`VisibilityInput.perceived`),
+   * read fresh per `toSpec` so a perceived add/remove is picked up on the next reconcile. Defaults
+   * to an always-empty set (`NO_PERCEIVED`), under which no token is raised above the fog.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -56,6 +64,7 @@ export class TokenView {
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
     private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
+    private readonly perceived: () => ReadonlySet<string> = () => NO_PERCEIVED,
   ) {}
 
   /** Mark `id` as the locally-dragged token (its sprite snaps to the authoritative transform each
@@ -301,8 +310,10 @@ export class TokenView {
    * (`resolveTokenActor`), the visual (`resolveTokenVisual`, image or animated, URL-resolved via
    * `resolveSource`), the faction border color (via the world `faction-registry` doc; `null` when
    * the effective actor has no faction or the faction has no registered color), condition badges
-   * (`resolveConditions`), and the footprint box/shape (`resolveTokenBox`, reading the server's
-   * resolved extent rather than computing one). Fails closed to `null`
+   * (`resolveConditions`), the footprint box/shape (`resolveTokenBox`, reading the server's
+   * resolved extent rather than computing one), and the creature-sense flag (`perceived` set
+   * membership — read fresh per call so a derived-frame reconcile re-projects it immediately).
+   * Fails closed to `null`
    * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
    * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
    * @param doc The `token` document to project.
@@ -340,6 +351,7 @@ export class TokenView {
       borderColor,
       badges,
       shape: box.shape,
+      perceived: this.perceived().has(doc.id),
     };
   }
 }
