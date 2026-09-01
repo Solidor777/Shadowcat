@@ -460,8 +460,87 @@ describe("ActorsPanel — per-token face swap", () => {
   });
 });
 
-describe("ActorsPanel — live search + open sheet", () => {
-  // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
+describe("ActorsPanel — post-create visual editing", () => {
+  function imageActor(): WireDocument {
+    return buildActorDoc(
+      "w1",
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
+      "act1",
+    );
+  }
+
+  it("opens the row editor initialized from the actor's current visual and applies a raw-`old` update", async () => {
+    const dispatchIntent = vi.fn();
+    const pickAsset = vi.fn().mockResolvedValue("a2");
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(imageActor()), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.click(within(listItem).getByText("actors.editVisual"));
+
+    // The row's editor initializes FROM the actor's current visual (kind + picked asset).
+    expect((within(listItem).getByLabelText("actors.visualKind") as HTMLSelectElement).value).toBe("image");
+
+    // Pick a replacement art asset, then apply.
+    await fireEvent.click(within(listItem).getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalledWith({ kind: "image" }));
+    await fireEvent.click(within(listItem).getByText("actors.applyVisual"));
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/visual", old: { kind: "image", asset: "a1" }, new: { kind: "image", asset: "a2" } }] },
+    ]);
+    // The row editor closes on apply.
+    expect(within(listItem).queryByLabelText("actors.visualKind")).toBeNull();
+  });
+
+  it("cancel closes the row editor without dispatching", async () => {
+    const dispatchIntent = vi.fn();
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(imageActor()), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.click(within(listItem).getByText("actors.editVisual"));
+    expect(within(listItem).getByLabelText("actors.visualKind")).toBeTruthy();
+
+    await fireEvent.click(within(listItem).getByText("actors.cancelVisual"));
+    expect(within(listItem).queryByLabelText("actors.visualKind")).toBeNull();
+    expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+
+  it("the row editor builds a generated visual and applies it wholesale", async () => {
+    const dispatchIntent = vi.fn();
+    const pickAsset = vi.fn().mockResolvedValue("art-1");
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(imageActor()), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.click(within(listItem).getByText("actors.editVisual"));
+    await fireEvent.change(within(listItem).getByLabelText("actors.visualKind"), { target: { value: "generated" } });
+    await fireEvent.click(within(listItem).getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalledWith({ kind: "image" }));
+    await fireEvent.click(within(listItem).getByText("actors.applyVisual"));
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      {
+        op: "update",
+        doc_id: "act1",
+        changes: [
+          {
+            path: "/engine/visual",
+            old: { kind: "image", asset: "a1" },
+            new: { kind: "generated", art: { kind: "image", asset: "art-1" }, crop: "circle", border: null, background: null },
+          },
+        ],
+      },
+    ]);
+  });
+});
+
+describe("ActorsPanel — live search + open sheet", () => {  // Real (not identity) `t` for this describe block: the "Open sheet" assertion below matches
   // the actual rendered label text, not the raw i18n key (the identity default the other
   // `describe` blocks rely on has no space between "open" and "Sheet").
   const realT = (k: string): string => ({ "actors.openSheet": "Open sheet", "actors.search": "Search actors" })[k as "actors.openSheet" | "actors.search"] ?? k;
