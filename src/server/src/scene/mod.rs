@@ -17,6 +17,7 @@ pub mod movement;
 pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
 pub(crate) mod regions;
+pub(crate) mod senses;
 pub mod vision;
 
 #[cfg(test)]
@@ -1949,14 +1950,52 @@ impl SceneEcs {
         Some((scene, self.token_effective_owner(&ent.doc)))
     }
 
+    /// The token's effective vision assignments — the ONE linked/instanced/override precedence
+    /// walk, shared by `token_vision_floors` (the terrain-floor view) and
+    /// `senses::SceneEcs::token_creature_senses` (the creature-sense view) so the two consumers
+    /// can never disagree on which assignments a token carries. Precedence (mirrors
+    /// `resolveTokenActor`): a LINKED token (`actor_id` present) resolves the shared actor and
+    /// applies `overrides.vision` as a wholesale replacement when present; a dangling link
+    /// (actor absent) yields `None`, ignoring overrides. An INSTANCED token (no `actor_id`)
+    /// uses its `embedded.actor[0].engine.vision` without overrides.
+    fn token_vision_assignments(&self, token: &Document) -> Option<Vec<eng::VisionAssignment>> {
+        let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
+
+        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
+        // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
+        // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
+        // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
+        match token_eng.as_ref().and_then(|t| t.actor_id) {
+            Some(id) => match self.actors.get(&id) {
+                Some(actor) => token_eng
+                    .as_ref()
+                    .and_then(|t| t.overrides.as_ref())
+                    .and_then(|o| o.vision.clone())
+                    .or_else(|| {
+                        self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)
+                            .and_then(|a| a.vision)
+                    }),
+                None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
+            },
+            // Uncached: an embedded actor's `id` doesn't match `token.id`, the key
+            // `apply_op`'s invalidation removes on a token mutation — caching under the
+            // embedded doc's own id would go stale on any `/embedded/actor/0/...` write.
+            None => token
+                .embedded
+                .get("actor")
+                .and_then(|v| v.first())
+                .and_then(engine_as::<eng::ActorEngine>)
+                .and_then(|a| a.vision),
+        }
+    }
+
     /// The token's effective vision modes as `(floor_min_illumination, range_cells, render_hint)`
-    /// triples. `range_cells == 0.0` ⇒ unlimited. `render_hint` mirrors `VisionMode.render_hint`
-    /// (e.g. `Some("desaturate")` for darkvision). Precedence (mirrors `resolveTokenActor`):
-    /// a LINKED token (`actor_id` present) resolves the shared actor and applies
-    /// `overrides.vision` as a wholesale replacement when present; a dangling link (actor absent)
-    /// yields normal, ignoring overrides. An INSTANCED token (no `actor_id`) uses its
-    /// `embedded.actor[0].engine.vision` without overrides. An unknown mode id is dropped
-    /// (fail-closed: it contributes no vision floor). A `Perception::Creatures` mode is likewise
+    /// triples, resolved from the assignments `token_vision_assignments` walks (that shared
+    /// resolver owns the linked/instanced/override precedence; this function owns only the
+    /// per-mode terrain-floor projection). `range_cells == 0.0` ⇒ unlimited. `render_hint`
+    /// mirrors `VisionMode.render_hint` (e.g. `Some("desaturate")` for darkvision).
+    /// An unknown mode id is dropped (fail-closed: it contributes no vision floor). A
+    /// `Perception::Creatures` mode is likewise
     /// absent here — creature senses perceive tokens, not terrain
     /// (`SceneEcs::player_perceived_tokens` is their consumer), so they must not widen the
     /// illumination-floor mask. Always returns ≥1 triple (normal fallback
@@ -1965,38 +2004,8 @@ impl SceneEcs {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
 
-        let token_eng = self.engine_as_cached::<eng::TokenEngine>(token.id, token);
-
-        // Mirror `resolveTokenActor`: a LINKED token (actor_id) resolves the shared actor and
-        // applies the per-token override whitelist (overrides.vision REPLACES the actor's vision); a
-        // dangling link (actor absent) yields normal, ignoring overrides. An INSTANCED token (no
-        // actor_id) uses its embedded copy's vision; overrides do not apply to instanced tokens.
-        let assignments: Option<Vec<eng::VisionAssignment>> =
-            match token_eng.as_ref().and_then(|t| t.actor_id) {
-                Some(id) => match self.actors.get(&id) {
-                    Some(actor) => token_eng
-                        .as_ref()
-                        .and_then(|t| t.overrides.as_ref())
-                        .and_then(|o| o.vision.clone())
-                        .or_else(|| {
-                            self.engine_as_cached::<eng::ActorEngine>(actor.id, actor)
-                                .and_then(|a| a.vision)
-                        }),
-                    None => None, // dangling link → normal (overrides ignored, per resolveTokenActor)
-                },
-                // Uncached: an embedded actor's `id` doesn't match `token.id`, the key
-                // `apply_op`'s invalidation removes on a token mutation — caching under the
-                // embedded doc's own id would go stale on any `/embedded/actor/0/...` write.
-                None => token
-                    .embedded
-                    .get("actor")
-                    .and_then(|v| v.first())
-                    .and_then(engine_as::<eng::ActorEngine>)
-                    .and_then(|a| a.vision),
-            };
-
         let mut out: Vec<(f64, f64, Option<String>)> = Vec::new();
-        if let Some(arr) = assignments {
+        if let Some(arr) = self.token_vision_assignments(token) {
             for a in arr {
                 let Some(vm) = modes.get(&a.mode) else {
                     continue;
@@ -3380,6 +3389,15 @@ pub fn compute_derived(
                 // Build the hint table and 5-int cell packing in a plain loop to avoid a
                 // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
                 let mask = ecs.player_lit_mask(ctx.user_id, ctx.world_role, world_defaults, &bands);
+                // Creature senses (tremorsense & kin): the grounded tokens the recipient's
+                // grounded sources perceive, disjoint from `lit` by construction (a target
+                // whose center cell is already in the lit mask is not restated). Absent on
+                // the GM arm above — a GM sees all, so there is nothing to perceive.
+                let perceived: Vec<serde_json::Value> = ecs
+                    .player_perceived_tokens(ctx, world_defaults)
+                    .into_iter()
+                    .map(|p| serde_json::json!({ "scene": p.scene, "tokens": p.tokens }))
+                    .collect();
                 let mut hints: Vec<String> = Vec::new();
                 let mut lit: Vec<serde_json::Value> = Vec::new();
                 for s in mask {
@@ -3402,7 +3420,7 @@ pub fn compute_derived(
                     );
                 }
                 Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit }),
+                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit, "perceived": perceived }),
                 )
             }
         }
