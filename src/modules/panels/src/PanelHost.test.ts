@@ -247,6 +247,27 @@ test("adoption: after apply, a docked panel's slot element is adopted into the F
   expect(slotEl!.parentElement!.isSameNode(groupEl)).toBe(true);
 });
 
+test("a panel contribution with styling isolated mounts its slot with the theme-isolation class", async () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({
+    id: "chat:panel",
+    contract: PANEL_CONTRACT,
+    component: CountingPanel,
+    props: { onMountFn: () => {} },
+    styling: "isolated",
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  const engine = new FakeEngine();
+  const context = setAppContextForTest({ contributions: registry, role: "gm" });
+  render(PanelHost, { props: { engine }, context });
+  await Promise.resolve();
+
+  // The class rides the SLOT, so it travels with the content through engine
+  // adoption — dock, float, compact switcher, and pop-out alike.
+  const slotEl = screen.getByTestId("counting-panel").closest('[data-panel="chat:panel"]');
+  expect(slotEl!.classList.contains("sc-theme-isolate")).toBe(true);
+});
+
 test("removed-while-docked: disposing a docked contribution prunes it reactively without crashing the host, survivor stays adopted", async () => {
   const registry = new ContributionRegistry();
   const disposeA = registry.contribute({

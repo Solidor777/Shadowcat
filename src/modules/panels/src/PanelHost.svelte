@@ -418,7 +418,7 @@
   <div class="staging" bind:this={stagingEl}>
     {#each visibleRegs as c (c.id)}
       {@const Comp = c.component as Component<Record<string, unknown>>}
-      <div class="panel-slot" data-panel={c.id} use:registerSlot={c.id}>
+      <div class="panel-slot" class:sc-theme-isolate={c.styling === "isolated"} data-panel={c.id} use:registerSlot={c.id}>
         {#key remountKeys.get(c.id) ?? 0}
           <svelte:boundary onerror={(e) => log.error(`panel "${c.id}" crashed`, e)}>
             <Comp {...(c.props ?? {})} />
