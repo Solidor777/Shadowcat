@@ -290,6 +290,75 @@ fn actor_missing_faction_key_accepted_as_none() {
 }
 
 #[test]
+fn actor_movement_absent_defaults_to_empty_and_round_trips() {
+    // `movement` is `#[serde(default)]`: a body written before the key existed still decodes.
+    let absent = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true
+    });
+    let engine: ActorEngine = serde_json::from_value(absent).unwrap();
+    assert_eq!(engine.movement, Vec::<String>::new());
+
+    // Tags (reserved and unknown alike) are carried verbatim as inert vocabulary.
+    let tagged = json!({
+        "displayName": "Wraith", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "movement": ["incorporeal", "ethereal-step"]
+    });
+    assert!(validate_engine("actor", Some(&tagged)).is_ok());
+    let engine: ActorEngine = serde_json::from_value(tagged).unwrap();
+    assert_eq!(engine.movement, vec!["incorporeal", "ethereal-step"]);
+    // A non-string tag is malformed input — fail closed at ingress.
+    let garbled = json!({
+        "displayName": "Wraith", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "movement": [7]
+    });
+    assert!(validate_engine("actor", Some(&garbled)).is_err());
+}
+
+#[test]
+fn token_overrides_movement_absent_is_none_present_replaces() {
+    // Absent key ⇒ `None` (inherit the actor's resolved set); a present array — even an
+    // EMPTY one — is `Some`, i.e. a wholesale replacement that strips every inherited tag.
+    let plain: TokenEngine = serde_json::from_value(json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+    }))
+    .unwrap();
+    assert_eq!(plain.overrides, None);
+
+    let replaced: TokenEngine = serde_json::from_value(json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "overrides": { "movement": ["flying"] }
+    }))
+    .unwrap();
+    assert_eq!(
+        replaced.overrides.and_then(|o| o.movement),
+        Some(vec!["flying".to_string()])
+    );
+}
+
+#[test]
+fn faction_movement_absent_defaults_to_empty() {
+    // A faction body written before `movement` existed still decodes; the seed
+    // factions carry no tags.
+    let f: Faction = serde_json::from_value(json!({
+        "name": "Skyborn", "color": "#88c", "stance": "neutral"
+    }))
+    .unwrap();
+    assert_eq!(f.movement, Vec::<String>::new());
+    assert!(
+        FactionRegistryEngine::seed()
+            .factions
+            .values()
+            .all(|f| f.movement.is_empty())
+    );
+}
+
+#[test]
 fn world_settings_unknown_field_is_rejected() {
     let mut v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
     v.as_object_mut().unwrap().insert("bogus".into(), json!(1));

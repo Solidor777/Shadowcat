@@ -130,6 +130,12 @@ pub struct TokenOverrides {
     /// illumination field every viewer's mask reads, unlike the other owner-writable overrides.
     #[serde(default)]
     pub light: Option<LightEmission>,
+    /// Per-token movement-tag override: replaces the actor's resolved movement set (actor ∪
+    /// faction) entirely when present — wholesale, same shape as `vision`. The engine-reserved
+    /// semantics of `"flying"`/`"incorporeal"` are stated on `ActorEngine::movement`; they apply
+    /// identically to tags arriving through this override.
+    #[serde(default)]
+    pub movement: Option<Vec<String>>,
 }
 
 /// A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
@@ -301,4 +307,13 @@ pub struct ActorEngine {
     /// field every viewer's mask reads.
     #[serde(default)]
     pub light: Option<LightEmission>,
+    /// Movement-type tags (system vocabulary space, same posture as `conditions`). The engine
+    /// reserves exactly two — `"flying"` and `"incorporeal"` — each meaning the mover ignores
+    /// difficult-terrain COST (`RegionField::terrain_multiplier` reads as 1.0) and NOTHING else:
+    /// walls still gate, impassable regions still block, arrest regions still stop, and the
+    /// visibility mask still gates. Unknown tags are carried as inert data for system modules to
+    /// interpret. Resolution (`SceneEcs::token_movement_tags` / `resolveTokenActor`) unions these
+    /// with the linked faction's `Faction.movement`; a token override replaces the whole set.
+    #[serde(default)]
+    pub movement: Vec<String>,
 }

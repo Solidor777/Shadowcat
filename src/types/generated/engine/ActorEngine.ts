@@ -62,4 +62,14 @@ vision: Array<VisionAssignment> | null,
  * (`permission::carried_light_touched`), since an emission edits the shared illumination
  * field every viewer's mask reads.
  */
-light: LightEmission | null, };
+light: LightEmission | null, 
+/**
+ * Movement-type tags (system vocabulary space, same posture as `conditions`). The engine
+ * reserves exactly two — `"flying"` and `"incorporeal"` — each meaning the mover ignores
+ * difficult-terrain COST (`RegionField::terrain_multiplier` reads as 1.0) and NOTHING else:
+ * walls still gate, impassable regions still block, arrest regions still stop, and the
+ * visibility mask still gates. Unknown tags are carried as inert data for system modules to
+ * interpret. Resolution (`SceneEcs::token_movement_tags` / `resolveTokenActor`) unions these
+ * with the linked faction's `Faction.movement`; a token override replaces the whole set.
+ */
+movement: Array<string>, };

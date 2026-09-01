@@ -42,4 +42,11 @@ vision: Array<VisionAssignment> | null,
  * GM-only at ingress (`permission::carried_light_touched`): an emission joins the shared
  * illumination field every viewer's mask reads, unlike the other owner-writable overrides.
  */
-light: LightEmission | null, };
+light: LightEmission | null, 
+/**
+ * Per-token movement-tag override: replaces the actor's resolved movement set (actor ∪
+ * faction) entirely when present — wholesale, same shape as `vision`. The engine-reserved
+ * semantics of `"flying"`/`"incorporeal"` are stated on `ActorEngine::movement`; they apply
+ * identically to tags arriving through this override.
+ */
+movement: Array<string> | null, };
