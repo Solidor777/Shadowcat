@@ -141,6 +141,8 @@ as, so an authoring UI can tell the author *why* a name was refused rather than
 only *that* it was, and `rejects` carries the error for a key the grammar refuses
 outright. What each of those outcomes does downstream is documented on
 [`NotationKeyCheck`](/api/ts/interfaces/_shadowcat_formula.NotationKeyCheck.html).
+The server runs the same grammar at ingest when it resolves a roll's references,
+so a key that passes here behaves identically when the server reads it.
 
 Run it wherever your system accepts a key an author can name — a sheet's stat
 editor, a compendium importer, a migration. A key that fails this check is a
@@ -167,6 +169,15 @@ is `ctx.templates` ([`TemplatesApi`](/api/ts/interfaces/_shadowcat_ui-kit.Templa
 Rolls are server-side and immutable: clients submit dice *notation* through chat
 (`/roll 2d6+3`-style commands), the server evaluates with its own entropy, and
 the result lands in the message stream as roll segments no client can edit.
+Notation may be a **raw template with stat references** (`/roll 1d20 + attributes.str`):
+the server resolves each reference at ingest against the send's actor binding —
+the sender's speak-as selection (or, for `CombatRoll`, each named combatant's
+formula host) — and the breakdown shows what each reference read as a labeled
+chip. An unbound send (no speak-as) that names a reference fails with an
+`unknown-ref` notice. `resolveNotationTemplate` is still shipped, but only as a
+preview/authoring aid: the wire carries the raw template, never a
+client-substituted one. A message's `channel` is validated against the world's
+channel registry at ingest — post to channels the registry declares.
 Systems integrate at two points: composing notation (e.g. a sheet button that
 sends a roll for `attributes.str`'s modifier via
 [`ChatApi`](/api/ts/interfaces/_shadowcat_ui-kit.ChatApi.html)) and rendering

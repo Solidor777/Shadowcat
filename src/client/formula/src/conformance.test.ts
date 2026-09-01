@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { evaluate } from "./evaluate";
 import { resolveAll } from "./graph";
 import { parseFormula, type Expr } from "./parser";
+import { resolveNotationTemplate } from "./template";
 import type { FormulaError, FormulaValue } from "./types";
 
 /** Every dotted ref in `expr`, in source order, first occurrence only. A graph node must
@@ -53,12 +54,27 @@ interface GraphCase {
   /** Expected value per key (a subset of the result map). */
   expect: Record<string, FormulaValue>;
 }
+/** One template case: `bindings` values are numbers or errors; a path absent from the map
+ * resolves as `unknown-ref`. */
+interface TemplateCase {
+  /** Unique case name, reported on failure. */
+  name: string;
+  /** Notation-template source text. */
+  src: string;
+  /** Stub-resolver environment keyed by the RAW-CASE dotted path (this grammar does not
+   * lowercase what it offers the resolver). */
+  bindings?: Record<string, FormulaValue>;
+  /** The rewritten notation, or the error the scan ends in. */
+  expect: { notation: string } | FormulaError;
+}
 /** The corpus file's shape. */
 interface Corpus {
   /** Expression cases. */
   expressions: ExpressionCase[];
   /** Graph cases. */
   graphs: GraphCase[];
+  /** Notation-template cases. */
+  templates: TemplateCase[];
 }
 
 const corpus: Corpus = JSON.parse(
@@ -72,7 +88,9 @@ const unknownRef = (key: string): FormulaError => ({
 
 describe("conformance corpus (shared with the server twin)", () => {
   it("has unique case names", () => {
-    const names = [...corpus.expressions, ...corpus.graphs].map((c) => c.name);
+    const names = [...corpus.expressions, ...corpus.graphs, ...corpus.templates].map(
+      (c) => c.name,
+    );
     expect(new Set(names).size).toBe(names.length);
   });
 
@@ -107,6 +125,17 @@ describe("conformance corpus (shared with the server twin)", () => {
       for (const [key, expected] of Object.entries(g.expect)) {
         expect(result.get(key), key).toEqual(expected);
       }
+    });
+  }
+
+  for (const t of corpus.templates) {
+    it(`template: ${t.name}`, () => {
+      const bindings = t.bindings ?? {};
+      const resolve = (path: string[]): FormulaValue => {
+        const key = path.join(".");
+        return key in bindings ? bindings[key] : unknownRef(key);
+      };
+      expect(resolveNotationTemplate(t.src, resolve)).toEqual(t.expect);
     });
   }
 });

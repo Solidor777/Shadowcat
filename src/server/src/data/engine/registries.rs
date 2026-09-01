@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::MAX_CHANNEL_CHARS;
+
 /// A chat channel's display config (mirrors the client's `Channel`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -60,6 +62,28 @@ impl ChannelRegistryEngine {
             },
         );
         Self { channels }
+    }
+
+    /// Ingress validation: the registry must hold at least one channel — an
+    /// empty registry wedges all chat, since message ingest validates
+    /// `MessageEngine.channel` against membership — every channel needs a
+    /// non-empty name, and a key longer than `MAX_CHANNEL_CHARS` could never
+    /// be posted to.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.channels.is_empty() {
+            return Err("channel-registry must declare at least one channel".to_string());
+        }
+        for (id, channel) in &self.channels {
+            if id.chars().count() > MAX_CHANNEL_CHARS {
+                return Err(format!(
+                    "channel id '{id}' exceeds {MAX_CHANNEL_CHARS} characters"
+                ));
+            }
+            if channel.name.trim().is_empty() {
+                return Err(format!("channel '{id}' has an empty name"));
+            }
+        }
+        Ok(())
     }
 }
 

@@ -56,6 +56,10 @@ pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
 pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
 /// Doc_type for the world's singleton channel registry config document.
 pub const CHANNEL_REGISTRY_DOC_TYPE: &str = "channel-registry";
+/// Maximum length of a chat channel id, in characters — the one declaration,
+/// shared by the message ingest check (`chat::handle_send_message`) and
+/// `ChannelRegistryEngine::validate` (a longer key could never be posted to).
+pub const MAX_CHANNEL_CHARS: usize = 128;
 /// Doc_type for the world's singleton vision-modes config document.
 pub const VISION_MODES_DOC_TYPE: &str = "vision-modes";
 /// Doc_type for the world's singleton light-gradation config document.
@@ -236,7 +240,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
         "dice-settings" => round_trip::<DiceSettingsEngine>(v, "dice-settings"),
-        "channel-registry" => round_trip::<ChannelRegistryEngine>(v, "channel-registry"),
+        "channel-registry" => {
+            let typed: ChannelRegistryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("channel-registry: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("channel-registry: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "faction-registry" => round_trip::<FactionRegistryEngine>(v, "faction-registry"),
         "condition-registry" => round_trip::<ConditionRegistryEngine>(v, "condition-registry"),
         "combat" => {

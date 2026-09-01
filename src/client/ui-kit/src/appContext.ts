@@ -6,6 +6,7 @@ import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
 import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
+import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
@@ -202,6 +203,10 @@ export interface AppContext {
   /** The pending "speak as this token" selection for the composer's next send — see
    * `SpeakAsToken`'s class doc for the one-shot consume contract. */
   speakAsToken: SpeakAsToken;
+  /** The session's sticky speak-as actor selection — the actor binding every roll-producing
+   * surface (composer, chat-card roll buttons) resolves against; the one-shot `speakAsToken`
+   * takes precedence when pending. See `SpeakAs`'s class doc. */
+  speakAs: SpeakAs;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves

@@ -29,9 +29,7 @@ further at design time. Numbering continues from Phase 1.
   - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-2 — combat resolution server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-3 — world-config authority** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-4 — dice references + chat channel**: reference production in the notation grammar;
-    roll frames carry an actor binding; `resolveNotationTemplate` preview-only;
-    `MessageEngine.channel` validated at ingest.
+  - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
     conflict set returned for human review; `Document.base` under engine-tree validation.
   - **M14c-6 — combat client seams**: `AppContext.combat`, `CoreHooks` first entries +

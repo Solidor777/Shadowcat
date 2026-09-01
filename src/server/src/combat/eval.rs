@@ -12,14 +12,13 @@ use std::collections::HashMap;
 
 use uuid::Uuid;
 
-use crate::data::document::Document;
+use crate::data::document::{embedded_actor_copy, Document};
 use crate::data::engine::combat::{
     CombatantKind, EffectLifecycle, EffectLifecycleDefaults, Formula, ResourceBinding,
 };
 use crate::data::permission::TOKEN_DOC_TYPE;
-use crate::formula::{
-    evaluate, parse, FormulaError, FormulaErrorKind, FormulaValue, Resolve, SystemLeafResolver,
-};
+use crate::formula::resolver::{NoHostResolver, SystemLeafResolver};
+use crate::formula::{evaluate, parse, FormulaError, FormulaErrorKind};
 
 /// The document a combatant's formulas read: the token-embedded actor copy
 /// when the combatant names a `token_id` whose document embeds one (the
@@ -45,13 +44,6 @@ pub(crate) fn formula_host<'a>(
     actor_id.as_ref().and_then(|id| hosts.get(id))
 }
 
-/// The actor copy a token document embeds, if any — the ONE extraction
-/// `formula_host` and `effect_host_doc` share, so the token→copy step cannot
-/// fork between the combatant walk and the effect walk.
-fn embedded_actor_copy(token: &Document) -> Option<&Document> {
-    token.embedded.get("actor").and_then(|v| v.first())
-}
-
 /// The document an EFFECT's formulas evaluate over: the host itself for an
 /// actor host, the token-embedded actor copy for a token host — the same two
 /// shapes `effects::walk_any_host` walks. `None` for a token embedding no
@@ -61,20 +53,6 @@ pub(crate) fn effect_host_doc(host: &Document) -> Option<&Document> {
         embedded_actor_copy(host)
     } else {
         Some(host)
-    }
-}
-
-/// The resolver used when a combatant has no formula host: every reference is
-/// an `UnknownRef` (wording matching `SystemLeafResolver`'s), so
-/// reference-free text still evaluates while a referencing formula fails with
-/// the path it needed.
-struct NoHostResolver;
-
-impl Resolve for NoHostResolver {
-    fn resolve(&self, path: &[String]) -> FormulaValue {
-        // The SAME wording `SystemLeafResolver` uses for a missing leaf, read
-        // from its own helper so the two cannot drift apart.
-        crate::formula::resolver::unknown(&path.join("."))
     }
 }
 

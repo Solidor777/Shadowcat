@@ -182,7 +182,7 @@ only; the message never distinguishes "hidden" from "absent" or "not yours".
 | `CombatEnd { combat_id }` | GM | §4.3 `on_combat_end`; then `Delete` of the combat (cascade: combatants, history). |
 | `CombatAdvance { combat_id }` | GM; the current combatant's owner under `OwnerMayEnd` | §5.1 |
 | `CombatRewind { combat_id }` | GM | §6.2 |
-| `CombatRoll { combat_id, channel, rolls: [{ combatant_id, notation }] }` | GM; owner for own combatant | each through `chat::rolls::execute_roll` (the sole untrusted-notation path; its caps and entropy apply unchanged) with the dice context resolved for `channel`; write `initiative`; rebuild `order`; one chat-message `Create` per roll on `channel` in the same command carrying a `RollEmbed` (hidden combatant ⇒ GM-only audience). |
+| `CombatRoll { combat_id, channel, rolls: [{ combatant_id, notation }] }` | GM; owner for own combatant | each through `chat::rolls::execute_roll` (the sole untrusted-notation path; its caps and entropy apply unchanged) with the dice context resolved for `channel`; write `initiative`; rebuild `order`; one chat-message `Create` per roll on `channel` in the same command carrying a `RollEmbed` (hidden combatant ⇒ GM-only audience). *Amended (M14c-4):* `notation` is a RAW template — each entry's references resolve server-side at execution against that entry's combatant's formula host (its token-embedded actor copy, else its linked actor); `channel` is validated against the channel registry at ingest. |
 | `CombatResource { combat_id, combatant_id, resource, op: Delta(f64) \| Set(f64) }` | GM; owner | clamp to `[0, max]`; non-finite refused. |
 | `CombatSort { combat_id }` | GM | `order` ← `initiative desc, tiebreak desc, existing index`. |
 

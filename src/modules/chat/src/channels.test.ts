@@ -31,13 +31,20 @@ const AUDIENCES: ChatMessageEngine["audience"][] = [
 
 describe("postTarget", () => {
   test("all view posts to the default channel with public audience", () => {
-    expect(postTarget({ kind: "all" })).toEqual({ channel: "general", audience: { kind: "public" } });
+    expect(postTarget({ kind: "all" }, ["general"])).toEqual({ channel: "general", audience: { kind: "public" } });
   });
   test("channel view posts to that channel with public audience", () => {
-    expect(postTarget({ kind: "channel", id: "ooc" })).toEqual({ channel: "ooc", audience: { kind: "public" } });
+    expect(postTarget({ kind: "channel", id: "ooc" }, ["general", "ooc"])).toEqual({ channel: "ooc", audience: { kind: "public" } });
   });
   test("gm view posts to the default channel with gm_only audience", () => {
-    expect(postTarget({ kind: "gm" })).toEqual({ channel: "general", audience: { kind: "gm_only" } });
+    expect(postTarget({ kind: "gm" }, ["general"])).toEqual({ channel: "general", audience: { kind: "gm_only" } });
+  });
+  test("the default channel is the registry's lowest-sorted id, not a hardcoded general", () => {
+    expect(postTarget({ kind: "all" }, ["announcements", "general"]).channel).toBe("announcements");
+    expect(postTarget({ kind: "gm" }, ["announcements", "general"]).channel).toBe("announcements");
+  });
+  test("a registry that has not arrived yet falls back to general", () => {
+    expect(postTarget({ kind: "all" }, []).channel).toBe("general");
   });
 });
 
