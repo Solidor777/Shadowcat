@@ -31,6 +31,16 @@ export interface PersistedTheme {
 /** A no-argument callback invoked after any theme state change. */
 export type ThemeListener = () => void;
 
+/** The controller's stored preview: the draft being previewed plus the owner
+ * token `clearPreview` matches against. */
+interface PreviewEntry {
+  /** The validated draft currently overriding resolution. */
+  draft: CustomTheme;
+  /** The opaque token passed to `previewCustom`, or null for an untagged
+   * preview. */
+  owner: object | null;
+}
+
 /** Owns the active theme and the saved custom themes, applies the resolved
  * theme to every registered document, and notifies subscribers on change.
  * Framework-neutral consumers use `subscribe`; Svelte consumers read through
@@ -49,7 +59,7 @@ export class ThemeController {
    * observes an in-progress edit. `$state.raw`: the value is only ever
    * replaced, never mutated, and the deep proxy `$state` would wrap the owner
    * token, breaking the identity comparison `clearPreview` relies on. */
-  #preview = $state.raw<{ draft: CustomTheme; owner: object | null } | null>(null);
+  #preview = $state.raw<PreviewEntry | null>(null);
   /** Secondary documents the resolved theme is applied to on every change. */
   #documents = new Set<Document>();
   /** Subscribers notified after a change that actually took effect. */
