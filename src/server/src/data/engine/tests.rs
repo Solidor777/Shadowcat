@@ -161,6 +161,56 @@ fn wall_unknown_field_is_rejected() {
 }
 
 #[test]
+fn wall_elevation_absent_defaults_to_none() {
+    // No `elevation` key: the wall occludes every elevation (see `WallEngine::elevation`).
+    let v = json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } });
+    let w: WallEngine = serde_json::from_value(v).unwrap();
+    assert_eq!(w.elevation, None);
+}
+
+#[test]
+fn wall_elevation_partial_band_parses_with_open_end() {
+    // An absent end is unbounded: `{"bottom": 2}` occludes elevation >= 2 only.
+    let v = json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
+        "elevation": { "bottom": 2.0 }
+    });
+    let w: WallEngine = serde_json::from_value(v).unwrap();
+    assert_eq!(
+        w.elevation,
+        Some(WallElevation {
+            bottom: Some(2.0),
+            top: None
+        })
+    );
+}
+
+#[test]
+fn wall_elevation_unknown_field_is_rejected() {
+    let v = json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
+        "elevation": { "bottom": 2.0, "bogus": 1 }
+    });
+    assert!(serde_json::from_value::<WallEngine>(v).is_err());
+}
+
+#[test]
+fn token_and_light_elevation_absent_default_to_none() {
+    // No `elevation` key reads as grounded (None = 0) on both carriers.
+    let t: TokenEngine = serde_json::from_value(json!({
+        "x": 1.0, "y": 2.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+    }))
+    .unwrap();
+    assert_eq!(t.elevation, None);
+    let l: LightEngine = serde_json::from_value(json!({
+        "x": 0.0, "y": 0.0,
+        "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
+    }))
+    .unwrap();
+    assert_eq!(l.elevation, None);
+}
+
+#[test]
 fn region_unknown_field_is_rejected() {
     let v = json!({
         "shape": { "kind": "rect", "points": [] },
@@ -1077,7 +1127,15 @@ fn vision_modes_seed_content() {
             n.perceives,
             n.requires_los,
         ),
-        ("normal", "Normal", "dim", 0.0, None, Perception::Terrain, true)
+        (
+            "normal",
+            "Normal",
+            "dim",
+            0.0,
+            None,
+            Perception::Terrain,
+            true
+        )
     );
     let d = &s.modes["darkvision"];
     assert_eq!(
@@ -1110,7 +1168,14 @@ fn vision_modes_seed_content() {
             t.perceives,
             t.requires_los,
         ),
-        ("tremorsense", "Tremorsense", 12.0, None, Perception::Creatures, false)
+        (
+            "tremorsense",
+            "Tremorsense",
+            12.0,
+            None,
+            Perception::Creatures,
+            false
+        )
     );
     let v = serde_json::to_value(&s).unwrap();
     assert!(validate_engine("vision-modes", Some(&v)).is_ok());
@@ -1131,6 +1196,15 @@ fn vision_mode_absent_sense_fields_default_to_terrain_los() {
     let w = serde_json::to_value(&m).unwrap();
     assert_eq!(w["perceives"], json!("terrain"));
     assert_eq!(w["requiresLos"], json!(true));
+}
+
+#[test]
+fn vision_mode_unknown_field_is_rejected() {
+    let v = json!({
+        "id": "normal", "name": "Normal",
+        "illuminationFloor": "dim", "defaultRange": 0.0, "bogus": 1
+    });
+    assert!(serde_json::from_value::<VisionMode>(v).is_err());
 }
 
 #[test]

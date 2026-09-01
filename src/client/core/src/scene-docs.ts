@@ -790,7 +790,7 @@ export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument 
  *
  * const engine: TokenEngine = {
  *   x: 50, y: 50, w: 100, h: 100, rotation: 0,
- *   visual: null, actor_id: null, overrides: null, face: null,
+ *   visual: null, actor_id: null, overrides: null, face: null, elevation: null,
  * };
  * const token = buildTokenDoc("world-1", "scene-1", engine);
  * token.doc_type; // "token"
@@ -859,7 +859,7 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
  *
  * const engine: WallEngine = {
  *   seg: { x1: 0, y1: 0, x2: 10, y2: 0 },
- *   blocksSight: true, blocksLight: true, blocksMove: true,
+ *   blocksSight: true, blocksLight: true, blocksMove: true, elevation: null,
  * };
  * const wall = buildSceneEntityDoc("world-1", "scene-1", "wall", engine);
  * wall.doc_type; // "wall"
@@ -989,7 +989,7 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  * import { buildLightDoc, type LightEngine } from "@shadowcat/core";
  *
  * const engine: LightEngine = {
- *   x: 0, y: 0,
+ *   x: 0, y: 0, elevation: null,
  *   emission: { color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
  * };
  * const light = buildLightDoc("world-1", "scene-1", engine);
