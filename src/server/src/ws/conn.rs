@@ -829,8 +829,9 @@ async fn handle_pathfind(
     // unreachable.
     //
     // Deliberate asymmetry — do NOT "fix" it by forking a looser ownership test: this gate keys
-    // on effective OWNERSHIP, while the visibility mask additionally unions observer-tier tokens
-    // when `observerVision` is on. A user whose only vision in a scene is observer-tier therefore
+    // on effective OWNERSHIP, while the visibility mask additionally unions tokens the requester
+    // holds whole-document `cap::READ` on when `observerVision` is on. A user whose only vision
+    // in a scene comes from that observer tier therefore
     // has a mask there but is refused a route preview. That is the fail-closed direction (a route
     // preview is a precursor to moving a token, which observer tier does not grant), and matching
     // the mask's wider source here would hand route previews — and the wall geometry they
@@ -850,7 +851,9 @@ async fn handle_pathfind(
         }
     }
     // The world's capability grants — an input to the movement-budget clamp's `cap::READ`
-    // resolution (`budget_gate_for_token`), fetched ahead of any scene read guard exactly as
+    // resolution (`budget_gate_for_token`) and to the mask's observer-vision source admission
+    // (`gather_vision_sources_in_scene` via `RouteRequester`), fetched ahead of any scene read
+    // guard exactly as
     // `Room::execute_move` fetches it (no await under a guard). Unconditional for the same
     // reason there: whether a combat is running is only knowable under the guard. Fails closed
     // like the executor — an unresolvable authority input refuses the preview generically.
@@ -952,6 +955,8 @@ async fn handle_pathfind(
         crate::scene::RouteRequester {
             user: ctx.user_id,
             is_gm,
+            world_role: ctx.world_role,
+            world_defaults: &world_defaults,
             explored: explored.as_ref(),
         },
         scene,

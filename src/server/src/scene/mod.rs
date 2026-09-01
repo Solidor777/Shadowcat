@@ -117,8 +117,8 @@ pub struct ResolvedScene {
     pub los_restriction: bool,
     /// Fog-of-war on: unseen state is withheld/clipped for players.
     pub fog: bool,
-    /// Observer-tier tokens also contribute vision sources
-    /// (`gather_vision_sources_in_scene`).
+    /// On: non-owned tokens a user holds whole-document `cap::READ` on also contribute vision
+    /// sources (`gather_vision_sources_in_scene`).
     pub observer_vision: bool,
     /// Master lighting toggle; off forces the all-bright arm with tint 0.
     pub lighting_enabled: bool,
@@ -337,7 +337,7 @@ impl VisionMoveInputs {
     }
 }
 
-/// Who is asking `SceneEcs::pathfind` for a route, and what they are allowed to see. These three
+/// Who is asking `SceneEcs::pathfind` for a route, and what they are allowed to see. These
 /// values decide every per-requester filter the router applies: the visibility mask
 /// (`SceneEcs::visible_cells`), the routing wall set (`SceneEcs::move_walls`) and the region field
 /// (`SceneEcs::region_field`).
@@ -357,6 +357,15 @@ pub struct RouteRequester<'a> {
     /// (`None`-viewer) wall set and region field — callers must never pass a GM's id as the
     /// viewer, per `move_walls`/`region_field`'s two-value contract.
     pub is_gm: bool,
+    /// The requester's world role, fed (with `world_defaults`) into the mask's observer-vision
+    /// source admission (`gather_vision_sources_in_scene` → `user_access` →
+    /// `resolve_access_world`) so a world-level READ grant widens the mask exactly as it widens
+    /// document egress. Consulted only when a mask is built at all (never for `is_gm`).
+    pub world_role: crate::data::document::WorldRole,
+    /// The world's capability defaults, pre-fetched by the caller off the scene read lock
+    /// (the fetch awaits; a scene read guard is never held across one). Read by the mask's
+    /// observer-vision admission, same pairing as `world_role`.
+    pub world_defaults: &'a crate::data::document::WorldCapDefaults,
     /// The requester's fog memory for this scene, pre-fetched by the caller off the scene read
     /// lock. Consulted ONLY under `MovementRestriction::Revealed`, where it is unioned into the
     /// mask; `None` degrades `Revealed` to visible-only, which is the fail-closed direction.
@@ -1617,6 +1626,8 @@ impl SceneEcs {
         let RouteRequester {
             user,
             is_gm,
+            world_role,
+            world_defaults,
             explored,
         } = requester;
         // Scene-existence admissibility, ahead of any routing work and for every requester
@@ -1649,11 +1660,21 @@ impl SceneEcs {
         } else {
             match settings.movement_restriction {
                 MovementRestriction::Unrestricted => None,
-                MovementRestriction::Visible => {
-                    Some(self.visible_cells(user, scene, settings.partial_cell_leniency))
-                }
+                MovementRestriction::Visible => Some(self.visible_cells(
+                    user,
+                    world_role,
+                    world_defaults,
+                    scene,
+                    settings.partial_cell_leniency,
+                )),
                 MovementRestriction::Revealed => {
-                    let mut m = self.visible_cells(user, scene, settings.partial_cell_leniency);
+                    let mut m = self.visible_cells(
+                        user,
+                        world_role,
+                        world_defaults,
+                        scene,
+                        settings.partial_cell_leniency,
+                    );
                     if let Some(ex) = explored {
                         m.extend(ex.iter());
                     }
@@ -1892,7 +1913,7 @@ impl SceneEcs {
     /// That equality is against `player_vision_inputs`/`VisionMoveInputs::polygons_at` ONLY —
     /// NOT `gather_vision_sources_in_scene`, the visibility mask's source, which is a different
     /// set in both directions: it additionally requires a parseable `TokenEngine`, and it unions
-    /// observer-tier tokens when `observerVision` is on. Conflating the two reads this comment
+    /// whole-document-READ tokens when `observerVision` is on. Conflating the two reads this comment
     /// as a false claim about the mask.
     ///
     /// Coupling: `handle_pathfind` gates a non-GM route request on this. Weakening it to a raw
@@ -2203,23 +2224,35 @@ impl SceneEcs {
         scene_eng.grid.distance.map(|d| d.per_cell)
     }
 
-    /// The access `ctx` holds on `doc`, resolved through the SAME `effective_owner_via` +
-    /// `resolve_access_world` pair document egress uses (`filter_command`), with the grants
-    /// projected from `doc`'s OWN `doc_type` so a caller cannot supply a mismatched set.
-    ///
-    /// Returns the `Access` rather than a verdict because egress asks TWO questions of it — whole
-    /// document `cap::READ` and the per-property tier through `Access::can_see` — and resolving it
-    /// twice is how the two answers drift apart.
+    /// The access `ctx` holds on `doc` — `user_access` at `ctx`'s identity.
     fn ctx_access(
         &self,
         ctx: &PermissionContext,
         world_defaults: &crate::data::document::WorldCapDefaults,
         doc: &Document,
     ) -> crate::data::permission::Access {
+        self.user_access(ctx.user_id, ctx.world_role, world_defaults, doc)
+    }
+
+    /// The access `user` (a `world_role` member) holds on `doc`, resolved through the SAME
+    /// `effective_owner_via` + `resolve_access_world` pair document egress uses
+    /// (`filter_command`), with the grants projected from `doc`'s OWN `doc_type` so a caller
+    /// cannot supply a mismatched set.
+    ///
+    /// Returns the `Access` rather than a verdict because egress asks TWO questions of it — whole
+    /// document `cap::READ` and the per-property tier through `Access::can_see` — and resolving it
+    /// twice is how the two answers drift apart.
+    fn user_access(
+        &self,
+        user: Uuid,
+        world_role: crate::data::document::WorldRole,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+        doc: &Document,
+    ) -> crate::data::permission::Access {
         let owner = crate::data::permission::effective_owner_via(doc, &|id: &Uuid| self.actor(id));
         crate::data::permission::resolve_access_world(
-            ctx.user_id,
-            ctx.world_role,
+            user,
+            world_role,
             doc,
             &world_defaults.grants_for(&doc.doc_type),
             owner,
@@ -2470,15 +2503,25 @@ impl SceneEcs {
 
     /// The per-player lighting-aware visibility mask: per scene, the cells the user can currently
     /// see = LOS-cells ∩ (illumination ≥ vision floor ∨ darkvision-in-range), each tagged with its
-    /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? Observer-tier
-    /// tokens : ∅). Fail-closed: a source-less player gets empty cells. GM is handled by the caller
+    /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? tokens the user
+    /// holds whole-document `cap::READ` on : ∅), gathered through the ONE admission decision in
+    /// `gather_vision_sources_in_scene` — shared with `visible_cells`/`visible_cells_cached`, so
+    /// the egress mask and the movement-gate mask can never disagree about what counts as a
+    /// source. Fail-closed: a source-less player gets empty cells. GM is handled by the caller
     /// (mode:"all"); this is the masked path only.
     ///
     /// `bands` is the caller-resolved gradation (`resolved_bands`), passed in so the sole
     /// production caller (`compute_derived`) resolves the gradation ONCE and the `vision`
     /// payload's `bands` array is the same resolution the mask's band indices were computed
-    /// against — never a second read that could disagree.
-    pub fn player_lit_mask(&self, user: Uuid, bands: &[Band]) -> Vec<LitScene> {
+    /// against — never a second read that could disagree. `world_role`/`world_defaults` feed the
+    /// source admission exactly as `visible_cells`'s own pair does.
+    pub fn player_lit_mask(
+        &self,
+        user: Uuid,
+        world_role: crate::data::document::WorldRole,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+        bands: &[Band],
+    ) -> Vec<LitScene> {
         // 0. Pre-resolve scene settings for every scene that has a token, so resolve_scene is
         //    called exactly once per scene rather than once per token. Collect
         //    scene ids in a first pass (drops the query borrow before the resolve calls).
@@ -2498,62 +2541,11 @@ impl SceneEcs {
             .map(|&sid| (sid, self.resolve_scene(sid)))
             .collect();
 
-        // 1. Gather vision-source tokens per scene (owner ∪ observer-tier when observerVision on).
-        //    Collect (scene, viewpoint, vision_floors) tuples; drop the query borrow before raycasts.
-        struct Src {
-            scene: Uuid,
-            vp: vision::P,
-            // Source token's elevation: filters the sight-wall set (see-over/see-under).
-            elevation: f64,
-            // (floor_min_value, range_cells, render_hint): render_hint drives per-cell
-            // darkvision hint resolution in the cell-accumulation loop (admit_hint).
-            floors: Vec<(f64, f64, Option<String>)>,
-        }
-        let mut sources: Vec<Src> = Vec::new();
-        for e in self.world.query::<&SceneEntity>().iter() {
-            if e.doc.doc_type != "token" {
-                continue;
-            }
-            let Some(scene) = e.doc.parent_id else {
-                continue;
-            };
-            let owns = self.token_effective_owner(&e.doc) == Some(user);
-            // Short-circuit: an owned token is a source regardless of observer_vision.
-            let is_source = owns || {
-                let observer_vision = scene_settings
-                    .get(&scene)
-                    .map(|s| s.observer_vision)
-                    .unwrap_or(false);
-                if observer_vision {
-                    let role = e
-                        .doc
-                        .permissions
-                        .users
-                        .get(&user)
-                        .copied()
-                        .unwrap_or(e.doc.permissions.default);
-                    role <= crate::data::document::DocRole::Observer
-                } else {
-                    false
-                }
-            };
-            if !is_source {
-                continue;
-            }
-            if let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc) {
-                sources.push(Src {
-                    scene,
-                    vp: (t.x, t.y),
-                    elevation: elevation::elevation_or_ground(t.elevation),
-                    floors: self.token_vision_floors(&e.doc),
-                });
-            }
-        }
-        if sources.is_empty() {
-            return Vec::new();
-        }
-
-        // 2. Per scene, accumulate visible cells across that scene's sources.
+        // 1. Per scene, gather this user's vision sources through the ONE admission decision
+        //    (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
+        //    movement gate can never disagree about what counts as a source), then accumulate
+        //    that scene's visible cells. `all_scene_ids` is sorted, so scene iteration here is
+        //    deterministic.
         let grid = self.scene_grid_sizes();
         use std::collections::BTreeMap;
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
@@ -2562,12 +2554,7 @@ impl SceneEcs {
         // scene -> (the scene's `cell` indexing scale, per-cell best)
         let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
 
-        // Distinct scenes among the sources.
-        let mut scenes: Vec<Uuid> = sources.iter().map(|s| s.scene).collect();
-        scenes.sort();
-        scenes.dedup();
-
-        for scene in scenes {
+        for scene in all_scene_ids {
             // Use the memoized settings; fall back to resolve (unreachable in practice since
             // `scene_settings` was populated from every source scene, but keeps the code correct
             // if the map misses).
@@ -2575,6 +2562,16 @@ impl SceneEcs {
                 Some(s) => s,
                 None => continue,
             };
+            let sources = self.gather_vision_sources_in_scene(
+                user,
+                world_role,
+                world_defaults,
+                scene,
+                settings,
+            );
+            if sources.is_empty() {
+                continue;
+            }
             // An absent entry means no scene document — skip rather than synthesize a grid.
             let Some(cell) = grid.get(&scene).copied() else {
                 continue;
@@ -2593,7 +2590,7 @@ impl SceneEcs {
             let entry = per_scene
                 .entry(scene)
                 .or_insert_with(|| (cell, BTreeMap::new()));
-            for src in sources.iter().filter(|s| s.scene == scene) {
+            for src in &sources {
                 // LOS polygon for this source (or, LOS off, the whole bound box as a polygon),
                 // raycast against the sight walls whose band covers the source's elevation.
                 let src_walls = elevation::walls_at_elevation(&li.sight_walls, src.elevation);
@@ -2737,9 +2734,15 @@ impl SceneEcs {
     /// cell CENTER only (≡ `player_lit_mask`); lenient also samples the four corners, so a cell
     /// whose vision polygon merely overlaps it counts — a superset, never extending past polygon
     /// overlap. Empty ⇒ no in-scene vision source for this user (fail closed).
+    ///
+    /// `world_role`/`world_defaults` feed `gather_vision_sources_in_scene`'s observer-vision
+    /// admission (`user_access` → `resolve_access_world`), so a world-level READ grant widens
+    /// this mask exactly as it widens document egress.
     pub fn visible_cells(
         &self,
         user: Uuid,
+        world_role: crate::data::document::WorldRole,
+        world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         lenient: bool,
     ) -> std::collections::BTreeSet<(i32, i32)> {
@@ -2754,7 +2757,8 @@ impl SceneEcs {
             return out;
         }
 
-        let sources = self.gather_vision_sources_in_scene(user, scene, &settings);
+        let sources =
+            self.gather_vision_sources_in_scene(user, world_role, world_defaults, scene, &settings);
         if sources.is_empty() {
             return out;
         }
@@ -2775,7 +2779,7 @@ impl SceneEcs {
     /// (`sight_wall_entries`/`light_wall_entries`)
     /// reads the uncached path uses — compares EQUAL to the snapshot stored alongside the cached
     /// mask. Any difference (token move, wall/light/vision-mode/world-settings/scene mutation, a
-    /// token gaining or losing owner/observer-tier status in this scene, or `lenient` itself
+    /// token gaining or losing owner/source status in this scene, or `lenient` itself
     /// changing) is a snapshot mismatch and forces a full recompute — fails toward recompute,
     /// never toward serving a stale wider mask. The only work skipped on a cache HIT is the two
     /// genuinely expensive geometry passes: `lit_polys`' per-light raycasts (inside
@@ -2785,6 +2789,8 @@ impl SceneEcs {
     pub fn visible_cells_cached(
         &self,
         user: Uuid,
+        world_role: crate::data::document::WorldRole,
+        world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         lenient: bool,
     ) -> std::collections::BTreeSet<(i32, i32)> {
@@ -2798,7 +2804,8 @@ impl SceneEcs {
             return BTreeSet::new();
         }
 
-        let mut sources = self.gather_vision_sources_in_scene(user, scene, &settings);
+        let mut sources =
+            self.gather_vision_sources_in_scene(user, world_role, world_defaults, scene, &settings);
         if sources.is_empty() {
             return BTreeSet::new();
         }
@@ -2876,14 +2883,23 @@ impl SceneEcs {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// This user's vision sources (owner ∪ observer-tier token when `observerVision`) in `scene`.
-    /// Shared by `visible_cells` and `visible_cells_cached` so the cached path's invalidation
-    /// fingerprint is built from the EXACT same source list the mask computation itself consumes
-    /// — never a second, separately hand-kept "what counts as a source" implementation that could
-    /// silently drift and omit an input the fingerprint should have caught.
+    /// This user's vision sources (owner ∪ whole-document-READ tokens when `observerVision`) in
+    /// `scene`. Shared by `player_lit_mask`, `visible_cells` and `visible_cells_cached` so the
+    /// cached path's invalidation fingerprint is built from the EXACT same source list the mask
+    /// computation itself consumes — never a second, separately hand-kept "what counts as a
+    /// source" implementation that could silently drift and omit an input the fingerprint should
+    /// have caught.
+    ///
+    /// The non-owned admission is whole-document `cap::READ` through `user_access` — the SAME
+    /// `resolve_access_world` resolution document egress applies — never a restated
+    /// `permissions.users`/`permissions.default` role read, which cannot see `gm_role` caps,
+    /// world-level capability grants, or the ownership floor (and reads `DocRole::None` as
+    /// observer-tier, fail-open).
     fn gather_vision_sources_in_scene(
         &self,
         user: Uuid,
+        world_role: crate::data::document::WorldRole,
+        world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         settings: &ResolvedScene,
     ) -> Vec<VisSrc> {
@@ -2893,17 +2909,12 @@ impl SceneEcs {
                 continue;
             }
             let owns = self.token_effective_owner(&e.doc) == Some(user);
+            // Short-circuit: an owned token is a source regardless of observer_vision.
             let is_source = owns
-                || (settings.observer_vision && {
-                    let role = e
-                        .doc
-                        .permissions
-                        .users
-                        .get(&user)
-                        .copied()
-                        .unwrap_or(e.doc.permissions.default);
-                    role <= crate::data::document::DocRole::Observer
-                });
+                || (settings.observer_vision
+                    && self
+                        .user_access(user, world_role, world_defaults, &e.doc)
+                        .has(crate::data::permission::cap::READ));
             if !is_source {
                 continue;
             }
@@ -3032,8 +3043,9 @@ fn point_qualifies(
     cell_visible(floors, cl.level, dist_cells)
 }
 
-/// One vision source gathered by `gather_vision_sources_in_scene`: an owned or observer-tier
-/// token's viewpoint + resolved vision floors. `id` is carried only for `visible_cells_cached`'s
+/// One vision source gathered by `gather_vision_sources_in_scene`: an owned or
+/// observer-vision-admitted token's viewpoint + resolved vision floors. `id` is carried only for
+/// `visible_cells_cached`'s
 /// deterministic snapshot ordering — `visible_cells` itself never reads it.
 struct VisSrc {
     /// Source token id (snapshot ordering only; see the struct doc).
@@ -3070,7 +3082,11 @@ type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<String>)>);
 /// `token_vision_floors`), a linked actor's vision assignment changing (same path), the scene's
 /// own grid size or vision/lighting overrides changing, or world-settings' `observerVision`/
 /// `losRestriction`/lighting defaults changing — is captured because it necessarily changes the
-/// value of one of these fields, making the snapshot compare unequal.
+/// value of one of these fields, making the snapshot compare unequal. The inputs to source
+/// ADMISSION (`user_access`'s `resolve_access_world`: the token's permissions, the caller's
+/// world role, the world-level capability grants) need no fields of their own — their entire
+/// effect on the mask is WHICH tokens the gathered `sources` list contains, and that list is
+/// fingerprinted here.
 #[derive(Clone, PartialEq)]
 struct VisibilityInputsSnapshot {
     /// The sampling mode the mask was computed under.
@@ -3363,7 +3379,7 @@ pub fn compute_derived(
                     .collect();
                 // Build the hint table and 5-int cell packing in a plain loop to avoid a
                 // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
-                let mask = ecs.player_lit_mask(ctx.user_id, &bands);
+                let mask = ecs.player_lit_mask(ctx.user_id, ctx.world_role, world_defaults, &bands);
                 let mut hints: Vec<String> = Vec::new();
                 let mut lit: Vec<serde_json::Value> = Vec::new();
                 for s in mask {

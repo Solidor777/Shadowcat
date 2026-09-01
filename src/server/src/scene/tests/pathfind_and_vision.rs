@@ -41,6 +41,8 @@ fn pathfind_gm_unconstrained_routes_without_a_mask() {
         RouteRequester {
             user: Uuid::from_u128(1),
             is_gm: true,
+            world_role: WorldRole::Gm,
+            world_defaults: &no_world_grants(),
             explored: None,
         },
         scene,
@@ -83,6 +85,8 @@ fn pathfind_dispatches_to_the_navmesh_router_for_a_continuous_scene() {
             RouteRequester {
 user: Uuid::from_u128(1),
 is_gm: true,
+world_role: WorldRole::Gm,
+world_defaults: &no_world_grants(),
 explored: // GM: unrestricted mask
             None,
 },
@@ -133,6 +137,8 @@ fn pathfind_continuous_budget_cut_truncates_the_final_span_at_the_boundary() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -175,9 +181,12 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
     let mut continuous_ecs = SceneEcs::from_documents(continuous_scene_docs(), 0);
     continuous_ecs.set_world_settings_for_test(continuous_world_settings());
 
+    let world_defaults = no_world_grants();
     let requester = || RouteRequester {
         user: Uuid::from_u128(1),
         is_gm: true,
+        world_role: WorldRole::Gm,
+        world_defaults: &world_defaults,
         explored: None,
     };
     let start = (50.0, 50.0);
@@ -242,6 +251,8 @@ fn pathfind_continuous_start_equals_goal_is_a_single_point_zero_cost() {
             RouteRequester {
 user: Uuid::from_u128(1),
 is_gm: true,
+world_role: WorldRole::Gm,
+world_defaults: &no_world_grants(),
 explored: // GM: unrestricted mask
             None,
 },
@@ -361,6 +372,8 @@ fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -459,6 +472,8 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -501,6 +516,8 @@ fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -543,6 +560,8 @@ fn pathfind_continuous_impassable_routes_around() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -598,6 +617,8 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
             RouteRequester {
                 user: player,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -620,6 +641,8 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -651,7 +674,7 @@ fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
     // future fork/null of the mask on the `Continuous` branch would fail this test.
     let (ecs, user, scene) = scene_with_lit_player_token_continuous();
     let lenient = ecs.resolve_scene(scene).partial_cell_leniency;
-    let mask = ecs.visible_cells(user, scene, lenient);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, lenient);
     assert!(!mask.is_empty(), "the lit token has a non-empty mask");
 
     // Far goal well outside the light radius (dimRadius 6 cells = 600 scene units) but still
@@ -663,6 +686,8 @@ fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
             RouteRequester {
                 user,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene,
@@ -745,7 +770,13 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
     let cell = 100.0;
 
     let lenient = ecs.resolve_scene(scene_id).partial_cell_leniency;
-    let mask = ecs.visible_cells(user, scene_id, lenient);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene_id,
+        lenient,
+    );
     assert!(!mask.is_empty(), "the lit token has a non-empty mask");
     assert!(
         ecs.region_field(scene_id, Some(user))
@@ -763,6 +794,8 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
             RouteRequester {
                 user,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene_id,
@@ -789,6 +822,8 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
         RouteRequester {
             user,
             is_gm: false,
+            world_role: WorldRole::Player,
+            world_defaults: &no_world_grants(),
             explored: None,
         },
         scene_id,
@@ -852,6 +887,8 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
             RouteRequester {
                 user: player,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene,
@@ -879,6 +916,8 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene,
@@ -972,6 +1011,8 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
             RouteRequester {
                 user: player,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene,
@@ -986,7 +1027,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
         "a route is produced despite the secret wall across it"
     );
 
-    let visible = ecs.visible_cells(player, scene, false);
+    let visible = ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false);
     let exec = crate::scene::move_exec::execute_move(
         &ecs,
         crate::scene::move_exec::MoveGateInputs {
@@ -1023,6 +1064,8 @@ fn gm_route_does_not_cross_a_gm_only_wall() {
             RouteRequester {
                 user: gm,
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene,
@@ -1052,6 +1095,8 @@ fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
         RouteRequester {
             user: Uuid::from_u128(1),
             is_gm: true,
+            world_role: WorldRole::Gm,
+            world_defaults: &no_world_grants(),
             explored: None,
         },
         scene,
@@ -1072,13 +1117,15 @@ fn pathfind_nongm_visible_is_bounded_by_the_mask() {
     // Non-GM under movementRestriction "visible": a goal outside the lit mask is Unreachable.
     let (ecs, user, scene) = scene_with_lit_player_token();
     let lenient = ecs.resolve_scene(scene).partial_cell_leniency;
-    let mask = ecs.visible_cells(user, scene, lenient);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, lenient);
     assert!(!mask.is_empty(), "the lit token has a non-empty mask");
     // A far goal well outside the lit radius → Unreachable.
     let far = ecs.pathfind(
         RouteRequester {
             user,
             is_gm: false,
+            world_role: WorldRole::Player,
+            world_defaults: &no_world_grants(),
             explored: None,
         },
         scene,
@@ -1114,6 +1161,8 @@ fn pathfind_revealed_unions_explored_memory() {
         RouteRequester {
             user,
             is_gm: false,
+            world_role: WorldRole::Player,
+            world_defaults: &no_world_grants(),
             explored: Some(&explored),
         },
         scene,
@@ -1484,7 +1533,12 @@ fn wall_less_large_scene_all_bright() -> (SceneEcs, Uuid, Uuid) {
 fn player_lit_mask_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
     let cells: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user, &ecs.resolved_bands())
+        .player_lit_mask(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            &ecs.resolved_bands(),
+        )
         .into_iter()
         .filter(|s| s.scene == scene_id)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -1502,7 +1556,7 @@ fn player_lit_mask_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
 #[test]
 fn visible_cells_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
-    let mask = ecs.visible_cells(user, scene_id, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false);
     assert!(
         mask.contains(&(4, 4)),
         "a wall-less scene's movement-gate mask must cover its full authored bounds, not a degenerate box around the viewpoint"
@@ -1528,7 +1582,7 @@ fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
         "player_vision_polygons must reveal the scene's own full bounded extent"
     );
 
-    let mask = ecs.visible_cells(user, scene_id, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false);
     assert!(
         mask.contains(&(4, 4)),
         "visible_cells (via source_los_poly) must not diverge from player_vision_polygons' bound for the same wall-less scene"
@@ -1545,7 +1599,7 @@ fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
 #[test]
 fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
-    let got = ecs.visible_cells(user, scene_id, false);
+    let got = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false);
     let expected: std::collections::BTreeSet<(i32, i32)> = (-1..=4)
         .flat_map(|i| (-1..=4).map(move |j| (i, j)))
         .collect();
@@ -1565,7 +1619,12 @@ fn accumulate_visible_cells_routes_through_grid_shape_cell_center_not_hardcoded(
 fn player_lit_mask_routes_through_grid_shape_cell_center_not_hardcoded() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
     let got: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user, &ecs.resolved_bands())
+        .player_lit_mask(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            &ecs.resolved_bands(),
+        )
         .into_iter()
         .filter(|s| s.scene == scene_id)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -1664,7 +1723,7 @@ fn hex_open_scene_with_vision_range(range_cells: Option<f64>) -> (SceneEcs, Uuid
 #[test]
 fn visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask() {
     let (ecs, user, scene) = hex_open_scene();
-    let strict = ecs.visible_cells(user, scene, false);
+    let strict = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(
         strict.contains(&(2, 0)),
         "hex (2,0) center is inside the LOS rectangle"
@@ -1674,7 +1733,7 @@ fn visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask() {
         "hex (5,0) center is outside the mask -> excluded"
     );
     // Even leniency (corner sampling) cannot pull (5,0) in: its nearest vertex is still outside.
-    let lenient = ecs.visible_cells(user, scene, true);
+    let lenient = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, true);
     assert!(
         !lenient.contains(&(5, 0)),
         "hex (5,0) has no vertex inside the mask either"
@@ -1689,12 +1748,12 @@ fn visible_cells_hex_excludes_cell_whose_center_is_outside_the_mask() {
 #[test]
 fn visible_cells_hex_lenient_includes_cell_whose_vertex_clips_the_mask() {
     let (ecs, user, scene) = hex_open_scene();
-    let strict = ecs.visible_cells(user, scene, false);
+    let strict = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(
         !strict.contains(&(4, 0)),
         "hex (4,0) center is outside -> strict excludes"
     );
-    let lenient = ecs.visible_cells(user, scene, true);
+    let lenient = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, true);
     assert!(
         lenient.contains(&(4, 0)),
         "hex (4,0) vertex clips the mask -> lenient includes"
@@ -1715,7 +1774,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
     let grid = ecs.resolve_grid_shape(scene, cell);
     let dest = grid.cell_center((4, 0));
 
-    let lenient_mask = ecs.visible_cells(user, scene, true);
+    let lenient_mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, true);
     let out = crate::scene::move_exec::execute_move(
         &ecs,
         crate::scene::move_exec::MoveGateInputs {
@@ -1737,7 +1796,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
     );
     assert_eq!(grid.cell_of(out.stop), (4, 0), "the move reaches hex (4,0)");
 
-    let strict_mask = ecs.visible_cells(user, scene, false);
+    let strict_mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     let out = crate::scene::move_exec::execute_move(
         &ecs,
         crate::scene::move_exec::MoveGateInputs {
@@ -1802,7 +1861,7 @@ fn a_hex_vision_range_is_measured_in_grid_steps() {
     // call path is `visible_cells`, the production movement-gate mask rather than a helper.
     let (ecs, user, scene) = hex_open_scene_with_vision_range(Some(HEX_VISION_RANGE_CELLS));
     assert_hex_row_zero_is_scanned(&ecs, scene, 3);
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(
         mask.contains(&(2, 0)),
         "two grid steps is inside a {HEX_VISION_RANGE_CELLS}-cell range, got {mask:?}"
@@ -1924,7 +1983,7 @@ fn a_hex_light_radius_is_measured_in_grid_steps() {
         !cells.contains(&(4, 0)),
         "four grid steps is beyond the {HEX_LIGHT_DIM_CELLS}-cell dim radius"
     );
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(
         mask.contains(&(2, 0)),
         "the gate mask agrees with the egress mask, got {mask:?}"
@@ -1986,7 +2045,7 @@ fn an_over_cap_visibility_scan_yields_a_bounded_mask_not_an_empty_one() {
     // leaving the mask empty. It cannot pass vacuously: the second assertion requires the
     // mask to STOP somewhere, so a scan that ignored the cap entirely also fails.
     let (ecs, user, scene) = over_cap_scan_scene();
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(mask.contains(&(0, 0)), "the source's own cell is visible");
     let outside = crate::scene::explored::SCAN_WINDOW_HALF_CELLS as i32 + 10;
     assert!(
@@ -2002,7 +2061,12 @@ fn an_over_cap_lit_mask_scan_yields_a_bounded_cell_set_not_an_empty_one() {
     // `player_lit_mask`'s own scan.
     let (ecs, user, scene) = over_cap_scan_scene();
     let cells: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user, &ecs.resolved_bands())
+        .player_lit_mask(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            &ecs.resolved_bands(),
+        )
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -2121,8 +2185,8 @@ fn lenient_visibility_scan_stays_a_superset_of_strict_at_the_clamp_boundary() {
         lenient_span > crate::scene::explored::MAX_CELLS_PER_POLYGON,
         "fixture: the padded span must exceed the cap ({lenient_span})"
     );
-    let strict = ecs.visible_cells(user, scene, false);
-    let lenient = ecs.visible_cells(user, scene, true);
+    let strict = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let lenient = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, true);
     assert!(
         !strict.is_empty(),
         "the strict scan must reach at least one cell"
@@ -2227,6 +2291,8 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
                 RouteRequester {
                     user: Uuid::from_u128(1),
                     is_gm: true,
+                    world_role: WorldRole::Gm,
+                    world_defaults: &no_world_grants(),
                     explored: None,
                 },
                 Uuid::from_u128(10),
@@ -2293,6 +2359,8 @@ fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -2348,6 +2416,8 @@ fn hex_continuous_navmesh_spans_the_authored_play_area() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),
@@ -2417,6 +2487,8 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
             RouteRequester {
                 user: Uuid::from_u128(1),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             Uuid::from_u128(10),

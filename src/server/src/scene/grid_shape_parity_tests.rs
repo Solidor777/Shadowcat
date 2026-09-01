@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::data::document::Document;
+use crate::data::document::{Document, WorldCapDefaults, WorldRole};
 use crate::scene::grid_shape::SquareGrid;
 use crate::scene::move_exec::{execute_move, MoveGateInputs};
 use crate::scene::pathfinding::{find, DiagonalRule, PathInputs, PathOutcome};
@@ -307,9 +307,12 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
 fn budget_clamped_preview_last_point_equals_executor_stop() {
     for goal in [(450.0, 50.0), (350.0, 350.0)] {
         let (ecs, scene, token) = clear_scene();
+        let world_defaults = WorldCapDefaults::default();
         let req = || crate::scene::RouteRequester {
             user: Uuid::from_u128(7),
             is_gm: true,
+            world_role: WorldRole::Gm,
+            world_defaults: &world_defaults,
             explored: None,
         };
         let full = ecs
@@ -403,7 +406,13 @@ fn two_source_open_scene() -> (SceneEcs, Uuid, Uuid) {
 #[test]
 fn visible_cells_parity_two_sources_pins_full_cell_set() {
     let (ecs, user, scene) = two_source_open_scene();
-    let got = ecs.visible_cells(user, scene, false);
+    let got = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let expected: BTreeSet<(i32, i32)> = (-1..=4)
         .flat_map(|i| (-1..=4).map(move |j| (i, j)))
         .collect();
@@ -524,14 +533,26 @@ fn visible_cells_lenient_parity_pins_full_cell_set_including_corner_ring() {
     let (ecs, user, scene) = lenient_corner_open_scene();
 
     // STRICT: center-only membership -> [-1,4]^2 (companion to Fixture 3's pin).
-    let strict = ecs.visible_cells(user, scene, false);
+    let strict = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let expected_strict: BTreeSet<(i32, i32)> = (-1..=4)
         .flat_map(|i| (-1..=4).map(move |j| (i, j)))
         .collect();
     assert_eq!(strict, expected_strict, "strict center-only set");
 
     // LENIENT: corner-sampling adds column i=5 and row j=5 -> [-1,5]^2, a strict superset.
-    let lenient = ecs.visible_cells(user, scene, true);
+    let lenient = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        true,
+    );
     let expected_lenient: BTreeSet<(i32, i32)> = (-1..=5)
         .flat_map(|i| (-1..=5).map(move |j| (i, j)))
         .collect();

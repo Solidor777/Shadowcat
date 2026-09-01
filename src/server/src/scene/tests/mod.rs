@@ -4,9 +4,16 @@
 //! more of the three subject files (`ecs_and_footprints`, `resolution_and_lighting`,
 //! `pathfind_and_vision`) and therefore lives here rather than being duplicated.
 pub(super) use super::*;
-pub(super) use crate::data::document::WorldCapDefaults;
+pub(super) use crate::data::document::{WorldCapDefaults, WorldRole};
 pub(super) use grid_shape::GridShape as _;
 pub(super) use serde_json::json;
+
+/// Empty world-level capability grants: the `WorldCapDefaults` a fixture passes when no
+/// world-level grant is in play (a fresh value per call, so a test mutating its copy affects no
+/// other).
+pub(super) fn no_world_grants() -> WorldCapDefaults {
+    WorldCapDefaults::default()
+}
 
 /// Builds a world-scoped fixture document of type `ty`, parented to `parent` when given.
 pub(super) fn doc(id: u128, parent: Option<u128>, ty: &str) -> Document {
@@ -163,10 +170,18 @@ pub(super) fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
 
 /// Gate-vs-egress parity helper: asserts `visible_cells(user, scene, false)` == the `(i,j)` set of
 /// `player_lit_mask(user)` filtered to `scene`, and that neither set is empty (non-vacuous).
+/// Both sides read the same no-grant access inputs, so the helper pins the mask agreement, not
+/// any particular permission resolution.
 pub(super) fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
-    let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
+    let strict: std::collections::BTreeSet<(i32, i32)> =
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     let egress: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user, &ecs.resolved_bands())
+        .player_lit_mask(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            &ecs.resolved_bands(),
+        )
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -185,17 +200,23 @@ pub(super) fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
     );
 }
 
-/// The `(i,j)` cell set of `player_lit_mask(user)` restricted to `scene`.
+/// The `(i,j)` cell set of `player_lit_mask(user)` restricted to `scene`, at the same no-grant
+/// access inputs `assert_strict_parity` uses.
 pub(super) fn mask_cells(
     ecs: &SceneEcs,
     user: Uuid,
     scene: Uuid,
 ) -> std::collections::BTreeSet<(i32, i32)> {
-    ecs.player_lit_mask(user, &ecs.resolved_bands())
-        .into_iter()
-        .filter(|s| s.scene == scene)
-        .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
-        .collect()
+    ecs.player_lit_mask(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    )
+    .into_iter()
+    .filter(|s| s.scene == scene)
+    .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
+    .collect()
 }
 
 /// A `wall` doc parented to `scene`, blocksMove+blocksSight+blocksLight all true.

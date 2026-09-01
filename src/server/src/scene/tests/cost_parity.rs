@@ -29,6 +29,8 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                 RouteRequester {
                     user: gm,
                     is_gm: true,
+                    world_role: WorldRole::Gm,
+                    world_defaults: &no_world_grants(),
                     explored: None,
                 },
                 scene_id,
@@ -89,6 +91,8 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
             RouteRequester {
                 user: Uuid::from_u128(9),
                 is_gm: true,
+                world_role: WorldRole::Gm,
+                world_defaults: &no_world_grants(),
                 explored: None,
             },
             scene_id,

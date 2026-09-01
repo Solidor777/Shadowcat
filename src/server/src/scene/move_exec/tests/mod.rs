@@ -1,4 +1,5 @@
 use super::*;
+use crate::data::document::{WorldCapDefaults, WorldRole};
 use crate::scene::MovementModel;
 use serde_json::json;
 
@@ -2394,13 +2395,21 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
         let (ecs, scene, token, user, start, goal) =
             scene_with_narrow_gap_and_wide_token(kind, MovementModel::GridStepped);
         let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
-        let mask = ecs.visible_cells(user, scene, false);
+        let mask = ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &WorldCapDefaults::default(),
+            scene,
+            false,
+        );
         // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
         let route = ecs
             .pathfind(
                 crate::scene::RouteRequester {
                     user,
                     is_gm: false,
+                    world_role: WorldRole::Player,
+                    world_defaults: &WorldCapDefaults::default(),
                     explored: None,
                 },
                 scene,
@@ -2446,12 +2455,20 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
     let (ecs, scene, token, user, start, goal) =
         scene_with_narrow_gap_and_wide_token("square", MovementModel::Continuous);
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let route = ecs
         .pathfind(
             crate::scene::RouteRequester {
                 user,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &WorldCapDefaults::default(),
                 explored: None,
             },
             scene,
@@ -2492,7 +2509,13 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
     // permissive than the router (e.g. a gate that omits the `segments_cross` check).
     let (ecs, scene, token, user) = scene_with_wall_between_adjacent_cells_and_default_footprint();
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // 0.4
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let candidates = [
         [(50.0, 50.0), (150.0, 50.0)],
         [(50.0, 50.0), (150.0, 150.0)],
@@ -2519,6 +2542,8 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
                 crate::scene::RouteRequester {
                     user,
                     is_gm: false,
+                    world_role: WorldRole::Player,
+                    world_defaults: &WorldCapDefaults::default(),
                     explored: None,
                 },
                 scene,
@@ -2545,7 +2570,13 @@ fn a_default_footprint_step_across_a_wall_is_truncated() {
     // disc test: a wall between two adjacent cell centers sits 0.5 cell from each, so the
     // 0.4-radius disc test alone would pass it.
     let (ecs, scene, token, user) = scene_with_wall_between_adjacent_cells_and_default_footprint();
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2568,7 +2599,13 @@ fn a_default_footprint_step_across_a_wall_is_truncated() {
 fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
     let (ecs, scene, token, user) = scene_with_lit_center_line_only();
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2595,7 +2632,13 @@ fn a_sub_half_cell_footprint_diagonal_is_admissible() {
     // A footprint disc smaller than half a cell clears both corner flankers of a diagonal
     // step in a fully-lit area, so the step is admissible.
     let (ecs, scene, token, user) = scene_with_open_lit_area();
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2621,7 +2664,13 @@ fn arrest_stays_center_cell_matching_the_router() {
     // arrested, or the gate becomes stricter than the router and route-gate parity breaks.
     let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {

@@ -660,6 +660,19 @@ impl Room {
             type CellSet = std::collections::BTreeSet<(i32, i32)>;
             let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet, crate::scene::GridKind)> =
                 Vec::new();
+            // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
+            // source admission through `resolve_access_world`, which reads the world's capability
+            // grants — an await, which must not run under the scene read guard below. Fetched
+            // once, ahead of the guard, and only when this batch actually contains a token
+            // Create (the sole op shape that reads the mask); every other batch skips the fetch.
+            let needs_world_defaults = ops.iter().any(
+                |op| matches!(op, Operation::Create { doc } if doc.doc_type == "token" && doc.parent_id.is_some()),
+            );
+            let world_defaults = if needs_world_defaults {
+                Some(repo.world_cap_defaults(self.world_id).await?)
+            } else {
+                None
+            };
             {
                 let scene = self.scene.read().await;
                 // Memoize the visible mask per (scene, leniency) within this publish so a
@@ -710,12 +723,24 @@ impl Room {
                         let target = scene
                             .resolve_grid_shape(scene_id, cell)
                             .cell_of((eng.x, eng.y));
+                        // Guaranteed `Some`: reaching this point means this op is a token Create
+                        // with a parent, which is exactly what `needs_world_defaults` scanned for.
+                        // Fail closed rather than defaulting an authority input.
+                        let Some(wd) = world_defaults.as_ref() else {
+                            return Err(DataError::Forbidden);
+                        };
                         match settings.movement_restriction {
                             crate::scene::MovementRestriction::Unrestricted => {}
                             crate::scene::MovementRestriction::Visible => {
                                 let mask =
                                     visible_cache.entry((scene_id, lenient)).or_insert_with(|| {
-                                        scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
+                                        scene.visible_cells_cached(
+                                            ctx.user_id,
+                                            ctx.world_role,
+                                            wd,
+                                            scene_id,
+                                            lenient,
+                                        )
                                     });
                                 if !mask.contains(&target) {
                                     return Err(DataError::Forbidden);
@@ -725,7 +750,13 @@ impl Room {
                                 let mask = visible_cache
                                     .entry((scene_id, lenient))
                                     .or_insert_with(|| {
-                                        scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
+                                        scene.visible_cells_cached(
+                                            ctx.user_id,
+                                            ctx.world_role,
+                                            wd,
+                                            scene_id,
+                                            lenient,
+                                        )
                                     })
                                     .clone();
                                 // Explored needs an async fetch, which must not run under the
@@ -934,7 +965,9 @@ impl Room {
 
         // --- World capability defaults, resolved before the scene read guard ---
         // An input to the combat gate's whole-document `cap::READ` resolution
-        // (`SceneEcs::combatant_for_token` → `ctx_access` → `resolve_access_world`), which runs
+        // (`SceneEcs::combatant_for_token` → `ctx_access` → `resolve_access_world`) and to the
+        // visibility mask's observer-vision source admission (`visible_cells_cached` →
+        // `gather_vision_sources_in_scene` → `user_access`), both of which run
         // UNDER that guard — and a scene read guard is never held across an await, so the
         // settings read has to happen ahead of it. Fetched unconditionally rather than only when
         // a combat turns out to be running: whether one is is itself only knowable under the
@@ -1028,7 +1061,13 @@ impl Room {
             visible_cells = if matches!(restriction, MovementRestriction::Unrestricted) {
                 std::collections::BTreeSet::new()
             } else {
-                scene.visible_cells_cached(ctx.user_id, token_scene, lenient)
+                scene.visible_cells_cached(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &world_defaults,
+                    token_scene,
+                    lenient,
+                )
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
 

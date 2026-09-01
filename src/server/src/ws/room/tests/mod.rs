@@ -1,6 +1,6 @@
 use super::*;
 use crate::auth::role::ServerRole;
-use crate::data::document::WorldRole;
+use crate::data::document::{WorldCapDefaults, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::sqlite::SqliteRepository;
 use std::sync::atomic::Ordering;
@@ -706,7 +706,8 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     .await
     .unwrap();
 
-    // A vision source: `visible_cells` requires an owned (or observer-tier) token in the
+    // A vision source: `visible_cells` requires an owned (or, under `observerVision`,
+    // whole-document-READ) token in the
     // scene — without one, `sources` is empty and the mask is unconditionally empty
     // regardless of lighting.
     let mut vision_token = wdoc(world_id, vision_token_id, "token");
@@ -731,7 +732,13 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     // wrong reason (Forbidden regardless of placement).
     {
         let scene_ecs = room.scene().read().await;
-        let mask = scene_ecs.visible_cells(player_ctx.user_id, scene_id, true);
+        let mask = scene_ecs.visible_cells(
+            player_ctx.user_id,
+            player_ctx.world_role,
+            &WorldCapDefaults::default(),
+            scene_id,
+            true,
+        );
         assert!(
             !mask.is_empty(),
             "fixture's lit corner must produce a non-empty visible mask"
@@ -1010,7 +1017,8 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     .await
     .unwrap();
 
-    // A vision source: `visible_cells` requires an owned (or observer-tier) token in the
+    // A vision source: `visible_cells` requires an owned (or, under `observerVision`,
+    // whole-document-READ) token in the
     // scene — without one, `sources` is empty and the mask is unconditionally empty
     // regardless of lighting.
     let mut vision_token = wdoc(world_id, vision_token_id, "token");
@@ -1035,7 +1043,13 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     // explored union is doing any work in the tests built on this fixture.
     {
         let scene_ecs = room.scene().read().await;
-        let mask = scene_ecs.visible_cells(player_ctx.user_id, scene_id, true);
+        let mask = scene_ecs.visible_cells(
+            player_ctx.user_id,
+            player_ctx.world_role,
+            &WorldCapDefaults::default(),
+            scene_id,
+            true,
+        );
         assert!(
             !mask.is_empty(),
             "fixture's lit corner must produce a non-empty visible mask"
@@ -1409,7 +1423,12 @@ async fn get_or_create_hydrates_config_and_actors_from_db() {
         ecs.world_settings_doc().is_some(),
         "world-settings hydrated from DB by get_or_create"
     );
-    let mask = ecs.player_lit_mask(p, &ecs.resolved_bands());
+    let mask = ecs.player_lit_mask(
+        p,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        &ecs.resolved_bands(),
+    );
     assert!(
         mask.iter().any(|s| !s.cells.is_empty()),
         "player lit mask non-empty after cold-start hydration (config + token + light from DB)"
@@ -2268,12 +2287,13 @@ async fn execute_move_gate_inputs_come_from_the_tokens_own_scene() {
     // A's gate. `far_dark` is outside A's mask, so a mask-skipped walk lands outside it.
     let (cx, cy) = h.committed_pos(h.token_id).await;
     let committed_cell = ((cx / 100.0).floor() as i32, (cy / 100.0).floor() as i32);
-    let mask = h
-        .room
-        .scene()
-        .read()
-        .await
-        .visible_cells(h.player.user_id, h.scene_id, true);
+    let mask = h.room.scene().read().await.visible_cells(
+        h.player.user_id,
+        h.player.world_role,
+        &WorldCapDefaults::default(),
+        h.scene_id,
+        true,
+    );
     assert!(
         mask.contains(&committed_cell),
         "committed cell {committed_cell:?} is not in scene A's visibility mask"
