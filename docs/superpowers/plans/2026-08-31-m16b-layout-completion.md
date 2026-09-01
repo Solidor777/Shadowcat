@@ -188,10 +188,10 @@ verbatim directive paragraph + the report-delivery requirement.
   the popup, close the popup or reload → assert the persisted `popouts` carries the rect;
   reload → floating rehydrate notice shows the Reopen action → click → new popup at the saved
   rect with the same panel set.
-- [ ] Full e2e suite green. Commit.
+- [x] Full e2e suite green. Commit.
 
 ## Final gates (whole M16b)
 
-- [ ] All repo gates green incl. `pnpm docs:check-examples`, `pnpm lint:file-size`,
+- [x] All repo gates green incl. `pnpm docs:check-examples`, `pnpm lint:file-size`,
   `pnpm build:all`, full e2e.
-- [ ] Review checkpoint over the M16b diff.
+- [x] Review checkpoint over the M16b diff.

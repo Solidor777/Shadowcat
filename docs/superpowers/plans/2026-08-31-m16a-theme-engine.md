@@ -71,15 +71,15 @@ phase before commit.
   keys dropped); anything unresolvable → the default theme.
 - `CustomTheme { label: string; base: string; tokens: Partial<Record<ThemeTokenName, string>> }`.
 
-- [ ] Step 1: Write failing tests — every built-in defines every `ThemeTokenName`; `resolveTheme`
+- [x] Step 1: Write failing tests — every built-in defines every `ThemeTokenName`; `resolveTheme`
   resolution/fallback/override-drop behavior; `slate-dark` literals equal the SCSS defaults
   (transcribe carefully — this equality is what makes the default theme a visual no-op).
-- [ ] Step 2: Implement `theme.ts` with full doc comments (every export — `lint:docs`/
+- [x] Step 2: Implement `theme.ts` with full doc comments (every export — `lint:docs`/
   `lint:props` are errors).
-- [ ] Step 3: Light + contrast-dark palettes: derive and check contrast per the pairings the
+- [x] Step 3: Light + contrast-dark palettes: derive and check contrast per the pairings the
   existing SCSS comments document (text/surfaces ≥4.5, `--on-accent` on `--accent` ≥4.5,
   `--danger`/`--on-danger`, `--text-muted` on raised/overlay ≥4.5). Task 4 makes this executable.
-- [ ] Step 4: Export from `ui-kit/src/index.ts`. Gates: `pnpm --filter @shadowcat/ui-kit test`,
+- [x] Step 4: Export from `ui-kit/src/index.ts`. Gates: `pnpm --filter @shadowcat/ui-kit test`,
   `typecheck`, `pnpm lint`. Commit.
 
 ### Task 2: Token completion + mismatch sweep
@@ -101,13 +101,13 @@ phase before commit.
 - Modify: `src/client/shell/public/site.webmanifest` (`theme_color`/`background_color` → the
   default theme's `--surface-sunken` `#16161f`)
 
-- [ ] Step 1: Grep-sweep for remaining `#[0-9a-fA-F]{3,8}` / `rgba?(` in `src/modules` and
+- [x] Step 1: Grep-sweep for remaining `#[0-9a-fA-F]{3,8}` / `rgba?(` in `src/modules` and
   `src/client` component styles (exclude domain/content colors: faction seeds, scene-tools tool
   colors, render-layer fog/ping constants, generated types, tests) — every UI-chrome color reads
   a tier-2 token.
-- [ ] Step 2: Apply the fixes; add the new tokens to the SCSS files with the same comment style
+- [x] Step 2: Apply the fixes; add the new tokens to the SCSS files with the same comment style
   (WCAG notes where relevant). Update `theme.ts`'s `slate-dark` map in the SAME commit.
-- [ ] Step 3: Gates: `pnpm -r test`, `pnpm -r typecheck`, `pnpm lint`, `pnpm lint:docs`,
+- [x] Step 3: Gates: `pnpm -r test`, `pnpm -r typecheck`, `pnpm lint`, `pnpm lint:docs`,
   `pnpm lint:props`. Commit.
 
 ### Task 3: Token-set parity test (SCSS ≡ data)
@@ -116,24 +116,24 @@ phase before commit.
 - Test: `src/client/shell/src/styles/tokenParity.test.ts` (shell owns the SCSS; it imports the
   ui-kit token list — shell already depends on ui-kit)
 
-- [ ] Step 1: Test reads `_primitives.scss` + `_semantic.scss` via `node:fs`, extracts every
+- [x] Step 1: Test reads `_primitives.scss` + `_semantic.scss` via `node:fs`, extracts every
   `--name:` declaration, strips the prefix, and asserts the set EQUALS the `ThemeTokenName`
   universe (export a `THEME_TOKEN_NAMES: readonly ThemeTokenName[]` from `theme.ts` for this).
   Mutation-check: the test fails when either side gains/lacks a name.
-- [ ] Step 2: Gates + commit.
+- [x] Step 2: Gates + commit.
 
 ### Task 4: Executable WCAG audit
 
 **Files:**
 - Test: `src/client/ui-kit/src/themeContrast.test.ts`
 
-- [ ] Step 1: Implement WCAG 2.x relative-luminance/contrast-ratio helpers INSIDE the test file
+- [x] Step 1: Implement WCAG 2.x relative-luminance/contrast-ratio helpers INSIDE the test file
   (no new runtime dependency).
-- [ ] Step 2: For EACH built-in theme assert: `text-primary` ≥4.5 on every surface token;
+- [x] Step 2: For EACH built-in theme assert: `text-primary` ≥4.5 on every surface token;
   `text-muted` ≥4.5 on `surface-raised`/`surface-overlay`; `on-accent` on `accent` ≥4.5;
   `on-danger` on `danger` ≥4.5; `danger` ≥4.5 on every surface (it serves as inline alert text);
   `accent` ≥3:1 against `surface-base` (non-text UI component contrast, WCAG 1.4.11).
-- [ ] Step 3: Fix palette values until green (iterate the DATA, not the test). Gates + commit.
+- [x] Step 3: Fix palette values until green (iterate the DATA, not the test). Gates + commit.
 
 ### Task 5: `ThemeController` singleton
 
@@ -157,11 +157,11 @@ phase before commit.
   `registerDocument(doc): () => void` — immediate apply + tracked for future changes.
 - The singleton instance: `export const theme = new ThemeController();`
 
-- [ ] Step 1: Failing tests — setActive/saveCustom/deleteCustom/load-garbage/serialize round
+- [x] Step 1: Failing tests — setActive/saveCustom/deleteCustom/load-garbage/serialize round
   trip; applyTo writes all tokens + colorScheme; registerDocument applies immediately and on
   later change, unregister stops updates; subscriber fires.
-- [ ] Step 2: Implement. Doc comments on every export.
-- [ ] Step 3: Gates + commit.
+- [x] Step 2: Implement. Doc comments on every export.
+- [x] Step 3: Gates + commit.
 
 ## Phase 2 — Persistence + boot wiring (shell)
 
@@ -174,14 +174,14 @@ phase before commit.
   marks dirty AND writes the localStorage mirror)
 - Test: existing sessionState tests + new arms
 
-- [ ] Step 1: Failing tests — `copyGlobalField` theme arm copies the value; loading a ui_state
+- [x] Step 1: Failing tests — `copyGlobalField` theme arm copies the value; loading a ui_state
   with a theme applies it to the ui-kit `theme` singleton; a `theme.setActive` call schedules a
   dirty `global.theme` patch (assert via the existing persist-machinery test patterns) and writes
   the localStorage mirror; garbage theme state → default, no throw.
-- [ ] Step 2: Implement. The `satisfies never` switch forces the arm — follow the locale arm's
+- [x] Step 2: Implement. The `satisfies never` switch forces the arm — follow the locale arm's
   shape exactly, including dirty-tracking and failure re-marking behavior riding the existing
   machinery (no parallel persist path).
-- [ ] Step 3: Gates + commit.
+- [x] Step 3: Gates + commit.
 
 ### Task 7: Pre-login boot application (localStorage mirror)
 
@@ -192,11 +192,11 @@ phase before commit.
   pure function in `sessionState` tests (the mirror read/parse is a pure helper:
   `readThemeMirror(storage): PersistedTheme | undefined`).
 
-- [ ] Step 1: Extract `readThemeMirror`/`writeThemeMirror` pure helpers (injectable storage) —
+- [x] Step 1: Extract `readThemeMirror`/`writeThemeMirror` pure helpers (injectable storage) —
   failing tests first (absent key, malformed JSON, valid).
-- [ ] Step 2: Wire `main.ts` to apply before the app mounts; wire the subscriber from Task 6 to
+- [x] Step 2: Wire `main.ts` to apply before the app mounts; wire the subscriber from Task 6 to
   `writeThemeMirror`. One storage key: `"shadowcat.theme"`.
-- [ ] Step 3: Gates + commit.
+- [x] Step 3: Gates + commit.
 
 ## Phase 3 — Propagation + canvas (panels/render/stage)
 
@@ -209,11 +209,11 @@ phase before commit.
 - Test: `src/modules/panels/src/engine/dockview.test.ts` (inject/inspect via the existing
   popout-driver test seams; assert register/unregister calls with the popout document)
 
-- [ ] Step 1: Verify the popout `Document` is reachable at `onDidOpen`/driver-resolution time
+- [x] Step 1: Verify the popout `Document` is reachable at `onDidOpen`/driver-resolution time
   (vendored `PopoutWindow` exposes its window — read the vendored source; the injected
   `popoutDriver` in tests stands in). Register EXACTLY once per pop-out open; pair every register
   with an unregister on both removal paths.
-- [ ] Step 2: Failing test → implement → gates → commit.
+- [x] Step 2: Failing test → implement → gates → commit.
 
 ### Task 9: Stage/canvas runtime recolor
 
@@ -232,12 +232,12 @@ phase before commit.
   call `engine.setThemeColors`)
 - Tests: render engine + stage tests
 
-- [ ] Step 1: Failing tests — engine.setThemeColors updates backend clear color + later
+- [x] Step 1: Failing tests — engine.setThemeColors updates backend clear color + later
   `drawGrid` calls use the new color; mock records; Stage re-reads on theme change (jsdom: stub
   `getComputedStyle` per the existing `readColor` tests).
-- [ ] Step 2: Implement; doc comments. `backend.mock.ts`'s recorded `gridColor` pattern is the
+- [x] Step 2: Implement; doc comments. `backend.mock.ts`'s recorded `gridColor` pattern is the
   template.
-- [ ] Step 3: Gates + commit.
+- [x] Step 3: Gates + commit.
 
 ## Phase 4 — Picker UI + chrome + e2e
 
@@ -250,9 +250,9 @@ phase before commit.
   option labels for the three built-ins — `ThemeDefinition.labelKey` resolves here)
 - Test: settings module tests (picker renders options, change calls through to the controller)
 
-- [ ] Step 1: Failing test (identity-echo `t` caveat from the shell skill: assert against keys/
+- [x] Step 1: Failing test (identity-echo `t` caveat from the shell skill: assert against keys/
   structure, not resolved English).
-- [ ] Step 2: Implement following the locale-switcher block's exact shape. Gates + commit.
+- [x] Step 2: Implement following the locale-switcher block's exact shape. Gates + commit.
 
 ### Task 11: Floating/drop chrome completion
 
@@ -261,9 +261,9 @@ phase before commit.
   overlays, tab-group chips, floating titlebar — skin all dockview chrome onto tier-2 tokens
   through the existing `--dv-*` bridge mapping)
 
-- [ ] Step 1: Read dockview-core 7.0.2's `dist/styles/dockview.css` for the full `--dv-*` and
+- [x] Step 1: Read dockview-core 7.0.2's `dist/styles/dockview.css` for the full `--dv-*` and
   class surface; map every chrome color/shadow to tier-2 tokens (no hex literals).
-- [ ] Step 2: Visual smoke via the dev server; screenshot-review floating + drop-overlay states.
+- [x] Step 2: Visual smoke via the dev server; screenshot-review floating + drop-overlay states.
   Gates + commit.
 
 ### Task 12: e2e — theme switch + persistence
@@ -271,19 +271,19 @@ phase before commit.
 **Files:**
 - Test: `src/client/shell/e2e/theme.spec.ts`
 
-- [ ] Step 1: Following `panels.spec.ts`'s persistence pattern (payload-matched
+- [x] Step 1: Following `panels.spec.ts`'s persistence pattern (payload-matched
   `waitForResponse` on the ui-state PUT before reload): open settings, switch to `slate-light`,
   assert a computed-style token change on `document.documentElement` (inline style), assert the
   PUT payload carries `global.theme`, reload, assert the theme survives (inline styles present
   post-reload, pre-login mirror applied on logout→login screen too if reachable).
-- [ ] Step 2: Requires the e2e binary — `pnpm build` then cargo build per the e2e config's
+- [x] Step 2: Requires the e2e binary — `pnpm build` then cargo build per the e2e config's
   expectations; run `pnpm --filter @shadowcat/shell exec playwright test e2e/theme.spec.ts`.
   Green → commit.
 
 ## Final gates (whole M16a)
 
-- [ ] `pnpm -r test`, `pnpm -r typecheck`, `pnpm lint`, `pnpm lint:docs`, `pnpm lint:props`,
+- [x] `pnpm -r test`, `pnpm -r typecheck`, `pnpm lint`, `pnpm lint:docs`, `pnpm lint:props`,
   `pnpm lint:comments`, `pnpm docs:check-examples`, `pnpm lint:file-size`
-- [ ] `pnpm build:all` (client build + docs generation incl. exemption count)
-- [ ] Full e2e suite green
-- [ ] Review checkpoint pass over the whole M16a diff before the milestone notes
+- [x] `pnpm build:all` (client build + docs generation incl. exemption count)
+- [x] Full e2e suite green
+- [x] Review checkpoint pass over the whole M16a diff before the milestone notes

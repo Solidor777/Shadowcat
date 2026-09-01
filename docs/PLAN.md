@@ -52,12 +52,12 @@ Complete: M15a (pipeline) and M15b (browser module + the generic GM-only documen
 operation) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M15a/M15b entries. The FTS
 integration for asset search remains deferred to M21 by design.
 
-### M16 · Layout + theming completion
-- Drag-resize of floating panels where the M12 panel engine does not already provide it;
-  multi-window arrangement persistence.
-- Multiple themes + user themes over the 3-tier SCSS token system; module styling modes
-  (how a module opts into or out of the host theme).
-- Excludes: pop-out windows (shipped, M12e).
+### M16 · Layout + theming completion ✅
+Complete: M16a (theme engine — token data, controller, ui-state + pre-login persistence,
+picker, dockview chrome, stage recolor), M16b (floating-window arrangement persistence and
+gesture restore, keyboard move/resize, a11y resize targets), and M16c (custom theme editor
+with live preview and contrast warnings, module styling modes, external-module stylesheets)
+— delivery notes in [`HISTORY.md`](HISTORY.md)'s M16 entry.
 
 ### M17 · Vision, lighting + movement completion
 - Photometric lighting (illumination coupling replacing the flat/edge-projected environment light

@@ -131,11 +131,11 @@ verbatim directive paragraph + the report-delivery requirement.
 - [x] Create a custom theme in settings (name + base + one override), apply, assert the override
   token is live on `documentElement`, reload, assert the custom theme persists and is still
   active. Delete it, assert fallback to the default theme.
-- [ ] Full e2e suite green. Commit.
+- [x] Full e2e suite green. Commit.
 
 ## Final gates (whole M16c)
 
-- [ ] `pnpm -r test`, `pnpm -r typecheck`, `pnpm lint`, `pnpm lint:docs`, `pnpm lint:props`,
+- [x] `pnpm -r test`, `pnpm -r typecheck`, `pnpm lint`, `pnpm lint:docs`, `pnpm lint:props`,
   `pnpm lint:comments`, `pnpm docs:check-examples`, `pnpm lint:file-size`, `pnpm build:all`,
   full e2e suite — all unpiped or pipefail.
-- [ ] Review checkpoint over the M16c diff.
+- [x] Review checkpoint over the M16c diff.
