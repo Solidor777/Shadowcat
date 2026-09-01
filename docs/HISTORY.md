@@ -2051,6 +2051,61 @@ Coverage added: 8 `process` unit tests on generated fixtures, tag/query/upload/m
 and five new integration files (`assets_chunked`, `assets_query`, `assets_mutate`, plus the
 extended `assets` and bundle round-trips).
 
+### M18 · Token enrichment ✅
+Branch `m18-token-enrichment`, executed from the approved brainstorm + design
+`docs/superpowers/specs/2026-08-31-m18-token-enrichment-brainstorm.md` and
+`docs/superpowers/specs/2026-08-31-m18-token-enrichment-design.md` as six sub-projects
+(M18c generated visuals, M18b trigger regions, M18a emitters, M18d built-in fx, M18e emotes,
+M18f art tooling), each landed with the full gate battery green; M18 is complete.
+Delivered, tokens: the `RenderVisual::Generated`/`TokenVisual::Generated` parametric compositor
+(art + shape crop + decorative border ring + background fill — authored data, distinct from the
+faction ring), resolved fail-closed in `resolveTokenVisual` (`isValidGeneratedArt`) and drawn by
+the PixiBackend `generated` frame (background → masked art → ring, inside `visualContainer`).
+Token art tooling closes the authoring loop: `VisualKindEditor` gained the `generated` kind and
+an `initial?: TokenVisual` prop (mount-time initialization from an existing visual, fail-closed
+on shapes the editor can't represent), the actors panel edits an existing actor's visual
+post-create through the panel's raw-`old` OCC convention, and `TokenVisualControl` writes the
+per-token `/engine/overrides/visual` override (clear writes `null`) — every pick through the
+M15b `ctx.pickAsset` seam.
+Delivered, scene: **trigger regions** — `RegionEngine.triggers` (`enter`/`arrest`;
+`condition_add`/`condition_remove`/`resource_delta`/`chat_notice` effects) sharing
+`regions::rasterize` with the composed field via the `SceneEcs::trigger_regions` identity
+side-table (parity-pinned), `MoveOutcome.entered_cells`+`arrested` keeping the move executor
+pure, `Room::fire_region_triggers` the single application path (placement fires on genuine
+token Creates/position Updates; region edits never re-fire; disabled regions inert), effects
+committed under `WriteOrigin::CombatTransition`, secret-region notices forced GM-only via
+`engine_geometry_visible_to_world`, resource deltas combat-scoped with a net-sum per key and
+GM-only failure notices. **Emote overlays** — `ClientMsg::Emote`/`ServerMsg::Emote` aux frames
+mirroring every ScenePing touch point (per-user rate limit in a separate bucket, effective-owner
+authz fail-closed via `token_scene_and_effective_owner`, ≤16-byte payload, `broadcast_aux`),
+the Zod/ws-client/worldSession chain with the `viewedSceneId` cross-scene guard, `EmoteView`
+(pure age-tracker; the glyph anchors at fire position and tracks nothing), and the scene-tools
+rail palette sharing speak-as's ownership predicate.
+Delivered, render: the emission component model — `AuraEmission`/`SoundEmission`/`VfxEmission`/
+`VfxAnchor` on `ActorEngine`+`TokenOverrides` (Option, wholesale-override like `vision`),
+`EffectiveActor.aura/sound/vfx` projections, the aura disc drawn under the art
+(`updateTokenAura`, `auraKey` memoization) with `EmissionEditor`/`TokenEmissionControl`
+authoring; and per-token built-in fx — `TokenNodeSpec.fx` (`tint`/`desaturate`/`highlight`),
+`composeTokenFxMatrix` folding the list into one `ColorMatrixFilter` on
+`visualContainer.filters` (art fx rotate with the art; badges stay clean; filters disposed with
+the node), condition-driven via `Condition.fx` (registry + ConditionsPanel editor) folded in
+effective-condition order by `TokenView.toSpec`, and the selection signifier moved onto the node
+as a `highlight` entry (`RenderEngineOpts.selectedTokens` + `reapplyTokenSelection`; the
+scene-tools overlay-ring draw deleted — one highlight mechanism; `"target"` a reserved source
+with no producer).
+Decisions taken: emissions follow standard write rules (no GM-only predicate — the spec was
+amended in-range); no server ECS emission accessors (no consumer; dead code fails lint);
+condition-fx strengths fixed at 0.5 (the registry authors colors, not strengths); selection
+highlight 0.4 at the preserved accent `0xffd400`. Found in flight: the m15b merge's auto-merge
+silently dropped the actors suite's `listAssets` module mock (the suite caught it — restored
+with the pickAsset flow); the merge itself was pulled forward onto the branch (origin/main +
+`m15b-asset-browser`) because M18f's editor targets `ctx.pickAsset` and main had not landed it.
+Sound/VFX playback stays Phase 3 by PLAN's own scoping — the component model is the deliverable.
+Coverage: 7 room region-trigger tests + 4 executor `entered_cells` tests (+ the rasterization
+parity pin), 6 `updateTokenFx` + condition-fx/selection tests across render/engine/stage, emote
+protocol + convergence + cross-scene guard tests, 17 new actors-module tests; full repo gates
+(`cargo test`/`clippy`/`fmt`, every `pnpm` gate, docs example check) green at every commit.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference
