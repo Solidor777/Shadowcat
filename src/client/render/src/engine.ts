@@ -95,6 +95,16 @@ export interface RenderEngineOpts {
   footprints?: () => FootprintLookup;
 }
 
+/** Theme-driven colors applied to the stage canvas at runtime by
+ * {@link RenderEngine.setThemeColors}. Either field may be omitted to leave
+ * that channel untouched. */
+export interface ThemeColors {
+  /** The renderer clear color, packed `0xRRGGBB`. */
+  background?: number;
+  /** The grid line color, packed `0xRRGGBB`. */
+  gridColor?: number;
+}
+
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
  * the store-driven reconciler. Framework- and Pixi-free (the backend is injected). */
 export class RenderEngine implements SceneToolHost {
@@ -907,12 +917,10 @@ export class RenderEngine implements SceneToolHost {
   /** Apply theme-driven colors at runtime: routes `background` to the backend's
    * clear color and stores `gridColor`, forcing an immediate grid redraw so the
    * new line color shows without waiting for a camera/viewport change (the grid
-   * only re-draws on those triggers — see {@link redrawGrid}). Either field may
+   * only re-draws on those triggers — see `redrawGrid`). Either field may
    * be omitted to leave that channel untouched; the engine is never recreated.
    * @param colors The colors to apply; either field may be omitted to leave that
    * channel untouched.
-   * @param colors.background The renderer clear color, packed `0xRRGGBB`.
-   * @param colors.gridColor The grid line color, packed `0xRRGGBB`.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -921,12 +929,7 @@ export class RenderEngine implements SceneToolHost {
    * engine.setThemeColors({ background: 0x1e1e2e, gridColor: 0x3a3a4a });
    * ```
    */
-  setThemeColors(colors: {
-    /** The renderer clear color, packed `0xRRGGBB`. */
-    background?: number;
-    /** The grid line color, packed `0xRRGGBB`. */
-    gridColor?: number;
-  }): void {
+  setThemeColors(colors: ThemeColors): void {
     if (colors.background !== undefined) this.opts.backend.setClearColor(colors.background);
     if (colors.gridColor !== undefined) {
       this.gridColor = colors.gridColor;
