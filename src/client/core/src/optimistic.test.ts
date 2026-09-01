@@ -184,7 +184,7 @@ describe("OptimisticClient", () => {
 
     // Same id, but envelope() stamps created_at/updated_at via Date.now() per call, so the two
     // racers' payloads genuinely differ in content — only the id is guaranteed identical.
-    const seed = { friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" as const } };
+    const seed = { friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" as const, movement: [] } };
     a.act([{ op: "create", doc: buildFactionRegistryDoc(worldId, seed, id) }]);
     b.act([{ op: "create", doc: buildFactionRegistryDoc(worldId, seed, id) }]);
 

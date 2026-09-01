@@ -631,7 +631,7 @@ export function resolveViewedScene(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null, light: null,
+ *   prototype: false, vision: null, light: null, movement: [],
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * actor.doc_type; // "actor"
@@ -763,7 +763,7 @@ export function buildTokenFromActor(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null, light: null,
+ *   prototype: false, vision: null, light: null, movement: [],
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * setNameHidden(actor, true);
@@ -812,7 +812,7 @@ export function buildTokenDoc(worldId: string, sceneId: string, engine: TokenEng
  * import { buildFactionRegistryDoc } from "@shadowcat/core";
  *
  * const doc = buildFactionRegistryDoc("world-1", {
- *   goblins: { name: "Goblins", color: "#00ff00", stance: "hostile" },
+ *   goblins: { name: "Goblins", color: "#00ff00", stance: "hostile", movement: [] },
  * });
  * doc.doc_type; // "faction-registry"
  * ```

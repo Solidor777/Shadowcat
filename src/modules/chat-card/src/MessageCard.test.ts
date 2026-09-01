@@ -61,6 +61,7 @@ function actorEngine(over: Partial<ActorEngine> = {}): ActorEngine {
     prototype: false,
     vision: null,
     light: null,
+    movement: [],
     ...over,
   };
 }

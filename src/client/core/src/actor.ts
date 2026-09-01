@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -48,6 +48,14 @@ export interface EffectiveActor {
    * all, so its absence here means "no carried light", matching the server's
    * `SceneEcs::token_light_emission` precedence). */
   light: LightEmission | null;
+  /** The effective movement-type tags, deduplicated. Mirrors the server's
+   * `SceneEcs::token_movement_tags`: a per-token `overrides.movement` replaces the whole set
+   * (wholesale, same shape as `vision`); otherwise the actor's own `movement` unions with the
+   * linked faction record's `Faction.movement` (a dangling faction link contributes nothing).
+   * The engine reserves `"flying"`/`"incorporeal"` (ignore difficult-terrain COST only — walls,
+   * impassable, arrest and the visibility mask all still gate); every other tag is inert system
+   * vocabulary. Advisory only — the authoritative pricing runs server-side. */
+  movement: string[];
 }
 
 /** Fold a per-token `TokenOverrides` whitelist onto its actor's `ActorEngine` base to produce the
@@ -55,16 +63,18 @@ export interface EffectiveActor {
  * @param actorDoc The resolved actor document (linked live, or the token's embedded copy).
  * @param base The actor's `engine` body.
  * @param overrides The token's own override whitelist, if any (absent for an embedded/instanced actor).
+ * @param factionMovement The linked faction record's `movement` tags ([] when the actor names no
+ * faction or the link dangles); unioned into `movement` unless an override replaces the set.
  * @returns The projected `EffectiveActor`.
  * @example
  * ```
  * // internal helper; not part of the public API (see resolveTokenActor for the public entry point)
  * declare const actorDoc: WireDocument;
  * declare const token: WireDocument;
- * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides);
+ * project(actorDoc, actorDoc.engine as ActorEngine, (token.engine as TokenEngine | undefined)?.overrides, []);
  * ```
  */
-function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null): EffectiveActor {
+function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOverrides | null, factionMovement: string[] = []): EffectiveActor {
   return {
     name: overrides?.name ?? actorDoc.name,
     displayName: base.displayName,
@@ -79,6 +89,8 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     visionModes: overrides?.vision ?? base.vision ?? [],
     // Wholesale replacement like `visionModes`; an override with `enabled: false` suppresses.
     light: overrides?.light ?? base.light ?? null,
+    // Override replaces the whole resolved set; otherwise actor ∪ faction, deduplicated.
+    movement: overrides?.movement ?? [...new Set([...(base.movement ?? []), ...factionMovement])],
   };
 }
 
@@ -125,13 +137,22 @@ export function actorDisplayName(a: { /** The real name, or `null`/absent when u
  */
 export function resolveTokenActor(token: WireDocument, store: ReadableDocuments): EffectiveActor | null {
   const eng = token.engine as TokenEngine | undefined;
+  // The faction-record join for the `movement` union: a dangling faction id (or an absent
+  // registry singleton) contributes no tags — fail-closed, mirroring `resolveConditions`'s
+  // registry lookup. Read once per resolution so both branches below share the one lookup.
+  const factions = (store.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined)?.factions ?? {};
+  const factionMovement = (faction: string | null): string[] => (faction ? factions[faction]?.movement ?? [] : []);
   if (eng?.actor_id) {
     const actor = store.get(eng.actor_id);
     if (!actor) return null;
-    return project(actor, actor.engine as ActorEngine, eng.overrides);
+    const base = actor.engine as ActorEngine;
+    return project(actor, base, eng.overrides, factionMovement(base.faction));
   }
   const embedded = token.embedded?.actor?.[0];
-  if (embedded) return project(embedded, embedded.engine as ActorEngine);
+  if (embedded) {
+    const base = embedded.engine as ActorEngine;
+    return project(embedded, base, undefined, factionMovement(base.faction));
+  }
   return null;
 }
 

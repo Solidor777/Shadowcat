@@ -185,6 +185,7 @@ const actorEngine: ActorEngine = {
   prototype: true,
   vision: null,
   light: null,
+  movement: [],
 };
 
 test("buildSceneDoc makes a top-level world scene with a default square grid", () => {
@@ -303,7 +304,7 @@ test("setNameHidden sets and clears the OwnerOrGm override on /name", () => {
 });
 
 test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
-  const factions: Record<string, Faction> = { hostile: { name: "Hostile", color: "#f85149", stance: "hostile" } };
+  const factions: Record<string, Faction> = { hostile: { name: "Hostile", color: "#f85149", stance: "hostile", movement: [] } };
   const d = buildFactionRegistryDoc("w1", factions, "reg1");
   expect(d.doc_type).toBe("faction-registry");
   expect(d.parent_id).toBeNull();
