@@ -124,7 +124,13 @@
         break;
       }
       default:
-        // resizeZone/resizeGroup/activeTab/compactView: not narrated.
+        // resizeZone/resizeGroup/resizeFloating/updatePopoutGeometry/
+        // activeTab/compactView: geometry and focus churn, never narrated.
+        // popOutInto: deliberately not narrated either, though it is a
+        // placement change — a restore gesture emits one per revived panel
+        // and would spam the live region with duplicates of its own restore
+        // notice, while a drag-into-popout announces itself visually (the
+        // panel appears in the target window).
         return null;
     }
     return t("panels.moved", { panel: label(op.id), where });

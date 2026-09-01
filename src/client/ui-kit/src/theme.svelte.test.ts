@@ -50,6 +50,18 @@ describe("ThemeController", () => {
     expect(controller.customThemes.mine!.tokens).toEqual({ accent: "#123456" });
   });
 
+  it("saveCustom ignores an entry the sanitizer rejects wholesale", () => {
+    const controller = new ThemeController();
+    const listener = vi.fn();
+    controller.subscribe(listener);
+    // A structurally unusable entry (here: tokens not an object) must not be
+    // stored — a stored `undefined` would throw in the next `serialize`.
+    controller.saveCustom("mine", { label: "Mine", base: "slate-dark", tokens: 42 } as never);
+    expect(controller.customThemes).toEqual({});
+    expect(listener).not.toHaveBeenCalled();
+    expect(() => controller.serialize()).not.toThrow();
+  });
+
   it("deleteCustom removes the theme and falls back to the default when active", () => {
     const controller = new ThemeController();
     controller.saveCustom("mine", { label: "Mine", base: "slate-dark", tokens: {} });

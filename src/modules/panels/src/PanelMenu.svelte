@@ -70,6 +70,10 @@
       onkeydown={(event) => onKeydown(event, i)}
     >{t(item.labelKey)}</button>
   {/each}
+  <!-- Discovery for the floating window's keyboard move/resize (the floating
+       dialog's aria-label carries the same text for AT users; sighted
+       keyboard users get it here). Presentation only — not a menuitem. -->
+  <div class="sc-panel-menu-hint">{t("panels.floatingShortcuts")}</div>
 </div>
 
 <style lang="scss">
@@ -82,6 +86,13 @@
     border-radius: 0.375rem;
     background: var(--surface-overlay);
     box-shadow: var(--shadow-elevated);
+  }
+  .sc-panel-menu-hint {
+    margin-top: 0.25rem;
+    padding: 0.375rem 0.75rem 0.25rem;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.75rem;
   }
   .sc-panel-menu-item {
     /* Touch target floor (mobile invariant); comfortably above the 24px a11y floor too. */

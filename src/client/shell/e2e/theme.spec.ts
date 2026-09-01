@@ -155,3 +155,35 @@ test("a custom theme is authored, persisted across reload, and deleted with fall
     .toBe("#2d6ee8");
   await expect(page.getByLabel("Theme")).toHaveValue("slate-dark");
 });
+
+// Theme isolation end to end in a real browser: with a non-default theme
+// active, an element inside the isolation class must compute the DEFAULT
+// theme's token values while an element outside computes the active theme's.
+// The contribution-wrapping half of the chain (who gets the class) is
+// unit-tested in Surface/PanelHost; this proves the mechanism those wrappers
+// rely on — the per-document sheet plus the cascade.
+test("an isolated subtree keeps engine defaults under a non-default theme", async ({
+  page,
+  account,
+}) => {
+  await enterFreshWorld(page, "Theme Isolation World", account);
+  await page.getByTestId("topbar-settings").click();
+  await page.getByLabel("Theme").selectOption("slate-light");
+  await expect.poll(() => surfaceBase(page)).toBe("#e4e6f0");
+
+  const probe = await page.evaluate(() => {
+    const host = document.createElement("div");
+    host.innerHTML =
+      '<div class="sc-theme-isolate"><div id="iso-probe" style="background: var(--surface-base)"></div></div>' +
+      '<div id="host-probe" style="background: var(--surface-base)"></div>';
+    document.body.appendChild(host);
+    const read = (id: string) => getComputedStyle(document.getElementById(id)!).backgroundColor;
+    const result = { isolated: read("iso-probe"), host: read("host-probe") };
+    host.remove();
+    return result;
+  });
+  // Computed colors come back as rgb(): the slate-light surface vs the
+  // slate-dark default the isolated subtree must keep.
+  expect(probe.host).toBe("rgb(228, 230, 240)"); // #e4e6f0
+  expect(probe.isolated).toBe("rgb(31, 31, 44)"); // #1f1f2c
+});

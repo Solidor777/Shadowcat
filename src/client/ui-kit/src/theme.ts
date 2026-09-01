@@ -527,9 +527,12 @@ export const THEME_ISOLATION_SHEET_ID = "sc-theme-isolate-sheet";
 /** Generates the theme-isolation stylesheet: one rule re-declaring EVERY
  * theme token at the default theme's value under the isolation class, so an
  * isolated subtree renders with engine defaults regardless of the active
- * (possibly user-authored) theme. Derived from the theme data itself — the
- * property set can never drift from `THEME_TOKEN_NAMES` (a test pins the
- * emitted names equal to it).
+ * (possibly user-authored) theme. `color-scheme` is re-declared alongside the
+ * tokens — it inherits like a custom property, and without it native
+ * scrollbars/form controls inside an isolated subtree would follow the user
+ * theme's scheme while the tokens revert to the defaults. Derived from the
+ * theme data itself — the property set can never drift from
+ * `THEME_TOKEN_NAMES` (a test pins the emitted names equal to it).
  * @returns The stylesheet text.
  * @example
  * ```ts
@@ -541,5 +544,6 @@ export const THEME_ISOLATION_SHEET_ID = "sc-theme-isolate-sheet";
 export function themeIsolationCss(): string {
   const defaults = BUILTIN_THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
   const lines = THEME_TOKEN_NAMES.map((name) => `  --${name}: ${defaults.tokens[name]};`);
+  lines.push(`  color-scheme: ${defaults.colorScheme};`);
   return `.${THEME_ISOLATION_CLASS} {\n${lines.join("\n")}\n}\n`;
 }

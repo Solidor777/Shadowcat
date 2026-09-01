@@ -180,15 +180,25 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
     )
     .optional(),
   engines: ModuleEnginesSchema.optional(),
-  // A bare relative `.css` path: no leading slash and no `..` segment. The
-  // server's module static route re-guards traversal at serve time; this
-  // refinement is authoring feedback, not the security boundary.
+  // A bare relative `.css` path: no leading slash, no `..` segment, and no
+  // backslash — WHATWG URL resolution treats `\` as a path separator for
+  // special schemes, so a `\`-carrying path could resolve outside the module
+  // folder even with every `/`-segment clean. The server's module static
+  // route re-guards traversal at serve time; this refinement is authoring
+  // feedback, not the security boundary.
   style: z
     .string()
     .min(1)
-    .refine((s) => !s.startsWith("/") && !s.split("/").includes("..") && s.endsWith(".css"), {
-      message: "style must be a relative .css path within the module folder",
-    })
+    .refine(
+      (s) =>
+        !s.startsWith("/") &&
+        !s.includes("\\") &&
+        !s.split("/").includes("..") &&
+        s.endsWith(".css"),
+      {
+        message: "style must be a relative .css path within the module folder",
+      },
+    )
     .optional(),
 });
 

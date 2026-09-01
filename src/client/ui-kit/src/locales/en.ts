@@ -348,6 +348,8 @@ export const en: Messages = {
     "Popped-out panels reopen as floating windows after reload",
   "panels.floatingDialog":
     "{panel} — floating window. Arrow keys move, Ctrl+arrow keys resize; hold Shift for larger steps. Escape closes.",
+  "panels.floatingShortcuts":
+    "Floating window: Arrow keys move · Ctrl+arrows resize · Shift = larger steps",
   "panels.reopenWindows": "Reopen windows",
   "panels.moreViews": "More views",
   "panels.unknownPanel": "Unknown panel ({id})",

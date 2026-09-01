@@ -247,5 +247,9 @@ describe("themeIsolationCss", () => {
     // Exactly one declaration per token — no more, no fewer: the emitted set
     // can never drift from the token universe in either direction.
     expect(css.match(/--[a-z0-9-]+:/g)).toHaveLength(THEME_TOKEN_NAMES.length);
+    // `color-scheme` rides alongside: it inherits like a custom property, so
+    // without it native controls inside the subtree would follow the user
+    // theme's scheme while the tokens revert to the defaults.
+    expect(css).toContain(`color-scheme: ${defaults.colorScheme};`);
   });
 });

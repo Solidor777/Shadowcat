@@ -155,6 +155,10 @@ test.each([
   ["/abs/style.css", "absolute"],
   ["../escape.css", "traversing"],
   ["style.css/..", "trailing-traversal"],
+  // WHATWG URL resolution treats `\` as a path separator for special
+  // schemes, so a backslash path is traversal even with clean `/`-segments.
+  ["..\\..\\escape.css", "backslash-traversal"],
+  ["sub\\style.css", "backslash-separator"],
   ["style.js", "non-css"],
   ["", "empty"],
 ])("a manifest with a %s style path (%s) is rejected", (style) => {

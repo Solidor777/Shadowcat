@@ -1042,8 +1042,18 @@ export class WorldSession {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load: ${f.error}`);
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
-      WorldSession.#applyModuleStyles(this.#moduleStyleLinks, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
+      // Styles follow activation, never precede it, and only a module that
+      // actually activated gets a link: a per-module activation failure logs
+      // and skips without rejecting (see `ModuleRegistry.activate`), so
+      // `result.loaded` can name a module that never activated.
+      WorldSession.#applyModuleStyles(
+        this.#moduleStyleLinks,
+        resolved,
+        result.loaded.filter((id) =>
+          this.#modules.list().some((m) => m.id === id && m.active),
+        ),
+      );
     } catch (e) {
       this.#logger.warn("external module discovery failed", e);
     }
@@ -1226,8 +1236,18 @@ export class WorldSession {
         this.#logger.warn(`external module ${f.id} (${f.entry}) failed to load during reconcile: ${f.error}`);
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
-      WorldSession.#applyModuleStyles(this.#moduleStyleLinks, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
+      // Styles follow activation, never precede it, and only a module that
+      // actually activated gets a link: a per-module activation failure logs
+      // and skips without rejecting (see `ModuleRegistry.activate`), so
+      // `result.loaded` can name a module that never activated.
+      WorldSession.#applyModuleStyles(
+        this.#moduleStyleLinks,
+        resolved,
+        result.loaded.filter((id) =>
+          this.#modules.list().some((m) => m.id === id && m.active),
+        ),
+      );
     } catch (e) {
       this.#logger.warn("external module reconcile failed", e);
     }

@@ -111,8 +111,10 @@ export class ThemeController {
   }
 
   /** Saves a custom theme under `id` (creating or overwriting) and re-applies.
-   * Token overrides are validated — unknown token keys are dropped. Does not
-   * change the active selector.
+   * Token overrides are validated — unknown token keys are dropped. An entry
+   * the sanitizer rejects wholesale is not saved at all (and nothing
+   * re-applies), so a rejected save can never plant an `undefined` the next
+   * `serialize` would trip over. Does not change the active selector.
    * @param id The custom theme id (the part after `custom:`).
    * @param custom The theme to save.
    * @example
@@ -124,6 +126,7 @@ export class ThemeController {
    */
   saveCustom(id: string, custom: CustomTheme): void {
     const sanitized = sanitizeCustomThemes({ [id]: custom });
+    if (!(id in sanitized)) return;
     this.#custom = { ...this.#custom, [id]: sanitized[id]! };
     this.#changed();
   }

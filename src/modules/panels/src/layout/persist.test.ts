@@ -307,6 +307,58 @@ describe("decodeLayout referential consistency", () => {
     expect(reset).toBe(true);
     expect(layout).toBe(fb);
   });
+
+  it("resets when one panel id occupies two locations (docked and popped out)", () => {
+    // A crafted blob can place the same id in a zone's tabs AND in a popout
+    // window's panels; every structural guard passes, so the uniqueness arm of
+    // the referential guard is what rejects it.
+    const encoded = structuredClone(encodeLayout(base())) as PanelLayoutV1 & Record<string, unknown>;
+    const zones = encoded.expanded.zones as Record<string, unknown>;
+    const right = zones.right as Record<string, unknown>;
+    const bad = {
+      ...encoded,
+      expanded: {
+        ...encoded.expanded,
+        zones: { ...zones, right: { ...right, groups: [{ tabs: ["chat"], active: "chat", size: 1 }] } },
+        popouts: [{ key: "w-chat", panels: ["chat"], rect: null }],
+      },
+    };
+    const fb = fallback();
+    const { layout, reset } = decodeLayout(bad, KNOWN, () => fb);
+    expect(reset).toBe(true);
+    expect(layout).toBe(fb);
+  });
+
+  it("resets when one panel id appears in two popout windows", () => {
+    const encoded = structuredClone(encodeLayout(base())) as PanelLayoutV1 & Record<string, unknown>;
+    const bad = {
+      ...encoded,
+      expanded: {
+        ...encoded.expanded,
+        popouts: [
+          { key: "w-1", panels: ["chat"], rect: null },
+          { key: "w-2", panels: ["chat"], rect: null },
+        ],
+      },
+    };
+    const fb = fallback();
+    const { layout, reset } = decodeLayout(bad, KNOWN, () => fb);
+    expect(reset).toBe(true);
+    expect(layout).toBe(fb);
+  });
+
+  it("resets when a legacy poppedOut id is also docked", () => {
+    const encoded = structuredClone(encodeLayout(base())) as PanelLayoutV1 & Record<string, unknown>;
+    const zones = encoded.expanded.zones as Record<string, unknown>;
+    const right = zones.right as Record<string, unknown>;
+    const expanded = { ...encoded.expanded, zones: { ...zones, right: { ...right, groups: [{ tabs: ["chat"], active: "chat", size: 1 }] } } } as Record<string, unknown>;
+    delete expanded.popouts;
+    const bad = { ...encoded, expanded: { ...expanded, poppedOut: ["chat"] } };
+    const fb = fallback();
+    const { layout, reset } = decodeLayout(bad, KNOWN, () => fb);
+    expect(reset).toBe(true);
+    expect(layout).toBe(fb);
+  });
 });
 
 test("decode round-trips popouts windows", () => {

@@ -271,13 +271,23 @@ function isPanelLayoutV1(v: unknown): v is PanelLayoutV1 {
 }
 
 /** Checks referential consistency for a structurally-valid `PanelLayoutV1`: each group's
- * `active` must be one of its own `tabs`, and `compact.activeView` must be `null` or present
- * in `compact.order`. Both ids are KNOWN-valid (structural guard already passed), so `prune`
+ * `active` must be one of its own `tabs`, `compact.activeView` must be `null` or present
+ * in `compact.order`, and a panel id occupies AT MOST ONE location across the expanded
+ * tree (zone tabs, floating, minimized, LIVE popout windows — repeats across live popout
+ * windows included). A DORMANT popout record claims nothing: it is the tombstone a closed
+ * popup leaves behind for the restore flow, and its panels legitimately live on in other
+ * locations (`locate` skips dormant records for the same reason). The first two ids are
+ * KNOWN-valid (structural guard already passed), so `prune`
  * — which only drops ids missing from `known` — cannot repair a dangling reference among ids
- * that are all still present; a violation here must fail the decode instead.
+ * that are all still present; a violation here must fail the decode instead. The uniqueness
+ * arm exists for the same reason: a hand-edited blob placing one id in two locations passes
+ * every structural guard, and `locate` would resolve one location while the duplicate
+ * lingers — the reducers maintain single-location by construction, so a violation can only
+ * come from a crafted blob. `compact.order` is deliberately excluded: it is the compact
+ * view's own ordering over the SAME panel ids, not another location.
  * @param l A structurally-valid `PanelLayoutV1` (already passed `isPanelLayoutV1`).
- * @returns Whether every group's `active` is one of its own `tabs` AND `compact.activeView`
- * is `null` or present in `compact.order`.
+ * @returns Whether the `active`/`activeView` memberships hold AND no panel id appears in
+ * two expanded locations.
  * @example
  * ```
  * // private function; not part of the public API — the second of the two guards
@@ -292,7 +302,35 @@ function isReferentiallyConsistent(l: PanelLayoutV1): boolean {
       if (!g.tabs.includes(g.active)) return false;
     }
   }
-  return l.compact.activeView === null || l.compact.order.includes(l.compact.activeView);
+  if (!(l.compact.activeView === null || l.compact.order.includes(l.compact.activeView))) {
+    return false;
+  }
+  const seen = new Set<string>();
+  const claim = (id: string): boolean => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  };
+  for (const zone of ZONE_IDS) {
+    for (const g of l.expanded.zones[zone].groups) {
+      for (const id of g.tabs) if (!claim(id)) return false;
+    }
+  }
+  for (const f of l.expanded.floating) if (!claim(f.id)) return false;
+  for (const id of l.expanded.minimized) if (!claim(id)) return false;
+  for (const w of l.expanded.popouts ?? []) {
+    // Dormant records are tombstones for the restore flow, not locations —
+    // their panels may legitimately appear elsewhere in the same blob.
+    if (w.dormant) continue;
+    for (const id of w.panels) if (!claim(id)) return false;
+  }
+  // The legacy field rides pre-`popouts` blobs into `withPopouts`'s migration,
+  // so its ids claim locations exactly like a present `popouts` record.
+  const legacy = (l.expanded as unknown as Record<string, unknown>).poppedOut;
+  if (l.expanded.popouts === undefined && Array.isArray(legacy)) {
+    for (const id of legacy) if (!claim(id as string)) return false;
+  }
+  return true;
 }
 
 /** Fills an absent `popouts` (a blob predating the field) so reducer arithmetic
