@@ -2008,6 +2008,50 @@ pre-customers rule: a pre-restructure flat `light` document fails the new engine
 dark (fail-closed). Two existing test expectations changed for the additive composition
 (env-plus-light saturation and a max-compose rename); no other suite moved.
 
+### M17b · Senses: tremorsense + elevation ✅
+Branch `m17`, executed from the same design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D3, D9-senses, fold-in fix 1) and plan
+[`superpowers/plans/2026-08-31-m17b-senses.md`](superpowers/plans/2026-08-31-m17b-senses.md);
+M17c (movement tags) and M17d (moving light mid-walk) remain. Delivered: `VisionMode` is the v2
+descriptor (`perceives` terrain/creatures, `requiresLos`, `renderHint`), and
+`VisionModesEngine::seed` gains `tremorsense` (creatures, no-LOS, 12 cells). The masked `vision`
+payload carries `perceived` — the grounded tokens the recipient's grounded creature-sense
+sources perceive per scene, READ-gated through the same `ctx_access` authority as the document
+stream, disjoint from the `lit` set by construction (`compute_derived` passes the one computed
+mask in), absent on the GM arm; `scene::senses` resolves senses through the SAME
+`token_vision_assignments` precedence walk the terrain floors use, so the two views cannot
+disagree. Client: `toVisibility` parses `perceived` fail-closed (garbled ⇒ empty) and
+`PixiBackend` re-parents a perceived token's node — never a duplicate copy — into the
+above-`mask` `perceivedTokens` container and back, so the reveal is immediate in both
+directions and survives vision sweeps. Elevation: `TokenEngine.elevation` /
+`LightEngine.elevation` (absent = ground; readers clamp non-finite to ground) and
+`WallEngine.elevation` `{ bottom, top }` — the band a wall's sight/light occlusion applies to
+(absent = every elevation, absent end unbounded, malformed or non-finite fails closed to
+occluding everything via `scene::elevation::wall_occludes`, including a non-finite source
+elevation). One filtered accessor pair (`sight_walls_for`/`light_walls_for` over the banded
+collectors) feeds every consumer; environment ambient keeps the full wall set at every
+elevation (walls always shadow sky-light); the visibility-cache snapshot fingerprints source
+elevation so no stale mask is served. Fold-in fix: observer-vision source admission routes
+through `resolve_access_world` — the same capability resolution `filter_command` uses — with a
+parity test exercising both masks at genuinely diverging inputs. Authoring: the game-settings
+vision-mode editor edits every descriptor field and adds/removes modes, with the floor dropdown
+derived from `resolveGradation` (the hardcoded band list is gone) and add/remove band on the
+gradation editor (band names stay non-editable — they are the floor reference key); the actors
+panel's darkvision-only input is now the shared `VisionAssignmentsEditor` list (mode + range +
+add/remove) on rows, the create form, and the actor sheet; `TokenVisionControl` (inherit /
+custom wholesale override) and `TokenElevationControl` (0 normalizes to absent) join the
+per-token surfaces; the wall editor gains the occlusion-band interval inputs and the light
+editor an elevation input; off-ground tokens render an upright `↑n`/`↓n` badge chip. E2e
+(Playwright, real server + two sessions): a tremorsense row assigned through the real UI
+reveals a grounded token through fog on the player's client, raising the target's elevation
+ends the perception, and the elevation badge renders. Review (two independent reviewers,
+converged): the lit-mask pass-through, the NaN-closed `wall_occludes`, and the legacy-mode
+display defaults above were found and fixed in flight; accepted and documented in the spec's
+security section — owner-writable token elevation can lift a carried GM-authored light over a
+deliberately banded wall (bounded by the emission's reach; GM-gating it would fork the movement
+model ahead of M17c's flight tags).
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference
