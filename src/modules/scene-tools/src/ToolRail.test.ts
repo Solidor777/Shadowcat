@@ -462,3 +462,70 @@ test("Escape clears the open editor", async () => {
   await fireEvent.keyDown(window, { key: "Escape" });
   expect(screen.queryByTestId("light-editor")).toBeNull();
 });
+
+test("the light editor's elevation input writes /engine/elevation, normalizing ground to null", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tools.at(-1)!.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  await screen.findByTestId("light-editor");
+
+  const input = screen.getByTestId("light-elevation") as HTMLInputElement;
+  expect(input.value).toBe("0"); // absent stored value displays as ground
+  await fireEvent.change(input, { target: { value: "10" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/elevation", old: null, new: 10 }],
+  });
+});
+
+test("the wall editor's band inputs write the whole /engine/elevation object, preserving the other end; both empty writes null", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: docs,
+      dispatchIntent: (ops) => {
+        dispatched.push(ops);
+        // Apply the intent back so the next edit's `old` re-derives from confirmed state.
+        docs.applyCommand({ seq: docs.appliedSeq + 1, world_id: "w1", author: "a", ts: 0, ops });
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("wall-editor");
+  const wallId = docs.query("wall")[0].id;
+
+  // Setting a bottom end on an unbounded (absent) band creates the band object.
+  await fireEvent.change(screen.getByTestId("wall-elevation-bottom"), { target: { value: "2" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: null, new: { bottom: 2, top: null } }],
+  });
+
+  // Setting the top end preserves the confirmed bottom.
+  await fireEvent.change(screen.getByTestId("wall-elevation-top"), { target: { value: "10" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: { bottom: 2, top: null }, new: { bottom: 2, top: 10 } }],
+  });
+
+  // Clearing both ends writes null — the canonical "occludes every elevation".
+  await fireEvent.change(screen.getByTestId("wall-elevation-bottom"), { target: { value: "" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: { bottom: 2, top: 10 }, new: { bottom: null, top: 10 } }],
+  });
+  await fireEvent.change(screen.getByTestId("wall-elevation-top"), { target: { value: "" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: { bottom: null, top: 10 }, new: null }],
+  });
+});

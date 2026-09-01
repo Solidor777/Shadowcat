@@ -198,6 +198,69 @@
     controller.editingEntity = null;
   }
 
+  /** Parse an elevation input's raw string: empty means "absent" (ground for a light, an
+   * unbounded end for a wall band); a finite number is the value; anything else is ignored
+   * (never dispatch a NaN).
+   * @param raw The input's raw string value.
+   * @returns The parsed elevation, `null` for absent, or `undefined` for "ignore this edit".
+   * @example
+   * ```
+   * parseElevation("");    // null  (absent)
+   * parseElevation("2.5"); // 2.5
+   * parseElevation("abc"); // undefined — no write
+   * ```
+   */
+  function parseElevation(raw: string): number | null | undefined {
+    if (raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  /** Write the edited light's `/engine/elevation`. Ground (`0`/empty) normalizes to `null`
+   * (canonical absent, matching `elevation_or_ground`'s None = 0 read); `old` is the raw
+   * stored value.
+   * @param raw The elevation input's raw string value.
+   * @example
+   * ```
+   * editLightElevation("10"); // a light 10 units above the ground plane
+   * ```
+   */
+  function editLightElevation(raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as LightEngine;
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return;
+    const next = parsed === 0 ? null : parsed;
+    const old = eng.elevation ?? null;
+    if (next === old) return;
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end.
+   * An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field writes
+   * `null` (canonical "occludes every elevation" — an absent band, matching
+   * `wall_occludes`). `old` is the raw stored band object (or `null`).
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * editWallElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * ```
+   */
+  function editWallElevation(end: "bottom" | "top", raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as WallEngine;
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return;
+    const old = eng.elevation ?? null;
+    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
+    const top = end === "top" ? parsed : (old?.top ?? null);
+    const next = bottom === null && top === null ? null : { bottom, top };
+    editSelected("/engine/elevation", old, next);
+  }
+
   /** Escape backs out of an open light/wall editor (clears the editing selection). Tool
    * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
    * @param event The window keydown event.
@@ -315,6 +378,18 @@
           value={eng.emission}
           onCommit={(next) => editSelected("/engine/emission", eng.emission, next)}
         />
+        <!-- The light's own elevation (absent = ground): a raised light shines over any wall
+             whose band ends below it (`wall_occludes`'s source-elevation band test). -->
+        <label>
+          {t("tools.lightElevation")}
+          <input
+            type="number"
+            step="1"
+            data-testid="light-elevation"
+            value={eng.elevation ?? 0}
+            onchange={(e) => editLightElevation(e.currentTarget.value)}
+          />
+        </label>
         <button type="button" class="tool" data-testid="light-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {:else if editingDoc && controller.editingEntity?.kind === "wall"}
@@ -349,6 +424,28 @@
             onchange={(e) => editSelected("/engine/blocksLight", eng.blocksLight ?? null, e.currentTarget.checked)}
           />
           {t("tools.blocksLight")}
+        </label>
+        <!-- The elevation band the wall's sight/light occlusion applies to; both ends empty =
+             unbounded (stored as an absent band, which occludes every elevation). -->
+        <label>
+          {t("tools.wallElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="wall-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editWallElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.wallElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="wall-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editWallElevation("top", e.currentTarget.value)}
+          />
         </label>
         <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>

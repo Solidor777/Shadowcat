@@ -402,6 +402,7 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
               blocksSight: true,
               blocksMove: true,
               blocksLight: true,
+              elevation: null,
             }),
           },
         ]);
