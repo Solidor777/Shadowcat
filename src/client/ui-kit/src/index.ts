@@ -37,10 +37,17 @@ export {
   THEME_TOKEN_NAMES,
   BUILTIN_THEMES,
   DEFAULT_THEME_ID,
+  CONTRAST_PAIRINGS,
+  THEME_ISOLATION_CLASS,
+  THEME_ISOLATION_SHEET_ID,
   resolveTheme,
   sanitizeCustomTheme,
   sanitizeCustomThemes,
+  colorThemeTokenNames,
+  contrastWarnings,
+  themeIsolationCss,
+  wcagContrast,
 } from "./theme";
-export type { ThemeDefinition, ThemeTokenName, CustomTheme } from "./theme";
+export type { ThemeDefinition, ThemeTokenName, CustomTheme, ContrastPairing } from "./theme";
 export { ThemeController, theme, activeTheme } from "./theme.svelte";
 export type { PersistedTheme, ThemeListener } from "./theme.svelte";

@@ -78,3 +78,80 @@ test("a theme switch applies immediately, persists to ui-state, and survives a r
   );
   await expect.poll(() => surfaceBase(page)).toBe("#e4e6f0");
 });
+
+// Custom themes are user-authored data: the editor's draft previews live
+// without persisting, save persists through the ui-state machinery, and
+// deleting the active theme falls back to the default.
+test("a custom theme is authored, persisted across reload, and deleted with fallback", async ({
+  page,
+  account,
+}) => {
+  await enterFreshWorld(page, "Custom Theme World", account);
+  await page.getByTestId("topbar-settings").click();
+
+  await page.getByRole("button", { name: "New custom theme" }).click();
+  await page.getByLabel("Theme name").fill("My Theme");
+
+  // Live preview: editing a token applies it immediately, before any save.
+  const accentRow = page.locator(".row", {
+    has: page.getByText("--accent", { exact: true }),
+  });
+  await accentRow.locator('input[type="color"]').fill("#ff0000");
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.style.getPropertyValue("--accent")),
+    )
+    .toBe("#ff0000");
+
+  const persistResponse = page.waitForResponse((r) => {
+    if (
+      !/\/api\/me\/ui-state$/.test(r.url()) ||
+      r.request().method() !== "PUT" ||
+      !r.ok()
+    ) {
+      return false;
+    }
+    try {
+      const body = r.request().postDataJSON() as {
+        global?: { theme?: { active?: string } };
+      };
+      return body?.global?.theme?.active?.startsWith("custom:") === true;
+    } catch {
+      return false;
+    }
+  });
+  await page.getByRole("button", { name: "Save theme" }).click();
+  await persistResponse;
+
+  await page.reload();
+  await expect(page.locator(".stage-host")).toHaveAttribute(
+    "data-render-ready",
+    "true",
+    { timeout: 30_000 },
+  );
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.style.getPropertyValue("--accent")),
+    )
+    .toBe("#ff0000");
+
+  // Delete the active custom theme: the confirm is accepted, and the theme
+  // falls back to the default's accent. The settings panel was open across
+  // the reload and the panel layout is persisted, so it may already be
+  // restored open — the topbar button toggles, so click it only when the
+  // panel is not showing.
+  page.once("dialog", (d) => d.accept());
+  const newThemeButton = page.getByRole("button", { name: "New custom theme" });
+  if (!(await newThemeButton.isVisible())) {
+    await page.getByTestId("topbar-settings").click();
+  }
+  await expect(newThemeButton).toBeVisible();
+  const row = page.locator(".custom-theme-row", { hasText: "My Theme" });
+  await row.getByRole("button", { name: "Delete" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.style.getPropertyValue("--accent")),
+    )
+    .toBe("#2d6ee8");
+  await expect(page.getByLabel("Theme")).toHaveValue("slate-dark");
+});

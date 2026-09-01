@@ -366,3 +366,180 @@ export function resolveTheme(
   }
   return BUILTIN_THEMES.find((theme) => theme.id === DEFAULT_THEME_ID)!;
 }
+
+/** Whether `value` is an opaque color literal: a `#rgb`/`#rrggbb` hex, or a
+ * three-component `rgb()`/`hsl()` with no alpha channel. Alpha-bearing syntax
+ * (`#rgba`, `#rrggbbaa`, `rgba()`, `hsla()`, and the modern `rgb(… / a)` form)
+ * is rejected: an opaque color input cannot represent alpha, so editing such a
+ * value through one would silently drop the alpha.
+ * @param value The token value to classify.
+ * @returns True when the value is an opaque color.
+ * @example
+ * ```ts
+ * // internal helper; not part of the public API
+ * isOpaqueColorValue("#2d6ee8"); // true
+ * isOpaqueColorValue("rgba(0, 0, 0, 0.5)"); // false
+ * ```
+ */
+function isOpaqueColorValue(value: string): boolean {
+  const v = value.trim().toLowerCase();
+  if (/^#[0-9a-f]{3}$/.test(v) || /^#[0-9a-f]{6}$/.test(v)) return true;
+  if (/^#[0-9a-f]{4}$/.test(v) || /^#[0-9a-f]{8}$/.test(v)) return false;
+  return (
+    /^rgb\([^()/]+,[^()/]+,[^()/]+\)$/.test(v) || /^hsl\([^()/]+,[^()/]+,[^()/]+\)$/.test(v)
+  );
+}
+
+/** The tokens a user theme may override through a color input: those whose
+ * value is an opaque color in EVERY built-in theme. Translucency tokens
+ * (`scrim`, `drop-overlay`), shadow, stacking, spacing, and font tokens are
+ * excluded — they are not representable by `<input type="color">` and always
+ * inherit the base. Derived from the built-in maps rather than declared
+ * separately, so a new token or built-in can never drift the editor's row set
+ * from the theme data.
+ * @returns The editable color token names, in `THEME_TOKEN_NAMES` order.
+ * @example
+ * ```ts
+ * import { colorThemeTokenNames } from "@shadowcat/ui-kit";
+ *
+ * colorThemeTokenNames().includes("accent"); // true
+ * ```
+ */
+export function colorThemeTokenNames(): ThemeTokenName[] {
+  return THEME_TOKEN_NAMES.filter((name) =>
+    BUILTIN_THEMES.every((theme) => isOpaqueColorValue(theme.tokens[name])),
+  );
+}
+
+/** Parses a 3- or 6-digit hex color into linear-light RGB channels (the WCAG
+ * 2.x sRGB transfer function).
+ * @param color The hex color (`#rgb` or `#rrggbb`).
+ * @returns The linear-light `[r, g, b]` channels.
+ * @example
+ * ```ts
+ * // internal helper; not part of the public API
+ * hexToLinearRgb("#ffffff"); // [1, 1, 1]
+ * ```
+ */
+function hexToLinearRgb(color: string): [number, number, number] {
+  const hex = color.replace("#", "");
+  const full = hex.length === 3 ? hex.split("").map((ch) => ch + ch).join("") : hex;
+  const channels: number[] = [];
+  for (let i = 0; i < 3; i++) {
+    const raw = parseInt(full.slice(i * 2, i * 2 + 2), 16) / 255;
+    channels.push(raw <= 0.03928 ? raw / 12.92 : Math.pow((raw + 0.055) / 1.055, 2.4));
+  }
+  return channels as [number, number, number];
+}
+
+/** The WCAG 2.x contrast ratio between two hex colors (`#rgb` or
+ * `#rrggbb`), from 1 (identical) to 21 (black on white). Non-hex input yields
+ * `NaN`, which compares false against every minimum — a garbage token value
+ * never produces a spurious warning.
+ * @param a The first color.
+ * @param b The second color.
+ * @returns The contrast ratio.
+ * @example
+ * ```ts
+ * import { wcagContrast } from "@shadowcat/ui-kit";
+ *
+ * wcagContrast("#000000", "#ffffff"); // 21
+ * ```
+ */
+export function wcagContrast(a: string, b: string): number {
+  const luminance = (color: string): number => {
+    const [r, g, b] = hexToLinearRgb(color);
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** A documented foreground/background token pairing and the minimum WCAG
+ * contrast ratio it must meet. The pairings are declared once here and drive
+ * both the built-in themes' executable audit and the theme editor's
+ * non-blocking warnings, so the two can never disagree about which pairings
+ * matter. */
+export interface ContrastPairing {
+  /** The foreground (text or glyph) token of the pairing. */
+  readonly fg: ThemeTokenName;
+  /** The background (surface or fill) token the foreground sits on. */
+  readonly bg: ThemeTokenName;
+  /** The minimum acceptable WCAG contrast ratio (4.5 for AA text, 3 for
+   * non-text UI components). */
+  readonly min: number;
+}
+
+/** Every surface token text can sit on. */
+const SURFACE_TOKEN_NAMES: readonly ThemeTokenName[] = [
+  "surface-sunken",
+  "surface-base",
+  "surface-raised",
+  "surface-overlay",
+];
+
+/** The documented contrast pairings: primary and muted text on surfaces,
+ * on-fill tokens on their fills, inline alert text on surfaces, and the
+ * accent's non-text minimum against the base surface. */
+export const CONTRAST_PAIRINGS: readonly ContrastPairing[] = [
+  ...SURFACE_TOKEN_NAMES.map(
+    (bg): ContrastPairing => ({ fg: "text-primary", bg, min: 4.5 }),
+  ),
+  { fg: "text-muted", bg: "surface-raised", min: 4.5 },
+  { fg: "text-muted", bg: "surface-overlay", min: 4.5 },
+  { fg: "on-accent", bg: "accent", min: 4.5 },
+  { fg: "on-danger", bg: "danger", min: 4.5 },
+  ...SURFACE_TOKEN_NAMES.map((bg): ContrastPairing => ({ fg: "danger", bg, min: 4.5 })),
+  { fg: "accent", bg: "surface-base", min: 3 },
+];
+
+/** Evaluates `CONTRAST_PAIRINGS` against a token map and returns the pairings
+ * below their minimum ratio. Used by the theme editor for its non-blocking
+ * warnings; the built-in themes' audit asserts this returns empty for each of
+ * them.
+ * @param tokens A full token map (a resolved theme's `tokens`).
+ * @returns The failing pairings, in `CONTRAST_PAIRINGS` order.
+ * @example
+ * ```ts
+ * import { BUILTIN_THEMES, contrastWarnings } from "@shadowcat/ui-kit";
+ *
+ * contrastWarnings(BUILTIN_THEMES[0].tokens); // []
+ * ```
+ */
+export function contrastWarnings(
+  tokens: Readonly<Record<ThemeTokenName, string>>,
+): ContrastPairing[] {
+  return CONTRAST_PAIRINGS.filter(
+    (pairing) => wcagContrast(tokens[pairing.fg], tokens[pairing.bg]) < pairing.min,
+  );
+}
+
+/** The CSS class marking a theme-isolated subtree (a contribution opted out of
+ * the host theme via `Contribution.styling`). The generated sheet from
+ * `themeIsolationCss` re-declares every token at its engine-default value
+ * under this class. */
+export const THEME_ISOLATION_CLASS = "sc-theme-isolate";
+
+/** The `id` of the injected `<style>` element carrying the isolation sheet —
+ * used by the theme controller's per-document install to stay idempotent. */
+export const THEME_ISOLATION_SHEET_ID = "sc-theme-isolate-sheet";
+
+/** Generates the theme-isolation stylesheet: one rule re-declaring EVERY
+ * theme token at the default theme's value under the isolation class, so an
+ * isolated subtree renders with engine defaults regardless of the active
+ * (possibly user-authored) theme. Derived from the theme data itself — the
+ * property set can never drift from `THEME_TOKEN_NAMES` (a test pins the
+ * emitted names equal to it).
+ * @returns The stylesheet text.
+ * @example
+ * ```ts
+ * import { themeIsolationCss, THEME_ISOLATION_CLASS } from "@shadowcat/ui-kit";
+ *
+ * themeIsolationCss().startsWith(`.${THEME_ISOLATION_CLASS}`); // true
+ * ```
+ */
+export function themeIsolationCss(): string {
+  const defaults = BUILTIN_THEMES.find((t) => t.id === DEFAULT_THEME_ID)!;
+  const lines = THEME_TOKEN_NAMES.map((name) => `  --${name}: ${defaults.tokens[name]};`);
+  return `.${THEME_ISOLATION_CLASS} {\n${lines.join("\n")}\n}\n`;
+}

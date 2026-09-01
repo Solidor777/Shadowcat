@@ -9,8 +9,11 @@ import { createSubscriber } from "svelte/reactivity";
 import {
   BUILTIN_THEMES,
   DEFAULT_THEME_ID,
+  THEME_ISOLATION_SHEET_ID,
   resolveTheme,
+  sanitizeCustomTheme,
   sanitizeCustomThemes,
+  themeIsolationCss,
   type CustomTheme,
   type ThemeDefinition,
 } from "./theme";
@@ -37,6 +40,16 @@ export class ThemeController {
   #active = $state(DEFAULT_THEME_ID);
   /** Backing store for {@link ThemeController.customThemes}. */
   #custom = $state<Record<string, CustomTheme>>({});
+  /** The transient preview draft set by `previewCustom`, or null, tagged with
+   * the owner object passed to `previewCustom` so `clearPreview` can tell
+   * whether the current preview still belongs to a given caller. A preview
+   * overrides what {@link ThemeController.resolved} reports (and therefore
+   * what is applied to documents) without touching the active selector or the
+   * saved custom themes, so `serialize` — and with it persistence — never
+   * observes an in-progress edit. `$state.raw`: the value is only ever
+   * replaced, never mutated, and the deep proxy `$state` would wrap the owner
+   * token, breaking the identity comparison `clearPreview` relies on. */
+  #preview = $state.raw<{ draft: CustomTheme; owner: object | null } | null>(null);
   /** Secondary documents the resolved theme is applied to on every change. */
   #documents = new Set<Document>();
   /** Subscribers notified after a change that actually took effect. */
@@ -50,9 +63,15 @@ export class ThemeController {
   }
 
   /** The resolved active theme — the built-in itself, or a custom theme's
-   * validated overrides layered onto its built-in base.
+   * validated overrides layered onto its built-in base. While a `previewCustom`
+   * draft is set, that draft (layered onto its own base) is resolved instead,
+   * under a synthetic selector — the preview is what documents display, but it
+   * never becomes the active theme.
    * @returns The resolved theme definition. */
   get resolved(): ThemeDefinition {
+    if (this.#preview) {
+      return resolveTheme("custom:preview", { preview: this.#preview.draft });
+    }
     return resolveTheme(this.#active, this.#custom);
   }
 
@@ -99,6 +118,54 @@ export class ThemeController {
     this.#changed();
   }
 
+  /** Sets (or with `null`, clears) a transient preview draft: the editor's
+   * live-preview seam. The draft is validated like any custom theme and then
+   * layered onto its base for {@link ThemeController.resolved}, so every
+   * registered document re-renders with the draft immediately. The preview is
+   * presentational only — `active`, `customThemes`, and `serialize` are
+   * untouched, so persistence subscribers comparing serialized snapshots see
+   * no change. Saving is the separate `saveCustom` + `setActive` path; clearing
+   * reverts documents to the genuinely active theme. Clearing with no preview
+   * set is a no-op. `owner` tags the preview so a later `clearPreview` can
+   * leave a successor's preview alone.
+   * @param draft The draft to preview, or `null` to clear the preview
+   *   unconditionally.
+   * @param owner Opaque token identifying the preview's owner.
+   * @example
+   * ```ts
+   * import { theme } from "@shadowcat/ui-kit";
+   *
+   * theme.previewCustom({ label: "Draft", base: "slate-dark", tokens: { accent: "#123456" } });
+   * theme.previewCustom(null);
+   * ```
+   */
+  previewCustom(draft: CustomTheme | null, owner: object | null = null): void {
+    const next = draft === null ? null : sanitizeCustomTheme(draft);
+    if (next === null && this.#preview === null) return;
+    this.#preview = next === null ? null : { draft: next, owner };
+    this.#changed();
+  }
+
+  /** Clears the preview only when it still belongs to `owner` — the
+   * teardown-safe counterpart to `previewCustom`: an editor unmounting in the
+   * same update cycle that mounted its successor must not clear the
+   * successor's preview. A mismatched or absent preview is a silent no-op.
+   * @param owner The owner token passed to `previewCustom`.
+   * @example
+   * ```ts
+   * import { theme } from "@shadowcat/ui-kit";
+   *
+   * const owner = {};
+   * theme.previewCustom({ label: "Draft", base: "slate-dark", tokens: {} }, owner);
+   * theme.clearPreview(owner);
+   * ```
+   */
+  clearPreview(owner: object): void {
+    if (this.#preview === null || this.#preview.owner !== owner) return;
+    this.#preview = null;
+    this.#changed();
+  }
+
   /** Deletes a saved custom theme and re-applies. If the deleted theme was
    * active, the default theme becomes active. Deleting an unknown id is a
    * no-op.
@@ -121,7 +188,9 @@ export class ThemeController {
 
   /** Replaces the whole state from a persisted blob, tolerating garbage:
    * `undefined`, an unresolvable active selector, and malformed custom entries
-   * all fall back to the default theme and an empty custom map.
+   * all fall back to the default theme and an empty custom map. Any active
+   * `previewCustom` draft is cleared — a wholesale state replace supersedes an
+   * in-progress preview.
    * @param state The persisted state, or `undefined` when none was saved.
    * @example
    * ```ts
@@ -140,10 +209,12 @@ export class ThemeController {
         : DEFAULT_THEME_ID;
     this.#custom = custom;
     this.#active = active;
+    this.#preview = null;
     this.#changed();
   }
 
-  /** The persisted shape: active selector plus custom themes.
+  /** The persisted shape: active selector plus custom themes. A `previewCustom`
+   * draft is deliberately excluded — a preview is never persisted.
    * @returns A snapshot suitable for persistence.
    * @example
    * ```ts
@@ -195,6 +266,17 @@ export class ThemeController {
       style.setProperty(`--${name}`, value);
     }
     style.setProperty("color-scheme", resolved.colorScheme);
+    // The isolation sheet rides theme application: it is static data (the
+    // default theme's token values), so an already-installed sheet never
+    // needs a rewrite, and every themed document — the main one and each
+    // registered secondary window — carries the rule an isolated subtree
+    // needs. Idempotent via the sheet's known id.
+    if (doc.getElementById(THEME_ISOLATION_SHEET_ID) === null) {
+      const sheet = doc.createElement("style");
+      sheet.id = THEME_ISOLATION_SHEET_ID;
+      sheet.textContent = themeIsolationCss();
+      doc.head.appendChild(sheet);
+    }
   }
 
   /** Registers an additional document (a secondary window) so it receives the

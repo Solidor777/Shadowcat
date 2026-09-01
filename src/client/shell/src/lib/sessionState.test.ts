@@ -479,3 +479,20 @@ test("writeThemeMirror swallows a throwing storage instead of propagating", () =
     writeThemeMirror(throwing, { active: "slate-light", custom: {} }),
   ).not.toThrow();
 });
+
+test("the editor save sequence (saveCustom + setActive + preview clear) persists the custom theme", async () => {
+  vi.spyOn(api, "getUiState").mockResolvedValue({
+    global: { locale: "en", lastWorld: null },
+    worlds: {},
+  });
+  const put = vi.spyOn(api, "putUiState").mockResolvedValue();
+  await loadSessionState();
+  theme.previewCustom({ label: "Draft", base: "slate-dark", tokens: { accent: "#123456" } });
+  theme.saveCustom("mine", { label: "Mine", base: "slate-dark", tokens: { accent: "#123456" } });
+  theme.setActive("custom:mine");
+  theme.previewCustom(null);
+  await flushSessionState();
+  const patch = put.mock.calls.at(-1)?.[0];
+  expect(patch?.global?.theme?.active).toBe("custom:mine");
+  expect(patch?.global?.theme?.custom?.mine?.label).toBe("Mine");
+});
