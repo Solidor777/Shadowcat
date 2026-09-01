@@ -412,10 +412,10 @@
       <input type="number" min="0.5" step="0.5" aria-label={t("actors.width")} bind:value={sizeW} />
       <input type="number" min="0.5" step="0.5" aria-label={t("actors.height")} bind:value={sizeH} />
     </label>
-    <label>
-      {t("actors.visionModes")}
+    <div class="vision-edit">
+      <span>{t("actors.visionModes")}</span>
       <VisionAssignmentsEditor value={pendingVision} modes={visionModes} onCommit={(next) => (pendingVision = next)} />
-    </label>
+    </div>
     {#if ctx.role === "gm"}
       <label>
         <input

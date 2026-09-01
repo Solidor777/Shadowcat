@@ -183,3 +183,29 @@ describe("ActorSheet carried light", () => {
     ]);
   });
 });
+
+describe("ActorSheet vision assignments", () => {
+  it("the list editor writes /engine/vision with the raw stored list as old", async () => {
+    const calls: unknown[] = [];
+    const stored = [{ mode: "darkvision", range: 12 }];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, vision: stored });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.change(getByTestId("vision-range-0"), { target: { value: "20" } });
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/vision", old: stored, new: [{ mode: "darkvision", range: 20 }] }] }],
+    ]);
+  });
+
+  it("removing the only assignment normalizes the write to null", async () => {
+    const calls: unknown[] = [];
+    const stored = [{ mode: "tremorsense", range: null }];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, vision: stored });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByTestId("vision-remove-0"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/vision", old: stored, new: null }] }],
+    ]);
+  });
+});
