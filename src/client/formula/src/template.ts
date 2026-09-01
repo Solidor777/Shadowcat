@@ -30,7 +30,8 @@ export const NOTATION_KEYWORDS: readonly string[] =
 /** The dice-notation grammar's math-function vocabulary (`floor`, `ceil`, `round`, `abs`,
  * `min`, `max` — the server's `FnName` set). These are NOT `NOTATION_KEYWORDS` members:
  * the keyword list guards the dice-MECHANIC modifier vocabulary (`kh`/`cs`/`tr`/…), while
- * function names are notation only when immediately followed by `(` — `claimNotationFunction`
+ * function names are notation only when followed by `(` after any spaces/tabs —
+ * `claimNotationFunction`
  * tests exactly that, and anywhere else the same word is an ordinary identifier a resolver
  * may answer. Declared once, here, because neither template twin can read the dice parser's
  * own declaration; the notation-modifier parity gate reads all three. */
@@ -142,8 +143,10 @@ const claimNotationKeyword: Recognizer = {
 };
 
 /** An identifier-start run that is a `NOTATION_FUNCTIONS` member when lowercased AND is
- * immediately followed by `(` — the exact rule the server's notation parser applies when it
- * recognizes a math function (`fn_call`). Reserved because the server now runs every roll
+ * followed by `(` after any spaces/tabs — the dice parser decides `fn_call` at TOKEN level,
+ * where the lexer's space/tab skip has already happened, so `floor (2d6)` is a function call
+ * there and must read as one here too (a newline is NOT skipped by that lexer, so it does not
+ * count here either). Reserved because the server now runs every roll
  * through this scan: without it, `floor(101d6/2)` would read `floor` as a stat reference and
  * the roll would fail (or, under placeholder validation, break shape). Ordered after
  * `claimNotationKeyword`; the two sets are disjoint, so that adjacency is unobservable. */
@@ -152,9 +155,9 @@ const claimNotationFunction: Recognizer = {
   claim: (src, at) => {
     if (!isWordStart(src[at])) return null;
     const run = readKeywordRun(src, at);
-    return NOTATION_FUNCTIONS.includes(run.toLowerCase()) && src[at + run.length] === "("
-      ? run
-      : null;
+    let j = at + run.length;
+    while (src[j] === " " || src[j] === "\t") j++;
+    return NOTATION_FUNCTIONS.includes(run.toLowerCase()) && src[j] === "(" ? run : null;
   },
 };
 

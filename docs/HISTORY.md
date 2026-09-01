@@ -1909,12 +1909,13 @@ final two-reviewer branch review. Fourth of six.
 
 The server resolves dice-notation references itself. `formula::template` is the Rust behavioural twin of the
 TS template rewrite (recognizer chain + `claimNotationFunction`, `1d` synthesis, labeled substitution, UTF-16
-positions), pinned by a new `templates` section of the shared conformance corpus (25 cases both suites read;
+positions), pinned by a new `templates` section of the shared conformance corpus (31 cases both suites read;
 sabotage/mutation evidence recorded per commit). One design change the campaign found in flight:
 the template grammar learned the notation `fn_call` vocabulary — every roll now runs through the
 scan, so `floor(101d6/2)` would otherwise read `floor` as a stat reference and regress;
 both twins, the corpus, and the parity gate (now three declarations for modifiers AND for
-the function list) moved in one commit. `chat::rolls::execute_roll`/`validate_formula`
+the function list) moved in one commit, and the final review caught that the reservation must
+tolerate spaces/tabs before the paren (`floor (2d6)`), matching the dice parser's token-level rule. `chat::rolls::execute_roll`/`validate_formula`
 substitute references pre-parse: chat rolls bind to the send's already-validated
 `actor_owner` (a token's embedded actor copy, else its linked actor — one shared
 `embedded_actor_copy` extraction, the combat precedence rule), `CombatRoll` binds per-entry

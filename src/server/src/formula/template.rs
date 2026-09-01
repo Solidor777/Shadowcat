@@ -61,7 +61,7 @@ pub(crate) const NOTATION_KEYWORDS: [&str; 15] = [
 /// `dice::spec::FnName` declares and `dice::notation::parser`'s `fn_call`
 /// recognizes). NOT `NOTATION_KEYWORDS` members: the keyword list guards the
 /// dice-MECHANIC modifier vocabulary, while function names are notation only
-/// when immediately followed by `(` — `claim_notation_function` tests exactly
+/// when followed by `(` after any spaces/tabs — `claim_notation_function` tests exactly
 /// that, and anywhere else the same word is an ordinary identifier a resolver
 /// may answer. One of three declarations of one decision (the client
 /// template module's own list and the dice parser's match arms are the other
@@ -170,9 +170,12 @@ fn claim_notation_keyword(chars: &[(char, usize)], at: usize) -> Option<usize> {
 }
 
 /// An identifier-start run that is a `NOTATION_FUNCTIONS` member when
-/// lowercased AND is immediately followed by `(` — the exact rule the dice
-/// notation parser applies when it recognizes a math function (`fn_call`).
-/// Reserved because the server runs every roll through this scan: without
+/// lowercased AND is followed by `(` after any spaces/tabs — the dice parser
+/// decides `fn_call` at TOKEN level, where the lexer's space/tab skip has
+/// already happened, so `floor (2d6)` is a function call there and must read
+/// as one here too (a newline is NOT skipped by that lexer, so it does not
+/// count here either). Reserved because the server runs every roll through
+/// this scan: without
 /// it, `floor(101d6/2)` would read `floor` as a stat reference and the roll
 /// would fail (or, under placeholder validation, break shape). Ordered after
 /// `claim_notation_keyword`; the two sets are disjoint, so that adjacency is
@@ -186,9 +189,13 @@ fn claim_notation_function(chars: &[(char, usize)], at: usize) -> Option<usize> 
         j += 1;
     }
     let run: String = chars[at..j].iter().map(|(c, _)| c).collect();
+    let mut k = j;
+    while k < chars.len() && matches!(chars[k].0, ' ' | '\t') {
+        k += 1;
+    }
     (NOTATION_FUNCTIONS.contains(&run.to_ascii_lowercase().as_str())
-        && j < chars.len()
-        && chars[j].0 == '(')
+        && k < chars.len()
+        && chars[k].0 == '(')
         .then_some(j)
 }
 

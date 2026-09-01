@@ -793,6 +793,21 @@
       "expect": {
         "notation": "min(7[stats.str], 2)"
       }
+    },
+    {
+      "name": "spaces or a tab before the paren still read as a function call",
+      "src": "floor (2d6) + ceil\t(1d4)",
+      "expect": {
+        "notation": "floor (2d6) + ceil\t(1d4)"
+      }
+    },
+    {
+      "name": "a newline before the paren breaks the call into a reference",
+      "src": "floor\n(2d6)",
+      "expect": {
+        "error": "unknown-ref",
+        "detail": "unknown reference 'floor'"
+      }
     }
   ]
 }

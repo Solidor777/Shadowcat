@@ -109,7 +109,8 @@ read) against the send's `actor_owner` host (a token instance's embedded actor
 copy, else the linked actor), or, for combat rolls, against each named
 combatant's formula host. A referencing roll with no binding fails with an
 `unknown-ref` system notice. The same raw-template rule applies to the
-`notation` of every combat-roll entry.
+`notation` of every combat-roll entry, and a combat roll's `channel` is
+validated against the channel registry the same way a message's is.
 
 ## Scene channels
 

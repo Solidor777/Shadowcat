@@ -417,15 +417,21 @@ async fn registered_and_unregistered_channels_are_answered() {
     let (repo, world_id, gm) = world().await;
     let body = serde_json::to_value(crate::data::engine::ChannelRegistryEngine::seed()).unwrap();
     seed_settings_doc(&repo, world_id, gm, registry_doc(world_id, gm, Some(body))).await;
-    assert!(channel_registered(&repo, world_id, "general").await.unwrap());
-    assert!(!channel_registered(&repo, world_id, "nowhere").await.unwrap());
+    assert!(channel_registered(&repo, world_id, "general")
+        .await
+        .unwrap());
+    assert!(!channel_registered(&repo, world_id, "nowhere")
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
 async fn an_absent_registry_fails_closed_as_an_error_not_a_no() {
     let (repo, world_id, _gm) = world().await;
     assert!(
-        channel_registered(&repo, world_id, "general").await.is_err(),
+        channel_registered(&repo, world_id, "general")
+            .await
+            .is_err(),
         "absence is corruption (create/join seeds the registry), not an unknown channel"
     );
 }
@@ -434,7 +440,9 @@ async fn an_absent_registry_fails_closed_as_an_error_not_a_no() {
 async fn a_registry_without_an_engine_body_fails_closed() {
     let (repo, world_id, gm) = world().await;
     seed_settings_doc(&repo, world_id, gm, registry_doc(world_id, gm, None)).await;
-    assert!(channel_registered(&repo, world_id, "general").await.is_err());
+    assert!(channel_registered(&repo, world_id, "general")
+        .await
+        .is_err());
 }
 
 #[tokio::test]
@@ -444,8 +452,14 @@ async fn a_registry_with_an_undecodable_body_fails_closed() {
         &repo,
         world_id,
         gm,
-        registry_doc(world_id, gm, Some(serde_json::json!({ "channels": "not-a-map" }))),
+        registry_doc(
+            world_id,
+            gm,
+            Some(serde_json::json!({ "channels": "not-a-map" })),
+        ),
     )
     .await;
-    assert!(channel_registered(&repo, world_id, "general").await.is_err());
+    assert!(channel_registered(&repo, world_id, "general")
+        .await
+        .is_err());
 }

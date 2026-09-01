@@ -1513,3 +1513,98 @@ async fn roll_notation_references_resolve_against_each_combatants_host() {
     .await;
     assert!(matches!(refused, Some(ServerMsg::CombatError { .. })));
 }
+
+/// The embedded-copy case of the `CombatRoll` host rule: when the combatant's token embeds an
+/// actor copy, the roll's references read the COPY — never the linked actor — exactly the
+/// precedence `combat::eval::formula_host` declares (here: copy's `init` 9 beats the linked
+/// actor's 1).
+#[tokio::test]
+async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
+    let h = combat_harness().await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+
+    let actor_engine = serde_json::json!({
+        "displayName": "Emb Fixture",
+        "visual": { "kind": "image", "asset": "a.png" },
+        "size": { "w": 100.0, "h": 100.0 },
+        "shape": "square",
+        "conditions": [],
+        "prototype": false,
+    });
+    // The linked actor: `init` 1 — must NOT be read.
+    let linked_id = Uuid::from_u128(0xCA10);
+    let mut linked = wdoc(h.world_id, linked_id, "actor");
+    linked.owner = Some(h.gm.user_id);
+    linked.engine = Some(actor_engine.clone());
+    linked.system = serde_json::json!({ "init": 1 });
+    // The embedded copy: `init` 9 — the host the roll must resolve against.
+    let mut copy = wdoc(h.world_id, Uuid::from_u128(0xCA11), "actor");
+    copy.engine = Some(actor_engine);
+    copy.system = serde_json::json!({ "init": 9 });
+    let token_id = Uuid::from_u128(0xCA12);
+    let mut token = wdoc(h.world_id, token_id, "token");
+    token.owner = Some(h.gm.user_id);
+    token.engine = Some(token_engine(50.0, 50.0));
+    token.embedded.insert("actor".to_string(), vec![copy]);
+    // The combatant naming that token (and the linked actor, for the precedence test).
+    let combatant_id = Uuid::from_u128(0xCA13);
+    let mut combatant = wdoc(h.world_id, combatant_id, "combatant");
+    combatant.parent_id = Some(h.combat);
+    combatant.owner = Some(h.gm.user_id);
+    combatant.engine = Some(
+        serde_json::to_value(CombatantEngine {
+            kind: CombatantKind::Actor {
+                token_id: Some(token_id),
+                actor_id: Some(linked_id),
+            },
+            initiative: None,
+            tiebreak: 0.0,
+            resources: Default::default(),
+        })
+        .unwrap(),
+    );
+    h.room
+        .publish(
+            h.repo.as_ref(),
+            &h.gm,
+            vec![
+                crate::data::command::Operation::Create { doc: linked },
+                crate::data::command::Operation::Create { doc: token },
+                crate::data::command::Operation::Create { doc: combatant },
+            ],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let ok = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatRoll {
+            request_id: Uuid::nil(),
+            combat_id: h.combat,
+            channel: "general".into(),
+            rolls: vec![CombatRollEntry {
+                combatant_id,
+                notation: "1d1+init".into(),
+            }],
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(ok.is_none(), "the roll commits");
+
+    let doc = h.repo.get_document(combatant_id).await.unwrap().unwrap();
+    let engine: CombatantEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
+    assert_eq!(
+        engine.initiative,
+        Some(1.0 + 9.0),
+        "the embedded copy's init won over the linked actor's"
+    );
+    let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
+    let content = &msgs[0].engine.as_ref().unwrap()["content"];
+    assert_eq!(content[0]["outcome"]["labeled_consts"][0]["value"], 9);
+}
