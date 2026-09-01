@@ -1413,6 +1413,51 @@ test("a stale-tree apply during an in-flight pop-out never re-docks a floating-o
   await Promise.resolve();
 });
 
+test("a close op landing mid-popout-flight skips the popOut op and all bookkeeping when the driver resolves", async () => {
+  const { api, ops, stale, settle } = await popOutInFlight("docked");
+  // The programmatic close lands inside the window.open → re-parent gap: the
+  // tree drops the panel and the apply() reconciling that close removes its
+  // widget via the orphan loop.
+  const closed = applyOp(stale, { op: "close", id: "chat" });
+  engine!.apply(closed.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+  expect(api.getPanel("chat")).toBeUndefined();
+
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // No ghost: the late resolution emits neither the popOut op nor a float
+  // fallback, and records no popout bookkeeping for the closed panel.
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+  expect(ops.some((o) => o.op === "float")).toBe(false);
+  expect(engine!.debugPoppedOutGroupPanels.size).toBe(0);
+  expect(engine!.debugPoppedOutOriginGroups.has("chat")).toBe(false);
+});
+
+test("a close+reopen landing mid-popout-flight still skips the popOut op when the widget was never recreated", async () => {
+  const { api, ops, stale, settle } = await popOutInFlight("docked");
+  const meta = new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]);
+  const closed = applyOp(stale, { op: "close", id: "chat" });
+  engine!.apply(closed.expanded, meta);
+  expect(api.getPanel("chat")).toBeUndefined();
+  // Reopened before the driver settles: the tree lists the panel again, but
+  // apply()'s in-flight guard skips re-creating the widget — only the
+  // widget-gone arm of the late-resolution guard catches this case (the tree
+  // still lists the id, so a tree-only check would wrongly emit the op).
+  const reopened = applyOp(closed, { op: "open", id: "chat" });
+  engine!.apply(reopened.expanded, meta);
+  expect(api.getPanel("chat")).toBeUndefined();
+
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Neither the ghost popOut op nor the blocked-path float fallback fires.
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+  expect(ops.some((o) => o.op === "float")).toBe(false);
+  expect(engine!.debugPoppedOutGroupPanels.size).toBe(0);
+});
+
 test("apply seeds seenPanelIds with the tree's popout windows so a live popout is never orphan-removed", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
@@ -1644,9 +1689,17 @@ test("onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses po
  * ORIGINAL zone-managed group (already tracked by `#groupWillDropSubs`). A
  * test exercising `#popoutGroupSubs`'s OWN wiring needs a group that wiring
  * alone reaches — reusing the original group could not tell the two apart.
- * Returns the live api and the popout group itself, for a caller to fire
- * further group-model events against directly. */
-async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: DockviewApi; group: IDockviewGroupPanel; ops: LayoutOp[] }> {
+ * Returns the live api, the popout group itself, and the pre-pop-out tree, for
+ * a caller to fire further group-model events against directly and to feed the
+ * emitted ops back through the reducer.
+ * @param popoutGroupId The dockview group id the driver moves the panel into.
+ * @param opts.dockNotes Also dock the registered "notes" panel into the bottom
+ * zone before the pop-out, so a test has a second LIVE widget to drag into the
+ * window (the default leaves "notes" registered but unplaced — no widget). */
+async function popOutToRealGroup(
+  popoutGroupId: string,
+  opts?: { dockNotes?: boolean },
+): Promise<{ api: DockviewApi; group: IDockviewGroupPanel; ops: LayoutOp[]; layout: PanelLayoutV1 }> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   attachedHost = host;
@@ -1664,12 +1717,18 @@ async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: Dockview
 
   let l = defaultLayout([{ id: "chat" }, { id: "notes" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  if (opts?.dockNotes) {
+    l = applyOp(l, { op: "dock", id: "notes", zone: "bottom", group: "new" });
+  }
   engine.apply(l.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
 
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  const menuBtn = host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn");
+  // Click CHAT's own tab menu button — with a second panel docked
+  // (`opts.dockNotes`), a bare host-wide querySelector would hit whichever tab
+  // renders first instead.
+  const menuBtn = engine.debugApi!.getPanel("chat")!.group.element.querySelector<HTMLButtonElement>(".sc-tab-menu-btn");
   menuBtn?.click();
   const popOutItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]');
   popOutItem?.click();
@@ -1678,7 +1737,7 @@ async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: Dockview
 
   const api = engine.debugApi!;
   const group = api.getGroup(popoutGroupId)!;
-  return { api, group, ops };
+  return { api, group, ops, layout: l };
 }
 
 test("popout veto-bypass closed: a drop targeting an open popout group's own group model is intercepted (defaultPrevented) via the popout group's own onWillDrop wire", async () => {
@@ -1712,13 +1771,133 @@ test("popout veto-bypass closed: a drop targeting an open popout group's own gro
   expect(prevented).toBe(true);
 });
 
-test("popout panel list grows: dragging a second panel into an open popout group's own gridview updates debugPoppedOutGroupPanels to include it", async () => {
+/** Fires a synthetic will-drop through a GROUP's own model emitter — the same
+ * listener path `#groupWillDropSubs`/`#popoutGroupSubs` subscribe — mirroring
+ * `fireWillDrop`'s component-level reach-in. */
+function fireGroupWillDrop(
+  group: IDockviewGroupPanel,
+  overrides: Partial<{
+    kind: DockviewWillDropEvent["kind"];
+    position: DockviewWillDropEvent["position"];
+    panelId: string | null;
+    groupId: string;
+  }>,
+): { defaultPrevented: boolean } {
+  let prevented = false;
+  const event: WillDropProbe = {
+    kind: overrides.kind ?? "content",
+    position: overrides.position ?? "center",
+    panel: undefined,
+    group,
+    getData: () => ({ viewId: "v", groupId: overrides.groupId ?? group.id, panelId: overrides.panelId ?? null }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  modelOf(group)._onWillDrop.fire(event);
+  return event;
+}
+
+/** Reads the window key off the single `popOut` op a pop-out helper emitted. */
+function popOutKeyOf(ops: LayoutOp[]): string {
+  const op = ops.find((o) => o.op === "popOut");
+  if (!op || op.op !== "popOut") throw new Error("expected a popOut op in the recorded ops");
+  return op.key;
+}
+
+test("drag-into-popout: a will-drop targeting an open popout group emits a popOutInto op with the window's key and moves the widget into the popout group", async () => {
+  const { api, group, ops, layout } = await popOutToRealGroup("sc-real-popout-group", { dockNotes: true });
+  const key = popOutKeyOf(ops);
+  ops.length = 0;
+
+  const event = fireGroupWillDrop(group, { panelId: "notes" });
+
+  // Intercepted like every other gesture, and redispatched as a pop-out
+  // placement carrying the window's tree key…
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([{ op: "popOutInto", id: "notes", key }]);
+  // …with the widget re-parented imperatively at gesture time — apply() seeds
+  // popped-out ids into its seen-sets precisely so it never originates this
+  // move.
+  expect(api.getPanel("notes")!.group.id).toBe("sc-real-popout-group");
+  // The group-model add event kept the tracked membership in sync.
+  expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat", "notes"]);
+
+  // The op, fed through the reducer, lists both panels in the window's record.
+  let l = applyOp(layout, { op: "popOut", id: "chat", key, rect: null });
+  l = applyOp(l, { op: "popOutInto", id: "notes", key });
+  expect(l.expanded.popouts.find((w) => w.key === key)?.panels).toEqual(["chat", "notes"]);
+});
+
+test("drag-into-popout: a drop of a panel already living in the window emits popOutInto without moving the widget (a same-window reorder the tree does not model)", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-real-popout-group");
+  const key = popOutKeyOf(ops);
+  ops.length = 0;
+
+  const event = fireGroupWillDrop(group, { panelId: "chat" });
+
+  expect(event.defaultPrevented).toBe(true);
+  // The op still emits — the reducer's popOutInto case no-ops an
+  // already-listed id, so this self-heals a widget/tree disagreement and is
+  // otherwise free — but the widget is not re-parented onto its own group.
+  expect(ops).toEqual([{ op: "popOutInto", id: "chat", key }]);
+  expect(api.getPanel("chat")!.group.id).toBe("sc-real-popout-group");
+});
+
+test("drag-into-popout: a drop whose subject has no live panel is vetoed (preventDefault, no op)", async () => {
+  const { group, ops } = await popOutToRealGroup("sc-real-popout-group");
+  ops.length = 0;
+
+  const event = fireGroupWillDrop(group, { panelId: "ghost" });
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([]);
+});
+
+test("drag-into-popout: a whole-group transfer targeting an open popout group emits one popOutInto per tab and moves every widget", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-real-popout-group", { dockNotes: true });
+  const key = popOutKeyOf(ops);
+  ops.length = 0;
+  // A second tab joins "notes"'s docked group, so the dragged whole group has
+  // two tabs to fan out.
+  api.addPanel({ id: "assets", component: "sc-panel", position: { referenceGroup: "sc-group:notes", direction: "within" } });
+
+  const event = fireGroupWillDrop(group, { panelId: null, groupId: "sc-group:notes" });
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([
+    { op: "popOutInto", id: "notes", key },
+    { op: "popOutInto", id: "assets", key },
+  ]);
+  expect(api.getPanel("notes")!.group.id).toBe("sc-real-popout-group");
+  expect(api.getPanel("assets")!.group.id).toBe("sc-real-popout-group");
+});
+
+test("a drop targeting a group outside zone bookkeeping that is NOT an open popout group still classifies as a pseudo-edge dock (regression)", async () => {
+  const { api, ops } = await popOutToRealGroup("sc-real-popout-group", { dockNotes: true });
+  ops.length = 0;
+  const foreign = api.addGroup({ id: "sc-foreign-group", direction: "right" });
+
+  const event = fireWillDrop(engine!, { kind: "content", position: "left", panelId: "notes", group: foreign });
+
+  // The unknown-group fallback in `#toDropSite` is untouched by the pop-out
+  // classification: a group with no popout window key still degrades to an
+  // edge-zone dock resolved from the drop position.
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([{ op: "dock", id: "notes", zone: "left", group: "new" }]);
+});
+
+test("popout panel list grows: a programmatic addPanel into an open popout group keeps debugPoppedOutGroupPanels in sync via the group-model add event", async () => {
   const { api, group } = await popOutToRealGroup("sc-real-popout-group");
 
-  // A real drop of a second panel into the popout group's own nested
-  // gridview — dockview-core natively accepts this drop target and fires the
-  // group model's own `onDidAddPanel`, which `#popoutGroupSubs` now listens
-  // for.
+  // The api-level addPanel path, NOT the drop path (a real drop is
+  // intercepted by the popout group's own onWillDrop wire and redispatched as
+  // a popOutInto op — covered by the drag-into-popout tests): any panel
+  // landing in the group fires the group model's own `onDidAddPanel`, which
+  // `#popoutGroupSubs`'s sync listens to.
   api.addPanel({ id: "notes", component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
 
   expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat", "notes"]);

@@ -181,3 +181,100 @@ test("a popped-out panel's arrangement persists and the restore action reopens i
   await expect(restored.getByRole("button", { name: "Send" })).toBeVisible();
   await restored.close();
 });
+
+// Multi-panel arrangement restore: a window saved with TWO panels — the exact
+// persisted shape a drag-into-popout gesture produces (a `popouts` record whose
+// `panels` list grew via `popOutInto`) — rehydrates both panels to floating on
+// reload, and the restore notice's action reopens ONE popup hosting both, with
+// the resulting arrangement persisted again. The record is seeded as a
+// leaf-level ui-state patch rather than produced by a drag, because a real
+// cross-window HTML5 tab drag cannot be driven from Playwright (browser input
+// dispatch is per-page; a drag session cannot span two windows) — the
+// drag-into-popout gesture itself is covered by the engine unit tests, and the
+// mechanism under test HERE (restore gesture → ops → tree → popup → persist)
+// runs for real.
+test("the restore action reopens a multi-panel arrangement into one window hosting every saved panel", async ({
+  page,
+  account,
+}) => {
+  await enterFreshWorld(page, "Popout Multi Restore World", account);
+  const worldId = new URL(page.url()).hash.replace(/^#\/world\//, "");
+  expect(worldId).not.toBe("");
+
+  // Wait out the shell's ui-state persist cooldown (`schedulePersist`) before
+  // seeding, so no boot persist lands after the seed and clobbers it; no
+  // gestures follow the seed, so nothing schedules another `panelLayout`
+  // write before the reload.
+  await page.waitForTimeout(700);
+  const seedLayout = {
+    version: 1,
+    expanded: {
+      zones: {
+        right: { groups: [], size: 320 },
+        bottom: { groups: [], size: 240 },
+        left: { groups: [], size: 320 },
+      },
+      floating: [],
+      minimized: [],
+      popouts: [
+        { key: "w-e2e", panels: ["chat:panel", "asset-browser:panel"], rect: null },
+      ],
+    },
+    compact: { activeView: null, order: [] },
+  };
+  const seedResponse = await page.request.put("/api/me/ui-state", {
+    data: { worlds: { [worldId]: { panelLayout: seedLayout } } },
+  });
+  expect(seedResponse.ok()).toBe(true);
+
+  await page.reload();
+  await expect(page.locator(".stage-host")).toHaveAttribute(
+    "data-render-ready",
+    "true",
+    {
+      timeout: 30_000,
+    },
+  );
+
+  // Both saved panels rehydrated to floating (one dialog each), and the
+  // restore notice's action is offered.
+  await expect(page.locator('[role="dialog"]')).toHaveCount(2);
+  const restore = page.locator(".sc-notify-action", {
+    hasText: "Reopen windows",
+  });
+  await expect(restore).toBeVisible();
+
+  const restoredPut = layoutPut(page, (l) => {
+    const popouts = (
+      l as { expanded?: { popouts?: { panels?: string[] }[] } }
+    )?.expanded?.popouts;
+    return (
+      Array.isArray(popouts) &&
+      popouts.some(
+        (w) =>
+          w.panels?.includes("chat:panel") &&
+          w.panels?.includes("asset-browser:panel"),
+      )
+    );
+  });
+  const restoredEvent = page.context().waitForEvent("page");
+  await restore.click();
+  const restored = await restoredEvent;
+  await restored.waitForLoadState();
+  expect(restored.url()).toContain("popout.html");
+
+  // ONE popup hosting BOTH panels: a tab each in its tab strip. The restore
+  // moves the second panel in last, so it starts active — activating the Chat
+  // tab must surface chat's own composer inside the popup.
+  await expect(restored.locator(".dv-tab", { hasText: "Chat" })).toBeVisible();
+  await expect(
+    restored.locator(".dv-tab", { hasText: "Assets" }),
+  ).toBeVisible();
+  await restored.locator(".dv-tab", { hasText: "Chat" }).click();
+  await expect(restored.getByRole("button", { name: "Send" })).toBeVisible();
+
+  // The restore's popOut + popOutInto ops round-tripped through the tree and
+  // persisted one window record listing both panels.
+  await restoredPut;
+  await restored.close();
+});
