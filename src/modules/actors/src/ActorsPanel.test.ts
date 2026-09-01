@@ -6,6 +6,14 @@ import { DocumentStore, buildActorDoc, buildItemDoc, buildTokenFromActor, type W
 import { TokenSelection } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
+// Suppress listAssets fetch: EmissionEditor calls listAssets($effect) which hits /api/... in jsdom.
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listAssets: vi.fn().mockResolvedValue([]),
+  };
+});
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -240,16 +248,13 @@ describe("ActorsPanel — darkvision authoring", () => {
 
   it("create dispatches the emission editor's pending emissions (and null when untouched)", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue("asset-1");
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Wisp" } });
-    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalled());
     // Toggle the aura section on and set its radius; sound/vfx stay null.
     await fireEvent.click(screen.getByLabelText("actors.aura"));
     await fireEvent.change(screen.getByLabelText("actors.auraRadius"), { target: { value: "3" } });
