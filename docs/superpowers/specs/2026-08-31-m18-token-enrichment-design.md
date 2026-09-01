@@ -178,12 +178,20 @@ VfxAnchor     = enum { Token, Above, Below }     // serde snake_case
   render for sound/vfx in M18.
 - Validation: real `validate` arms — css color shape, finite bounded numbers,
   opacity/volume clamped read-side like m17's intensity.
-- Permissions: GM-only value-aware predicates mirroring m17's
-  `carried_light_touched` shape (`/engine/aura` etc. on actor,
-  `/engine/overrides/aura` on token, ancestor-write subtree comparison).
+- Permissions: **standard write rules** (effective owner + `WRITE_FIELDS`),
+  exactly as `TokenOverrides.visual` already works — no GM-only predicate.
+  Emitters are presentational (unlike m17's light, which moves vision
+  mechanics); an owner-writable aura is strictly less impactful than the
+  owner-writable whole-visual override that already exists, and validation
+  bounds (radius/opacity caps) handle abuse. Building a value-aware
+  GM-only predicate on main would fork permission machinery m17 is actively
+  landing for light; if Phase-3 playback (sound/VFX) wants a tighter posture,
+  that seam's design owns the decision.
 - Resolution: `EffectiveActor` projections `aura`/`sound`/`vfx` with the same
-  precedence as every overridable field (override replaces base wholesale);
-  server ECS mirrors for future consumers.
+  precedence as every overridable field (override replaces base wholesale).
+  **No server ECS accessors** — no server consumer exists for these payloads
+  (auras render client-side; sound/vfx playback is Phase 3), and an unused
+  accessor is dead code under the workspace's lint posture.
 
 ### Client render (aura only)
 
