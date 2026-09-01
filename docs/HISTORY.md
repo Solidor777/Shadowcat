@@ -1931,6 +1931,61 @@ re-anchored, one e2e caught at review). Two review fold-ins: `js_number` normali
 the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/authoring docs;
 GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
 
+### M15b · Asset browser + generic document Move ✅
+Branch `m15b-asset-browser`, executed mainline (Fable) from the approved design
+`docs/superpowers/specs/2026-08-30-m15b-asset-browser-design.md` and plan
+`docs/superpowers/plans/2026-08-30-m15b-asset-browser.md`. M15 is complete.
+Delivered, server: `Operation::Move { doc_id, parent_id, old_parent_id }` — the one write path
+for the envelope `parent_id`, riding the ordinary intent pipeline. GM-only AND uncapped
+(`WorldRole::Gm` whose resolved `Access.all` holds; `CombatTransition` exempt like the other
+capability gates; stored `message` docs refuse it), OCC on `old_parent_id`, invert-by-swap,
+no-op short-circuit; validity is Create-validity through the shared `check_parent_placement`
+helper extracted from the Create arm plus `validate_containment`, and `check_move_acyclic`'s
+batch-aware ancestor walk (the cycle check M15a found unreachable, now real — incl. the
+same-batch create-then-move cycle). Both authoritative loops implement the arm (replay keeps
+structural checks, drops capability/OCC); a moved folder recomputes its subtree's derived tags;
+`filter_command`'s Move arm delivers verbatim iff whole-document READ holds at commit AND now
+(generation-guarded; no transition synthesis — access never consults `parent_id`, test-pinned);
+the scene mirror re-evaluates `is_scene_entity` (top-level despawns; source scene forgets, the
+destination gains, region fields re-derive). Client: Zod member pinning the serde bytes,
+`applyOperation` move arm, optimistic rollback; ts-rs regenerated.
+Delivered, client: `@shadowcat/module-asset-browser` replaces the retired
+`@shadowcat/module-assets` — reactive `FolderTree` (create, inline rename with OCC pre-image,
+drag + accessible Move-to with the own-subtree drag guard, delete dialog mapping
+reparent-vs-purge onto the new core `deleteAssetFolder`), `FilterBar` mapped 1:1 onto
+`queryAssets` (name/regex exclusive) with leading-edge debounce + generation guard + keyset
+load-more, `computeGridWindow`-virtualized multi-select `AssetGrid` (click/ctrl/shift; ordered
+append mode with pick-order badges), `PreviewPane` (metadata, explicit-tag editor with derived
+tags read-only, rename, byte Replace — restored deliberately: neither design section carried the
+old panel's stable-UUID byte swap and dropping it silently would have been a capability
+regression — download original + reconvert gated on `original_retained`, confirmed delete),
+`BulkBar`, sequential `UploadQueue` (per-file progress/retry/abort; a partial-placement failure
+surfaces done-with-warning and never re-uploads), drop-zones + file-input fallback, compact-mode
+tree drawer. Pick mode: ui-kit `AssetPickController` + overloaded `AppContext.pickAsset`
+(`PickAssetMultiple` → ordered ids; one active pick, a new request cancels the previous; settle
+clears before resolving), rendered by `AssetPickOverlay` contributed into the new
+`shadowcat.surface:overlay` core-ui surface (outside the layout grid; deliberately un-gated —
+any member picks, while the browser panel contribution is `gmOnly`). Consumers converted:
+scene-tools `AssetPicker` browse affordance; `VisualKindEditor`'s face/sheet/image single picks
+through its shared snippet and frames as one ordered multi-pick replacing the list wholesale
+(the in-editor `listAssets` grid deleted).
+Decisions taken in the brainstorm (user-confirmed): fully generic Move from day one over
+per-type opt-in; GM-only authz; modal pick over a floating panel; multi-capable seam converting
+every picking surface. Found in flight: `AppContext.assets` was already the resolver, so the
+pick seam is `pickAsset`/`assetPick`; a case-insensitive filesystem cannot hold
+`uploadQueue.svelte.ts` beside `UploadQueue.svelte` (model renamed `uploadQueueModel.svelte.ts`,
+one shared queue test file); the e2e sweep for retired panel testids initially missed
+`panels.spec.ts`/`stage.spec.ts` because the grep output was head-truncated — re-swept
+untruncated; hex-movement's final assertion raced panel-open under machine load while trace
+screenshots proved the app state correct (assertion now waits for control visibility first);
+the wildly slow e2e runs were machine contention from concurrent gate batteries — the suite is
+19/19 in ~27s quiet. e2e: the carried multi-chunk-upload-found-by-tag scenario, a folder
+re-parent through the accessible control (the Move op end to end), and the preview-pane
+replace/delete flow. Coverage: 15 server Move tests (+ replay, egress ×5, ECS mirror ×3),
+46 asset-browser module tests, consumer conversions, full repo gates + `build:all` green.
+Pre-existing findings surfaced (not fixed here): 25 broken skill symbol citations in the
+combat/formula/scene-rendering skills naming not-yet-built combat-resolution symbols — logged in
+`POST_WORK_FINDINGS.md`.
 
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design

@@ -34,28 +34,17 @@ further at design time. Numbering continues from Phase 1.
     conflict set returned for human review; `Document.base` under engine-tree validation.
   - **M14c-6 — combat client seams**: `AppContext.combat`, `CoreHooks` first entries +
     delta-derived emission, `Warn` overage label.
-- **M14d — tracker module + settings editors**: the default tracker UI, the world/scene combat
+- **M14d — tracker module + settings editors** (panel + settings-editor conventions to follow
+  the M15b asset-browser module, which landed first): the default tracker UI, the world/scene combat
   settings editors (including the combat chain editor over `resolve_combat_rules`'s
   engine→system-defaults→world→scene precedence), and end-to-end coverage.
 - Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
-### M15 · Asset pipeline + browser
-- Design: [`superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md`](superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md).
-- **M15a (pipeline: server + client core) is DONE** — delivery notes in
-  [`HISTORY.md`](HISTORY.md)'s M15a entry.
-- **Remaining (M15b — browser module)**: the GM asset browser (`@shadowcat/module-asset-browser`,
-  replacing `@shadowcat/module-assets`): folder tree, filter bar (name / regex / tags / kind /
-  sort), virtualized thumbnail grid over `?variant=thumb`, preview pane (metadata, tag editor,
-  download original, reconvert), multi-select bulk move/tag/delete, drop-zone uploads driven by
-  `startChunkedUpload`, `AssetPicker` "browse…" pick mode via `AppContext.assets`; mobile
-  reflow. Open design point carried from M15a: **folder move** — `parent_id` is an immutable
-  envelope path, so a move needs its own server-authored route (or delete + recreate with asset
-  reparenting); decide in the M15b brainstorm. The §5 e2e ("upload a >1-chunk file and find it
-  by tag") lands here with the tag UI. Re-review `AppContext` (M14c adds `.combat`), M14d's
-  panel/settings-editor conventions, and `AssetPicker`'s consumers before writing the plan.
-- Excludes: audio transcode + animated-WebP encoding (Phase 3 audio); FTS-backed asset search
-  (M21 — M15 ships SQL substring/tag/folder filters plus a size-limited Rust `regex` filter).
+### M15 · Asset pipeline + browser ✅
+Complete: M15a (pipeline) and M15b (browser module + the generic GM-only document `Move`
+operation) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M15a/M15b entries. The FTS
+integration for asset search remains deferred to M21 by design.
 
 ### M16 · Layout + theming completion
 - Drag-resize of floating panels where the M12 panel engine does not already provide it;

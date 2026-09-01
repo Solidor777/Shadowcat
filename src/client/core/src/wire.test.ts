@@ -12,6 +12,7 @@ import {
   SendMessageSchema,
   PathfindSchema,
   DocumentSchema,
+  OperationSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
   FieldChangeSchema,
@@ -730,5 +731,26 @@ describe("PathfindSchema", () => {
         token: "not-a-uuid",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("OperationSchema move member", () => {
+  // The exact serde wire bytes the server emits: `#[serde(tag = "op",
+  // rename_all = "snake_case")]` with uuid strings and a null Option.
+  const MOVE_WIRE = {
+    op: "move",
+    doc_id: "00000000-0000-0000-0000-000000000001",
+    parent_id: "00000000-0000-0000-0000-000000000002",
+    old_parent_id: null,
+  };
+
+  it("accepts the serde wire shape of a move operation", () => {
+    const parsed = OperationSchema.parse(MOVE_WIRE);
+    expect(parsed).toEqual(MOVE_WIRE);
+  });
+
+  it("rejects a move missing doc_id", () => {
+    const { doc_id: _dropped, ...rest } = MOVE_WIRE;
+    expect(() => OperationSchema.parse(rest)).toThrow();
   });
 });

@@ -6,14 +6,6 @@ import { DocumentStore, buildActorDoc, buildItemDoc, buildTokenFromActor, type W
 import { TokenSelection } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
-// Suppress listAssets fetch: ActorsPanel calls listAssets($effect) which hits /api/... in jsdom.
-vi.mock("@shadowcat/core", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@shadowcat/core")>();
-  return {
-    ...actual,
-    listAssets: vi.fn().mockResolvedValue([]),
-  };
-});
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -64,11 +56,7 @@ describe("ActorsPanel — shape + size", () => {
 
   it("create dispatches an actor with the chosen shape and size", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    // Provide a fake asset so the picker has something to select
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png", byte_size: 100n, created_by: "u-self", created_at: 0n, storage_key: "k1", version: 1n, folder_id: null, tags: [], derived_tags: [], width: null, height: null, has_alpha: false, animated: false, original_content_type: "image/png", original_byte_size: 100n, original_retained: false, conversion_note: null },
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue("asset-1");
 
     render(ActorsPanel, {
       context: setAppContextForTest({
@@ -76,21 +64,21 @@ describe("ActorsPanel — shape + size", () => {
         world: "w1",
         documents: new DocumentStore(),
         dispatchIntent,
+        pickAsset: pickAsset as never,
         assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never,
       }),
     });
 
     // Wait for the asset list to populate via the $effect
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
 
     // Fill in name
     const nameInput = screen.getByPlaceholderText("actors.name");
     await fireEvent.input(nameInput, { target: { value: "Ogre" } });
     await fireEvent.change(nameInput, { target: { value: "Ogre" } });
 
-    // Pick the asset (enables the create button)
-    const assetBtn = screen.getByRole("button", { name: "hero.png" });
-    await fireEvent.click(assetBtn);
+    // Pick the asset via the browser pick seam (enables the create button)
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalled());
 
     // Choose circle shape
     const shapeSelect = screen.getByLabelText("actors.shape");
@@ -221,16 +209,13 @@ describe("ActorsPanel — shape + size", () => {
 describe("ActorsPanel — darkvision authoring", () => {
   it("create includes darkvision vision when a range is entered", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue("asset-1");
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Drow" } });
-    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalled());
     await fireEvent.change(screen.getByLabelText("actors.darkvision"), { target: { value: "12" } });
     await fireEvent.click(screen.getByText("actors.create"));
 
@@ -240,16 +225,13 @@ describe("ActorsPanel — darkvision authoring", () => {
 
   it("create omits vision when darkvision range is 0", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue("asset-1");
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Human" } });
-    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalled());
     await fireEvent.click(screen.getByText("actors.create"));
     // `vision` is required-nullable on the generated `ActorEngine` — omitted becomes an
     // explicit `null` (never `undefined`, and never a genuinely-absent key).
@@ -321,16 +303,13 @@ describe("ActorsPanel — darkvision authoring", () => {
 describe("ActorsPanel — visual kind editor", () => {
   it("defaults to the image kind and creates an image visual as before", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue("asset-1");
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Ogre" } });
-    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalled());
     await fireEvent.click(screen.getByText("actors.create"));
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
     const op = ops[0] as { doc: WireDocument };
@@ -339,19 +318,14 @@ describe("ActorsPanel — visual kind editor", () => {
 
   it("switching to the animated kind and choosing frames + fps creates an animated visual", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "f1", world_id: "w1", original_name: "f1.png", content_type: "image/png" } as never,
-      { id: "f2", world_id: "w1", original_name: "f2.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValue(["f1", "f2"]);
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "f1.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Wisp" } });
     await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "animated" } });
-    await fireEvent.click(screen.getByRole("button", { name: "f1.png" }));
-    await fireEvent.click(screen.getByRole("button", { name: "f2.png" }));
+    await fireEvent.click(screen.getByTestId("visual-pick-frames"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalledWith({ kind: "image", multiple: true }));
     await fireEvent.change(screen.getByLabelText("actors.animFps"), { target: { value: "10" } });
     await fireEvent.click(screen.getByText("actors.create"));
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
@@ -361,15 +335,10 @@ describe("ActorsPanel — visual kind editor", () => {
 
   it("switching to the faces kind with two image faces + a default creates a faces visual", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
-      { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValueOnce("n1").mockResolvedValueOnce("b1");
     const { container } = render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
     await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
     await fireEvent.click(screen.getByText("actors.faceAdd"));
@@ -377,14 +346,11 @@ describe("ActorsPanel — visual kind editor", () => {
     const nameInputs = screen.getAllByLabelText("actors.faceName");
     await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
     await fireEvent.input(nameInputs[1], { target: { value: "bloodied" } });
-    // Each face row renders its own asset-picker instance, so scope the pick to that
-    // row's DOM subtree (`.face-row`) rather than a global getAllByRole index — a
-    // global index picks the first occurrence across ALL rows' pickers, not "this row's".
+    // Each face row renders its own pick button; scope to the row's subtree.
     const faceRowEls = container.querySelectorAll(".face-row");
-    const normalPickBtn = within(faceRowEls[0] as HTMLElement).getByRole("button", { name: "normal.png" });
-    await fireEvent.click(normalPickBtn);
-    const bloodiedPickBtn = within(faceRowEls[1] as HTMLElement).getByRole("button", { name: "bloodied.png" });
-    await fireEvent.click(bloodiedPickBtn);
+    await fireEvent.click(within(faceRowEls[0] as HTMLElement).getByTestId("visual-pick"));
+    await fireEvent.click(within(faceRowEls[1] as HTMLElement).getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalledTimes(2));
     await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
     await fireEvent.click(screen.getByText("actors.create"));
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
@@ -396,14 +362,10 @@ describe("ActorsPanel — visual kind editor", () => {
 
   it("an incomplete face row (kind image, no asset picked) keeps the create button disabled", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn();
     render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
     await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
     await fireEvent.click(screen.getByText("actors.faceAdd"));
@@ -420,15 +382,10 @@ describe("ActorsPanel — visual kind editor", () => {
 
   it("duplicate face-row names keep the create button disabled", async () => {
     const dispatchIntent = vi.fn();
-    const { listAssets } = await import("@shadowcat/core");
-    vi.mocked(listAssets).mockResolvedValue([
-      { id: "n1", world_id: "w1", original_name: "normal.png", content_type: "image/png" } as never,
-      { id: "b1", world_id: "w1", original_name: "bloodied.png", content_type: "image/png" } as never,
-    ]);
+    const pickAsset = vi.fn().mockResolvedValueOnce("n1").mockResolvedValueOnce("b1");
     const { container } = render(ActorsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, pickAsset: pickAsset as never, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
     });
-    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "normal.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Goblin" } });
     await fireEvent.change(screen.getByLabelText("actors.visualKind"), { target: { value: "faces" } });
     await fireEvent.click(screen.getByText("actors.faceAdd"));
@@ -438,10 +395,9 @@ describe("ActorsPanel — visual kind editor", () => {
     await fireEvent.input(nameInputs[0], { target: { value: "normal" } });
     await fireEvent.input(nameInputs[1], { target: { value: "normal" } });
     const faceRowEls = container.querySelectorAll(".face-row");
-    const normalPickBtn = within(faceRowEls[0] as HTMLElement).getByRole("button", { name: "normal.png" });
-    await fireEvent.click(normalPickBtn);
-    const bloodiedPickBtn = within(faceRowEls[1] as HTMLElement).getByRole("button", { name: "bloodied.png" });
-    await fireEvent.click(bloodiedPickBtn);
+    await fireEvent.click(within(faceRowEls[0] as HTMLElement).getByTestId("visual-pick"));
+    await fireEvent.click(within(faceRowEls[1] as HTMLElement).getByTestId("visual-pick"));
+    await vi.waitFor(() => expect(pickAsset).toHaveBeenCalledTimes(2));
     await fireEvent.change(screen.getByLabelText("actors.faceDefault"), { target: { value: "normal" } });
 
     const submitBtn = screen.getByText("actors.create");

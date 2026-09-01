@@ -1,7 +1,6 @@
 <script lang="ts">
-  import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { listAssets, type TokenVisual, type FaceVisual, type AnimatedSource, type Condition } from "@shadowcat/core";
+  import { type TokenVisual, type FaceVisual, type AnimatedSource, type Condition } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -19,7 +18,6 @@
   } = $props();
 
   let assetId = $state<string | null>(null);
-  let assetList = $state<Asset[]>([]);
 
   /** Editor-local flat state for one `AnimatedSource`; `animSourceToSource` projects it into
    * the wire union, keeping only the fields for the active `sourceType`. */
@@ -242,30 +240,6 @@
     resetVisualEditor();
   }
 
-  /**
-   * Refetches the world's image assets (filtered to `image/*` content types) into `assetList`,
-   * feeding every `assetPicker` snippet instance. Called once at mount and on every
-   * `AssetChanged` broadcast, via the `$effect` below.
-   * @returns Nothing; assigns the component's own `assetList` `$state`.
-   * @example
-   * ```
-   * // private helper; not part of the public API — invoked from the `$effect` below
-   * refreshAssets();
-   * ```
-   */
-  function refreshAssets(): void {
-    void listAssets(ctx.world).then((a) => {
-      assetList = a.filter((x) => x.content_type.startsWith("image/"));
-      // Every record here carries the true, current version — reconciling on each load
-      // self-heals a uuid whose cache-bust state went stale from a missed AssetChanged frame.
-      ctx.assets.reconcile(a);
-    });
-  }
-  $effect(() => {
-    refreshAssets();
-    return ctx.onAssetChanged(refreshAssets);
-  });
-
   // Continuously report the current built visual (or null when incomplete) to the host, which
   // gates its submit button and consumes it at create time. buildVisual reads every editor
   // $state, so this effect re-emits on any change, keeping `onBuild` synced with every field.
@@ -284,11 +258,17 @@
 
 {#snippet assetPicker(selected: string | null, onPick: (id: string) => void)}
   <div class="picker">
-    {#each assetList as a (a.id)}
-      <button type="button" class:selected={selected === a.id} title={a.original_name} onclick={() => onPick(a.id)}>
-        <img src={ctx.assets.url(a.id)} alt={a.original_name} />
-      </button>
-    {/each}
+    {#if selected}
+      <img class="current" src={ctx.assets.url(selected)} alt="" />
+    {/if}
+    <button
+      type="button"
+      data-testid="visual-pick"
+      onclick={() =>
+        void ctx.pickAsset({ kind: "image" }).then((id) => {
+          if (id) onPick(id);
+        })}
+    >{t("actors.pickAsset")}</button>
   </div>
 {/snippet}
 
@@ -301,7 +281,14 @@
   </label>
   {#if anim.sourceType === "frames"}
     <p class="hint">{t("actors.animFramesHint")}</p>
-    {@render assetPicker(null, (id: string) => (anim.frames = [...anim.frames, id]))}
+    <button
+      type="button"
+      data-testid="visual-pick-frames"
+      onclick={() =>
+        void ctx.pickAsset({ kind: "image", multiple: true }).then((ids) => {
+          if (ids) anim.frames = ids;
+        })}
+    >{t("actors.pickFrames")}</button>
     <ol class="frame-list">
       {#each anim.frames as f, i (i)}
         <li><img src={ctx.assets.url(f)} alt="" /> <button type="button" onclick={() => (anim.frames = anim.frames.filter((_: string, j: number) => j !== i))}>{t("actors.animRemoveFrame")}</button></li>
@@ -378,14 +365,8 @@
     gap: var(--space-1);
   }
   .picker button {
-    padding: 0;
-    border: 2px solid transparent;
-    border-radius: var(--radius-1);
-    background: none;
+    min-height: 2rem;
     cursor: pointer;
-  }
-  .picker button.selected {
-    border-color: var(--accent);
   }
   .picker img {
     width: 48px;

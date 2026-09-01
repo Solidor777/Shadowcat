@@ -698,3 +698,12 @@ are observations awaiting triage, not committed work.
   verified `pnpm docs:api:ts` green on post-M14c-2 main (2026-08-31, the
   M14c-4 baseline) with `treatWarningsAsErrors` intact — no exemption needed.
 
+
+- Title: Skill symbol citations reference unbuilt combat-resolution symbols. Summary: the
+  local-only `check-skill-symbol-refs` gate reports 25 broken citations in the
+  `shadowcat-codebase-combat`, `-formula`, and `-scene-rendering` skills (`resolve_budget`,
+  `eval_formula`, `formula_host`, `budget_cells`, `replay_step_costs`, and kin) — symbols the
+  combat-resolution sub-project of M14c describes but has not yet built. Surfaced during the
+  M15b skill-update gate (whose own four skill diffs verify clean); the fix belongs to that
+  sub-project's close-out, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.

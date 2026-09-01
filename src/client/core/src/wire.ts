@@ -469,6 +469,17 @@ export type WireOperation =
       doc_id: string;
       /** Ordered field changes, each with its OCC pre-image. */
       changes: WireFieldChange[];
+    }
+  | {
+      /** Re-parent a top-level document: rewrite its envelope `parent_id`.
+       * GM-only and Create-validity-gated server-side (`apply_intent`). */
+      op: "move";
+      /** Target document id. */
+      doc_id: string;
+      /** New parent (`null` = top level). */
+      parent_id: string | null;
+      /** OCC pre-image of the current parent. */
+      old_parent_id: string | null;
     };
 
 // Unannotated impl const — see the module-level note above the `z` import.
@@ -479,6 +490,12 @@ export const operationSchemaImpl = z.discriminatedUnion("op", [
     op: z.literal("update"),
     doc_id: z.string(),
     changes: z.array(FieldChangeSchema),
+  }),
+  z.object({
+    op: z.literal("move"),
+    doc_id: z.string(),
+    parent_id: z.string().nullable(),
+    old_parent_id: z.string().nullable(),
   }),
 ]);
 /** Validator for a single `Operation` within a `Command`. */

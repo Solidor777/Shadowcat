@@ -124,6 +124,27 @@ interface RestErrorBody {
   error?: unknown;
 }
 
+/** Deletes an `asset_folder` document server-side, with its asset policy:
+ * `"reparent"` (default) moves the folder subtree's assets to the deleted
+ * folder's parent; `"delete"` purges them through the shared asset-delete
+ * path first. Sub-folders cascade either way (document invariant). GM-only.
+ * @param id - The `asset_folder` document id.
+ * @param assets - What happens to the subtree's assets.
+ * @example
+ * ```ts
+ * import { deleteAssetFolder } from "@shadowcat/core";
+ *
+ * await deleteAssetFolder("00000000-0000-0000-0000-000000000001", "reparent");
+ * ```
+ */
+export async function deleteAssetFolder(
+  id: string,
+  assets: "reparent" | "delete" = "reparent",
+): Promise<void> {
+  const res = await fetch(`/api/asset-folders/${id}?assets=${assets}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(`folder delete failed: ${res.status} ${await restErrorText(res)}`);
+}
+
 /** The server's `{error}` text from a failed response, else `"HTTP <status>"` — the
  * human-readable half of every REST failure message this module and the chunked-upload
  * client produce.

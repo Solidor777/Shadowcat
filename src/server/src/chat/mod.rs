@@ -95,7 +95,10 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 pub fn ops_target_message(ops: &[Operation]) -> bool {
     ops.iter().any(|op| match op {
         Operation::Create { doc } | Operation::Delete { doc } => doc.doc_type == MESSAGE_DOC_TYPE,
-        Operation::Update { .. } => false,
+        // Like Update: the op carries only an id, so a Move targeting a stored
+        // `message` doc is classified (and rejected) in `apply_intent`'s Move
+        // branch against the authoritative stored `doc_type`.
+        Operation::Update { .. } | Operation::Move { .. } => false,
     })
 }
 
@@ -1388,7 +1391,7 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
     match cmd.ops.first()? {
         Operation::Create { doc } => Some(doc.id),
         Operation::Update { doc_id, .. } => Some(*doc_id),
-        Operation::Delete { .. } => None,
+        Operation::Delete { .. } | Operation::Move { .. } => None,
     }
 }
 
