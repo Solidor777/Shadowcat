@@ -1,12 +1,14 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
+  import { getAppContext, LightEmissionEditor, VisionAssignmentsEditor } from "@shadowcat/ui-kit";
+  import { buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
   import TokenRotationControl from "./TokenRotationControl.svelte";
   import TokenLightControl from "./TokenLightControl.svelte";
+  import TokenVisionControl from "./TokenVisionControl.svelte";
+  import TokenElevationControl from "./TokenElevationControl.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -40,17 +42,6 @@
       /** Height in grid cells. */
       h: number;
     };
-  };
-  /** Shape of an actor's `engine.vision` field. */
-  type VisionEngineShape = {
-    /** The actor's vision-mode assignments; the darkvision row reads/writes the sole
-     * `mode: "darkvision"` entry. */
-    vision?: {
-      /** The vision-modes registry id this assignment applies. */
-      mode: string;
-      /** The assignment's range in grid cells; `null`/absent inherits the mode's own default. */
-      range: number | null;
-    }[];
   };
 
   // Reactive read of the document store (same bridge as Surface): reading
@@ -96,7 +87,9 @@
   let shape = $state<"square" | "circle">("square");
   let sizeW = $state(1);
   let sizeH = $state(1);
-  let darkvision = $state(0);
+  /** The create form's pending vision-mode assignments (empty = the new actor has no senses).
+   * Read via `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingVision = $state<VisionAssignment[]>([]);
   /** The create form's pending carried light (`null` = the new actor emits nothing). Read via
    * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingLight = $state<LightEmission | null>(null);
@@ -118,8 +111,9 @@
 
   /** The single selected token's id, if any — drives every per-token control below: the
    * face-swap palette (`FaceSwapPalette`), the ownership override control
-   * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), and the carried-light
-   * override control (`TokenLightControl`). */
+   * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), the carried-light
+   * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
+   * and the elevation control (`TokenElevationControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
@@ -175,6 +169,43 @@
    */
   function toggleLight(a: WireDocument, on: boolean): void {
     commitLight(a, on ? { ...DEFAULT_LIGHT_EMISSION } : null);
+  }
+
+  /** The resolved vision-mode registry entries the assignment editors' mode selects offer,
+   * reactively re-read so a registry edit (game-settings panel) reaches the rows. */
+  const visionModes = $derived.by((): VisionMode[] => {
+    subscribe();
+    return Object.values(resolveVisionModes(ctx.documents));
+  });
+
+  /** The actor row's raw stored vision assignments (`engine.vision`), or `null`. This RAW read
+   * is the OCC pre-image for `commitVision`'s update — never a resolved/defaulted value.
+   * @param a The actor document to read.
+   * @returns The raw stored assignment list, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row vision editor
+   * declare const a: WireDocument;
+   * visionOf(a); // a.engine.vision ?? null
+   * ```
+   */
+  const visionOf = (a: WireDocument): VisionAssignment[] | null =>
+    (a.engine as ActorEngine | undefined)?.vision ?? null;
+
+  /** Dispatch a whole-payload `/engine/vision` update on actor `a` (the assignment list is one
+   * nested value, so one write carries every row's change). `old` is the raw stored list; an
+   * empty list normalizes to `null` (canonical absent — matches the create form).
+   * @param a The actor document.
+   * @param next The new assignment list.
+   * @example
+   * ```
+   * // private helper; wired to the per-row vision editor's onCommit
+   * declare const a: WireDocument;
+   * commitVision(a, []);
+   * ```
+   */
+  function commitVision(a: WireDocument, next: VisionAssignment[]): void {
+    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: visionOf(a), new: next.length > 0 ? next : null }] }]);
   }
 
   // Rows come from two sources — a store-resolved document and a search hit
@@ -237,7 +268,7 @@
       faction,
       conditions: [],
       prototype: instanceOnDrop,
-      vision: darkvision > 0 ? [{ mode: "darkvision" as const, range: darkvision }] : null,
+      vision: pendingVision.length > 0 ? $state.snapshot(pendingVision) : null,
       light: pendingLight ? $state.snapshot(pendingLight) : null,
     };
     const doc = buildActorDoc(ctx.world, name, engine);
@@ -250,7 +281,7 @@
     shape = "square";
     sizeW = 1;
     sizeH = 1;
-    darkvision = 0;
+    pendingVision = [];
     pendingLight = null;
     visualEditor?.reset();
   }
@@ -260,8 +291,10 @@
   <h3>{t("actors.title")}</h3>
   <TokenOwnerControl tokenId={selectedTokenId} />
   <TokenRotationControl tokenId={selectedTokenId} />
+  <TokenElevationControl tokenId={selectedTokenId} />
   <FaceSwapPalette tokenId={selectedTokenId} />
   <TokenLightControl tokenId={selectedTokenId} />
+  <TokenVisionControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
     type="search"
@@ -327,12 +360,12 @@
             value={(a.engine as SizeEngineShape | undefined)?.size?.h ?? 1}
             onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: sz.w, h: Number(e.currentTarget.value) } }] }]); }}
           />
-          <!-- Per-row darkvision input dispatches an update to /engine/vision; range=0 clears to empty array. -->
-          <input
-            type="number" min="0" step="1" class="size-edit" aria-label={t("actors.darkvision")}
-            value={(a.engine as VisionEngineShape | undefined)?.vision?.find((v) => v.mode === "darkvision")?.range ?? 0}
-            onchange={(e) => { const range = Number(e.currentTarget.value); const cur = (a.engine as VisionEngineShape | undefined)?.vision ?? null; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: cur, new: range > 0 ? [{ mode: "darkvision", range }] : [] }] }]); }}
-          />
+          <!-- Per-row vision-assignment list editor; commits whole-payload /engine/vision
+               updates with the raw stored list as the OCC pre-image. -->
+          <div class="vision-edit" aria-label={t("actors.visionModes")}>
+            <span>{t("actors.visionModes")}</span>
+            <VisionAssignmentsEditor value={visionOf(a) ?? []} modes={visionModes} onCommit={(next) => commitVision(a, next)} />
+          </div>
           <!-- Per-row carried-light toggle + editor; commits whole-payload /engine/light updates. -->
           <label>
             <input
@@ -380,9 +413,8 @@
       <input type="number" min="0.5" step="0.5" aria-label={t("actors.height")} bind:value={sizeH} />
     </label>
     <label>
-      {t("actors.darkvision")}
-      <!-- value + onchange (not bind:value): bind:value on a number input reacts only to input events; the explicit handlers update state on change too. -->
-      <input type="number" min="0" step="1" aria-label={t("actors.darkvision")} value={darkvision} onchange={(e) => (darkvision = Number(e.currentTarget.value))} oninput={(e) => (darkvision = Number(e.currentTarget.value))} />
+      {t("actors.visionModes")}
+      <VisionAssignmentsEditor value={pendingVision} modes={visionModes} onCommit={(next) => (pendingVision = next)} />
     </label>
     {#if ctx.role === "gm"}
       <label>
@@ -463,6 +495,11 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+  .vision-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
   }
   input,
   label,

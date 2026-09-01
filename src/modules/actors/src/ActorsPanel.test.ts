@@ -218,8 +218,8 @@ describe("ActorsPanel — shape + size", () => {
   });
 });
 
-describe("ActorsPanel — darkvision authoring", () => {
-  it("create includes darkvision vision when a range is entered", async () => {
+describe("ActorsPanel — vision-assignment authoring", () => {
+  it("create includes the vision assignments built in the form's list editor", async () => {
     const dispatchIntent = vi.fn();
     const { listAssets } = await import("@shadowcat/core");
     vi.mocked(listAssets).mockResolvedValue([
@@ -231,14 +231,17 @@ describe("ActorsPanel — darkvision authoring", () => {
     await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
     await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Drow" } });
     await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
-    await fireEvent.change(screen.getByLabelText("actors.darkvision"), { target: { value: "12" } });
+    // The create form's editor: one row, switched to tremorsense with an explicit range.
+    await fireEvent.click(screen.getByTestId("vision-add"));
+    await fireEvent.change(screen.getByTestId("vision-mode-0"), { target: { value: "tremorsense" } });
+    await fireEvent.change(screen.getByTestId("vision-range-0"), { target: { value: "12" } });
     await fireEvent.click(screen.getByText("actors.create"));
 
     const ops = dispatchIntent.mock.calls[0][0];
-    expect(ops[0].doc.engine).toMatchObject({ vision: [{ mode: "darkvision", range: 12 }] });
+    expect(ops[0].doc.engine).toMatchObject({ vision: [{ mode: "tremorsense", range: 12 }] });
   });
 
-  it("create omits vision when darkvision range is 0", async () => {
+  it("create omits vision when no assignments were added", async () => {
     const dispatchIntent = vi.fn();
     const { listAssets } = await import("@shadowcat/core");
     vi.mocked(listAssets).mockResolvedValue([
@@ -256,9 +259,10 @@ describe("ActorsPanel — darkvision authoring", () => {
     expect(dispatchIntent.mock.calls[0][0][0].doc.engine.vision).toBeNull();
   });
 
-  it("per-row darkvision input shows 0 for a vision assignment carrying range: null", async () => {
+  it("per-row editor shows an empty range for a range: null assignment (inherits the mode default)", async () => {
     // `VisionAssignment.range` is `number | null` on the wire (an omitted/null range inherits the
-    // mode's own default) — the row reads it via `?? 0`, guarding against exactly this case.
+    // mode's own default) — the row's range input renders it as an empty string, guarding against
+    // exactly this case.
     const actor = buildActorDoc(
       "w1",
       "Troll",
@@ -287,8 +291,73 @@ describe("ActorsPanel — darkvision authoring", () => {
     });
 
     const listItem = screen.getByRole("listitem");
-    const rowDarkvisionInput = within(listItem).getByLabelText("actors.darkvision");
-    expect((rowDarkvisionInput as HTMLInputElement).value).toBe("0");
+    const rangeInput = within(listItem).getByTestId("vision-range-0");
+    expect((rangeInput as HTMLInputElement).value).toBe("");
+    expect((within(listItem).getByTestId("vision-mode-0") as HTMLSelectElement).value).toBe("darkvision");
+  });
+
+  it("per-row range edit commits the whole /engine/vision payload with the raw stored list as old", async () => {
+    const dispatchIntent = vi.fn();
+    const stored = [{ mode: "darkvision", range: null }, { mode: "tremorsense", range: 12 }];
+    const actor = buildActorDoc(
+      "w1",
+      "Troll",
+      {
+        displayName: "Troll",
+        visual: { kind: "image", asset: "a1" },
+        size: { w: 1, h: 1 },
+        shape: "square",
+        faction: null,
+        conditions: [],
+        prototype: false,
+        vision: stored,
+        light: null,
+      },
+      "act1",
+    );
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(actor), dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.change(within(listItem).getByTestId("vision-range-1"), { target: { value: "20" } });
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      {
+        op: "update",
+        doc_id: "act1",
+        changes: [{ path: "/engine/vision", old: stored, new: [stored[0], { mode: "tremorsense", range: 20 }] }],
+      },
+    ]);
+  });
+
+  it("removing the last row normalizes the write to null (canonical absent)", async () => {
+    const dispatchIntent = vi.fn();
+    const stored = [{ mode: "darkvision", range: 8 }];
+    const actor = buildActorDoc(
+      "w1",
+      "Troll",
+      {
+        displayName: "Troll",
+        visual: { kind: "image", asset: "a1" },
+        size: { w: 1, h: 1 },
+        shape: "square",
+        faction: null,
+        conditions: [],
+        prototype: false,
+        vision: stored,
+        light: null,
+      },
+      "act1",
+    );
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(actor), dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.click(within(listItem).getByTestId("vision-remove-0"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/vision", old: stored, new: null }] },
+    ]);
   });
 });
 

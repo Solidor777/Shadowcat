@@ -22,6 +22,7 @@ export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 export { setField } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
 export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
+export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
