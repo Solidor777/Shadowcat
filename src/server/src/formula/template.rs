@@ -304,10 +304,7 @@ fn emit_claim(
 /// chip.
 fn substitute_identifier(text: &str, resolve: &dyn Resolve) -> Result<String, FormulaError> {
     let path: Vec<String> = text.split('.').map(str::to_owned).collect();
-    let n = match resolve.resolve(&path) {
-        Ok(n) => finite(n)?,
-        Err(e) => return Err(e),
-    };
+    let n = finite(resolve.resolve(&path)?)?;
     if n.fract() != 0.0 {
         return Err(FormulaError::new(
             FormulaErrorKind::Type,
