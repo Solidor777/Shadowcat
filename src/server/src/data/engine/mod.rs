@@ -230,7 +230,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "light" => round_trip::<LightEngine>(v, "light"),
         "drawing" => round_trip::<DrawingEngine>(v, "drawing"),
         "template" => round_trip::<TemplateEngine>(v, "template"),
-        "actor" => round_trip::<ActorEngine>(v, "actor"),
+        "actor" => {
+            let typed: ActorEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("actor: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("actor: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "message" => round_trip::<crate::chat::MessageEngine>(v, "message"),
         "world-settings" => {
             let typed: WorldSettingsEngine = serde_json::from_value(v.clone())

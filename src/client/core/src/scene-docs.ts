@@ -33,6 +33,10 @@ import type {
   GeneratedBorder,
   GeneratedBackground,
   VisionAssignment,
+  AuraEmission,
+  SoundEmission,
+  VfxEmission,
+  VfxAnchor,
   ActorEngine,
   LightEngine,
   Falloff,
@@ -120,6 +124,10 @@ export type {
   GeneratedBorder,
   GeneratedBackground,
   VisionAssignment,
+  AuraEmission,
+  SoundEmission,
+  VfxEmission,
+  VfxAnchor,
   ActorEngine,
   LightEngine,
   Falloff,
@@ -625,8 +633,8 @@ export function resolveViewedScene(
 
 /** A top-level (world-scoped, parentless) actor document. `name` is the actor's real,
  * privacy-gateable identity (envelope field); `engine` carries every other engine-owned
- * field (`displayName`, visual, size, shape, faction, conditions, prototype, vision)
- * per `ActorEngine`.
+ * field (`displayName`, visual, size, shape, faction, conditions, prototype, vision,
+ * aura/sound/vfx emissions) per `ActorEngine`.
  * @param worldId The owning world's id.
  * @param name The actor's real name (envelope field; use `setNameHidden` to privacy-gate it).
  * @param engine The full `ActorEngine` body.
@@ -639,7 +647,7 @@ export function resolveViewedScene(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null,
+ *   prototype: false, vision: null, aura: null, sound: null, vfx: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * actor.doc_type; // "actor"
@@ -771,7 +779,7 @@ export function buildTokenFromActor(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null,
+ *   prototype: false, vision: null, aura: null, sound: null, vfx: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * setNameHidden(actor, true);

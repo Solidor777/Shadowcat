@@ -184,6 +184,9 @@ const actorEngine: ActorEngine = {
   conditions: [],
   prototype: true,
   vision: null,
+  aura: null,
+  sound: null,
+  vfx: null,
 };
 
 test("buildSceneDoc makes a top-level world scene with a default square grid", () => {

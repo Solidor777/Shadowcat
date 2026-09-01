@@ -120,7 +120,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -154,7 +154,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -188,7 +188,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
       "act1",
     );
     const store = storeWith(actor);
@@ -256,6 +256,30 @@ describe("ActorsPanel — darkvision authoring", () => {
     expect(dispatchIntent.mock.calls[0][0][0].doc.engine.vision).toBeNull();
   });
 
+  it("create dispatches the emission editor's pending emissions (and null when untouched)", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Wisp" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    // Toggle the aura section on and set its radius; sound/vfx stay null.
+    await fireEvent.click(screen.getByLabelText("actors.aura"));
+    await fireEvent.change(screen.getByLabelText("actors.auraRadius"), { target: { value: "3" } });
+    await fireEvent.click(screen.getByText("actors.create"));
+    const engine = dispatchIntent.mock.calls[0][0][0].doc.engine;
+    expect(engine.aura).toEqual({ color: "#ffcc66", opacity: 0.4, radius: 3, enabled: true });
+    expect(engine.sound).toBeNull();
+    expect(engine.vfx).toBeNull();
+    // The form reset after create clears the pending emissions too.
+    expect((screen.getByLabelText("actors.aura") as HTMLInputElement).checked).toBe(false);
+  });
+
   it("per-row darkvision input shows 0 for a vision assignment carrying range: null", async () => {
     // `VisionAssignment.range` is `number | null` on the wire (an omitted/null range inherits the
     // mode's own default) — the row reads it via `?? 0`, guarding against exactly this case.
@@ -271,6 +295,9 @@ describe("ActorsPanel — darkvision authoring", () => {
         conditions: [],
         prototype: false,
         vision: [{ mode: "darkvision", range: null }],
+        aura: null,
+        sound: null,
+        vfx: null,
       },
       "act1",
     );
@@ -429,7 +456,7 @@ describe("ActorsPanel — per-token face swap", () => {
     return buildActorDoc(
       "w1",
       "Goblin",
-      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
       "act1",
     );
   }
@@ -482,7 +509,7 @@ describe("ActorsPanel — live search + open sheet", () => {
     return buildActorDoc(
       "w1",
       name,
-      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
       id,
     );
   }

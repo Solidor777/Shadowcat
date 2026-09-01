@@ -156,6 +156,18 @@ export interface TokenNodeSpec {
   badges: string[];
   /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";
+  /** The token's aura disc, drawn UNDER the art (a `container` child ordered below
+   * `visualContainer`), or absent for none. Fully pre-resolved by `TokenView.toSpec`: color is
+   * already `parseColor`-packed, radius already converted from grid cells to scene units — the
+   * backend never parses colors or computes grid math. */
+  aura?: {
+    /** Disc fill color, packed `0xRRGGBB`. */
+    color: number;
+    /** Disc fill opacity, read-side-clamped to `[0,1]` by the resolver. */
+    opacity: number;
+    /** Disc radius, in scene units. */
+    radius: number;
+  };
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

@@ -36,6 +36,13 @@ interface TokenNode {
   /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
   badgeKey: string;
+  /** The aura disc, drawn by `updateTokenAura` as a `container` child ordered BELOW
+   * `visualContainer` (the art draws over it; badges stay on top), or `null` while the last-applied
+   * spec had no aura. */
+  aura: Graphics | null;
+  /** Identity key of the last-applied `tokenSpec.aura` (`updateTokenAura`'s memo, same discipline
+   * as `badgeKey`/`sourceKey`): an unchanged key short-circuits the redraw. */
+  auraKey: string;
   /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
@@ -471,6 +478,7 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenGeneratedFrame(node, tokenSpec);
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
+    this.updateTokenAura(node, tokenSpec);
   }
 
   /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
@@ -495,7 +503,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "" };
     this.tokens.set(id, node);
     return node;
   }
@@ -752,8 +760,43 @@ export class PixiBackend implements DisplayBackend {
     });
   }
 
+  /** Redraw (or remove) `node`'s aura disc: a filled ellipse of `tokenSpec.aura.radius` scene
+   * units centered on the token's origin, filled with `aura.color` at `aura.opacity`. The disc
+   * Graphics is a direct child of the non-rotating outer `container` inserted at index 0 — BELOW
+   * `visualContainer`, so the art draws over the aura and the badge chips (appended later, on top)
+   * stay clean; radial by definition, so rotation would be invisible anyway. Guarded by an
+   * `auraKey` memo (same discipline as `badgeKey`/`sourceKey`): an unchanged key returns
+   * immediately; an absent aura destroys the Graphics and drops the reference.
+   * @param node The token render node whose aura to redraw.
+   * @param tokenSpec The resolved token tokenSpec; only `.aura` is read here (color pre-packed,
+   * radius pre-converted to scene units by `TokenView.toSpec`).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenAura(node, tokenSpec);
+   * ```
+   */
+  private updateTokenAura(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const aura = tokenSpec.aura;
+    const key = aura ? `${aura.color}:${aura.opacity}:${aura.radius}` : "";
+    if (node.auraKey === key) return;
+    node.auraKey = key;
+    if (!aura) {
+      node.aura?.destroy();
+      node.aura = null;
+      return;
+    }
+    if (!node.aura) {
+      node.aura = new Graphics();
+      node.container.addChildAt(node.aura, 0); // below visualContainer: art draws over the aura
+    }
+    node.aura.clear().ellipse(0, 0, aura.radius, aura.radius).fill({ color: aura.color, alpha: aura.opacity });
+  }
+
   /** `DisplayBackend.removeToken`: destroy a token's render node (container + all children,
-   * including `visualContainer`/`visual`/`border`/badges) and drop it from `this.tokens`. A no-op
+   * including `visualContainer`/`visual`/`border`/badges/aura) and drop it from `this.tokens`. A no-op
    * for an unknown `id`.
    * @param id The token document id to remove.
    * @example

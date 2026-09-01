@@ -57,12 +57,18 @@ describe("PixiBackend.setLighting", () => {
 });
 
 interface TokenNodeLike {
+  /** Mirror of `TokenNode.container` — read to assert the aura's child order. */
+  container: Container;
   /** Mirror of `TokenNode.visualContainer` — read to assert the frame's child order. */
   visualContainer: Container;
   /** Mirror of `TokenNode.visual` — read to assert mask assignment. */
   visual: { mask: unknown };
   /** Mirror of `TokenNode.generated` — read to assert frame lifetime. */
   generated: { background: GraphicsInstructionLog; mask: GraphicsInstructionLog; ring: GraphicsInstructionLog } | null;
+  /** Mirror of `TokenNode.aura` — read to assert the disc's draw + lifetime. */
+  aura: (GraphicsInstructionLog & { destroyed: boolean }) | null;
+  /** Mirror of `TokenNode.auraKey` — read to assert the redraw memo. */
+  auraKey: string;
 }
 
 interface PixiBackendTokenInternals {
@@ -70,6 +76,8 @@ interface PixiBackendTokenInternals {
   createTokenNode(id: string): TokenNodeLike;
   /** Mirror of the private `PixiBackend.updateTokenGeneratedFrame`. */
   updateTokenGeneratedFrame(node: TokenNodeLike, spec: TokenNodeSpec): void;
+  /** Mirror of the private `PixiBackend.updateTokenAura`. */
+  updateTokenAura(node: TokenNodeLike, spec: TokenNodeSpec): void;
 }
 
 /** Reads the flat draw-call action list recorded on a Graphics' context — the same instruction
@@ -86,9 +94,9 @@ function pathActions(g: GraphicsInstructionLog): string[] {
  * @param action The instruction action to find (`"fill"` or `"stroke"`).
  * @returns The instruction's converted style, or `null` when no such instruction exists.
  */
-function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?: number; color?: number } | null {
+function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?: number; color?: number; alpha?: number } | null {
   const instr = g.context.instructions.find((i) => (i as unknown as { action?: string }).action === action);
-  return instr ? (instr.data as unknown as { style: { width?: number; color?: number } }).style : null;
+  return instr ? (instr.data as unknown as { style: { width?: number; color?: number; alpha?: number } }).style : null;
 }
 
 describe("PixiBackend.updateTokenGeneratedFrame", () => {
@@ -156,5 +164,55 @@ describe("PixiBackend.updateTokenGeneratedFrame", () => {
     // Pixi's mask getter returns `undefined` (not `null`) once the mask effect is removed.
     expect(node.visual.mask).toBeUndefined();
     expect((frame.mask as unknown as { destroyed: boolean }).destroyed).toBe(true);
+  });
+});
+
+describe("PixiBackend.updateTokenAura", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
+
+  test("draws the disc as the container's bottom-most child with the given color + opacity", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0xffcc66, opacity: 0.4, radius: 140 } });
+    const aura = node.aura!;
+    expect(aura).not.toBeNull();
+    // Child order: aura first (the art's visualContainer draws over it; badges stay on top).
+    expect(node.container.children[0]).toBe(aura);
+    expect(pathActions(aura)).toContain("ellipse");
+    const fill = styleOf(aura, "fill");
+    expect(fill?.color).toBe(0xffcc66);
+    expect(fill?.alpha).toBeCloseTo(0.4);
+  });
+
+  test("an unchanged aura key skips the redraw; a changed one redraws in place", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0xffcc66, opacity: 0.4, radius: 140 } });
+    const aura = node.aura!;
+    // Memoized: a same-key re-push leaves the recorded instructions untouched (still one pass).
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0xffcc66, opacity: 0.4, radius: 140 } });
+    expect(node.aura).toBe(aura);
+    expect(aura.context.instructions.length).toBe(1);
+    // A changed key redraws on the SAME Graphics (clear + re-fill — still one fill instruction set).
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0x0000ff, opacity: 0.4, radius: 140 } });
+    expect(node.aura).toBe(aura);
+    expect(styleOf(aura, "fill")?.color).toBe(0x0000ff);
+    expect(node.auraKey).toBe(`${0x0000ff}:0.4:140`);
+  });
+
+  test("an absent aura destroys the disc and drops the reference", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenAura(node, { ...base, visual: imageVisual, aura: { color: 0xffcc66, opacity: 0.4, radius: 140 } });
+    const aura = node.aura!;
+    backend.updateTokenAura(node, { ...base, visual: imageVisual });
+    expect(node.aura).toBeNull();
+    expect(aura.destroyed).toBe(true);
+    // And a token that never had an aura leaves no Graphics behind.
+    const node2 = backend.createTokenNode("t2");
+    backend.updateTokenAura(node2, { ...base, visual: imageVisual });
+    expect(node2.aura).toBeNull();
+    expect(node2.container.children.length).toBe(1); // visualContainer only
   });
 });

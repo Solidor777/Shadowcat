@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -41,6 +41,13 @@ export interface EffectiveActor {
   /** Effective vision modes for this actor/token. Per-token override replaces actor base entirely;
    * defaults to [] when neither specifies vision. */
   visionModes: VisionAssignment[];
+  /** Effective aura emission, or `null` for none. Per-token override replaces the actor base
+   * wholesale (never merged), exactly like `visionModes`. */
+  aura: AuraEmission | null;
+  /** Effective sound emission, or `null` for none. Same wholesale-override precedence as `aura`. */
+  sound: SoundEmission | null;
+  /** Effective VFX emission, or `null` for none. Same wholesale-override precedence as `aura`. */
+  vfx: VfxEmission | null;
 }
 
 /** Fold a per-token `TokenOverrides` whitelist onto its actor's `ActorEngine` base to produce the
@@ -70,6 +77,10 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     conditions: base.conditions ?? [],
     // Override replaces actor base entirely (not merged); [] when neither present (fail-closed).
     visionModes: overrides?.vision ?? base.vision ?? [],
+    // Emissions follow the same wholesale-override precedence as visionModes; null when absent.
+    aura: overrides?.aura ?? base.aura ?? null,
+    sound: overrides?.sound ?? base.sound ?? null,
+    vfx: overrides?.vfx ?? base.vfx ?? null,
   };
 }
 

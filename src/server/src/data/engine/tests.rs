@@ -69,6 +69,52 @@ fn actor_minimal_body_is_valid() {
 }
 
 #[test]
+fn actor_with_emissions_is_valid() {
+    let v = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true },
+        "sound": { "asset": "a1", "radius": 5.0, "volume": 0.8, "loop": true, "enabled": true },
+        "vfx": { "asset": "a2", "anchor": "above", "loop": false, "enabled": true }
+    });
+    assert!(validate_engine("actor", Some(&v)).is_ok());
+}
+
+#[test]
+fn actor_with_malformed_emission_is_rejected() {
+    let base = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true
+    });
+    let mut bad_color = base.clone();
+    bad_color["aura"] =
+        json!({ "color": "orange", "opacity": 0.4, "radius": 2.0, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_color)).is_err());
+    let mut bad_radius = base.clone();
+    bad_radius["sound"] =
+        json!({ "asset": "a1", "radius": -1.0, "volume": 0.8, "loop": true, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_radius)).is_err());
+    let mut bad_asset = base.clone();
+    bad_asset["vfx"] = json!({ "asset": "", "anchor": "token", "loop": true, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_asset)).is_err());
+}
+
+#[test]
+fn token_with_malformed_override_emission_is_rejected() {
+    let mut v = json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 });
+    v["overrides"] = json!({
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 1.0e12, "enabled": true }
+    });
+    assert!(validate_engine("token", Some(&v)).is_err());
+    v["overrides"] = json!({
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true }
+    });
+    assert!(validate_engine("token", Some(&v)).is_ok());
+}
+
+#[test]
 fn message_minimal_body_is_valid() {
     let v = json!({
         "channel": "ic", "user_owner": "00000000-0000-0000-0000-000000000000",

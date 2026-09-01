@@ -365,12 +365,22 @@ export class TokenView {
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
     const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
-    return {
+    // Aura emission (the EffectiveActor projection; null for a raw token): a radial disc under
+    // the art. Cells → scene units go through the view's ONE cell-size source
+    // (`setWorldUnitsPerCell`, fed from `Grid.worldUnitsPerCell`) — never a second grid formula.
+    // Opacity is read-side-clamped to [0,1] here (ingress validates finiteness only).
+    const aura =
+      eff?.aura && eff.aura.enabled && eff.aura.radius > 0
+        ? { color: parseColor(eff.aura.color), opacity: Math.min(1, Math.max(0, eff.aura.opacity)), radius: eff.aura.radius * this.worldUnitsPerCell }
+        : undefined;
+    const spec: TokenNodeSpec = {
       x: box.x, y: box.y, w: box.w, h: box.h, rotation: s.rotation ?? 0,
       visual: resolvedVisual,
       borderColor,
       badges,
       shape: box.shape,
     };
+    if (aura) spec.aura = aura;
+    return spec;
   }
 }
