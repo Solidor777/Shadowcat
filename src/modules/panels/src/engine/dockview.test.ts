@@ -1343,6 +1343,76 @@ test("pop-out rejected: a throwing driver falls back to a float op + a notice", 
   expect(notices).toEqual(["panels.popoutBlocked"]);
 });
 
+/** Mounts an engine, docks chat, and starts a pop-out whose driver relocates
+ * the panel SYNCHRONOUSLY (the way `addPopoutGroup` really does) but resolves
+ * only when the test says so — leaving the gesture in flight while the tree
+ * still records the panel's pre-popout location. Returns the pieces a test
+ * needs to apply the stale tree and then settle the gesture. */
+async function popOutInFlight(initial: "docked" | "floating"): Promise<{
+  api: DockviewApi;
+  ops: LayoutOp[];
+  stale: PanelLayoutV1;
+  settle: (ok: boolean) => void;
+}> {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  let settle: (ok: boolean) => void = () => {};
+  const driver = (panel: IDockviewPanel): Promise<boolean> => {
+    const api = engine!.debugApi!;
+    const group = api.addGroup({ id: "sc-inflight-popout", direction: "right" });
+    api.removePanel(panel);
+    api.addPanel({ id: panel.id, component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+    return new Promise<boolean>((res) => {
+      settle = res;
+    });
+  };
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, initial === "docked"
+    ? { op: "dock", id: "chat", zone: "right", group: "new" }
+    : { op: "float", id: "chat", rect: { x: 10, y: 10, w: 300, h: 200 } });
+  const meta = new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]);
+  engine.apply(l.expanded, meta);
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")?.click();
+  document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]')?.click();
+  return { api: engine.debugApi!, ops, stale: l, settle };
+}
+
+test("a stale-tree apply during an in-flight pop-out never relocates a docked-origin panel back", async () => {
+  const { api, ops, stale, settle } = await popOutInFlight("docked");
+  // The driver's synchronous relocation already happened; the tree applied
+  // next is the PRE-popOut tree (the `popOut` op lands only when the driver
+  // settles) — the apply must not drag the panel back into its old group.
+  expect(api.getPanel("chat")?.group.id).toBe("sc-inflight-popout");
+  engine!.apply(stale.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+  expect(api.getPanel("chat")?.group.id).toBe("sc-inflight-popout");
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(ops).toContainEqual(expect.objectContaining({ op: "popOut", id: "chat", key: expect.any(String) }));
+});
+
+test("a stale-tree apply during an in-flight pop-out never re-docks a floating-origin panel", async () => {
+  const { api, stale, settle } = await popOutInFlight("floating");
+  expect(api.getPanel("chat")?.group.api.location.type).not.toBe("floating");
+  engine!.apply(stale.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+  expect(api.getPanel("chat")?.group.id).toBe("sc-inflight-popout");
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
 test("apply seeds seenPanelIds with the tree's popout windows so a live popout is never orphan-removed", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");

@@ -552,9 +552,58 @@ test("restorablePopouts returns the full pre-prune arrangement across the boot r
   });
   ctrl.syncRegistrations(regsForRole(contributions.contributionsFor(PANEL_CONTRACT), "gm"));
   expect(locate(ctrl.layout, "assets").where).toBe("floating");
+  // The live tree's record heals back to the full saved set, so the next
+  // persist no longer carries the trickle-shrunken record.
+  expect(ctrl.layout.expanded.popouts).toEqual([
+    { key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 }, dormant: true },
+  ]);
   expect(ctrl.restorablePopouts()).toEqual([
     { key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 } },
   ]);
+});
+
+// The notice offers the restore gesture whenever an arrangement was SAVED —
+// the boot registration trickle can prune the live tree's records to empty
+// before the panel ever registers, so keying the notice on the live tree
+// alone would lose the gesture exactly when a registration lags.
+test("the restore notice keys on the saved arrangement even when the panel has not registered yet", () => {
+  const contributions = new ContributionRegistry(); // nothing registered at construction
+  let saved = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+  saved = applyOp(saved, { op: "dock", id: "chat", zone: "right", group: "new" });
+  saved = applyOp(saved, { op: "popOut", id: "chat", key: "w-chat", rect: { left: 500, top: 100, width: 900, height: 700 } });
+
+  const notices: { key: string; action?: { labelKey: string } }[] = [];
+  const ctrl = new PanelsController({
+    contributions,
+    role: "gm",
+    getPanelLayout: () => saved,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+    onNotice: (key, action) => notices.push({ key, ...(action ? { action } : {}) }),
+  });
+
+  // "chat" is unknown at construction: pruned out of the live tree entirely…
+  expect(locate(ctrl.layout, "chat").where).toBe("closed");
+  expect(ctrl.layout.expanded.popouts).toEqual([]);
+  // …and nothing is restorable while no panel of the window is registered.
+  expect(ctrl.restorablePopouts()).toEqual([]);
+  // The action notice is WITHHELD (not dropped) while the gesture could
+  // restore nothing — the host re-flushes on every registration change.
+  ctrl.flushPendingNotice();
+  expect(notices).toEqual([]);
+
+  // The panel's late registration (the boot trickle) makes the saved window
+  // restorable, and the next flush delivers the notice.
+  contributions.contribute({
+    id: "chat",
+    contract: PANEL_CONTRACT,
+    component: {},
+    panel: { icon: "c", labelKey: "chat.tab", defaultPlacement: { kind: "docked", zone: "right" } },
+  });
+  ctrl.syncRegistrations(regsForRole(contributions.contributionsFor(PANEL_CONTRACT), "gm"));
+  ctrl.flushPendingNotice();
+  expect(notices).toEqual([{ key: "panels.popoutRestoredFloating", action: { labelKey: "panels.reopenWindows" } }]);
 });
 
 // No persisted history (or a reset blob) means no arrangement to restore.

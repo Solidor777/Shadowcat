@@ -171,6 +171,11 @@
           // (`FakeEngine`, which omits `restorePopouts`) degrades the notice
           // to the plain live-region announce.
           if (action && eng.restorePopouts) {
+            // The controller delivers an action-carrying notice only once a
+            // restorable window exists (see `flushPendingNotice`), so the
+            // toast is never a dead button. `run` re-reads
+            // `restorablePopouts` at click time so a panel that registered
+            // between delivery and the click is included.
             notifications.push("info", t(key), {
               label: t(action.labelKey),
               run: () => eng.restorePopouts?.(ctrl.restorablePopouts()),
@@ -200,11 +205,14 @@
   // Flushes any notice `PanelsController` queued during its own construction
   // (currently only the reload-restore notice — see `flushPendingNotice`'s
   // doc comment for why this can't fire from the constructor's `onNotice`
-  // callback itself). Reads no reactive state, so this `$effect` runs
-  // exactly once, after first mount — the live region below is guaranteed
-  // to have already painted its EMPTY initial value by the time this can
-  // possibly change it, which is what makes the change announced at all.
+  // callback itself). The visibleRegs read makes the effect re-run on every
+  // registration change, so an action-carrying notice withheld at first flush
+  // (its restore gesture had no registered panel yet — registrations trickle
+  // in after the panels module activates) is retried as panels arrive. The
+  // a11y property still holds: the first run is post-mount, so the live region
+  // has already painted its EMPTY initial value before any announcement.
   $effect(() => {
+    void ctrl.visibleRegs;
     ctrl.flushPendingNotice();
   });
 

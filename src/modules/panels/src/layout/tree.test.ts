@@ -158,6 +158,48 @@ describe("placeNewRegistrations with a persistedSource", () => {
     expect(l1).toBe(l0);
   });
 
+  it("places a persisted popped-out id as floating AND restores the window's dormant arrangement record", () => {
+    // chat + assets shared one saved window; only chat registers here. The
+    // record carries the FULL saved panel set so the restore gesture can
+    // re-open the window as saved.
+    let source = defaultLayout([
+      { id: "chat", placement: { kind: "docked", zone: "right" } },
+      { id: "assets", placement: { kind: "docked", zone: "right" } },
+    ]);
+    source = applyOp(source, { op: "popOut", id: "chat", key: "w1", rect: { left: 40, top: 50, width: 600, height: 500 } });
+    source = applyOp(source, { op: "popOutInto", id: "assets", key: "w1" });
+
+    const l1 = placeNewRegistrations(
+      defaultLayout([]),
+      [{ id: "chat", placement: { kind: "docked", zone: "right" } }],
+      source,
+    );
+    expect(locate(l1, "chat").where).toBe("floating");
+    expect(l1.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 }, dormant: true },
+    ]);
+  });
+
+  it("leaves a same-keyed LIVE window record untouched when a late panel of that window registers", () => {
+    let source = defaultLayout([
+      { id: "chat", placement: { kind: "docked", zone: "right" } },
+      { id: "assets", placement: { kind: "docked", zone: "right" } },
+    ]);
+    source = applyOp(source, { op: "popOut", id: "chat", key: "w1", rect: { left: 40, top: 50, width: 600, height: 500 } });
+    source = applyOp(source, { op: "popOutInto", id: "assets", key: "w1" });
+
+    // The live tree: chat already re-opened w1 this session (live record,
+    // fresher rect). The late registration of assets must float assets
+    // WITHOUT reverting w1's record to the stale saved one.
+    let l = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: { left: 1, top: 1, width: 300, height: 200 } });
+    const l1 = placeNewRegistrations(l, [{ id: "assets", placement: { kind: "docked", zone: "right" } }], source);
+    expect(locate(l1, "assets").where).toBe("floating");
+    expect(l1.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat"], rect: { left: 1, top: 1, width: 300, height: 200 } },
+    ]);
+  });
+
   it("restores the persisted activeView when the layout started with none", () => {
     let source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "right" } }]);
     source = applyOp(source, { op: "dock", id: "chat", zone: "right", group: "new" });
@@ -752,7 +794,12 @@ describe("popOut / popIn", () => {
     source = applyOp(source, { op: "popOut", id: "assets", key: "w2", rect: null });
 
     const rehydrated = placeNewRegistrations(defaultLayout([]), [{ id: "chat" }, { id: "assets" }], source);
-    expect(rehydrated.expanded.popouts).toEqual([]);
+    // Each restored window's arrangement record is retained as dormant — see
+    // `placeFromPersistedLocation`'s popped-out branch.
+    expect(rehydrated.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat"], rect: null, dormant: true },
+      { key: "w2", panels: ["assets"], rect: null, dormant: true },
+    ]);
     const rects = rehydrated.expanded.floating;
     expect(rects).toHaveLength(2);
     const [a, b] = rects;

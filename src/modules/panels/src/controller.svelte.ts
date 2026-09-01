@@ -255,13 +255,22 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
       this.#layout = l;
       this.#persist(l);
     }
-    // The restore notice is keyed on dormant-PRESENCE after rehydration, not
-    // on conversion: a reload whose blob carried only dormant entries (a prior
-    // load already converted them) converts nothing — yet the arrangement is
-    // still restorable, so the "Reopen windows" affordance must still be
-    // offered. The action's behavior is wired host-side (see
+    // The restore notice is keyed on the SAVED arrangement, not on what this
+    // load converted: a reload whose blob carried only dormant entries (a
+    // prior load already converted them) converts nothing — yet the
+    // arrangement is still restorable, so the "Reopen windows" affordance
+    // must still be offered. The check reads BOTH the post-rehydration live
+    // tree and the retained pre-prune source: a panel that registers after
+    // this constructor runs is pruned out of the live tree's records by the
+    // boot registration trickle before `placeFromPersistedLocation` restores
+    // them, so the live tree alone can transiently hold NO record of an
+    // arrangement the user genuinely saved.
+    // The action's behavior is wired host-side (see
     // `PanelsNoticeAction`); the controller only declares it.
-    if (this.#layout.expanded.popouts.some((w) => w.dormant === true)) {
+    if (
+      this.#layout.expanded.popouts.some((w) => w.dormant === true) ||
+      (this.#persistedSource?.expanded.popouts.length ?? 0) > 0
+    ) {
       this.#pendingNotice = { key: "panels.popoutRestoredFloating", action: { labelKey: "panels.reopenWindows" } };
     }
   }
@@ -277,7 +286,10 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * already present at initial paint is silently swallowed by assistive
    * tech. No-op when nothing is queued (the common case: most mounts have no
    * persisted popout to rehydrate). Idempotent: a second call after the
-   * first is also a no-op, so a caller need not guard re-invocation.
+   * first is also a no-op, so a caller need not guard re-invocation — and a
+   * call that arrives while an action-carrying notice is still waiting on
+   * registrations (see the method body) leaves the notice queued, so the
+   * host re-invokes this on every registration change.
    * @example
    * ```ts
    * import { PanelsController } from "@shadowcat/module-panels";
@@ -290,8 +302,17 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * ```
    */
   flushPendingNotice(): void {
-    if (this.#pendingNotice === null) return;
     const notice = this.#pendingNotice;
+    if (notice === null) return;
+    // An action-carrying notice is withheld until its gesture can actually do
+    // something: panel registrations trickle in after this controller's
+    // construction (every panel module `requires` the panels contract, so the
+    // panels module activates first), and at first flush no saved window may
+    // have a registered panel yet. The host re-calls this on every
+    // registration change; the notice stays queued until a window becomes
+    // restorable — or forever, when its module is gone entirely (no toast is
+    // better than a toast whose button restores nothing).
+    if (notice.action && this.restorablePopouts().length === 0) return;
     this.#pendingNotice = null;
     this.#deps.onNotice?.(notice.key, notice.action);
   }
@@ -303,10 +324,13 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * during the boot registration trickle, while the source record keeps the
    * full panel set the user actually saved (a late-registering panel restores
    * with its window instead of being silently dropped from the arrangement).
-   * Entries naming panels that never registered are tolerated engine-side
-   * (skipped at restore time). Empty when there is no persisted source (a
-   * fresh or reset layout — which then also has no dormant entries, so no
-   * restore notice is ever queued in that state).
+   * Windows whose ENTIRE panel set is unregistered for this session (module
+   * uninstalled, role-filtered) are excluded — a restore gesture could
+   * re-open nothing from them; partially-absent windows are returned whole,
+   * with the absent panels tolerated (skipped) engine-side at restore time.
+   * Empty when there is no persisted source (a fresh or reset layout — which
+   * then also has no dormant entries, so no restore notice is ever queued in
+   * that state) or when nothing saved is restorable.
    * @returns The saved pop-out window records, with original keys, full panel
    * sets, and last-known rects.
    * @example
@@ -320,7 +344,15 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
    * ```
    */
   restorablePopouts(): readonly PopoutWindowLayout[] {
-    return this.#persistedSource?.expanded.popouts ?? [];
+    const saved = this.#persistedSource?.expanded.popouts ?? [];
+    if (saved.length === 0) return [];
+    // A window with no currently-registered panel offers nothing the restore
+    // gesture could re-open (its module was uninstalled, or it is filtered
+    // for this role) — the engine tolerates partial panel sets within a
+    // window, but a wholly-absent window would make the restore action a
+    // no-op the user can click.
+    const known = new Set(this.visibleRegs.map((c) => c.id));
+    return saved.filter((w) => w.panels.some((p) => known.has(p)));
   }
 
   /** The current `PanelLayoutV1` tree — `$state`, so a reactive reader

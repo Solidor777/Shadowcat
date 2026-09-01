@@ -182,9 +182,9 @@ verbatim directive paragraph + the report-delivery requirement.
 - Test: `src/client/shell/e2e/panels-floating.spec.ts` (or extend `panels.spec.ts` if it fits
   the file's scope better)
 
-- [ ] Keyboard: float a panel (via PanelMenu), focus the floating dialog, Ctrl+Arrow → assert
+- [x] Keyboard: float a panel (via PanelMenu), focus the floating dialog, Ctrl+Arrow → assert
   the ui-state PUT payload's layout carries the resized rect; reload → size survives.
-- [ ] Arrangement: pop out a panel (real popup via `context.waitForEvent('page')`), resize/move
+- [x] Arrangement: pop out a panel (real popup via `context.waitForEvent('page')`), resize/move
   the popup, close the popup or reload → assert the persisted `popouts` carries the rect;
   reload → floating rehydrate notice shows the Reopen action → click → new popup at the saved
   rect with the same panel set.

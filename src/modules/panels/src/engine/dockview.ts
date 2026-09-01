@@ -1831,6 +1831,17 @@ export class DockviewEngine implements EngineAdapter {
             // relocate the real stage panel into a zone group.
             if (tabId === STAGE_ID) return;
             seenPanelIds.add(tabId);
+            // A panel whose pop-out gesture is IN FLIGHT (`#pendingPopouts`)
+            // has already left its docked group in dockview's model while the
+            // tree this `apply()` reconciles still lists it here — the
+            // `popOut` op lands only after the driver's async open resolves
+            // (e.g. the zone-shrinking `resizeZone` op the move triggers
+            // reconciles the pre-popOut tree). Relocating the widget back
+            // would yank the panel out of its new popout window — and throw
+            // on the hidden origin group, which dockview's `addPanel` cannot
+            // address as a `referenceGroup`. Skip it; the imminent op's own
+            // `apply()` reconciles.
+            if (this.#pendingPopouts.has(tabId)) return;
             const existing = api.getPanel(tabId);
             if (!existing) {
               api.addPanel({
@@ -1862,6 +1873,10 @@ export class DockviewEngine implements EngineAdapter {
 
       for (const f of expanded.floating) {
         seenPanelIds.add(f.id);
+        // Same in-flight pop-out gap as the zone loop above: the tree still
+        // lists the panel floating while dockview has already moved it into
+        // the popout window — reconciling would drag it back out.
+        if (this.#pendingPopouts.has(f.id)) continue;
         const existing = api.getPanel(f.id);
         // A panel already present but NOT in a floating group is transitioning
         // INTO floating (e.g. the menu's "Float" command on a docked tab) —

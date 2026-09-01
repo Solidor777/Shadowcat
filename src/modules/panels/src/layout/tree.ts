@@ -936,7 +936,27 @@ function placeFromPersistedLocation(l: PanelLayoutV1, id: string, source: PanelL
       const rect: Rect = { x: SHEET_CASCADE_BASE.x + off, y: SHEET_CASCADE_BASE.y + off, w: SHEET_CASCADE_BASE.w, h: SHEET_CASCADE_BASE.h };
       const maxZ = l.expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
       const floating = compactZ([...l.expanded.floating, { id, rect, z: maxZ + 1 }]);
-      return { ...l, expanded: { ...l.expanded, floating } };
+      // The window's arrangement record comes back too: decode-time and
+      // `syncRegistrations` pruning drop a not-yet-registered panel from
+      // `popouts` during the boot registration trickle, and without this
+      // repair the next persist of the pruned tree would erase the saved
+      // window's grouping/rect for good. The SOURCE's record is the truth —
+      // it keeps the full panel set even when some panels have not registered
+      // yet (a same-keyed dormant entry left by an earlier panel's placement
+      // is refreshed back to it). A same-keyed LIVE entry is never touched:
+      // the user already re-opened that window this session, and the record
+      // would clobber its live panel set.
+      const win = source.expanded.popouts.find((w) => w.panels.includes(id));
+      if (!win) return { ...l, expanded: { ...l.expanded, floating } };
+      const existing = l.expanded.popouts.find((w) => w.key === win.key);
+      if (existing && existing.dormant !== true) {
+        return { ...l, expanded: { ...l.expanded, floating } };
+      }
+      const record: PopoutWindowLayout = { ...win, panels: [...win.panels], rect: win.rect ? { ...win.rect } : null, dormant: true };
+      const popouts = existing
+        ? l.expanded.popouts.map((w) => (w.key === win.key ? record : w))
+        : [...l.expanded.popouts, record];
+      return { ...l, expanded: { ...l.expanded, floating, popouts } };
     }
 
     case "closed":
