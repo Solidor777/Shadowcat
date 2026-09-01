@@ -1,7 +1,8 @@
 // Pure chat view model: which channel/GM view is active, filtering, sort, post
 // target derivation. No Svelte/store dependency — ChatPanel wires this to reactive
-// queries. `channel` is a purely client-side display label; the server enforces
-// only `audience`, never `channel` (`build_message_doc`). "All" and per-channel
+// queries. The server validates `channel` at ingest against the world's channel
+// registry (`handle_send_message` refuses an unregistered channel), and enforces
+// `audience` — never using `channel` to gate visibility. "All" and per-channel
 // views both read every message already present in this client's store
 // regardless of audience; the GM view further filters on
 // `audience.kind === "gm_only"`. This filtering is NOT a secrecy boundary — a
@@ -27,24 +28,33 @@ export type ChatView =
  * view posts to that channel as `public`; the GM view posts to the default
  * channel as `gm_only` (the server's `PermissionSet` mapping is what makes it
  * GM-only, not this label — see the module header); "All" posts to the
- * default channel as `public`, same as a plain channel post.
+ * default channel as `public`, same as a plain channel post. The default
+ * channel is the registry's lowest-sorted id — the server validates every
+ * send's channel against registry membership, and the seeded default is
+ * `general`; the `general` fallback only covers a registry doc that has not arrived yet
+ * (mid-join, before the server's seed lands).
  * @param view The chat view currently active in the panel.
+ * @param channels The registry's channel ids, sorted.
  * @returns The channel name and audience a send from `view` should carry.
  * @example
  * ```
  * // private module; not reachable as a workspace import — call shape:
- * postTarget({ kind: "gm" }); // → { channel: "general", audience: { kind: "gm_only" } }
+ * postTarget({ kind: "gm" }, ["general"]); // → { channel: "general", audience: { kind: "gm_only" } }
  * ```
  */
-export function postTarget(view: ChatView): {
+export function postTarget(
+  view: ChatView,
+  channels: readonly string[],
+): {
   /** The channel a send from `view` should carry. */
   channel: string;
   /** The audience a send from `view` should carry. */
   audience: WireAudience;
 } {
+  const fallback = channels[0] ?? "general";
   if (view.kind === "channel") return { channel: view.id, audience: { kind: "public" } };
-  if (view.kind === "gm") return { channel: "general", audience: { kind: "gm_only" } };
-  return { channel: "general", audience: { kind: "public" } };
+  if (view.kind === "gm") return { channel: fallback, audience: { kind: "gm_only" } };
+  return { channel: fallback, audience: { kind: "public" } };
 }
 
 /**

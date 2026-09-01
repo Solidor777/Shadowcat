@@ -146,7 +146,7 @@ async fn send_message_is_broadcast_as_message_document_event() {
         serde_json::json!({
             "type": "send_message",
             "request_id": Uuid::new_v4(),
-            "channel": "all",
+            "channel": "general",
             "content": "hello",
             "actor_owner": null,
         })
@@ -159,7 +159,7 @@ async fn send_message_is_broadcast_as_message_document_event() {
     let op = &evt["command"]["ops"][0];
     assert_eq!(op["op"], "create");
     assert_eq!(op["doc"]["doc_type"], "message");
-    assert_eq!(op["doc"]["engine"]["channel"], "all");
+    assert_eq!(op["doc"]["engine"]["channel"], "general");
     assert_eq!(
         op["doc"]["engine"]["content"][0]["kind"], "text",
         "content segment is the plain-text producer's Segment::Text"
@@ -188,7 +188,7 @@ async fn rejected_send_returns_a_correlated_chat_error_to_the_sender() {
         serde_json::json!({
             "type": "send_message",
             "request_id": request_id,
-            "channel": "all",
+            "channel": "general",
             "content": "   ", // whitespace-only -> SendMessageError::Empty
             "actor_owner": null,
         })

@@ -6,6 +6,7 @@ import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
 import { PanelsBridge } from "../panelsBridge.svelte";
 import { SceneSelection } from "../sceneSelection.svelte";
+import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
 
 /**
@@ -79,6 +80,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),
     speakAsToken: over.speakAsToken ?? new SpeakAsToken(),
+    speakAs: over.speakAs ?? new SpeakAs(),
     templates: over.templates ?? {
       stampInstance: (s) => s,
       pull: () => {},

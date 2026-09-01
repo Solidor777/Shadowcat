@@ -300,7 +300,12 @@ pub enum ClientMsg {
 pub struct CombatRollEntry {
     /// The combatant to roll initiative for.
     pub combatant_id: Uuid,
-    /// Dice notation for the roll (e.g. `1d20+3`).
+    /// Dice notation for the roll (e.g. `1d20+3`), sent as a RAW template:
+    /// dotted references (`1d20 + init`) resolve SERVER-side against this
+    /// combatant's formula host (its token-embedded actor copy, else its
+    /// linked actor) at execution — never pre-substituted by the client.
+    /// Pre-substituted literals like `1d20 + 3[init]` remain valid (a
+    /// labeled constant is already plain notation).
     pub notation: String,
 }
 

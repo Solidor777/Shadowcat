@@ -182,6 +182,14 @@
     const sys = registry.engine as ChannelRegistryEngine;
     const cur = sys.channels[id];
     if (!cur) return;
+    // The registry must never be emptied: message ingest validates channel
+    // membership, so an empty registry wedges all chat (the server's own
+    // `ChannelRegistryEngine::validate` would refuse the write anyway — this
+    // client error is the kinder one).
+    if (Object.keys(sys.channels).length <= 1) {
+      ctx.notify(t("chat.channels.lastChannel"), "warning");
+      return;
+    }
     if (view.kind === "channel" && view.id === id) view = { kind: "all" };
     // Whole-field replace (FactionsPanel idiom, see FactionsPanel's
     // own `remove`): `set_pointer` cannot delete an object key (it only ever
@@ -457,7 +465,8 @@
   <div class="composer-slot">
     {#if composerComp}
       {@const Composer = composerComp}
-      <Composer {...postTarget(view)} placeholderName={channelDisplayName(postTarget(view).channel)} />
+      {@const target = postTarget(view, channelEntries.map(([id]) => id).sort())}
+      <Composer {...target} placeholderName={channelDisplayName(target.channel)} />
     {/if}
   </div>
 </section>

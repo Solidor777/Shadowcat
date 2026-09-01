@@ -2,7 +2,7 @@
   import type { AssetChangedNotice } from "@shadowcat/core";
   import { AssetResolver, silentLogger, EMPTY_FOOTPRINTS } from "@shadowcat/core";
   import { setAppContext } from "@shadowcat/ui-kit";
-  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge, SceneSelection, SpeakAsToken } from "@shadowcat/ui-kit";
+  import { SceneInteractionBridge, ActorSelection, TokenSelection, PanelsBridge, SceneSelection, SpeakAs, SpeakAsToken } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import Assets from "../Assets.svelte";
 
@@ -62,6 +62,7 @@
     searchDocuments: () => Promise.reject(new Error("not connected")),
     sceneSelection: new SceneSelection(),
     speakAsToken: new SpeakAsToken(),
+    speakAs: new SpeakAs(),
     footprints: EMPTY_FOOTPRINTS,
     templates: {
       stampInstance: (s) => s,

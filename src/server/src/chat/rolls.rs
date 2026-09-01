@@ -1,12 +1,20 @@
 //! Roll execution core: the ONLY untrusted-notation execution path in chat.
 //!
 //! `execute_roll`/`validate_formula` are the sole entry points from the chat
-//! ingest stage: parse the caller-supplied formula against the dice crate's
-//! `notation::parse`, enforce the wire-boundary caps below (`MAX_ROLL_DICE`,
+//! ingest stage. The caller's formula may be a TEMPLATE carrying dotted
+//! references (`1d20 + str`): the first step rewrites it through
+//! `crate::formula::resolve_notation_template`, resolving each reference
+//! against the roll's host document (the bound actor's `system` band, or the
+//! no-host resolver when nothing is bound — a referencing roll then fails
+//! `unknown-ref`), so the server — not the sending client — decides what a
+//! reference read. The substituted notation then parses against the dice
+//! crate's `notation::parse`, enforces the wire-boundary caps below
+//! (`MAX_ROLL_DICE`,
 //! `MAX_ROLL_RECORDS`, `MAX_EXPERTISE`, `MAX_DIE_SIDES` — the dice crate's own
 //! types stay unbounded, so an untrusted formula has no size limit until it
-//! crosses this boundary), then roll/evaluate. The dice crate itself stays
-//! pure — it has no notion of these caps, entropy seeding, or chat settings;
+//! crosses this boundary), then rolls/evaluates. The dice crate itself stays
+//! pure — it has no notion of these caps, reference resolution, entropy
+//! seeding, or chat settings;
 //! those are transport policy that belongs here, not in `dice/`.
 //!
 //! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
@@ -19,11 +27,13 @@
 use uuid::Uuid;
 
 use super::DocLinkTarget;
+use crate::data::document::Document;
 use crate::dice::notation::{self, ParseContext, ParseError};
 use crate::dice::outcome::RollOutcome;
 use crate::dice::rng::NoiseRng;
 use crate::dice::spec::{DiceGroup, DieKind, Expr, Mode, RollSpec};
 use crate::dice::{eval, roll};
+use crate::formula::resolver::{NoHostResolver, SystemLeafResolver};
 
 /// Sum of `DiceGroup.count` across one parsed `Expr` — rejects the unbounded-
 /// `count` DoS/overflow class at the source, before any die is ever rolled.
@@ -258,6 +268,10 @@ pub enum RollError {
     /// A `[[doc:...]]`/`[[token:...]]` span recognized by its prefix but malformed: an
     /// unparseable id, or a missing/empty `|<label>` suffix.
     MalformedDocLink,
+    /// A template reference could not be resolved — an unknown path, a
+    /// non-integer value, or a scan error from the template grammar itself.
+    /// Carries the formula engine's error; its `detail` is player-presentable.
+    Reference(crate::formula::FormulaError),
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -301,6 +315,7 @@ impl std::fmt::Display for RollError {
             RollError::MalformedDocLink => {
                 write!(f, "that document/token link is malformed")
             }
+            RollError::Reference(e) => write!(f, "{}", e.detail),
         }
     }
 }
@@ -396,11 +411,31 @@ fn validate_tiers(tiers: &[crate::dice::spec::Tier]) -> Result<(), RollError> {
     Ok(())
 }
 
+/// Rewrites a roll template's references against `host` — the bound actor's
+/// `system` band via `SystemLeafResolver`, or every-reference-unknown via
+/// `NoHostResolver` when nothing is bound. A template with no references
+/// passes through byte-identically.
+fn resolve_roll_notation(formula: &str, host: Option<&Document>) -> Result<String, RollError> {
+    let notation = match host {
+        Some(doc) => {
+            crate::formula::resolve_notation_template(formula, &SystemLeafResolver::new(doc))
+        }
+        None => crate::formula::resolve_notation_template(formula, &NoHostResolver),
+    };
+    notation.map_err(RollError::Reference)
+}
+
 /// Parse a formula and run every pre-roll cap check WITHOUT rolling — used to
 /// validate a `[[roll:...]]` button at ingest so a stored button is never
-/// broken.
+/// structurally broken. A button is a template by nature — its references are
+/// per-clicker — so validation substitutes a placeholder zero for every
+/// identifier (a substituted reference is always a labeled constant factor,
+/// never a dice count, so the placeholder cannot change the shape being
+/// checked); value-dependent failures surface per clicker at click time.
 pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), RollError> {
-    let spec = notation::parse(formula, ctx).map_err(RollError::Parse)?;
+    let notation = crate::formula::resolve_notation_template(formula, &|_: &[String]| Ok(0.0))
+        .map_err(RollError::Reference)?;
+    let spec = notation::parse(&notation, ctx).map_err(RollError::Parse)?;
     validate_pre_roll(&spec)
 }
 
@@ -412,9 +447,11 @@ pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), R
 pub(crate) fn execute_roll_with_seed(
     formula: &str,
     ctx: ParseContext,
+    host: Option<&Document>,
     seed: u64,
 ) -> Result<(String, RollOutcome, RollSpec, crate::dice::RawRoll), RollError> {
-    let spec = notation::parse(formula, ctx).map_err(RollError::Parse)?;
+    let notation = resolve_roll_notation(formula, host)?;
+    let spec = notation::parse(&notation, ctx).map_err(RollError::Parse)?;
     validate_pre_roll(&spec)?;
     let mut rng = NoiseRng::from_seed(seed);
     let raws = roll(&spec, &mut rng);
@@ -425,18 +462,24 @@ pub(crate) fn execute_roll_with_seed(
     Ok((formula.to_owned(), outcome, spec, raws))
 }
 
-/// Parse -> cap-validate -> roll -> evaluate. The ONLY untrusted-notation
+/// Resolve references -> parse -> cap-validate -> roll -> evaluate. The ONLY
+/// untrusted-notation
 /// execution path in chat. Seeds from `entropy_seed()` -- fresh OS entropy
-/// per call, never a caller-supplied or persisted seed.
+/// per call, never a caller-supplied or persisted seed. `host` is the roll's
+/// actor binding (see the module doc): `None` resolves every reference as
+/// unknown.
 ///
 /// Also returns the parsed `RollSpec` and rolled `RawRoll` alongside the
 /// formula/outcome, so a caller can persist them onto `Segment::RollEmbed`
-/// for a later GM recalculation.
+/// for a later GM recalculation. The returned formula string is the author's
+/// ORIGINAL template text, not the substituted notation — the embed shows
+/// what was asked and the breakdown chips show what each reference read.
 pub(crate) fn execute_roll(
     formula: &str,
     ctx: ParseContext,
+    host: Option<&Document>,
 ) -> Result<(String, RollOutcome, RollSpec, crate::dice::RawRoll), RollError> {
-    execute_roll_with_seed(formula, ctx, entropy_seed())
+    execute_roll_with_seed(formula, ctx, host, entropy_seed())
 }
 
 #[cfg(test)]

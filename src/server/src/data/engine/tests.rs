@@ -174,7 +174,30 @@ fn dice_settings_minimal_body_is_valid() {
 
 #[test]
 fn channel_registry_minimal_body_is_valid() {
-    assert!(validate_engine("channel-registry", Some(&json!({ "channels": {} }))).is_ok());
+    // The smallest body `ChannelRegistryEngine::validate` admits: one channel.
+    let v = json!({ "channels": { "general": { "name": "General" } } });
+    assert!(validate_engine("channel-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn channel_registry_rejects_an_empty_channels_map_but_the_seed_validates() {
+    // An empty registry wedges all chat (message ingest validates
+    // `MessageEngine.channel` against membership), so it is refused.
+    assert!(validate_engine("channel-registry", Some(&json!({ "channels": {} }))).is_err());
+    assert!(crate::data::engine::ChannelRegistryEngine::seed()
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn channel_registry_rejects_an_empty_name_and_an_overlong_key() {
+    let empty_name = json!({ "channels": { "general": { "name": "  " } } });
+    assert!(validate_engine("channel-registry", Some(&empty_name)).is_err());
+    // A key one past the cap could never be posted to (the ingest cap would
+    // refuse the channel string first), so it is rejected here.
+    let long_key: String = "x".repeat(crate::data::engine::MAX_CHANNEL_CHARS + 1);
+    let overlong = json!({ "channels": { long_key: { "name": "X" } } });
+    assert!(validate_engine("channel-registry", Some(&overlong)).is_err());
 }
 
 #[test]

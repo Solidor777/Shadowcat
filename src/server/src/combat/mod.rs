@@ -86,6 +86,11 @@ pub enum CombatError {
     /// the caller doesn't already know.
     #[error("duplicate combatant in rolls")]
     DuplicateRoll,
+    /// `CombatRoll` named a channel that is not in the world's channel
+    /// registry. Distinct wording is safe, same as `DuplicateRoll`: the
+    /// caller supplied the channel and the registry's keys are member-visible.
+    #[error("unknown channel")]
+    UnknownChannel,
     /// The caller's per-minute combat-intent flood budget is exhausted.
     /// Distinct wording (never leaks combat/hidden state, same class as
     /// `SendMessageError::RateLimited`).
@@ -412,11 +417,26 @@ async fn build_ops(
                     return Err(CombatError::DuplicateRoll);
                 }
             }
+            // The channel the results post to (and whose dice context they
+            // resolve under) must be a registered channel of this world.
+            if !crate::chat::channel_registered(repo, room.world_id, &channel).await? {
+                return Err(CombatError::UnknownChannel);
+            }
             let dice_ctx = crate::chat::resolve_dice_context(repo, room.world_id, &channel).await;
             let mut posts = Vec::with_capacity(rolls.len());
             for entry in &rolls {
+                // Each entry's references resolve against ITS combatant's
+                // formula host — the token-embedded copy or the linked actor,
+                // the one precedence rule `eval::formula_host` declares. A
+                // combatant with no host resolves every reference as unknown
+                // and the intent refuses with the roll error.
+                let host = snap
+                    .combatants
+                    .iter()
+                    .find(|c| c.doc.id == entry.combatant_id)
+                    .and_then(|c| eval::formula_host(&snap.hosts, &c.engine.kind));
                 let (formula, outcome, spec, raw) =
-                    crate::chat::rolls::execute_roll(&entry.notation, dice_ctx)?;
+                    crate::chat::rolls::execute_roll(&entry.notation, dice_ctx, host)?;
                 posts.push((
                     entry.combatant_id,
                     RollPost {
