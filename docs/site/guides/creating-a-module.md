@@ -66,6 +66,12 @@ Field by field:
 - **`entry`** *(optional, default `"index.js"`)* — overrides the built entry file
   name the server serves at `/modules/<folder-id>/<entry>`. Only declare it when
   your build emits something other than `index.js`.
+- **`style`** *(optional)* — a single CSS file relative to your install folder
+  (conventionally `"style.css"`). The server serves it from the module's static
+  route and each client injects it as a `<link>` while your module is active,
+  removing it again when the module is disabled or the world is left. Declare
+  it whenever your build emits a stylesheet — an undeclared stylesheet is never
+  loaded. See [Styling and theming](#styling-and-theming).
 
 ## The build
 
@@ -121,6 +127,32 @@ by convention to avoid colliding with another module's or the host's own keys (t
 is a convention, not an enforced uniqueness constraint). A key with no registered
 message renders as its literal string.
 
+## Styling and theming
+
+The host UI is themed by CSS custom properties ("tokens") on the document root.
+Users pick among built-in themes and can author their own, so **your module must
+not hardcode colors** — a hex literal that looks right today goes dark-on-dark
+under a different theme.
+
+- **Consume the semantic tokens.** Reference the host's tier-2 tokens with plain
+  `var(--*)` in your component styles: `--surface-base` / `--surface-raised` /
+  `--surface-overlay` (backgrounds), `--text-primary` / `--text-muted`,
+  `--accent` / `--accent-hover` / `--accent-active` / `--on-accent`, `--border`,
+  `--danger` / `--on-danger`, `--success`, `--warning`, plus the spacing
+  (`--space-*`), radius (`--radius-*`), and font-size (`--font-size-*`) scales.
+  Your components then follow every built-in and user theme for free — including
+  inside popped-out panel windows, which the host re-themes automatically.
+- **Declare your stylesheet.** Svelte scoped `<style>` blocks compile to a CSS
+  file your build emits separately from `index.js`; the host only loads it when
+  the manifest's `style` field names it (see [The manifest](#the-manifest)).
+  Pin the emitted name in your `vite.config.ts` (`build.lib.cssFileName`) so the
+  manifest value is stable.
+- **Opt out only deliberately.** A contribution may set `styling: "isolated"`
+  to render inside the theme-isolation class, which re-declares every token at
+  its engine-default value for that subtree — your module then re-implements
+  surface/text/accent itself and ignores the user's theme entirely. The default
+  (`"host"`) is what modules should almost always choose.
+
 ## Reading documents
 
 Inside a contributed component, `getAppContext()` hands you the world session:
@@ -162,13 +194,14 @@ Three things this snippet does right — copy all three:
 
 ## Install, enable, dev loop
 
-**Install** (production): build, then copy `dist/index.js` + `module.json` into
-the server's modules folder —
+**Install** (production): build, then copy `dist/index.js` + `module.json` (plus
+your stylesheet if the manifest declares one) into the server's modules folder —
 
 ```
 <data-dir>/modules/<folder-id>/
 ├── module.json
-└── index.js
+├── index.js
+└── style.css   (when `"style"` is declared)
 ```
 
 **Enable**: log in as GM → Settings → Installed modules → toggle your module on

@@ -138,6 +138,10 @@ export interface ModuleManifest {
   /** Engine-compat range; optional because first-party modules never set it (see `ModuleEngines`
    * doc) while community modules must. */
   engines?: ModuleEngines;
+  /** The module's stylesheet: a single CSS file relative to the module's install folder
+   * (conventionally `"style.css"`), served from the module's static route and injected as a
+   * `<link>` while the module is active. Absent means the module ships no styles. */
+  style?: string;
 }
 
 const HookKindSchema = z.enum(["info", "mutate", "cancel"]);
@@ -176,6 +180,16 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
     )
     .optional(),
   engines: ModuleEnginesSchema.optional(),
+  // A bare relative `.css` path: no leading slash and no `..` segment. The
+  // server's module static route re-guards traversal at serve time; this
+  // refinement is authoring feedback, not the security boundary.
+  style: z
+    .string()
+    .min(1)
+    .refine((s) => !s.startsWith("/") && !s.split("/").includes("..") && s.endsWith(".css"), {
+      message: "style must be a relative .css path within the module folder",
+    })
+    .optional(),
 });
 
 /** Validates and parses an unknown value as a `ModuleManifest`; throws a Zod

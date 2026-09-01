@@ -1408,3 +1408,73 @@ test("a snapshot-fetch failure does not throw out of enter() and does not preven
   await expect(session.enter("w1")).resolves.toBeUndefined();
   expect(connectCalled).toBe(true);
 });
+
+// An external module's declared stylesheet (`ModuleManifest.style`) follows
+// the module's load lifecycle: injected as a <link> when the module loads,
+// removed when it unloads or the session leaves the world.
+const styledModuleManifest = {
+  id: "mod-one",
+  version: "1.0.0",
+  dependencies: {},
+  style: "style.css",
+};
+
+async function enterWithStyledModule(): Promise<WorldSession> {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+    },
+  ]);
+  const externalModule: Module = {
+    manifest: { ...styledModuleManifest },
+    register: vi.fn(),
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    importModule: vi.fn().mockResolvedValue(externalModule),
+  });
+  await session.enter("w1");
+  await vi.waitFor(() =>
+    expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeTruthy(),
+  );
+  return session;
+}
+
+test("a loaded external module's declared stylesheet is injected, resolved inside its served folder", async () => {
+  const session = await enterWithStyledModule();
+  const link = document.querySelector<HTMLLinkElement>(
+    'link[data-shadowcat-module-style="mod-one"]',
+  )!;
+  expect(link.rel).toBe("stylesheet");
+  expect(link.getAttribute("href")).toBe("/modules/folder-one/style.css");
+  session.leave();
+});
+
+test("leaving the world removes every injected module stylesheet", async () => {
+  const session = await enterWithStyledModule();
+  session.leave();
+  expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+});
+
+test("a reconcile unload removes the module's stylesheet", async () => {
+  const session = await enterWithStyledModule();
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue([]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+    },
+  ]);
+  await session.reconcileInstalledModules();
+  expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+  session.leave();
+});
