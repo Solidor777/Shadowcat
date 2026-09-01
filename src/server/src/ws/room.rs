@@ -1602,6 +1602,7 @@ impl RoomRegistry {
                     "system-defaults",
                     "resource-registry",
                     "combat",
+                    "faction-registry",
                 ],
             )
             .await?;
@@ -1622,6 +1623,10 @@ impl RoomRegistry {
             .iter()
             .find(|d| d.doc_type == "resource-registry")
             .cloned();
+        let faction_registry = docs
+            .iter()
+            .find(|d| d.doc_type == "faction-registry")
+            .cloned();
         let actors: Vec<Document> = docs
             .iter()
             .filter(|d| d.doc_type == "actor")
@@ -1637,6 +1642,7 @@ impl RoomRegistry {
             vision_modes,
             system_defaults,
             resource_registry,
+            faction_registry,
         );
         scene_ecs.set_actors(actors);
         scene_ecs.set_combats(combats);

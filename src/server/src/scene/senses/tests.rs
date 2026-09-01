@@ -419,7 +419,7 @@ fn a_requires_los_creature_sense_is_wall_bounded() {
         vec![doc(SCENE, None, "scene"), source, open, behind, wall],
         0,
     );
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     assert_eq!(
         perceived(&ecs, Uuid::from_u128(USER)),
         vec![Uuid::from_u128(12)],

@@ -510,7 +510,7 @@ fn resolvers_layer_world_then_scene_and_fail_closed() {
             json!({ "color": "#0a0e1a", "intensity": 0.25 }),
         ),
     ]));
-    ecs.set_world_config(Some(ws), None, None, None, None);
+    ecs.set_world_config(Some(ws), None, None, None, None, None);
     let r1 = ecs.resolve_scene(scene_id);
     assert!(!r1.lighting_enabled);
     assert!(matches!(r1.light_mode, LightMode::GlobalIllumination));
@@ -545,7 +545,7 @@ fn vision_modes_doc_is_respected_not_reseeded() {
         "id": "blindsight", "name": "Blindsight",
         "illuminationFloor": "dark", "defaultRange": 4
     } } }));
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     let modes = ecs.resolved_vision_modes();
     assert!(modes.contains_key("blindsight"));
     assert!(
@@ -969,7 +969,7 @@ fn config_singleton_mirror_honors_a_remove_change() {
     };
 
     let mut ecs = SceneEcs::new();
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     ecs.apply_op(&Operation::Update {
         doc_id: vm_id,
         changes: vec![change],
@@ -2188,7 +2188,7 @@ fn config_and_actor_side_tables_track_ops() {
     // Seed via setters (the room-hydration path).
     let mut ws = doc(100, None, "world-settings");
     ws.system = json!({ "scene": { "lightingEnabled": false } });
-    ecs.set_world_config(Some(ws), None, None, None, None);
+    ecs.set_world_config(Some(ws), None, None, None, None, None);
     ecs.set_actors(vec![entity_doc_top_eng(
         200,
         "actor",
@@ -2253,7 +2253,7 @@ fn vision_modes_carry_render_hint() {
                        "illuminationFloor": "dim",  "defaultRange": 0 }
     }}));
     let mut ecs = SceneEcs::new();
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     let m = ecs.resolved_vision_modes();
     assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
     assert_eq!(m["plain"].render_hint, None);

@@ -14,6 +14,7 @@ pub mod lighting;
 pub(crate) mod move_exec;
 pub(crate) mod move_stream;
 pub mod movement;
+pub(crate) mod movement_tags;
 pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
 pub(crate) mod regions;
@@ -397,6 +398,10 @@ pub struct SceneEcs {
     /// The `resource-registry` singleton, or `None` (the world defines no
     /// turn resources; the movement-budget gate then resolves no binding).
     resource_registry: Option<Document>,
+    /// The `faction-registry` singleton, or `None` (the world has authored none — the
+    /// faction union in `movement_tags::SceneEcs::token_movement_tags` then contributes no
+    /// tags, fail-closed). Not a scene entity; maintained like the other config singletons.
+    faction_registry: Option<Document>,
     /// The `light-gradation` singleton config-doc, or `None` (built-in bands).
     gradation: Option<Document>,
     /// The `vision-modes` singleton config-doc, or `None` (seed modes).
@@ -650,6 +655,7 @@ impl SceneEcs {
             world_settings: None,
             system_defaults: None,
             resource_registry: None,
+            faction_registry: None,
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
@@ -728,12 +734,14 @@ impl SceneEcs {
         vision_modes: Option<Document>,
         system_defaults: Option<Document>,
         resource_registry: Option<Document>,
+        faction_registry: Option<Document>,
     ) {
         self.world_settings = world_settings;
         self.gradation = gradation;
         self.vision_modes = vision_modes;
         self.system_defaults = system_defaults;
         self.resource_registry = resource_registry;
+        self.faction_registry = faction_registry;
     }
 
     /// Seed the actor table (room-hydration path). Keyed by actor doc id.
@@ -778,6 +786,13 @@ impl SceneEcs {
         let doc = self.resource_registry.as_ref()?;
         self.engine_as_cached::<eng::ResourceRegistryEngine>(doc.id, doc)
     }
+    /// The `faction-registry` singleton's parsed engine, or `None` (absent, or a malformed
+    /// body — fail closed to "no factions", the same posture `resource_registry_engine`
+    /// takes). `movement_tags::SceneEcs::token_movement_tags` is the consumer.
+    pub fn faction_registry_engine(&self) -> Option<eng::FactionRegistryEngine> {
+        let doc = self.faction_registry.as_ref()?;
+        self.engine_as_cached::<eng::FactionRegistryEngine>(doc.id, doc)
+    }
     /// The `vision-modes` singleton, or `None` (seed modes apply).
     pub fn vision_modes_doc(&self) -> Option<&Document> {
         self.vision_modes.as_ref()
@@ -788,8 +803,8 @@ impl SceneEcs {
     }
 
     /// Mirror a config/actor field Update into the side tables (see `reapply_changes`).
-    /// Takes `&mut Option<Document>` (not `&mut self`) so the three call sites can borrow the
-    /// three distinct singleton fields independently without conflicting on `self`.
+    /// Takes `&mut Option<Document>` (not `&mut self`) so the call sites can borrow the
+    /// distinct singleton fields independently without conflicting on `self`.
     fn apply_config_update(
         slot: &mut Option<Document>,
         doc_id: Uuid,
@@ -861,6 +876,7 @@ impl SceneEcs {
                 Self::apply_config_update(&mut self.gradation, *doc_id, changes);
                 Self::apply_config_update(&mut self.vision_modes, *doc_id, changes);
                 Self::apply_config_update(&mut self.resource_registry, *doc_id, changes);
+                Self::apply_config_update(&mut self.faction_registry, *doc_id, changes);
                 if let Some(a) = self.actors.get_mut(doc_id) {
                     // Same store-equal mutation rule: an actor's `/owner` is an authz
                     // input for every token linked to it, so a forked `remove` here
@@ -897,6 +913,11 @@ impl SceneEcs {
                     {
                         self.resource_registry = None;
                     }
+                    "faction-registry"
+                        if self.faction_registry.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.faction_registry = None;
+                    }
                     "actor" => {
                         self.actors.remove(&doc.id);
                     }
@@ -913,6 +934,7 @@ impl SceneEcs {
                     "light-gradation" => self.gradation = Some(doc.clone()),
                     "vision-modes" => self.vision_modes = Some(doc.clone()),
                     "resource-registry" => self.resource_registry = Some(doc.clone()),
+                    "faction-registry" => self.faction_registry = Some(doc.clone()),
                     "actor" => {
                         self.actors.insert(doc.id, doc.clone());
                     }
