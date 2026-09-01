@@ -82,7 +82,11 @@ const CELL: f64 = 100.0;
 
 /// The token ids `user` perceives in the fixture's one scene.
 fn perceived(ecs: &SceneEcs, user: Uuid) -> Vec<Uuid> {
-    let out = ecs.player_perceived_tokens(&player_ctx(user), &no_grants());
+    // The disjointness input is the caller-computed lit mask, exactly as `compute_derived`
+    // passes it.
+    let bands = ecs.resolved_bands();
+    let lit = ecs.player_lit_mask(user, WorldRole::Player, &no_grants(), &bands);
+    let out = ecs.player_perceived_tokens(&player_ctx(user), &no_grants(), &lit);
     assert!(out.len() <= 1, "fixture has exactly one scene");
     out.into_iter().next().map(|p| p.tokens).unwrap_or_default()
 }

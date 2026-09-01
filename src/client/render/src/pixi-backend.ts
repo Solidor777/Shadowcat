@@ -123,7 +123,8 @@ export class PixiBackend implements DisplayBackend {
    * layer) but below `overlays`: a token whose spec's `perceived` flag is set is re-parented here
    * by `setToken` so it renders THROUGH fog and darkness, without touching the fog sheets
    * themselves (no fog holes — terrain stays covered). Not registered in `this.layers`: it is a
-   * display container, not a named core layer. */
+   * display container, not a named core layer — so a module filter registered on the `tokens`
+   * layer (`addLayerFilter`) does NOT apply to a token for the duration it is perceived. */
   private readonly perceivedTokens = new Container();
   /** The current background sprite, or `null` before the first `setBackground` call/after a
    * clear. */

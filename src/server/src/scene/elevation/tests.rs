@@ -57,3 +57,15 @@ fn wall_occludes_malformed_interval_fails_closed() {
     let inf_end = band(None, Some(f64::NEG_INFINITY));
     assert!(wall_occludes(Some(&inf_end), 0.0));
 }
+
+#[test]
+fn wall_occludes_non_finite_source_elevation_fails_closed() {
+    // Every production caller passes an `elevation_or_ground`-clamped value; the guard keeps
+    // the function fail-closed in isolation for any future caller (NaN comparisons would
+    // otherwise strip every wall).
+    let b = band(Some(0.0), Some(3.0));
+    assert!(wall_occludes(Some(&b), f64::NAN));
+    assert!(wall_occludes(Some(&b), f64::INFINITY));
+    assert!(wall_occludes(Some(&b), f64::NEG_INFINITY));
+    assert!(wall_occludes(None, f64::NAN));
+}

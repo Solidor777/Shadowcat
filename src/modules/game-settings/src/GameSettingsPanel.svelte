@@ -484,19 +484,27 @@
           </label>
           <label>
             {ctx.t("gameSettings.visionModePerceives")}
+            <!-- `?? "terrain"`: a mode entry stored before the descriptor gained `perceives`
+                 reads `undefined` at runtime (the generated TS type declares the field
+                 non-optional, so the legacy shape is invisible to the compiler) while the
+                 server resolves it as the `terrain` serde default — display THAT. The write's
+                 `old` still passes the raw stored value (`set` coalesces absent to null). -->
             <select
               aria-label="gameSettings.visionMode.{mode.id}.perceives"
-              value={mode.perceives}
+              value={mode.perceives ?? "terrain"}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/perceives`, mode.perceives, (e.currentTarget as HTMLSelectElement).value)}
             >
               {#each PERCEPTIONS as p}<option value={p}>{p === "terrain" ? ctx.t("gameSettings.perceivesTerrain") : ctx.t("gameSettings.perceivesCreatures")}</option>{/each}
             </select>
           </label>
           <label>
+            <!-- `?? true`: same legacy-entry read as `perceives` above — the server resolves an
+                 absent `requiresLos` as `true`, so the checkbox must display checked, not
+                 blank, for a mode entry that predates the field. -->
             <input
               type="checkbox"
               aria-label="gameSettings.visionMode.{mode.id}.requiresLos"
-              checked={mode.requiresLos}
+              checked={mode.requiresLos ?? true}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/requiresLos`, mode.requiresLos, (e.currentTarget as HTMLInputElement).checked)}
             />
             {ctx.t("gameSettings.visionModeRequiresLos")}

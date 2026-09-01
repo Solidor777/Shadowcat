@@ -306,6 +306,14 @@ begins.
 - All new engine fields are `deny_unknown_fields` structs with ts-rs export + Zod mirror (the
   drift guard enforces parity); range/magnitude validation at ingress keeps the DoS bounds
   (`MAX_GATE_WALK_*`, `MAX_VISION_*`, cell-scan caps) binding on the new inputs.
+- **Accepted residual (reviewed):** token elevation is owner-writable token state (like
+  position), and a carried emission takes its token's elevation — so a player can fly a
+  GM-authored torch over a wall whose band the GM deliberately opened. The disclosure is bounded
+  by the emission's own reach and exists only where the GM authored a partial band (an absent
+  band occludes every elevation); a flying torch lighting over a wall is the in-world behavior
+  the band feature exists to express. GM-gating elevation for emission carriers was rejected:
+  it would fork the movement model (a player could not fly their own torch-bearer) ahead of the
+  movement-tags work that owns flight.
 
 ## 13. Testing
 

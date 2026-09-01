@@ -33,10 +33,14 @@ pub(crate) fn elevation_or_ground(v: Option<f64>) -> f64 {
 /// Whether a wall with elevation band `band` occludes a sight/light source at
 /// elevation `e`: the wall occludes iff `bottom ≤ e ≤ top`, an absent end is
 /// unbounded, and an absent band occludes every elevation. Fail-closed: a
-/// malformed interval (`bottom > top`) or a non-finite authored endpoint occludes
-/// EVERYTHING (the pre-elevation behavior), so a corrupt wall never opens a
+/// malformed interval (`bottom > top`), a non-finite authored endpoint, or a
+/// non-finite source elevation occludes EVERYTHING (the pre-elevation behavior),
+/// so a corrupt wall or a NaN leaked past `elevation_or_ground` never opens a
 /// sightline the scene did not have.
 pub(crate) fn wall_occludes(band: Option<&eng::WallElevation>, e: f64) -> bool {
+    if !e.is_finite() {
+        return true;
+    }
     let Some(b) = band else { return true };
     if b.bottom.is_some_and(|v| !v.is_finite()) || b.top.is_some_and(|v| !v.is_finite()) {
         return true;

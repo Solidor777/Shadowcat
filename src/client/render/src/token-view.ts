@@ -366,10 +366,13 @@ export class TokenView {
     // Condition badges: resolve the actor's condition ids to registry icon glyphs.
     const badges = resolveConditions(doc, this.store).map((c) => c.icon);
     // Elevation chip: any non-ground elevation shows as an upright badge (`↑n`/`↓n`), mirroring
-    // `elevation_or_ground`'s read — absent and non-finite both mean grounded (no chip).
+    // `elevation_or_ground`'s read — absent and non-finite both mean grounded (no chip). The
+    // displayed number is rounded to two decimals (an authored float prints clean); a value that
+    // ROUNDS to 0 keeps its chip, since the stored elevation is still off-ground.
     const elev = s.elevation;
     if (elev != null && Number.isFinite(elev) && elev !== 0) {
-      badges.push(elev > 0 ? `↑${elev}` : `↓${-elev}`);
+      const shown = Math.round(Math.abs(elev) * 100) / 100;
+      badges.push(elev > 0 ? `↑${shown}` : `↓${shown}`);
     }
     const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
     return {

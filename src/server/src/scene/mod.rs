@@ -3390,11 +3390,12 @@ pub fn compute_derived(
                 // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
                 let mask = ecs.player_lit_mask(ctx.user_id, ctx.world_role, world_defaults, &bands);
                 // Creature senses (tremorsense & kin): the grounded tokens the recipient's
-                // grounded sources perceive, disjoint from `lit` by construction (a target
-                // whose center cell is already in the lit mask is not restated). Absent on
+                // grounded sources perceive, disjoint from `lit` by construction — the SAME
+                // mask value the payload's `lit` set below is built from is the exclusion
+                // set (a target whose center cell is already lit is not restated). Absent on
                 // the GM arm above — a GM sees all, so there is nothing to perceive.
                 let perceived: Vec<serde_json::Value> = ecs
-                    .player_perceived_tokens(ctx, world_defaults)
+                    .player_perceived_tokens(ctx, world_defaults, &mask)
                     .into_iter()
                     .map(|p| serde_json::json!({ "scene": p.scene, "tokens": p.tokens }))
                     .collect();

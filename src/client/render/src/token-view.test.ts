@@ -159,10 +159,13 @@ test("a token off the ground plane gains an elevation chip after its condition g
   store.applyCommand(cmd(1, [
     { op: "create", doc: elevatedToken("t-up", 10) },
     { op: "create", doc: elevatedToken("t-down", -2.5) },
+    { op: "create", doc: elevatedToken("t-noisy", 0.30000000000000004) },
   ]));
   new TokenView(store, new AssetResolver(), backend).reconcile();
   expect(backend.tokens.get("t-up")!.badges).toEqual(["↑10"]);
   expect(backend.tokens.get("t-down")!.badges).toEqual(["↓2.5"]);
+  // Float noise prints clean (two-decimal display rounding), not the raw f64.
+  expect(backend.tokens.get("t-noisy")!.badges).toEqual(["↑0.3"]);
 });
 
 test("grounded (0 / absent / non-finite stored) tokens get no elevation chip", () => {

@@ -168,4 +168,15 @@ describe("vision-mode editor", () => {
     await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.normal.name"), { target: { value: "   " } });
     expect(dispatchIntent).not.toHaveBeenCalled();
   });
+
+  it("a mode entry predating the descriptor-v2 fields displays the server's defaults (terrain, LOS-gated)", () => {
+    // A legacy stored entry lacks `perceives`/`requiresLos` keys entirely; the server resolves
+    // them as `terrain`/`true` (the serde defaults), so the controls must display exactly that.
+    const legacy = {
+      id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, renderHint: null,
+    } as unknown as VisionModesEngine["modes"][string];
+    renderPanel(vi.fn(), [buildVisionModesDoc("w1", { modes: { normal: legacy } }, "vm1")]);
+    expect((screen.getByLabelText("gameSettings.visionMode.normal.requiresLos") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("gameSettings.visionMode.normal.perceives") as HTMLSelectElement).value).toBe("terrain");
+  });
 });

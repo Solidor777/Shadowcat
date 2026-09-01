@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use uuid::Uuid;
 
-use super::{elevation, eng, source_los_poly, vision, SceneEcs, SceneEntity};
+use super::{elevation, eng, source_los_poly, vision, LitScene, SceneEcs, SceneEntity};
 use crate::data::document::{Document, WorldCapDefaults};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::cap;
@@ -92,10 +92,10 @@ impl SceneEcs {
     /// - READ: a target is named only when `ctx` holds whole-document `cap::READ` on it
     ///   (`SceneEcs::ctx_access`, the same authority the footprints channel uses) — creature
     ///   senses pierce fog, never the document permission gate.
-    /// - Disjointness: a target whose center CELL is already in the recipient's
-    ///   `player_lit_mask` set for the scene is not restated (the lit mask is exactly what
-    ///   the recipient's `lit` payload shows, so `perceived` is disjoint from it by
-    ///   construction). The mask is computed ONCE per call.
+    /// - Disjointness: `lit` is the recipient's already-computed `player_lit_mask` result —
+    ///   the SAME value the payload's `lit` set is built from, passed by the caller so the
+    ///   exclusion is structurally identical to it (never a recomputation that could drift).
+    ///   A target whose center CELL is in `lit` for the scene is not restated.
     ///
     /// Fail-closed everywhere: non-finite positions/ranges contribute nothing, a scene with
     /// no grid entry is skipped, and a degenerate LOS polygon admits nothing
@@ -106,20 +106,13 @@ impl SceneEcs {
         &self,
         ctx: &PermissionContext,
         world_defaults: &WorldCapDefaults,
+        lit: &[LitScene],
     ) -> Vec<PerceivedScene> {
-        // The recipient's terrain visibility, computed once: the exclusion set that keeps
-        // `perceived` disjoint from the `lit` payload.
-        let bands = self.resolved_bands();
-        let lit = self.player_lit_mask(ctx.user_id, ctx.world_role, world_defaults, &bands);
-        // Point-lookup only; never iterated into output, so HashMap order is inert.
+        // The caller-computed lit mask is the exclusion set that keeps `perceived` disjoint
+        // from the `lit` payload by construction.
         let lit_cells: HashMap<Uuid, BTreeSet<(i32, i32)>> = lit
-            .into_iter()
-            .map(|s| {
-                (
-                    s.scene,
-                    s.cells.into_iter().map(|(i, j, ..)| (i, j)).collect(),
-                )
-            })
+            .iter()
+            .map(|s| (s.scene, s.cells.iter().map(|&(i, j, ..)| (i, j)).collect()))
             .collect();
 
         // Scenes holding at least one token (sources and targets are both tokens), sorted.
