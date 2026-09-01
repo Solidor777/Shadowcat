@@ -1,4 +1,4 @@
-export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample } from "./types";
+export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, TokenFx, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample } from "./types";
 export type { LightingInput, LitCell } from "./types";
 export { Lighting, LIGHTING_FADE_MS, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
@@ -17,5 +17,5 @@ export { MockBackend } from "./backend.mock";
 export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription } from "./engine";
-export { PixiBackend, createPixiBackend } from "./pixi-backend";
+export { PixiBackend, createPixiBackend, composeTokenFxMatrix } from "./pixi-backend";
 export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints } from "./geometry";

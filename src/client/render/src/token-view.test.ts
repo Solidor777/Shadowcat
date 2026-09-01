@@ -426,6 +426,95 @@ test("a per-token aura override replaces the actor's base aura wholesale", () =>
   expect(backend.tokens.get("tok1")!.aura).toEqual({ color: 0x0000ff, opacity: 0.9, radius: 100 });
 });
 
+// ---- condition fx + selection highlight resolution ----
+
+/** Build a linked actor+token pair in a fresh store, with a condition registry whose entries
+ * carry the given fx payloads; the actor carries `conditionIds` in that order. */
+function storeWithFxToken(
+  registry: Parameters<typeof buildConditionRegistryDoc>[1],
+  conditionIds: string[],
+): { store: DocumentStore; backend: MockBackend } {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const reg = buildConditionRegistryDoc("w1", registry, "creg1");
+  const actor = buildActorDoc(
+    "w1",
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: conditionIds, prototype: false, vision: null, aura: null, sound: null, vfx: null },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: reg }, { op: "create", doc: actor }, { op: "create", doc: token }]));
+  return { store, backend };
+}
+
+test("condition fx folds into the TokenNodeSpec in condition array order, colors packed, at the condition strength", () => {
+  const { store, backend } = storeWithFxToken(
+    {
+      poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } },
+      blinded: { name: "Blinded", icon: "🙈", fx: { desaturate: true } },
+      hasted: { name: "Hasted", icon: "⚡", fx: { highlight: "#ffee00" } },
+    },
+    ["poisoned", "blinded", "hasted"],
+  );
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("tok1")!.fx).toEqual([
+    { kind: "tint", color: 0x66ff66, strength: 0.5 },
+    { kind: "desaturate" },
+    { kind: "highlight", color: 0xffee00, strength: 0.5 },
+  ]);
+});
+
+test("one condition's fx fields fold tint → desaturate → highlight", () => {
+  const { store, backend } = storeWithFxToken(
+    { cursed: { name: "Cursed", icon: "🕸", fx: { highlight: "#ffffff", desaturate: true, tint: "#102030" } } },
+    ["cursed"],
+  );
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("tok1")!.fx).toEqual([
+    { kind: "tint", color: 0x102030, strength: 0.5 },
+    { kind: "desaturate" },
+    { kind: "highlight", color: 0xffffff, strength: 0.5 },
+  ]);
+});
+
+test("a malformed fx color contributes no entry (fail closed), and no conditions means no fx", () => {
+  const { store, backend } = storeWithFxToken(
+    { broken: { name: "Broken", icon: "🕸", fx: { tint: "green", highlight: "#fff" } } },
+    ["broken"],
+  );
+  new TokenView(store, new AssetResolver(), backend).reconcile();
+  expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
+  const plain = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
+  new TokenView(plain.store, new AssetResolver(), plain.backend).reconcile();
+  expect(plain.backend.tokens.get("tok1")!.fx).toBeUndefined();
+});
+
+test("a selected token's spec appends the selection highlight after every condition fx", () => {
+  const { store, backend } = storeWithFxToken(
+    { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+    ["poisoned"],
+  );
+  const selected = new Set<string>(["tok1"]);
+  new TokenView(store, new AssetResolver(), backend, () => null, undefined, () => selected).reconcile();
+  expect(backend.tokens.get("tok1")!.fx).toEqual([
+    { kind: "tint", color: 0x66ff66, strength: 0.5 },
+    { kind: "highlight", color: 0xffd400, strength: 0.4 },
+  ]);
+});
+
+test("an unselected token (or a view with no selection source) gains no highlight", () => {
+  const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
+  const selected = new Set<string>(["someone-else"]);
+  new TokenView(store, new AssetResolver(), backend, () => null, undefined, () => selected).reconcile();
+  expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
+  // Selection is re-read per reconcile: selecting the token and re-reconciling adds the highlight.
+  selected.add("tok1");
+  const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, () => selected);
+  view.reconcile();
+  expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+});
+
 // ---- helpers for animation-config tests ----
 
 /** Extends MockBackend with convenience accessors for token position queries. */

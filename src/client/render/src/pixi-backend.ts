@@ -1,7 +1,7 @@
-import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
+import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
 import type { LightingFrame } from "./lighting";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
 import type { PingRing } from "./ping-view";
@@ -43,6 +43,13 @@ interface TokenNode {
   /** Identity key of the last-applied `tokenSpec.aura` (`updateTokenAura`'s memo, same discipline
    * as `badgeKey`/`sourceKey`): an unchanged key short-circuits the redraw. */
   auraKey: string;
+  /** The composed art-effects filter, assigned to `visualContainer.filters` by `updateTokenFx`
+   * (the fx rotate with the art; the badge chips on `container` stay clean), or `null` while the
+   * last-applied spec had no fx. */
+  fx: ColorMatrixFilter | null;
+  /** Identity key of the last-applied `tokenSpec.fx` (`updateTokenFx`'s memo, same discipline as
+   * `auraKey`): an unchanged key short-circuits the filter rebuild. */
+  fxKey: string;
   /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
@@ -91,6 +98,61 @@ function visualSourceKey(v: TokenNodeSpec["visual"]): string {
   // A generated visual's identity is its frame (crop/border/background) plus its art's own key
   // (one recursion level — `art` is never itself `"generated"`).
   return `generated:${visualSourceKey(v.art)}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+}
+
+/** The 5x4 identity color matrix (row-major: `[r,g,b,a,offset]` per row) — the composition
+ * start for `composeTokenFxMatrix`. */
+const IDENTITY_COLOR_MATRIX = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+
+/** Compose a `TokenFx` list into ONE 5x4 color matrix (row-major, `ColorMatrixFilter.matrix`'s
+ * layout): each entry's matrix is applied in array order (the first entry transforms the art
+ * first). `tint` scales each channel toward the entry color by `strength` (a `strength`-blend of
+ * the identity diagonal and the color's normalized channels); `desaturate` collapses every RGB
+ * output channel to the mean of the inputs — the same equal-thirds matrix
+ * `ColorMatrixFilter.desaturate` loads; `highlight` blends the art toward the entry color
+ * (`out = (1-strength)*in + strength*color`, a scale plus offset). Exported for tests — the
+ * composition is pure, while the `ColorMatrixFilter` it feeds is not (its constructor compiles
+ * shader programs, which needs a GL context).
+ * @param fx The resolved fx entries (colors packed `0xRRGGBB`, strengths in `[0,1]`).
+ * @returns The composed 20-element matrix; the identity for an empty list.
+ * @example
+ * ```ts
+ * import { composeTokenFxMatrix } from "@shadowcat/render";
+ *
+ * composeTokenFxMatrix([{ kind: "desaturate" }]); // equal-thirds luminance rows
+ * ```
+ */
+export function composeTokenFxMatrix(fx: TokenFx[]): number[] {
+  // Per-entry 5x4 matrix, in the `ColorMatrixFilter.matrix` row-major layout.
+  const entryMatrix = (f: TokenFx): number[] => {
+    if (f.kind === "desaturate") {
+      const t = 1 / 3;
+      return [t, t, t, 0, 0, t, t, t, 0, 0, t, t, t, 0, 0, 0, 0, 0, 1, 0];
+    }
+    const r = ((f.color >> 16) & 0xff) / 255;
+    const g = ((f.color >> 8) & 0xff) / 255;
+    const b = (f.color & 0xff) / 255;
+    const s = f.strength;
+    if (f.kind === "tint") {
+      return [1 - s + s * r, 0, 0, 0, 0, 0, 1 - s + s * g, 0, 0, 0, 0, 0, 1 - s + s * b, 0, 0, 0, 0, 0, 1, 0];
+    }
+    return [1 - s, 0, 0, 0, s * r, 0, 1 - s, 0, 0, s * g, 0, 0, 1 - s, 0, s * b, 0, 0, 0, 1, 0];
+  };
+  // Row-major 4x5 multiply: `out` = `a` applied AFTER `b` (b's output feeds a's input).
+  const multiply = (a: number[], b: number[]): number[] => {
+    const out = new Array<number>(20).fill(0);
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 5; col++) {
+        let sum = col === 4 ? a[row * 5 + 4] : 0;
+        for (let k = 0; k < 4; k++) sum += a[row * 5 + k] * b[k * 5 + col];
+        out[row * 5 + col] = sum;
+      }
+    }
+    return out;
+  };
+  let matrix = [...IDENTITY_COLOR_MATRIX];
+  for (const f of fx) matrix = multiply(entryMatrix(f), matrix);
+  return matrix;
 }
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
@@ -479,6 +541,7 @@ export class PixiBackend implements DisplayBackend {
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
     this.updateTokenAura(node, tokenSpec);
+    this.updateTokenFx(node, tokenSpec);
   }
 
   /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
@@ -503,7 +566,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "" };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", fx: null, fxKey: "" };
     this.tokens.set(id, node);
     return node;
   }
@@ -795,9 +858,42 @@ export class PixiBackend implements DisplayBackend {
     node.aura.clear().ellipse(0, 0, aura.radius, aura.radius).fill({ color: aura.color, alpha: aura.opacity });
   }
 
+  /** Rebuild (or remove) `node`'s art-effects filter: `tokenSpec.fx` composed into ONE
+   * `ColorMatrixFilter` (`composeTokenFxMatrix` — tint/desaturate/highlight fold into a single
+   * 5x4 matrix) assigned to `visualContainer.filters`, so the fx rotate with the art and the
+   * badge chips (siblings on the outer `container`) stay clean. Guarded by an `fxKey` memo (same
+   * discipline as `auraKey`): an unchanged key returns immediately without rebuilding the filter;
+   * an empty/absent fx list destroys the filter, clears the slot, and drops the reference.
+   * @param node The token render node whose fx to apply.
+   * @param tokenSpec The resolved token tokenSpec; only `.fx` is read here (colors pre-packed,
+   * strengths pre-clamped by `TokenView.toSpec`).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenFx(node, tokenSpec);
+   * ```
+   */
+  private updateTokenFx(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const fx = tokenSpec.fx ?? [];
+    const key = JSON.stringify(fx);
+    if (node.fxKey === key) return;
+    node.fxKey = key;
+    if (fx.length === 0) {
+      node.fx?.destroy();
+      node.fx = null;
+      node.visualContainer.filters = [];
+      return;
+    }
+    if (!node.fx) node.fx = new ColorMatrixFilter();
+    node.fx.matrix = composeTokenFxMatrix(fx) as ColorMatrixFilter["matrix"];
+    node.visualContainer.filters = [node.fx];
+  }
+
   /** `DisplayBackend.removeToken`: destroy a token's render node (container + all children,
-   * including `visualContainer`/`visual`/`border`/badges/aura) and drop it from `this.tokens`. A no-op
-   * for an unknown `id`.
+   * including `visualContainer`/`visual`/`border`/badges/aura, plus the `visualContainer`-attached
+   * fx filter) and drop it from `this.tokens`. A no-op for an unknown `id`.
    * @param id The token document id to remove.
    * @example
    * ```ts
@@ -810,6 +906,9 @@ export class PixiBackend implements DisplayBackend {
   removeToken(id: string): void {
     const node = this.tokens.get(id);
     if (!node) return;
+    // The fx filter is not a display-list child (it lives on `visualContainer.filters`), so the
+    // container destroy below would not release it — destroy it explicitly first.
+    node.fx?.destroy();
     node.container.destroy({ children: true });
     this.tokens.delete(id);
   }

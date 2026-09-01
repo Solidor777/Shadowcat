@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type RegionTrigger, type RegionEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type RegionTrigger, type RegionEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
@@ -1294,8 +1294,9 @@ const DRAG_THROTTLE_MS = 50;
  * non-GM's is request-only (`pathfind`/`moveRequest`), so the landed position is
  * SERVER-DETERMINED and may differ from the drop point (a wall/mask refusal or an arrest
  * truncation can land the token short of, or not at, where it was released). Empty space clears
- * the selection and yields the gesture to the camera. A ring overlay marks the selection
- * (`drawSelection`).
+ * the selection and yields the gesture to the camera. The selection itself is signified on the
+ * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
+ * `tokenSelection` state), never by a tool overlay.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
  * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
@@ -1336,37 +1337,6 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     return { x: e?.x ?? 0, y: e?.y ?? 0 };
   };
 
-  /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
-   * tokens receive an ellipse ring, square tokens an axis-aligned box — both keyed off
-   * `resolveTokenBox(...).shape`, the SAME field `topTokenAt`'s hit-test
-   * and the render layer's faction border
-   * (`PixiBackend.updateTokenBorder`) also
-   * read — so the ring, hit-test, and faction border agree on shape structurally (one shared
-   * source), not by three independent implementations happening to match.
-   * @example
-   * ```
-   * declare function drawSelection(): void;
-   * drawSelection();
-   * ```
-   */
-  const drawSelection = (): void => {
-    if (!sel) return;
-    const rings = [...sel.ids].map((id) => {
-      const c = centerOf(id);
-      const doc = ctx.documents.get(id);
-      const box = doc ? resolveTokenBox(doc, ctx.documents, footprintsOf(ctx)) : null;
-      const w = (box?.w || 0) || 100;
-      const h = (box?.h || 0) || 100;
-      const hw = w / 2;
-      const hh = h / 2;
-      const points = box?.shape === "circle"
-        ? ellipsePoints(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
-        : [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh];
-      return { points, closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
-    });
-    if (rings.length === 0) ctx.scene.clearOverlay();
-    else ctx.scene.previewOverlay(rings);
-  };
 
   /** Drag feedback only — never a document write and never a move request. A player's token
    * must not appear to move until the server executes it (no optimistic prediction for a gated
@@ -1465,7 +1435,6 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
       moved = false;
       lastSentAt = -Infinity;
       ctx.scene.setDraggingToken(id);
-      drawSelection();
       return true;
     },
     onPointerMove(p: Point): void {

@@ -1,11 +1,63 @@
 import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, FootprintLookup } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, FootprintLookup, ConditionFx } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec, ResolvedAnimatedSource, ResolvedArtVisual } from "./types";
+import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
 import { sceneScopedDocs } from "./scene-scope";
+
+/** The empty selection a `TokenView` constructed without a `selectedTokens` source reads —
+ * module-level so the default getter shares one frozen instance. */
+const EMPTY_TOKEN_SELECTION: ReadonlySet<string> = new Set();
+
+/** Blend strength a condition registry's `tint`/`highlight` fx applies at: the registry authors
+ * a color, not a strength (`ConditionFx` carries no strength field), and full strength would
+ * replace the art outright, so condition fx land at an even half. */
+const CONDITION_FX_STRENGTH = 0.5;
+
+/** The selection signifier's brighten-toward color — the accent the overlay ring drew with,
+ * preserved — applied at a deliberately partial strength so the art stays readable under it. */
+const SELECTION_HIGHLIGHT_COLOR = 0xffd400;
+/** See `SELECTION_HIGHLIGHT_COLOR`. */
+const SELECTION_HIGHLIGHT_STRENGTH = 0.4;
+
+/** Parse a condition-fx css color to packed `0xRRGGBB`, failing closed to `null` on anything
+ * that isn't exactly `#rrggbb` — ingress (`Condition::validate`) enforces that shape, and a
+ * hand-crafted/stale doc must resolve to "no effect", never to a default that grants one
+ * (`parseColor` alone would silently read a malformed string as black).
+ * @param css The authored css color string.
+ * @returns The packed color, or `null` when `css` is not a `#rrggbb` string.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * parseFxColor("#ff8800"); // 0xff8800
+ * ```
+ */
+function parseFxColor(css: string): number | null {
+  return /^#[0-9a-fA-F]{6}$/.test(css) ? parseColor(css) : null;
+}
+
+/** Fold one condition's registry-authored `ConditionFx` into `TokenFx` entries (tint, then
+ * desaturate, then highlight — a fixed per-condition order so the composed matrix is
+ * deterministic), skipping malformed colors fail-closed. Applied at `CONDITION_FX_STRENGTH`.
+ * @param cf The condition's authored fx payload.
+ * @returns The folded entries, in application order.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * conditionFxEntries({ desaturate: true });
+ * ```
+ */
+function conditionFxEntries(cf: ConditionFx): TokenFx[] {
+  const out: TokenFx[] = [];
+  const tint = cf.tint ? parseFxColor(cf.tint) : null;
+  if (tint !== null) out.push({ kind: "tint", color: tint, strength: CONDITION_FX_STRENGTH });
+  if (cf.desaturate) out.push({ kind: "desaturate" });
+  const highlight = cf.highlight ? parseFxColor(cf.highlight) : null;
+  if (highlight !== null) out.push({ kind: "highlight", color: highlight, strength: CONDITION_FX_STRENGTH });
+  return out;
+}
 
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
@@ -41,6 +93,10 @@ export class TokenView {
    * @param footprints Resolves the server's current footprint lookup, read fresh per `toSpec` so a
    * newly-arrived frame is picked up on the next reconcile. Defaults to `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`.
+   * @param selectedTokens Resolves the currently-selected token ids (client-local UI state), read
+   * fresh per `toSpec`; a selected token's spec gains the selection highlight fx. Defaults to an
+   * empty selection (legacy/test callers that never pass one). Selection changes carry no store
+   * commit, so the host re-drives a reconcile on change (`RenderEngine.reapplyTokenSelection`).
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -56,6 +112,7 @@ export class TokenView {
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
     private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
+    private readonly selectedTokens: () => ReadonlySet<string> = () => EMPTY_TOKEN_SELECTION,
   ) {}
 
   /** Mark `id` as the locally-dragged token (its sprite snaps to the authoritative transform each
@@ -320,7 +377,9 @@ export class TokenView {
    * (`resolveTokenActor`), the visual (`resolveTokenVisual` — image, animated, or generated,
    * URL-resolved via `resolveArtVisual`/`resolveSource`), the faction border color (via the world
    * `faction-registry` doc; `null` when the effective actor has no faction or the faction has no
-   * registered color), condition badges (`resolveConditions`), and the footprint box/shape
+   * registered color), condition badges + authored fx (`resolveConditions` — registry fx folded
+   * in condition array order, css colors parsed here so the backend stays parse-free), the
+   * selection highlight (from `selectedTokens`), and the footprint box/shape
    * (`resolveTokenBox`, reading the server's resolved extent rather than computing one). Fails closed to `null`
    * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
    * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
@@ -362,8 +421,15 @@ export class TokenView {
       const hex = reg?.factions?.[eff.faction]?.color;
       if (hex) borderColor = parseColor(hex);
     }
-    // Condition badges: resolve the actor's condition ids to registry icon glyphs.
-    const badges = resolveConditions(doc, this.store).map((c) => c.icon);
+    // Condition badges + fx: resolve the actor's condition ids to registry entries once, then
+    // read the badge glyphs and the authored fx off the SAME resolution, in the SAME effective
+    // condition array order the face map reads (`resolveConditions` iterates it).
+    const conditions = resolveConditions(doc, this.store);
+    const badges = conditions.map((c) => c.icon);
+    const fx: TokenFx[] = conditions.flatMap((c) => (c.fx ? conditionFxEntries(c.fx) : []));
+    // The selection signifier appends after every condition fx, so the highlight reads on top of
+    // condition tints (a selected poisoned token reads as selected first).
+    if (this.selectedTokens().has(doc.id)) fx.push({ kind: "highlight", color: SELECTION_HIGHLIGHT_COLOR, strength: SELECTION_HIGHLIGHT_STRENGTH });
     const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
     // Aura emission (the EffectiveActor projection; null for a raw token): a radial disc under
     // the art. Cells → scene units go through the view's ONE cell-size source
@@ -381,6 +447,7 @@ export class TokenView {
       shape: box.shape,
     };
     if (aura) spec.aura = aura;
+    if (fx.length > 0) spec.fx = fx;
     return spec;
   }
 }

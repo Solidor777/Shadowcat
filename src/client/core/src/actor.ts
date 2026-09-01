@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -235,6 +235,10 @@ interface ConditionDisplayEntry {
   name: string;
   /** The registry's emoji glyph for `id` at resolution time. */
   icon: string;
+  /** The registry's authored built-in art effects for `id` at resolution time (css colors,
+   * unfolded), or absent for none — folding into the token's render fx is `TokenView.toSpec`'s
+   * job, so display-only consumers can ignore this. */
+  fx: Condition["fx"];
 }
 
 /** Resolve a token's effective conditions to display entries (id preserved for keying), via the
@@ -242,7 +246,7 @@ interface ConditionDisplayEntry {
  * never a render error (fail-closed). The single read-through every condition consumer uses.
  * @param token The token to resolve effective conditions for.
  * @param store The document store to resolve the actor + condition registry against.
- * @returns Display entries `{id, name, icon}`, one per effective condition id that IS present in
+ * @returns Display entries `{id, name, icon, fx}`, one per effective condition id that IS present in
  * the world's condition registry (an unregistered id is dropped, not the whole list); `[]` for a
  * raw/dangling token, or when none of the token's condition ids are registered.
  * @example
@@ -251,7 +255,7 @@ interface ConditionDisplayEntry {
  *
  * declare const token: WireDocument;
  * declare const store: ReadableDocuments;
- * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "..." }, ...]
+ * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "...", fx: null }, ...]
  * ```
  */
 export function resolveConditions(token: WireDocument, store: ReadableDocuments): ConditionDisplayEntry[] {
@@ -262,7 +266,7 @@ export function resolveConditions(token: WireDocument, store: ReadableDocuments)
   const out: ConditionDisplayEntry[] = [];
   for (const id of eff.conditions) {
     const c = map[id];
-    if (c) out.push({ id, name: c.name, icon: c.icon });
+    if (c) out.push({ id, name: c.name, icon: c.icon, fx: c.fx });
   }
   return out;
 }

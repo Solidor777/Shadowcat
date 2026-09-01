@@ -115,6 +115,7 @@ export type { Faction } from "./generated/engine/Faction";
 export type { FactionStance } from "./generated/engine/FactionStance";
 export type { FactionRegistryEngine } from "./generated/engine/FactionRegistryEngine";
 export type { Condition } from "./generated/engine/Condition";
+export type { ConditionFx } from "./generated/engine/ConditionFx";
 export type { ConditionRegistryEngine } from "./generated/engine/ConditionRegistryEngine";
 export type { ChatSettingsEngine } from "./generated/engine/ChatSettingsEngine";
 export type { DiceSettingsEngine } from "./generated/engine/DiceSettingsEngine";

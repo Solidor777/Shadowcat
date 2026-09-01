@@ -93,6 +93,11 @@ export interface RenderEngineOpts {
    * footprint geometry: `TokenView` reads the extent from here. Absent ⇒ `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`. */
   footprints?: () => FootprintLookup;
+  /** The currently-selected token ids (Stage → `ctx.tokenSelection.ids`): a selected token's
+   * spec gains the selection highlight fx. Absent ⇒ an empty selection (no highlights). A
+   * selection change carries no store commit, so the host must call
+   * {@link RenderEngine.reapplyTokenSelection} to re-project. */
+  selectedTokens?: () => ReadonlySet<string>;
 }
 
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
@@ -232,7 +237,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, opts.selectedTokens);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
@@ -519,6 +524,22 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   reapplyFootprints(): void {
+    this.tokens.reconcile();
+  }
+
+  /** Re-project every token after a token-selection change. Selection is client-local UI state
+   * (no document write), so the store subscription that drives reconciles never fires for it —
+   * without this, the selection highlight fx would lag behind the click until the next unrelated
+   * store commit. Tokens only — no other view reads the selection.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyTokenSelection();
+   * ```
+   */
+  reapplyTokenSelection(): void {
     this.tokens.reconcile();
   }
 

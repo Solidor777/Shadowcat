@@ -108,6 +108,38 @@ export type ResolvedArtVisual =
       loop: boolean;
     };
 
+/** One built-in per-token art effect, applied to the token's visual by the backend (composed
+ * into a single `ColorMatrixFilter` by `PixiBackend.updateTokenFx`, in array order). Every color
+ * is already packed `0xRRGGBB` and every strength already clamped to `[0,1]` by `TokenView.toSpec`
+ * — the backend never parses colors. Entries compose: a `tint` scales the
+ * art's channels toward the given color, a `desaturate` strips color to luminance, a `highlight`
+ * brightens the art toward the given color. */
+export type TokenFx =
+  | {
+      /** Discriminant: scale the art's RGB channels toward `color`, by `strength`. */
+      kind: "tint";
+      /** Tint target color, packed `0xRRGGBB`. */
+      color: number;
+      /** Blend amount, `[0,1]`: `0` = no effect, `1` = full channel multiply by `color`. */
+      strength: number;
+    }
+  | {
+      /** Discriminant: strip the art to luminance (full desaturation; no strength — partial
+       * desaturation is a `tint` toward the art's own gray). */
+      kind: "desaturate";
+    }
+  | {
+      /** Discriminant: brighten the art toward `color`, by `strength`. Produced for a token's
+       * selection signifier and for condition-registry `highlight` fx; a `"target"` source is
+       * reserved for this same arm (a targeted token would brighten the same way) but has no
+       * producer — no targeting feature exists. */
+      kind: "highlight";
+      /** Brighten-toward target color, packed `0xRRGGBB`. */
+      color: number;
+      /** Blend amount, `[0,1]`: `0` = no effect, `1` = the art replaced by `color`. */
+      strength: number;
+    };
+
 /** A resolved token render node: transform + size + resolved visual + faction border + footprint shape. */
 export interface TokenNodeSpec {
   /** Center's scene x-coordinate — from `resolveTokenBox`. */
@@ -168,6 +200,11 @@ export interface TokenNodeSpec {
     /** Disc radius, in scene units. */
     radius: number;
   };
+  /** Built-in art effects (see `TokenFx`), composed by the backend onto the token's visual
+   * container — the fx rotate with the art; the badge chips stay clean. Fully pre-resolved by
+   * `TokenView.toSpec` (condition-registry fx folded in condition array order, then the
+   * selection highlight); absent or empty for no effects. */
+  fx?: TokenFx[];
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill

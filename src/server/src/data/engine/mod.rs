@@ -253,7 +253,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "dice-settings" => round_trip::<DiceSettingsEngine>(v, "dice-settings"),
         "channel-registry" => round_trip::<ChannelRegistryEngine>(v, "channel-registry"),
         "faction-registry" => round_trip::<FactionRegistryEngine>(v, "faction-registry"),
-        "condition-registry" => round_trip::<ConditionRegistryEngine>(v, "condition-registry"),
+        "condition-registry" => {
+            let typed: ConditionRegistryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("condition-registry: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("condition-registry: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "combat" => {
             let typed: CombatEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("combat: {e}")))?;

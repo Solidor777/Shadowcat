@@ -1,9 +1,28 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 import { Container } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
 import type { TokenNodeSpec } from "./types";
+
+vi.mock("pixi.js", async (importActual) => {
+  const actual = await importActual<typeof import("pixi.js")>();
+  /** Headless stand-in for the real `ColorMatrixFilter` (whose constructor compiles shader
+   * programs and so needs a GL context): records the assigned matrix verbatim and latches
+   * `_destroyed` on `destroy`, so `PixiBackend.updateTokenFx`'s plumbing is testable here. The
+   * matrix math itself is the REAL `composeTokenFxMatrix` — only filter construction is stubbed. */
+  class StubColorMatrixFilter {
+    /** The last assigned `matrix`, recorded verbatim. */
+    matrix: number[] = [];
+    /** Latch set by `destroy` — mirrors `Shader.destroy`'s private `_destroyed`. */
+    _destroyed = false;
+    /** Record destruction (see `_destroyed`). */
+    destroy(): void {
+      this._destroyed = true;
+    }
+  }
+  return { ...actual, ColorMatrixFilter: StubColorMatrixFilter };
+});
 
 /** A minimal stand-in satisfying `PixiBackend`'s constructor: it reads only `app.stage.addChild`.
  * `Container` is GL-free (a pure scene-graph node), so this constructs a real `PixiBackend`
@@ -59,7 +78,7 @@ describe("PixiBackend.setLighting", () => {
 interface TokenNodeLike {
   /** Mirror of `TokenNode.container` — read to assert the aura's child order. */
   container: Container;
-  /** Mirror of `TokenNode.visualContainer` — read to assert the frame's child order. */
+  /** Mirror of `TokenNode.visualContainer` — read to assert the frame's child order + fx slot. */
   visualContainer: Container;
   /** Mirror of `TokenNode.visual` — read to assert mask assignment. */
   visual: { mask: unknown };
@@ -69,6 +88,11 @@ interface TokenNodeLike {
   aura: (GraphicsInstructionLog & { destroyed: boolean }) | null;
   /** Mirror of `TokenNode.auraKey` — read to assert the redraw memo. */
   auraKey: string;
+  /** Mirror of `TokenNode.fx` — read to assert the filter's matrix + lifetime (`_destroyed` is
+   * `Shader.destroy`'s private latch; `Filter` extends `Shader` and exposes no public getter). */
+  fx: { matrix: number[]; _destroyed: boolean } | null;
+  /** Mirror of `TokenNode.fxKey` — read to assert the rebuild memo. */
+  fxKey: string;
 }
 
 interface PixiBackendTokenInternals {
@@ -78,6 +102,8 @@ interface PixiBackendTokenInternals {
   updateTokenGeneratedFrame(node: TokenNodeLike, spec: TokenNodeSpec): void;
   /** Mirror of the private `PixiBackend.updateTokenAura`. */
   updateTokenAura(node: TokenNodeLike, spec: TokenNodeSpec): void;
+  /** Mirror of the private `PixiBackend.updateTokenFx`. */
+  updateTokenFx(node: TokenNodeLike, spec: TokenNodeSpec): void;
 }
 
 /** Reads the flat draw-call action list recorded on a Graphics' context — the same instruction
@@ -214,5 +240,95 @@ describe("PixiBackend.updateTokenAura", () => {
     backend.updateTokenAura(node2, { ...base, visual: imageVisual });
     expect(node2.aura).toBeNull();
     expect(node2.container.children.length).toBe(1); // visualContainer only
+  });
+});
+
+describe("PixiBackend.updateTokenFx", () => {
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
+
+  test("composes the fx list into one ColorMatrixFilter on the visualContainer", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "tint", color: 0xff0000, strength: 0.5 }] });
+    const fx = node.fx!;
+    expect(fx).not.toBeNull();
+    expect(node.visualContainer.filters).toEqual([fx]);
+    // A half-strength red tint: the red row stays identity, the green/blue diagonals drop to 0.5.
+    expect(fx.matrix[0]).toBeCloseTo(1);
+    expect(fx.matrix[6]).toBeCloseTo(0.5);
+    expect(fx.matrix[12]).toBeCloseTo(0.5);
+  });
+
+  test("desaturate collapses every RGB output row to the equal-thirds mean; highlight scales and offsets", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "desaturate" }] });
+    const m = node.fx!.matrix;
+    for (const row of [0, 1, 2]) {
+      expect(m[row * 5]).toBeCloseTo(1 / 3);
+      expect(m[row * 5 + 1]).toBeCloseTo(1 / 3);
+      expect(m[row * 5 + 2]).toBeCloseTo(1 / 3);
+    }
+    backend.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "highlight", color: 0xffd400, strength: 0.4 }] });
+    const h = node.fx!.matrix;
+    expect(h[0]).toBeCloseTo(0.6); // scale: 1 - strength
+    expect(h[4]).toBeCloseTo(0.4 * (0xff / 255)); // offset: strength × red channel
+    expect(h[9]).toBeCloseTo(0.4 * (0xd4 / 255));
+    expect(h[14]).toBeCloseTo(0); // blue channel of 0xffd400
+  });
+
+  test("later entries transform the output of earlier ones (array order)", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    // Desaturate first, then a full-strength green tint: the composed green/blue diagonals
+    // read (1/3, 0) — the tint scaling the desaturated mean — not the tint's own (1, 0).
+    backend.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "desaturate" }, { kind: "tint", color: 0x00ff00, strength: 1 }] });
+    const m = node.fx!.matrix;
+    expect(m[0]).toBeCloseTo(0); // red row scaled to 0 by the full green tint
+    expect(m[6]).toBeCloseTo(1 / 3); // green row keeps the desaturated mean of green
+    expect(m[7]).toBeCloseTo(1 / 3); // green row keeps the desaturated mean of blue
+    expect(m[12]).toBeCloseTo(0); // blue row scaled to 0
+  });
+
+  test("an unchanged fx key skips the rebuild; a changed one rebuilds the SAME filter instance in place", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    const spec = { ...base, visual: imageVisual, fx: [{ kind: "tint" as const, color: 0xff0000, strength: 0.5 }] };
+    backend.updateTokenFx(node, spec);
+    const fx = node.fx!;
+    backend.updateTokenFx(node, { ...spec, fx: [{ kind: "tint" as const, color: 0xff0000, strength: 0.5 }] });
+    expect(node.fx).toBe(fx); // memoized: same instance, no rebuild
+    backend.updateTokenFx(node, { ...spec, fx: [{ kind: "tint" as const, color: 0x00ff00, strength: 0.5 }] });
+    expect(node.fx).toBe(fx); // rebuilt in place, not swapped
+    expect(fx.matrix[6]).toBeCloseTo(1);
+    expect(fx.matrix[0]).toBeCloseTo(0.5);
+  });
+
+  test("an absent fx list destroys the filter, clears the slot, and drops the reference", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "desaturate" }] });
+    const fx = node.fx!;
+    backend.updateTokenFx(node, { ...base, visual: imageVisual });
+    expect(node.fx).toBeNull();
+    expect(fx._destroyed).toBe(true);
+    expect(node.visualContainer.filters).toEqual([]);
+    // And a token that never had fx leaves no filter behind (the filters slot is never touched —
+    // a fresh Container's `filters` getter reads `undefined`).
+    const node2 = backend.createTokenNode("t2");
+    backend.updateTokenFx(node2, { ...base, visual: imageVisual });
+    expect(node2.fx).toBeNull();
+    expect(node2.visualContainer.filters ?? []).toEqual([]);
+  });
+
+  test("removeToken destroys the fx filter (it is not a display-list child)", () => {
+    const backend = headlessBackend();
+    const internals = backend as unknown as PixiBackendTokenInternals;
+    const node = internals.createTokenNode("t1");
+    internals.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "desaturate" }] });
+    const fx = node.fx!;
+    backend.removeToken("t1");
+    expect(fx._destroyed).toBe(true);
   });
 });

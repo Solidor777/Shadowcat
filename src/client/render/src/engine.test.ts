@@ -1141,3 +1141,31 @@ test("the engine renders a token at the footprint lookup it was constructed with
   expect(backend.tokens.get("t1")!.h).toBe(400);
   engine.destroy();
 });
+
+test("the engine highlights selected tokens via the selectedTokens accessor, refreshed by reapplyTokenSelection", () => {
+  // The wiring under test is the engine passing its `selectedTokens` accessor down to
+  // `TokenView`. The accessor is read per reconcile, so changing the selection and calling
+  // `reapplyTokenSelection` repaints without any document change.
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let selected: ReadonlySet<string> = new Set();
+  const engine = new RenderEngine({
+    store,
+    assets: new AssetResolver(),
+    backend,
+    grid: { kind: "square", size: 100 },
+    selectedTokens: () => selected,
+  });
+  engine.start();
+  store.applyCommand(tokenCmd(1, "t1", 0));
+  expect(backend.tokens.get("t1")!.fx).toBeUndefined();
+
+  selected = new Set(["t1"]);
+  engine.reapplyTokenSelection();
+  expect(backend.tokens.get("t1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+
+  selected = new Set();
+  engine.reapplyTokenSelection();
+  expect(backend.tokens.get("t1")!.fx).toBeUndefined();
+  engine.destroy();
+});

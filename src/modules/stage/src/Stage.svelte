@@ -127,6 +127,7 @@
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
+        selectedTokens: () => ctx.tokenSelection.ids,
         onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
       });
       const e = engine;
@@ -145,6 +146,9 @@
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
+      // Token selection is client-local UI state (no document write either) — same explicit
+      // re-projection so the selection highlight fx tracks the click.
+      let lastSelectionKey = [...ctx.tokenSelection.ids].sort().join(" ");
       const vsSub = createSubscriber((update) => documents.subscribe(update));
       offViewed = $effect.root(() => {
         $effect(() => {
@@ -158,6 +162,12 @@
           if (fp !== lastFootprints) {
             lastFootprints = fp;
             e.reapplyFootprints();
+          }
+          // Iterating the SvelteSet tracks it; a membership change re-projects the tokens.
+          const selKey = [...ctx.tokenSelection.ids].sort().join(" ");
+          if (selKey !== lastSelectionKey) {
+            lastSelectionKey = selKey;
+            e.reapplyTokenSelection();
           }
         });
       });

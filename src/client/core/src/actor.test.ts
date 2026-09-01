@@ -100,7 +100,15 @@ describe("resolveConditions", () => {
     const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["dead", "ghost"] }, "act1");
     const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀" }]);
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀", fx: undefined }]);
+  });
+
+  it("carries the registry's authored fx payload through to the display entry", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["poisoned"] }, "act1");
+    const fx = { tint: "#66ff66", desaturate: true };
+    const registry = buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx } }, "creg1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "poisoned", name: "Poisoned", icon: "🤢", fx }]);
   });
 
   it("is fail-closed when the actor's engine conditions is absent (redacted or hand-built doc)", () => {

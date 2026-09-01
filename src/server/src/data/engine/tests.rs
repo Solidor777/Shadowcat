@@ -1116,6 +1116,51 @@ fn condition_registry_seed_content() {
 }
 
 #[test]
+fn condition_registry_fx_round_trips() {
+    let v = json!({ "conditions": { "poisoned": {
+        "name": "Poisoned", "icon": "🤢",
+        "fx": { "tint": "#66ff66", "desaturate": true, "highlight": "#ffffff" }
+    } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+    let typed: ConditionRegistryEngine = serde_json::from_value(v).unwrap();
+    let fx = typed.conditions["poisoned"].fx.as_ref().unwrap();
+    assert_eq!(fx.tint.as_deref(), Some("#66ff66"));
+    assert_eq!(fx.desaturate, Some(true));
+    assert_eq!(fx.highlight.as_deref(), Some("#ffffff"));
+}
+
+#[test]
+fn condition_without_fx_deserializes_with_none() {
+    // Registry entries authored before the fx field existed carry no `fx` key
+    // at all; serde's default must absorb that.
+    let typed: ConditionRegistryEngine = serde_json::from_value(
+        json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀" } } }),
+    )
+    .unwrap();
+    assert_eq!(typed.conditions["dead"].fx, None);
+}
+
+#[test]
+fn condition_fx_unknown_field_is_rejected() {
+    let v = json!({ "conditions": { "dead": {
+        "name": "Dead", "icon": "💀", "fx": { "bogus": 1 }
+    } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_err());
+}
+
+#[test]
+fn condition_fx_malformed_color_is_rejected() {
+    for fx in [
+        json!({ "tint": "green" }),
+        json!({ "tint": "#fff" }),
+        json!({ "highlight": "#ff8800ff" }),
+    ] {
+        let v = json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀", "fx": fx } } });
+        assert!(validate_engine("condition-registry", Some(&v)).is_err());
+    }
+}
+
+#[test]
 fn channel_registry_seed_content() {
     let s = ChannelRegistryEngine::seed();
     assert_eq!(s.channels.len(), 1);
