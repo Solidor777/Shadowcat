@@ -220,6 +220,13 @@ display name.
 
 **Steps:**
 - [ ] Controller/shell/modal re-plumb against generated types.
+- [ ] Drop the `/base` leg from the advisory gates: Task 3's `/base` capability removal makes
+      `canPull`'s `canEdit(child, "/base")` leg (and `#canApplyUpdate`'s coverage of the `/base`
+      change) unsatisfiable for non-GM effective owners, which would hide pull/revert/push from
+      exactly the users the server now authorizes. Remove both, mirroring the server's
+      `TemplateMerge` exemption of the whole-band `/base` refresh; update
+      `templatesController.svelte.ts`'s `canPull` comment (the "WRITE_FIELDS (base/system) ∪
+      MANAGE_EMBEDDED" cap-union description) and the controller tests that mock `canEdit`.
 - [ ] Deletion pass (verify zero remaining imports of the deleted symbols repo-wide first).
 - [ ] Client gates (`pnpm -r test`, `pnpm -r typecheck`, lint family); commit.
 
