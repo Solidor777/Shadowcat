@@ -14,7 +14,7 @@ use crate::data::document::Document;
 use crate::merge::bands::{bands_tree, placement_exclusions, snapshot_base, MergeBands, MergeBase};
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
 use crate::merge::tree::{deep_equal, merge3_tree, take_template};
-use crate::merge::MergeConflict;
+use crate::merge::{MergeConflict, MergeError};
 
 /// Result of a 3-way merge: the child-wins-default merged bands plus the
 /// conflicts to resolve. Mirrors the client `MergePlan`.
@@ -98,22 +98,28 @@ pub fn merge3(
 /// (unstamped) child falls back to a snapshot of ITSELF, not the template —
 /// the child diff is then empty against that base, so every template-side
 /// change auto-applies with zero conflicts (a clean template-wins result).
-/// A stored snapshot that fails to parse as `MergeBase` falls back the same
-/// way: it cannot carry correlation information the merge could trust, and
-/// the fallback is the same shape the client produces for a missing one.
-/// Twin of the client `computePull`.
-pub fn compute_pull(child: &Document, template: &Document) -> MergePlan {
-    let base = child
-        .base
-        .clone()
-        .and_then(|v| serde_json::from_value::<MergeBase>(v).ok())
-        .unwrap_or_else(|| snapshot_base(child));
-    merge3(
+///
+/// A stored snapshot that is PRESENT but fails to parse as `MergeBase` is
+/// corruption, not absence: returning a clean template-wins merge here would
+/// silently destroy child-local edits, so the pull fails closed with
+/// `MergeError::CorruptBase` and nothing is written. Deliberate semantic
+/// delta from the client engine: the client crashes loudly on a grossly
+/// malformed base (its merge reads the stored value without validation);
+/// this twin returns a typed error instead — both are loud, and neither
+/// loses data. Twin of the client `computePull`.
+pub fn compute_pull(child: &Document, template: &Document) -> Result<MergePlan, MergeError> {
+    let base = match &child.base {
+        Some(v) => {
+            serde_json::from_value::<MergeBase>(v.clone()).map_err(|_| MergeError::CorruptBase)?
+        }
+        None => snapshot_base(child),
+    };
+    Ok(merge3(
         &base,
         template,
         child,
         &placement_exclusions(&child.doc_type),
-    )
+    ))
 }
 
 /// Append a `FieldChange` iff `before` and `after` structurally differ. Twin

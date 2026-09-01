@@ -271,7 +271,8 @@ fn run_case(case: &Value) -> Value {
     let actual = match kind {
         "revert" => json!({ "update": compute_revert(&child, &parent) }),
         "resolve" => {
-            let plan = compute_pull(&child, &parent);
+            let plan = compute_pull(&child, &parent)
+                .unwrap_or_else(|e| panic!("case '{name}': a corpus base never fails closed: {e}"));
             let theirs: BTreeSet<String> = case
                 .get("theirs")
                 .and_then(Value::as_array)
@@ -295,7 +296,8 @@ fn run_case(case: &Value) -> Value {
             })
         }
         _ => {
-            let plan = compute_pull(&child, &parent);
+            let plan = compute_pull(&child, &parent)
+                .unwrap_or_else(|e| panic!("case '{name}': a corpus base never fails closed: {e}"));
             json!({
                 "mergedBands": plan.merged_bands,
                 "conflicts": plan.conflicts,

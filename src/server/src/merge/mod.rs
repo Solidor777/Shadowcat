@@ -9,6 +9,29 @@
 //! moved. Rust ownership replaces the client's `structuredClone` discipline:
 //! every cross-tree value is cloned at the crossing point the client comments
 //! mark, which the corpus's aliasing-sensitive cases pin behaviourally.
+//!
+//! # Accepted divergences from the client engine
+//!
+//! Three differences are accepted as dead or cosmetic; none can change a
+//! merge RESULT:
+//!
+//! - **Key sorting is UTF-8 byte order** (Rust `String` `Ord`, via the
+//!   `BTreeSet` traversals in `tree::structural_diff_at`,
+//!   `embedded::merge3_embedded`/`embedded::revert_embedded` and
+//!   `plan::plan_to_update`) where the client sorts UTF-16 code units. Merge
+//!   results are order-independent by design; only diff/conflict/change ORDER
+//!   within a result can differ, and only on keys mixing U+E000–U+FFFF with
+//!   astral-plane characters.
+//! - **`tree::get_pointer`/`tree::delete_pointer` reject non-canonical
+//!   array-index tokens** (`"01"`, `"+1"`, …) that the client would coerce
+//!   via `Number(tok)`. Merge-generated pointers only ever carry canonical
+//!   indices (`structural_diff` and `prefix_conflicts` format `usize`
+//!   values), so the coercing path is unreachable here.
+//! - **Base correlation stringifies `Uuid` canonically** where the client
+//!   compared verbatim strings (`embedded::merge3_embedded`'s
+//!   `base_by_source` keys). A non-canonical legacy `sourceId` (uppercase
+//!   hex, braces, …) correlates as instance-added — the keep direction,
+//!   never the drop direction.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -37,6 +60,33 @@ pub use bands::{
 pub use plan::{
     apply_resolutions, compute_pull, compute_revert, merge3, plan_to_update, MergePlan,
 };
+
+/// A merge computation that refused to run. Small by design: the merge
+/// engine's only failure mode today is a corrupt stored snapshot; wire-level
+/// errors (missing documents, authorization, stale resolutions) live in the
+/// protocol layer, not here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeError {
+    /// The child's stored `base` snapshot is present but does not parse as a
+    /// `MergeBase`. A corrupt snapshot cannot carry correlation information
+    /// the merge could trust, and falling back to a clean template-wins
+    /// merge would silently destroy child-local edits — so the pull fails
+    /// closed and nothing is written. Carries no user data: the offending
+    /// document is identified by the caller's context.
+    CorruptBase,
+}
+
+impl std::fmt::Display for MergeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MergeError::CorruptBase => {
+                f.write_str("the stored merge base does not parse as a MergeBase snapshot")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MergeError {}
 
 /// How `take_template` resolves a conflict: `"set"` writes the parent value,
 /// `"delete"` removes the key. Mirrors the client `Conflict.parentKind`.

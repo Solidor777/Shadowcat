@@ -2,7 +2,9 @@
 //
 // Default mode asserts the engine reproduces `__fixtures__/merge-conformance.json` exactly —
 // the fixture is the measured behaviour of this implementation, and the server's Rust twin
-// asserts byte-identical results against the same file forever. Generation mode
+// asserts byte-identical results against the same file forever. Default mode also asserts the
+// fixture's stored inputs are exactly the serialized case matrix below, so a stale or
+// hand-edited fixture fails instead of silently passing. Generation mode
 // (`MERGE_CORPUS_GENERATE=1`) re-runs the case matrix below and (over)writes the fixture;
 // a regeneration that produces no diff is the equivalence evidence.
 //
@@ -121,10 +123,28 @@ const CASES: CorpusCase[] = [
     child: doc({ id: "c1", source: fromTemplate("t1"), system: { hp: 3 } }),
   },
   {
+    // Both sides ADD the same key with different values: the snapshot has no value at the
+    // conflict path, so the conflict's `base` key is ABSENT from the serialized JSON (the
+    // `skip_serializing_if` contract on `MergeConflict.base`), not present-null.
+    name: "both-add-absent-base-conflict",
+    base: base({}),
+    parent: doc({ id: "t1", system: { hp: 2 } }),
+    child: doc({ id: "c1", source: fromTemplate("t1"), system: { hp: 3 } }),
+  },
+  {
     name: "same-result-no-conflict",
     base: base({ system: { hp: 1 } }),
     parent: doc({ id: "t1", system: { hp: 5 } }),
     child: doc({ id: "c1", source: fromTemplate("t1"), system: { hp: 5 } }),
+  },
+  {
+    // Same-result suppression with an extra child change SIBLING to the exact match: the
+    // sibling path does not overlap the parent diff, so the exact match stays the sole
+    // overlap and the same-result suppression still applies.
+    name: "same-result-sibling-change-no-conflict",
+    base: base({ system: { a: { b: 1, c: 1 } } }),
+    parent: doc({ id: "t1", system: { a: { b: 2, c: 1 } } }),
+    child: doc({ id: "c1", source: fromTemplate("t1"), system: { a: { b: 2, c: 9 } } }),
   },
   {
     name: "parent-set-child-delete-conflict",
@@ -214,6 +234,26 @@ const CASES: CorpusCase[] = [
     base: base({ name: "A", engine: { e: 1 }, system: { s: 1 } }),
     parent: doc({ id: "t1", name: "B", engine: { e: 2 }, system: { s: 2 } }),
     child: doc({ id: "c1", source: fromTemplate("t1"), name: "C", engine: { e: 3 }, system: { s: 3 } }),
+  },
+  {
+    // A case with BOTH top-level and embedded conflicts pins the concatenation order:
+    // every tree conflict (sorted) precedes every embedded conflict.
+    name: "conflict-order-tree-then-embedded",
+    base: base({
+      system: { hp: 1 },
+      embedded: { items: [baseChild({ sourceId: "tc1", system: { x: 1 } })] },
+    }),
+    parent: doc({
+      id: "t1",
+      system: { hp: 2 },
+      embedded: { items: [doc({ id: "tc1", system: { x: 2 } })] },
+    }),
+    child: doc({
+      id: "c1",
+      source: fromTemplate("t1"),
+      system: { hp: 3 },
+      embedded: { items: [doc({ id: "ic1", source: fromTemplate("tc1"), system: { x: 3 } })] },
+    }),
   },
   {
     name: "embedded-correlated-merge",
@@ -363,6 +403,70 @@ const CASES: CorpusCase[] = [
     }),
   },
   {
+    // The FIRST instance child is template-deleted-unchanged (dropped from the output) while
+    // a LATER child conflicts: the conflict's index is the child's position in the OUTPUT
+    // array being built, so the surviving first-out child is `/embedded/items/0`, not `1`.
+    name: "embedded-conflict-index-after-drop",
+    base: base({
+      embedded: {
+        items: [
+          baseChild({ sourceId: "tc1", system: { hp: 1 } }),
+          baseChild({ sourceId: "tc2", system: { hp: 1 } }),
+        ],
+      },
+    }),
+    parent: doc({ id: "t1", embedded: { items: [doc({ id: "tc2", system: { hp: 2 } })] } }),
+    child: doc({
+      id: "c1",
+      source: fromTemplate("t1"),
+      embedded: {
+        items: [
+          doc({ id: "ic1", source: fromTemplate("tc1"), system: { hp: 1 } }),
+          doc({ id: "ic2", source: fromTemplate("tc2"), system: { hp: 3 } }),
+        ],
+      },
+    }),
+  },
+  {
+    // A template-embedded child that ITSELF carries provenance keeps its stored
+    // `source.version` through the restamp: the copy's new provenance reads
+    // `{ id: <template child>, version: 3 }`, not the `?? 1` fallback.
+    name: "embedded-restamp-version-passthrough",
+    base: base({ embedded: { items: [baseChild({ sourceId: "tc1", system: { hp: 1 } })] } }),
+    parent: doc({
+      id: "t1",
+      embedded: {
+        items: [
+          doc({ id: "tc1", system: { hp: 1 } }),
+          doc({ id: "tc2", source: { id: "other-t", pack: null, version: 3 }, system: { k: 1 } }),
+        ],
+      },
+    }),
+    child: doc({
+      id: "c1",
+      source: fromTemplate("t1"),
+      embedded: { items: [doc({ id: "ic1", source: fromTemplate("tc1"), system: { hp: 1 } })] },
+    }),
+  },
+  {
+    // An instance child whose non-null `source.id` is FOREIGN (in neither the template's
+    // child ids nor the base's membership records) is the third correlation shape: not
+    // correlated at all, so it is kept as instance-added, exactly like a source-less child.
+    name: "embedded-foreign-source-kept",
+    base: base({ embedded: { items: [baseChild({ sourceId: "tc1", system: { hp: 1 } })] } }),
+    parent: doc({ id: "t1", embedded: { items: [doc({ id: "tc1", system: { hp: 1 } })] } }),
+    child: doc({
+      id: "c1",
+      source: fromTemplate("t1"),
+      embedded: {
+        items: [
+          doc({ id: "ic1", source: fromTemplate("tc1"), system: { hp: 1 } }),
+          doc({ id: "ic2", source: fromTemplate("foreign1"), system: { own: true } }),
+        ],
+      },
+    }),
+  },
+  {
     name: "resolve-takes-template",
     kind: "resolve",
     theirs: ["/system/hp"],
@@ -415,6 +519,54 @@ const CASES: CorpusCase[] = [
     child: doc({ id: "c1", source: fromTemplate("t1"), name: "A", engine: { e: 1 }, system: { hp: 1 } }),
   },
   {
+    // Taking the template's side of an ancestor/descendant conflict: the child deleted the
+    // whole `a` object, so the merged bands lack the intermediate container and the resolve
+    // must CREATE `/system/a` before writing `/system/a/b` (setPointer descent).
+    name: "resolve-ancestor-delete-takes-template",
+    kind: "resolve",
+    theirs: ["/system/a/b"],
+    base: base({ system: { a: { b: 1 } } }),
+    parent: doc({ id: "t1", system: { a: { b: 2 } } }),
+    child: doc({ id: "c1", source: fromTemplate("t1"), system: {} }),
+  },
+  {
+    // Taking the template's side of a top-level `parentKind: "delete"` conflict: the key is
+    // REMOVED from the merged bands (deletePointer), not written.
+    name: "resolve-parent-delete-takes-template",
+    kind: "resolve",
+    theirs: ["/system/hp"],
+    base: base({ system: { hp: 1 } }),
+    parent: doc({ id: "t1", system: {} }),
+    child: doc({ id: "c1", source: fromTemplate("t1"), system: { hp: 3 } }),
+  },
+  {
+    // Escaped-token keys resolved toward the template: `/system/a~1b` unescapes to the key
+    // `a/b` and `/system/c~0d` to `c~d` (both escape forms) before the value is written.
+    name: "resolve-escaped-keys-take-template",
+    kind: "resolve",
+    theirs: ["/system/a~1b", "/system/c~0d"],
+    base: base({ system: { "a/b": 1, "c~d": 1 } }),
+    parent: doc({ id: "t1", system: { "a/b": 2, "c~d": 2 } }),
+    child: doc({ id: "c1", source: fromTemplate("t1"), system: { "a/b": 3, "c~d": 9 } }),
+  },
+  {
+    // Two embedded collections change in one merge: the update's collection changes come in
+    // sorted collection-key order (`items` before `spells`), pinning both the sorted
+    // collection iteration and `planToUpdate`'s changes-array order.
+    name: "plan-multi-collection-order",
+    kind: "resolve",
+    theirs: [],
+    base: base({ embedded: { items: [], spells: [] } }),
+    parent: doc({
+      id: "t1",
+      embedded: {
+        spells: [doc({ id: "ts1", system: { s: 1 } })],
+        items: [doc({ id: "ti1", system: { i: 1 } })],
+      },
+    }),
+    child: doc({ id: "c1", source: fromTemplate("t1"), embedded: { items: [], spells: [] } }),
+  },
+  {
     name: "revert-bands-take-template",
     kind: "revert",
     base: base({ name: "T", engine: { x: 99, hp: 5 }, system: { s: 1 } }),
@@ -445,6 +597,63 @@ const CASES: CorpusCase[] = [
     base: base({ embedded: { items: [baseChild({ sourceId: "tc1", system: { k: 1 } })] } }),
     parent: doc({ id: "t1", embedded: { items: [doc({ id: "tc1", system: { k: 1 } })] } }),
     child: doc({ id: "c1", source: fromTemplate("t1"), embedded: { items: [] } }),
+  },
+  {
+    // Revert at embedded depth 2: the recursion must reset each level against the TEMPLATE
+    // side (template-first argument order) — a locally edited grandchild resets to the
+    // template grandchild's bands, a locally added grandchild is dropped, and a locally
+    // deleted grandchild is restamped back in.
+    name: "revert-nested-embedded",
+    kind: "revert",
+    base: base({
+      embedded: {
+        items: [
+          baseChild({
+            sourceId: "tc1",
+            system: { a: 5 },
+            embedded: {
+              sub: [
+                baseChild({ sourceId: "gc1", system: { deep: 7 } }),
+                baseChild({ sourceId: "gc2", system: { deep: 8 } }),
+              ],
+            },
+          }),
+        ],
+      },
+    }),
+    parent: doc({
+      id: "t1",
+      embedded: {
+        items: [
+          doc({
+            id: "tc1",
+            system: { a: 5 },
+            embedded: {
+              sub: [doc({ id: "gc1", system: { deep: 7 } }), doc({ id: "gc2", system: { deep: 8 } })],
+            },
+          }),
+        ],
+      },
+    }),
+    child: doc({
+      id: "c1",
+      source: fromTemplate("t1"),
+      embedded: {
+        items: [
+          doc({
+            id: "ic1",
+            source: fromTemplate("tc1"),
+            system: { a: 9 },
+            embedded: {
+              sub: [
+                doc({ id: "igc1", source: fromTemplate("gc1"), system: { deep: 1 } }),
+                doc({ id: "ilocal", system: { own: 1 } }),
+              ],
+            },
+          }),
+        ],
+      },
+    }),
   },
   {
     name: "revert-no-op-still-emits-base",
@@ -537,8 +746,10 @@ function runCase(c: CorpusCase): Record<string, unknown> {
   ) as Record<string, unknown>;
 }
 
-/** Serialize one authored case for the fixture: normalized inputs plus its expected output. */
-function serializeCase(c: CorpusCase): CorpusCase {
+/** Serialize one authored case's INPUTS for the fixture (no expected output). Shared by
+ * generation mode (which appends `expect`) and assertion mode's provenance check, so a
+ * stale or hand-edited fixture fails identically in both. */
+function serializeInputs(c: CorpusCase): Omit<CorpusCase, "expect"> {
   const known = collectIds([c.child, c.parent]);
   return {
     name: c.name,
@@ -547,8 +758,12 @@ function serializeCase(c: CorpusCase): CorpusCase {
     parent: normalize(c.parent, known) as WireDocument,
     child: normalize(c.child, known) as WireDocument,
     ...(c.theirs !== undefined ? { theirs: c.theirs } : {}),
-    expect: runCase(c),
   };
+}
+
+/** Serialize one authored case for the fixture: normalized inputs plus its expected output. */
+function serializeCase(c: CorpusCase): CorpusCase {
+  return { ...serializeInputs(c), expect: runCase(c) };
 }
 
 describe("merge conformance corpus", () => {
@@ -569,6 +784,15 @@ describe("merge conformance corpus", () => {
   it("covers every case kind", () => {
     const kinds = new Set(corpus.cases.map((c) => c.kind ?? "pull"));
     expect(kinds).toEqual(new Set<CaseKind>(["pull", "resolve", "revert"]));
+  });
+
+  it("stores inputs identical to the case matrix (no stale or hand-edited fixture)", () => {
+    const stored = corpus.cases.map((c) => {
+      const inputs = { ...c };
+      delete inputs.expect;
+      return inputs;
+    });
+    expect(stored).toEqual(CASES.map(serializeInputs));
   });
 
   for (const c of corpus.cases) {

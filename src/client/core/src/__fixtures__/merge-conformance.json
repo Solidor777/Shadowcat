@@ -261,6 +261,95 @@
       }
     },
     {
+      "name": "both-add-absent-base-conflict",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {},
+        "embedded": {}
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "hp": 2
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "hp": 3
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {
+            "hp": 3
+          },
+          "embedded": {}
+        },
+        "conflicts": [
+          {
+            "path": "/system/hp",
+            "parent": 2,
+            "child": 3,
+            "parentKind": "set"
+          }
+        ]
+      }
+    },
+    {
       "name": "same-result-no-conflict",
       "base": {
         "name": null,
@@ -338,6 +427,102 @@
           "engine": null,
           "system": {
             "hp": 5
+          },
+          "embedded": {}
+        },
+        "conflicts": []
+      }
+    },
+    {
+      "name": "same-result-sibling-change-no-conflict",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {
+          "a": {
+            "b": 1,
+            "c": 1
+          }
+        },
+        "embedded": {}
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "a": {
+            "b": 2,
+            "c": 1
+          }
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "a": {
+            "b": 2,
+            "c": 9
+          }
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {
+            "a": {
+              "b": 2,
+              "c": 9
+            }
           },
           "embedded": {}
         },
@@ -1644,6 +1829,221 @@
           },
           {
             "path": "/system/s",
+            "base": 1,
+            "parent": 2,
+            "child": 3,
+            "parentKind": "set"
+          }
+        ]
+      }
+    },
+    {
+      "name": "conflict-order-tree-then-embedded",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {
+          "hp": 1
+        },
+        "embedded": {
+          "items": [
+            {
+              "name": null,
+              "engine": null,
+              "system": {
+                "x": 1
+              },
+              "embedded": {},
+              "sourceId": "tc1"
+            }
+          ]
+        }
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "tc1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "x": 2
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {
+          "hp": 2
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "ic1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "tc1",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "x": 3
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {
+          "hp": 3
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {
+            "hp": 3
+          },
+          "embedded": {
+            "items": [
+              {
+                "id": "ic1",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "tc1",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "x": 3
+                },
+                "created_at": 0,
+                "updated_at": 0
+              }
+            ]
+          }
+        },
+        "conflicts": [
+          {
+            "path": "/system/hp",
+            "base": 1,
+            "parent": 2,
+            "child": 3,
+            "parentKind": "set"
+          },
+          {
+            "path": "/embedded/items/0/system/x",
             "base": 1,
             "parent": 2,
             "child": 3,
@@ -3627,6 +4027,764 @@
       }
     },
     {
+      "name": "embedded-conflict-index-after-drop",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {},
+        "embedded": {
+          "items": [
+            {
+              "name": null,
+              "engine": null,
+              "system": {
+                "hp": 1
+              },
+              "embedded": {},
+              "sourceId": "tc1"
+            },
+            {
+              "name": null,
+              "engine": null,
+              "system": {
+                "hp": 1
+              },
+              "embedded": {},
+              "sourceId": "tc2"
+            }
+          ]
+        }
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "tc2",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 2
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "ic1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "tc1",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            },
+            {
+              "id": "ic2",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "tc2",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 3
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {},
+          "embedded": {
+            "items": [
+              {
+                "id": "ic2",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "tc2",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "hp": 3
+                },
+                "created_at": 0,
+                "updated_at": 0
+              }
+            ]
+          }
+        },
+        "conflicts": [
+          {
+            "path": "/embedded/items/0/system/hp",
+            "base": 1,
+            "parent": 2,
+            "child": 3,
+            "parentKind": "set"
+          }
+        ]
+      }
+    },
+    {
+      "name": "embedded-restamp-version-passthrough",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {},
+        "embedded": {
+          "items": [
+            {
+              "name": null,
+              "engine": null,
+              "system": {
+                "hp": 1
+              },
+              "embedded": {},
+              "sourceId": "tc1"
+            }
+          ]
+        }
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "tc1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            },
+            {
+              "id": "tc2",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "other-t",
+                "pack": null,
+                "version": 3
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "k": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "ic1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "tc1",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {},
+          "embedded": {
+            "items": [
+              {
+                "id": "ic1",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "tc1",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "hp": 1
+                },
+                "created_at": 0,
+                "updated_at": 0
+              },
+              {
+                "id": "restamped-1",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "tc2",
+                  "pack": null,
+                  "version": 3
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "k": 1
+                },
+                "created_at": 0,
+                "updated_at": 0
+              }
+            ]
+          }
+        },
+        "conflicts": []
+      }
+    },
+    {
+      "name": "embedded-foreign-source-kept",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {},
+        "embedded": {
+          "items": [
+            {
+              "name": null,
+              "engine": null,
+              "system": {
+                "hp": 1
+              },
+              "embedded": {},
+              "sourceId": "tc1"
+            }
+          ]
+        }
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "tc1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "ic1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "tc1",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "hp": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            },
+            {
+              "id": "ic2",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "foreign1",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "own": true
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {},
+          "embedded": {
+            "items": [
+              {
+                "id": "ic1",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "tc1",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "hp": 1
+                },
+                "created_at": 0,
+                "updated_at": 0
+              },
+              {
+                "id": "ic2",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "foreign1",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "own": true
+                },
+                "created_at": 0,
+                "updated_at": 0
+              }
+            ]
+          }
+        },
+        "conflicts": []
+      }
+    },
+    {
       "name": "resolve-takes-template",
       "kind": "resolve",
       "base": {
@@ -4574,6 +5732,751 @@
       }
     },
     {
+      "name": "resolve-ancestor-delete-takes-template",
+      "kind": "resolve",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {
+          "a": {
+            "b": 1
+          }
+        },
+        "embedded": {}
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "a": {
+            "b": 2
+          }
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "theirs": [
+        "/system/a/b"
+      ],
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {},
+          "embedded": {}
+        },
+        "conflicts": [
+          {
+            "path": "/system/a/b",
+            "base": 1,
+            "parent": 2,
+            "parentKind": "set"
+          }
+        ],
+        "update": {
+          "op": "update",
+          "doc_id": "c1",
+          "changes": [
+            {
+              "path": "/system",
+              "old": {},
+              "new": {
+                "a": {
+                  "b": 2
+                }
+              }
+            },
+            {
+              "path": "/base",
+              "old": {
+                "name": null,
+                "engine": null,
+                "system": {
+                  "a": {
+                    "b": 1
+                  }
+                },
+                "embedded": {}
+              },
+              "new": {
+                "name": null,
+                "engine": null,
+                "system": {
+                  "a": {
+                    "b": 2
+                  }
+                },
+                "embedded": {}
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "resolve-parent-delete-takes-template",
+      "kind": "resolve",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {
+          "hp": 1
+        },
+        "embedded": {}
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "hp": 3
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "theirs": [
+        "/system/hp"
+      ],
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {
+            "hp": 3
+          },
+          "embedded": {}
+        },
+        "conflicts": [
+          {
+            "path": "/system/hp",
+            "base": 1,
+            "child": 3,
+            "parentKind": "delete"
+          }
+        ],
+        "update": {
+          "op": "update",
+          "doc_id": "c1",
+          "changes": [
+            {
+              "path": "/system",
+              "old": {
+                "hp": 3
+              },
+              "new": {}
+            },
+            {
+              "path": "/base",
+              "old": {
+                "name": null,
+                "engine": null,
+                "system": {
+                  "hp": 1
+                },
+                "embedded": {}
+              },
+              "new": {
+                "name": null,
+                "engine": null,
+                "system": {},
+                "embedded": {}
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "resolve-escaped-keys-take-template",
+      "kind": "resolve",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {
+          "a/b": 1,
+          "c~d": 1
+        },
+        "embedded": {}
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "a/b": 2,
+          "c~d": 2
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {},
+        "parent_id": null,
+        "system": {
+          "a/b": 3,
+          "c~d": 9
+        },
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "theirs": [
+        "/system/a~1b",
+        "/system/c~0d"
+      ],
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {
+            "a/b": 3,
+            "c~d": 9
+          },
+          "embedded": {}
+        },
+        "conflicts": [
+          {
+            "path": "/system/a~1b",
+            "base": 1,
+            "parent": 2,
+            "child": 3,
+            "parentKind": "set"
+          },
+          {
+            "path": "/system/c~0d",
+            "base": 1,
+            "parent": 2,
+            "child": 9,
+            "parentKind": "set"
+          }
+        ],
+        "update": {
+          "op": "update",
+          "doc_id": "c1",
+          "changes": [
+            {
+              "path": "/system",
+              "old": {
+                "a/b": 3,
+                "c~d": 9
+              },
+              "new": {
+                "a/b": 2,
+                "c~d": 2
+              }
+            },
+            {
+              "path": "/base",
+              "old": {
+                "name": null,
+                "engine": null,
+                "system": {
+                  "a/b": 1,
+                  "c~d": 1
+                },
+                "embedded": {}
+              },
+              "new": {
+                "name": null,
+                "engine": null,
+                "system": {
+                  "a/b": 2,
+                  "c~d": 2
+                },
+                "embedded": {}
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "plan-multi-collection-order",
+      "kind": "resolve",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {},
+        "embedded": {
+          "items": [],
+          "spells": []
+        }
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "spells": [
+            {
+              "id": "ts1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "s": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ],
+          "items": [
+            {
+              "id": "ti1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {},
+              "parent_id": null,
+              "system": {
+                "i": 1
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [],
+          "spells": []
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "theirs": [],
+      "expect": {
+        "mergedBands": {
+          "name": null,
+          "engine": null,
+          "system": {},
+          "embedded": {
+            "items": [
+              {
+                "id": "restamped-1",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "ti1",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "i": 1
+                },
+                "created_at": 0,
+                "updated_at": 0
+              }
+            ],
+            "spells": [
+              {
+                "id": "restamped-2",
+                "scope": {
+                  "kind": "world",
+                  "world_id": "w1"
+                },
+                "doc_type": "actor",
+                "schema_version": 1,
+                "name": null,
+                "source": {
+                  "id": "ts1",
+                  "pack": null,
+                  "version": 1
+                },
+                "owner": null,
+                "permissions": {
+                  "default": "none",
+                  "users": {},
+                  "property_overrides": {},
+                  "capabilities": {
+                    "by_role": {},
+                    "by_user": {}
+                  },
+                  "gm_role": null
+                },
+                "embedded": {},
+                "parent_id": null,
+                "system": {
+                  "s": 1
+                },
+                "created_at": 0,
+                "updated_at": 0
+              }
+            ]
+          }
+        },
+        "conflicts": [],
+        "update": {
+          "op": "update",
+          "doc_id": "c1",
+          "changes": [
+            {
+              "path": "/embedded/items",
+              "old": [],
+              "new": [
+                {
+                  "id": "restamped-1",
+                  "scope": {
+                    "kind": "world",
+                    "world_id": "w1"
+                  },
+                  "doc_type": "actor",
+                  "schema_version": 1,
+                  "name": null,
+                  "source": {
+                    "id": "ti1",
+                    "pack": null,
+                    "version": 1
+                  },
+                  "owner": null,
+                  "permissions": {
+                    "default": "none",
+                    "users": {},
+                    "property_overrides": {},
+                    "capabilities": {
+                      "by_role": {},
+                      "by_user": {}
+                    },
+                    "gm_role": null
+                  },
+                  "embedded": {},
+                  "parent_id": null,
+                  "system": {
+                    "i": 1
+                  },
+                  "created_at": 0,
+                  "updated_at": 0
+                }
+              ]
+            },
+            {
+              "path": "/embedded/spells",
+              "old": [],
+              "new": [
+                {
+                  "id": "restamped-2",
+                  "scope": {
+                    "kind": "world",
+                    "world_id": "w1"
+                  },
+                  "doc_type": "actor",
+                  "schema_version": 1,
+                  "name": null,
+                  "source": {
+                    "id": "ts1",
+                    "pack": null,
+                    "version": 1
+                  },
+                  "owner": null,
+                  "permissions": {
+                    "default": "none",
+                    "users": {},
+                    "property_overrides": {},
+                    "capabilities": {
+                      "by_role": {},
+                      "by_user": {}
+                    },
+                    "gm_role": null
+                  },
+                  "embedded": {},
+                  "parent_id": null,
+                  "system": {
+                    "s": 1
+                  },
+                  "created_at": 0,
+                  "updated_at": 0
+                }
+              ]
+            },
+            {
+              "path": "/base",
+              "old": {
+                "name": null,
+                "engine": null,
+                "system": {},
+                "embedded": {
+                  "items": [],
+                  "spells": []
+                }
+              },
+              "new": {
+                "name": null,
+                "engine": null,
+                "system": {},
+                "embedded": {
+                  "spells": [
+                    {
+                      "sourceId": "ts1",
+                      "name": null,
+                      "engine": null,
+                      "system": {
+                        "s": 1
+                      },
+                      "embedded": {}
+                    }
+                  ],
+                  "items": [
+                    {
+                      "sourceId": "ti1",
+                      "name": null,
+                      "engine": null,
+                      "system": {
+                        "i": 1
+                      },
+                      "embedded": {}
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
       "name": "revert-bands-take-template",
       "kind": "revert",
       "base": {
@@ -5149,6 +7052,597 @@
                         "k": 1
                       },
                       "embedded": {}
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "revert-nested-embedded",
+      "kind": "revert",
+      "base": {
+        "name": null,
+        "engine": null,
+        "system": {},
+        "embedded": {
+          "items": [
+            {
+              "name": null,
+              "engine": null,
+              "system": {
+                "a": 5
+              },
+              "embedded": {
+                "sub": [
+                  {
+                    "name": null,
+                    "engine": null,
+                    "system": {
+                      "deep": 7
+                    },
+                    "embedded": {},
+                    "sourceId": "gc1"
+                  },
+                  {
+                    "name": null,
+                    "engine": null,
+                    "system": {
+                      "deep": 8
+                    },
+                    "embedded": {},
+                    "sourceId": "gc2"
+                  }
+                ]
+              },
+              "sourceId": "tc1"
+            }
+          ]
+        }
+      },
+      "parent": {
+        "id": "t1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": null,
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "tc1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": null,
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {
+                "sub": [
+                  {
+                    "id": "gc1",
+                    "scope": {
+                      "kind": "world",
+                      "world_id": "w1"
+                    },
+                    "doc_type": "actor",
+                    "schema_version": 1,
+                    "name": null,
+                    "source": null,
+                    "owner": null,
+                    "permissions": {
+                      "default": "none",
+                      "users": {},
+                      "property_overrides": {},
+                      "capabilities": {
+                        "by_role": {},
+                        "by_user": {}
+                      },
+                      "gm_role": null
+                    },
+                    "embedded": {},
+                    "parent_id": null,
+                    "system": {
+                      "deep": 7
+                    },
+                    "created_at": 0,
+                    "updated_at": 0
+                  },
+                  {
+                    "id": "gc2",
+                    "scope": {
+                      "kind": "world",
+                      "world_id": "w1"
+                    },
+                    "doc_type": "actor",
+                    "schema_version": 1,
+                    "name": null,
+                    "source": null,
+                    "owner": null,
+                    "permissions": {
+                      "default": "none",
+                      "users": {},
+                      "property_overrides": {},
+                      "capabilities": {
+                        "by_role": {},
+                        "by_user": {}
+                      },
+                      "gm_role": null
+                    },
+                    "embedded": {},
+                    "parent_id": null,
+                    "system": {
+                      "deep": 8
+                    },
+                    "created_at": 0,
+                    "updated_at": 0
+                  }
+                ]
+              },
+              "parent_id": null,
+              "system": {
+                "a": 5
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "child": {
+        "id": "c1",
+        "scope": {
+          "kind": "world",
+          "world_id": "w1"
+        },
+        "doc_type": "actor",
+        "schema_version": 1,
+        "name": null,
+        "source": {
+          "id": "t1",
+          "pack": null,
+          "version": 1
+        },
+        "owner": null,
+        "permissions": {
+          "default": "none",
+          "users": {},
+          "property_overrides": {},
+          "capabilities": {
+            "by_role": {},
+            "by_user": {}
+          },
+          "gm_role": null
+        },
+        "embedded": {
+          "items": [
+            {
+              "id": "ic1",
+              "scope": {
+                "kind": "world",
+                "world_id": "w1"
+              },
+              "doc_type": "actor",
+              "schema_version": 1,
+              "name": null,
+              "source": {
+                "id": "tc1",
+                "pack": null,
+                "version": 1
+              },
+              "owner": null,
+              "permissions": {
+                "default": "none",
+                "users": {},
+                "property_overrides": {},
+                "capabilities": {
+                  "by_role": {},
+                  "by_user": {}
+                },
+                "gm_role": null
+              },
+              "embedded": {
+                "sub": [
+                  {
+                    "id": "igc1",
+                    "scope": {
+                      "kind": "world",
+                      "world_id": "w1"
+                    },
+                    "doc_type": "actor",
+                    "schema_version": 1,
+                    "name": null,
+                    "source": {
+                      "id": "gc1",
+                      "pack": null,
+                      "version": 1
+                    },
+                    "owner": null,
+                    "permissions": {
+                      "default": "none",
+                      "users": {},
+                      "property_overrides": {},
+                      "capabilities": {
+                        "by_role": {},
+                        "by_user": {}
+                      },
+                      "gm_role": null
+                    },
+                    "embedded": {},
+                    "parent_id": null,
+                    "system": {
+                      "deep": 1
+                    },
+                    "created_at": 0,
+                    "updated_at": 0
+                  },
+                  {
+                    "id": "ilocal",
+                    "scope": {
+                      "kind": "world",
+                      "world_id": "w1"
+                    },
+                    "doc_type": "actor",
+                    "schema_version": 1,
+                    "name": null,
+                    "source": null,
+                    "owner": null,
+                    "permissions": {
+                      "default": "none",
+                      "users": {},
+                      "property_overrides": {},
+                      "capabilities": {
+                        "by_role": {},
+                        "by_user": {}
+                      },
+                      "gm_role": null
+                    },
+                    "embedded": {},
+                    "parent_id": null,
+                    "system": {
+                      "own": 1
+                    },
+                    "created_at": 0,
+                    "updated_at": 0
+                  }
+                ]
+              },
+              "parent_id": null,
+              "system": {
+                "a": 9
+              },
+              "created_at": 0,
+              "updated_at": 0
+            }
+          ]
+        },
+        "parent_id": null,
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0
+      },
+      "expect": {
+        "update": {
+          "op": "update",
+          "doc_id": "c1",
+          "changes": [
+            {
+              "path": "/embedded/items",
+              "old": [
+                {
+                  "id": "ic1",
+                  "scope": {
+                    "kind": "world",
+                    "world_id": "w1"
+                  },
+                  "doc_type": "actor",
+                  "schema_version": 1,
+                  "name": null,
+                  "source": {
+                    "id": "tc1",
+                    "pack": null,
+                    "version": 1
+                  },
+                  "owner": null,
+                  "permissions": {
+                    "default": "none",
+                    "users": {},
+                    "property_overrides": {},
+                    "capabilities": {
+                      "by_role": {},
+                      "by_user": {}
+                    },
+                    "gm_role": null
+                  },
+                  "embedded": {
+                    "sub": [
+                      {
+                        "id": "igc1",
+                        "scope": {
+                          "kind": "world",
+                          "world_id": "w1"
+                        },
+                        "doc_type": "actor",
+                        "schema_version": 1,
+                        "name": null,
+                        "source": {
+                          "id": "gc1",
+                          "pack": null,
+                          "version": 1
+                        },
+                        "owner": null,
+                        "permissions": {
+                          "default": "none",
+                          "users": {},
+                          "property_overrides": {},
+                          "capabilities": {
+                            "by_role": {},
+                            "by_user": {}
+                          },
+                          "gm_role": null
+                        },
+                        "embedded": {},
+                        "parent_id": null,
+                        "system": {
+                          "deep": 1
+                        },
+                        "created_at": 0,
+                        "updated_at": 0
+                      },
+                      {
+                        "id": "ilocal",
+                        "scope": {
+                          "kind": "world",
+                          "world_id": "w1"
+                        },
+                        "doc_type": "actor",
+                        "schema_version": 1,
+                        "name": null,
+                        "source": null,
+                        "owner": null,
+                        "permissions": {
+                          "default": "none",
+                          "users": {},
+                          "property_overrides": {},
+                          "capabilities": {
+                            "by_role": {},
+                            "by_user": {}
+                          },
+                          "gm_role": null
+                        },
+                        "embedded": {},
+                        "parent_id": null,
+                        "system": {
+                          "own": 1
+                        },
+                        "created_at": 0,
+                        "updated_at": 0
+                      }
+                    ]
+                  },
+                  "parent_id": null,
+                  "system": {
+                    "a": 9
+                  },
+                  "created_at": 0,
+                  "updated_at": 0
+                }
+              ],
+              "new": [
+                {
+                  "id": "ic1",
+                  "scope": {
+                    "kind": "world",
+                    "world_id": "w1"
+                  },
+                  "doc_type": "actor",
+                  "schema_version": 1,
+                  "name": null,
+                  "source": {
+                    "id": "tc1",
+                    "pack": null,
+                    "version": 1
+                  },
+                  "owner": null,
+                  "permissions": {
+                    "default": "none",
+                    "users": {},
+                    "property_overrides": {},
+                    "capabilities": {
+                      "by_role": {},
+                      "by_user": {}
+                    },
+                    "gm_role": null
+                  },
+                  "embedded": {
+                    "sub": [
+                      {
+                        "id": "igc1",
+                        "scope": {
+                          "kind": "world",
+                          "world_id": "w1"
+                        },
+                        "doc_type": "actor",
+                        "schema_version": 1,
+                        "name": null,
+                        "source": {
+                          "id": "gc1",
+                          "pack": null,
+                          "version": 1
+                        },
+                        "owner": null,
+                        "permissions": {
+                          "default": "none",
+                          "users": {},
+                          "property_overrides": {},
+                          "capabilities": {
+                            "by_role": {},
+                            "by_user": {}
+                          },
+                          "gm_role": null
+                        },
+                        "embedded": {},
+                        "parent_id": null,
+                        "system": {
+                          "deep": 7
+                        },
+                        "created_at": 0,
+                        "updated_at": 0
+                      },
+                      {
+                        "id": "restamped-1",
+                        "scope": {
+                          "kind": "world",
+                          "world_id": "w1"
+                        },
+                        "doc_type": "actor",
+                        "schema_version": 1,
+                        "name": null,
+                        "source": {
+                          "id": "gc2",
+                          "pack": null,
+                          "version": 1
+                        },
+                        "owner": null,
+                        "permissions": {
+                          "default": "none",
+                          "users": {},
+                          "property_overrides": {},
+                          "capabilities": {
+                            "by_role": {},
+                            "by_user": {}
+                          },
+                          "gm_role": null
+                        },
+                        "embedded": {},
+                        "parent_id": null,
+                        "system": {
+                          "deep": 8
+                        },
+                        "created_at": 0,
+                        "updated_at": 0
+                      }
+                    ]
+                  },
+                  "parent_id": null,
+                  "system": {
+                    "a": 5
+                  },
+                  "created_at": 0,
+                  "updated_at": 0
+                }
+              ]
+            },
+            {
+              "path": "/base",
+              "old": {
+                "name": null,
+                "engine": null,
+                "system": {},
+                "embedded": {
+                  "items": [
+                    {
+                      "name": null,
+                      "engine": null,
+                      "system": {
+                        "a": 5
+                      },
+                      "embedded": {
+                        "sub": [
+                          {
+                            "name": null,
+                            "engine": null,
+                            "system": {
+                              "deep": 7
+                            },
+                            "embedded": {},
+                            "sourceId": "gc1"
+                          },
+                          {
+                            "name": null,
+                            "engine": null,
+                            "system": {
+                              "deep": 8
+                            },
+                            "embedded": {},
+                            "sourceId": "gc2"
+                          }
+                        ]
+                      },
+                      "sourceId": "tc1"
+                    }
+                  ]
+                }
+              },
+              "new": {
+                "name": null,
+                "engine": null,
+                "system": {},
+                "embedded": {
+                  "items": [
+                    {
+                      "sourceId": "tc1",
+                      "name": null,
+                      "engine": null,
+                      "system": {
+                        "a": 5
+                      },
+                      "embedded": {
+                        "sub": [
+                          {
+                            "sourceId": "gc1",
+                            "name": null,
+                            "engine": null,
+                            "system": {
+                              "deep": 7
+                            },
+                            "embedded": {}
+                          },
+                          {
+                            "sourceId": "gc2",
+                            "name": null,
+                            "engine": null,
+                            "system": {
+                              "deep": 8
+                            },
+                            "embedded": {}
+                          }
+                        ]
+                      }
                     }
                   ]
                 }
