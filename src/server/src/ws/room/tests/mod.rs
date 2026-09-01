@@ -122,6 +122,13 @@ impl Repository for DeleteMidHydration<'_> {
     ) -> Result<Vec<Document>, DataError> {
         self.inner.documents_by_source(pack, source_id).await
     }
+    async fn instances_of(
+        &self,
+        world_id: Uuid,
+        template_id: Uuid,
+    ) -> Result<Vec<Document>, DataError> {
+        self.inner.instances_of(world_id, template_id).await
+    }
     async fn events_since(
         &self,
         world_id: Uuid,

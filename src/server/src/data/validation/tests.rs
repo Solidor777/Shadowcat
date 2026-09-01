@@ -511,7 +511,6 @@ fn validate_engine_tree_rejects_a_base_with_wrong_typed_members() {
     );
 
     let mut doc = doc_with_engine(valid_wall_engine());
-    let mut base = base;
     base["name"] = serde_json::json!("Old");
     base["embedded"] = serde_json::json!([]);
     doc.base = Some(base);

@@ -542,6 +542,104 @@ fn combat_start_pause_end_advance_rewind_sort_round_trip() {
 }
 
 #[test]
+fn merge_intents_and_replies_round_trip() {
+    let pull: ClientMsg = serde_json::from_value(serde_json::json!({
+        "type": "merge_pull", "request_id": Uuid::from_u128(1), "child_id": Uuid::from_u128(2),
+    }))
+    .unwrap();
+    assert!(matches!(
+        pull,
+        ClientMsg::MergePull {
+            resolutions: None,
+            ..
+        }
+    ));
+
+    let push = ClientMsg::MergePush {
+        request_id: Uuid::from_u128(3),
+        template_id: Uuid::from_u128(4),
+        resolutions: Some(
+            [(Uuid::from_u128(5), vec!["/system/hp".to_string()])]
+                .into_iter()
+                .collect(),
+        ),
+    };
+    let wire = serde_json::to_string(&push).unwrap();
+    assert!(wire.contains("\"type\":\"merge_push\""), "got {wire}");
+    let back: ClientMsg = serde_json::from_str(&wire).unwrap();
+    assert!(
+        matches!(&back, ClientMsg::MergePush { resolutions: Some(r), .. } if r[&Uuid::from_u128(5)] == ["/system/hp"])
+    );
+
+    let conflict = crate::merge::MergeConflict {
+        path: "/system/hp".into(),
+        base: Some(serde_json::json!(10)),
+        parent: Some(serde_json::json!(12)),
+        child: None,
+        parent_kind: crate::merge::ParentKind::Set,
+    };
+    let result = ServerMsg::MergeResult {
+        request_id: Uuid::from_u128(6),
+        outcome: MergeOutcome::Pull {
+            child_id: Uuid::from_u128(2),
+            status: MergePullStatus::Conflicts(vec![conflict]),
+        },
+    };
+    let j = serde_json::to_value(&result).unwrap();
+    assert_eq!(j["type"], "merge_result");
+    assert_eq!(j["outcome"]["kind"], "pull");
+    assert_eq!(j["outcome"]["status"]["conflicts"][0]["parentKind"], "set");
+    let back: ServerMsg = serde_json::from_value(j).unwrap();
+    assert!(matches!(
+        back,
+        ServerMsg::MergeResult {
+            outcome: MergeOutcome::Pull {
+                status: MergePullStatus::Conflicts(_),
+                ..
+            },
+            ..
+        }
+    ));
+
+    let err = ServerMsg::MergeError {
+        request_id: Uuid::from_u128(7),
+        reason: MergeErrorKind::StaleResolutions(MergeOutcome::Revert {
+            child_id: Uuid::from_u128(2),
+            status: MergeRevertStatus::Applied,
+        }),
+    };
+    let j = serde_json::to_value(&err).unwrap();
+    assert_eq!(j["type"], "merge_error");
+    assert_eq!(j["reason"]["stale_resolutions"]["kind"], "revert");
+    let back: ServerMsg = serde_json::from_value(j).unwrap();
+    assert!(matches!(
+        back,
+        ServerMsg::MergeError {
+            reason: MergeErrorKind::StaleResolutions(_),
+            ..
+        }
+    ));
+    for unit in [
+        MergeErrorKind::NotFound,
+        MergeErrorKind::NotAnInstance,
+        MergeErrorKind::Forbidden,
+        MergeErrorKind::CorruptBase,
+        MergeErrorKind::Internal,
+    ] {
+        assert!(serde_json::to_value(&unit).unwrap().is_string());
+    }
+    let excluded = PushInstanceOutcome {
+        instance_id: Uuid::from_u128(8),
+        name: None,
+        status: PushInstanceStatus::Excluded,
+    };
+    assert_eq!(
+        serde_json::to_value(&excluded).unwrap()["status"],
+        serde_json::json!("excluded")
+    );
+}
+
+#[test]
 fn combat_resource_set_op_round_trips() {
     let m = ClientMsg::CombatResource {
         request_id: Uuid::from_u128(1),

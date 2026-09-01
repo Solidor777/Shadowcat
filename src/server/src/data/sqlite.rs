@@ -4039,6 +4039,24 @@ impl Repository for SqliteRepository {
             .collect()
     }
 
+    async fn instances_of(
+        &self,
+        world_id: Uuid,
+        template_id: Uuid,
+    ) -> Result<Vec<Document>, DataError> {
+        let rows = sqlx::query(
+            "SELECT json FROM documents WHERE world_id = ? \
+             AND source_pack IS NULL AND source_id = ? ORDER BY id",
+        )
+        .bind(world_id.to_string())
+        .bind(template_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
+    }
+
     async fn events_since(
         &self,
         world_id: Uuid,

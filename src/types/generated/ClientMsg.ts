@@ -270,4 +270,38 @@ request_id: string,
 /**
  * The combat.
  */
-combat_id: string, };
+combat_id: string, } | { "type": "merge_pull", 
+/**
+ * Correlation token for `MergeResult`/`MergeError`.
+ */
+request_id: string, 
+/**
+ * The instance to merge the template into.
+ */
+child_id: string, 
+/**
+ * Second-call resolutions: the current conflict paths to take the template
+ * side of; every OTHER current conflict keeps the child side.
+ */
+resolutions?: Array<string>, } | { "type": "merge_push", 
+/**
+ * Correlation token for `MergeResult`/`MergeError`.
+ */
+request_id: string, 
+/**
+ * The template to push.
+ */
+template_id: string, 
+/**
+ * Second-call resolutions, per instance: the current conflict paths to take
+ * the template side of.
+ */
+resolutions?: { [key in string]: Array<string> }, } | { "type": "merge_revert", 
+/**
+ * Correlation token for `MergeResult`/`MergeError`.
+ */
+request_id: string, 
+/**
+ * The instance to reset.
+ */
+child_id: string, };

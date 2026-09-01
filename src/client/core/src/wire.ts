@@ -558,6 +558,166 @@ export type WireMoveStreamVisionSample = {
   polygons: [number, number][][];
 };
 
+/** A field changed on both the template (parent) and instance (child) sides since the last
+ * sync. `base`/`parent`/`child` are ABSENT (not `null`) when that side has no value at
+ * `path` — the template deleted it, the instance deleted it, or the snapshot never held it —
+ * matching the server engine's absent-not-null emission. Mirrors `merge::MergeConflict`. */
+export type WireMergeConflict = {
+  /** The RFC-6901 pointer of the conflicting field. */
+  path: string;
+  /** The last-synced snapshot's value at `path`; absent when the snapshot has no value
+   * there. */
+  base?: unknown;
+  /** The template side's current value at `path`; absent iff the template deleted it. */
+  parent?: unknown;
+  /** The instance side's current value at `path`; absent iff the instance deleted it. */
+  child?: unknown;
+  /** How taking the template side resolves this conflict: `set` writes `parent`, `delete`
+   * removes the key. */
+  parentKind: "set" | "delete";
+};
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const mergeConflictSchemaImpl = z.object({
+  path: z.string(),
+  base: z.unknown(),
+  parent: z.unknown(),
+  child: z.unknown(),
+  parentKind: z.enum(["set", "delete"]),
+});
+/** Validator for a `WireMergeConflict`. */
+export const MergeConflictSchema: z.ZodType<WireMergeConflict> = mergeConflictSchemaImpl;
+
+/** How a `merge_pull` resolved. In a plain `merge_result` reply, `applied` means the merge
+ * committed and a `conflicts` object means NOTHING was written — the conflict set is the
+ * client modal's input. In the fresh outcome carried by a `stale_resolutions`/
+ * `unknown_resolution` rejection, `applied` instead means "the merge is currently
+ * conflict-free; the rejected call wrote nothing". Mirrors `ws::protocol::MergePullStatus`. */
+export type WireMergePullStatus = "applied" | { conflicts: WireMergeConflict[] };
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const mergePullStatusSchemaImpl = z.union([
+  z.literal("applied"),
+  z.object({ conflicts: z.array(mergeConflictSchemaImpl) }),
+]);
+/** Validator for a `WireMergePullStatus`. */
+export const MergePullStatusSchema: z.ZodType<WireMergePullStatus> = mergePullStatusSchemaImpl;
+
+/** How one instance fared in a `merge_push`. `excluded` covers BOTH "not visible to the
+ * pusher" and "visible but not writable by the pusher" without disclosing which — mirroring
+ * redaction's existence-hiding. Mirrors `ws::protocol::PushInstanceStatus`. */
+export type WirePushInstanceStatus = "applied" | { conflicts: WireMergeConflict[] } | "excluded";
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const pushInstanceStatusSchemaImpl = z.union([
+  z.literal("applied"),
+  z.object({ conflicts: z.array(mergeConflictSchemaImpl) }),
+  z.literal("excluded"),
+]);
+/** Validator for a `WirePushInstanceStatus`. */
+export const PushInstanceStatusSchema: z.ZodType<WirePushInstanceStatus> =
+  pushInstanceStatusSchemaImpl;
+
+/** One instance's entry in a `merge_push` outcome. Mirrors
+ * `ws::protocol::PushInstanceOutcome`. */
+export type WirePushInstanceOutcome = {
+  /** The instance this entry reports. */
+  instance_id: string;
+  /** The pusher-VISIBLE display name for the modal's group label; `null` when the pusher
+   * cannot see the instance at all — an `excluded` entry never carries a name the pusher is
+   * not otherwise entitled to read. */
+  name: string | null;
+  /** What happened to this instance. */
+  status: WirePushInstanceStatus;
+};
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const pushInstanceOutcomeSchemaImpl = z.object({
+  instance_id: z.string(),
+  name: z.string().nullable(),
+  status: pushInstanceStatusSchemaImpl,
+});
+/** Validator for a `WirePushInstanceOutcome`. */
+export const PushInstanceOutcomeSchema: z.ZodType<WirePushInstanceOutcome> =
+  pushInstanceOutcomeSchemaImpl;
+
+/** The outcome of a merge intent, reported by `merge_result`. Mirrors
+ * `ws::protocol::MergeOutcome`. */
+export type WireMergeOutcome =
+  | {
+      /** Outcome of a `merge_pull`. */
+      kind: "pull";
+      /** The instance merged into. */
+      child_id: string;
+      /** Applied or conflicted (nothing written). A revert-style single status literal
+       * (`ws::protocol::MergeRevertStatus`) is used only by the `revert` arm below. */
+      status: WireMergePullStatus;
+    }
+  | {
+      /** Outcome of a `merge_push`: one entry per same-world instance of the template. */
+      kind: "push";
+      /** The template pushed. */
+      template_id: string;
+      /** Per-instance outcomes. */
+      instances: WirePushInstanceOutcome[];
+    }
+  | {
+      /** Outcome of a `merge_revert`. Revert never conflicts, so the status is always
+       * `applied` (`ws::protocol::MergeRevertStatus`). */
+      kind: "revert";
+      /** The instance reset. */
+      child_id: string;
+      /** Always `applied`. */
+      status: "applied";
+    };
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const mergeOutcomeSchemaImpl = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("pull"),
+    child_id: z.string(),
+    status: mergePullStatusSchemaImpl,
+  }),
+  z.object({
+    kind: z.literal("push"),
+    template_id: z.string(),
+    instances: z.array(pushInstanceOutcomeSchemaImpl),
+  }),
+  z.object({
+    kind: z.literal("revert"),
+    child_id: z.string(),
+    status: z.literal("applied"),
+  }),
+]);
+/** Validator for a `WireMergeOutcome`. */
+export const MergeOutcomeSchema: z.ZodType<WireMergeOutcome> = mergeOutcomeSchemaImpl;
+
+/** Why a merge intent was rejected. The `stale_resolutions`/`unknown_resolution` objects carry
+ * the FRESH outcome — the merge as recomputed from live documents at rejection time — so the
+ * client re-opens its modal without a round trip; their client-side handling is identical, the
+ * distinction is diagnostic. Mirrors `ws::protocol::MergeErrorKind`. */
+export type WireMergeErrorKind =
+  | "not_found"
+  | "not_an_instance"
+  | "forbidden"
+  | "corrupt_base"
+  | { stale_resolutions: WireMergeOutcome }
+  | { unknown_resolution: WireMergeOutcome }
+  | "internal";
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const mergeErrorKindSchemaImpl = z.union([
+  z.literal("not_found"),
+  z.literal("not_an_instance"),
+  z.literal("forbidden"),
+  z.literal("corrupt_base"),
+  z.object({ stale_resolutions: mergeOutcomeSchemaImpl }),
+  z.object({ unknown_resolution: mergeOutcomeSchemaImpl }),
+  z.literal("internal"),
+]);
+/** Validator for a `WireMergeErrorKind`. */
+export const MergeErrorKindSchema: z.ZodType<WireMergeErrorKind> = mergeErrorKindSchemaImpl;
+
 /** The `welcome` server frame, sent right after a successful join. Carries the world's default
  * capability grants, the connecting user's world role, and the declarative capability
  * requirements so the client can replicate access resolution for advisory UI gating (the server
@@ -793,6 +953,25 @@ export type ServerMsg =
       message: string;
     }
   | {
+      /** The outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`.
+       * Addressed to the originating connection only; never broadcast — a merge that
+       * committed additionally arrives as the ordinary broadcast `event` echo. */
+      type: "merge_result";
+      /** The originating intent's correlation token. */
+      request_id: string;
+      /** What the merge did (or, for a conflicted first call, would need resolved). */
+      outcome: WireMergeOutcome;
+    }
+  | {
+      /** A `merge_pull`/`merge_push`/`merge_revert` with this `request_id` was rejected.
+       * Addressed to the originating connection only; never broadcast. */
+      type: "merge_error";
+      /** The refused intent's correlation token. */
+      request_id: string;
+      /** Why it was refused. */
+      reason: WireMergeErrorKind;
+    }
+  | {
       /** Broadcast to the scene, then clipped per recipient at egress: the mover receives
        * the full trajectory and `mover_vision`; observers receive only the position samples
        * their own vision admits, with `mover_vision` nulled; a fully-occluded recipient
@@ -995,6 +1174,16 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     // strips keys it does not name — an omitted field is silently discarded at parse, so a
     // server field absent from this schema never reaches any consumer.
     truncated: z.boolean().nullable(),
+  }),
+  z.object({
+    type: z.literal("merge_result"),
+    request_id: z.string(),
+    outcome: mergeOutcomeSchemaImpl,
+  }),
+  z.object({
+    type: z.literal("merge_error"),
+    request_id: z.string(),
+    reason: mergeErrorKindSchemaImpl,
   }),
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
 ]);
@@ -1324,6 +1513,49 @@ export type ClientMsg =
       request_id: string;
       /** The combat. */
       combat_id: string;
+    }
+  | {
+      /** Pull the named instance's template into it: the server computes the 3-way merge
+       * from LIVE documents and, when conflict-free, commits it. Replies
+       * `merge_result`/`merge_error` correlated by `request_id`, addressed to the
+       * originator only; a committed merge is additionally confirmed by the ordinary
+       * broadcast `event` echo. `resolutions` is the stateless two-call flow's second
+       * call: the conflict paths (from a prior `conflicts` reply) whose TEMPLATE side the
+       * user takes. Omitted = the compute-only first call; an empty list is valid and
+       * means "keep the child side of every conflict" (all-mine). The server holds no
+       * session state: a resolutions call RECOMPUTES the merge and rejects a path set
+       * that no longer matches the current conflicts (`stale_resolutions`). */
+      type: "merge_pull";
+      /** Correlation token for `merge_result`/`merge_error`. */
+      request_id: string;
+      /** The instance to merge the template into. */
+      child_id: string;
+      /** Second-call resolutions: the current conflict paths to take the template side
+       * of; every OTHER current conflict keeps the child side. */
+      resolutions?: string[];
+    }
+  | {
+      /** Push the named template into every same-world instance of it. Same reply
+       * protocol as `merge_pull`; the outcome reports each instance individually. */
+      type: "merge_push";
+      /** Correlation token for `merge_result`/`merge_error`. */
+      request_id: string;
+      /** The template to push. */
+      template_id: string;
+      /** Second-call resolutions, per instance: the current conflict paths to take the
+       * template side of. An instance absent from the map keeps the child side of every
+       * one of its conflicts (all-mine), mirroring `merge_pull`'s empty list. */
+      resolutions?: Record<string, string[]>;
+    }
+  | {
+      /** Reset the named instance's mergeable bands to its template (placement paths
+       * kept). Never conflicts — there is nothing to reconcile — so it always applies and
+       * answers a `revert` outcome. Same reply protocol as `merge_pull`. */
+      type: "merge_revert";
+      /** Correlation token for `merge_result`/`merge_error`. */
+      request_id: string;
+      /** The instance to reset. */
+      child_id: string;
     };
 
 /**

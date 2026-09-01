@@ -9,6 +9,8 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -16,6 +18,7 @@ use uuid::Uuid;
 use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
 use crate::data::search::SearchHit;
+use crate::merge::MergeConflict;
 
 /// Client -> server frames.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -279,6 +282,53 @@ pub enum ClientMsg {
         /// The combat.
         combat_id: Uuid,
     },
+    /// Pull the named instance's template into it: the server computes the 3-way
+    /// merge from LIVE documents and, when conflict-free, commits it under
+    /// `WriteOrigin::TemplateMerge`. Replies `MergeResult`/`MergeError` correlated by
+    /// `request_id`, addressed to the originator only (the `CombatRoll` reply pattern);
+    /// a committed merge is additionally confirmed by the ordinary broadcast `Event`
+    /// echo. `resolutions` is the stateless two-call flow's second call: the conflict
+    /// paths (from a prior `MergePullStatus::Conflicts` reply) whose TEMPLATE side the
+    /// user takes. Omitted = the compute-only first call; an empty list is valid and
+    /// means "keep the child side of every conflict" (all-mine). The server holds no
+    /// session state: a resolutions call RECOMPUTES the merge and rejects a path set
+    /// that no longer matches the current conflicts (`MergeErrorKind::StaleResolutions`).
+    MergePull {
+        /// Correlation token for `MergeResult`/`MergeError`.
+        request_id: Uuid,
+        /// The instance to merge the template into.
+        child_id: Uuid,
+        /// Second-call resolutions: the current conflict paths to take the template
+        /// side of; every OTHER current conflict keeps the child side.
+        #[serde(default)]
+        #[ts(optional)]
+        resolutions: Option<Vec<String>>,
+    },
+    /// Push the named template into every same-world instance of it. Same reply
+    /// protocol as `MergePull`; the outcome reports each instance individually
+    /// (`PushInstanceOutcome`). `resolutions` keys on the INSTANCE id; an instance
+    /// absent from the map keeps the child side of every one of its conflicts
+    /// (all-mine), mirroring `MergePull`'s empty list.
+    MergePush {
+        /// Correlation token for `MergeResult`/`MergeError`.
+        request_id: Uuid,
+        /// The template to push.
+        template_id: Uuid,
+        /// Second-call resolutions, per instance: the current conflict paths to take
+        /// the template side of.
+        #[serde(default)]
+        #[ts(optional)]
+        resolutions: Option<BTreeMap<Uuid, Vec<String>>>,
+    },
+    /// Reset the named instance's mergeable bands to its template (placement paths
+    /// kept). Never conflicts — there is nothing to reconcile — so it always applies
+    /// and answers `MergeOutcome::Revert`. Same reply protocol as `MergePull`.
+    MergeRevert {
+        /// Correlation token for `MergeResult`/`MergeError`.
+        request_id: Uuid,
+        /// The instance to reset.
+        child_id: Uuid,
+    },
 }
 
 /// One initiative roll within a `ClientMsg::CombatRoll` request.
@@ -396,6 +446,128 @@ pub struct VisionSample {
     /// Visibility polygons (scene coords) visible at this instant. Each polygon is
     /// an ordered list of [x, y] vertices; multiple polygons cover non-contiguous visible areas.
     pub polygons: Vec<Vec<[f64; 2]>>,
+}
+
+/// How a `MergePull` resolved.
+///
+/// In a plain `MergeResult` reply, `Applied` means the merge committed (under
+/// `WriteOrigin::TemplateMerge`, through the one write path) and `Conflicts` means
+/// NOTHING was written — the conflict set is the client's modal input. In the fresh
+/// outcome carried by `MergeErrorKind::StaleResolutions`/`UnknownResolution`,
+/// `Applied` instead means "the merge is CURRENTLY conflict-free; the rejected call
+/// wrote nothing" — the outcome always describes the merge as recomputed from live
+/// documents at reply time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum MergePullStatus {
+    /// The merge was conflict-free (or fully resolved) and committed.
+    Applied,
+    /// The merge has unresolved conflicts; nothing was written for it.
+    Conflicts(Vec<MergeConflict>),
+}
+
+/// How a `MergeRevert` resolved. Revert never conflicts (the child's local diffs
+/// are discarded outright), so the only outcome is `Applied`; the variant exists so
+/// the wire shape of `MergeOutcome::Revert` cannot claim otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum MergeRevertStatus {
+    /// The revert committed.
+    Applied,
+}
+
+/// How one instance fared in a `MergePush`. `Excluded` covers BOTH "not visible to
+/// the pusher" and "visible but not writable by the pusher" without disclosing
+/// which — mirroring redaction's existence-hiding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum PushInstanceStatus {
+    /// The merge was conflict-free (or fully resolved) and committed.
+    Applied,
+    /// The merge has unresolved conflicts; nothing was written for this instance.
+    /// The conflict set is this instance's modal group.
+    Conflicts(Vec<MergeConflict>),
+    /// The pusher may not merge this instance (not visible, or not writable per the
+    /// same per-path derivation the write path applies); nothing was written.
+    Excluded,
+}
+
+/// One instance's entry in a `MergeOutcome::Push` report.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct PushInstanceOutcome {
+    /// The instance this entry reports.
+    pub instance_id: Uuid,
+    /// The pusher-VISIBLE display name (the redacted view's `name`, which a `/name`
+    /// override may already have nulled) for the modal's group label. `None` when the
+    /// pusher cannot see the instance at all — an `Excluded` entry never carries a
+    /// name the pusher is not otherwise entitled to read.
+    pub name: Option<String>,
+    /// What happened to this instance.
+    pub status: PushInstanceStatus,
+}
+
+/// The outcome of a merge intent, reported by `ServerMsg::MergeResult`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MergeOutcome {
+    /// Outcome of a `MergePull`.
+    Pull {
+        /// The instance merged into.
+        child_id: Uuid,
+        /// Applied or conflicted (nothing written).
+        status: MergePullStatus,
+    },
+    /// Outcome of a `MergePush`: one entry per same-world instance of the template.
+    Push {
+        /// The template pushed.
+        template_id: Uuid,
+        /// Per-instance outcomes.
+        instances: Vec<PushInstanceOutcome>,
+    },
+    /// Outcome of a `MergeRevert`.
+    Revert {
+        /// The instance reset.
+        child_id: Uuid,
+        /// Always `MergeRevertStatus::Applied`.
+        status: MergeRevertStatus,
+    },
+}
+
+/// Why a merge intent was rejected. `StaleResolutions` and `UnknownResolution`
+/// carry the FRESH outcome — the merge as recomputed from live documents at
+/// rejection time — so the client re-opens its modal without a round trip; their
+/// client-side handling is identical, the distinction is diagnostic.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum MergeErrorKind {
+    /// The named child/template does not exist (or is not part of this world).
+    NotFound,
+    /// The named child carries no `source` — it is not a stamped instance.
+    NotAnInstance,
+    /// The requester fails the intent's owner-or-GM gate, or lacks a capability the
+    /// computed merge write requires.
+    Forbidden,
+    /// An instance's stored merge base does not parse as a `MergeBase` snapshot.
+    /// Fail-closed (`merge::MergeError::CorruptBase`): nothing was written and the
+    /// instance needs human attention.
+    CorruptBase,
+    /// The documents moved between the conflict report and the resolution call: a
+    /// submitted path is no longer a CURRENT conflict path, or the commit's OCC
+    /// pre-image no longer held. Carries the fresh outcome.
+    StaleResolutions(MergeOutcome),
+    /// The request submitted a resolution that can never name a merge conflict — a
+    /// path outside the mergeable bands (`/name`, `/engine`, `/system`,
+    /// `/embedded`), or, for push, an instance id that is not a visible push target.
+    /// Carries the fresh outcome, same as `StaleResolutions`.
+    UnknownResolution(MergeOutcome),
+    /// Unexpected server-side failure (details logged, never echoed).
+    Internal,
 }
 
 /// Server -> client frames.
@@ -669,6 +841,23 @@ pub enum ServerMsg {
         /// disclose whether anything blocked the token BEYOND their vision, revealing the
         /// presence of a wall or a `gm_only` region they cannot see.
         truncated: Option<bool>,
+    },
+    /// The outcome of a `MergePull`/`MergePush`/`MergeRevert` with this `request_id`.
+    /// Addressed to the originating connection only; never broadcast — a merge that
+    /// committed additionally arrives as the ordinary broadcast `Event` echo.
+    MergeResult {
+        /// The originating intent's correlation token.
+        request_id: Uuid,
+        /// What the merge did (or, for a conflicted first call, would need resolved).
+        outcome: MergeOutcome,
+    },
+    /// A `MergePull`/`MergePush`/`MergeRevert` with this `request_id` was rejected.
+    /// Addressed to the originating connection only; never broadcast.
+    MergeError {
+        /// The refused intent's correlation token.
+        request_id: Uuid,
+        /// Why it was refused.
+        reason: MergeErrorKind,
     },
 }
 

@@ -90,6 +90,12 @@ export type {
   WireMoveStreamSample,
   WireMoveStreamVisionSample,
   WireRecalcOp,
+  WireMergeConflict,
+  WireMergePullStatus,
+  WirePushInstanceStatus,
+  WirePushInstanceOutcome,
+  WireMergeOutcome,
+  WireMergeErrorKind,
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type {

@@ -28,6 +28,12 @@ import {
   operationSchemaImpl,
   commandSchemaImpl,
   searchHitSchemaImpl,
+  mergeConflictSchemaImpl,
+  mergePullStatusSchemaImpl,
+  pushInstanceStatusSchemaImpl,
+  pushInstanceOutcomeSchemaImpl,
+  mergeOutcomeSchemaImpl,
+  mergeErrorKindSchemaImpl,
   serverMsgSchemaImpl,
   type ServerMsg,
   type ClientMsg,
@@ -43,6 +49,12 @@ import {
   type WireFieldChange,
   type WireCommand,
   type WireSearchHit,
+  type WireMergeConflict,
+  type WireMergePullStatus,
+  type WirePushInstanceStatus,
+  type WirePushInstanceOutcome,
+  type WireMergeOutcome,
+  type WireMergeErrorKind,
 } from "./wire";
 
 // Drift guard. Exact field-by-field type equality fights Zod's inference
@@ -170,6 +182,28 @@ describe("wire drift guard — non-vacuous schema/type assertions", () => {
   });
   it("SearchHit", () => {
     expectTypeOf<z.infer<typeof searchHitSchemaImpl>>().toEqualTypeOf<WireSearchHit>();
+  });
+  it("MergeConflict", () => {
+    expectTypeOf<z.infer<typeof mergeConflictSchemaImpl>>().toEqualTypeOf<WireMergeConflict>();
+  });
+  it("MergePullStatus", () => {
+    expectTypeOf<z.infer<typeof mergePullStatusSchemaImpl>>().toEqualTypeOf<WireMergePullStatus>();
+  });
+  it("PushInstanceStatus", () => {
+    expectTypeOf<
+      z.infer<typeof pushInstanceStatusSchemaImpl>
+    >().toEqualTypeOf<WirePushInstanceStatus>();
+  });
+  it("PushInstanceOutcome", () => {
+    expectTypeOf<
+      z.infer<typeof pushInstanceOutcomeSchemaImpl>
+    >().toEqualTypeOf<WirePushInstanceOutcome>();
+  });
+  it("MergeOutcome", () => {
+    expectTypeOf<z.infer<typeof mergeOutcomeSchemaImpl>>().toEqualTypeOf<WireMergeOutcome>();
+  });
+  it("MergeErrorKind", () => {
+    expectTypeOf<z.infer<typeof mergeErrorKindSchemaImpl>>().toEqualTypeOf<WireMergeErrorKind>();
   });
   // The finding's worked example: this is the one whose non-vacuity was hand-verified by
   // temporarily deleting the "reject" arm from `serverMsgSchemaImpl` and confirming this
@@ -471,6 +505,12 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
+    merge_result: {
+      type: "merge_result",
+      request_id: "r",
+      outcome: { kind: "pull", child_id: "c", status: "applied" },
+    },
+    merge_error: { type: "merge_error", request_id: "r", reason: "forbidden" },
     move_stream: {
       type: "move_stream",
       request_id: "r",

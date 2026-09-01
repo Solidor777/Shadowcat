@@ -12,6 +12,10 @@ use crate::ws::test_support::{token_engine, ws_engine};
 /// `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
 mod combat_intents;
 
+/// `merge_intents::handle_merge_intent` two-call flow, authorization derivation,
+/// push per-instance outcomes, and `WriteOrigin::TemplateMerge` commit tests.
+mod merge_intents;
+
 /// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are
 /// forwarded to an unbounded channel the test drains. Each send consumes one credit (the
 /// permit is `forget`-ten), so the test controls exactly how many frames the egress may
