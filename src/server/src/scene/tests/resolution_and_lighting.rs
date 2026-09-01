@@ -2001,7 +2001,12 @@ fn light_elevation_band_gates_occlusion_per_light() {
 
     // Grounded light against a {0,3} wall: occluded — the target cell stays dark.
     let ecs = SceneEcs::from_documents(
-        vec![scene.clone(), tok.clone(), wall.clone(), light_at(json!(null))],
+        vec![
+            scene.clone(),
+            tok.clone(),
+            wall.clone(),
+            light_at(json!(null)),
+        ],
         0,
     );
     assert!(
@@ -2010,8 +2015,7 @@ fn light_elevation_band_gates_occlusion_per_light() {
     );
 
     // The same light above the band shines over the wall.
-    let ecs =
-        SceneEcs::from_documents(vec![scene, tok, wall, light_at(json!(5.0))], 0);
+    let ecs = SceneEcs::from_documents(vec![scene, tok, wall, light_at(json!(5.0))], 0);
     assert!(
         ecs.visible_cells(user, scene_id, false).contains(&target),
         "a light above the wall's band must shine over it"
@@ -2125,4 +2129,3 @@ fn visible_cells_cached_invalidates_on_source_elevation_change() {
         "above the band, the same walls no longer occlude the target cell"
     );
 }
-

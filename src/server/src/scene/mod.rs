@@ -5,8 +5,8 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-pub(crate) mod emitters;
 pub(crate) mod elevation;
+pub(crate) mod emitters;
 pub mod explored;
 pub mod footprint;
 pub(crate) mod grid_shape;
@@ -1357,7 +1357,11 @@ impl SceneEcs {
                 self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc),
                 e.doc.parent_id,
             ) {
-                viewpoints.push((scene, (t.x, t.y), elevation::elevation_or_ground(t.elevation)));
+                viewpoints.push((
+                    scene,
+                    (t.x, t.y),
+                    elevation::elevation_or_ground(t.elevation),
+                ));
             }
         }
         // `scene_grid_sizes` is a full entity scan, so it is read ONCE here rather than per
@@ -1976,16 +1980,16 @@ impl SceneEcs {
                 let Some(vm) = modes.get(&a.mode) else {
                     continue;
                 }; // unknown mode → drop (fail-closed)
-                // A creature sense contributes no terrain floor — it perceives tokens
-                // (`player_perceived_tokens`), never the illumination mask.
+                   // A creature sense contributes no terrain floor — it perceives tokens
+                   // (`player_perceived_tokens`), never the illumination mask.
                 if vm.perceives == eng::Perception::Creatures {
                     continue;
                 }
-                   // An omitted assignment range inherits the mode's own authored default — both
-                   // are authored in the SAME unit (grid cells; see `VisionAssignment::range`'s and
-                   // `VisionMode::default_range`'s docs), so no additional per-cell conversion is
-                   // needed here: the value feeds straight into the same `dist_cells` comparison
-                   // `a.range` always fed.
+                // An omitted assignment range inherits the mode's own authored default — both
+                // are authored in the SAME unit (grid cells; see `VisionAssignment::range`'s and
+                // `VisionMode::default_range`'s docs), so no additional per-cell conversion is
+                // needed here: the value feeds straight into the same `dist_cells` comparison
+                // `a.range` always fed.
                 out.push((
                     crate::scene::lighting::floor_min(&bands, &vm.illumination_floor),
                     a.range.unwrap_or(vm.default_range),

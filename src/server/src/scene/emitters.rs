@@ -119,10 +119,7 @@ impl SceneEcs {
                     };
                     // A carried emission emits at its token's elevation (the token IS the
                     // emitter); the token's own x/y/elevation are the position read.
-                    let (pos, elev) = (
-                        (t.x, t.y),
-                        elevation::elevation_or_ground(t.elevation),
-                    );
+                    let (pos, elev) = ((t.x, t.y), elevation::elevation_or_ground(t.elevation));
                     if let Some(l) = self
                         .token_light_emission(&e.doc)
                         .and_then(|em| emission_to_light(pos, elev, &em))

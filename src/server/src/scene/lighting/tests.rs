@@ -435,5 +435,3 @@ fn cell_illumination_occludes_environment_outside_the_boundary_polys() {
         "cell inside a boundary poly gets the full ambient"
     );
 }
-
-
