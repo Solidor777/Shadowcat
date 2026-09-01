@@ -115,26 +115,27 @@
     { id: "region", label: t("tools.region"), gmOnly: true },
   ];
   const visibleTools = tools.filter((tool) => isGm || !tool.gmOnly);
-  // Speak-as-token affordance: shown whenever exactly one token is selected and the current
-  // user may plausibly speak as it (GM, or the effective owner) — advisory only, mirroring the
-  // "Speak as" composer picker's own client-side offer/server-reauthorizes split. Reuses the
-  // subscriber bridge already established above for `activeScene`/`snapToGrid`.
-  const selectedSpeakToken = $derived.by((): WireDocument | null => {
+  // Speak-as + emote affordance gate: exactly one token selected and the current user may
+  // plausibly act as it (GM, or the effective owner) — advisory only, mirroring the
+  // client-side offer/server-reauthorizes split (the server enforces both `SendMessage`'s
+  // `actor_owner` and the emote relay's effective-ownership gate). Reuses the subscriber
+  // bridge already established above for `activeScene`/`snapToGrid`.
+  const selectedSingleToken = $derived.by((): WireDocument | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
     if (ids.size !== 1) return null;
     const [id] = ids;
     return ctx.documents.get(id) ?? null;
   });
-  const canSpeakAsSelected = $derived.by((): boolean => {
+  const canActAsSelected = $derived.by((): boolean => {
     subscribe();
-    const tok = selectedSpeakToken;
+    const tok = selectedSingleToken;
     if (!tok) return false;
     return ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents);
   });
 
   /** Sets the pending speak-as-token selection from the currently selected token (a no-op if
-   * none is selected, guarded by `canSpeakAsSelected` at the call site).
+   * none is selected, guarded by `canActAsSelected` at the call site).
    * @example
    * ```
    * // internal; wired to the "speak as this token" button
@@ -142,8 +143,58 @@
    * ```
    */
   function speakAsSelectedToken(): void {
-    const tok = selectedSpeakToken;
+    const tok = selectedSingleToken;
     if (tok) ctx.speakAsToken.select(tok.id);
+  }
+
+  /** The palette's stock emote glyphs — every entry well under the server's per-emote byte
+   * cap (16 bytes covers 1–4 emoji graphemes), so a palette click can never silent-drop. */
+  const emoteChoices = ["😀", "😂", "😮", "😢", "😡", "👍", "❤️", "🎉", "🔥", "⚔️"];
+  /** The free-input emote draft, cleared after a successful send. */
+  let emoteDraft = $state("");
+  /** Byte length of `s` (UTF-8) — the unit the server's emote bound is stated in.
+   * @param s The emote draft to measure.
+   * @returns The UTF-8 byte length of `s`.
+   * @example
+   * ```
+   * emoteByteLength("😀"); // 4
+   * ```
+   */
+  function emoteByteLength(s: string): number {
+    return new TextEncoder().encode(s).length;
+  }
+  /** The draft is sendable when it is non-blank and within the server's byte bound —
+   * client-advisory, so an over-long draft can't vanish into the server's silent drop. */
+  const emoteDraftSendable = $derived(emoteDraft.trim() !== "" && emoteByteLength(emoteDraft.trim()) <= 16);
+
+  /** Send an emote over the currently selected token (a no-op without an effectively-owned
+   * selection — `canActAsSelected` guards the call sites). The server relays it back to all
+   * members (incl. us), so the local overlay arrives via the emote listener like any other.
+   * @param emote The emote glyph(s) to send.
+   * @example
+   * ```
+   * // internal; wired to the emote palette buttons
+   * sendEmoteAsSelected("😀");
+   * ```
+   */
+  function sendEmoteAsSelected(emote: string): void {
+    const tok = selectedSingleToken;
+    if (!tok || !canActAsSelected) return;
+    ctx.sendEmote(tok.id, emote);
+  }
+
+  /** Send the free-input draft and clear it (guarded by `emoteDraftSendable`).
+   * @example
+   * ```
+   * // internal; wired to the emote send button
+   * sendEmoteDraft();
+   * ```
+   */
+  function sendEmoteDraft(): void {
+    const draft = emoteDraft.trim();
+    if (!emoteDraftSendable) return;
+    sendEmoteAsSelected(draft);
+    emoteDraft = "";
   }
 
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
@@ -233,7 +284,7 @@
     </button>
   {/if}
 
-  {#if canSpeakAsSelected}
+  {#if canActAsSelected}
     <button
       type="button"
       class="tool"
@@ -244,6 +295,41 @@
       {t("tools.speakAsToken")}
     </button>
   {/if}
+
+  <!-- The emote palette is always rendered but disabled without a selection the user
+       effectively owns (client-advisory; the server re-authorizes the relay). -->
+  <div class="controls emote-palette" role="group" aria-label={t("tools.emote")}>
+    {#each emoteChoices as emoji, i (emoji)}
+      <button
+        type="button"
+        class="tool emote"
+        disabled={!canActAsSelected}
+        data-testid="emote-{i}"
+        title={emoji}
+        onclick={() => sendEmoteAsSelected(emoji)}
+      >
+        {emoji}
+      </button>
+    {/each}
+    <input
+      type="text"
+      data-testid="emote-input"
+      aria-label={t("tools.emoteCustom")}
+      placeholder={t("tools.emoteCustom")}
+      disabled={!canActAsSelected}
+      bind:value={emoteDraft}
+    />
+    <button
+      type="button"
+      class="tool"
+      data-testid="emote-send"
+      disabled={!canActAsSelected || !emoteDraftSendable}
+      title={t("tools.emoteSend")}
+      onclick={sendEmoteDraft}
+    >
+      {t("tools.emoteSend")}
+    </button>
+  </div>
 
   <!-- Every mode control below belongs to a gmOnly tool. Gated on `isGm` as well as the
        active tool so the branch cannot render even if an authoring tool somehow became
@@ -364,6 +450,21 @@
   .trigger-row input {
     min-width: 0;
     flex: 1;
+  }
+
+  /* Emote palette: a wrapping row of glyph buttons plus the free input. */
+  .emote-palette {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .tool.emote {
+    font-size: 1.25rem;
+    padding: var(--space-1);
+  }
+  .emote-palette input {
+    min-width: 0;
+    width: 8rem;
   }
 
   /* Compact bottom strip: lay tools out horizontally with overflow scroll

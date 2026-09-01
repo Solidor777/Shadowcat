@@ -137,6 +137,18 @@ export interface ScenePingNotice {
   user: string;
 }
 
+/** A relayed emote over a token (`WsClientHandlers.onEmote`); carries no seq. */
+export interface EmoteNotice {
+  /** The scene the token stands on. */
+  scene: string;
+  /** The token the emote plays over. */
+  token: string;
+  /** The user id who emoted (server-stamped, not client-asserted). */
+  user: string;
+  /** The emote glyph(s). */
+  emote: string;
+}
+
 /** Timeout override for a correlated request whose only option is how long to wait for the
  * reply before rejecting. Shared by `WsClient.moveRequest` and `WsClient.pathfind` — each
  * signature's own doc states its default. */
@@ -221,6 +233,9 @@ export interface WsClientHandlers {
   /** An out-of-band relayed location ping (carries no seq).
    * @param msg The ping's scene, coordinates, and sending user. */
   onScenePing?(msg: ScenePingNotice): void;
+  /** An out-of-band relayed emote over a token (carries no seq).
+   * @param msg The emote's scene, token, sending user, and glyph(s). */
+  onEmote?(msg: EmoteNotice): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
@@ -963,6 +978,11 @@ export class WsClient {
       case "scene_ping":
         this.safeEmit(() =>
           this.opts.handlers.onScenePing?.({ scene: msg.scene, x: msg.x, y: msg.y, user: msg.user }),
+        );
+        break;
+      case "emote":
+        this.safeEmit(() =>
+          this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
         );
         break;
       case "scene_derived": {

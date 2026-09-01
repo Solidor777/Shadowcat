@@ -204,6 +204,10 @@ export interface AppContext {
   speakAsToken: SpeakAsToken;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
+  /** Broadcast a transient emote over `token` on the currently-viewed scene. The server
+   * re-authorizes effective ownership (GM exempt) and drops an over-reaching send
+   * silently, so callers may offer this client-advisory only. */
+  sendEmote: (token: string, emote: string) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves
    * with the computed path + cost, rejects on unreachable or timeout. Thin
    * transport mirror — no client-side path logic. `token`, when given, names the
@@ -235,6 +239,17 @@ export interface AppContext {
     y: number;
     /** Userid of the pinging user. */
     user: string;
+  }) => void) => () => void;
+  /** Subscribe to relayed emotes (incl. our own echo); returns an unsubscribe. */
+  onEmote: (cb: (msg: {
+    /** Scene the token stands on. */
+    scene: string;
+    /** Token the emote plays over. */
+    token: string;
+    /** Userid of the emoting user. */
+    user: string;
+    /** The emote glyph(s). */
+    emote: string;
   }) => void) => () => void;
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
    * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an

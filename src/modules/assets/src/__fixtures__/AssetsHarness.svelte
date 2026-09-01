@@ -40,9 +40,11 @@
     actorSelection: new ActorSelection(),
     tokenSelection: new TokenSelection(),
     sendPing: () => {},
+    sendEmote: () => {},
     pathfind: () => Promise.reject(new Error("not connected")),
     moveRequest: () => Promise.reject(new Error("not connected")),
     onPing: () => () => {},
+    onEmote: () => () => {},
     onMoveOutcome: () => () => {},
     chat: {
       send: () => Promise.resolve(),

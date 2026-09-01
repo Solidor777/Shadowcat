@@ -5,6 +5,7 @@ import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx,
 import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
 import type { PingRing } from "./ping-view";
+import type { EmoteGlyph } from "./emote-view";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -199,6 +200,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
+  /** The emote-glyph overlay's parent; its `Text` children are rebuilt wholesale by
+   * `drawEmotes` (the glyph set changes every frame while an emote lives). */
+  private readonly emoteLayer = new Container();
   /** Per-cell darkening + tint quads for the lighting layer. Parented under the
    * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
   private readonly lightingGraphics = new Graphics();
@@ -297,6 +301,7 @@ export class PixiBackend implements DisplayBackend {
         this.measureText.visible = false;
         c.addChild(this.measureText);
         c.addChild(this.pingGraphics);
+        c.addChild(this.emoteLayer);
       }
     }
     // Re-parent in z-order (addChild appends; order array is authoritative).
@@ -1068,6 +1073,29 @@ export class PixiBackend implements DisplayBackend {
     this.pingGraphics.clear();
     for (const r of rings) {
       this.pingGraphics.circle(r.x, r.y, r.radius).stroke({ width: 3, color: 0xffd400, alpha: r.alpha });
+    }
+  }
+
+  /** `DisplayBackend.drawEmotes`: redraw the emote-glyph overlay — destroys the previous
+   * frame's `Text` children, then adds one centered glyph per emote (fontSize 48,
+   * `sans-serif`, at the glyph's own `alpha`).
+   * @param glyphs The current emote glyphs to draw (anchor, glyph(s), alpha), in draw order.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * ```
+   */
+  drawEmotes(glyphs: EmoteGlyph[]): void {
+    for (const child of this.emoteLayer.removeChildren()) child.destroy();
+    for (const g of glyphs) {
+      const t = new Text({ text: g.emote, style: { fontSize: 48, fontFamily: "sans-serif" } });
+      t.anchor.set(0.5);
+      t.position.set(g.x, g.y);
+      t.alpha = g.alpha;
+      this.emoteLayer.addChild(t);
     }
   }
 

@@ -198,7 +198,23 @@ y: number,
 /**
  * Who pinged (senders receive their own echo).
  */
-user: string, } | { "type": "path_result", 
+user: string, } | { "type": "emote", 
+/**
+ * Scene the token stands on.
+ */
+scene: string, 
+/**
+ * Token the emote plays over.
+ */
+token: string, 
+/**
+ * Who emoted (senders receive their own echo).
+ */
+user: string, 
+/**
+ * The emote glyph(s).
+ */
+emote: string, } | { "type": "path_result", 
 /**
  * The originating pathfind's correlation token.
  */

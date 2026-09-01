@@ -31,7 +31,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -108,6 +108,7 @@
     let offAsset: (() => void) | null = null;
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
+    let offEmote: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
@@ -265,6 +266,11 @@
         e.addPing(m.x, m.y);
         host.dataset.lastPing = `${m.x},${m.y}`;
       });
+      // Relayed emotes (incl. our own echo) spawn a transient glyph over the token.
+      offEmote = onEmote((m) => {
+        e.addEmote(m.token, m.emote);
+        host.dataset.lastEmote = `${m.token}:${m.emote}`;
+      });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
       // receives via `WorldSession.moveRequest`'s resolution.
@@ -296,6 +302,7 @@
       detachScene?.();
       offGrid?.();
       offPing?.();
+      offEmote?.();
       offMoveOutcome?.();
       offAsset?.();
       offViewed?.();

@@ -133,6 +133,26 @@ export class TokenView {
     this.dragging = id;
   }
 
+  /** The last resolved `TokenNodeSpec` for `id`, or `undefined` when the token is absent
+   * from the viewed scene or `toSpec` failed closed on it. Overlay features anchored to a
+   * token (e.g. `RenderEngine.addEmote`) read this so an id the viewer cannot render gets
+   * no overlay either.
+   * @param id The token document id.
+   * @returns The resolved spec, or `undefined` for an unknown/unrenderable token.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.specOf("token-1");
+   * ```
+   */
+  specOf(id: string): TokenNodeSpec | undefined {
+    return this.specs.get(id);
+  }
+
   /** Update the per-step world distance used to compute tween durations — the world distance
    * between adjacent cell centres (`Grid.worldUnitsPerCell`), NOT the grid's indexing scale
    * (`GridSpec.size`), which diverges from it by `sqrt(3)` on hex. Affects only FUTURE tweens

@@ -52,6 +52,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean } {
     drawMeasure() {},
     clearMeasure() {},
     drawPings() {},
+    drawEmotes() {},
     setLighting() {},
     startTicker() {},
     resize() {},
