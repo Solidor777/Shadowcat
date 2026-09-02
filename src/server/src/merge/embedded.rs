@@ -13,9 +13,15 @@ use crate::merge::bands::{
     MergeBands,
 };
 use crate::merge::plan::{merge3, revert_bands};
-use crate::merge::tree::structural_diff;
+use crate::merge::tree::{structural_diff, HiddenPointers};
 use crate::merge::visibility::{MergeVisibility, Side};
 use crate::merge::{MergeConflict, MergeError, ParentKind};
+
+/// The band a template-deleted child conflict discloses: its `base` and
+/// `child` payloads are the record's and the child's `system` values, nothing
+/// from `name`/`engine`. Widening the payload widens this, and with it the
+/// withhold test that reads it.
+const TEMPLATE_DELETED_PAYLOAD_BAND: &str = "/system";
 
 /// Whether an instance child's bands are unchanged versus its base record —
 /// CONTENT only (`content_only`): the policy a record carries is not merged
@@ -152,10 +158,20 @@ pub(crate) fn merge3_embedded(
                 let idx = out.len();
                 // Kept pending resolution.
                 out.push(cd.clone());
-                // The conflict carries the WHOLE child (`child: cd.system`),
-                // so any hidden pointer on `cd` withholds it: the child stays,
-                // unreported, which is the child-wins default anyway.
-                if !vis.hidden(Side::Child, cd)?.is_empty() {
+                // The conflict's payload is the child's WHOLE `system` band
+                // (`child: cd.system`, `base: b.system`), so it is withheld
+                // by the same overlap rule the tree level applies
+                // (`HiddenPointers::withholds`) against that band: a hidden
+                // pointer inside `/system` (or `/system` itself) withholds it —
+                // the child stays, unreported, which is the child-wins default
+                // anyway — while a hidden pointer elsewhere on the child (the
+                // synthetic `/base` entry every non-owner carries, a hidden
+                // `/name`) discloses nothing through this payload and does not.
+                let hidden = HiddenPointers {
+                    template: Vec::new(),
+                    child: vis.hidden(Side::Child, cd)?,
+                };
+                if hidden.withholds(TEMPLATE_DELETED_PAYLOAD_BAND) {
                     continue;
                 }
                 conflicts.push(MergeConflict {

@@ -11,7 +11,7 @@ use crate::data::document::{DocRole, Document, Source, Visibility, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::filter_command;
 use crate::data::DataError;
-use crate::merge::MergeBase;
+use crate::merge::{MergeBase, ParentKind};
 use crate::ws::conn::merge_intents::{commit_error, handle_merge_intent};
 use crate::ws::protocol::{
     MergeErrorKind, MergeOutcome, MergePullStatus, MergeRevertStatus, PushInstanceStatus,
@@ -2544,4 +2544,106 @@ async fn gm_push_of_a_gm_only_template_value_never_reaches_the_instance_owner() 
     assert_eq!(gm_doc.base.unwrap()["system"]["gm_secret"], json!("S2"));
     assert_sync_state_parity(&h, &h.player, template, child).await;
     assert_sync_state_parity(&h, &h.gm, template, child).await;
+}
+
+/// A template owner who is NOT the instance's owner pushes: every non-owner
+/// requester's child-side hidden set carries the synthetic `/base` entry, so
+/// a withhold rule of "any hidden pointer at all" would silently swallow
+/// every template-deleted-but-changed child conflict for every such push.
+/// With no overrides anywhere, the conflict is reported.
+#[tokio::test]
+async fn non_owner_template_owner_push_reports_a_template_deleted_child_conflict() {
+    let h = merge_harness().await;
+    let (template, instance) = (Uuid::from_u128(0xEA01), Uuid::from_u128(0xEA02));
+    let (t_a, i_a) = (Uuid::from_u128(0xEA03), Uuid::from_u128(0xEA04));
+    let mut tmpl = template_doc(
+        h.world_id,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({}),
+    );
+    tmpl.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    tmpl.permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default()
+        .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    tmpl.embedded.insert(
+        "items".into(),
+        vec![embedded_child(h.world_id, t_a, None, json!({ "hp": 1 }))],
+    );
+    h.create(tmpl).await;
+    let mut inst = instance_doc(
+        h.world_id,
+        instance,
+        template,
+        h.bystander.user_id,
+        DocRole::Observer,
+        json!({}),
+    );
+    let caps = inst
+        .permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default();
+    caps.insert(crate::data::permission::cap::WRITE_FIELDS.to_string());
+    caps.insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    inst.embedded.insert(
+        "items".into(),
+        vec![embedded_child(
+            h.world_id,
+            i_a,
+            Some(t_a),
+            json!({ "hp": 1 }),
+        )],
+    );
+    h.create(inst).await;
+    // The template deletes T_a; the instance edits I_a.
+    h.set_items(template, vec![]).await;
+    h.set_items(
+        instance,
+        vec![embedded_child(
+            h.world_id,
+            i_a,
+            Some(t_a),
+            json!({ "hp": 5 }),
+        )],
+    )
+    .await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePush {
+            request_id: Uuid::from_u128(1),
+            template_id: template,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let ServerMsg::MergeResult {
+        outcome: MergeOutcome::Push { instances, .. },
+        ..
+    } = reply
+    else {
+        panic!("expected a MergeResult::Push, got {reply:?}");
+    };
+    assert_eq!(instances.len(), 1);
+    let PushInstanceStatus::Conflicts(conflicts) = &instances[0].status else {
+        panic!(
+            "the template-deleted, instance-changed child is a reported conflict, got {:?}",
+            instances[0].status
+        );
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].path, "/embedded/items/0");
+    assert!(matches!(conflicts[0].parent_kind, ParentKind::Delete));
 }

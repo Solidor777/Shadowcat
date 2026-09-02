@@ -322,8 +322,11 @@ impl HiddenPointers {
     /// Whether a conflict at `path` is WITHHELD from the returned set: it
     /// overlaps a pointer hidden on the child side, so its `child` value (or,
     /// for an ancestor path, the subtree it carries) is something the
-    /// requester may not see.
-    fn withholds(&self, path: &str) -> bool {
+    /// requester may not see. The one overlap rule for every conflict
+    /// payload: `merge3_tree` asks it per leaf path, and
+    /// `embedded::merge3_embedded` asks it for the band a whole-child
+    /// conflict discloses.
+    pub(crate) fn withholds(&self, path: &str) -> bool {
         self.child.iter().any(|h| paths_overlap(path, h))
     }
 }

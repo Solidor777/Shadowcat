@@ -318,10 +318,10 @@ fn both_sides_hidden_with_shifted_indices_on_both_sides() {
 }
 
 #[test]
-fn template_deleted_conflict_is_withheld_when_the_child_hides_anything() {
+fn template_deleted_conflict_is_withheld_when_the_child_hides_inside_the_payload_band() {
     // The template deleted T_a; I_a changed since the snapshot, so it would
     // conflict as a whole-child deletion — a payload carrying the whole
-    // child, withheld because I_a hides a property.
+    // child's `system`, withheld because I_a hides a property inside it.
     let (template, child) = pair(
         vec![],
         vec![instance_child(
@@ -339,6 +339,45 @@ fn template_deleted_conflict_is_withheld_when_the_child_hides_anything() {
         1,
         "the child is kept (child-wins), just unreported"
     );
+}
+
+#[test]
+fn template_deleted_conflict_is_reported_when_the_hidden_pointer_lies_outside_its_payload() {
+    // The same template-deleted + instance-changed shape, but the child's
+    // hidden pointers name nothing the whole-child payload discloses: the
+    // synthetic `/base` entry every non-owner requester carries, and a hidden
+    // `/name`. Withholding is the tree level's overlap rule against the
+    // payload band, never "any hidden pointer at all".
+    for hidden in ["/base", "/name"] {
+        let (template, child) = pair(
+            vec![],
+            vec![instance_child("I_a", "T_a", json!({ "hp": 5 }))],
+            vec![record("T_a", json!({ "hp": 1 }), vec![])],
+        );
+        let vis = Hide::default().on_child("I_a", hidden);
+        let plan = compute_pull(&child, &template, &vis).expect("merges");
+        assert_eq!(
+            paths(&plan),
+            vec!["/embedded/items/0"],
+            "a hidden `{hidden}` discloses nothing through a /system payload"
+        );
+    }
+    // A hidden pointer ON the payload band — `/system` itself, or inside it —
+    // withholds.
+    for hidden in ["/system", "/system/secret"] {
+        let (template, child) = pair(
+            vec![],
+            vec![instance_child(
+                "I_a",
+                "T_a",
+                json!({ "hp": 5, "secret": "S3" }),
+            )],
+            vec![record("T_a", json!({ "hp": 1, "secret": "S1" }), vec![])],
+        );
+        let vis = Hide::default().on_child("I_a", hidden);
+        let plan = compute_pull(&child, &template, &vis).expect("merges");
+        assert!(plan.conflicts.is_empty(), "a hidden `{hidden}` withholds");
+    }
 }
 
 #[test]
