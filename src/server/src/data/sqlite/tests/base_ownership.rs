@@ -339,7 +339,8 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
         "name": "Old",
         "engine": { "seg": { "x1": "not-a-number" } },
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {}
     }));
     r.seed_document_unvalidated(&doc).await.unwrap();
 
@@ -499,4 +500,81 @@ async fn client_update_of_an_embedded_child_without_base_passes() {
         serde_json::json!({ "qty": 2 })
     );
     assert!(after.embedded["items"][0].base.is_none());
+}
+
+#[tokio::test]
+async fn create_propagates_the_templates_policy_and_records_it_in_the_base() {
+    // The stamp arrives from a client with no overrides at all; the write
+    // path loads the template, lands its content-band policy on the new
+    // instance (so a later merge that moves the hidden value lands it
+    // hidden) and records that policy in the derived base.
+    let (r, world, gm_ctx) = gm_setup().await;
+    let mut template = world_doc(1, world, serde_json::json!({ "hp": 7, "secret": "S" }));
+    template.permissions.property_overrides.insert(
+        "/system/secret".into(),
+        crate::data::document::Visibility::GmOnly,
+    );
+    r.apply_intent(
+        &gm_ctx,
+        world,
+        vec![Operation::Create { doc: template }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let mut instance = world_doc(2, world, serde_json::json!({ "hp": 7 }));
+    instance.source = Some(Source {
+        id: Uuid::from_u128(1),
+        pack: None,
+        version: 1,
+    });
+    r.apply_intent(
+        &gm_ctx,
+        world,
+        vec![Operation::Create { doc: instance }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = r.get_document(Uuid::from_u128(2)).await.unwrap().unwrap();
+    assert_eq!(
+        stored.permissions.property_overrides.get("/system/secret"),
+        Some(&crate::data::document::Visibility::GmOnly),
+        "the template's policy propagated onto the instance"
+    );
+    let base = stored.base.expect("an instance carries a base");
+    assert_eq!(
+        base["property_overrides"]["/system/secret"],
+        serde_json::json!("gm_only"),
+        "and is recorded in the snapshot"
+    );
+    assert_eq!(base["system"], serde_json::json!({ "hp": 7 }));
+
+    // A stamp whose template is not loadable propagates nothing and still
+    // derives a base recording its own (empty) policy.
+    let mut orphan = world_doc(3, world, serde_json::json!({ "hp": 1 }));
+    orphan.source = Some(Source {
+        id: Uuid::from_u128(900),
+        pack: None,
+        version: 1,
+    });
+    r.apply_intent(
+        &gm_ctx,
+        world,
+        vec![Operation::Create { doc: orphan }],
+        3,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = r.get_document(Uuid::from_u128(3)).await.unwrap().unwrap();
+    assert!(stored.permissions.property_overrides.is_empty());
+    assert_eq!(
+        stored.base.unwrap()["property_overrides"],
+        serde_json::json!({})
+    );
 }

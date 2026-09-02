@@ -65,19 +65,24 @@ impl AuthInputs {
     /// `resolve_access_world` for `doc` under this world's default grants, with the
     /// effective owner joined LIVE (`Repository::effective_owner_of` — the same
     /// linked-actor join `apply_intent`'s Update arm performs through
-    /// `load_effective_owner`), never a literal `owner` read.
-    async fn access(
+    /// `load_effective_owner`), never a literal `owner` read — returned beside
+    /// the access, since the instance/template owner relation
+    /// (`merge::bands::relate_tier`'s `same_owner`) compares the same value.
+    async fn access_and_owner(
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
         doc: &Document,
-    ) -> Result<Access, DataError> {
+    ) -> Result<(Access, Option<Uuid>), DataError> {
         let owner = repo.effective_owner_of(doc).await?;
-        Ok(resolve_access_world(
-            ctx.user_id,
-            ctx.world_role,
-            doc,
-            &self.defaults.grants_for(&doc.doc_type),
+        Ok((
+            resolve_access_world(
+                ctx.user_id,
+                ctx.world_role,
+                doc,
+                &self.defaults.grants_for(&doc.doc_type),
+                owner,
+            ),
             owner,
         ))
     }
@@ -87,9 +92,13 @@ impl AuthInputs {
 /// `apply_intent`'s Update arm applies — each path's structural capability
 /// (`required_cap_for_path`) plus the additive declared requirements
 /// (`declared_caps_for_path`) — re-derived here because the commit runs under
-/// `WriteOrigin::TemplateMerge`, which waives that arm's per-op gates. The
-/// whole-band `/base` refresh is exempted exactly as `apply_intent`'s merge-base
-/// carve-out exempts it (the server-owned write this origin exists to commit);
+/// `WriteOrigin::TemplateMerge`, which waives that arm's per-op gates. Two
+/// server-authored writes are exempted: the whole-band `/base` refresh, exactly
+/// as `apply_intent`'s merge-base carve-out exempts it (the server-owned write
+/// this origin exists to commit), and the `/permissions/property_overrides`
+/// propagation of the template's policy (`merge::bands::propagate_overrides`,
+/// additive by construction — it can only narrow an audience, never widen one,
+/// so the requester's own `cap::EDIT_PERMISSIONS` standing is immaterial).
 /// `/base/...` sub-paths and any other unmappable path refuse, fail-closed, for
 /// every origin there and so for the merge here.
 fn update_authorized(update: &Operation, access: &Access, inputs: &AuthInputs) -> bool {
@@ -97,7 +106,7 @@ fn update_authorized(update: &Operation, access: &Access, inputs: &AuthInputs) -
         return false;
     };
     changes.iter().all(|ch| {
-        if ch.path == "/base" {
+        if ch.path == "/base" || ch.path == "/permissions/property_overrides" {
             return true;
         }
         let Some(need) = required_cap_for_path(&ch.path) else {
@@ -147,13 +156,17 @@ fn engine_error(child_id: Uuid, e: MergeError) -> MergeErrorKind {
 
 /// The template AS THE REQUESTER SEES IT — `filter_properties` under the
 /// requester's access, the same view egress delivers — which is the parent
-/// side of every merge this requester runs (pull, revert, push) and the value
-/// the `/base` refresh snapshots. Fails closed (`Internal`) when the view cannot
-/// be computed. Together with the `RequesterView` oracle (which additionally
-/// EXCLUDES the template-hidden paths from the parent diff, so a redaction-
-/// induced delete or null never reads as a template change) this is what makes
-/// a merge never move data the requester cannot see: not into the instance,
-/// not into its snapshot, not onto the wire.
+/// side of every merge this requester runs (pull, revert, push). The `/base`
+/// refresh snapshots the FULL template instead (`plan_to_update`): the stored
+/// snapshot is one canonical value, and each recipient's cut of it is made at
+/// egress by the policy it records. Fails closed (`Internal`) when the view
+/// cannot be computed. Together with the `RequesterView` oracle (which reduces
+/// the stored base by the same template-side hidden set and EXCLUDES the
+/// template-hidden paths from the parent diff, so a redaction-induced delete or
+/// null never reads as a template change) this is what makes a merge never
+/// move data the requester cannot see: not into the instance's content, not
+/// onto the wire — and the propagated policy (`propagate_overrides`) keeps
+/// what a seeing requester moves hidden from the instance's own readers.
 fn visible_template(template: &Document, access: &Access) -> Result<Document, MergeErrorKind> {
     filter_properties(template, access).map_err(|e| {
         tracing::warn!(doc_id = %template.id, error = %e, "merge: template view unresolvable; failing closed");
@@ -305,14 +318,21 @@ struct PullDocs {
     /// whole-band write).
     child: Document,
     /// The instance's template AS THE REQUESTER SEES IT (`visible_template`) —
-    /// the parent side of the merge and the `/base` snapshot source.
+    /// the parent side of the merge.
     template: Document,
+    /// The instance's template in FULL — the `/base` snapshot source and the
+    /// policy `plan_to_update` propagates onto the instance.
+    template_full: Document,
     /// The requester's resolved access on the child (the per-path derivation's input).
     child_access: Access,
-    /// The requester's resolved access on the template — the template half of the
-    /// conflict-set visibility filter (`filter_conflicts` evaluates per-path
-    /// visibility against BOTH documents).
+    /// The requester's resolved access on the template — the template side of
+    /// the `RequesterView` oracle, which excludes the template-hidden paths from
+    /// the parent diff at every embedded depth.
     template_access: Access,
+    /// Whether the instance and the template share an effective owner — the
+    /// relation the propagated tiers and the stored snapshot's recorded policy
+    /// are expressed under (`merge::bands::relate_tier`).
+    same_owner: bool,
 }
 
 /// Load and gate the pull/revert document pair.
@@ -348,8 +368,8 @@ async fn load_pull_docs(
     if world_of(&template).is_some_and(|w| w != room.world_id) {
         return Err(MergeErrorKind::NotFound);
     }
-    let child_access = inputs
-        .access(repo, ctx, &child)
+    let (child_access, child_owner) = inputs
+        .access_and_owner(repo, ctx, &child)
         .await
         .map_err(|_| MergeErrorKind::Internal)?;
     // Owner-or-GM is `Access::is_owner` (the effective-owner rule) — the uncapped
@@ -359,19 +379,21 @@ async fn load_pull_docs(
     if !(child_access.is_owner && child_access.has(cap::READ)) {
         return Err(MergeErrorKind::Forbidden);
     }
-    let template_access = inputs
-        .access(repo, ctx, &template)
+    let (template_access, template_owner) = inputs
+        .access_and_owner(repo, ctx, &template)
         .await
         .map_err(|_| MergeErrorKind::Internal)?;
     if !template_access.has(cap::READ) {
         return Err(MergeErrorKind::NotFound);
     }
-    let template = visible_template(&template, &template_access)?;
+    let template_view = visible_template(&template, &template_access)?;
     Ok(PullDocs {
         child,
-        template,
+        template: template_view,
+        template_full: template,
         child_access,
         template_access,
+        same_owner: child_owner == template_owner,
     })
 }
 
@@ -450,7 +472,7 @@ async fn pull(
             );
         }
     };
-    let update = plan_to_update(&docs.child, &docs.template, &bands);
+    let update = plan_to_update(&docs.child, &docs.template_full, &bands, docs.same_owner);
     if !update_authorized(&update, &docs.child_access, &inputs) {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
@@ -521,7 +543,7 @@ async fn revert(
         child: &docs.child_access,
     };
     let update = match compute_revert(&docs.child, &docs.template, &vis) {
-        Ok(u) => u,
+        Ok(bands) => plan_to_update(&docs.child, &docs.template_full, &bands, docs.same_owner),
         Err(e) => return merge_error(request_id, engine_error(child_id, e)),
     };
     if !update_authorized(&update, &docs.child_access, &inputs) {
@@ -567,6 +589,9 @@ struct PlannedInstance {
     /// already filtered to the conflicts this pusher may see
     /// (`visible_pull_plan` against BOTH the instance and the template).
     plan: MergePlan,
+    /// Whether this instance and the template share an effective owner
+    /// (`merge::bands::relate_tier`'s relation).
+    same_owner: bool,
 }
 
 /// Phase 1 of a push: load every same-world instance and compute its plan.
@@ -583,6 +608,7 @@ async fn plan_push(
     inputs: &AuthInputs,
     template: &Document,
     template_access: &Access,
+    template_owner: Option<Uuid>,
 ) -> Result<Vec<(Uuid, PlannedInstance)>, MergeErrorKind> {
     let instances = repo
         .instances_of(room.world_id, template.id)
@@ -593,8 +619,8 @@ async fn plan_push(
         })?;
     let mut planned = Vec::with_capacity(instances.len());
     for doc in instances {
-        let access = inputs
-            .access(repo, ctx, &doc)
+        let (access, owner) = inputs
+            .access_and_owner(repo, ctx, &doc)
             .await
             .map_err(|_| MergeErrorKind::Internal)?;
         if !access.has(cap::READ) {
@@ -615,6 +641,7 @@ async fn plan_push(
                 name,
                 access,
                 plan,
+                same_owner: owner == template_owner,
             },
         ));
     }
@@ -626,7 +653,8 @@ async fn plan_push(
 /// conflict-free" — `MergePullStatus`'s contract covers the uncommitted reading).
 /// A VISIBLE instance whose child-wins update fails the per-path derivation is
 /// `Excluded`, mirroring the client flow, which kept such instances out of the
-/// conflict modal entirely.
+/// conflict modal entirely. `template` is the FULL template (the `/base`
+/// source), not the pusher's view.
 fn push_outcome(
     template_id: Uuid,
     instances: &[(Uuid, PlannedInstance)],
@@ -636,7 +664,7 @@ fn push_outcome(
     let instances = instances
         .iter()
         .map(|(id, p)| {
-            let update = plan_to_update(&p.doc, template, &p.plan.merged_bands);
+            let update = plan_to_update(&p.doc, template, &p.plan.merged_bands, p.same_owner);
             let status = if !update_authorized(&update, &p.access, inputs) {
                 PushInstanceStatus::Excluded
             } else if p.plan.conflicts.is_empty() {
@@ -718,10 +746,11 @@ async fn push(
     if world_of(&template) != Some(room.world_id) {
         return merge_error(request_id, MergeErrorKind::NotFound);
     }
-    let template_access = match inputs.access(repo, ctx, &template).await {
-        Ok(a) => a,
-        Err(_) => return merge_error(request_id, MergeErrorKind::Internal),
-    };
+    let (template_access, template_owner) =
+        match inputs.access_and_owner(repo, ctx, &template).await {
+            Ok(a) => a,
+            Err(_) => return merge_error(request_id, MergeErrorKind::Internal),
+        };
     // Owner-or-GM of the TEMPLATE plus `/embedded` writability on it — the one
     // capability every push can require (merged embedded collections add/remove
     // children on instances), read off the shared `required_cap_for_path`
@@ -737,13 +766,24 @@ async fn push(
     {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
-    // From here on the template is the PUSHER's view of it: the parent side of
-    // every instance's merge and every instance's `/base` refresh.
-    let template = match visible_template(&template, &template_access) {
+    // The PUSHER's view of the template is the parent side of every instance's
+    // merge; the full template is what every instance's `/base` refresh
+    // snapshots and whose policy `plan_to_update` propagates.
+    let template_view = match visible_template(&template, &template_access) {
         Ok(t) => t,
         Err(reason) => return merge_error(request_id, reason),
     };
-    let instances = match plan_push(room, repo, ctx, &inputs, &template, &template_access).await {
+    let instances = match plan_push(
+        room,
+        repo,
+        ctx,
+        &inputs,
+        &template_view,
+        &template_access,
+        template_owner,
+    )
+    .await
+    {
         Ok(s) => s,
         Err(reason) => return merge_error(request_id, reason),
     };
@@ -789,7 +829,7 @@ async fn push(
     // commit — or, on a first call with conflicts, report without writing.
     let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(resolved.len());
     for (id, p, bands) in resolved {
-        let update = plan_to_update(&p.doc, &template, &bands);
+        let update = plan_to_update(&p.doc, &template, &bands, p.same_owner);
         if !update_authorized(&update, &p.access, &inputs) {
             outcomes.push(PushInstanceOutcome {
                 instance_id: id,
@@ -828,8 +868,16 @@ async fn push(
                     let inputs = AuthInputs::load(repo, room.world_id)
                         .await
                         .map_err(|_| MergeErrorKind::Internal)?;
-                    let instances =
-                        plan_push(room, repo, ctx, &inputs, &template, &template_access).await?;
+                    let instances = plan_push(
+                        room,
+                        repo,
+                        ctx,
+                        &inputs,
+                        &template_view,
+                        &template_access,
+                        template_owner,
+                    )
+                    .await?;
                     Ok(push_outcome(template_id, &instances, &inputs, &template))
                 })
                 .await;

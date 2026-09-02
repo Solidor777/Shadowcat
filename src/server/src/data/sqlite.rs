@@ -12,8 +12,8 @@ use crate::data::command::{
     apply_field_change, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
 };
 use crate::data::document::{
-    CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope, World,
-    WorldCapDefaults, WorldRole,
+    world_of, CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope,
+    World, WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
     CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
@@ -3124,6 +3124,26 @@ impl Repository for SqliteRepository {
         // captured", its `None` value means "captured, no owner".
         let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
             std::collections::HashMap::new();
+        // A stamp whose template is CREATED in this same batch cannot load it
+        // from the store yet (nothing is written before the loop below), so
+        // the batch's own Creates are consulted first, by id — only the ones
+        // some other Create in the batch names as its `source`.
+        let batch_sources: std::collections::HashSet<Uuid> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Operation::Create { doc } => doc.source.as_ref().map(|s| s.id),
+                _ => None,
+            })
+            .collect();
+        let batch_templates: std::collections::HashMap<Uuid, Document> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Operation::Create { doc } if batch_sources.contains(&doc.id) => {
+                    Some((doc.id, doc.clone()))
+                }
+                _ => None,
+            })
+            .collect();
         for op in &mut ops {
             match op {
                 Operation::Create { doc } => {
@@ -3134,12 +3154,37 @@ impl Repository for SqliteRepository {
                     // broadcast and logged — a stamped instance (`source`
                     // set) snapshots itself, any other document stores no
                     // base, and embedded children never carry one. Any
-                    // client-supplied `base` is discarded here.
+                    // client-supplied `base` is discarded here. The
+                    // template is loaded so its content-band policy lands
+                    // on the new instance first (`propagate_overrides`,
+                    // inside `derive_create_base`); a template in another
+                    // world is treated exactly as a missing one, the same
+                    // reading `merge_intents::load_pull_docs` gives it.
                     // `apply_command` (the trusted undo/replay substrate)
                     // deliberately does NOT re-derive: it applies the
                     // already-derived logged op verbatim, and every
                     // production Create reaches storage through this arm.
-                    crate::merge::bands::derive_create_base(doc);
+                    let template = match &doc.source {
+                        Some(source) => match batch_templates.get(&source.id) {
+                            Some(t) => Some(t.clone()),
+                            None => Self::load_document(&mut *tx, source.id)
+                                .await?
+                                .filter(|t| world_of(t).is_none_or(|w| w == world_id)),
+                        },
+                        None => None,
+                    };
+                    // The owner relation the propagated tiers are expressed
+                    // under (`merge::bands::relate_tier`): both effective
+                    // owners through the one linked-actor join
+                    // (`load_effective_owner`), never a literal `owner` read.
+                    let same_owner = match &template {
+                        Some(t) => {
+                            Self::load_effective_owner(&mut *tx, doc).await?
+                                == Self::load_effective_owner(&mut *tx, t).await?
+                        }
+                        None => true,
+                    };
+                    crate::merge::bands::derive_create_base(doc, template.as_ref(), same_owner);
                     // A combatant's stored resource numbers derive from actor
                     // formulas that may read hidden leaves, so their egress
                     // defaults to the trusted tier: stamp the override when

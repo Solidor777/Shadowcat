@@ -4,6 +4,7 @@
 // need locally. Every value is plain JSON (objects recurse key-by-key, arrays are opaque leaves,
 // scalars are leaves).
 import type { WireDocument } from "./wire";
+import type { MergeBase } from "@shadowcat/types";
 
 /** One structural change between two JSON trees at an RFC-6901 pointer. */
 export type Diff =
@@ -136,6 +137,96 @@ export function isPlacementExcluded(path: string, exclusions: string[]): boolean
  * so the stamp/sync helpers here and their consumers name the ONE generated declaration rather
  * than a hand-written copy of it. */
 export type { MergeBase, EmbeddedBaseChild } from "@shadowcat/types";
+
+/** Whether an override pointer names a MERGEABLE band — `/name`, `/engine`, `/system`, or a
+ * path inside `engine`/`system` — the content a `MergeBase` snapshots and a merge writes. The
+ * server's `writes_a_content_band` is the definition; `snapshotBase` records exactly these
+ * overrides (a `/base…` override says nothing about the document's own bands), so the client's
+ * template snapshot and the server-written stored base agree on the recorded policy.
+ * @param pointer The `property_overrides` key to classify.
+ * @returns `true` iff the pointer is a mergeable band or a path inside one.
+ * @example
+ * ```ts
+ * import { isMergeableBandPointer } from "@shadowcat/core";
+ *
+ * isMergeableBandPointer("/system/secret"); // true
+ * isMergeableBandPointer("/base/system/secret"); // false
+ * ```
+ */
+export function isMergeableBandPointer(pointer: string): boolean {
+  return pointer === "/name" || ["/engine", "/system"].some((b) => pointer === b || pointer.startsWith(`${b}/`));
+}
+
+/** Read a stored `WireDocument.base` the way the server's `MergeBase` deserializer does: every
+ * missing key coalesces to its default (`null` band, empty `embedded`, empty policy), recursively
+ * through the embedded records. Egress REMOVES a hidden key from the snapshot (a stripped
+ * `/base/name` leaves no `name` key), while the same redaction NULLS a whole hidden band on the
+ * live template, so a raw key-presence comparison of the two views would flag every hidden band
+ * as a template change; reading the snapshot through the server's own defaults is what makes
+ * `syncState`'s comparison the same one the server makes.
+ * @param base The raw `base` value off the wire (`unknown`; a non-object reads as an empty base).
+ * @returns The normalized `MergeBase`.
+ * @example
+ * ```ts
+ * import { normalizeBase } from "@shadowcat/core";
+ *
+ * normalizeBase({ system: { hp: 1 } }).name; // null
+ * ```
+ */
+export function normalizeBase(base: unknown): MergeBase {
+  const b = isPlainObject(base) ? base : {};
+  return {
+    name: typeof b.name === "string" ? b.name : null,
+    engine: b.engine ?? null,
+    system: b.system ?? null,
+    embedded: normalizeBaseEmbedded(b.embedded),
+    property_overrides: normalizeBasePolicy(b.property_overrides),
+  };
+}
+
+/** `normalizeBase`'s recursion over the embedded records (`EmbeddedBaseChild` defaults; the
+ * record's policy key is spelled `propertyOverrides`). Not exported.
+ * @param embedded The raw `embedded` value of a snapshot node.
+ * @returns The normalized record collections; a non-object reads as no collections.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see normalizeBase for the public entry point)
+ * normalizeBaseEmbedded({ items: [{ sourceId: "t" }] });
+ * ```
+ */
+function normalizeBaseEmbedded(embedded: unknown): MergeBase["embedded"] {
+  const out: MergeBase["embedded"] = {};
+  if (!isPlainObject(embedded)) return out;
+  for (const [coll, records] of Object.entries(embedded)) {
+    if (!Array.isArray(records)) continue;
+    out[coll] = records.map((r) => {
+      const rec = isPlainObject(r) ? r : {};
+      return {
+        sourceId: typeof rec.sourceId === "string" ? rec.sourceId : "",
+        name: typeof rec.name === "string" ? rec.name : null,
+        engine: rec.engine ?? null,
+        system: rec.system ?? null,
+        embedded: normalizeBaseEmbedded(rec.embedded),
+        propertyOverrides: normalizeBasePolicy(rec.propertyOverrides),
+      };
+    });
+  }
+  return out;
+}
+
+/** `normalizeBase`'s reading of a recorded policy map: an object of visibility tiers, anything
+ * else reads as empty. Not exported.
+ * @param policy The raw policy value of a snapshot node.
+ * @returns The policy map (a non-object reads as `{}`).
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see normalizeBase for the public entry point)
+ * normalizeBasePolicy({ "/system/secret": "gm_only" });
+ * ```
+ */
+function normalizeBasePolicy(policy: unknown): MergeBase["property_overrides"] {
+  return isPlainObject(policy) ? (structuredClone(policy) as MergeBase["property_overrides"]) : {};
+}
 
 /** Per-`doc_type` instance-local paths that never merge.
  * @param docType The document's `doc_type`.

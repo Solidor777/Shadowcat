@@ -81,6 +81,33 @@ impl Harness {
             .unwrap();
     }
 
+    /// Whole-map `/permissions/property_overrides` rewrite of `id` as the GM.
+    async fn set_overrides(&self, id: Uuid, overrides: &[(&str, Visibility)]) {
+        let cur = self.get(id).await;
+        let new: std::collections::BTreeMap<String, Visibility> = overrides
+            .iter()
+            .map(|(p, v)| ((*p).to_string(), *v))
+            .collect();
+        self.room
+            .publish(
+                self.repo.as_ref(),
+                &self.gm,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        path: "/permissions/property_overrides".into(),
+                        old: serde_json::to_value(&cur.permissions.property_overrides).unwrap(),
+                        new: serde_json::to_value(&new).unwrap(),
+                        remove: false,
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+
     /// Whole-collection `/embedded/items` rewrite of `id` as the GM.
     async fn set_items(&self, id: Uuid, items: Vec<Document>) {
         let cur = self.get(id).await;
@@ -1812,27 +1839,19 @@ async fn template_hidden_pair(h: &Harness, template_id: Uuid, child_id: Uuid) ->
     (template_id, child_id)
 }
 
-/// The requester's stored-`base` parity check: the snapshot the merge wrote
-/// equals `snapshot_base` of the template AS THAT REQUESTER SEES IT
-/// (`filter_properties` under their resolved access) — the same comparison
-/// the client's sync badge makes against its redacted store view.
-async fn assert_base_is_the_visible_snapshot(
-    h: &Harness,
-    ctx: &PermissionContext,
-    template: Uuid,
-    child: Uuid,
-) {
+/// The stored `base` is ONE canonical value: the FULL, unredacted template
+/// snapshot with its recorded policy re-expressed for this instance
+/// (`snapshot_for_instance` under the two documents' effective-owner
+/// relation), whichever seat ran the merge that wrote it. Proves the write
+/// path stores the full snapshot (not the writer's view of it): under a
+/// requester-relative snapshot this fails for any non-GM writer.
+async fn assert_base_is_the_full_snapshot(h: &Harness, template: Uuid, child: Uuid) {
     let t = h.get(template).await;
-    let owner = h.repo.effective_owner_of(&t).await.unwrap();
-    let access = crate::data::permission::resolve_access_world(
-        ctx.user_id,
-        ctx.world_role,
-        &t,
-        &h.world_defaults.grants_for(&t.doc_type),
-        owner,
-    );
-    let visible = crate::data::permission::filter_properties(&t, &access).unwrap();
-    let expected = serde_json::to_value(crate::merge::snapshot_base(&visible)).unwrap();
+    let c = h.get(child).await;
+    let same_owner = h.repo.effective_owner_of(&c).await.unwrap()
+        == h.repo.effective_owner_of(&t).await.unwrap();
+    let expected =
+        serde_json::to_value(crate::merge::bands::snapshot_for_instance(&t, same_owner)).unwrap();
     let stored = h
         .get(child)
         .await
@@ -1840,17 +1859,67 @@ async fn assert_base_is_the_visible_snapshot(
         .expect("a merge write refreshes base");
     assert!(
         crate::merge::tree::structural_diff(&stored, &expected).is_empty(),
-        "stored base {stored} is the requester-visible template snapshot {expected}"
+        "stored base {stored} is the full template snapshot {expected}"
+    );
+}
+
+/// `filter_properties` of the stored document `id` under `ctx`'s resolved
+/// access — the view egress delivers to that seat.
+async fn seat_view(h: &Harness, ctx: &PermissionContext, id: Uuid) -> Document {
+    let d = h.get(id).await;
+    let owner = h.repo.effective_owner_of(&d).await.unwrap();
+    let access = crate::data::permission::resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        &d,
+        &h.world_defaults.grants_for(&d.doc_type),
+        owner,
+    );
+    crate::data::permission::filter_properties(&d, &access).unwrap()
+}
+
+/// One seat's `syncState` parity, computed the way the client computes it:
+/// that seat's egress view of the stored base, read through `MergeBase`'s
+/// own defaults (the client's `normalizeBase`), structurally equals
+/// `snapshot_base` of that seat's egress view of the template on CONTENT
+/// (the recorded policy maps are excluded, as the client's `syncState`
+/// excludes them — the snapshot's is re-expressed for the instance, the
+/// template's is verbatim) — so the client's badge reads up-to-date for this
+/// seat. Pinned per seat because the two views are cut by different policies
+/// (the snapshot's recorded one and the template's current one) and must
+/// still agree.
+async fn assert_sync_state_parity(
+    h: &Harness,
+    ctx: &PermissionContext,
+    template: Uuid,
+    child: Uuid,
+) {
+    let template_view = seat_view(h, ctx, template).await;
+    let expected = serde_json::to_value(crate::merge::bands::content_only(
+        &crate::merge::snapshot_base(&template_view),
+    ))
+    .unwrap();
+    let base_view = seat_view(h, ctx, child)
+        .await
+        .base
+        .expect("an owner-or-GM seat receives base");
+    let normalized: MergeBase = serde_json::from_value(base_view).expect("a redacted base parses");
+    let normalized = serde_json::to_value(crate::merge::bands::content_only(&normalized)).unwrap();
+    assert!(
+        crate::merge::tree::structural_diff(&normalized, &expected).is_empty(),
+        "this seat's view of the stored base {normalized} equals its view of the template {expected}"
     );
 }
 
 /// The parent side of a pull is the template as the REQUESTER sees it: the
 /// template's hidden edits (`gm_only`, `owner_or_gm`) never move into the
-/// instance, never appear in the reply, and the refreshed `/base` is the
-/// visible template's snapshot — so the client's sync badge, which diffs
-/// `base` against its redacted store view, reads up-to-date.
+/// instance's content and never appear in the reply. The refreshed `/base` is
+/// the FULL template's snapshot, and the requester's egress view of it is
+/// cut by the policy the snapshot records — so the client's sync badge, which
+/// diffs its view of `base` against its redacted store view of the template,
+/// reads up-to-date for every seat.
 #[tokio::test]
-async fn pull_never_moves_template_hidden_values_and_snapshots_the_visible_template() {
+async fn pull_never_moves_template_hidden_values_and_stores_the_full_snapshot() {
     let h = merge_harness().await;
     let (template, child) =
         template_hidden_pair(&h, Uuid::from_u128(0xE701), Uuid::from_u128(0xE702)).await;
@@ -1885,12 +1954,21 @@ async fn pull_never_moves_template_hidden_values_and_snapshots_the_visible_templ
         json!({ "hp": 11, "gm_secret": "S1", "owner_note": "N1" }),
         "only the visible edit moved; the instance's own hidden-path values stay"
     );
-    let base = serde_json::to_string(stored.base.as_ref().unwrap()).unwrap();
+    assert_base_is_the_full_snapshot(&h, template, child).await;
+    let base_view = seat_view(&h, &h.player, child)
+        .await
+        .base
+        .expect("the instance owner receives base");
+    let base_wire = serde_json::to_string(&base_view).unwrap();
     assert!(
-        !base.contains("S2") && !base.contains("N2") && !base.contains("gm_secret"),
-        "the snapshot carries nothing the requester cannot see: {base}"
+        !base_wire.contains("S2")
+            && !base_wire.contains("N2")
+            && base_view["system"].get("gm_secret").is_none()
+            && base_view["system"].get("owner_note").is_none(),
+        "the requester's egress view of the snapshot carries nothing they cannot see: {base_wire}"
     );
-    assert_base_is_the_visible_snapshot(&h, &h.player, template, child).await;
+    assert_sync_state_parity(&h, &h.player, template, child).await;
+    assert_sync_state_parity(&h, &h.gm, template, child).await;
 
     // A GM's pull of the same pair is unchanged: the GM sees everything.
     let (template2, child2) =
@@ -1918,12 +1996,14 @@ async fn pull_never_moves_template_hidden_values_and_snapshots_the_visible_templ
         h.get(child2).await.system,
         json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" })
     );
-    assert_base_is_the_visible_snapshot(&h, &h.gm, template2, child2).await;
+    assert_base_is_the_full_snapshot(&h, template2, child2).await;
+    assert_sync_state_parity(&h, &h.gm, template2, child2).await;
+    assert_sync_state_parity(&h, &h.player, template2, child2).await;
 }
 
 /// Revert resets only what the requester can see of the template: the
 /// instance's values on template-hidden paths survive the reset, and the
-/// refreshed `/base` is the visible snapshot.
+/// refreshed `/base` is the full snapshot, cut per seat at egress.
 #[tokio::test]
 async fn revert_keeps_the_instances_values_on_template_hidden_paths() {
     let h = merge_harness().await;
@@ -1966,14 +2046,17 @@ async fn revert_keeps_the_instances_values_on_template_hidden_paths() {
         json!({ "hp": 11, "gm_secret": "S3", "owner_note": "N3" }),
         "visible paths reset to the template; hidden-path values are the instance's own"
     );
-    assert_base_is_the_visible_snapshot(&h, &h.player, template, child).await;
+    assert_base_is_the_full_snapshot(&h, template, child).await;
+    assert_sync_state_parity(&h, &h.player, template, child).await;
+    assert_sync_state_parity(&h, &h.gm, template, child).await;
 }
 
 /// Push, parent-side rule: the pusher owns the template but a `gm_only`
 /// field on it is still hidden from them; the instance (owned by someone
 /// else) hides an `owner_or_gm` field from the pusher. Neither hidden value
-/// moves or appears on the wire, and the instance's `/base` snapshots the
-/// PUSHER-visible template.
+/// moves or appears on the wire; the instance's `/base` snapshots the FULL
+/// template, and the instance owner's egress view of it omits the template's
+/// hidden field.
 #[tokio::test]
 async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_cannot_fully_see() {
     let h = merge_harness().await;
@@ -2063,7 +2146,22 @@ async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_can
         json!({ "hp": 11, "gm_secret": "S1", "mine": "M3" }),
         "hp moved; the template-hidden gm_secret did not; the child-hidden conflict stayed child-wins"
     );
-    assert_base_is_the_visible_snapshot(&h, &h.player, template, instance).await;
+    assert_base_is_the_full_snapshot(&h, template, instance).await;
+    let owner_base = seat_view(&h, &h.bystander, instance)
+        .await
+        .base
+        .expect("the instance owner receives base");
+    assert!(
+        owner_base["system"].get("gm_secret").is_none()
+            && !serde_json::to_string(&owner_base).unwrap().contains("S2"),
+        "the instance owner's view of the snapshot omits the template's gm_only value: {owner_base}"
+    );
+    assert!(
+        seat_view(&h, &h.player, instance).await.base.is_none(),
+        "the pusher, neither owner nor GM of the instance, receives no base at all"
+    );
+    assert_sync_state_parity(&h, &h.bystander, template, instance).await;
+    assert_sync_state_parity(&h, &h.gm, template, instance).await;
 }
 
 /// A resolution whose "take template" cannot be applied to the current merged
@@ -2242,4 +2340,208 @@ async fn pull_on_an_in_sync_instance_publishes_nothing() {
         seq_after_first,
         "an in-sync pull publishes no Event"
     );
+}
+
+/// Ping-pong: the stored `/base` is one canonical value, so consecutive
+/// pulls by seats with different views of the template never rewrite each
+/// other's snapshot. After a GM's pull lands the template's edit, the
+/// player's pull and the GM's second pull each publish NOTHING (the room
+/// sequence stands still), and both seats' `syncState` parity holds
+/// throughout. Under a requester-relative snapshot the player's pull would
+/// write its narrower view out and the GM's badge would flip back.
+#[tokio::test]
+async fn gm_pull_then_player_pull_on_an_in_sync_instance_publishes_nothing() {
+    let h = merge_harness().await;
+    let (template, child) =
+        template_hidden_pair(&h, Uuid::from_u128(0xE901), Uuid::from_u128(0xE902)).await;
+    h.set_system(
+        template,
+        json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
+    )
+    .await;
+    let pull = |ctx: &'static str, request: u128| {
+        let ctx = match ctx {
+            "gm" => &h.gm,
+            _ => &h.player,
+        };
+        handle_merge_intent(
+            &h.room,
+            h.repo.as_ref(),
+            ctx,
+            ClientMsg::MergePull {
+                request_id: Uuid::from_u128(request),
+                child_id: child,
+                resolutions: None,
+            },
+            0,
+        )
+    };
+
+    let before = h.room.current_seq();
+    assert!(matches!(
+        pull("gm", 1).await.map(pull_status),
+        Some(MergePullStatus::Applied)
+    ));
+    let after_gm = h.room.current_seq();
+    assert_eq!(
+        after_gm,
+        before + 1,
+        "the GM's pull commits the template's edit"
+    );
+    assert_base_is_the_full_snapshot(&h, template, child).await;
+    assert_sync_state_parity(&h, &h.gm, template, child).await;
+    assert_sync_state_parity(&h, &h.player, template, child).await;
+
+    assert!(matches!(
+        pull("player", 2).await.map(pull_status),
+        Some(MergePullStatus::Applied)
+    ));
+    assert_eq!(
+        h.room.current_seq(),
+        after_gm,
+        "the player's pull on the in-sync instance publishes nothing"
+    );
+    assert_base_is_the_full_snapshot(&h, template, child).await;
+    assert_sync_state_parity(&h, &h.gm, template, child).await;
+    assert_sync_state_parity(&h, &h.player, template, child).await;
+
+    assert!(matches!(
+        pull("gm", 3).await.map(pull_status),
+        Some(MergePullStatus::Applied)
+    ));
+    assert_eq!(
+        h.room.current_seq(),
+        after_gm,
+        "the GM's second pull publishes nothing either"
+    );
+    assert_sync_state_parity(&h, &h.gm, template, child).await;
+    assert_sync_state_parity(&h, &h.player, template, child).await;
+}
+
+/// Recipient secrecy: a GM's push of a `gm_only` template value lands on a
+/// player-owned instance HIDDEN — the template's policy propagates onto the
+/// instance WITH THE MERGE WRITE (the template hid the field only after the
+/// instance was stamped, so the stamp carried no such policy) — so the
+/// instance owner's egress of the `Event` (`/system` and `/base` deltas), of
+/// the stored document (`/system`, `/base`) and of any `MergeResult` never
+/// carries the value, while the GM's does.
+#[tokio::test]
+async fn gm_push_of_a_gm_only_template_value_never_reaches_the_instance_owner() {
+    let h = merge_harness().await;
+    let (template, child) = (Uuid::from_u128(0xE911), Uuid::from_u128(0xE912));
+    h.create(template_doc(
+        h.world_id,
+        template,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "gm_secret": "S1" }),
+    ))
+    .await;
+    let mut inst = instance_doc(
+        h.world_id,
+        child,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "gm_secret": "S1" }),
+    );
+    inst.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    h.create(inst).await;
+    assert!(
+        h.get(child).await.permissions.property_overrides.is_empty(),
+        "the stamp carried no policy: the template had none yet"
+    );
+    // The GM now hides the field on the template and edits it.
+    h.set_overrides(template, &[("/system/gm_secret", Visibility::GmOnly)])
+        .await;
+    h.set_system(template, json!({ "hp": 10, "gm_secret": "S2" }))
+        .await;
+
+    let (mut rx, _) = h.room.subscribe();
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::MergePush {
+            request_id: Uuid::from_u128(1),
+            template_id: template,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let ServerMsg::MergeResult {
+        outcome: MergeOutcome::Push { instances, .. },
+        ..
+    } = &reply
+    else {
+        panic!("expected a MergeResult::Push, got {reply:?}");
+    };
+    assert_eq!(instances.len(), 1);
+    assert!(matches!(instances[0].status, PushInstanceStatus::Applied));
+    // The reply is addressed to the pusher alone; with the merge applied it
+    // carries no conflict payload for anyone to read the value from.
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2"),
+        "an applied push discloses no values: {wire}"
+    );
+
+    let ev = loop {
+        match rx.recv().await.unwrap() {
+            crate::ws::room::RoomEvent::Event(ev) => break (*ev).clone(),
+            crate::ws::room::RoomEvent::Other(_) => continue,
+        }
+    };
+    let current = crate::data::permission::load_current_docs(h.repo.as_ref(), &ev.command).await;
+    let owner_event = serde_json::to_string(&filter_command(
+        &ev.command,
+        &ev.snapshot,
+        &h.player,
+        &h.world_defaults,
+        &current,
+        |_| None,
+    ))
+    .unwrap();
+    assert!(
+        !owner_event.contains("S2"),
+        "the instance owner's Event egress never carries the value: {owner_event}"
+    );
+    let gm_event = serde_json::to_string(&filter_command(
+        &ev.command,
+        &ev.snapshot,
+        &h.gm,
+        &h.world_defaults,
+        &current,
+        |_| None,
+    ))
+    .unwrap();
+    assert!(
+        gm_event.contains("S2"),
+        "the GM's Event egress carries it: {gm_event}"
+    );
+
+    let stored = h.get(child).await;
+    assert_eq!(stored.system["gm_secret"], json!("S2"), "the value landed");
+    assert_eq!(
+        stored
+            .permissions
+            .property_overrides
+            .get("/system/gm_secret"),
+        Some(&Visibility::GmOnly),
+        "and landed hidden: the template's policy propagated onto the instance"
+    );
+    let owner_doc = serde_json::to_string(&seat_view(&h, &h.player, child).await).unwrap();
+    assert!(
+        !owner_doc.contains("S2"),
+        "the instance owner's document egress (system and base) omits it: {owner_doc}"
+    );
+    let gm_doc = seat_view(&h, &h.gm, child).await;
+    assert_eq!(gm_doc.system["gm_secret"], json!("S2"));
+    assert_eq!(gm_doc.base.unwrap()["system"]["gm_secret"], json!("S2"));
+    assert_sync_state_parity(&h, &h.player, template, child).await;
+    assert_sync_state_parity(&h, &h.gm, template, child).await;
 }

@@ -402,9 +402,11 @@ fn valid_wall_base(child_source_id: &str) -> serde_json::Value {
                 "name": "Child",
                 "engine": null,
                 "system": {},
-                "embedded": {}
+                "embedded": {},
+                "propertyOverrides": {}
             }]
-        }
+        },
+        "property_overrides": {}
     })
 }
 
@@ -445,7 +447,8 @@ fn validate_engine_tree_normalizes_the_root_base_engine_band() {
             // "faction" intentionally omitted
         },
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {}
     }));
     validate_engine_tree(&mut doc).unwrap();
     let base = doc.base.unwrap();
@@ -460,6 +463,81 @@ fn validate_engine_tree_rejects_a_non_object_base() {
         validate_engine_tree(&mut doc),
         Err(DataError::SchemaViolation { .. })
     ));
+}
+
+#[test]
+fn validate_engine_tree_requires_the_recorded_policy_key_at_every_depth() {
+    // An absent policy map would read as "nothing hidden" — the fail-open
+    // direction for the egress redaction that reads it — so the key is
+    // required on the root and on every record, under each node's spelling.
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base.as_object_mut().unwrap().remove("property_overrides");
+    doc.base = Some(base);
+    match validate_engine_tree(&mut doc).unwrap_err() {
+        DataError::SchemaViolation { pointer, reason } => {
+            assert_eq!(pointer, "/base");
+            assert!(reason.contains("property_overrides"), "{reason}");
+        }
+        other => panic!("expected SchemaViolation, got {other:?}"),
+    }
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base["embedded"]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("propertyOverrides");
+    doc.base = Some(base);
+    match validate_engine_tree(&mut doc).unwrap_err() {
+        DataError::SchemaViolation { pointer, reason } => {
+            assert_eq!(pointer, "/base/embedded/items/0");
+            assert!(reason.contains("propertyOverrides"), "{reason}");
+        }
+        other => panic!("expected SchemaViolation, got {other:?}"),
+    }
+}
+
+#[test]
+fn validate_engine_tree_rejects_a_recorded_policy_egress_cannot_act_on() {
+    // Every recorded entry must classify once prefixed with `/base` and carry
+    // a real tier, or the egress redaction reading it would fail closed on a
+    // stored document.
+    for (policy, what) in [
+        (
+            serde_json::json!({ "/base/system/x": "gm_only" }),
+            "a pointer naming no mergeable band",
+        ),
+        (
+            serde_json::json!({ "/system/secret": "invisible" }),
+            "not a tier",
+        ),
+        (serde_json::json!("gm_only"), "not an object"),
+    ] {
+        let mut doc = doc_with_engine(valid_wall_engine());
+        let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+        base["property_overrides"] = policy;
+        doc.base = Some(base);
+        assert!(
+            matches!(
+                validate_engine_tree(&mut doc),
+                Err(DataError::SchemaViolation { .. })
+            ),
+            "{what} must be rejected"
+        );
+    }
+    let mut doc = doc_with_engine(valid_wall_engine());
+    let mut base = valid_wall_base("00000000-0000-0000-0000-0000000000c1");
+    base["property_overrides"] =
+        serde_json::json!({ "/system/secret": "gm_only", "/name": "owner_or_gm" });
+    base["embedded"]["items"][0]["propertyOverrides"] =
+        serde_json::json!({ "/engine/hp": "gm_only" });
+    doc.base = Some(base.clone());
+    validate_engine_tree(&mut doc).unwrap();
+    assert_eq!(
+        doc.base.unwrap(),
+        base,
+        "a well-formed policy round-trips verbatim"
+    );
 }
 
 #[test]
@@ -615,9 +693,11 @@ fn validate_engine_tree_normalizes_a_correlated_embedded_child_engine() {
                     // "faction" intentionally omitted
                 },
                 "system": {},
-                "embedded": {}
+                "embedded": {},
+                "propertyOverrides": {}
             }]
-        }
+        },
+        "property_overrides": {}
     }));
     validate_engine_tree(&mut parent).unwrap();
     let base = parent.base.unwrap();

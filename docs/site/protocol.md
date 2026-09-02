@@ -148,6 +148,19 @@ carry their current conflicts; re-sending the intent commits what remains. Every
 filtered to the paths the requester can see in both documents before it reaches the wire; a
 hidden conflict resolves to the instance's own (child) value automatically.
 
+**Visibility.** The merge runs over the requester's view of the template and of the stored
+`base` snapshot (both reduced by the same per-recipient classifier that redacts documents), so a
+value the requester cannot see never moves into an instance's content in either direction. The
+stored `base` itself is one canonical value — the full template snapshot with its
+`property_overrides` recorded (`propertyOverrides` on each embedded record), written by the server
+alone — and every merge write carries the template's overrides onto the instance additively
+(an `owner_or_gm` tier of a template with a different owner lands as `gm_only`), so a value a GM
+pushes into a player's instance arrives hidden from that player. Each recipient receives `base`
+cut by the policy it records, on top of the whole-band owner-or-GM floor: the instance owner sees
+the snapshot minus what the template hid, a GM sees it whole, and nobody else receives it. A
+client's "template changed" badge therefore compares its own view of the snapshot with its own
+view of the template, and reads in sync for every seat after any seat's merge.
+
 ## Scene channels
 
 Scene-derived data (vision, fog, lighting masks) does not travel as documents —

@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::data::document::Document;
+use crate::data::document::{Document, Visibility};
+use crate::data::permission::writes_a_content_band;
 
 /// The mergeable bands of a live document; `embedded` children are full
 /// documents (envelope preserved). Produced by `merge3`, written whole-band
@@ -60,15 +61,29 @@ pub struct EmbeddedBaseChild {
     /// same shape.
     #[serde(default)]
     pub embedded: BTreeMap<String, Vec<EmbeddedBaseChild>>,
+    /// The redaction policy the snapshotted child carried over its own
+    /// bands at sync time (`recorded_overrides`), so egress can redact this
+    /// record by the policy that governed its content (`permission`'s
+    /// `own_overrides`). Spelled `propertyOverrides` on the wire like this
+    /// record's other keys.
+    #[serde(default)]
+    pub property_overrides: BTreeMap<String, Visibility>,
 }
 
-/// The merge snapshot stored at `Document.base`: top-level bands plus
-/// recursive embedded content keyed for provenance correlation. Every field
-/// defaults so a historical record still parses on READ (a missing band
-/// reads as `null`/empty, exactly the coalescing the client's `snapshotBase`
-/// produces when it stamps); the write path never admits such a record —
-/// `validate_engine_tree` requires every key present at ingest. The ts-rs
-/// export is the client's `MergeBase`.
+/// The merge snapshot stored at `Document.base`: the TEMPLATE's top-level
+/// bands plus recursive embedded content keyed for provenance correlation,
+/// FULL and unredacted — one canonical value per instance, never relative
+/// to the requester who wrote it (a requester-relative snapshot would make
+/// two seats' merges rewrite each other's view forever). Written only by
+/// the Create derivation (`derive_create_base`) and the merge write path
+/// (`plan_to_update` under `WriteOrigin::TemplateMerge`); each recipient's
+/// view of it is cut at egress by the policy it records
+/// (`property_overrides`). Every field defaults so a historical record still
+/// parses on READ (a missing band reads as `null`/empty, exactly the
+/// coalescing the client's `snapshotBase` produces when it stamps); the
+/// write path never admits such a record — `validate_engine_tree` requires
+/// every key present at ingest. The ts-rs export is the client's
+/// `MergeBase`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct MergeBase {
@@ -87,6 +102,118 @@ pub struct MergeBase {
     /// reduced to `EmbeddedBaseChild` records (not full documents).
     #[serde(default)]
     pub embedded: BTreeMap<String, Vec<EmbeddedBaseChild>>,
+    /// The redaction policy the snapshotted document carried over its own
+    /// bands at sync time (`recorded_overrides`): the snapshot travels with
+    /// the policy that governed its content, so egress redacts `/base` by
+    /// it (`permission`'s `own_overrides`) and the client's `syncState`
+    /// compares it against the template's current policy. Not consulted by
+    /// the merge itself, which reduces the base by the template's CURRENT
+    /// hidden set (`merge3`).
+    #[serde(default)]
+    pub property_overrides: BTreeMap<String, Visibility>,
+}
+
+/// The overrides of `doc` that govern its MERGEABLE bands — the pointers
+/// `writes_a_content_band` admits (`/name`, `/engine…`, `/system…`), which
+/// is exactly the content a `MergeBase` snapshots and a merge writes. A
+/// `/base…` pointer (a policy over `doc`'s OWN snapshot of some other
+/// template) is neither recorded nor propagated: it says nothing about
+/// `doc`'s bands.
+pub(crate) fn recorded_overrides(doc: &Document) -> BTreeMap<String, Visibility> {
+    doc.permissions
+        .property_overrides
+        .iter()
+        .filter(|(p, _)| writes_a_content_band(p))
+        .map(|(p, v)| (p.clone(), *v))
+        .collect()
+}
+
+/// A template's tier re-expressed for the instance that will hold it. The
+/// `OwnerOrGm` tier names the OWNER of the document it sits on, and every
+/// document evaluates its tiers against its own effective owner
+/// (`Access::is_owner`) — so a template-owner-private value carried onto an
+/// instance is private to the same person only when the two documents share
+/// an effective owner (`same_owner`); otherwise it is nobody's private value
+/// on the instance and becomes `GmOnly` there. `All` and `GmOnly` name no
+/// owner and are unchanged. The one relation both `propagate_overrides` (the
+/// instance's content policy) and `snapshot_for_instance` (the recorded
+/// policy of its `/base`) apply, so the instance's content and its snapshot
+/// hide the same paths from the same seats.
+pub fn relate_tier(tier: Visibility, same_owner: bool) -> Visibility {
+    match tier {
+        Visibility::OwnerOrGm if !same_owner => Visibility::GmOnly,
+        other => other,
+    }
+}
+
+/// Carry `template`'s content-band policy onto `instance`, ADDITIVELY: every
+/// pointer the template hides (`recorded_overrides`) gets the template's
+/// tier, re-expressed for the instance (`relate_tier`), unless the instance
+/// already holds a tier at least as strict (`Visibility::strictness`); an
+/// instance-authored override is never removed or widened. Recurses into the
+/// instance's embedded children by IDENTITY — a child whose `source.id`
+/// names a template child takes that child's policy — never by position.
+/// `same_owner` is the ROOT relation (an embedded child's tiers resolve
+/// against the root's access, as `filter_properties` recurses). Returns
+/// whether anything changed.
+///
+/// This is what closes the recipient direction of merge secrecy: a merge
+/// write moves the template's values into the instance under the
+/// requester's view, so a GM's push of a `gm_only` value lands on an
+/// instance whose OWNER then reads it — unless the path arrives hidden. The
+/// Create derivation and every merge write (`plan_to_update`) apply this,
+/// server-authored, before the instance's content is written.
+pub fn propagate_overrides(instance: &mut Document, template: &Document, same_owner: bool) -> bool {
+    let mut changed = false;
+    for (p, tier) in recorded_overrides(template) {
+        let tier = relate_tier(tier, same_owner);
+        let keep = instance
+            .permissions
+            .property_overrides
+            .get(&p)
+            .is_some_and(|own| own.strictness() >= tier.strictness());
+        if !keep {
+            instance.permissions.property_overrides.insert(p, tier);
+            changed = true;
+        }
+    }
+    for (coll, kids) in instance.embedded.iter_mut() {
+        let Some(template_kids) = template.embedded.get(coll) else {
+            continue;
+        };
+        for kid in kids {
+            let Some(sid) = kid.source.as_ref().map(|s| s.id) else {
+                continue;
+            };
+            if let Some(t) = template_kids.iter().find(|t| t.id == sid) {
+                changed |= propagate_overrides(kid, t, same_owner);
+            }
+        }
+    }
+    changed
+}
+
+/// The `/base` value a merge write stores on an instance: `snapshot_base` of
+/// the FULL template with every recorded tier re-expressed for the instance
+/// (`relate_tier`, at every depth) — the policy the instance's egress
+/// evaluates against its own owner. Compared and written by `plan_to_update`.
+pub fn snapshot_for_instance(template: &Document, same_owner: bool) -> MergeBase {
+    fn relate_records(records: &mut BTreeMap<String, Vec<EmbeddedBaseChild>>, same_owner: bool) {
+        for kids in records.values_mut() {
+            for k in kids {
+                for tier in k.property_overrides.values_mut() {
+                    *tier = relate_tier(*tier, same_owner);
+                }
+                relate_records(&mut k.embedded, same_owner);
+            }
+        }
+    }
+    let mut base = snapshot_base(template);
+    for tier in base.property_overrides.values_mut() {
+        *tier = relate_tier(*tier, same_owner);
+    }
+    relate_records(&mut base.embedded, same_owner);
+    base
 }
 
 /// Per-`doc_type` instance-local paths that never merge. Currently only
@@ -139,6 +266,44 @@ pub(crate) fn base_from_child(b: &EmbeddedBaseChild) -> MergeBase {
         engine: b.engine.clone(),
         system: b.system.clone(),
         embedded: b.embedded.clone(),
+        property_overrides: b.property_overrides.clone(),
+    }
+}
+
+/// `base` with every recorded policy cleared, at every depth: the CONTENT
+/// of a snapshot, for a comparison that asks whether bands changed (the
+/// embedded template-deleted test, `merge3_embedded`'s
+/// `child_unchanged_vs_base`) and must not read a permission edit as a
+/// content edit.
+pub(crate) fn content_only(base: &MergeBase) -> MergeBase {
+    fn clear(
+        records: &BTreeMap<String, Vec<EmbeddedBaseChild>>,
+    ) -> BTreeMap<String, Vec<EmbeddedBaseChild>> {
+        records
+            .iter()
+            .map(|(coll, kids)| {
+                (
+                    coll.clone(),
+                    kids.iter()
+                        .map(|k| EmbeddedBaseChild {
+                            source_id: k.source_id.clone(),
+                            name: k.name.clone(),
+                            engine: k.engine.clone(),
+                            system: k.system.clone(),
+                            embedded: clear(&k.embedded),
+                            property_overrides: BTreeMap::new(),
+                        })
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+    MergeBase {
+        name: base.name.clone(),
+        engine: base.engine.clone(),
+        system: base.system.clone(),
+        embedded: clear(&base.embedded),
+        property_overrides: BTreeMap::new(),
     }
 }
 
@@ -165,6 +330,7 @@ fn embedded_base_children(
                     engine: k.engine.clone().unwrap_or(Value::Null),
                     system: k.system.clone(),
                     embedded: embedded_base_children(&k.embedded),
+                    property_overrides: recorded_overrides(k),
                 })
                 .collect();
             (coll.clone(), records)
@@ -172,39 +338,54 @@ fn embedded_base_children(
         .collect()
 }
 
-/// Bands of a live document as a `MergeBase` (no `source_id` at the top).
-/// `snapshot_base` delegates here: owned values need no separate
-/// deep-cloning variant for a snapshot that outlives the call.
+/// Bands of a live document as a `MergeBase` (no `source_id` at the top),
+/// recording the document's own content-band policy alongside
+/// (`recorded_overrides`). `snapshot_base` delegates here: owned values need
+/// no separate deep-cloning variant for a snapshot that outlives the call.
 pub(crate) fn bands_merge_base(d: &Document) -> MergeBase {
     MergeBase {
         name: d.name.clone(),
         engine: d.engine.clone().unwrap_or(Value::Null),
         system: d.system.clone(),
         embedded: embedded_base_children(&d.embedded),
+        property_overrides: recorded_overrides(d),
     }
 }
 
 /// The value stored at `Document.base` — works for both a stamped instance
 /// (children keyed by their `source.id`) and a template (children key on
 /// `source.id` falling back to their own id, the same correlation key its
-/// instances point to). INVARIANT: agrees with the client's `snapshotBase` —
-/// the client's `syncState` compares a stored base against
-/// `snapshotBase(template)` of its redacted store view, and the `/base` this
-/// engine writes is `snapshot_base` of the requester-visible template, so
-/// the two reductions must not diverge or the sync badge sticks.
+/// instances point to). The merge write path snapshots the FULL template
+/// (`plan_to_update`), policy included. INVARIANT: agrees with the client's
+/// `snapshotBase` — the client's `syncState` compares its redacted view of
+/// the stored base against `snapshotBase(template)` of its redacted store
+/// view, and egress cuts the stored base by the policy this snapshot records
+/// (`permission`'s `own_overrides`), so the two reductions must not diverge
+/// or the sync badge sticks.
 pub fn snapshot_base(doc: &Document) -> MergeBase {
     bands_merge_base(doc)
 }
 
 /// The Create-write `base` rule: `base` is server-owned, so the write path
 /// DERIVES it rather than trusting the submitted value — a stamped instance
-/// (`source` set) snapshots its OWN bands (`snapshot_base`); any other
-/// document stores no base. Any client-supplied `base` is discarded, and an
-/// embedded child never carries one (a submitted one is cleared recursively).
-/// `apply_intent`'s Create branch calls this BEFORE validation, so the
-/// derived value is what `validate_engine_tree` shape-checks and normalizes
-/// and what gets stored, broadcast and logged.
-pub fn derive_create_base(doc: &mut Document) {
+/// (`source` set) first takes `template`'s content-band policy
+/// (`propagate_overrides` under `same_owner`, the two documents' effective-
+/// owner relation, when the template is loadable), then snapshots its OWN
+/// bands and policy (`snapshot_base`). The stamper's copy IS the template as
+/// that seat saw it at the stamp, so this is the template snapshot the merge
+/// treats as "last sync"; a hidden template value absent from a redacted
+/// stamper's copy reads as template-ADDED on the first merge a seat that
+/// sees it runs — the direction that lands it, hidden by the propagated
+/// policy, rather than deleting it. Any other document stores no base. Any
+/// client-supplied `base` is discarded, and an embedded child never carries
+/// one (a submitted one is cleared recursively). `apply_intent`'s Create
+/// branch calls this BEFORE validation, so the derived value is what
+/// `validate_engine_tree` shape-checks and normalizes and what gets stored,
+/// broadcast and logged.
+pub fn derive_create_base(doc: &mut Document, template: Option<&Document>, same_owner: bool) {
+    if let Some(template) = template {
+        propagate_overrides(doc, template, same_owner);
+    }
     let derived = doc
         .source
         .as_ref()

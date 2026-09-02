@@ -269,10 +269,11 @@ fn run_case(case: &Value) -> Value {
 
     let kind = case.get("kind").and_then(Value::as_str).unwrap_or("pull");
     let actual = match kind {
-        "revert" => json!({
-            "update": compute_revert(&child, &parent, &AllVisible)
-                .unwrap_or_else(|e| panic!("case '{name}': a corpus revert never fails: {e}"))
-        }),
+        "revert" => {
+            let bands = compute_revert(&child, &parent, &AllVisible)
+                .unwrap_or_else(|e| panic!("case '{name}': a corpus revert never fails: {e}"));
+            json!({ "update": plan_to_update(&child, &parent, &bands, child.owner == parent.owner) })
+        }
         "resolve" => {
             let plan = compute_pull(&child, &parent, &AllVisible)
                 .unwrap_or_else(|e| panic!("case '{name}': a corpus base never fails closed: {e}"));
@@ -294,7 +295,7 @@ fn run_case(case: &Value) -> Value {
                 .unwrap_or_else(|e| {
                     panic!("case '{name}': a corpus resolution always applies: {e}")
                 });
-            let update = plan_to_update(&child, &parent, &resolved);
+            let update = plan_to_update(&child, &parent, &resolved, child.owner == parent.owner);
             json!({
                 "mergedBands": plan.merged_bands,
                 "conflicts": plan.conflicts,

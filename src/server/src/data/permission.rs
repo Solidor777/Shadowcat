@@ -280,6 +280,11 @@ fn band_has_interior(band: &str) -> bool {
 }
 
 /// Whether `path` writes a CLIENT-writable content band whole, or writes into one.
+/// The same set is the MERGEABLE surface: `merge::bands::recorded_overrides` keeps
+/// exactly the overrides this admits as a snapshot's recorded policy and as the
+/// policy `propagate_overrides` carries onto an instance, and the ingest walk
+/// (`validation::check_base_node_shape`) and the egress reader (`base_policy`)
+/// admit no other recorded pointer.
 ///
 /// Derived from `WRITABLE_BANDS`, the write-side band list: `base` is absent by
 /// design — redactable at egress but server-owned, so a `/base` path maps to no
@@ -290,7 +295,7 @@ fn band_has_interior(band: &str) -> bool {
 /// empty residual (`/system/`) is a writable path here and an unclassifiable
 /// override key there, because a `FieldChange` path and a `property_overrides`
 /// key are different fields on different structures with different validators.
-fn writes_a_content_band(path: &str) -> bool {
+pub(crate) fn writes_a_content_band(path: &str) -> bool {
     let Some(rest) = path.strip_prefix('/') else {
         return false;
     };
@@ -875,34 +880,64 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
         .collect::<Result<_, _>>()?;
     let hidden = hidden_own_pointers(doc, access)?;
     let mut whole = serde_json::to_value(&out).expect("document serializes");
-    for pointer in hidden {
-        match redaction_target(&pointer) {
-            Some(RedactionTarget::Band) => {
-                if let Some(f) = whole.get_mut(&pointer[1..]) {
-                    *f = serde_json::Value::Null;
-                }
-            }
-            Some(RedactionTarget::Within) => strip_pointer(&mut whole, &pointer),
-            None => return Err(RedactionError { pointer }),
-        }
-    }
+    redact_pointers(&mut whole, &hidden)?;
     serde_json::from_value(whole).map_err(|_| RedactionError {
         pointer: "<document>".to_string(),
     })
 }
 
+/// Remove every `hidden` pointer from `whole`, a serialized document-shaped
+/// tree, the one way egress removes a hidden value: a `RedactionTarget::Band`
+/// pointer nulls the band in place, a `Within` pointer strips the value
+/// (`strip_pointer`), an unclassifiable pointer fails closed. THE single
+/// redaction step: `filter_properties` applies it to a whole document under
+/// the recipient's hidden set, and `merge::plan::merge3` applies it to a
+/// stored `base` snapshot's band tree under the TEMPLATE's hidden set, so
+/// the base and parent sides of a merge are reduced by one procedure and
+/// agree on what the requester may see.
+pub(crate) fn redact_pointers(
+    whole: &mut serde_json::Value,
+    hidden: &[String],
+) -> Result<(), RedactionError> {
+    for pointer in hidden {
+        match redaction_target(pointer) {
+            Some(RedactionTarget::Band) => {
+                if let Some(f) = whole.get_mut(&pointer[1..]) {
+                    *f = serde_json::Value::Null;
+                }
+            }
+            Some(RedactionTarget::Within) => strip_pointer(whole, pointer),
+            None => {
+                return Err(RedactionError {
+                    pointer: pointer.clone(),
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Every `(pointer, tier)` pair of `doc`'s OWN redaction policy at THIS level, pointers
 /// relative to `doc`'s own root: its `property_overrides`, each classified via
-/// `redaction_target` (fail closed on an unclassifiable pointer), plus the hardcoded `/base`
-/// entry. No embedded recursion — this is the one per-document statement of "what this
+/// `redaction_target` (fail closed on an unclassifiable pointer), the hardcoded `/base`
+/// entry, and the `/base` snapshot's RECORDED policy (`base_policy`). No embedded recursion
+/// through the live children — this is the one per-document statement of "what this
 /// document hides", which `collect_overrides` walks positionally through embedded descendants
 /// and `filter_properties`/`hidden_own_pointers` read at a single level.
 ///
-/// `base` is a historical snapshot of this doc's own (possibly hidden) bands — it is hardcoded
-/// `OwnerOrGm` visibility, unconditional and non-overridable, independent of
-/// `property_overrides`. Only the document's owner or a GM ever needs it to compute a
-/// pull/push/revert; no other recipient should receive the raw snapshot. The synthetic `/base`
-/// entry is never classified (it is hardcoded, not user-supplied).
+/// `base` is a snapshot of the TEMPLATE's bands (full, unredacted — `merge::bands::snapshot_base`
+/// of the template at the last merge write; the stamped document's own bands at Create). Two
+/// rules govern its egress, both from this function: (1) the whole band is hardcoded
+/// `OwnerOrGm`, unconditional and non-overridable, so no recipient outside the owner-or-GM
+/// pair ever receives the raw snapshot; (2) inside it, every pointer the snapshot's own
+/// recorded `property_overrides` name is hidden at the recorded tier — the policy the
+/// snapshotted document carried over that content, stored WITH the content by
+/// `snapshot_base` (`MergeBase::property_overrides`, `EmbeddedBaseChild::property_overrides`,
+/// the embedded records addressed at their positions in the snapshot). The owner therefore
+/// receives `/base` minus exactly what the template hid, with no template lookup on the
+/// egress path. The synthetic `/base` entry is never classified (it is hardcoded, not
+/// user-supplied); a recorded entry is classified as `/base{pointer}`, which is what egress
+/// strips.
 ///
 /// Classifies every REAL override pointer via `redaction_target` eagerly (not only the hidden
 /// ones): safe because every document reaching this function has already passed
@@ -920,7 +955,60 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
         out.push((p.clone(), *v));
     }
     out.push(("/base".to_string(), Visibility::OwnerOrGm));
+    if let Some(base) = &doc.base {
+        base_policy(base, "/base", &mut out)?;
+    }
     Ok(out)
+}
+
+/// The policy a `base` snapshot node records over its own content: its
+/// `property_overrides` map (`MergeBase`'s spelling at the root,
+/// `EmbeddedBaseChild`'s `propertyOverrides` on a record), each entry emitted
+/// as `{prefix}{pointer}` at the recorded tier, recursing into the records
+/// under `embedded` at their snapshot positions (`{prefix}/embedded/<coll>/<k>`).
+/// Fails closed on a tier that does not parse as a `Visibility` or a pointer
+/// that names no mergeable band (`writes_a_content_band` — every such pointer
+/// classifies `Within` once prefixed, so the strip below can act on it) — the
+/// ingest walk (`validation::validate_engine_tree`) admits neither, so both
+/// mean hand-seeded data. A snapshot node that is not an object records
+/// nothing (the ingest walk rejects that shape too).
+fn base_policy(
+    node: &serde_json::Value,
+    prefix: &str,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    let Some(obj) = node.as_object() else {
+        return Ok(());
+    };
+    let key = if prefix == "/base" {
+        "property_overrides"
+    } else {
+        "propertyOverrides"
+    };
+    if let Some(policy) = obj.get(key).and_then(serde_json::Value::as_object) {
+        for (p, tier) in policy {
+            let pointer = format!("{prefix}{p}");
+            let tier: Visibility =
+                serde_json::from_value(tier.clone()).map_err(|_| RedactionError {
+                    pointer: pointer.clone(),
+                })?;
+            if !writes_a_content_band(p) {
+                return Err(RedactionError { pointer });
+            }
+            out.push((pointer, tier));
+        }
+    }
+    if let Some(embedded) = obj.get("embedded").and_then(serde_json::Value::as_object) {
+        for (coll, records) in embedded {
+            let Some(records) = records.as_array() else {
+                continue;
+            };
+            for (k, record) in records.iter().enumerate() {
+                base_policy(record, &format!("{prefix}/embedded/{coll}/{k}"), out)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The pointers of `doc`'s OWN properties (this level only, relative to `doc`'s root) that

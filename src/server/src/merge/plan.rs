@@ -9,7 +9,11 @@ use serde_json::Value;
 
 use crate::data::command::{FieldChange, Operation};
 use crate::data::document::Document;
-use crate::merge::bands::{bands_tree, placement_exclusions, snapshot_base, MergeBands, MergeBase};
+use crate::data::permission::redact_pointers;
+use crate::merge::bands::{
+    bands_tree, placement_exclusions, propagate_overrides, snapshot_base, snapshot_for_instance,
+    MergeBands, MergeBase,
+};
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
 use crate::merge::tree::{
     deep_equal, merge3_tree, take_template, tokenize, HiddenPointers, PointerError,
@@ -62,6 +66,15 @@ pub(crate) fn split_bands_tree(tree: &Value) -> BandTriple {
 /// `vis` is asked about `parent_now` and `child_now` THEMSELVES — the two
 /// documents this call merges — so the hidden pointers it returns are in
 /// this level's own coordinate space, whatever depth the call sits at.
+///
+/// The three inputs are viewed through the requester's access by ONE rule:
+/// the parent is the template as `filter_properties` delivers it to the
+/// requester (the caller's job), the base is the stored snapshot reduced
+/// here by the SAME template-side hidden set through the same procedure
+/// (`redact_pointers`), and the child stays unredacted (its own hidden set
+/// withholds conflicts instead). Base and parent therefore agree on what
+/// the requester may see, and no hidden template value — from either the
+/// snapshot or the live template — enters the parent diff.
 pub fn merge3(
     base: &MergeBase,
     parent_now: &Document,
@@ -73,8 +86,10 @@ pub fn merge3(
         template: vis.hidden(Side::Template, parent_now)?,
         child: vis.hidden(Side::Child, child_now)?,
     };
+    let mut base_tree = bands_tree(base.name.as_deref(), Some(&base.engine), Some(&base.system));
+    redact_pointers(&mut base_tree, &hidden.template).map_err(|_| MergeError::VisibilityUnknown)?;
     let (tree, tree_conflicts) = merge3_tree(
-        &bands_tree(base.name.as_deref(), Some(&base.engine), Some(&base.system)),
+        &base_tree,
         &bands_tree(
             parent_now.name.as_deref(),
             parent_now.engine.as_ref(),
@@ -161,15 +176,23 @@ fn is_empty_collection(v: &Value) -> bool {
 
 /// Turn merged bands into ONE `Operation::Update`: at most one whole-band
 /// change per changed band (`/name`, `/engine`, `/system`), one per changed
-/// embedded collection (whole array), plus a `/base` refresh whose new value
-/// is `template`'s CURRENT snapshot — `template` being the requester-visible
-/// template the merge ran against — emitted, like every other change, only
-/// when it differs from the stored value. An instance already in sync with
-/// its template therefore yields an update with NO changes, which the
-/// handlers report as applied without publishing (no no-op `Event` per
-/// clean instance per resolution round). Every `old` is the child's REAL
-/// current stored value (the OCC pre-image). Whole-band/whole-collection
-/// writes are the only deletion-capable form the write path accepts.
+/// embedded collection (whole array), a `/permissions/property_overrides`
+/// change carrying the template's content-band policy propagated onto the
+/// instance (`propagate_overrides` under `same_owner`, additive — every
+/// merged embedded child takes its template child's policy the same way
+/// inside its collection write), plus a `/base` refresh whose new value is
+/// `template`'s CURRENT snapshot re-expressed for this instance
+/// (`snapshot_for_instance`) — `template` being the FULL, unredacted
+/// template, so the stored base is one canonical value whoever wrote it —
+/// each emitted, like every other change, only when it differs from the
+/// stored value (the stored `/base` read through `MergeBase`'s own defaults,
+/// so a snapshot that predates a key the shape later gained is not rewritten
+/// for the key alone). An instance already in sync with its template
+/// therefore yields an update with NO changes, which the handlers report as
+/// applied without publishing (no no-op `Event` per clean instance per
+/// resolution round). Every `old` is the child's REAL current stored value
+/// (the OCC pre-image). Whole-band/whole-collection writes are the only
+/// deletion-capable form the write path accepts.
 ///
 /// A collection key genuinely absent from `child.embedded` falls back to
 /// `null` as its pre-image, NOT `[]`: the write path reads a missing JSON
@@ -180,8 +203,18 @@ pub fn plan_to_update(
     child: &Document,
     template: &Document,
     merged_bands: &MergeBands,
+    same_owner: bool,
 ) -> Operation {
     let mut changes = Vec::new();
+    let mut policy_carrier = child.clone();
+    policy_carrier.embedded = merged_bands.embedded.clone();
+    propagate_overrides(&mut policy_carrier, template, same_owner);
+    let merged_bands = &MergeBands {
+        name: merged_bands.name.clone(),
+        engine: merged_bands.engine.clone(),
+        system: merged_bands.system.clone(),
+        embedded: policy_carrier.embedded,
+    };
     push_if_changed(
         &mut changes,
         "/name",
@@ -228,10 +261,26 @@ pub fn plan_to_update(
     }
     push_if_changed(
         &mut changes,
-        "/base",
-        child.base.clone().unwrap_or(Value::Null),
-        serde_json::to_value(snapshot_base(template)).expect("MergeBase serializes to JSON"),
+        "/permissions/property_overrides",
+        serde_json::to_value(&child.permissions.property_overrides)
+            .expect("property overrides serialize to JSON"),
+        serde_json::to_value(&policy_carrier.permissions.property_overrides)
+            .expect("property overrides serialize to JSON"),
     );
+    let stored_base = child.base.clone().unwrap_or(Value::Null);
+    let stored_normalized = serde_json::from_value::<MergeBase>(stored_base.clone())
+        .map(|b| serde_json::to_value(b).expect("MergeBase serializes to JSON"))
+        .unwrap_or(Value::Null);
+    let refreshed = serde_json::to_value(snapshot_for_instance(template, same_owner))
+        .expect("MergeBase serializes to JSON");
+    if !deep_equal(&stored_normalized, &refreshed) {
+        changes.push(FieldChange {
+            path: "/base".to_string(),
+            old: stored_base,
+            new: refreshed,
+            remove: false,
+        });
+    }
     Operation::Update {
         doc_id: child.id,
         changes,
@@ -353,14 +402,16 @@ pub(crate) fn revert_bands(
 /// path becomes the template's current value, embedded content resets per
 /// `revert_embedded` — except placement paths (kept) and paths hidden from
 /// the requester on the template side (kept: the requester cannot see the
-/// template's value there, so the child's own stays), then refresh `base`.
-/// No conflicts are possible (revert never asks the user to choose; it
-/// always takes the template).
+/// template's value there, so the child's own stays). `template` is the
+/// requester-VISIBLE template; the caller emits the result through
+/// `plan_to_update` against the full template, which refreshes `base`. No
+/// conflicts are possible (revert never asks the user to choose; it always
+/// takes the template).
 pub fn compute_revert(
     child: &Document,
     template: &Document,
     vis: &dyn MergeVisibility,
-) -> Result<Operation, MergeError> {
+) -> Result<MergeBands, MergeError> {
     let bands = revert_bands(
         child,
         template,
@@ -368,11 +419,10 @@ pub fn compute_revert(
         vis.hidden(Side::Template, template)?,
     )
     .map_err(MergeError::Pointer)?;
-    let merged_bands = MergeBands {
+    Ok(MergeBands {
         name: bands.name,
         engine: bands.engine,
         system: bands.system,
         embedded: revert_embedded(&template.embedded, &child.embedded, vis)?,
-    };
-    Ok(plan_to_update(child, template, &merged_bands))
+    })
 }

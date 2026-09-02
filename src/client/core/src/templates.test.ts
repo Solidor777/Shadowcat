@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { snapshotBase, stampInstance, type StampOpts, findInstances, syncState } from "./templates";
 import type { WireDocument } from "./wire";
-import type { MergeBase } from "./merge";
+import { normalizeBase, type MergeBase } from "./merge";
 
 function doc(over: Partial<WireDocument> & { id: string }): WireDocument {
   return {
@@ -33,8 +33,26 @@ describe("snapshotBase", () => {
       name: "Inst",
       engine: { hp: 9 },
       system: { a: 1 },
-      embedded: { items: [{ sourceId: "tc", name: "Kid", engine: null, system: { hp: 3 }, embedded: {} }] },
+      embedded: { items: [{ sourceId: "tc", name: "Kid", engine: null, system: { hp: 3 }, embedded: {}, propertyOverrides: {} }] },
+      property_overrides: {},
     });
+  });
+
+  it("records the mergeable-band policy at every depth, never a /base policy", () => {
+    const child = doc({
+      id: "ic", source: { id: "tc", pack: null, version: 1 },
+      permissions: { default: "none", users: {}, property_overrides: { "/engine/hp": "owner_or_gm" }, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+    });
+    const d = doc({
+      id: "C", embedded: { items: [child] },
+      permissions: {
+        default: "none", users: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null,
+        property_overrides: { "/system/secret": "gm_only", "/name": "owner_or_gm", "/base/system/x": "gm_only" },
+      },
+    });
+    const snap = snapshotBase(d);
+    expect(snap.property_overrides).toEqual({ "/system/secret": "gm_only", "/name": "owner_or_gm" });
+    expect(snap.embedded.items[0].propertyOverrides).toEqual({ "/engine/hp": "owner_or_gm" });
   });
 
   it("deep-clones so the snapshot does not alias the document", () => {
@@ -157,17 +175,113 @@ describe("syncState", () => {
   it("up_to_date when base equals the template's current snapshot", () => {
     const tmpl = doc({ id: "T", name: "T", system: { hp: 1 } });
     const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
-    child.base = { name: "T", engine: null, system: { hp: 1 }, embedded: {} };
+    child.base = { name: "T", engine: null, system: { hp: 1 }, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("up_to_date");
+  });
+
+  // The server's egress of a stored base to each seat, pinned as explicit fixtures: the stored
+  // snapshot is the FULL template (`{ hp, gm_secret, owner_note }`, policy recorded); a player who
+  // owns the instance but not the template receives it minus the recorded `gm_only` and (re-expressed
+  // for another owner) `owner_or_gm` paths, and receives the template minus the same paths under its
+  // own policy; a GM receives both whole.
+  const fullTemplate = () =>
+    doc({
+      id: "T", name: "T", system: { hp: 11, gm_secret: "S2", owner_note: "N2" },
+      permissions: {
+        default: "observer", users: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null,
+        property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "owner_or_gm" },
+      },
+    });
+  const playerTemplateView = () => {
+    const t = fullTemplate();
+    t.system = { hp: 11 };
+    return t;
+  };
+  const playerBaseView = () => ({
+    name: "T",
+    engine: null,
+    system: { hp: 11 },
+    embedded: {},
+    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "gm_only" },
+  });
+  const gmBaseView = () => ({
+    name: "T",
+    engine: null,
+    system: { hp: 11, gm_secret: "S2", owner_note: "N2" },
+    embedded: {},
+    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "gm_only" },
+  });
+
+  it("parity: a player's redacted base against their redacted template reads up_to_date", () => {
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    child.base = playerBaseView();
+    expect(syncState(child, playerTemplateView())).toBe("up_to_date");
+  });
+
+  it("parity: a GM's full base against the full template reads up_to_date", () => {
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    child.base = gmBaseView();
+    expect(syncState(child, fullTemplate())).toBe("up_to_date");
+  });
+
+  it("parity: a genuine template edit still flips both seats", () => {
+    const edited = fullTemplate();
+    edited.system = { hp: 12, gm_secret: "S2", owner_note: "N2" };
+    const gmChild = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    gmChild.base = gmBaseView();
+    expect(syncState(gmChild, edited)).toBe("template_changed");
+    const playerEdited = playerTemplateView();
+    playerEdited.system = { hp: 12 };
+    const playerChild = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    playerChild.base = playerBaseView();
+    expect(syncState(playerChild, playerEdited)).toBe("template_changed");
+  });
+
+  it("parity: a stripped snapshot key and a nulled template band read as one value", () => {
+    // `/name` hidden: egress NULLS the template's band but REMOVES the key from the snapshot.
+    const tmpl = doc({ id: "T", name: null, system: { hp: 1 } });
+    tmpl.permissions.property_overrides = { "/name": "gm_only" };
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    child.base = { engine: null, system: { hp: 1 }, embedded: {}, property_overrides: { "/name": "gm_only" } };
+    expect(syncState(child, tmpl)).toBe("up_to_date");
+  });
+
+  it("parity: the recorded policy maps themselves are not compared", () => {
+    // The snapshot's `owner_or_gm` is re-expressed as `gm_only` for another owner's instance; the
+    // template's stays verbatim. The VIEWS agree, so the badge must too.
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const stored = playerBaseView();
+    child.base = stored;
+    const t = playerTemplateView();
+    expect(t.permissions.property_overrides["/system/owner_note"]).toBe("owner_or_gm");
+    expect(stored.property_overrides["/system/owner_note"]).toBe("gm_only");
+    expect(syncState(child, t)).toBe("up_to_date");
   });
 
   it("template_changed when the template diverged from base (ignoring placement)", () => {
     const tmpl = doc({ id: "T", doc_type: "token", name: "T", engine: { x: 5, hp: 9 }, system: {} });
     const child = doc({ id: "C", doc_type: "token", source: { id: "T", pack: null, version: 1 } });
     // base engine hp:1; template hp:9 → changed. But an x-only move must NOT count.
-    child.base = { name: "T", engine: { x: 0, hp: 1 }, system: {}, embedded: {} };
+    child.base = { name: "T", engine: { x: 0, hp: 1 }, system: {}, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("template_changed");
-    child.base = { name: "T", engine: { x: 0, hp: 9 }, system: {}, embedded: {} };
+    child.base = { name: "T", engine: { x: 0, hp: 9 }, system: {}, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("up_to_date"); // only x differs → excluded
+  });
+});
+
+describe("normalizeBase", () => {
+  it("reads a snapshot with the server's MergeBase defaults, recursively", () => {
+    expect(normalizeBase({ system: { hp: 1 }, embedded: { items: [{ sourceId: "t" }] } })).toEqual<MergeBase>({
+      name: null,
+      engine: null,
+      system: { hp: 1 },
+      embedded: { items: [{ sourceId: "t", name: null, engine: null, system: null, embedded: {}, propertyOverrides: {} }] },
+      property_overrides: {},
+    });
+  });
+
+  it("reads a non-object as an empty base", () => {
+    expect(normalizeBase(undefined).system).toBeNull();
+    expect(normalizeBase(42).embedded).toEqual({});
   });
 });

@@ -1,6 +1,7 @@
 {
   "amendments": [
-    "revert-bands-take-template, revert-restores-locally-deleted, revert-nested-embedded, revert-no-op-emits-no-changes (generated as revert-no-op-still-emits-base): the /base change whose old value structurally equalled its new value was removed from expect.update.changes by hand — the server engine emits /base, like every other change, only when it differs from the stored value (deep, key-order-independent equality); the generator's engine emitted it unconditionally. Every other byte is the generator's output (see scripts/merge-corpus-generation.log)."
+    "revert-bands-take-template, revert-restores-locally-deleted, revert-nested-embedded, revert-no-op-emits-no-changes (generated as revert-no-op-still-emits-base): the /base change whose old value structurally equalled its new value was removed from expect.update.changes by hand — the server engine emits /base, like every other change, only when it differs from the stored value (deep, key-order-independent equality); the generator's engine emitted it unconditionally. Every other byte is the generator's output (see scripts/merge-corpus-generation.log).",
+    "every /base change's new value in expect.update.changes (11 cases, listed in scripts/merge-corpus-generation.log's second amendment note) carries the snapshot's recorded policy — `property_overrides` on the root, `propertyOverrides` on every embedded record, all empty here because no corpus document carries an override — added by hand: the server's MergeBase records the policy of the document it snapshots alongside its bands, a key the generator's engine did not emit. Every other byte is the generator's output."
   ],
   "cases": [
     {
@@ -4910,7 +4911,8 @@
                 "system": {
                   "hp": 2
                 },
-                "embedded": {}
+                "embedded": {},
+                "property_overrides": {}
               }
             }
           ]
@@ -5029,7 +5031,8 @@
                 "system": {
                   "hp": 2
                 },
-                "embedded": {}
+                "embedded": {},
+                "property_overrides": {}
               }
             }
           ]
@@ -5280,7 +5283,8 @@
                 "system": {},
                 "embedded": {
                   "items": []
-                }
+                },
+                "property_overrides": {}
               }
             }
           ]
@@ -5485,10 +5489,12 @@
                       "system": {
                         "k": 1
                       },
-                      "embedded": {}
+                      "embedded": {},
+                      "propertyOverrides": {}
                     }
                   ]
-                }
+                },
+                "property_overrides": {}
               }
             }
           ]
@@ -5593,7 +5599,8 @@
                 "system": {},
                 "embedded": {
                   "items": []
-                }
+                },
+                "property_overrides": {}
               }
             }
           ]
@@ -5727,7 +5734,8 @@
                 "system": {
                   "hp": 2
                 },
-                "embedded": {}
+                "embedded": {},
+                "property_overrides": {}
               }
             }
           ]
@@ -5860,7 +5868,8 @@
                     "b": 2
                   }
                 },
-                "embedded": {}
+                "embedded": {},
+                "property_overrides": {}
               }
             }
           ]
@@ -5983,7 +5992,8 @@
                 "name": null,
                 "engine": null,
                 "system": {},
-                "embedded": {}
+                "embedded": {},
+                "property_overrides": {}
               }
             }
           ]
@@ -6129,7 +6139,8 @@
                   "a/b": 2,
                   "c~d": 2
                 },
-                "embedded": {}
+                "embedded": {},
+                "property_overrides": {}
               }
             }
           ]
@@ -6458,7 +6469,8 @@
                       "system": {
                         "s": 1
                       },
-                      "embedded": {}
+                      "embedded": {},
+                      "propertyOverrides": {}
                     }
                   ],
                   "items": [
@@ -6469,10 +6481,12 @@
                       "system": {
                         "i": 1
                       },
-                      "embedded": {}
+                      "embedded": {},
+                      "propertyOverrides": {}
                     }
                   ]
-                }
+                },
+                "property_overrides": {}
               }
             }
           ]
@@ -6829,10 +6843,12 @@
                       "system": {
                         "k": 1
                       },
-                      "embedded": {}
+                      "embedded": {},
+                      "propertyOverrides": {}
                     }
                   ]
-                }
+                },
+                "property_overrides": {}
               }
             }
           ]

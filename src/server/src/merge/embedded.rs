@@ -9,18 +9,23 @@ use uuid::Uuid;
 
 use crate::data::document::{Document, Source};
 use crate::merge::bands::{
-    bands_merge_base, base_from_child, placement_exclusions, EmbeddedBaseChild, MergeBands,
+    bands_merge_base, base_from_child, content_only, placement_exclusions, EmbeddedBaseChild,
+    MergeBands,
 };
 use crate::merge::plan::{merge3, revert_bands};
 use crate::merge::tree::structural_diff;
 use crate::merge::visibility::{MergeVisibility, Side};
 use crate::merge::{MergeConflict, MergeError, ParentKind};
 
-/// Whether an instance child's bands are unchanged versus its base record.
+/// Whether an instance child's bands are unchanged versus its base record —
+/// CONTENT only (`content_only`): the policy a record carries is not merged
+/// content, so a permission edit on the child never reads as a local edit
+/// that turns a template deletion into a conflict.
 fn child_unchanged_vs_base(child: &Document, b: &EmbeddedBaseChild) -> bool {
-    let before = serde_json::to_value(base_from_child(b)).expect("MergeBase serializes to JSON");
-    let after =
-        serde_json::to_value(bands_merge_base(child)).expect("MergeBase serializes to JSON");
+    let before = serde_json::to_value(content_only(&base_from_child(b)))
+        .expect("MergeBase serializes to JSON");
+    let after = serde_json::to_value(content_only(&bands_merge_base(child)))
+        .expect("MergeBase serializes to JSON");
     structural_diff(&before, &after).is_empty()
 }
 

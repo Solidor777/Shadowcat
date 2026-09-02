@@ -161,3 +161,17 @@ $ sha256sum (both)
 #   revert-no-op-still-emits-base    — `/base` change removed; renamed revert-no-op-emits-no-changes
 # The fixture also gained a top-level `amendments` key stating the same. Every other byte of the
 # fixture is the generator's output above.
+
+# ---- second post-generation amendment (by hand) ----
+# The server's `MergeBase` records the content-band policy of the document it snapshots
+# (`property_overrides` on the root, `propertyOverrides` on every embedded record) alongside the
+# bands, and the ingest walk requires the key; the generator's engine emitted no such key. Every
+# `/base` change's NEW value in `expect.update.changes` gained the key, empty (no corpus document
+# carries an override), in these 11 cases:
+#   resolve-takes-template, resolve-keeps-mine, resolve-embedded-deletion-takes-template,
+#   plan-absent-collection-old-null, plan-empty-collection-skipped, plan-changed-bands-only,
+#   resolve-ancestor-delete-takes-template, resolve-parent-delete-takes-template,
+#   resolve-escaped-keys-take-template, plan-multi-collection-order, revert-drops-local-additions
+# Inputs (`base`, and every `/base` change's OLD value) are untouched: the engine parses an absent
+# policy as empty on read and echoes the stored pre-image verbatim. The fixture's `amendments` key
+# gained a second entry stating the same. Every other byte is the generator's output above.

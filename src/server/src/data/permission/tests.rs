@@ -4340,3 +4340,184 @@ async fn two_updates_to_the_same_doc_in_one_command_synthesize_exactly_one_trans
     );
     assert!(matches!(&out.ops[0], Operation::Create { .. }));
 }
+
+#[test]
+fn base_egress_is_cut_by_the_policy_the_snapshot_records() {
+    // The stored base is the FULL template snapshot; the owner receives it
+    // minus every pointer the snapshot's own recorded policy hides from them
+    // (root `property_overrides`, record `propertyOverrides` at the record's
+    // snapshot position), a GM receives it whole, and a non-owner receives no
+    // base at all. The instance's OWN content overrides are not what cuts it.
+    let owner = Uuid::from_u128(1);
+    let other = Uuid::from_u128(2);
+    let gm = Uuid::from_u128(3);
+    let mut inst = doc(PermissionSet::default(), serde_json::json!({ "hp": 1 }));
+    inst.owner = Some(owner);
+    inst.base = Some(serde_json::json!({
+        "name": "Tmpl",
+        "engine": null,
+        "system": { "hp": 1, "secret": "S", "note": "N", "public": "P" },
+        "embedded": {
+            "items": [{
+                "sourceId": "tc",
+                "name": "Kid",
+                "engine": { "hp": 5 },
+                "system": { "k": "K" },
+                "embedded": {},
+                "propertyOverrides": { "/engine/hp": "gm_only" }
+            }]
+        },
+        "property_overrides": {
+            "/system/secret": "gm_only",
+            "/system/note": "owner_or_gm",
+            "/name": "gm_only"
+        }
+    }));
+
+    let a_owner = resolve_access(owner, WorldRole::Player, &inst, inst.owner);
+    let v = filter_properties(&inst, &a_owner).unwrap();
+    let b = v.base.expect("the owner receives base");
+    assert!(b["system"].get("secret").is_none(), "gm_only cut: {b}");
+    assert_eq!(b["system"]["note"], "N", "owner_or_gm kept for the owner");
+    assert_eq!(b["system"]["public"], "P");
+    assert!(
+        b.get("name").is_none(),
+        "a hidden band key is stripped from the snapshot"
+    );
+    assert!(
+        b["embedded"]["items"][0]["engine"].get("hp").is_none(),
+        "a record's recorded policy cuts the record: {b}"
+    );
+    assert_eq!(b["embedded"]["items"][0]["system"]["k"], "K");
+
+    let a_gm = resolve_access(gm, WorldRole::Gm, &inst, inst.owner);
+    let vg = filter_properties(&inst, &a_gm).unwrap();
+    assert_eq!(vg.base.unwrap()["system"]["secret"], "S");
+
+    let a_other = resolve_access(other, WorldRole::Player, &inst, inst.owner);
+    let vo = filter_properties(&inst, &a_other).unwrap();
+    assert!(vo.base.is_none(), "a non-owner receives no base");
+}
+
+#[test]
+fn base_egress_fails_closed_on_a_recorded_policy_it_cannot_act_on() {
+    let owner = Uuid::from_u128(1);
+    let mut inst = doc(PermissionSet::default(), serde_json::json!({}));
+    inst.owner = Some(owner);
+    let a_owner = resolve_access(owner, WorldRole::Player, &inst, inst.owner);
+    for policy in [
+        serde_json::json!({ "/system/secret": "not-a-tier" }),
+        serde_json::json!({ "/permissions/default": "gm_only" }),
+    ] {
+        inst.base = Some(serde_json::json!({
+            "name": null, "engine": null, "system": {}, "embedded": {},
+            "property_overrides": policy
+        }));
+        assert!(filter_properties(&inst, &a_owner).is_err());
+    }
+}
+
+#[tokio::test]
+async fn base_egress_redacts_the_update_delta_by_the_recorded_policy() {
+    // The same `own_overrides` source feeds `filter_command`: a whole-band
+    // `/base` change is stripped of the recorded hidden pointers for the
+    // owner, exactly like a `/system` change is stripped of the document's
+    // own hidden pointers. The instance is stamped from a template that
+    // hides `/system/secret`, so its derived base records that policy.
+    use crate::auth::role::ServerRole;
+    use crate::data::command::WriteOrigin;
+    use crate::data::sqlite::SqliteRepository;
+
+    let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let owner = r
+        .create_user("owner", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let mut template = doc(
+        perms_with(&[("/system/secret", Visibility::GmOnly)]),
+        serde_json::json!({ "hp": 1, "secret": "S1" }),
+    );
+    template.id = Uuid::from_u128(55);
+    template.scope = Scope::World { world_id: w.id };
+    template.owner = Some(gm);
+    let mut d = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 1 }),
+    );
+    d.scope = Scope::World { world_id: w.id };
+    d.owner = Some(owner);
+    d.source = Some(crate::data::document::Source {
+        id: template.id,
+        pack: None,
+        version: 1,
+    });
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![
+            Operation::Create { doc: template },
+            Operation::Create { doc: d.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = r.get_document(d.id).await.unwrap().unwrap();
+    let old_base = stored.base.clone().expect("derived base");
+    assert_eq!(old_base["property_overrides"]["/system/secret"], "gm_only");
+    let mut new_base = old_base.clone();
+    new_base["system"] = serde_json::json!({ "hp": 2, "secret": "S2" });
+
+    let cmd = Command {
+        seq: 2,
+        world_id: w.id,
+        author: gm,
+        ts: 0,
+        ops: vec![Operation::Update {
+            doc_id: d.id,
+            changes: vec![FieldChange {
+                remove: false,
+                path: "/base".into(),
+                old: old_base,
+                new: new_base,
+            }],
+        }],
+    };
+    let current = load_current_docs(&r, &cmd).await;
+    let snapshot = immediate_snapshot(&cmd, &current, &[gm], &|_| None);
+    let ctx = PermissionContext {
+        user_id: owner,
+        world_role: WorldRole::Player,
+    };
+    let view = filter_command(
+        &cmd,
+        &snapshot,
+        &ctx,
+        &WorldCapDefaults::default(),
+        &current,
+        |_| None,
+    );
+    let Operation::Update { changes, .. } = &view.ops[0] else {
+        panic!("the owner keeps the Update");
+    };
+    let base = &changes
+        .iter()
+        .find(|c| c.path == "/base")
+        .expect("owner receives /base")
+        .new;
+    assert!(base["system"].get("secret").is_none(), "{base}");
+    assert_eq!(base["system"]["hp"], 2);
+}

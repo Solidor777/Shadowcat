@@ -4,7 +4,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::data::document::{
-    AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType,
+    AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType, Visibility,
 };
 use crate::data::engine;
 use crate::data::DataError;
@@ -100,13 +100,32 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
 }
 
 /// The band keys every `MergeBase`-shaped node must carry exactly; an
-/// embedded child record additionally carries `sourceId`.
+/// embedded child record additionally carries `sourceId`. The recorded
+/// policy key is required too, under the node's own spelling
+/// (`base_policy_key`).
 const BASE_BAND_KEYS: [&str; 4] = ["name", "engine", "system", "embedded"];
+
+/// The key a `MergeBase`-shaped node records its content-band policy under:
+/// `MergeBase` spells it `property_overrides`, an `EmbeddedBaseChild` record
+/// `propertyOverrides` (the record's other keys are camelCase). Required at
+/// ingest — an absent map would read as "nothing hidden", the fail-open
+/// direction for the egress redaction that reads it.
+fn base_policy_key(is_child: bool) -> &'static str {
+    if is_child {
+        "propertyOverrides"
+    } else {
+        "property_overrides"
+    }
+}
 
 /// Shape-check one `MergeBase`-shaped node (`is_child` selects the
 /// `EmbeddedBaseChild` key set): an object carrying every required key and
-/// no others, `name` a string or null, `embedded` an object of arrays, and —
-/// for a child record — `sourceId` a string. Reads nothing but shape.
+/// no others, `name` a string or null, `embedded` an object of arrays, the
+/// recorded policy an object whose keys name a mergeable band
+/// (`writes_a_content_band` — the only pointers `snapshot_base` records, and
+/// the only ones the egress reader `permission`'s `base_policy` acts on) and
+/// whose values parse as `Visibility`, and — for a child record —
+/// `sourceId` a string. Reads nothing but shape.
 fn check_base_node_shape(
     node: &serde_json::Value,
     pointer: &str,
@@ -122,8 +141,9 @@ fn check_base_node_shape(
             json_type_name(node)
         )));
     };
-    for key in BASE_BAND_KEYS {
-        if !obj.contains_key(key) {
+    let policy_key = base_policy_key(is_child);
+    for key in BASE_BAND_KEYS.iter().chain(std::iter::once(&policy_key)) {
+        if !obj.contains_key(*key) {
             return Err(shape_err(format!("missing required key '{key}'")));
         }
     }
@@ -131,12 +151,35 @@ fn check_base_node_shape(
         return Err(shape_err("missing required key 'sourceId'".to_string()));
     }
     for key in obj.keys() {
-        if BASE_BAND_KEYS.contains(&key.as_str()) || (is_child && key == "sourceId") {
+        if BASE_BAND_KEYS.contains(&key.as_str())
+            || key == policy_key
+            || (is_child && key == "sourceId")
+        {
             continue;
         }
         return Err(shape_err(format!(
             "unknown key '{key}' not permitted in a merge base"
         )));
+    }
+    let Some(policy) = obj[policy_key].as_object() else {
+        return Err(shape_err(format!(
+            "expected object at '{policy_key}', got {}",
+            json_type_name(&obj[policy_key])
+        )));
+    };
+    for (p, tier) in policy {
+        if !crate::data::permission::writes_a_content_band(p) {
+            return Err(shape_err(format!(
+                "pointer '{p}' in '{policy_key}' names no mergeable band"
+            )));
+        }
+        if serde_json::from_value::<Visibility>(tier.clone()).is_err() {
+            return Err(shape_err(format!(
+                "expected a visibility tier at '{policy_key}/{}', got {}",
+                escape_token(p),
+                json_type_name(tier)
+            )));
+        }
     }
     let name = &obj["name"];
     if !(name.is_string() || name.is_null()) {

@@ -4,7 +4,7 @@
 // `TemplatesController` sends the intents; nothing in this module composes a merge `Update`.
 import type { WireDocument, WirePermissionSet } from "./wire";
 import {
-  structuralDiff, isPlacementExcluded, placementExclusions,
+  structuralDiff, isPlacementExcluded, placementExclusions, isMergeableBandPointer, normalizeBase,
   restampSubtree, type MergeBase, type EmbeddedBaseChild,
 } from "./merge";
 
@@ -34,11 +34,28 @@ function defaultPerms(): WirePermissionSet {
   return { default: "none", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null };
 }
 
+/** The overrides of `doc` that govern its mergeable bands (`isMergeableBandPointer`) — what a
+ * snapshot records as its policy. Not exported (folded into `snapshotBase`'s public surface).
+ * @param doc The document whose `permissions.property_overrides` to filter.
+ * @returns A fresh map of the mergeable-band overrides.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see snapshotBase for the public entry point)
+ * declare const doc: WireDocument;
+ * recordedOverrides(doc);
+ * ```
+ */
+function recordedOverrides(doc: WireDocument): MergeBase["property_overrides"] {
+  const out: MergeBase["property_overrides"] = {};
+  for (const [p, v] of Object.entries(doc.permissions.property_overrides)) if (isMergeableBandPointer(p)) out[p] = v;
+  return out;
+}
+
 /** Recursively reduce a document's `embedded` collections to `EmbeddedBaseChild` records for a
  * `MergeBase` snapshot. Not exported (folded into `snapshotBase`'s public surface).
  * @param embedded The document's `embedded` collections, keyed by collection name.
  * @returns The same collections, each child reduced to `{sourceId, name, engine, system,
- * embedded}` (deep-cloned so the snapshot never aliases the live document).
+ * embedded, propertyOverrides}` (deep-cloned so the snapshot never aliases the live document).
  * @example
  * ```
  * // internal helper; not part of the public API (see snapshotBase for the public entry point)
@@ -57,6 +74,7 @@ function snapshotEmbedded(embedded: Record<string, WireDocument[]>): Record<stri
       engine: structuredClone(k.engine ?? null),
       system: structuredClone(k.system ?? null),
       embedded: snapshotEmbedded(k.embedded),
+      propertyOverrides: recordedOverrides(k),
     }));
   }
   return out;
@@ -65,9 +83,13 @@ function snapshotEmbedded(embedded: Record<string, WireDocument[]>): Record<stri
 /** Builds the value stored at `WireDocument.base` — see that field's own doc comment for what it
  * means and when it's present. Works for both a stamped instance (children keyed by their
  * `source.id`) and a template (children key on `source.id ?? id`, which for a template child is
- * its own id — the same correlation key its instances point to).
+ * its own id — the same correlation key its instances point to). Records the document's
+ * mergeable-band policy alongside the bands (`property_overrides`, `propertyOverrides` on each
+ * record), the same reduction the server's `snapshot_base` writes to `/base`, so `syncState` can
+ * compare a stored base against this snapshot of the template key for key.
  * @param doc The document to snapshot.
- * @returns A deep-cloned `MergeBase` of `doc`'s `name`/`engine`/`system`/`embedded` bands.
+ * @returns A deep-cloned `MergeBase` of `doc`'s `name`/`engine`/`system`/`embedded` bands plus
+ * its recorded policy.
  * @example
  * ```ts
  * import { snapshotBase, envelope } from "@shadowcat/core";
@@ -83,6 +105,7 @@ export function snapshotBase(doc: WireDocument): MergeBase {
     engine: structuredClone(doc.engine ?? null),
     system: structuredClone(doc.system ?? null),
     embedded: snapshotEmbedded(doc.embedded),
+    property_overrides: recordedOverrides(doc),
   };
 }
 
@@ -162,6 +185,13 @@ export function findInstances(templateId: string, all: Iterable<WireDocument>): 
  * Computes this via its own `structuralDiff` call (a divergence-only comparison for a UI label) —
  * it does NOT compute or request a merge plan and produces no conflict set; do not conflate the
  * two paths.
+ *
+ * Consistent for every seat: the stored `base` this client holds is the server's ONE canonical
+ * snapshot of the template (full, policy recorded) cut at egress by that recorded policy, and
+ * the template in store is cut by the template's current policy — so a recipient compares its
+ * view of the snapshot with its view of the template, a GM both in full. Reading `base` through
+ * `normalizeBase` (the server's own `MergeBase` defaults) is what keeps a stripped snapshot key
+ * and a nulled template band reading as the same value.
  * @param child The instance document to check.
  * @param template The template document, or `undefined` if not in store.
  * @returns `"none"` (unstamped or template missing), `"up_to_date"`, or `"template_changed"`.
@@ -176,8 +206,30 @@ export function findInstances(templateId: string, all: Iterable<WireDocument>): 
  */
 export function syncState(child: WireDocument, template: WireDocument | undefined): SyncState {
   if (!child.source || !template) return "none";
-  const base: MergeBase = (child.base as MergeBase | undefined) ?? snapshotBase(child);
+  const base: MergeBase = child.base === undefined || child.base === null ? snapshotBase(child) : normalizeBase(child.base);
   const excl = placementExclusions(child.doc_type);
-  const diverged = structuralDiff(base, snapshotBase(template)).filter((d) => !isPlacementExcluded(d.path, excl));
+  const diverged = structuralDiff(base, snapshotBase(template)).filter(
+    (d) => !isPlacementExcluded(d.path, excl) && !isRecordedPolicyPath(d.path),
+  );
   return diverged.length === 0 ? "up_to_date" : "template_changed";
+}
+
+/** Whether a snapshot diff path lands in a recorded policy map — the root `property_overrides`
+ * or a record's `propertyOverrides` at any embedded depth — which `syncState` leaves out of its
+ * comparison: the stored snapshot's policy is re-expressed for the instance (an owner-or-GM tier
+ * of another owner's template becomes GM-only there) while the template's is verbatim, and a
+ * policy change is already visible through the VIEWS the two policies cut (a newly hidden band
+ * disappears from one side before the other). Not exported.
+ * @param path The RFC-6901 pointer of a `structuralDiff` entry over two `MergeBase` values.
+ * @returns `true` iff the path is inside a policy map rather than a band or record content.
+ * @example
+ * ```
+ * // internal predicate; not part of the public API (see syncState for the public entry point)
+ * isRecordedPolicyPath("/property_overrides/~1system~1secret"); // true
+ * isRecordedPolicyPath("/embedded/items/0/propertyOverrides"); // true
+ * isRecordedPolicyPath("/system/propertyOverrides"); // false — band content
+ * ```
+ */
+function isRecordedPolicyPath(path: string): boolean {
+  return /^(\/embedded\/[^/]+\/\d+)*\/(property_overrides|propertyOverrides)(\/|$)/.test(path);
 }

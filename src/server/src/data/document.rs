@@ -100,6 +100,21 @@ pub enum Visibility {
     OwnerOrGm,
 }
 
+impl Visibility {
+    /// Audience-inclusion rank: the audiences nest — every recipient `GmOnly`
+    /// admits is admitted by `OwnerOrGm`, and every recipient `OwnerOrGm`
+    /// admits is admitted by `All` (`Access::can_see`) — so a higher rank is a
+    /// strictly smaller audience. `merge::bands::propagate_overrides` keeps
+    /// the higher-ranked of two tiers at one path, never widening an audience.
+    pub fn strictness(self) -> u8 {
+        match self {
+            Visibility::All => 0,
+            Visibility::OwnerOrGm => 1,
+            Visibility::GmOnly => 2,
+        }
+    }
+}
+
 /// Per-world membership role (orthogonal to the server admin/user tier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]

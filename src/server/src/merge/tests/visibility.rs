@@ -93,6 +93,7 @@ fn record(from: &str, system: Value, embedded: Vec<EmbeddedBaseChild>) -> Embedd
         engine: Value::Null,
         system,
         embedded: kids,
+        property_overrides: BTreeMap::new(),
     }
 }
 
@@ -390,7 +391,8 @@ fn revert_keeps_the_child_value_on_a_template_hidden_path() {
     child.source = Some(source_from("t1"));
     child.system = json!({ "hp": 9, "secret": "S3", "extra": true });
     let vis = Hide::default().on_template("t1", "/system/secret");
-    let op = crate::merge::compute_revert(&child, &template, &vis).expect("reverts");
+    let bands = crate::merge::compute_revert(&child, &template, &vis).expect("reverts");
+    let op = crate::merge::plan_to_update(&child, &template, &bands, true);
     let crate::data::command::Operation::Update { changes, .. } = op else {
         panic!("revert emits an update");
     };

@@ -69,7 +69,7 @@ fn plan_to_update_targets_the_child_and_refreshes_base_only_when_it_changed() {
     // No stored base: the refresh is a change (null -> snapshot).
     let plan =
         compute_pull(&child, &template, &AllVisible).expect("no base is stored on this child");
-    let op = plan_to_update(&child, &template, &plan.merged_bands);
+    let op = plan_to_update(&child, &template, &plan.merged_bands, true);
     let Operation::Update { doc_id, changes } = op else {
         panic!("plan_to_update emits an update");
     };
@@ -83,7 +83,8 @@ fn plan_to_update_targets_the_child_and_refreshes_base_only_when_it_changed() {
     // Stored base already equal to the template snapshot: nothing to write.
     child.base = Some(snapshot);
     let plan = compute_pull(&child, &template, &AllVisible).expect("merges");
-    let Operation::Update { changes, .. } = plan_to_update(&child, &template, &plan.merged_bands)
+    let Operation::Update { changes, .. } =
+        plan_to_update(&child, &template, &plan.merged_bands, true)
     else {
         panic!("plan_to_update emits an update");
     };
@@ -139,9 +140,9 @@ fn compute_revert_keeps_token_placement_and_refreshes_base() {
         json!({ "name": null, "engine": { "x": 99, "hp": 5 }, "system": { "s": 0 }, "embedded": {} }),
     );
 
-    let op = compute_revert(&child, &template, &AllVisible).expect("reverts");
-    let Operation::Update { changes, .. } = op else {
-        panic!("compute_revert emits an update");
+    let bands = compute_revert(&child, &template, &AllVisible).expect("reverts");
+    let Operation::Update { changes, .. } = plan_to_update(&child, &template, &bands, true) else {
+        panic!("plan_to_update emits an update");
     };
     let find = |path: &str| {
         changes

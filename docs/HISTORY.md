@@ -1960,15 +1960,27 @@ uses), never a guessed band list; authorized writes commit under a new
 `WriteOrigin::TemplateMerge`, mirroring `CombatTransition`/`ConfigSeed`. `MergePush` reports each
 same-world instance individually (`Applied`/`Conflicts`/`Excluded`); an instance invisible to the
 pusher is omitted from the reply entirely (existence-hiding), and an unreadable template is
-`NotFound` for pull/revert too. **Visibility ruling:** the PARENT side of every merge is the
+`NotFound` for pull/revert too. **Visibility ruling (spec §11 D1/D9/D10):** the merge's three
+inputs are viewed through the requester's access by ONE classifier — the PARENT side is the
 requester-VISIBLE template (`filter_properties` under the requester's access, the same classifier
-egress uses) — a template-hidden path is excluded from the parent diff, so a value the requester
-cannot see never moves into an instance in either direction, and the stored `/base` refresh is the
-snapshot of that visible template; the child side stays unredacted, and a child-hidden conflict is
-withheld from the wire with the child-wins default standing. Visibility resolves by document
-identity at every embedded depth (`MergeVisibility`), never by array index. `instances_of` reads
-the `source_id`/`source_pack` columns over `idx_documents_source` rather than the spec's
-`json_extract`.
+egress uses), the BASE side is the stored snapshot reduced by the same template-side hidden set
+(`permission::redact_pointers` inside `merge3`, at every embedded depth), the child side stays
+unredacted — and a template-hidden path is excluded from the parent diff, so a value the requester
+cannot see never moves into an instance's content; a child-hidden conflict is withheld from the
+wire with the child-wins default standing. The stored `/base` is ONE canonical value, never
+requester-relative: `snapshot_for_instance` of the FULL template, bands plus the template's
+mergeable-band policy re-expressed for the instance (`relate_tier`: an `OwnerOrGm` tier of another
+owner's template becomes `GmOnly`), so consecutive merges by a GM and a player never rewrite each
+other's snapshot. Template overrides PROPAGATE onto instances additively (`propagate_overrides`,
+at Create and on every merge write, embedded children by `source.id`), which closes the recipient
+direction — a GM's push of a `gm_only` value lands hidden on a player-owned instance — and `/base`
+egress is cut per recipient by the policy the snapshot records (`own_overrides`, the single source
+`filter_properties`/`redact_change` and the merge oracle read), so the owner receives `/base` minus
+exactly what the template hid with no template lookup at egress; the client's `syncState` reads
+the stored base through `normalizeBase` and excludes the recorded policy maps from its diff, and
+is consistent per seat. Visibility resolves by document identity at every embedded depth
+(`MergeVisibility`), never by array index. `instances_of` reads the `source_id`/`source_pack`
+columns over `idx_documents_source` rather than the spec's `json_extract`.
 
 **The base-ownership fork:** `Document.base` — previously a fully opaque, client-writable blob —
 becomes server-owned: `/base` leaves the client-writable field set entirely (no capability maps to
