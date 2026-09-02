@@ -164,16 +164,6 @@ impl BudgetGate {
     }
 }
 
-/// The one division a movement-budget number performs: `current` divided by
-/// the per-cell (or per-space) conversion rate. Both the `Hard` truncation
-/// ceiling (`BudgetResolution::Resolved.budget_cells`) and the route-preview
-/// number (`PathResult.budget_cells`) call this — the SAME arithmetic, so the
-/// clamp and the preview cannot drift apart by one of the two call sites
-/// duplicating the division with a rounding or unit difference.
-pub(crate) fn resource_cells(current: f64, cost_to_resource: f64) -> f64 {
-    current / cost_to_resource
-}
-
 /// `BudgetGate`, once resolved: the evaluated resource numbers (and, under
 /// `Interpretation::PerCell`, the per-cell distance) are guaranteed present — every refusal
 /// path has already returned before this is constructed. `cost_to_resource`
@@ -198,12 +188,12 @@ pub(crate) struct ResolvedBudget {
 
 impl ResolvedBudget {
     /// The mover's remaining movement budget in cells, through the shared
-    /// `resource_cells` helper — the same number `handle_pathfind` discloses
-    /// as `PathResult.budget_cells` for an enforced caller, computed from
-    /// this resolution's own `current`/`cost_to_resource` rather than a
-    /// second read of either.
+    /// `combat::budget::resource_cells` helper — the same number
+    /// `handle_pathfind` discloses as `PathResult.budget_cells` for an
+    /// enforced caller, computed from this resolution's own
+    /// `current`/`cost_to_resource` rather than a second read of either.
     pub(crate) fn resource_cells(&self) -> f64 {
-        resource_cells(self.current, self.cost_to_resource)
+        crate::combat::budget::resource_cells(self.current, self.cost_to_resource)
     }
 }
 
@@ -268,48 +258,47 @@ pub(crate) enum BudgetResolution {
     },
 }
 
-/// Resolves one `BudgetGate` into the gate's decision, deriving the resource
-/// numbers through `combat::eval::resolved_resource` over the combatant's
-/// formula host — the SAME derivation the combat transitions use, so the gate
-/// and the clock cannot price a resource differently. An absent stored entry
-/// reads as full; the decrement then materializes it. Exemption (a GM, or
-/// `enforced: false` — see `BudgetGate::enforced`) skips every refusal and
-/// the truncation but still records the decrement when the budget resolves,
-/// and degrades an UNRESOLVABLE budget to "move freely, no decrement" — the
-/// same outcome as a token bound to no combatant at all.
+/// Resolves one `BudgetGate` into the gate's decision. The budget itself
+/// comes from `combat::budget::resolve_movement_budget` — the ONE resolution
+/// the `"combat"` channel (`SceneEcs::resolved_combats`) reads too, deriving
+/// the numbers through `combat::eval::resolved_resource` over the combatant's
+/// formula host, so the gate, the channel and the clock cannot price a
+/// resource differently. An absent stored entry reads as full; the decrement
+/// then materializes it. Exemption (a GM, or `enforced: false` — see
+/// `BudgetGate::enforced`) skips every refusal and the truncation but still
+/// records the decrement when the budget resolves, and degrades an
+/// UNRESOLVABLE budget to "move freely, no decrement" — the same outcome as a
+/// token bound to no combatant at all.
 pub(crate) fn resolve_budget(bg: &BudgetGate, is_gm: bool) -> BudgetResolution {
     let exempt = is_gm || !bg.enforced;
     if !exempt && !bg.is_turn_owner && matches!(bg.enforcement, eng::Enforcement::Hard) {
         return BudgetResolution::NotYourTurn;
     }
-    let nums = bg.binding.as_ref().and_then(|b| match b {
-        eng::ResourceBinding::Mirror { .. } => None,
-        tracked @ eng::ResourceBinding::Tracked { .. } => {
-            crate::combat::eval::resolved_resource(tracked, bg.stored, bg.host.as_ref()).ok()
-        }
-    });
-    let cost_to_resource = match (&nums, bg.interpretation) {
-        (Some(_), eng::Interpretation::PerCell) => bg.per_cell,
-        (Some(_), eng::Interpretation::Spaces) => Some(1.0),
-        (None, _) => None,
-    };
-    match (nums, cost_to_resource) {
-        (Some(n), Some(ctr)) => BudgetResolution::Resolved {
+    let budget =
+        crate::combat::budget::resolve_movement_budget(&crate::combat::budget::BudgetInputs {
+            binding: bg.binding.as_ref(),
+            stored: bg.stored,
+            host: bg.host.as_ref(),
+            interpretation: bg.interpretation,
+            per_cell: bg.per_cell,
+        });
+    match budget {
+        Some(mb) => BudgetResolution::Resolved {
             budget_cells: (!exempt && matches!(bg.enforcement, eng::Enforcement::Hard))
-                .then(|| resource_cells(n.current, ctr)),
+                .then(|| mb.cells()),
             decrement: Some(ResolvedBudget {
                 combatant_id: bg.combatant_id,
                 resource: bg.resource.clone(),
-                current: n.current,
+                current: mb.current,
                 stored: bg.stored,
-                cost_to_resource: ctr,
+                cost_to_resource: mb.cost_to_resource,
             }),
         },
-        _ if exempt => BudgetResolution::Resolved {
+        None if exempt => BudgetResolution::Resolved {
             budget_cells: None,
             decrement: None,
         },
-        _ => BudgetResolution::Unresolvable,
+        None => BudgetResolution::Unresolvable,
     }
 }
 

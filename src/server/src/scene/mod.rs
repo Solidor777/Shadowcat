@@ -2428,10 +2428,11 @@ impl SceneEcs {
     /// The resolved `"combat"` derived-channel payload for `ctx`: every combat `ctx` may READ,
     /// each with every combatant `ctx` may READ, each with the registry's resolved resource
     /// numbers (when the `/engine/resources` band is visible to `ctx`) and the combat's movement
-    /// resource converted to cells through the SAME `ws::room::resource_cells` helper
-    /// `resolve_budget` uses for the movement-budget gate. Sorted by id at every level (combats,
-    /// then combatants) for a stable fingerprint — the egress loop's change detection compares
-    /// whole payloads.
+    /// budget in cells through the SAME `combat::budget::resolve_movement_budget` the
+    /// movement-budget gate (`ws::room::resolve_budget`) reads — including its
+    /// `ResourceBinding::Tracked` gate, so a `Mirror`-bound movement resource is `None` here
+    /// exactly as the gate refuses it. Sorted by id at every level (combats, then combatants)
+    /// for a stable fingerprint — the egress loop's change detection compares whole payloads.
     ///
     /// Readability mirrors `resolved_footprints`'s own two-gate discipline: a combat/combatant is
     /// included only when `ctx_access` grants whole-document `cap::READ` on it (a hidden
@@ -2484,8 +2485,8 @@ impl SceneEcs {
                     .get("/engine/resources")
                     .copied()
                     .unwrap_or(Visibility::All);
+                let host = self.combatant_formula_host(&cengine.kind);
                 let resources = if c_access.can_see(resources_visible) {
-                    let host = self.combatant_formula_host(&cengine.kind);
                     let mut resolved: BTreeMap<String, ResolvedResourceView> = BTreeMap::new();
                     if let Some(reg) = &registry {
                         for (key, def) in &reg.resources {
@@ -2527,15 +2528,23 @@ impl SceneEcs {
                     None
                 };
 
-                let movement_cells = resources.as_ref().and_then(|resolved| {
+                let movement_cells = resources.as_ref().and_then(|_| {
                     let resource_key = ce.movement.resource.as_ref()?;
-                    let view = resolved.get(resource_key)?;
-                    let current = view.current?;
-                    let ctr = match ce.movement.interpretation {
-                        eng::Interpretation::PerCell => self.scene_per_cell(ce.scene_id)?,
-                        eng::Interpretation::Spaces => 1.0,
-                    };
-                    Some(crate::ws::room::resource_cells(current, ctr))
+                    let binding = registry
+                        .as_ref()?
+                        .resources
+                        .get(resource_key)
+                        .map(|r| &r.binding);
+                    crate::combat::budget::resolve_movement_budget(
+                        &crate::combat::budget::BudgetInputs {
+                            binding,
+                            stored: cengine.resources.get(resource_key).map(|r| r.current),
+                            host: host.as_ref(),
+                            interpretation: ce.movement.interpretation,
+                            per_cell: self.scene_per_cell(ce.scene_id),
+                        },
+                    )
+                    .map(|mb| mb.cells())
                 });
 
                 combatants.push((

@@ -606,9 +606,59 @@ mod resolved_combats {
         assert_eq!(a, b);
     }
 
+    /// A `Mirror`-bound movement resource still resolves to a NUMBER in the combatant's
+    /// `resources` view (it is a readable value), but is no movement BUDGET: the channel's
+    /// `movement_cells` is `None`, exactly as `ws::room::resolve_budget` refuses it, because both
+    /// read `combat::budget::resolve_movement_budget` and its `ResourceBinding::Tracked` gate.
+    #[test]
+    fn a_mirror_bound_movement_resource_yields_no_movement_cells_and_an_unresolvable_gate() {
+        let mut f = build();
+        f.ecs.apply_op(&Operation::Update {
+            doc_id: Uuid::from_u128(0x50),
+            changes: vec![fc(
+                "/engine/resources/movement/binding",
+                json!({ "kind": "mirror", "value": "speed" }),
+            )],
+        });
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let pc = payload.combats[0]
+            .combatants
+            .iter()
+            .find(|c| c.id == f.pc_combatant)
+            .unwrap();
+        let movement = &pc.resources.as_ref().unwrap()["movement"];
+        assert_eq!(
+            movement.current,
+            Some(30.0),
+            "the Mirror value itself still reads as a number"
+        );
+        assert!(
+            pc.movement_cells.is_none(),
+            "a Mirror binding is no movement budget for the channel"
+        );
+
+        let bg = crate::ws::room::budget_gate_for_token(
+            &f.ecs,
+            f.scene,
+            Uuid::from_u128(0xB0),
+            &f.player_ctx,
+            &WorldCapDefaults::default(),
+        )
+        .expect("the gate resolves for the pc token");
+        assert!(
+            matches!(
+                crate::ws::room::resolve_budget(&bg, false),
+                crate::ws::room::BudgetResolution::Unresolvable
+            ),
+            "the gate refuses the same Mirror binding for the enforced owner"
+        );
+    }
+
     /// Anti-drift parity: movement_cells for the turn owner equals the Hard budget-gate
     /// ceiling ws::room::resolve_budget computes for the same token -- both derive through the
-    /// shared ws::room::resource_cells helper.
+    /// shared combat::budget::resolve_movement_budget resolution.
     #[test]
     fn movement_cells_matches_the_hard_budget_gate_ceiling_for_the_turn_owner() {
         let f = build();
