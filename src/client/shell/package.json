@@ -13,7 +13,7 @@
     "@shadowcat/module-statusbar": "workspace:*",
     "@shadowcat/module-stage": "workspace:*",
     "@shadowcat/module-settings": "workspace:*",
-    "@shadowcat/module-assets": "workspace:*",
+    "@shadowcat/module-asset-browser": "workspace:*",
     "@shadowcat/module-actors": "workspace:*",
     "@shadowcat/module-chat": "workspace:*",
     "@shadowcat/module-chat-composer": "workspace:*",

@@ -291,4 +291,22 @@ describe("OptimisticClient", () => {
       expect(oc.get("d3")).toBeDefined();
     });
   });
+
+  it("optimistically applies a move and rolls it back on rejection", async () => {
+    const server = new MockServer({
+      rejectRule: (ctx) => (ctx.ops.some((o) => o.op === "move") ? "forbidden" : null),
+    });
+    const { oc, act } = await connect(server, "u1");
+    act([createOp("d1", 10)]);
+    await waitFor(() => oc.pendingIntents().length === 0);
+    expect(oc.get("d1")!.parent_id).toBeNull();
+
+    act([{ op: "move", doc_id: "d1", parent_id: "scene-9", old_parent_id: null }]);
+    // Optimistic view reflects the predicted parent immediately.
+    expect(oc.get("d1")!.parent_id).toBe("scene-9");
+
+    await waitFor(() => oc.pendingIntents().length === 0);
+    // Rejected → rolled back to the confirmed parent.
+    expect(oc.get("d1")!.parent_id).toBeNull();
+  });
 });

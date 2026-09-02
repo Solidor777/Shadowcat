@@ -16,6 +16,9 @@ const eng: ActorEngine = {
   conditions: [],
   prototype: true,
   vision: null,
+  aura: null,
+  sound: null,
+  vfx: null,
 };
 
 /** A raw (actorless) token's full engine body — every generated key is required
@@ -42,7 +45,7 @@ describe("resolveTokenActor", () => {
   it("applies the per-token override whitelist over the linked actor", () => {
     const actor = buildActorDoc("w1", NAME, eng, "act1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-    (token.engine as TokenEngine).overrides = { name: "Boss", visual: { kind: "image", asset: "a2" }, size: null, shape: null, vision: null };
+    (token.engine as TokenEngine).overrides = { name: "Boss", visual: { kind: "image", asset: "a2" }, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null };
     const eff = resolveTokenActor(token, storeWith(actor));
     expect(eff?.name).toBe("Boss");
     expect(eff?.visual?.kind === "image" && eff.visual.asset).toBe("a2");
@@ -62,6 +65,34 @@ describe("resolveTokenActor", () => {
     const raw = buildTokenDoc("w1", "scene1", rawTokenEngine({ visual: { kind: "image", asset: "z" } }));
     expect(resolveTokenActor(raw, new DocumentStore())).toBeNull();
   });
+
+  it("projects emissions with override-replaces-base precedence, like visionModes", () => {
+    const base = {
+      aura: { color: "#ffcc66", opacity: 0.4, radius: 2, enabled: true },
+      sound: { asset: "a1", radius: 5, volume: 0.8, loop: true, enabled: true },
+      vfx: { asset: "a2", anchor: "above" as const, loop: false, enabled: true },
+    };
+    const actor = buildActorDoc("w1", NAME, { ...eng, ...base }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    // Absent override: the actor base falls straight through.
+    const inherited = resolveTokenActor(token, storeWith(actor));
+    expect(inherited?.aura).toEqual(base.aura);
+    expect(inherited?.sound).toEqual(base.sound);
+    expect(inherited?.vfx).toEqual(base.vfx);
+    // Present override: replaces the base wholesale (never merged).
+    const over = { aura: { color: "#0000ff", opacity: 1, radius: 4, enabled: false }, sound: null, vfx: null };
+    (token.engine as TokenEngine).overrides = { name: null, visual: null, size: null, shape: null, vision: null, ...over };
+    const replaced = resolveTokenActor(token, storeWith(actor));
+    expect(replaced?.aura).toEqual(over.aura);
+    expect(replaced?.sound).toEqual(base.sound); // null override field = inherit, same as vision
+    expect(replaced?.vfx).toEqual(base.vfx);
+  });
+
+  it("projects no emissions for a raw (actorless) token", () => {
+    const raw = buildTokenDoc("w1", "scene1", rawTokenEngine({ visual: { kind: "image", asset: "z" } }));
+    const eff = resolveTokenActor(raw, new DocumentStore());
+    expect(eff).toBeNull(); // a raw token has no EffectiveActor at all — hence no emissions
+  });
 });
 
 describe("resolveConditions", () => {
@@ -69,7 +100,15 @@ describe("resolveConditions", () => {
     const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["dead", "ghost"] }, "act1");
     const registry = buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀" }]);
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "dead", name: "Dead", icon: "💀", fx: undefined }]);
+  });
+
+  it("carries the registry's authored fx payload through to the display entry", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, conditions: ["poisoned"] }, "act1");
+    const fx = { tint: "#66ff66", desaturate: true };
+    const registry = buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx } }, "creg1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveConditions(token, storeWith(actor, registry))).toEqual([{ id: "poisoned", name: "Poisoned", icon: "🤢", fx }]);
   });
 
   it("is fail-closed when the actor's engine conditions is absent (redacted or hand-built doc)", () => {
@@ -139,7 +178,7 @@ function fakeStore(docs: WireDocument[]): ReadableDocuments {
 
 const actorEngine = (over: Partial<ActorEngine> = {}): ActorEngine => ({
   displayName: "Goblin", visual: { kind: "image" as const, asset: "a1" },
-  size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, ...over,
+  size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null, ...over,
 });
 
 /** A lookup stating `extent` for `tokenId` and nothing else, standing in for a `"footprints"`
@@ -166,7 +205,7 @@ test("resolveTokenBox reads shape from the actor and applies a per-token overrid
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   const fp = footprintsFor("tok1", { w: 400, h: 400 });
   expect(resolveTokenBox(token, fakeStore([scene, actor, token]), fp).shape).toBe("circle");
-  (token.engine as TokenEngine).overrides = { shape: "square", size: { w: 4, h: 4 }, name: null, visual: null, vision: null };
+  (token.engine as TokenEngine).overrides = { shape: "square", size: { w: 4, h: 4 }, name: null, visual: null, vision: null, aura: null, sound: null, vfx: null };
   const box = resolveTokenBox(token, fakeStore([scene, actor, token]), fp);
   expect(box.shape).toBe("square");
   expect(box.w).toBe(400);
@@ -218,7 +257,7 @@ it("per-token override replaces actor vision modes", () => {
   const withVision = { ...eng, vision: [{ mode: "darkvision", range: 12 }] };
   const actor = buildActorDoc("w1", NAME, withVision, "act1");
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-  (token.engine as TokenEngine).overrides = { vision: [{ mode: "darkvision", range: 6 }], name: null, visual: null, size: null, shape: null };
+  (token.engine as TokenEngine).overrides = { vision: [{ mode: "darkvision", range: 6 }], name: null, visual: null, size: null, shape: null, aura: null, sound: null, vfx: null };
   expect(resolveTokenActor(token, storeWith(actor))?.visionModes).toEqual([{ mode: "darkvision", range: 6 }]);
 });
 
@@ -318,6 +357,62 @@ describe("resolveTokenVisual", () => {
     expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
   });
 
+  it("accepts a generated visual with image art", () => {
+    const generated: TokenVisual = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } };
+    const actor = actorWith(generated);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(generated);
+  });
+
+  it("accepts a generated visual with animated art", () => {
+    const generated: TokenVisual = { kind: "generated", art: { kind: "animated", source: { type: "frames", frames: ["f1"] }, fps: 4, loop: true }, crop: "square", border: null, background: null };
+    const actor = actorWith(generated);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(generated);
+  });
+
+  it("accepts a generated face selected out of a faces visual", () => {
+    const framed = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: null, background: null } as const;
+    const actor = actorWith({ kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, framed }, default: "framed", faceMap: null });
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toEqual(framed);
+  });
+
+  it("fails closed on a nested generated art", () => {
+    const nested: TokenVisual = { kind: "generated", art: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: null, background: null }, crop: "circle", border: null, background: null };
+    const actor = actorWith(nested);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual with missing art (garbled wire data)", () => {
+    const noArt = { kind: "generated", crop: "circle", border: null, background: null } as unknown as TokenVisual;
+    const actor = actorWith(noArt);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual whose art has a malformed AnimatedSource", () => {
+    const badArt: TokenVisual = { kind: "generated", art: { kind: "animated", source: { type: "frames", frames: [] }, fps: 8, loop: true }, crop: "circle", border: null, background: null };
+    const actor = actorWith(badArt);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual with an unknown crop (garbled wire data)", () => {
+    const badCrop = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "hex", border: null, background: null } as unknown as TokenVisual;
+    const actor = actorWith(badCrop);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
+  it("fails closed on a generated visual with a non-positive border width", () => {
+    const badBorder: TokenVisual = { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0 }, background: null };
+    const actor = actorWith(badBorder);
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
+    expect(resolveTokenVisual(token, storeWith(actor))).toBeNull();
+  });
+
   it("fails closed on a malformed nested faces value (defense in depth against garbled wire data)", () => {
     const nested = { kind: "faces", faces: {}, default: "x" } as unknown as { kind: "image"; asset: string };
     const actor = actorWith({ kind: "faces", faces: { bad: nested }, default: "bad", faceMap: null });
@@ -339,6 +434,9 @@ describe("resolveTokenVisual", () => {
       size: null,
       shape: null,
       vision: null,
+      aura: null,
+      sound: null,
+      vfx: null,
     };
     (token.engine as TokenEngine).face = "frown"; // active manual face-swap
 

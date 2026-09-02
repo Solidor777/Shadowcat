@@ -2287,3 +2287,75 @@ fn token_vision_floors_falls_back_to_mode_default_range_when_assignment_omits_ra
     // darkvision entry carries `default_range: 12.0`.
     assert_eq!(floors, vec![(0.0, 12.0, Some("desaturate".to_string()))]);
 }
+
+#[test]
+fn apply_op_move_reparents_a_token_between_scenes() {
+    let user = Uuid::from_u128(77);
+    let mut tok = doc(30, Some(1), "token");
+    tok.owner = Some(user);
+    let mut ecs =
+        SceneEcs::from_documents(vec![doc(1, None, "scene"), doc(2, None, "scene"), tok], 0);
+    assert!(ecs.user_owns_token_in_scene(user, Uuid::from_u128(1)));
+    assert!(!ecs.user_owns_token_in_scene(user, Uuid::from_u128(2)));
+
+    ecs.apply_op(&Operation::Move {
+        doc_id: Uuid::from_u128(30),
+        parent_id: Some(Uuid::from_u128(2)),
+        old_parent_id: Some(Uuid::from_u128(1)),
+    });
+
+    // Membership is derived from the doc's own parent_id: the source scene
+    // forgets the token, the destination gains it.
+    assert!(!ecs.user_owns_token_in_scene(user, Uuid::from_u128(1)));
+    assert!(ecs.user_owns_token_in_scene(user, Uuid::from_u128(2)));
+}
+
+#[test]
+fn apply_op_move_to_top_level_despawns_the_scene_entity() {
+    let mut ecs =
+        SceneEcs::from_documents(vec![doc(1, None, "scene"), doc(30, Some(1), "token")], 0);
+    assert_eq!(ecs.entity_count(), 2);
+
+    ecs.apply_op(&Operation::Move {
+        doc_id: Uuid::from_u128(30),
+        parent_id: None,
+        old_parent_id: Some(Uuid::from_u128(1)),
+    });
+
+    // A parentless non-scene doc is no scene entity; it leaves the runtime.
+    assert_eq!(ecs.entity_count(), 1);
+}
+
+#[test]
+fn apply_op_move_refields_a_region_into_the_destination_scene() {
+    let region = region_doc(20, 10, "impassable", 1.0, (0.0, 0.0, 150.0, 150.0));
+    let mut ecs = SceneEcs::from_documents(
+        vec![doc(10, None, "scene"), doc(11, None, "scene"), region],
+        0,
+    );
+    let s10 = Uuid::from_u128(10);
+    let s11 = Uuid::from_u128(11);
+    assert!(ecs
+        .region_field(s10, None)
+        .expect("scene exists")
+        .has_terrain_or_impassable());
+    assert!(!ecs
+        .region_field(s11, None)
+        .expect("scene exists")
+        .has_terrain_or_impassable());
+
+    ecs.apply_op(&Operation::Move {
+        doc_id: Uuid::from_u128(20),
+        parent_id: Some(s11),
+        old_parent_id: Some(s10),
+    });
+
+    assert!(!ecs
+        .region_field(s10, None)
+        .expect("scene exists")
+        .has_terrain_or_impassable());
+    assert!(ecs
+        .region_field(s11, None)
+        .expect("scene exists")
+        .has_terrain_or_impassable());
+}

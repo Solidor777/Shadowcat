@@ -20,7 +20,7 @@ Community modules follow the same model — see
 | [panels](/modules/panels) | The dockable panel manager (`shadowcat.panel` host) |
 | [settings](/modules/settings) | Settings panel: users, invites, modules, locale, session |
 | [game-settings](/modules/game-settings) | GM game configuration panel |
-| [assets](/modules/assets) | Asset upload/browse panel |
+| [asset-browser](/modules/asset-browser) | GM asset browser: folders, filters, uploads, pick mode |
 | [scene-browser](/modules/scene-browser) | GM scene list/activate/roam panel |
 | [sheet-fallback](/modules/sheet-fallback) | The always-available generic document sheet |
 | [stage](/modules/stage) | The PixiJS scene canvas |

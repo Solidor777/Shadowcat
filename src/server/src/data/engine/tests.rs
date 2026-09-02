@@ -69,6 +69,52 @@ fn actor_minimal_body_is_valid() {
 }
 
 #[test]
+fn actor_with_emissions_is_valid() {
+    let v = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true },
+        "sound": { "asset": "a1", "radius": 5.0, "volume": 0.8, "loop": true, "enabled": true },
+        "vfx": { "asset": "a2", "anchor": "above", "loop": false, "enabled": true }
+    });
+    assert!(validate_engine("actor", Some(&v)).is_ok());
+}
+
+#[test]
+fn actor_with_malformed_emission_is_rejected() {
+    let base = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true
+    });
+    let mut bad_color = base.clone();
+    bad_color["aura"] =
+        json!({ "color": "orange", "opacity": 0.4, "radius": 2.0, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_color)).is_err());
+    let mut bad_radius = base.clone();
+    bad_radius["sound"] =
+        json!({ "asset": "a1", "radius": -1.0, "volume": 0.8, "loop": true, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_radius)).is_err());
+    let mut bad_asset = base.clone();
+    bad_asset["vfx"] = json!({ "asset": "", "anchor": "token", "loop": true, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_asset)).is_err());
+}
+
+#[test]
+fn token_with_malformed_override_emission_is_rejected() {
+    let mut v = json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 });
+    v["overrides"] = json!({
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 1.0e12, "enabled": true }
+    });
+    assert!(validate_engine("token", Some(&v)).is_err());
+    v["overrides"] = json!({
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true }
+    });
+    assert!(validate_engine("token", Some(&v)).is_ok());
+}
+
+#[test]
 fn message_minimal_body_is_valid() {
     let v = json!({
         "channel": "ic", "user_owner": "00000000-0000-0000-0000-000000000000",
@@ -534,6 +580,71 @@ fn animated_source_sheet_round_trips() {
         serde_json::from_value(json!({ "type": "sheet", "asset": "s.png", "rows": 2, "cols": 3 }))
             .unwrap();
     assert!(matches!(src, AnimatedSource::Sheet { .. }));
+}
+
+#[test]
+fn render_visual_generated_round_trips() {
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": "a.png" },
+        "crop": "circle",
+        "border": { "color": "#ff8800", "width": 0.06 },
+        "background": { "color": "#102030" }
+    });
+    let v: RenderVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(
+        v,
+        RenderVisual::Generated {
+            crop: GeneratedCrop::Circle,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+}
+
+#[test]
+fn render_visual_generated_omitted_border_and_background_serialize_as_null() {
+    // `Option` fields re-serialize as explicit `null` (the client's `T | null`
+    // contract), never as an omitted key.
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "animated", "source": { "type": "frames", "frames": ["a"] }, "fps": 4.0, "loop": true },
+        "crop": "square"
+    });
+    let v: RenderVisual = serde_json::from_value(src).unwrap();
+    let stored = serde_json::to_value(&v).unwrap();
+    assert_eq!(stored["border"], serde_json::Value::Null);
+    assert_eq!(stored["background"], serde_json::Value::Null);
+    let back: RenderVisual = serde_json::from_value(stored).unwrap();
+    assert_eq!(v, back);
+}
+
+#[test]
+fn token_visual_generated_round_trips() {
+    // An actor's whole visual can be a generated composition (the same payload
+    // shape `RenderVisual::Generated` carries per-face).
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": "a.png" },
+        "crop": "circle",
+        "border": null,
+        "background": { "color": "#102030" }
+    });
+    let v: TokenVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(v, TokenVisual::Generated { .. }));
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+}
+
+#[test]
+fn generated_crop_literal_set_deserializes() {
+    for (literal, expected) in [
+        ("circle", GeneratedCrop::Circle),
+        ("square", GeneratedCrop::Square),
+    ] {
+        let v: GeneratedCrop = serde_json::from_value(json!(literal)).unwrap();
+        assert_eq!(v, expected);
+    }
+    assert!(serde_json::from_value::<GeneratedCrop>(json!("hex")).is_err());
 }
 
 // --- literal-set assertions (client writers emit these strings today) ---
@@ -1028,6 +1139,51 @@ fn condition_registry_seed_content() {
 }
 
 #[test]
+fn condition_registry_fx_round_trips() {
+    let v = json!({ "conditions": { "poisoned": {
+        "name": "Poisoned", "icon": "🤢",
+        "fx": { "tint": "#66ff66", "desaturate": true, "highlight": "#ffffff" }
+    } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+    let typed: ConditionRegistryEngine = serde_json::from_value(v).unwrap();
+    let fx = typed.conditions["poisoned"].fx.as_ref().unwrap();
+    assert_eq!(fx.tint.as_deref(), Some("#66ff66"));
+    assert_eq!(fx.desaturate, Some(true));
+    assert_eq!(fx.highlight.as_deref(), Some("#ffffff"));
+}
+
+#[test]
+fn condition_without_fx_deserializes_with_none() {
+    // Registry entries authored before the fx field existed carry no `fx` key
+    // at all; serde's default must absorb that.
+    let typed: ConditionRegistryEngine = serde_json::from_value(
+        json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀" } } }),
+    )
+    .unwrap();
+    assert_eq!(typed.conditions["dead"].fx, None);
+}
+
+#[test]
+fn condition_fx_unknown_field_is_rejected() {
+    let v = json!({ "conditions": { "dead": {
+        "name": "Dead", "icon": "💀", "fx": { "bogus": 1 }
+    } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_err());
+}
+
+#[test]
+fn condition_fx_malformed_color_is_rejected() {
+    for fx in [
+        json!({ "tint": "green" }),
+        json!({ "tint": "#fff" }),
+        json!({ "highlight": "#ff8800ff" }),
+    ] {
+        let v = json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀", "fx": fx } } });
+        assert!(validate_engine("condition-registry", Some(&v)).is_err());
+    }
+}
+
+#[test]
 fn channel_registry_seed_content() {
     let s = ChannelRegistryEngine::seed();
     assert_eq!(s.channels.len(), 1);
@@ -1106,4 +1262,115 @@ fn asset_folder_is_engine_type_with_sort_only() {
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3 }))).is_ok());
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3, "name": "x" }))).is_err());
     assert!(validate_engine("asset_folder", None).is_err());
+}
+
+#[test]
+fn region_without_triggers_loads_and_normalizes_with_an_empty_list() {
+    // A document written before triggers existed carries no `triggers` key: serde's default
+    // admits it, and normalization re-serializes the key back as an explicit empty list.
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(n.get("triggers"), Some(&json!([])));
+}
+
+#[test]
+fn region_trigger_payload_round_trips_all_effect_kinds() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "arrest", "effect": { "type": "condition_remove", "condition": "prone" } },
+            { "on": "enter", "effect": { "type": "resource_delta", "resource": "hp", "amount": -3.0 } },
+            { "on": "enter", "effect": { "type": "resource_delta", "resource": "hp", "amount": "con + 1" } },
+            { "on": "arrest", "effect": { "type": "chat_notice", "text": "It snaps shut.", "audience": "owner" } }
+        ]
+    });
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(
+        n, v,
+        "a valid trigger payload must round-trip byte-identically"
+    );
+}
+
+#[test]
+fn region_trigger_validation_rejects_malformed_payloads() {
+    let base = |effect: serde_json::Value| {
+        json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": 1.0, "enabled": true,
+            "triggers": [ { "on": "enter", "effect": effect } ]
+        })
+    };
+    // An empty condition/resource id.
+    assert!(validate_engine(
+        "region",
+        Some(&base(json!({ "type": "condition_add", "condition": "" })))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "resource_delta", "resource": "", "amount": 1.0 })
+        ))
+    )
+    .is_err());
+    // An over-cap id (`MAX_TRIGGER_ID_CHARS`).
+    let long_id = "x".repeat(MAX_TRIGGER_ID_CHARS + 1);
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "condition_add", "condition": long_id })
+        ))
+    )
+    .is_err());
+    // An amount that is not formula source.
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "resource_delta", "resource": "hp", "amount": "1 +" })
+        ))
+    )
+    .is_err());
+    // An over-cap notice text (`chat::MAX_MESSAGE_CHARS`).
+    let long_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "chat_notice", "text": long_text, "audience": "public" })
+        ))
+    )
+    .is_err());
+    // An unknown effect type, event, audience, or trigger field — serde closes these.
+    assert!(validate_engine("region", Some(&base(json!({ "type": "explode" })))).is_err());
+    assert!(validate_engine("region", Some(&json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [ { "on": "leave", "effect": { "type": "condition_add", "condition": "x" } } ]
+    }))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "chat_notice", "text": "t", "audience": "everyone" })
+        ))
+    )
+    .is_err());
+    assert!(validate_engine("region", Some(&json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [ { "on": "enter", "effect": { "type": "condition_add", "condition": "x" }, "extra": 1 } ]
+    }))).is_err());
+    // The same payloads at exactly the cap are admitted.
+    let cap_id = "x".repeat(MAX_TRIGGER_ID_CHARS);
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "condition_add", "condition": cap_id })
+        ))
+    )
+    .is_ok());
 }

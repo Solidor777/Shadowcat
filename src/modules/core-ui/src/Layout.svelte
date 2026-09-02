@@ -17,6 +17,11 @@
   <div class="toolrail"><Surface contract="shadowcat.surface:toolrail" /></div>
   <div class="statusbar"><Surface contract="shadowcat.surface:statusbar" /></div>
 </div>
+<!-- App-level overlay layer (modal scrims and similar fixed-position chrome).
+     Rendered OUTSIDE and AFTER the grid so contributions here are never
+     clipped by the grid's overflow and stack above every region without a
+     z-index war; contributions position themselves (typically fixed). -->
+<Surface contract="shadowcat.surface:overlay" />
 
 <style lang="scss">
   .layout {

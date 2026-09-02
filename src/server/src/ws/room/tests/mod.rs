@@ -3520,3 +3520,4 @@ async fn resync_floors_are_independent_per_user() {
 }
 
 mod movement_budget;
+mod region_triggers;

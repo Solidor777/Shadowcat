@@ -105,6 +105,19 @@ pub enum ClientMsg {
         /// Scene-coordinate y.
         y: f64,
     },
+    /// A transient emote over a token. Relayed out-of-band to the world room with the
+    /// sender stamped; never sequenced, logged, or a document (mirrors `ScenePing`).
+    /// The token must be parented to `scene` and effectively owned by the sender
+    /// (a GM is exempt from the ownership half) — silent drop otherwise; rate-limited
+    /// per user on its own budget. `emote` must be 1..=16 bytes (1–4 emoji graphemes).
+    Emote {
+        /// Scene the token stands on.
+        scene: Uuid,
+        /// Token the emote plays over (must be effectively owned by the sender).
+        token: Uuid,
+        /// The emote glyph(s); 1..=16 bytes.
+        emote: String,
+    },
     /// A one-shot grid pathfinding request, correlated by `request_id`. `start`/`waypoints` are
     /// scene coords; `waypoints`' LAST element is the goal. The route is mask-bounded for non-GM
     /// requesters.
@@ -566,6 +579,18 @@ pub enum ServerMsg {
         y: f64,
         /// Who pinged (senders receive their own echo).
         user: Uuid,
+    },
+    /// A relayed emote: the sender's transient glyph over a token. Out-of-band
+    /// (no seq, never buffered/resynced), mirroring `ScenePing`.
+    Emote {
+        /// Scene the token stands on.
+        scene: Uuid,
+        /// Token the emote plays over.
+        token: Uuid,
+        /// Who emoted (senders receive their own echo).
+        user: Uuid,
+        /// The emote glyph(s).
+        emote: String,
     },
     /// The route for the `Pathfind` with this `request_id`: ordered cell-center scene points
     /// (incl. start + goal) and the total cost in cells (client multiplies `grid.distance.perCell`).

@@ -77,6 +77,22 @@ pub enum Operation {
         /// Ordered field changes, each with its OCC pre-image.
         changes: Vec<FieldChange>,
     },
+    /// Re-parent a top-level document: rewrite its envelope `parent_id`.
+    ///
+    /// The one write path for `parent_id`, which no field-path `Update` can
+    /// touch (`required_cap_for_path` maps no capability to envelope fields).
+    /// GM-only, and legal exactly where `Create` with the target parent would
+    /// be — both enforced at `SqliteRepository::apply_intent`. Never
+    /// restructures `embedded`; an id that exists only as an embedded child
+    /// has no top-level row and the op is refused there.
+    Move {
+        /// Target document id.
+        doc_id: Uuid,
+        /// New parent (`None` = top level).
+        parent_id: Option<Uuid>,
+        /// OCC pre-image of the current parent; also what `invert` restores.
+        old_parent_id: Option<Uuid>,
+    },
 }
 
 /// A command awaiting a sequence number (constructed by callers).
@@ -109,7 +125,8 @@ pub struct Command {
 }
 
 impl Operation {
-    /// The inverse operation: Create<->Delete; Update swaps old/new per change, reversed.
+    /// The inverse operation: Create<->Delete; Update swaps old/new per change,
+    /// reversed; Move swaps `parent_id`/`old_parent_id`.
     ///
     /// Operates on the wire `Operation` only — `StoredCommand`/`CommandSnapshot` (server-internal
     /// commit-time redaction state) do not exist at this layer and are not this function's
@@ -166,6 +183,15 @@ impl Operation {
                         }
                     })
                     .collect(),
+            },
+            Operation::Move {
+                doc_id,
+                parent_id,
+                old_parent_id,
+            } => Operation::Move {
+                doc_id: *doc_id,
+                parent_id: *old_parent_id,
+                old_parent_id: *parent_id,
             },
         }
     }

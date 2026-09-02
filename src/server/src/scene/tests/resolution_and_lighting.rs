@@ -1248,6 +1248,68 @@ fn region_field_ignores_disabled_regions() {
 }
 
 #[test]
+fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization() {
+    // Anti-drift: `SceneEcs::trigger_regions`'s identity rows and the composed
+    // `region_field` must cover the same cells for the same region, because one
+    // rasterizer feeds both. A divergence would let a move spring a region's
+    // movement behavior without firing its triggers (or the reverse).
+    let scene_id = Uuid::from_u128(10);
+    let region = |id: u128, x0: f64, behavior: &str, enabled: bool, triggers: serde_json::Value| {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(id),
+            "region",
+        );
+        d.parent_id = Some(scene_id);
+        d.engine = Some(serde_json::json!({
+            "shape": { "kind": "rect", "points": [x0, 0.0, x0 + 100.0, 100.0] },
+            "behavior": behavior,
+            "cost": 1.0,
+            "enabled": enabled,
+            "triggers": triggers,
+        }));
+        d
+    };
+    let enter_notice = serde_json::json!([
+        { "on": "enter", "effect": { "type": "chat_notice", "text": "hi", "audience": "gm_only" } }
+    ]);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            region(20, 0.0, "terrain", true, enter_notice.clone()),
+            region(21, 200.0, "arrest", true, enter_notice.clone()),
+            region(22, 400.0, "impassable", true, serde_json::json!([])),
+            region(23, 600.0, "terrain", false, enter_notice),
+        ],
+        0,
+    );
+
+    let field = ecs.region_field(scene_id, None).expect("scene exists");
+    let field_cells: std::collections::BTreeSet<_> = field.iter_cells().map(|(c, _)| c).collect();
+    let rows = ecs.trigger_regions(scene_id).expect("scene exists");
+    assert_eq!(
+        rows.len(),
+        2,
+        "only enabled, trigger-bearing regions get identity rows"
+    );
+    for row in &rows {
+        assert!(!row.cells.is_empty());
+        for cell in &row.cells {
+            assert!(
+                field_cells.contains(cell),
+                "identity row for region {} covers {cell:?} but the composed field does not",
+                row.region_id,
+            );
+        }
+    }
+    // The trigger-less region is in the field without an identity row; the
+    // disabled region is in neither.
+    assert!(field_cells.contains(&(4, 0)));
+    assert!(!field_cells.contains(&(6, 0)));
+    assert!(!rows.iter().any(|r| r.cells.contains(&(4, 0))));
+}
+
+#[test]
 fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
     // A scene with one blocksMove wall and one non-blocksMove wall yields exactly the blocking segment.
     let (ecs, scene) = scene_with_two_walls_one_blocking();

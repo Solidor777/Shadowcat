@@ -211,6 +211,20 @@ pub(crate) struct MoveOutcome {
     /// the same route (see the unified step-price note on `MoveGateInputs::budget`); consumed by
     /// the movement-budget gate (`MoveGateInputs::budget`) and exposed on the wire.
     pub cost: f64,
+    /// The deduplicated sequence of grid cells the mover's CENTER entered during the walk, in
+    /// entry order: one entry per cell-entry transition the step loop committed (gates passed,
+    /// cost accrued), including the arrest cell when the walk was arrested, and excluding both
+    /// the start cell (never itself "entered") and any cell whose entry a gate refused. The
+    /// step loop's own consecutive-sample dedup is the only dedup applied — a cell re-entered
+    /// after leaving appears again; consumers dedup per region themselves. Bounded by
+    /// `MAX_GATE_WALK_SAMPLES` (the walk it derives from is). The executor only REPORTS these;
+    /// what fires on them is the caller's decision (`Room::execute_move`'s region triggers).
+    pub entered_cells: Vec<(i32, i32)>,
+    /// `true` when the walk was stopped by a region-arrest — the mover then rests inside
+    /// `entered_cells.last()`. Distinct from `truncated`, which any gate (wall, mask,
+    /// impassable, budget) can cause; never true for a GM mover, whose `check_regions`
+    /// exemption skips the arrest rule entirely.
+    pub arrested: bool,
 }
 
 /// Reason an `execute_move` call was rejected before any walking.
@@ -454,7 +468,10 @@ pub(crate) fn execute_move(
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
     let mut stopped_early = false;
+    let mut arrested = false;
     let mut cost = 0.0;
+    // The cell-entry transition sequence the outcome reports (`MoveOutcome::entered_cells`).
+    let mut entered_cells: Vec<(i32, i32)> = Vec::new();
     // The cell already accounted for by region/cost logic. The START cell is never itself
     // "entered": cost accrual begins at the first cell transition (`i = 1` / `to_cell(next)`).
     let mut last_region_cell = to_cell(walk[0].pos);
@@ -571,6 +588,9 @@ pub(crate) fn execute_move(
             }
             cost += step_cost;
             last_transition_pos = next;
+            // The transition is committed: the mover's center now rests in `next_cell`
+            // (reported on the outcome; an arrest below still counts as entered).
+            entered_cells.push(next_cell);
             // Arrest and terrain stay CENTER-CELL only, mirroring `cell_enterable`'s documented
             // asymmetry: they act on the mover's own position rather
             // than solid geometry it must clear. Footprint-gating arrest here would make the gate
@@ -578,6 +598,7 @@ pub(crate) fn execute_move(
             if check_regions && regions.is_arrest(next_cell) {
                 stop_idx = i;
                 stopped_early = true;
+                arrested = true;
                 break;
             }
             last_region_cell = next_cell;
@@ -630,6 +651,8 @@ pub(crate) fn execute_move(
         render_path,
         truncated,
         cost,
+        entered_cells,
+        arrested,
     })
 }
 

@@ -65,6 +65,8 @@ fn post_transition_snapshot(snap: &CombatSnapshot, ops: &[Operation]) -> CombatS
     for op in ops {
         match op {
             Operation::Create { .. } => {}
+            // The transition layer emits Create/Update/Delete only.
+            Operation::Move { .. } => {}
             Operation::Delete { doc } => combatants.retain(|c| c.id != doc.id),
             Operation::Update { doc_id, changes } => {
                 if *doc_id == combat.id {
@@ -316,7 +318,7 @@ pub(crate) fn append_record(snap: &CombatSnapshot, ops: &mut Vec<Operation>, now
                     change.new = value.clone();
                 }
             }
-            Operation::Delete { .. } => {
+            Operation::Delete { .. } | Operation::Move { .. } => {
                 unreachable!("staged_history only ever indexes a Create or an Update slot")
             }
         }

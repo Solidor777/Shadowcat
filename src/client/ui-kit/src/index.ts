@@ -28,6 +28,8 @@ export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
 export type { ConflictGroup } from "./mergeConflict";
 export { TemplatesController } from "./templatesController.svelte";
 export type { TemplatesControllerDeps, PendingSession } from "./templatesController.svelte";
+export { AssetPickController } from "./assetPickController.svelte";
+export type { PickAssetOptions, PickAssetMultiple, PendingPick } from "./assetPickController.svelte";
 export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
 export type { ChatApi, TemplatesApi } from "./appContext";
 export { default as TemplateControls } from "./TemplateControls.svelte";

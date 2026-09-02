@@ -20,7 +20,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
 /** `buildActorDoc` seeds `owner: null`; tests that need an owned actor
  * set it directly, mirroring how the server stamps `owner` on Create. */
 function ownedActor(id: string, owner: string, name: string): WireDocument {
-  return { ...buildActorDoc("w1", name, { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, id), owner };
+  return { ...buildActorDoc("w1", name, { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, id), owner };
 }
 
 function renderComposer(
@@ -285,7 +285,7 @@ describe("Composer — speak-as-actor picker", () => {
 
 describe("Composer — @doc link insertion", () => {
   it("opens the doc picker, searches, and inserts a [[doc:id|label]] span at the cursor", async () => {
-    const hitDoc = { ...buildActorDoc("w1", "My Doc", { displayName: "My Doc", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "doc1") };
+    const hitDoc = { ...buildActorDoc("w1", "My Doc", { displayName: "My Doc", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "doc1") };
     const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
       onUpdate([{ document: hitDoc, score: 1, snippet: "" }]);
       return Promise.resolve({ unsubscribe: () => {} });
@@ -301,7 +301,7 @@ describe("Composer — @doc link insertion", () => {
   });
 
   it("inserts a [[token:id|label]] span for a token-doc_type search hit", async () => {
-    const tokenDoc: WireDocument = { ...buildActorDoc("w1", "unused", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "tok1"), doc_type: "token", name: "Goblin" };
+    const tokenDoc: WireDocument = { ...buildActorDoc("w1", "unused", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "tok1"), doc_type: "token", name: "Goblin" };
     const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
       onUpdate([{ document: tokenDoc, score: 1, snippet: "" }]);
       return Promise.resolve({ unsubscribe: () => {} });
@@ -318,7 +318,7 @@ describe("Composer — @doc link insertion", () => {
     // A name made ENTIRELY of grammar-control characters ([, ], |) strips to "" -
     // an empty label is RollError::MalformedDocLink server-side, rejecting the
     // whole message. The inserted span must never carry one.
-    const hitDoc = { ...buildActorDoc("w1", "[[||]]", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "doc1") };
+    const hitDoc = { ...buildActorDoc("w1", "[[||]]", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "doc1") };
     const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
       onUpdate([{ document: hitDoc, score: 1, snippet: "" }]);
       return Promise.resolve({ unsubscribe: () => {} });
@@ -335,7 +335,7 @@ describe("Composer — @doc link insertion", () => {
     // An unstripped `[` would increment scan_body's nesting depth without a
     // matching close, causing the span's OWN closing ]] to be silently consumed
     // as an ordinary depth-decrement instead of recognized as the terminator.
-    const hitDoc = { ...buildActorDoc("w1", "Foo [Bar", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "doc1") };
+    const hitDoc = { ...buildActorDoc("w1", "Foo [Bar", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "doc1") };
     const searchDocuments: AppContext["searchDocuments"] = vi.fn((_q, _opts, onUpdate) => {
       onUpdate([{ document: hitDoc, score: 1, snippet: "" }]);
       return Promise.resolve({ unsubscribe: () => {} });
@@ -353,7 +353,7 @@ describe("Composer — speak-as-token", () => {
   it("sends a token_instance actor_owner and consumes the pending selection", async () => {
     const speakAsToken = new SpeakAsToken();
     speakAsToken.select("tok1");
-    const token = { ...buildActorDoc("w1", "unused", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "tok1"), doc_type: "token", name: "Goblin" };
+    const token = { ...buildActorDoc("w1", "unused", { displayName: "x", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "tok1"), doc_type: "token", name: "Goblin" };
     const documents = new DocumentStore();
     documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: token }] });
     const { send } = renderComposer({ documents, speakAsToken });

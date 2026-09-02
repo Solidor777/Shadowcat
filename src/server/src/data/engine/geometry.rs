@@ -67,8 +67,92 @@ pub struct RegionShape {
     pub points: Vec<f64>,
 }
 
+/// Upper bound (chars) for a trigger's condition/resource id. Ids are
+/// free-form strings naming registry entries; the bound exists because a
+/// trigger is an engine-EXECUTED payload, so its fields are validated at
+/// ingress rather than trusted read-side.
+pub const MAX_TRIGGER_ID_CHARS: usize = 128;
+
+/// The moment a region trigger fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerEvent {
+    /// The token's center cell (a move) or footprint cells (a placement)
+    /// intersect the region.
+    Enter,
+    /// The walk was arrested while inside the region.
+    Arrest,
+}
+
+/// Who a trigger's chat notice may reach. `Owner` means the token's
+/// effective owner plus every GM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeAudience {
+    /// Every world member.
+    Public,
+    /// GMs only; forced onto every notice when the region itself is not
+    /// visible to all (a public side-channel would leak a secret region).
+    GmOnly,
+    /// The token's effective owner, plus every GM.
+    Owner,
+}
+
+/// The effect a fired trigger applies to the entering token. Internally
+/// tagged, so `deny_unknown_fields` is unavailable (the
+/// `CombatantKind`/`ResourceBinding` precedent); `normalize_engine`'s
+/// re-serialization still drops smuggled keys.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum TriggerEffect {
+    /// Add a condition id to the token's actor host (no-op when present).
+    ConditionAdd {
+        /// The condition id (non-empty, `MAX_TRIGGER_ID_CHARS`-bounded).
+        condition: String,
+    },
+    /// Remove a condition id from the token's actor host (no-op when absent).
+    ConditionRemove {
+        /// The condition id (non-empty, `MAX_TRIGGER_ID_CHARS`-bounded).
+        condition: String,
+    },
+    /// Adjust a tracked resource of the token's combatant in the scene's
+    /// active combat. No active combat, no combatant, a `Mirror` binding, or
+    /// an amount that fails to evaluate is a no-op surfaced as a GM-only
+    /// notice.
+    ResourceDelta {
+        /// The resource-registry key (non-empty, `MAX_TRIGGER_ID_CHARS`-bounded).
+        resource: String,
+        /// The signed amount, evaluated against the token's actor host.
+        amount: crate::data::engine::combat::Formula,
+    },
+    /// Post a chat notice.
+    ChatNotice {
+        /// Notice body (`chat::MAX_MESSAGE_CHARS`-bounded).
+        text: String,
+        /// Intended readership; forced to `GmOnly` for a region not visible
+        /// to all.
+        audience: NoticeAudience,
+    },
+}
+
+/// One region trigger: when `on` occurs for a token inside the region,
+/// apply `effect`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct RegionTrigger {
+    /// The firing moment.
+    pub on: TriggerEvent,
+    /// The effect to apply.
+    pub effect: TriggerEffect,
+}
+
 /// A region document's engine body: a vector-shaped zone that weights,
-/// blocks, or arrests grid movement. Client mirror: `RegionEngine` (`@shadowcat/core`).
+/// blocks, or arrests grid movement, and optionally fires triggers on
+/// entering tokens. Client mirror: `RegionEngine` (`@shadowcat/core`).
 /// `cost` is a multiplier (>=1, clamped read-side) meaningful only for
 /// `behavior:"terrain"`. `enabled` lets a GM toggle a region off without
 /// deleting it (disabled regions are dropped entirely at read time).
@@ -86,6 +170,53 @@ pub struct RegionEngine {
     pub cost: f64,
     /// GM toggle; a disabled region is dropped entirely at read time.
     pub enabled: bool,
+    /// Effects fired on tokens entering (or arrested inside) the region.
+    /// Absent on documents written before triggers existed (serde default).
+    #[serde(default)]
+    pub triggers: Vec<RegionTrigger>,
+}
+
+impl RegionEngine {
+    /// Ingress validation for the trigger payloads — the one engine-EXECUTED
+    /// part of this body (the movement fields keep their read-side
+    /// fail-closed semantics and are not re-validated here). Ids must be
+    /// non-empty and `MAX_TRIGGER_ID_CHARS`-bounded, `amount` must satisfy
+    /// `Formula::validate` (finite literal or parseable formula source), and
+    /// notice text is bounded by `chat::MAX_MESSAGE_CHARS`.
+    pub fn validate(&self) -> Result<(), String> {
+        for trigger in &self.triggers {
+            match &trigger.effect {
+                TriggerEffect::ConditionAdd { condition }
+                | TriggerEffect::ConditionRemove { condition } => {
+                    validate_trigger_id(condition, "condition")?;
+                }
+                TriggerEffect::ResourceDelta { resource, amount } => {
+                    validate_trigger_id(resource, "resource")?;
+                    amount.validate("resource_delta amount")?;
+                }
+                TriggerEffect::ChatNotice { text, .. } => {
+                    if text.chars().count() > crate::chat::MAX_MESSAGE_CHARS {
+                        return Err(format!(
+                            "chat_notice text exceeds {} chars",
+                            crate::chat::MAX_MESSAGE_CHARS
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One trigger id (condition/resource): non-empty and char-bounded.
+fn validate_trigger_id(id: &str, what: &str) -> Result<(), String> {
+    if id.is_empty() {
+        return Err(format!("{what} id must be non-empty"));
+    }
+    if id.chars().count() > MAX_TRIGGER_ID_CHARS {
+        return Err(format!("{what} id exceeds {MAX_TRIGGER_ID_CHARS} chars"));
+    }
+    Ok(())
 }
 
 /// `points` layout mirrors `RegionShape` (path vertices for freehand/line/

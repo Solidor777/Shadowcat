@@ -6,7 +6,7 @@ import { topBar } from "@shadowcat/module-topbar";
 import { statusBar } from "@shadowcat/module-statusbar";
 import { stage } from "@shadowcat/module-stage";
 import { settings } from "@shadowcat/module-settings";
-import { assets } from "@shadowcat/module-assets";
+import { assetBrowser } from "@shadowcat/module-asset-browser";
 import { actors } from "@shadowcat/module-actors";
 import { factions } from "@shadowcat/module-factions";
 import { conditions } from "@shadowcat/module-conditions";
@@ -28,7 +28,7 @@ describe("default module set — default docked panel", () => {
   it("chat:panel (order 0) is the first shadowcat.panel contribution across the full default module set", () => {
     const contributions = new ContributionRegistry();
     const ctx = { contributions } as never;
-    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat]) {
+    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assetBrowser, actors, factions, conditions, sceneTools, chat]) {
       m.register(ctx);
     }
     const list = contributions.contributionsFor(PANEL_CONTRACT);
@@ -38,7 +38,7 @@ describe("default module set — default docked panel", () => {
   it("the built default layout docks exactly chat:panel; every other panel starts closed in the launcher", () => {
     const contributions = new ContributionRegistry();
     const ctx = { contributions } as never;
-    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assets, actors, factions, conditions, sceneTools, chat]) {
+    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assetBrowser, actors, factions, conditions, sceneTools, chat]) {
       m.register(ctx);
     }
     const regs = contributions.contributionsFor(PANEL_CONTRACT).map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement }));
@@ -51,7 +51,7 @@ describe("default module set — default docked panel", () => {
     expect(docked).toEqual(["chat:panel"]);
     expect(layout.expanded.minimized).toEqual([]);
     expect(layout.compact.order.sort()).toEqual(
-      ["chat:panel", "assets:panel", "actors:panel", "factions:panel", "conditions:panel", "game-settings:panel", "settings:panel"].sort(),
+      ["chat:panel", "asset-browser:panel", "actors:panel", "factions:panel", "conditions:panel", "game-settings:panel", "settings:panel"].sort(),
     );
   });
 });

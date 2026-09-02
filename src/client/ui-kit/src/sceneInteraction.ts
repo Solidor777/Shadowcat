@@ -126,6 +126,15 @@ export class SceneInteractionBridge implements SceneInteraction {
   }
 
   /** Forward to the attached host; a no-op when detached.
+   * @param tokenId - The token id the emote plays over.
+   * @param emote - The emote glyph(s).
+   * @example sceneInteraction.addEmote("tok1", "😀");
+   */
+  addEmote(tokenId: string, emote: string): void {
+    this.#host?.addEmote(tokenId, emote);
+  }
+
+  /** Forward to the attached host; a no-op when detached.
    * @param id - The token id to animate.
    * @param path - The scene-coord waypoints to walk through, in order.
    * @example sceneInteraction.animateAlongPath("tok1", [[0, 0], [5, 5]]);

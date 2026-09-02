@@ -285,6 +285,8 @@ pub(super) fn apply(snap: &CombatSnapshot, ops: &[Operation]) -> HashMap<Uuid, D
             Operation::Delete { doc } => {
                 docs.remove(&doc.id);
             }
+            // The transition layer emits Create/Update/Delete only.
+            Operation::Move { .. } => {}
             Operation::Update { doc_id, changes } => {
                 if let Some(d) = docs.get_mut(doc_id) {
                     let pre = batch_start.get(doc_id).expect(

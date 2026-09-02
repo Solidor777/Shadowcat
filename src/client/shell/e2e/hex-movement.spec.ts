@@ -290,9 +290,9 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
 
     // Token art.
     await gm.getByTestId("launcher-trigger").click();
-    await gm.getByTestId("launcher-item-assets:panel").click();
+    await gm.getByTestId("launcher-item-asset-browser:panel").click();
     await gm
-      .getByTestId("asset-upload")
+      .getByTestId("asset-upload-input")
       .setInputFiles({
         name: "tok.png",
         mimeType: "image/png",
@@ -311,7 +311,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
       timeout: 15_000,
     });
     await gm.getByTestId("launcher-trigger").click();
-    await gm.getByTestId("launcher-item-assets:panel").click();
+    await gm.getByTestId("launcher-item-asset-browser:panel").click();
 
     // A `blocksMove` wall between the token and the illegal destination is NOT enough on its
     // own: a player's move is always real A* routing (`SceneEcs::pathfind`), and Unrestricted
@@ -447,6 +447,12 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // rejected would have rolled back well before this point.
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-game-settings:panel").click();
+    // Panel-open is not instant under a session this long (many panels stay
+    // mounted); wait for the control to be VISIBLE before asserting its value,
+    // with its own generous budget.
+    await expect(gm.getByLabel("gameSettings.movementRestriction")).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue(
       "unrestricted",
     );

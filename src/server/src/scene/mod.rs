@@ -567,6 +567,23 @@ fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     engine_tier_visible_to(doc, &access)
 }
 
+/// The WORLD-DEFAULT form of `engine_geometry_visible_to`: would a world member carrying no
+/// per-user grant and no ownership receive this document's `/engine` band? Same whole-world
+/// question class as `combat::transition::is_hidden` — never a per-caller gate, so the two
+/// egress gates are still evaluated through the ONE shared predicate pair rather than restated
+/// here. A per-user grant that individually admits someone is invisible to this predicate, which
+/// therefore only ever under-discloses (a region notice forced GM-only though one granted member
+/// could have read it) — the safe direction, mirroring `is_hidden`'s documented residual.
+fn engine_geometry_visible_to_world(doc: &Document) -> bool {
+    let access = crate::data::permission::resolve_access(
+        Uuid::nil(),
+        crate::data::document::WorldRole::Player,
+        doc,
+        crate::data::permission::effective_owner(doc, None),
+    );
+    engine_geometry_visible_to(doc, &access)
+}
+
 /// Exact, order-independent key for a routing wall set — the third component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
@@ -779,7 +796,7 @@ impl SceneEcs {
         // removal is deliberately narrow: it only ever drops the ONE id this op targets.
         let touched_id = match op {
             Operation::Create { doc } | Operation::Delete { doc } => doc.id,
-            Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Update { doc_id, .. } | Operation::Move { doc_id, .. } => *doc_id,
         };
         self.engine_cache.lock().unwrap().remove(&touched_id);
 
@@ -791,7 +808,7 @@ impl SceneEcs {
             Operation::Create { doc } | Operation::Delete { doc } => {
                 matches!(doc.doc_type.as_str(), "wall" | "scene")
             }
-            Operation::Update { doc_id, .. } => self
+            Operation::Update { doc_id, .. } | Operation::Move { doc_id, .. } => self
                 .index
                 .get(doc_id)
                 .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
@@ -811,9 +828,9 @@ impl SceneEcs {
                 // An Update never changes scene-entity membership: `parent_id`
                 // and `doc_type` are envelope fields, immutable via field-path
                 // Update (`required_cap_for_path` maps them to no capability).
-                // INVARIANT: if `parent_id` becomes mutable, this arm must
-                // re-evaluate `is_scene_entity` and spawn/despawn accordingly.
-                // TODO: re-evaluate is_scene_entity here once parent_id is mutable.
+                // Re-parenting travels only as `Operation::Move`, whose arm
+                // below re-evaluates `is_scene_entity` and despawns a doc
+                // leaving the scene runtime.
                 if let Some(&e) = self.index.get(doc_id) {
                     if let Ok(mut comp) = self.world.get::<&mut SceneEntity>(e) {
                         // Mirror the same field-path changes apply_intent applied
@@ -835,6 +852,35 @@ impl SceneEcs {
                 }
                 if let Some(d) = self.combats.get_mut(doc_id) {
                     reapply_changes(d, changes);
+                }
+            }
+            Operation::Move {
+                doc_id, parent_id, ..
+            } => {
+                // Mirrors the DB's envelope rewrite. Scene membership is
+                // DERIVED from the doc's own `parent_id` (`is_scene_entity`,
+                // and every per-scene query filters on it), so rewriting the
+                // mirrored field re-parents the entity for every consumer; an
+                // entity moved to the top level stops being scene runtime and
+                // is despawned. An id held by no structure here is the same
+                // unknown-id posture as the Update arm: nothing to mirror,
+                // the resync path repairs.
+                if let Some(&e) = self.index.get(doc_id) {
+                    let mut leaves_scene_runtime = false;
+                    if let Ok(mut comp) = self.world.get::<&mut SceneEntity>(e) {
+                        comp.doc.parent_id = *parent_id;
+                        leaves_scene_runtime = !is_scene_entity(&comp.doc);
+                    }
+                    if leaves_scene_runtime {
+                        let _ = self.world.despawn(e);
+                        self.index.remove(doc_id);
+                    }
+                }
+                if let Some(a) = self.actors.get_mut(doc_id) {
+                    a.parent_id = *parent_id;
+                }
+                if let Some(d) = self.combats.get_mut(doc_id) {
+                    d.parent_id = *parent_id;
                 }
             }
             Operation::Delete { doc } => {
@@ -1882,6 +1928,52 @@ impl SceneEcs {
             builder.add(&shape, behavior, cost, cell, &*grid);
         }
         Some(builder.build())
+    }
+
+    /// The trigger-bearing region identity table for `scene`: one `regions::TriggerRegion` row
+    /// per ENABLED region carrying at least one trigger, each row's cells rasterized through the
+    /// SAME `regions::rasterize` the composed `region_field` above uses — one geometry
+    /// derivation feeds both consumers, so this table and the authoritative field cannot
+    /// disagree about a region's coverage (the parity battery pins that agreement). There is no
+    /// per-requester form: triggers fire on the server's authoritative view, springing secret
+    /// regions exactly as `move_exec` does; secrecy is enforced on the effect side (a
+    /// not-visible-to-all region's notices are forced GM-only), never by filtering this table.
+    /// Recomputed on demand from the same ECS entities `region_field` reads, so a region-doc
+    /// mutation applied through `apply_op` is reflected on the next call.
+    ///
+    /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
+    /// Rows are sorted by region id so downstream effect application order is deterministic
+    /// (entity-query order is unspecified).
+    pub(crate) fn trigger_regions(&self, scene: Uuid) -> Option<Vec<regions::TriggerRegion>> {
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        let mut out = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
+                continue;
+            }
+            let Some(region_eng) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
+                continue;
+            };
+            if !region_eng.enabled || region_eng.triggers.is_empty() {
+                continue;
+            }
+            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
+                continue;
+            };
+            let Some(cells) = regions::rasterize(&shape, cell, &*grid) else {
+                continue;
+            };
+            out.push(regions::TriggerRegion {
+                region_id: doc.id,
+                visible_to_all: engine_geometry_visible_to_world(doc),
+                triggers: region_eng.triggers,
+                cells: cells.into_iter().collect(),
+            });
+        }
+        out.sort_by_key(|r| r.region_id);
+        Some(out)
     }
 
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights

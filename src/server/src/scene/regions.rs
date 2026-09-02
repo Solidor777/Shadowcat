@@ -6,7 +6,11 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use uuid::Uuid;
+
+use crate::data::engine::{RegionTrigger, TriggerEvent};
 
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
@@ -263,6 +267,15 @@ impl RegionField {
             RegionEffect::Arrest => false,
         })
     }
+
+    /// Read-only iteration over the composed per-cell effects, existing for the parity
+    /// assertion between this field and the `TriggerRegion` identity rows — comparing
+    /// coverage sets is what the single-cell predicates above cannot express; never a
+    /// mutation seam.
+    #[cfg(test)]
+    pub(crate) fn iter_cells(&self) -> impl Iterator<Item = (Cell, RegionEffect)> + '_ {
+        self.cells.iter().map(|(c, e)| (*c, *e))
+    }
 }
 
 /// Accumulates per-region contributions cell-by-cell; `build` composes them
@@ -330,6 +343,53 @@ pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Op
         }
         _ => None,
     }
+}
+
+/// One trigger-bearing region's identity row: which cells it covers, which
+/// triggers it carries, and whether every world member can see its `/engine`
+/// band. Built by `SceneEcs::trigger_regions` from the SAME `rasterize` the
+/// composed `RegionField` uses — one rasterizer feeds both consumers, so an
+/// identity row and the composed field can never disagree about a region's
+/// coverage (the parity battery pins this).
+pub(crate) struct TriggerRegion {
+    /// The region document's id.
+    pub region_id: Uuid,
+    /// World-default visibility of the region's `/engine` band
+    /// (`engine_geometry_visible_to_world`). `false` forces every
+    /// `ChatNotice` this region fires to `NoticeAudience::GmOnly`, since a
+    /// public notice would name or imply a region some recipients cannot see.
+    pub visible_to_all: bool,
+    /// The region's authored triggers, in engine order.
+    pub triggers: Vec<RegionTrigger>,
+    /// The region's rasterized cells.
+    pub cells: BTreeSet<Cell>,
+}
+
+/// The `(region, trigger)` pairs that fire for one move or placement report,
+/// in region-table order then authored engine order. `entered` is the
+/// deduplicated cell-entry sequence (`MoveOutcome::entered_cells`) or a
+/// placement's footprint cells; `arrest_cell` is `Some` only when the walk
+/// was arrested (`MoveOutcome::arrested`). Each listed trigger fires at most
+/// once per report no matter how many of its region's cells were entered —
+/// the caller applies each returned pair exactly once.
+pub(crate) fn fired_triggers<'a>(
+    regions: &'a [TriggerRegion],
+    entered: &[Cell],
+    arrest_cell: Option<Cell>,
+) -> Vec<(&'a TriggerRegion, &'a RegionTrigger)> {
+    let mut out = Vec::new();
+    for region in regions {
+        for trigger in &region.triggers {
+            let fires = match trigger.on {
+                TriggerEvent::Enter => entered.iter().any(|c| region.cells.contains(c)),
+                TriggerEvent::Arrest => arrest_cell.is_some_and(|c| region.cells.contains(&c)),
+            };
+            if fires {
+                out.push((region, trigger));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
