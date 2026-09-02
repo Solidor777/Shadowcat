@@ -17,7 +17,7 @@ import {
   type Module,
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
-import { listWorldMembers } from "@shadowcat/core";
+import { listWorldMembers, CombatClientError } from "@shadowcat/core";
 import { getWorldSnapshot } from "./api";
 
 // The snapshot-bootstrap fetch hits the network on every enter(); stub it (safe default: no
@@ -416,11 +416,17 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
 
   session.leave(); // tears down the socket → no transport
   const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-x");
-  session.dispatchIntent([{ op: "create", doc }]);
+  expect(session.dispatchIntent([{ op: "create", doc }])).toBe(false);
 
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
   expect(capturedClient!.get("tok-x")).toBeUndefined();
   expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
+});
+
+test("combat.createCombat before enter() throws not-connected instead of returning an id for a dropped op", () => {
+  const session = new WorldSession({ selfId: "u1", connect: pushConnect([]).connect, modules: [], logger: silentLogger });
+  expect(() => session.combat.createCombat("s1")).toThrow(CombatClientError);
+  expect(() => session.combat.createCombat("s1")).toThrow(expect.objectContaining({ code: "not-connected" }));
 });
 
 test("a GM Welcome populates members in place (stable reference) for see-as labels", async () => {

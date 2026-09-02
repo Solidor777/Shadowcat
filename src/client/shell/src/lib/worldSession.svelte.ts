@@ -427,8 +427,10 @@ export class WorldSession {
       role: () => (this.role === "gm" ? "gm" : this.role ? "player" : null),
       canEdit: (doc, path) => this.canEdit(doc, path),
       // `enter(worldId)` sets `this.world` before any document mutation can reach this
-      // controller; the empty-string fallback is unreachable in practice, never a silent
-      // mis-stamp, because dispatchIntent itself is a no-op before enter() opens a connection.
+      // controller. Before `enter()` (or after `leave()`), `dispatchIntent` is a GUARDED DROP —
+      // it warns and discards, returning `false` — and the controller turns that `false` into a
+      // thrown `CombatClientError`, so an op built against the empty-string fallback is never
+      // transmitted and no fabricated id is ever returned for a discarded op.
       world: () => this.world ?? "",
       logger: this.#logger,
     });
@@ -464,6 +466,9 @@ export class WorldSession {
    * (the optimistic view rebases onto authoritative state first). When stopped, drop
    * without an orphaned pending entry.
    * @param ops The operations to predict + transmit as one intent.
+   * @returns `true` when `ops` were predicted and transmitted or queued; `false` when they were
+   * dropped (no socket, or a stopped one) — the one signal a caller that must not silently lose
+   * a write (`CombatController`) turns into an explicit failure.
    * @example
    * ```
    * declare const session: WorldSession;
@@ -473,22 +478,23 @@ export class WorldSession {
    * ]);
    * ```
    */
-  dispatchIntent(ops: WireOperation[]): void {
+  dispatchIntent(ops: WireOperation[]): boolean {
     const intentId = crypto.randomUUID();
     if (this.#ws?.connected) {
       this.#optimistic.applyIntent(intentId, ops);
       this.#ws.send({ type: "intent", intent_id: intentId, ops });
-      return;
+      return true;
     }
     if (this.#ws?.running) {
       // Reconnecting: predict now (immediate feedback) and queue for FIFO replay.
       this.#optimistic.applyIntent(intentId, ops);
       this.#offlineQueue.push({ intentId, ops });
-      return;
+      return true;
     }
     // Stopped (or no socket): no reconnect is coming, so drop without predicting —
     // an orphaned pending entry would mis-correlate the next live echo.
     this.#logger.warn("dropping intent: world session stopped");
+    return false;
   }
 
   /** Transmit intents queued while offline, in FIFO order. Called after a resync

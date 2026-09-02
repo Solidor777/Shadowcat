@@ -38,7 +38,12 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       over.combat ??
       new CombatController({
         documents,
-        dispatchIntent: over.dispatchIntent ?? (() => {}),
+        // `AppContext.dispatchIntent` is fire-and-forget; the controller's dep reports whether
+        // the host transmitted, which a fixture host always does.
+        dispatchIntent: (ops) => {
+          over.dispatchIntent?.(ops);
+          return true;
+        },
         sendCombat: () => Promise.reject(new Error("not connected")),
         selfId: over.selfId ?? "u-self",
         role: () => ((over.role ?? "gm") === "gm" ? "gm" : "player"),

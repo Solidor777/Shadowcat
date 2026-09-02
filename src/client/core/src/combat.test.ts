@@ -110,7 +110,7 @@ type CombatFrame = Extract<ClientMsg, { type: `combat_${string}` }>;
 function makeDeps(store: DocumentStore, overrides: Partial<CombatControllerDeps> = {}): CombatControllerDeps {
   return {
     documents: store,
-    dispatchIntent: vi.fn(),
+    dispatchIntent: vi.fn((_ops: WireOperation[]) => true),
     sendCombat: vi.fn((_msg: CombatFrame) => Promise.resolve()),
     selfId: "player-1",
     role: () => "player",
@@ -221,9 +221,20 @@ describe("CombatController intents", () => {
 });
 
 describe("CombatController document helpers", () => {
+  it("a dropped dispatch throws not-connected instead of returning an id for a document that never exists", () => {
+    const { store, combatId } = seedStore();
+    const combat = new CombatController(makeDeps(store, { dispatchIntent: () => false }));
+    expect(() => combat.createCombat("scene-2")).toThrow(CombatClientError);
+    expect(() => combat.createCombat("scene-2")).toThrow(expect.objectContaining({ code: "not-connected" }));
+    expect(() => combat.addCombatants(combatId, [{ tokenId: "tok-1" }])).toThrow(
+      expect.objectContaining({ code: "not-connected" }),
+    );
+    expect(() => combat.setInitiative("c1", 3)).toThrow(expect.objectContaining({ code: "not-connected" }));
+  });
+
   it("createCombat builds a combat doc at the engine defaults via one intent", () => {
     const { store } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     const id = combat.createCombat("scene-2", { name: "Ambush" });
     expect(dispatchIntent).toHaveBeenCalledTimes(1);
@@ -239,7 +250,7 @@ describe("CombatController document helpers", () => {
 
   it("addCombatants: one intent, creates plus one order-update with the exact old/new", () => {
     const { store, combatId } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     const before = (store.get(combatId)!.engine as CombatEngine).order;
 
@@ -265,7 +276,7 @@ describe("CombatController document helpers", () => {
 
   it("addCombatants: actorId-only entry (no token) is admitted", () => {
     const { store, combatId } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     combat.addCombatants(combatId, [{ actorId: "actor-1" }]);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
@@ -285,7 +296,7 @@ describe("CombatController document helpers", () => {
 
   it("addEvent builds a one-shot event combatant and appends it to order", () => {
     const { store, combatId } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     const before = (store.get(combatId)!.engine as CombatEngine).order;
     const id = combat.addEvent(combatId, { name: "Lair action", lifespan: 3, message: "rumble" });
@@ -303,7 +314,7 @@ describe("CombatController document helpers", () => {
 
   it("removeCombatant: order update + delete with the store pre-image", () => {
     const { store, combatId } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     combat.removeCombatant(combatId, "cc-1");
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
@@ -322,7 +333,7 @@ describe("CombatController document helpers", () => {
 
   it("setHidden: both directions, remove: true on the users entry when hiding", () => {
     const { store } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     combat.setHidden("cc-1", true);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
@@ -340,7 +351,7 @@ describe("CombatController document helpers", () => {
 
   it("reorder: set mismatch throws, matching set dispatches the update", () => {
     const { store, combatId, combatants } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     expect(() => combat.reorder(combatId, ["cc-1"])).toThrow(CombatClientError);
     const reordered = [combatants[1], combatants[0], combatants[2], "cc-ghost"];
@@ -351,7 +362,7 @@ describe("CombatController document helpers", () => {
 
   it("setInitiative dispatches the field update", () => {
     const { store } = seedStore();
-    const dispatchIntent = vi.fn();
+    const dispatchIntent = vi.fn((_ops: WireOperation[]) => true);
     const combat = new CombatController(makeDeps(store, { dispatchIntent }));
     combat.setInitiative("cc-1", 18, 2);
     const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];

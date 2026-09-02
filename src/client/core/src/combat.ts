@@ -88,8 +88,9 @@ export interface CombatAffordances {
 /** An error `CombatApi`'s document helpers throw for a client-side rule violation (never a
  * server rejection, which surfaces as a rejected `Promise` from an intent method instead). */
 export class CombatClientError extends Error {
-  /** Which client-side rule was violated. */
-  code: "no-host" | "turn-owner" | "order-mismatch" | "not-found";
+  /** Which client-side rule was violated. `"not-connected"`: the host could not transmit the
+   * intent (no world entered, or the session stopped) and dropped it — nothing was written. */
+  code: "no-host" | "turn-owner" | "order-mismatch" | "not-found" | "not-connected";
   /**
    * Constructs a client-side combat rule violation.
    * @param code Which rule was violated.
@@ -114,8 +115,10 @@ export interface CombatControllerDeps {
   /** The optimistic per-recipient document view -- every read goes through this. */
   documents: ReadableDocuments;
   /** Predicts + transmits document-mutating operations as one intent (e.g.
-   * `WorldSession.dispatchIntent`). */
-  dispatchIntent: (ops: WireOperation[]) => void;
+   * `WorldSession.dispatchIntent`). Returns `false` when the host DROPPED the ops instead (no
+   * connection to transmit on); the controller then throws `CombatClientError`
+   * `"not-connected"` rather than returning an id for a document that will never exist. */
+  dispatchIntent: (ops: WireOperation[]) => boolean;
   /** Sends one of the eight `combat_*` frames and resolves once its event has applied, or
    * rejects with the server's player-presentable refusal reason. */
   sendCombat: (
@@ -144,7 +147,11 @@ export interface CombatControllerDeps {
 }
 
 /** The combat seam surface: reads, the server-owned clock's intents, and document helpers.
- * See `CombatController`'s own doc for the concrete implementation. */
+ * See `CombatController`'s own doc for the concrete implementation. Every document helper
+ * (`createCombat` through `setInitiative`) throws `CombatClientError` `code: "not-connected"`
+ * when the host cannot transmit the intent (`CombatControllerDeps.dispatchIntent` returned
+ * `false`): before a world is entered or after the session stopped, the op is dropped, and a
+ * returned id would name a document that never exists. */
 export interface CombatApi {
   /** Every combat bound to `sceneId`, active first, then by id.
    * @param sceneId The scene to query.
@@ -220,7 +227,8 @@ export interface CombatApi {
   /** Builds and dispatches a new (inactive) combat document at the engine defaults.
    * @param sceneId The scene to bind the combat to.
    * @param opts Optional display name and explicit id.
-   * @returns The new combat document's id. */
+   * @returns The new combat document's id.
+   * @throws {CombatClientError} `code: "not-connected"` when the host dropped the intent. */
   createCombat(sceneId: string, opts?: CreateCombatOptions): string;
   /** Dispatches a `Delete` of an inactive combat -- an active one must go through `end()`.
    * @param combatId The combat to delete. */
@@ -231,7 +239,7 @@ export interface CombatApi {
    * @param entries The combatants to add.
    * @returns The new combatants' ids, in the same order as `entries`.
    * @throws {CombatClientError} `code: "no-host"` when an entry names neither a resolvable
-   * token nor actor. */
+   * token nor actor; `code: "not-connected"` when the host dropped the intent. */
   addCombatants(combatId: string, entries: NewCombatant[]): string[];
   /** Adds a one-shot event combatant.
    * @param combatId The combat to add to.
@@ -294,6 +302,26 @@ export class CombatController implements CombatApi {
    * ```
    */
   constructor(private readonly deps: CombatControllerDeps) {}
+
+  /** Hands `ops` to the host as one intent, or throws when the host dropped them — the one
+   * place every document helper's write goes through, so none can return an id for a document
+   * the host never transmitted.
+   * @param ops The operations to predict + transmit.
+   * @throws {CombatClientError} `code: "not-connected"` when `deps.dispatchIntent` returned `false`.
+   * @example
+   * ```ts
+   * import { CombatController, type CombatControllerDeps } from "@shadowcat/core";
+   *
+   * declare const deps: CombatControllerDeps;
+   * const combat = new CombatController(deps);
+   * combat.createCombat("scene-1"); // routes its Create through this guard
+   * ```
+   */
+  private dispatch(ops: WireOperation[]): void {
+    if (!this.deps.dispatchIntent(ops)) {
+      throw new CombatClientError("not-connected", "the world session cannot transmit the intent; nothing was written");
+    }
+  }
 
   /** Replaces the latest `"combat"` frame and notifies subscribers. Called by the host on
    * every `"combat"` derived-channel frame (never part of `CombatApi` -- a method on the
@@ -451,14 +479,14 @@ export class CombatController implements CombatApi {
     const engine = newCombatEngine(sceneId);
     const doc = buildCombatDoc(this.deps.world(), engine, opts.id);
     doc.name = opts.name ?? null;
-    this.deps.dispatchIntent([{ op: "create", doc }]);
+    this.dispatch([{ op: "create", doc }]);
     return doc.id;
   }
 
   deleteCombat(combatId: string): void {
     const doc = this.deps.documents.get(combatId);
     if (!doc) return;
-    this.deps.dispatchIntent([{ op: "delete", doc }]);
+    this.dispatch([{ op: "delete", doc }]);
   }
 
   addCombatants(combatId: string, entries: NewCombatant[]): string[] {
@@ -501,7 +529,7 @@ export class CombatController implements CombatApi {
       doc_id: combatId,
       changes: [{ path: "/engine/order", old: oldOrder, new: [...oldOrder, ...newIds] }],
     });
-    this.deps.dispatchIntent(ops);
+    this.dispatch(ops);
     return newIds;
   }
 
@@ -516,7 +544,7 @@ export class CombatController implements CombatApi {
       system: ev.system,
       name: ev.name,
     });
-    this.deps.dispatchIntent([
+    this.dispatch([
       { op: "create", doc },
       {
         op: "update",
@@ -544,7 +572,7 @@ export class CombatController implements CombatApi {
       },
     ];
     if (doc) ops.push({ op: "delete", doc });
-    this.deps.dispatchIntent(ops);
+    this.dispatch(ops);
   }
 
   setHidden(combatantId: string, hidden: boolean): void {
@@ -576,7 +604,7 @@ export class CombatController implements CombatApi {
         });
       }
     }
-    this.deps.dispatchIntent(ops);
+    this.dispatch(ops);
   }
 
   reorder(combatId: string, order: string[]): void {
@@ -588,7 +616,7 @@ export class CombatController implements CombatApi {
     if (oldSet.size !== newSet.size || [...oldSet].some((id) => !newSet.has(id))) {
       throw new CombatClientError("order-mismatch", "reorder must keep the same combatant id set");
     }
-    this.deps.dispatchIntent([
+    this.dispatch([
       { op: "update", doc_id: combatId, changes: [{ path: "/engine/order", old: oldOrder, new: order }] },
     ]);
   }
@@ -600,6 +628,6 @@ export class CombatController implements CombatApi {
     if (tiebreak !== undefined) {
       changes.push({ path: "/engine/tiebreak", old: engine?.tiebreak ?? 0, new: tiebreak });
     }
-    this.deps.dispatchIntent([{ op: "update", doc_id: combatantId, changes }]);
+    this.dispatch([{ op: "update", doc_id: combatantId, changes }]);
   }
 }
