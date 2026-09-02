@@ -52,7 +52,7 @@ async fn text_only_body_matches_sanitize_byte_identically() {
     let got = compose_message("hello world", deps, ScanMode::Execute)
         .await
         .unwrap();
-    assert_eq!(got, sanitize::sanitize("hello world", &policy));
+    assert_eq!(got, sanitize::sanitize("hello world", &policy).segments);
 }
 
 #[tokio::test]

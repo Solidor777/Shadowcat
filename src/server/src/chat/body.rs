@@ -70,14 +70,16 @@ pub(crate) async fn compose_message(
     let chunks =
         rolls::scan_body_capped(body, rolls::MAX_INLINE_ROLLS).map_err(ComposeError::Roll)?;
     if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
-        return Ok(sanitize::sanitize(body, deps.policy));
+        return Ok(sanitize::sanitize(body, deps.policy).segments);
     }
     let mut dice_ctx: Option<crate::dice::ParseContext> = None;
     let mut roll_host: Option<Option<Document>> = None;
     let mut segments = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         match chunk {
-            rolls::BodyChunk::Text(t) => segments.extend(sanitize::sanitize(t, deps.policy)),
+            rolls::BodyChunk::Text(t) => {
+                segments.extend(sanitize::sanitize(t, deps.policy).segments)
+            }
             rolls::BodyChunk::Inline(formula) => match mode {
                 ScanMode::NoExecute => return Err(ComposeError::Inline),
                 ScanMode::Execute => {

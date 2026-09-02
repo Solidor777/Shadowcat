@@ -61,7 +61,7 @@ pub use preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
     PREVIEW_FETCH_PER_MIN,
 };
-pub use sanitize::sanitize;
+pub use sanitize::{sanitize, Sanitized};
 pub use settings::{
     channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
     CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE,
@@ -1304,7 +1304,7 @@ pub async fn handle_edit_message(
     }
 
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let mut segments = sanitize(&body, &policy);
+    let mut segments = sanitize(&body, &policy).segments;
     // A preview is derived, not authored — re-derive on every edit so the
     // card always reflects the CURRENT edited content (never a stale link
     // preview from before the edit). The roll-immutability checks above
