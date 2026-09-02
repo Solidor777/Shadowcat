@@ -51,17 +51,20 @@ fn render(segs: &[Segment]) -> String {
             Segment::Text { text } => text.clone(),
             Segment::Html { sanitized_html } => sanitized_html.clone(),
             // `sanitize()` (the function under test) never produces a
-            // roll, link-preview, oembed, doc-link, or image segment --
-            // those are `chat::rolls`'s, `chat::link_preview::enrich`'s,
-            // and `chat::post_publish`'s own producers.
+            // roll, link-preview, oembed, doc-link, image, or table-draw
+            // segment -- those are `chat::rolls`'s, `chat::link_preview::
+            // enrich`'s, `chat::post_publish`'s, and `crate::tables::draw`'s
+            // own producers.
             Segment::RollEmbed { .. }
             | Segment::RollButton { .. }
             | Segment::LinkPreview { .. }
             | Segment::OEmbed(_)
             | Segment::DocLink { .. }
-            | Segment::Image { .. } => {
+            | Segment::Image { .. }
+            | Segment::TableDraw(_) => {
                 unreachable!(
-                    "sanitize() never produces roll, preview, oembed, doc-link, or image segments"
+                    "sanitize() never produces roll, preview, oembed, doc-link, image, or \
+                     table-draw segments"
                 )
             }
         })

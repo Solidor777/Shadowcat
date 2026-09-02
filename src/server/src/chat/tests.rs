@@ -108,7 +108,7 @@ fn roll_embed_without_roll_id_deserializes_with_a_fresh_generated_one() {
 }
 
 #[test]
-fn roll_embed_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_only() {
+fn roll_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_gm_only() {
     use crate::data::document::Visibility;
 
     let spec = crate::dice::notation::parse(
@@ -143,7 +143,7 @@ fn roll_embed_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_
         },
     ];
 
-    let overrides = roll_embed_property_overrides(&content);
+    let overrides = roll_property_overrides(&content);
     assert_eq!(
         overrides.get("/engine/content/1/spec"),
         Some(&Visibility::GmOnly)
@@ -165,13 +165,13 @@ fn roll_embed_property_overrides_marks_spec_raw_and_recalc_history_previous_raw_
 }
 
 #[test]
-fn roll_embed_property_overrides_is_empty_for_non_roll_content() {
+fn roll_property_overrides_is_empty_for_non_roll_content() {
     let content = vec![Segment::Text { text: "hi".into() }];
-    assert!(roll_embed_property_overrides(&content).is_empty());
+    assert!(roll_property_overrides(&content).is_empty());
 }
 
 #[test]
-fn roll_embed_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
+fn roll_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
     // A roll embedded before this feature shipped: spec/raw are None, so no
     // override entries should be produced for it (nothing to hide).
     let outcome = crate::dice::evaluate(
@@ -203,7 +203,172 @@ fn roll_embed_property_overrides_skips_a_pre_existing_roll_with_no_spec_raw() {
         raw: None,
         recalc_history: None,
     }];
-    assert!(roll_embed_property_overrides(&content).is_empty());
+    assert!(roll_property_overrides(&content).is_empty());
+}
+
+/// Builds a minimal `RollOutcome`/`RollSpec`/`RawRoll` triple for a fixed
+/// `"1d6"` roll under a distinct seed, for constructing `TableDrawSegment`
+/// fixtures without duplicating the parse/roll/evaluate boilerplate above.
+fn fixture_roll(
+    seed: u64,
+) -> (
+    crate::dice::spec::RollSpec,
+    crate::dice::RawRoll,
+    RollOutcome,
+) {
+    let spec = crate::dice::notation::parse(
+        "1d6",
+        crate::dice::ParseContext {
+            mode: crate::dice::notation::ModeKind::Total,
+            direction: crate::dice::spec::Direction::HighWins,
+        },
+    )
+    .unwrap();
+    let raw = crate::dice::roll(&spec, &mut crate::dice::rng::NoiseRng::from_seed(seed));
+    let outcome = crate::dice::evaluate(&spec, &raw);
+    (spec, raw, outcome)
+}
+
+fn fixture_table_draw(
+    seed: u64,
+    table_id: Uuid,
+    nested: Vec<TableDrawSegment>,
+) -> TableDrawSegment {
+    let (spec, raw, outcome) = fixture_roll(seed);
+    TableDrawSegment {
+        table_id,
+        table_name: "T".into(),
+        roll_id: Uuid::new_v4(),
+        formula: "1d6".into(),
+        outcome,
+        spec: Some(Box::new(spec)),
+        raw: Some(Box::new(raw)),
+        row: Some(DrawnRow {
+            index: 0,
+            label: "row".into(),
+            content: vec![],
+            nested,
+        }),
+    }
+}
+
+#[test]
+fn table_draw_spec_and_raw_are_gm_only_at_every_depth() {
+    use crate::data::document::Visibility;
+
+    // A message whose content is one TableDraw with two nested draws --
+    // three draws total, each contributing spec+raw, for six GmOnly pointers.
+    let inner_a = fixture_table_draw(10, Uuid::from_u128(1), vec![]);
+    let inner_b = fixture_table_draw(11, Uuid::from_u128(2), vec![]);
+    let top = fixture_table_draw(12, Uuid::from_u128(3), vec![inner_a, inner_b]);
+    let content = vec![Segment::TableDraw(top)];
+
+    let overrides = roll_property_overrides(&content);
+    assert_eq!(
+        overrides.len(),
+        6,
+        "spec+raw at every one of the three draws"
+    );
+    for path in [
+        "/engine/content/0/spec",
+        "/engine/content/0/raw",
+        "/engine/content/0/row/nested/0/spec",
+        "/engine/content/0/row/nested/0/raw",
+        "/engine/content/0/row/nested/1/spec",
+        "/engine/content/0/row/nested/1/raw",
+    ] {
+        assert_eq!(overrides.get(path), Some(&Visibility::GmOnly), "{path}");
+    }
+}
+
+#[test]
+fn filter_properties_strips_table_draw_spec_and_raw_for_a_player_but_not_a_gm() {
+    use crate::data::document::{Document, PermissionSet, Scope};
+    use crate::data::permission::{filter_properties, Access};
+
+    let inner_a = fixture_table_draw(20, Uuid::from_u128(11), vec![]);
+    let inner_b = fixture_table_draw(21, Uuid::from_u128(12), vec![]);
+    let top = fixture_table_draw(22, Uuid::from_u128(13), vec![inner_a, inner_b]);
+    let content = vec![Segment::TableDraw(top)];
+    let overrides = roll_property_overrides(&content);
+    assert_eq!(overrides.len(), 6);
+
+    let permissions = PermissionSet {
+        property_overrides: overrides,
+        ..Default::default()
+    };
+
+    let doc = Document {
+        id: Uuid::from_u128(100),
+        scope: Scope::World {
+            world_id: Uuid::from_u128(9),
+        },
+        doc_type: MESSAGE_DOC_TYPE.into(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: None,
+        permissions,
+        embedded: Default::default(),
+        parent_id: None,
+        engine: Some(serde_json::json!({ "content": content })),
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    };
+
+    let player = Access {
+        caps: Default::default(),
+        all: false,
+        see_gm_only: false,
+        is_owner: false,
+    };
+    let filtered = filter_properties(&doc, &player).unwrap();
+    let engine = filtered.engine.unwrap();
+    let seg = &engine["content"][0];
+    // `spec`/`raw` are `Option` fields inside an untyped JSON object -- a
+    // `Within` redaction removes the key entirely (true absence), it does
+    // not null it in place (that treatment is reserved for a `Band` result).
+    assert!(seg.get("spec").is_none(), "top spec hidden");
+    assert!(seg.get("raw").is_none(), "top raw hidden");
+    assert!(seg.get("outcome").unwrap().is_object(), "outcome visible");
+    let row = seg.get("row").unwrap();
+    assert!(row.get("label").unwrap().is_string(), "row.label visible");
+    assert!(
+        row.get("content").unwrap().is_array(),
+        "row.content visible"
+    );
+    for nested in row.get("nested").unwrap().as_array().unwrap() {
+        assert!(nested.get("spec").is_none(), "nested spec hidden");
+        assert!(nested.get("raw").is_none(), "nested raw hidden");
+    }
+
+    let gm = Access {
+        caps: Default::default(),
+        all: false,
+        see_gm_only: true,
+        is_owner: false,
+    };
+    let filtered_gm = filter_properties(&doc, &gm).unwrap();
+    let engine_gm = filtered_gm.engine.unwrap();
+    let seg_gm = &engine_gm["content"][0];
+    assert!(!seg_gm.get("spec").unwrap().is_null(), "GM keeps top spec");
+    assert!(!seg_gm.get("raw").unwrap().is_null(), "GM keeps top raw");
+    for nested in seg_gm
+        .get("row")
+        .unwrap()
+        .get("nested")
+        .unwrap()
+        .as_array()
+        .unwrap()
+    {
+        assert!(
+            !nested.get("spec").unwrap().is_null(),
+            "GM keeps nested spec"
+        );
+        assert!(!nested.get("raw").unwrap().is_null(), "GM keeps nested raw");
+    }
 }
 
 #[test]

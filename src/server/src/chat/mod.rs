@@ -250,7 +250,7 @@ pub enum Segment {
         /// recalculate it. `None` for any roll embedded before this field existed
         /// -- `handle_recalc_roll` refuses `NoStoredState` on `None`, never
         /// guesses a spec back from `outcome`. GM-visible only (see
-        /// `roll_embed_property_overrides`). Boxed: `RollSpec` is large enough
+        /// `roll_property_overrides`). Boxed: `RollSpec` is large enough
         /// that an unboxed `Option<RollSpec>` here would make `RollEmbed` the
         /// dominant variant of `Segment` by a wide margin
         /// (`clippy::large_enum_variant`); `Box` keeps the wire shape identical
@@ -348,6 +348,57 @@ pub enum Segment {
         /// Empty when the span carried no `|alt` suffix.
         alt: String,
     },
+    /// One executed table draw, recursive through any nested draws it fanned
+    /// out. Produced ONLY by `crate::tables::draw::draw_table`. `spec`/`raw`
+    /// are GM-only at every depth (see `roll_property_overrides`'s
+    /// `push_draw_overrides`), mirroring `RollEmbed`'s own GM-only fields.
+    TableDraw(TableDrawSegment),
+}
+
+/// One executed table draw. See `Segment::TableDraw`'s doc for the recursion
+/// and visibility rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableDrawSegment {
+    /// The table drawn from.
+    pub table_id: Uuid,
+    /// The table's envelope `name` at draw time (`""` when the table has
+    /// none); never re-resolved after the draw.
+    pub table_name: String,
+    /// Stable identity for this draw, mirroring `RollEmbed.roll_id`'s role --
+    /// NOT a `handle_recalc_roll` target (a table draw is not recalculable).
+    pub roll_id: Uuid,
+    /// The notation actually rolled: `1d<sum>` for `DrawRule::Weighted`, or
+    /// the table's own notation for `DrawRule::Formula`.
+    pub formula: String,
+    /// The full deterministic outcome of the roll that selected a row.
+    pub outcome: RollOutcome,
+    /// The parsed spec the row-selecting roll was scored from. GM-visible only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<Box<RollSpec>>,
+    /// The natural-face roll log the row-selecting roll was evaluated from.
+    /// GM-visible only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Box<RawRoll>>,
+    /// The matched row, or `None` when a `DrawRule::Formula` total matched no
+    /// row's range (rendered "no matching row").
+    pub row: Option<DrawnRow>,
+}
+
+/// The row a table draw matched, and everything it yielded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrawnRow {
+    /// The matched row's index into `TableEngine.rows` at draw time.
+    pub index: usize,
+    /// The matched row's `label` at draw time.
+    pub label: String,
+    /// The row's `results` rendered to segments (`TableEntry::Text` ->
+    /// sanitized under the world's chat policy, `Doc` -> `Segment::DocLink`,
+    /// `Image` -> `Segment::Image`; a `Draw` entry contributes its fan-out to
+    /// `nested` below rather than to `content`).
+    pub content: Vec<Segment>,
+    /// One entry per nested draw this row's `TableEntry::Draw` results
+    /// triggered, in `results` order then `count` order.
+    pub nested: Vec<TableDrawSegment>,
 }
 
 /// Max characters accepted for a `Segment::Image.alt` string -- an
@@ -414,41 +465,70 @@ pub struct RecalcEntry {
 
 /// Computes the `gm_only` `permissions.property_overrides` entries a
 /// message's roll content requires: `spec`/`raw` on every `RollEmbed`, plus
-/// `previous_raw` on every one of its `recalc_history` entries. Applied
-/// uniformly to every `RollSpec`/`RawRoll`-shaped value under a `RollEmbed`
-/// -- `outcome`/`previous_outcome`/`recalc_history` itself stay visible to
-/// every recipient. Recomputed from scratch against the CURRENT `content`
-/// (never incrementally patched), so a message's override set always matches
-/// what it actually carries; called from `build_message_doc` at Create time
-/// and from `handle_recalc_roll` after every recalculation.
-pub(crate) fn roll_embed_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
+/// `previous_raw` on every one of its `recalc_history` entries; and, walking
+/// every `TableDraw` RECURSIVELY through nested draws, `spec`/`raw` at every
+/// depth (a table draw carries no recalc history — it is not recalculable).
+/// Applied uniformly to every `RollSpec`/`RawRoll`-shaped value under a
+/// `RollEmbed`/`TableDraw` -- `outcome`/`previous_outcome`/`recalc_history`/
+/// `row` themselves stay visible to every recipient. Recomputed from scratch
+/// against the CURRENT `content` (never incrementally patched), so a
+/// message's override set always matches what it actually carries; called
+/// from `build_message_doc` at Create time and from `handle_recalc_roll`
+/// after every recalculation.
+pub(crate) fn roll_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
     let mut out = BTreeMap::new();
     for (i, seg) in content.iter().enumerate() {
-        let Segment::RollEmbed {
-            spec,
-            raw,
-            recalc_history,
-            ..
-        } = seg
-        else {
-            continue;
-        };
-        if spec.is_some() {
-            out.insert(format!("/engine/content/{i}/spec"), Visibility::GmOnly);
-        }
-        if raw.is_some() {
-            out.insert(format!("/engine/content/{i}/raw"), Visibility::GmOnly);
-        }
-        if let Some(history) = recalc_history {
-            for j in 0..history.len() {
-                out.insert(
-                    format!("/engine/content/{i}/recalc_history/{j}/previous_raw"),
-                    Visibility::GmOnly,
-                );
+        match seg {
+            Segment::RollEmbed {
+                spec,
+                raw,
+                recalc_history,
+                ..
+            } => {
+                if spec.is_some() {
+                    out.insert(format!("/engine/content/{i}/spec"), Visibility::GmOnly);
+                }
+                if raw.is_some() {
+                    out.insert(format!("/engine/content/{i}/raw"), Visibility::GmOnly);
+                }
+                if let Some(history) = recalc_history {
+                    for j in 0..history.len() {
+                        out.insert(
+                            format!("/engine/content/{i}/recalc_history/{j}/previous_raw"),
+                            Visibility::GmOnly,
+                        );
+                    }
+                }
             }
+            Segment::TableDraw(draw) => {
+                push_draw_overrides(&format!("/engine/content/{i}"), draw, &mut out);
+            }
+            _ => {}
         }
     }
     out
+}
+
+/// Recursive helper for `roll_property_overrides`'s `TableDraw` arm: emits
+/// `{prefix}/spec`/`{prefix}/raw` for this draw, then recurses into every
+/// nested draw its matched row fanned out (`{prefix}/row/nested/{j}`),
+/// mirroring the draw's own recursive shape (`Segment::TableDraw`'s doc).
+fn push_draw_overrides(
+    prefix: &str,
+    seg: &TableDrawSegment,
+    out: &mut BTreeMap<String, Visibility>,
+) {
+    if seg.spec.is_some() {
+        out.insert(format!("{prefix}/spec"), Visibility::GmOnly);
+    }
+    if seg.raw.is_some() {
+        out.insert(format!("{prefix}/raw"), Visibility::GmOnly);
+    }
+    if let Some(row) = &seg.row {
+        for (j, nested) in row.nested.iter().enumerate() {
+            push_draw_overrides(&format!("{prefix}/row/nested/{j}"), nested, out);
+        }
+    }
 }
 
 /// The plain-text producer: wraps raw input as a single literal-text segment.
@@ -601,7 +681,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
             default,
             users,
             gm_role,
-            property_overrides: roll_embed_property_overrides(&engine.content),
+            property_overrides: roll_property_overrides(&engine.content),
             ..Default::default()
         },
         embedded: BTreeMap::new(),
@@ -1591,7 +1671,7 @@ pub async fn handle_recalc_roll(
         *outcome = new_outcome;
     }
 
-    let overrides = roll_embed_property_overrides(&sys.content);
+    let overrides = roll_property_overrides(&sys.content);
     let new_engine = serde_json::to_value(&sys)
         .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
     let new_overrides_json = serde_json::to_value(&overrides)
