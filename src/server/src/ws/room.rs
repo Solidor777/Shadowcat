@@ -153,6 +153,27 @@ pub(crate) struct BudgetGate {
     enforcement: eng::Enforcement,
 }
 
+impl BudgetGate {
+    /// Whether the gate's refusals and truncation apply to this caller at
+    /// all — see the field's own doc for the full disclosure rationale.
+    /// `handle_pathfind` reads this through the accessor rather than the
+    /// private field to decide whether a route preview may disclose
+    /// `PathResult.budget_cells` for the named token.
+    pub(crate) fn enforced(&self) -> bool {
+        self.enforced
+    }
+}
+
+/// The one division a movement-budget number performs: `current` divided by
+/// the per-cell (or per-space) conversion rate. Both the `Hard` truncation
+/// ceiling (`BudgetResolution::Resolved.budget_cells`) and the route-preview
+/// number (`PathResult.budget_cells`) call this — the SAME arithmetic, so the
+/// clamp and the preview cannot drift apart by one of the two call sites
+/// duplicating the division with a rounding or unit difference.
+pub(crate) fn resource_cells(current: f64, cost_to_resource: f64) -> f64 {
+    current / cost_to_resource
+}
+
 /// `BudgetGate`, once resolved: the evaluated resource numbers (and, under
 /// `Interpretation::PerCell`, the per-cell distance) are guaranteed present — every refusal
 /// path has already returned before this is constructed. `cost_to_resource`
@@ -173,6 +194,17 @@ pub(crate) struct ResolvedBudget {
     stored: Option<f64>,
     /// `MoveOutcome.cost` (cells) → resource units.
     cost_to_resource: f64,
+}
+
+impl ResolvedBudget {
+    /// The mover's remaining movement budget in cells, through the shared
+    /// `resource_cells` helper — the same number `handle_pathfind` discloses
+    /// as `PathResult.budget_cells` for an enforced caller, computed from
+    /// this resolution's own `current`/`cost_to_resource` rather than a
+    /// second read of either.
+    pub(crate) fn resource_cells(&self) -> f64 {
+        resource_cells(self.current, self.cost_to_resource)
+    }
 }
 
 /// Builds the movement-budget gate inputs for `token` on `token_scene`'s active combat, under
@@ -264,7 +296,7 @@ pub(crate) fn resolve_budget(bg: &BudgetGate, is_gm: bool) -> BudgetResolution {
     match (nums, cost_to_resource) {
         (Some(n), Some(ctr)) => BudgetResolution::Resolved {
             budget_cells: (!exempt && matches!(bg.enforcement, eng::Enforcement::Hard))
-                .then(|| n.current / ctr),
+                .then(|| resource_cells(n.current, ctr)),
             decrement: Some(ResolvedBudget {
                 combatant_id: bg.combatant_id,
                 resource: bg.resource.clone(),

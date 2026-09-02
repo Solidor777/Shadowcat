@@ -101,16 +101,17 @@ pub enum CombatError {
 /// Dispatches one combat intent frame: checks the caller's flood budget,
 /// loads the snapshot, authorizes, resolves the transition's ops, and
 /// commits them as ONE server-authored command via `Room::commit_combat`.
-/// `None` on success — the broadcast `Event` is the notification, mirroring
-/// `SendMessage`'s asymmetric reply protocol; `Some(ServerMsg::CombatError)`
-/// on refusal, `message` set to `CombatError`'s own `Display` text so every
-/// refusal path (including an unrecognized/foreign `combat_id`) renders
-/// identically to the sender. `rate` is checked BEFORE the snapshot's
-/// multi-query doc read — cheap check first, mirroring `ScenePing`'s guard
-/// order in `conn.rs` — and spends `MESSAGE_RATE_PER_MIN` against the SAME
-/// `WsState::message_rate` counter the chat handlers use: a combat intent
-/// costs one snapshot doc read plus a commit, the same order of cost, so the
-/// budget is read from its single declaration rather than restated here.
+/// `Some(ServerMsg::CombatResult)` on success, addressed to the originator
+/// only — the broadcast `Event` remains the state notification;
+/// `Some(ServerMsg::CombatError)` on refusal, `message` set to
+/// `CombatError`'s own `Display` text so every refusal path (including an
+/// unrecognized/foreign `combat_id`) renders identically to the sender.
+/// `rate` is checked BEFORE the snapshot's multi-query doc read — cheap
+/// check first, mirroring `ScenePing`'s guard order in `conn.rs` — and
+/// spends `MESSAGE_RATE_PER_MIN` against the SAME `WsState::message_rate`
+/// counter the chat handlers use: a combat intent costs one snapshot doc
+/// read plus a commit, the same order of cost, so the budget is read from
+/// its single declaration rather than restated here.
 pub async fn handle_combat_intent(
     room: &Room,
     repo: &dyn Repository,
@@ -164,13 +165,15 @@ pub async fn handle_combat_intent(
     }
 
     match run_intent(room, repo, ctx, msg, combat_id, now).await {
-        Ok(()) => None,
+        Ok(seq) => Some(ServerMsg::CombatResult { request_id, seq }),
         Err(e) => Some(to_server_msg(request_id, e)),
     }
 }
 
 /// The load → authorize → resolve → commit pipeline for one combat intent,
-/// once `combat_id` has been extracted from `msg`.
+/// once `combat_id` has been extracted from `msg`. Returns the committed
+/// command's `seq` on success, so the caller can answer the originator with a
+/// correlated `ServerMsg::CombatResult`.
 async fn run_intent(
     room: &Room,
     repo: &dyn Repository,
@@ -178,7 +181,7 @@ async fn run_intent(
     msg: ClientMsg,
     combat_id: Uuid,
     now: i64,
-) -> Result<(), CombatError> {
+) -> Result<i64, CombatError> {
     let snap = load_snapshot(repo, room.world_id, combat_id).await?;
     // The world's default capability grants, read ONCE per intent — an input to
     // `authorize`'s whole-document `cap::READ` resolution, which may consult
@@ -192,8 +195,8 @@ async fn run_intent(
     let world_defaults = repo.world_cap_defaults(room.world_id).await?;
     authorize(&snap, ctx, &msg, &world_defaults)?;
     let ops = build_ops(room, repo, ctx, &snap, msg, now).await?;
-    room.commit_combat(repo, ctx, ops, now).await?;
-    Ok(())
+    let cmd = room.commit_combat(repo, ctx, ops, now).await?;
+    Ok(cmd.seq)
 }
 
 /// The access `ctx` holds on combatant `c`'s document, resolved through the

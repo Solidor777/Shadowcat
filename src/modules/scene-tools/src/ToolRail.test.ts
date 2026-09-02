@@ -92,7 +92,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
       scene,
       documents: docs,
       tokenSelection: sel,
-      pathfind: async () => ({ path: [[0, 0], [100, 0]], cost: 1, arrested: false, truncated: false }),
+      pathfind: async () => ({ path: [[0, 0], [100, 0]], cost: 1, arrested: false, truncated: false, budgetCells: null }),
       moveRequest: async (_s, tokenId, path) => {
         moves.push({ tokenId, path });
         return {
@@ -176,7 +176,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
       documents: docs,
       tokenSelection: new TokenSelection(),
       dispatchIntent: (ops) => dispatched.push(ops),
-      pathfind: async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!], cost: 1, arrested: false, truncated: false }),
+      pathfind: async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!], cost: 1, arrested: false, truncated: false, budgetCells: null }),
       moveRequest: async (s, tokenId, path) => {
         moves.push({ tokenId, path });
         return {

@@ -809,7 +809,6 @@ export class WorldSession {
     this.#ws = new WsClient({
       world: worldId,
       connect: this.opts.connect,
-      selfUserId: this.opts.selfId,
       handlers: {
         // Feed both mirrors: the authoritative DocumentStore (exposed via
         // AppContext for document-reading panels) and the optimistic client

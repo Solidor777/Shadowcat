@@ -270,6 +270,7 @@ describe("parseServerMsg", () => {
         cost: 2,
         arrested: false,
         truncated: false,
+        budget_cells: null,
       }),
     );
     expect(ok?.type).toBe("path_result");
@@ -466,11 +467,20 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     scene_error: { type: "scene_error", request_id: "r", message: "x" },
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
-    path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false, truncated: false },
+    path_result: {
+      type: "path_result",
+      request_id: "r",
+      path: [],
+      cost: 0,
+      arrested: false,
+      truncated: false,
+      budget_cells: null,
+    },
     path_error: { type: "path_error", request_id: "r", message: "x" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
+    combat_result: { type: "combat_result", request_id: "r", seq: 1 },
     move_stream: {
       type: "move_stream",
       request_id: "r",

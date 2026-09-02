@@ -746,6 +746,11 @@ export type ServerMsg =
       arrested: boolean;
       /** True when the mover's movement budget truncated the route short of the goal. */
       truncated: boolean;
+      /** The named token's remaining movement budget in cells, present iff the requester can
+       * read the combat's combatant for that token — regardless of enforcement mode, so a GM
+       * or a `warn`/`none` mover still sees the number. `null` when the token names no
+       * combatant, the caller cannot read it, or no combat is running. */
+      budget_cells: number | null;
     }
   | {
       /** The `pathfind` with this `request_id` failed (unreachable / invalid request /
@@ -783,12 +788,23 @@ export type ServerMsg =
        * `combat_rewind`/`combat_roll`/`combat_resource`/`combat_sort`) was rejected. One
        * wording for every refusal — never distinguishes hidden from absent from not-yours.
        * Addressed to the originating connection only; never broadcast. Success is confirmed
-       * by the broadcast `event` echo. */
+       * by a correlated `combat_result`. */
       type: "combat_error";
       /** The refused combat intent's correlation token. */
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+    }
+  | {
+      /** A combat intent was accepted and committed as the sequenced `event` at `seq`.
+       * Addressed to the originating connection only; never broadcast. The broadcast
+       * `event` remains the state notification — this frame only correlates it, and may
+       * arrive before OR after that `event`. */
+      type: "combat_result";
+      /** The confirmed combat intent's correlation token. */
+      request_id: string;
+      /** The committed command's sequence number — matches the broadcast `event`'s `seq`. */
+      seq: number;
     }
   | {
       /** Broadcast to the scene, then clipped per recipient at egress: the mover receives
@@ -944,6 +960,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     cost: z.number(),
     arrested: z.boolean(),
     truncated: z.boolean(),
+    budget_cells: z.number().nullable(),
   }),
   z.object({
     type: z.literal("path_error"),
@@ -964,6 +981,11 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("combat_error"),
     request_id: z.string(),
     message: z.string(),
+  }),
+  z.object({
+    type: z.literal("combat_result"),
+    request_id: z.string(),
+    seq: int,
   }),
   z.object({
     type: z.literal("move_stream"),
