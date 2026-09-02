@@ -3,7 +3,9 @@
 //! floors for the terrain mask, this module projects the SAME assignments — resolved
 //! through the SAME `SceneEcs::token_vision_assignments` precedence walk, so the two
 //! views can never disagree on which assignments a token carries — into the grounded
-//! tokens a `Perception::Creatures` mode perceives.
+//! tokens a `Perception::Creatures` mode perceives. `sense_perceives` is THE reach
+//! decision, read for a token at rest (`player_perceived_tokens`) and in motion (the
+//! egress clip's `InstantSight::sees_token`).
 
 // Ratchet: every item in this module must carry a doc comment, enforced by
 // the two crate-level deny attributes this module declares.
@@ -30,20 +32,45 @@ pub(crate) struct PerceivedScene {
     pub(crate) tokens: Vec<Uuid>,
 }
 
-/// A grounded creature-sense source within one scene: viewpoint, resolved senses, and the
-/// LOS polygon, computed lazily on the first `requires_los` sense that needs it.
+/// A creature-sense source within one scene: viewpoint, resolved senses, and the LOS
+/// polygon, computed lazily on the first `requires_los` sense that needs it.
 struct SenseSource {
     /// Source token id — a target equal to it is the source itself, never perceived by it.
     id: Uuid,
     /// Viewpoint in scene units.
     vp: vision::P,
-    /// Source elevation (always `elevation::GROUND` — a flying source feels nothing): the
-    /// wall-band filter the lazily-computed LOS polygon is raycast against.
+    /// Source elevation: `sense_perceives` refuses a flying source, and the wall-band filter
+    /// the lazily-computed LOS polygon is raycast against reads it.
     elevation: f64,
     /// Resolved creature senses `(range_cells, requires_los)`; a `0.0` range is unlimited.
     senses: Vec<(f64, bool)>,
     /// The source's LOS polygon, computed once when a `requires_los` sense is evaluated.
     los: Option<Vec<vision::P>>,
+}
+
+/// THE creature-sense reach decision, shared by `SceneEcs::player_perceived_tokens` (a token
+/// at rest) and the egress clip's `InstantSight::sees_token` (a token in motion), so the two
+/// cannot disagree: a GROUNDED source with `senses` perceives a GROUNDED target `dist_cells`
+/// away when some sense's range admits it (`0.0` = unlimited) and — for a `requires_los`
+/// sense only — `in_los()` holds, evaluated lazily so a wall-ignoring sense never pays for a
+/// raycast. A flying source feels nothing; a flying target is not felt through the ground;
+/// a non-finite distance perceives nothing (fail-closed).
+pub(crate) fn sense_perceives(
+    src_elevation: f64,
+    target_elevation: f64,
+    senses: &[(f64, bool)],
+    dist_cells: f64,
+    mut in_los: impl FnMut() -> bool,
+) -> bool {
+    if src_elevation != elevation::GROUND
+        || target_elevation != elevation::GROUND
+        || !dist_cells.is_finite()
+    {
+        return false;
+    }
+    senses.iter().any(|&(range, requires_los)| {
+        (range == 0.0 || dist_cells <= range) && (!requires_los || in_los())
+    })
 }
 
 impl SceneEcs {
@@ -78,9 +105,10 @@ impl SceneEcs {
     /// The grounded tokens `ctx`'s creature senses perceive, per scene — the `perceived`
     /// half of the masked vision payload (wired in `compute_derived`). Sources are the
     /// recipient's own vision sources, gathered through the ONE admission decision
-    /// (`gather_vision_sources_in_scene`, the same set the lit mask uses), kept only when
-    /// grounded and carrying at least one creature sense. A target qualifies when it is
-    /// grounded, in range (2D center distance in cells against the grid shape's
+    /// (`gather_vision_sources_in_scene`, the same set the lit mask uses), kept when they
+    /// carry at least one creature sense. A target qualifies through `sense_perceives` —
+    /// THE reach decision, shared with the move-stream clip — when both are grounded, it is
+    /// in range (2D center distance in cells against the grid shape's
     /// `GridShape::world_units_per_cell`, the authored-distance scale; `0.0` = unlimited),
     /// not the perceiving source itself, and — for a `requires_los` sense only — its center
     /// lies inside the source's LOS polygon (`source_los_poly` against
@@ -155,28 +183,19 @@ impl SceneEcs {
                 scene,
                 &settings,
             ) {
-                // A flying source feels nothing.
-                if src.elevation != elevation::GROUND {
-                    continue;
-                }
                 if !src.vp.0.is_finite() || !src.vp.1.is_finite() {
                     continue;
                 }
-                let Some(&entity) = self.index.get(&src.id) else {
-                    continue;
-                };
-                let Ok(ent) = self.world.get::<&SceneEntity>(entity) else {
-                    continue;
-                };
-                let senses = self.token_creature_senses(&ent.doc);
-                if senses.is_empty() {
+                // A source with no creature sense perceives nothing; skipping it here is the
+                // same outcome `sense_perceives` reaches over an empty list.
+                if src.senses.is_empty() {
                     continue;
                 }
                 sources.push(SenseSource {
                     id: src.id,
                     vp: src.vp,
                     elevation: src.elevation,
-                    senses,
+                    senses: src.senses,
                     los: None,
                 });
             }
@@ -194,10 +213,7 @@ impl SceneEcs {
                 let Some(t) = self.engine_as_cached::<eng::TokenEngine>(doc.id, doc) else {
                     continue;
                 };
-                // A flying target is not felt through the ground.
-                if elevation::elevation_or_ground(t.elevation) != elevation::GROUND {
-                    continue;
-                }
+                let target_elevation = elevation::elevation_or_ground(t.elevation);
                 let center = (t.x, t.y);
                 if !center.0.is_finite() || !center.1.is_finite() {
                     continue;
@@ -218,13 +234,11 @@ impl SceneEcs {
                     let dist_cells =
                         (((center.0 - src.vp.0).powi(2) + (center.1 - src.vp.1).powi(2)).sqrt())
                             / world_units_per_cell;
-                    for &(range, requires_los) in &src.senses {
-                        if !(range == 0.0 || dist_cells <= range) {
-                            continue;
-                        }
-                        if requires_los {
-                            let (vp, elev) = (src.vp, src.elevation);
-                            let poly = src.los.get_or_insert_with(|| {
+                    let (vp, elev) = (src.vp, src.elevation);
+                    let los = &mut src.los;
+                    let reached =
+                        sense_perceives(elev, target_elevation, &src.senses, dist_cells, || {
+                            let poly = los.get_or_insert_with(|| {
                                 source_los_poly(
                                     vp,
                                     &self.sight_walls_for(scene, elev),
@@ -232,10 +246,9 @@ impl SceneEcs {
                                     extent,
                                 )
                             });
-                            if !vision::point_in_poly(poly, center) {
-                                continue;
-                            }
-                        }
+                            vision::point_in_poly(poly, center)
+                        });
+                    if reached {
                         perceived.insert(doc.id);
                         break;
                     }

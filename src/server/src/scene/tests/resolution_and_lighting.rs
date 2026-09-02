@@ -2352,7 +2352,16 @@ fn wire_falloff_round_trips_field_falloff() {
 fn recipient_sight_agrees_with_player_lit_mask_cell_for_cell() {
     let (ecs, user, scene) = scene_with_lit_player_token();
     let mask = mask_cells(&ecs, user, scene);
-    let sight = ecs.recipient_sight(user, WorldRole::Player, &no_world_grants(), scene, &[]);
+    let sight = ecs.recipient_sight(
+        &PermissionContext {
+            user_id: user,
+            world_role: WorldRole::Player,
+        },
+        &no_world_grants(),
+        scene,
+        &[],
+        Uuid::nil(),
+    );
     let instant = sight.at(&[]);
     let (mut lit, mut dark) = (0, 0);
     for i in -4..=12 {

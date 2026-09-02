@@ -1161,9 +1161,12 @@ async fn enrich_vision_explored(
 ///   previewed target would see, via the SAME clip path a real observer gets (keyed on the
 ///   target's sight, not the GM's). A see-as whose target has no source in the move's scene
 ///   does not apply → full GM stream. This branch can only ever NARROW the GM's own view.
-/// - **Observer**: only samples the recipient SEES are forwarded — inside a source's line of
-///   sight AND lit for that source at that instant (`InstantSight::sees`, the lit mask's own
-///   predicate); `mover_light` reduced to the samples whose glow reaches their line of sight;
+/// - **Observer**: only samples the recipient PERCEIVES are forwarded — inside a source's line
+///   of sight AND lit for that source at that instant (`InstantSight::sees`, the lit mask's own
+///   predicate), or within reach of a source's creature sense (`InstantSight::sees_token`, the
+///   decision `player_perceived_tokens` makes for the token at rest — a tremorsense observer
+///   keeps a grounded token walking through walls and darkness; a flying one is not felt);
+///   `mover_light` reduced to the samples whose glow lights a cell they see;
 ///   `mover_vision` AND `cost` nulled. A frame with no visible position sample but an admitted
 ///   glow is a GLOW-ONLY frame (`samples` empty, `mover_light` present): the recipient sees the
 ///   light approach without ever seeing its bearer. Neither → `None`. `stop` and `duration_ms`
@@ -1287,13 +1290,7 @@ async fn clip_move_stream(
     // Authoritative ECS read, dropped before this function's caller awaits `sink.send`.
     let sight = {
         let ecs = room.scene().read().await;
-        ecs.recipient_sight(
-            target.user_id,
-            target.world_role,
-            world_defaults,
-            *scene,
-            &exclude,
-        )
+        ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id)
     };
     if ctx.world_role == crate::data::document::WorldRole::Gm && !sight.has_sources() {
         // See-as target has no vision source in this scene → not applicable → full GM stream.

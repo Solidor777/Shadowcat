@@ -13,6 +13,7 @@ use crate::ws::test_support::{token_engine, ws_engine};
 mod combat_intents;
 /// `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
 mod mover_light;
+mod senses;
 
 /// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are
 /// forwarded to an unbounded channel the test drains. Each send consumes one credit (the

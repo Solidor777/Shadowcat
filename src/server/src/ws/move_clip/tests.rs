@@ -1,6 +1,7 @@
 use super::*;
 use crate::data::document::tests::world_scoped_doc;
-use crate::data::document::{WorldCapDefaults, WorldRole};
+use crate::data::document::{DocRole, WorldCapDefaults, WorldRole};
+use crate::data::membership::PermissionContext;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{LightSample, PosSample, VisionSample};
 use serde_json::json;
@@ -62,6 +63,8 @@ const SCENE: Uuid = Uuid::from_u128(0xC2);
 const TARGET: Uuid = Uuid::from_u128(0xC3);
 const TARGET_TOKEN: Uuid = Uuid::from_u128(0xC4);
 const STRANGER: Uuid = Uuid::from_u128(0xC5);
+/// The stranger's token every clipped frame moves — the token creature senses may perceive.
+const MOVER_TOKEN: Uuid = Uuid::from_u128(0xC8);
 
 /// The scene ECS for a lit or dark walled scene. `vision` (an actor's `vision` assignment
 /// list, or `None` for a raw normal-vision token) is what makes the darkvision case buildable.
@@ -72,6 +75,18 @@ fn fixture(lit: bool, vision: Option<serde_json::Value>) -> SceneEcs {
 /// `fixture` with the target's token committed at `at` — the END of a move whose timeline a
 /// test registers, since `Room::execute_move` commits before it broadcasts.
 fn fixture_at(lit: bool, vision: Option<serde_json::Value>, at: (f64, f64)) -> SceneEcs {
+    fixture_full(lit, vision, at, None, true)
+}
+
+/// `fixture_at` with the stranger's `MOVER_TOKEN` (committed at (250,50), behind the wall) at
+/// `mover_elevation` (`None` = grounded) and readable by the target iff `mover_readable`.
+fn fixture_full(
+    lit: bool,
+    vision: Option<serde_json::Value>,
+    at: (f64, f64),
+    mover_elevation: Option<f64>,
+    mover_readable: bool,
+) -> SceneEcs {
     let mut scene = world_scoped_doc(WORLD, SCENE, "scene");
     let mut engine = json!({ "grid": { "kind": "square", "size": 100 }, "background": null });
     if lit {
@@ -92,7 +107,18 @@ fn fixture_at(lit: bool, vision: Option<serde_json::Value>, at: (f64, f64)) -> S
     wall.engine = Some(json!({
         "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true
     }));
-    let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
+    let mut mover = world_scoped_doc(WORLD, MOVER_TOKEN, "token");
+    mover.parent_id = Some(SCENE);
+    mover.owner = Some(STRANGER);
+    if mover_readable {
+        mover.permissions.default = DocRole::Observer;
+    }
+    let mut mover_engine = crate::ws::test_support::token_engine(250.0, 50.0);
+    if let Some(e) = mover_elevation {
+        mover_engine["elevation"] = json!(e);
+    }
+    mover.engine = Some(mover_engine);
+    let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall, mover], 0);
     if let Some(v) = vision {
         let mut actor = world_scoped_doc(WORLD, actor_id, "actor");
         actor.owner = Some(TARGET);
@@ -108,11 +134,14 @@ fn fixture_at(lit: bool, vision: Option<serde_json::Value>, at: (f64, f64)) -> S
 
 fn sight(ecs: &SceneEcs, exclude: &[Uuid]) -> crate::scene::RecipientSight {
     ecs.recipient_sight(
-        TARGET,
-        WorldRole::Player,
+        &PermissionContext {
+            user_id: TARGET,
+            world_role: WorldRole::Player,
+        },
         &WorldCapDefaults::default(),
         SCENE,
         exclude,
+        MOVER_TOKEN,
     )
 }
 
@@ -615,10 +644,76 @@ fn bearer<'a>(positions: &'a [PosSample], light: &'a [LightSample]) -> [InFlight
     [InFlight {
         start_server_ms: 1000.0,
         mover: STRANGER,
-        token: Uuid::from_u128(0xC8),
+        token: MOVER_TOKEN,
         positions,
         light: Some(light),
     }]
+}
+
+// --- Creature senses (`InstantSight::sees_token`) ---
+
+/// Clip inputs over `sight` alone (no in-flight move).
+fn inputs_for(sight: &crate::scene::RecipientSight) -> ClipInputs<'_> {
+    ClipInputs {
+        sight,
+        in_flight: &[],
+        target: TARGET,
+    }
+}
+
+/// A tremorsense assignment (no authored range → the mode's 12-cell default).
+fn tremorsense() -> serde_json::Value {
+    json!([{ "mode": "tremorsense" }])
+}
+
+#[test]
+fn a_tremorsense_target_keeps_a_grounded_mover_walking_through_walls_and_darkness() {
+    // The stranger's walk runs behind the sight wall in the dark: nothing a terrain sense
+    // shows. A tremorsense target within 12 cells perceives every sample — the SAME decision
+    // `player_perceived_tokens` makes for that token at rest — and a sample 13 cells out is
+    // beyond its reach.
+    let walk = vec![pos(0.0, 150.0, 60.0), pos(100.0, 250.0, 50.0)];
+    let ecs = fixture(false, Some(tremorsense()));
+    let dark = sight(&ecs, &[]);
+    assert_eq!(clip_samples(&walk, 1000.0, &inputs_for(&dark)), walk);
+    let far = vec![pos(0.0, 1350.0, 50.0)];
+    assert!(clip_samples(&far, 1000.0, &inputs_for(&dark)).is_empty());
+    // Non-vacuity: a normal-vision target sees none of it.
+    let ecs = fixture(false, None);
+    let normal = sight(&ecs, &[]);
+    assert!(clip_samples(&walk, 1000.0, &inputs_for(&normal)).is_empty());
+    // A flying mover is not felt through the ground.
+    let ecs = fixture_full(false, Some(tremorsense()), (50.0, 50.0), Some(5.0), true);
+    let flying = sight(&ecs, &[]);
+    assert!(clip_samples(&walk, 1000.0, &inputs_for(&flying)).is_empty());
+    // A mover the target holds no READ on is never perceived — senses pierce fog, not the
+    // document permission gate.
+    let ecs = fixture_full(false, Some(tremorsense()), (50.0, 50.0), None, false);
+    let hidden = sight(&ecs, &[]);
+    assert!(clip_samples(&walk, 1000.0, &inputs_for(&hidden)).is_empty());
+}
+
+#[test]
+fn creature_senses_admit_tokens_never_glow() {
+    // The stranger's ember (below the dim floor) sits behind the wall in the dark, within the
+    // tremorsense target's reach. Its bearer's position samples are perceived; the glow is
+    // judged through `sees` alone and admitted nowhere — a sense that ignores light cannot
+    // vouch for a light.
+    let ecs = fixture(false, Some(tremorsense()));
+    let dark = sight(&ecs, &[]);
+    let positions = vec![pos(0.0, 150.0, 60.0)];
+    let ember = vec![LightSample {
+        intensity: 0.2,
+        ..light(0, 0.0, [150.0, 60.0], 150.0)
+    }];
+    let flight = bearer(&positions, &ember);
+    let inputs = ClipInputs {
+        sight: &dark,
+        in_flight: &flight,
+        target: TARGET,
+    };
+    assert_eq!(clip_samples(&positions, 1000.0, &inputs), positions);
+    assert!(admit_light_samples(Some(&ember), 1000.0, &inputs).is_none());
 }
 
 #[test]

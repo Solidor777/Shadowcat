@@ -315,6 +315,12 @@ pub(crate) struct SightSource {
     vp: vision::P,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
     floors: Vec<(f64, f64, Option<String>)>,
+    /// The source token's elevation (`elevation::GROUND` = grounded) — a creature sense
+    /// (`senses`) feels nothing from the air (`senses::sense_perceives`).
+    elevation: f64,
+    /// Resolved creature senses `(range_cells, requires_los)` (`token_creature_senses`) —
+    /// the sense half of `InstantSight::sees_token`.
+    senses: Vec<(f64, bool)>,
     /// `blocksSight` walls at this source's elevation (the full set incl. `gm_only` walls).
     walls: Vec<vision::Seg>,
     /// LOS polygon from `vp` through `walls` (the whole scene bound when LOS is off).
@@ -405,6 +411,12 @@ pub(crate) struct InstantLight {
 /// walk still plays — and `InstantSight::sees` composes them back in per instant from their
 /// timelines (`InstantLight`), so a torch lights the cell its bearer is IN, not the cell it will
 /// stop in.
+///
+/// `sensed` is the creature-sense half for the ONE token the frame moves: `InstantSight::
+/// sees_token` perceives a sample where a source's creature senses reach it
+/// (`senses::sense_perceives` — the decision `player_perceived_tokens` makes for that token at
+/// rest), so a tremorsense observer keeps a grounded token walking through walls and darkness
+/// exactly as it names it standing still.
 pub(crate) struct RecipientSight {
     /// The LOS half.
     los: SightSources,
@@ -412,6 +424,11 @@ pub(crate) struct RecipientSight {
     li: LightingInputs,
     /// `GridShape::world_units_per_cell` — converts cell radii/ranges, never the indexing scale.
     world_units_per_cell: f64,
+    /// The moving token creature senses may perceive, `(token id, elevation)`: `Some` only
+    /// when it is a token of this scene the recipient holds whole-document `cap::READ` on
+    /// (`SceneEcs::ctx_access` — creature senses pierce fog, never the document permission
+    /// gate); `None` names nothing.
+    sensed: Option<(Uuid, f64)>,
 }
 
 impl RecipientSight {
@@ -513,6 +530,46 @@ impl InstantSight<'_> {
         let grid = &self.sight.los.grid;
         let cells = grid.cells_in_bounds(min, max, self.sight.los.cell, max_cells)?;
         Some(cells.into_iter().map(|c| grid.cell_center(c)).collect())
+    }
+
+    /// Whether the recipient perceives the frame's moving token at `point` at this instant:
+    /// `sees` (a terrain sense — line of sight and the composed illumination) OR a creature
+    /// sense of some source reaches it (`senses_perceive`). THE token-visibility predicate the
+    /// position clip reads (`ws::move_clip::ClipInputs::sees_at`): at rest the same token is
+    /// visible through the lit mask OR named by `player_perceived_tokens`, and this is that
+    /// disjunction per instant. A glow is admitted through `sees` alone — creature senses
+    /// perceive tokens, never light.
+    pub(crate) fn sees_token(&self, point: vision::P, extra: &[InstantLight]) -> bool {
+        self.sees(point, extra) || self.senses_perceive(point)
+    }
+
+    /// The creature-sense half of `sees_token`: some source other than the sensed token itself
+    /// perceives it at `point` through `senses::sense_perceives` — the source's instant
+    /// viewpoint sets the distance (in cells, through `world_units_per_cell`) and its instant
+    /// LOS polygon answers a `requires_los` sense. `false` when `RecipientSight::sensed` names
+    /// nothing (an unreadable, absent or foreign-scene token).
+    fn senses_perceive(&self, point: vision::P) -> bool {
+        let sight = self.sight;
+        let Some((token, target_elevation)) = sight.sensed else {
+            return false;
+        };
+        let wupc = sight.world_units_per_cell;
+        if !wupc.is_finite() || wupc <= 0.0 {
+            return false;
+        }
+        self.views
+            .iter()
+            .zip(&sight.los.sources)
+            .any(|((vp, poly), src)| {
+                src.id != token
+                    && senses::sense_perceives(
+                        src.elevation,
+                        target_elevation,
+                        &src.senses,
+                        (point.0 - vp.0).hypot(point.1 - vp.1) / wupc,
+                        || vision::point_in_poly(poly, point),
+                    )
+            })
     }
 
     /// Whether `point` is visible to the recipient at this instant, with `extra` carried lights
@@ -1644,6 +1701,8 @@ impl SceneEcs {
                         id: s.id,
                         vp: s.vp,
                         floors: s.floors,
+                        elevation: s.elevation,
+                        senses: s.senses,
                         walls,
                         poly,
                     }
@@ -1664,25 +1723,43 @@ impl SceneEcs {
     /// The recipient's authoritative sight in `scene` for the egress clip — `sight_sources`
     /// plus the scene's illumination field with the carried emissions of `exclude_emitters`
     /// (in-flight movers, whose committed position is their move's end) left out; the clip
-    /// composes those back in per instant from their timelines. See `RecipientSight`.
+    /// composes those back in per instant from their timelines. `mover` is the token the
+    /// clipped frame moves: it is the one token creature senses may perceive
+    /// (`RecipientSight::sensed`), admitted only when it is a token of `scene` that `ctx`
+    /// holds whole-document `cap::READ` on — the SAME `ctx_access` gate
+    /// `player_perceived_tokens` applies at rest. See `RecipientSight`.
     pub(crate) fn recipient_sight(
         &self,
-        user: Uuid,
-        world_role: crate::data::document::WorldRole,
+        ctx: &PermissionContext,
         world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         exclude_emitters: &[Uuid],
+        mover: Uuid,
     ) -> RecipientSight {
-        let los = self.sight_sources(user, world_role, world_defaults, scene);
+        let los = self.sight_sources(ctx.user_id, ctx.world_role, world_defaults, scene);
         // A scene with no document has no sources (`sight_sources` fails closed), so the
         // illumination inputs built here are never consulted; a zero cell size synthesizes no
         // grid.
         let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
         let li = self.lighting_inputs_excluding(scene, &los.settings, cell, exclude_emitters);
+        let sensed = self.index.get(&mover).and_then(|&e| {
+            let ent = self.world.get::<&SceneEntity>(e).ok()?;
+            let doc = &ent.doc;
+            if doc.doc_type != "token" || doc.parent_id != Some(scene) {
+                return None;
+            }
+            let t = self.engine_as_cached::<eng::TokenEngine>(doc.id, doc)?;
+            // Creature senses pierce fog, never the READ gate: a permission-hidden token is
+            // never perceived (`player_perceived_tokens` names it under the same gate).
+            self.ctx_access(ctx, world_defaults, doc)
+                .has(crate::data::permission::cap::READ)
+                .then(|| (mover, elevation::elevation_or_ground(t.elevation)))
+        });
         RecipientSight {
             world_units_per_cell: los.grid.world_units_per_cell(),
             los,
             li,
+            sensed,
         }
     }
 
@@ -3154,6 +3231,7 @@ impl SceneEcs {
                     vp: (t.x, t.y),
                     elevation: elevation::elevation_or_ground(t.elevation),
                     floors: self.token_vision_floors(&e.doc),
+                    senses: self.token_creature_senses(&e.doc),
                 });
             }
         }
@@ -3310,6 +3388,10 @@ struct VisSrc {
     elevation: f64,
     /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
     floors: Vec<(f64, f64, Option<String>)>,
+    /// Resolved creature senses `(range_cells, requires_los)` (`token_creature_senses`) —
+    /// read by `player_perceived_tokens` and the clip's `SightSource`; the lit mask ignores
+    /// them, so they are no part of `VisibilityInputsSnapshot`.
+    senses: Vec<(f64, bool)>,
 }
 
 /// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors)`.

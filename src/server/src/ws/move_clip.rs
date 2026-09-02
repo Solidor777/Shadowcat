@@ -114,11 +114,12 @@ impl ClipInputs<'_> {
         (self.sight.at(&moved), lights)
     }
 
-    /// Whether the target sees scene point `point` at absolute instant `t_abs_ms`
-    /// (`InstantSight::sees`: some source's LOS contains it and it is lit for that source).
+    /// Whether the target perceives the frame's moving token at scene point `point` at
+    /// absolute instant `t_abs_ms` (`InstantSight::sees_token`: some source's LOS contains it
+    /// and it is lit for that source, OR a source's creature sense reaches it).
     pub(crate) fn sees_at(&self, t_abs_ms: f64, point: P) -> bool {
         let (sight, lights) = self.at(t_abs_ms);
-        sight.sees(point, &lights)
+        sight.sees_token(point, &lights)
     }
 }
 
@@ -135,9 +136,10 @@ pub(crate) fn chosen_vision_sample<T: Timed>(samples: &[T], elapsed_ms: f64) -> 
     Some(chosen)
 }
 
-/// Keep each sample whose position the clip target sees AT THAT SAMPLE'S INSTANT
+/// Keep each sample whose position the clip target perceives AT THAT SAMPLE'S INSTANT
 /// (`ClipInputs::sees_at`: inside a source's line of sight AND lit for that source, the mover's
-/// own carried light composed in — a torch bearer lights the cell it stands in).
+/// own carried light composed in — a torch bearer lights the cell it stands in — OR within
+/// reach of a source's creature sense, walls and darkness notwithstanding).
 pub(crate) fn clip_samples(
     samples: &[PosSample],
     start_server_ms: f64,
