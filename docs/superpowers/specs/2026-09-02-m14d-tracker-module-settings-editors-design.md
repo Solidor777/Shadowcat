@@ -236,7 +236,8 @@ a valid value dispatches ONE `update` on `/engine/resources/<key>/<field path>` 
 stored pre-image. Add: key input (validated `[a-z][a-z0-9_-]*`, unique) + kind ⇒ a whole-entry
 `update` at `/engine/resources/<key>` (`old: null`) with `name = key`, `order = next`, and the
 kind's defaults (`Mirror { value: 0 }` / `Tracked { max: 0, recover: all 0 }`). Kind switch:
-whole-entry replace. Remove: whole-map rewrite (the `ConditionsPanel.remove` shape). The
+ONE `update` at `/engine/resources/<key>/binding` replacing only the `ResourceBinding` with the
+new kind's defaults, `old` = the raw stored binding — `name` and `order` are preserved. Remove: whole-map rewrite (the `ConditionsPanel.remove` shape). The
 `movementResource` select in §4.2 lists these keys, so a GM sets up movement in two steps in one
 panel.
 

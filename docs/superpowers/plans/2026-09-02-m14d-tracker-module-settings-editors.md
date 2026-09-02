@@ -352,7 +352,8 @@ snake_case under `binding` — read `src/types/generated/engine/Recovery.ts` and
 - [ ] **Step 1 (failing tests):** rows render from a fixture registry in `order`; name/order
   edits dispatch field writes with pre-images; a Tracked `max` edit of `"speed"` writes the
   string, `"30"` writes the number, `"1 +"` shows the inline error and writes nothing; kind
-  switch dispatches a whole-entry replace with the kind's defaults; add validates the key shape
+  switch dispatches ONE `update` at `/engine/resources/<key>/binding` (raw stored binding as
+  `old`) carrying the new kind's defaults, and leaves `name`/`order` untouched; add validates the key shape
   and uniqueness and writes the whole entry at `old: null`; remove rewrites the map without the
   key; non-GM renders nothing (the panel is `gmOnly`, but the component guards too).
 - [ ] **Step 2:** implement; tests PASS; `pnpm lint:file-size` (GameSettingsPanel stays under

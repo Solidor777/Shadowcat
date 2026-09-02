@@ -47,7 +47,7 @@ fable for genuinely complex tasks). Reviewers get no Bash — pre-generate the d
 ## Buddy-check directives
 
 Run buddy-checking (two blind reviewers + brokered debate) at:
-1. After Task 3 — the server surface (`CombatResult`, `budget_cells`, the `"combat"` channel).
+1. After Task 3 — the server surface (`CombatResult`, `PathResult.budget_cells`, the `"combat"` channel).
 2. After Task 7 — the hook derivation table + emitter + `WorldSession` wiring.
 3. Final: two-reviewer branch review before merge.
 
@@ -109,14 +109,20 @@ Run buddy-checking (two blind reviewers + brokered debate) at:
   clean.
 - [ ] **Step 5:** `git add` the touched paths; `git commit -m "feat(ws): combat intents answer a correlated combat_result on success" -- src/server/src/ws/ src/server/src/combat/mod.rs src/types/generated/ServerMsg.ts src/client/core/src/wire.ts src/client/core/src/wire.test.ts`
 
-### Task 2: `PathResult.budget_cells` through a shared `budget_cells` helper
+### Task 2: `PathResult.budget_cells` through a shared `resource_cells` helper
 
 **Files:**
-- Modify: `src/server/src/ws/room.rs` (`pub(crate) fn budget_cells(current: f64, cost_to_resource: f64) -> f64`;
+- Modify: `src/server/src/ws/room.rs` (`pub(crate) fn resource_cells(current: f64, cost_to_resource: f64) -> f64`;
   `resolve_budget`'s `Resolved.budget_cells` uses it)
-- Modify: `src/server/src/ws/conn.rs` (`handle_pathfind`: compute `budget_cells: Option<f64>` from
-  the `Resolved { decrement: Some(d), .. }` branch when `bg.enforced`; thread it into the
-  `PathResult` reply; keep the existing `Hard`-only truncation ceiling)
+- Modify: `src/server/src/ws/conn.rs` (`handle_pathfind`: compute a NEW local
+  `reply_budget_cells: Option<f64>` from the `Resolved { decrement: Some(d), .. }` branch when
+  `bg.enforced` — present under `Warn`, `None` and for a GM alike — and thread it into the
+  `PathResult` reply. `handle_pathfind` ALREADY declares a local named `budget_cells:
+  Option<f64>` that is the `Hard`-only route-truncation ceiling passed to `s.pathfind(..)`; that
+  local, its name, and its `Hard`-only population are UNCHANGED. The two values differ in
+  presence (ceiling: `Hard` only; reply: whenever enforced) and must never share a binding —
+  reusing or overwriting the ceiling local with the reply value would truncate `Warn`/`None`
+  previews, which Step 1's owner-under-`Warn` test exists to catch.)
 - Modify: `src/server/src/ws/protocol.rs` (`PathResult.budget_cells: Option<f64>`, doc per spec §3.2)
 - Modify: `src/server/src/ws/room/tests/movement_budget.rs` + `src/server/src/ws/conn/tests/`
   (whichever file already covers `handle_pathfind`'s clamp — locate with
@@ -126,8 +132,11 @@ Run buddy-checking (two blind reviewers + brokered debate) at:
   frame), `src/client/core/src/wire.ts` (schema), tests
 
 **Interfaces:**
-- `budget_cells(current, cost_to_resource) = current / cost_to_resource` — the ONE place this
-  division lives; both the `Hard` ceiling and the preview number call it.
+- `resource_cells(current, cost_to_resource) = current / cost_to_resource` — the ONE place this
+  division lives; both the `Hard` ceiling (`BudgetResolution::Resolved.budget_cells`) and the
+  preview number (`PathResult.budget_cells`) call it. Three names, deliberately distinct: the
+  helper `resource_cells`, the truncation-ceiling field/local `budget_cells`, and the reply
+  local `reply_budget_cells` feeding `PathResult.budget_cells`.
 - `BudgetGate::enforced` is read where `handle_pathfind` already holds `bg` (it is a private
   field of `BudgetGate` — add a `pub(crate) fn enforced(&self) -> bool` accessor rather than
   widening the field).
@@ -179,7 +188,7 @@ Run buddy-checking (two blind reviewers + brokered debate) at:
   key order.
 - `movement_cells`: `ce.movement.resource` → the resolved Tracked entry's `current`;
   `cost_to_resource` = `self.scene_per_cell(ce.scene_id)` under `PerCell` (None ⇒ None) or
-  `1.0` under `Spaces`; then `crate::ws::room::budget_cells(current, ctr)`. Mirror-bound ⇒
+  `1.0` under `Spaces`; then `crate::ws::room::resource_cells(current, ctr)`. Mirror-bound ⇒
   `None`.
 - Sort combats by id and combatants by id (stable fingerprint).
 

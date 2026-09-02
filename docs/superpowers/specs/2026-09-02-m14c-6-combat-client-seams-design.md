@@ -94,13 +94,16 @@ to the originator via `etx`). Egress ordering: `egress_loop` is `biased;` on `er
 
 ### 3.2 `PathResult.budget_cells` (S9)
 
-- `ws::room::budget_cells(current: f64, cost_to_resource: f64) -> f64` — the one division
+- `ws::room::resource_cells(current: f64, cost_to_resource: f64) -> f64` — the one division
   `resolve_budget`'s `Hard` ceiling already performs (`n.current / ctr`), extracted so the clamp
   and the preview number are the same arithmetic. `resolve_budget` calls it for `budget_cells`;
   `ResolvedBudget` gains nothing (it already carries `current` and `cost_to_resource`).
 - `handle_pathfind`: when the gate resolves (`BudgetResolution::Resolved { decrement: Some(d), .. }`)
   and `bg.enforced` (the caller can READ the combatant — the same predicate that gates refusal and
-  truncation), the reply carries `budget_cells: Some(budget_cells(d.current, d.cost_to_resource))`;
+  truncation), the reply carries `budget_cells: Some(resource_cells(d.current, d.cost_to_resource))` (a
+  NEW `handle_pathfind` local, `reply_budget_cells`, distinct from the existing `Hard`-only
+  truncation-ceiling local `budget_cells` that feeds `SceneEcs::pathfind` — that local and its
+  `Hard`-only population are unchanged);
   otherwise `None`. A GM is `enforced` (a GM reads every document), so a GM preview shows the
   number too — their move still decrements. `NotYourTurn`/`Unresolvable` refusals are unchanged
   (generic `PathError`). Under `Hard` the route is truncated AND `budget_cells` is present.
@@ -141,7 +144,7 @@ ResolvedResourceView { binding: ResourceBindingKind /* "mirror" | "tracked" */,
   `current = max = eval(value)`; Tracked ⇒ `max = eval(max)`, `current = stored ?? max`
   (lazy-full). An `Err` becomes `{ current: None, max: None, error: Some(detail) }`.
 - `movement_cells`: when the combat's `movement.resource` names a Tracked key that resolved,
-  `budget_cells(current, cost_to_resource)` with `cost_to_resource` = `scene_per_cell(scene)` under
+  `resource_cells(current, cost_to_resource)` with `cost_to_resource` = `scene_per_cell(scene)` under
   `PerCell` (`None` ⇒ `None`) or `1.0` under `Spaces` — the same conversion `resolve_budget` uses,
   through the same helper. Computed for every combat, active or not (a paused combat's rows still
   show budgets).
@@ -477,7 +480,7 @@ reply carries `budget_cells` under `warn` for their own token.
   (`AppContext.combat`, the service, the `"combat"` session subscription beside footprints),
   `shadowcat-codebase-realtime-sync` (the third correlated family now resolves by
   `combat_result`; the `selfUserId` failure mode paragraph is deleted),
-  `shadowcat-codebase-scene-rendering` (`PathResult.budget_cells`, the shared `budget_cells`
+  `shadowcat-codebase-scene-rendering` (`PathResult.budget_cells`, the shared `resource_cells`
   helper).
 - `docs/PLAN.md` M14c-6 DONE marker; `docs/HISTORY.md` delivery entry; POST_WORK_FINDINGS sweep.
 
