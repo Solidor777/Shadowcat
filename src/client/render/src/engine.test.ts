@@ -1316,7 +1316,7 @@ describe("carried-light sweep (moverLight)", () => {
     return { engine, store, backend, onUpdate, applied, lit, has };
   }
 
-  test("an admitted timeline lights the cells around each sample as it plays, holding a mid-walk committed frame until the sweep ends", () => {
+  test("an admitted timeline lights the cells around each sample as it plays, holding only the torch's end cells of a mid-walk committed frame until the sweep ends", () => {
     const { engine, backend, onUpdate, applied, lit, has } = setup();
     expect(lit()).toEqual([]);
     engine.animateSamples(
@@ -1334,10 +1334,12 @@ describe("carried-light sweep (moverLight)", () => {
     expect(has(3, 0)).toBe(false);
     expect(applied.at(-1)).toEqual({ cells: lit().length, sweeping: true });
 
-    // The post-commit rebroadcast arrives mid-walk with the light already at its final cell:
-    // parked, not painted — the far end must not light before the torch gets there.
-    onUpdate({ payload: frame([3, 0, 0, 0xffcc66, -1]), computedAtSeq: 2 });
+    // The post-commit rebroadcast arrives mid-walk with the light already at its final cell
+    // (3,0) AND an unrelated cell (7,7) lit by something else: the far end is held — it must
+    // not light before the torch gets there — while the unrelated cell paints at once.
+    onUpdate({ payload: frame([3, 0, 0, 0xffcc66, -1, 7, 7, 0, 0, -1]), computedAtSeq: 2 });
     expect(has(3, 0)).toBe(false);
+    expect(has(7, 7)).toBe(true); // a cell new to the target snaps in — no fade tick needed
 
     // Clock 250: cross-fade between the two samples — both cells present, fading.
     backend.runTicker(250);
@@ -1351,11 +1353,11 @@ describe("carried-light sweep (moverLight)", () => {
     expect(has(3, 0)).toBe(true);
     expect(has(0, 0)).toBe(false);
 
-    // Sweep end (clock 1000): the parked committed frame applies through the normal fade.
+    // Sweep end (clock 1000): the held end cell applies through the normal fade.
     backend.runTicker(500);
     backend.runTicker(300);
     expect(applied.at(-1)?.sweeping).toBe(false);
-    expect(lit().map((c) => [c.i, c.j, c.tint])).toEqual([[3, 0, 0xffcc66]]);
+    expect(lit().map((c) => [c.i, c.j, c.tint])).toEqual([[3, 0, 0xffcc66], [7, 7, 0]]);
   });
 
   test("a null moverLight (nothing reached this viewer) leaves the lighting overlay untouched", () => {

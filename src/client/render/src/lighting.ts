@@ -113,6 +113,35 @@ export function unionLightingInputs(prev: LightingInput, next: LightingInput): L
   return { cell: next.cell, bands: next.bands, hints: next.hints, cells };
 }
 
+/** Hold a set of cells at their previous committed values while a carried-light sweep plays:
+ * every cell of `next` whose `"i,j"` key is in `held` is replaced by the cell `prev` carries
+ * under that key (or dropped when `prev` has none); every other cell is `next`'s, as are
+ * `cell`, `bands` and `hints` (a `prev` cell's `band`/`hint` index is read against them, as
+ * in `unionLightingInputs`). `RenderEngine` paints this while a light sweep plays, with `held`
+ * the cells the sweeping torch's LAST sample lights: the post-move rebroadcast carries the
+ * light at that final position, and applying those cells mid-walk would light the corridor's
+ * far end before the torch gets there — while every OTHER change a committed frame carries
+ * (another light switched on, a door opened) applies at once. Pure.
+ * @param prev The lighting in force when the light sweep started.
+ * @param next The newest committed lighting.
+ * @param held The `"i,j"` keys to hold at `prev`'s values.
+ * @returns `next` with the held cells taken from `prev`.
+ * @example
+ * ```ts
+ * import { holdLightingCells } from "@shadowcat/render";
+ *
+ * const prev = { cell: 100, bands: [], hints: [], cells: [] };
+ * const next = { cell: 100, bands: [], hints: [], cells: [{ i: 3, j: 0, band: 0, tint: 0, hint: -1, corners: [] }] };
+ * holdLightingCells(prev, next, new Set(["3,0"])).cells.length; // 0 — held at prev, which has no such cell
+ * ```
+ */
+export function holdLightingCells(prev: LightingInput, next: LightingInput, held: ReadonlySet<string>): LightingInput {
+  if (held.size === 0) return next;
+  const cells: LitCell[] = next.cells.filter((c) => !held.has(key(c)));
+  for (const c of prev.cells) if (held.has(key(c))) cells.push(c);
+  return { cell: next.cell, bands: next.bands, hints: next.hints, cells };
+}
+
 /** Cell identity key for matching a cell across `prev`/`target` frames during a fade.
  * @param c A cell's grid coordinates.
  * @param c.i Grid column index.

@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { Lighting, MockBackend, mergeSweepCells, bandAlpha, unionLightingInputs } from "./index";
+import { Lighting, MockBackend, mergeSweepCells, bandAlpha, unionLightingInputs, holdLightingCells } from "./index";
 
 const bands = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }];
 
@@ -152,6 +152,24 @@ test("unionLightingInputs keeps prev cells next does not restate; next wins a sh
   expect(out.cells.map((c) => [c.i, c.j, c.band])).toEqual([[1, 0, 2], [3, 0, 0], [0, 0, 0]]);
   expect(prev.cells).toHaveLength(2); // pure
   expect(next.cells).toHaveLength(2);
+});
+
+test("holdLightingCells keeps held keys at prev's values (absent when prev lacks them) and takes everything else from next", () => {
+  const prev = { cell: 100, bands: [{ name: "bright", min: 0.67 }], hints: [], cells: [
+    { i: 3, j: 0, band: 1, tint: 0, hint: -1, corners: [] },
+  ] };
+  const next = { cell: 50, bands, hints: ["desaturate"], cells: [
+    { i: 3, j: 0, band: 0, tint: 0xffcc66, hint: 0, corners: [] }, // held: prev's band-1 cell stands in
+    { i: 4, j: 0, band: 0, tint: 0xffcc66, hint: 0, corners: [] }, // held: prev has none → absent
+    { i: 7, j: 7, band: 0, tint: 0, hint: -1, corners: [] },       // applies at once
+  ] };
+  const out = holdLightingCells(prev, next, new Set(["3,0", "4,0"]));
+  expect(out.cell).toBe(50);
+  expect(out.bands).toBe(bands);
+  expect(out.cells.map((c) => [c.i, c.j, c.band, c.tint])).toEqual([[7, 7, 0, 0], [3, 0, 1, 0]]);
+  expect(holdLightingCells(prev, next, new Set())).toBe(next); // nothing held → next itself
+  expect(prev.cells).toHaveLength(1); // pure
+  expect(next.cells).toHaveLength(3);
 });
 
 test("darkness regions paint only while a lighting model is in force, and a repeated reference does not repaint", () => {

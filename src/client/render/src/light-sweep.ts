@@ -69,7 +69,9 @@ function pointInRings(x: number, y: number, rings: [number, number][][]): boolea
  * (non-finite position or reach) or one exceeding `MAX_LIGHT_SWEEP_CELLS` contributes nothing.
  * @param sample The light sample to rasterize.
  * @param grid The active grid (cell geometry + indexing).
- * @param los The viewer's current visible polygons (scene coords, flat encoding).
+ * @param los The viewer's current visible polygons (scene coords, flat encoding), or `null` for
+ * no line-of-sight clip — `lightSampleCellKeys`'s read, which asks what the sample lights
+ * regardless of where the viewer can see.
  * @param bandCount The active gradation's band count (drives the dim-band darkening alpha).
  * @returns The contributed cells, one per grid cell, in enumeration order.
  * @example
@@ -89,7 +91,7 @@ function pointInRings(x: number, y: number, rings: [number, number][][]): boolea
 export function lightSampleCells(
   sample: MoveLightSample,
   grid: Grid,
-  los: Polygon[],
+  los: Polygon[] | null,
   bandCount: number,
 ): LitDrawCell[] {
   const [px, py] = sample.pos;
@@ -107,14 +109,14 @@ export function lightSampleCells(
   const r0 = Math.min(...corners.map((c) => c.row)) - 1;
   const r1 = Math.max(...corners.map((c) => c.row)) + 1;
   if ((c1 - c0 + 1) * (r1 - r0 + 1) > MAX_LIGHT_SWEEP_CELLS) return [];
-  const losRings = los.map((p) => p.points);
+  const losRings = los?.map((p) => p.points) ?? null;
   const out: LitDrawCell[] = [];
   for (let col = c0; col <= c1; col++) {
     for (let row = r0; row <= r1; row++) {
       const center = grid.cellCenter(col, row);
       const d = Math.hypot(center.x - px, center.y - py);
       if (d > dim) continue;
-      if (!losRings.some((ring) => pointInFlatRing(center.x, center.y, ring))) continue;
+      if (losRings !== null && !losRings.some((ring) => pointInFlatRing(center.x, center.y, ring))) continue;
       if (!pointInRings(center.x, center.y, sample.polygons)) continue;
       const band = d <= bright ? 0 : Math.min(1, Math.max(0, bandCount - 1));
       out.push({
@@ -129,6 +131,30 @@ export function lightSampleCells(
     }
   }
   return out;
+}
+
+/** The `"i,j"` keys of every cell `sample` lights with no line-of-sight clip — the cells the
+ * sweeping torch's FINAL sample will light in the committed frame that follows its move,
+ * which `RenderEngine` holds at their pre-sweep values until the sweep ends
+ * (`holdLightingCells`). Empty for a degenerate or over-cap sample, exactly as
+ * `lightSampleCells` is.
+ * @param sample The light sample (the sweep's last one).
+ * @param grid The active grid.
+ * @returns The lit cells' keys.
+ * @example
+ * ```ts
+ * import { Grid } from "@shadowcat/render";
+ *
+ * const grid = new Grid({ kind: "square", size: 100 });
+ * // not exported from @shadowcat/render; internal to RenderEngine's light sweep
+ * lightSampleCellKeys(
+ *   { tMs: 0, pos: [350, 50], bright: 100, dim: 150, color: 0xffcc66, intensity: 1, falloff: "linear", polygons: [[[-500, -500], [1000, -500], [1000, 500], [-500, 500]]] },
+ *   grid,
+ * ).has("3,0"); // true
+ * ```
+ */
+export function lightSampleCellKeys(sample: MoveLightSample, grid: Grid): Set<string> {
+  return new Set(lightSampleCells(sample, grid, null, 1).map(cellKey));
 }
 
 /** Cell identity key shared with `Lighting`'s fade — `"i,j"`.

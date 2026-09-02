@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { Grid } from "./grid";
 import { bandAlpha, MAX_DARK_ALPHA, TINT_ALPHA } from "./lighting";
-import { blendLightCells, lightSampleCells, MAX_LIGHT_SWEEP_CELLS } from "./light-sweep";
+import { blendLightCells, lightSampleCellKeys, lightSampleCells, MAX_LIGHT_SWEEP_CELLS } from "./light-sweep";
 import type { MoveLightSample, Polygon } from "./types";
 
 const grid = new Grid({ kind: "square", size: 100 });
@@ -65,6 +65,21 @@ describe("lightSampleCells", () => {
       const p = hex.cellCenter(c.i, c.j);
       expect(Math.hypot(p.x - center.x, p.y - center.y)).toBeLessThanOrEqual(250);
     }
+  });
+});
+
+describe("lightSampleCellKeys", () => {
+  test("names every cell the sample lights with no line-of-sight clip", () => {
+    const grid = new Grid({ kind: "square", size: 100 });
+    const sample: MoveLightSample = { tMs: 0, pos: [350, 50], bright: 100, dim: 150, color: 0xffcc66, intensity: 1, falloff: "linear", polygons: [[[-500, -500], [1000, -500], [1000, 500], [-500, 500]]] };
+    const keys = lightSampleCellKeys(sample, grid);
+    // The 3×3 block around (3,0): the diagonals sit 141 units out, inside the 150 reach.
+    expect([...keys].sort()).toEqual(["2,-1", "2,0", "2,1", "3,-1", "3,0", "3,1", "4,-1", "4,0", "4,1"]);
+    // A LOS clip that excludes the far cells would drop them from `lightSampleCells`; the keys
+    // are the unclipped set.
+    const clipped = lightSampleCells(sample, grid, [{ points: [0, 0, 100, 0, 100, 100, 0, 100] }], 3);
+    expect(clipped).toEqual([]);
+    expect(lightSampleCellKeys({ ...sample, dim: Number.NaN }, grid).size).toBe(0);
   });
 });
 

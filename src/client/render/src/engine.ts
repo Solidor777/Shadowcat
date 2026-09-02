@@ -4,8 +4,8 @@ import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
-import { blendLightCells, lightSampleCells } from "./light-sweep";
-import { unionLightingInputs } from "./lighting";
+import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
+import { holdLightingCells, unionLightingInputs } from "./lighting";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
@@ -214,12 +214,15 @@ export class RenderEngine implements SceneToolHost {
     }
   >();
   /** Active carried-light sweeps, keyed by token id — the lighting twin of `visionSweeps`.
-   * While non-empty, `Lighting` paints the held committed frame unioned with every sweep's
-   * chosen sample (`applyLightSweep`), and a committed lighting frame arriving meanwhile is
-   * parked in `lastLightingInput` rather than applied: the post-commit rebroadcast already
-   * carries the light at its FINAL position, and applying it mid-walk would show the corridor's
-   * far end lit before the torch gets there. Any recipient may populate this — the mover, a
-   * GM, or an observer whose vision the glow reached (`MoveStream.mover_light`). */
+   * While non-empty, `Lighting` paints the committed frame unioned with every sweep's chosen
+   * sample (`applyLightSweep`). A committed lighting frame arriving meanwhile APPLIES at once
+   * except for each sweep's `endKeys` — the cells its torch's LAST sample lights — which stay
+   * at their pre-sweep values (`lightingBeforeLightSweep`, `holdLightingCells`) until the
+   * sweep ends: the post-commit rebroadcast already carries the light at its FINAL position,
+   * and painting those cells mid-walk would show the corridor's far end lit before the torch
+   * gets there, while an unrelated change the same frame carries must not wait for the walk.
+   * Any recipient may populate this — the mover, a GM, or an observer whose vision the glow
+   * reached (`MoveStream.mover_light`). */
   private readonly lightSweeps = new Map<
     string,
     {
@@ -231,12 +234,20 @@ export class RenderEngine implements SceneToolHost {
        * admitted light sample's `tMs` — an observer's clipped duration can end before a still-
        * admitted glow does. */
       durationMs: number;
+      /** The `"i,j"` keys of the cells the sweep's LAST sample lights (`lightSampleCellKeys`)
+       * — held at their pre-sweep committed values while the sweep plays. */
+      endKeys: ReadonlySet<string>;
     }
   >();
-  /** The last parsed lighting input for the viewed scene (`toLighting`), applied or parked —
-   * see `lightSweeps`. `null` = no overlay (GM `mode:"all"`, or no frame yet); a light sweep
-   * has no darkness model to lift then and paints nothing. */
+  /** The last parsed lighting input for the viewed scene (`toLighting`), always applied
+   * through `applyCommittedLighting` (which holds a light sweep's end cells, never the whole
+   * frame). `null` = no overlay (GM `mode:"all"`, or no frame yet); a light sweep has no
+   * darkness model to lift then and paints nothing. */
   private lastLightingInput: LightingInput | null = null;
+  /** The committed lighting in force when the first active light sweep began — the source of
+   * the held `endKeys` cells while any light sweep plays (`holdLightingCells`). Cleared when
+   * the last light sweep ends. */
+  private lightingBeforeLightSweep: LightingInput | null = null;
   /** The committed lighting in force when the viewer's own vision sweep began (`animateSamples`
    * with `moverVision`), unioned with every newer committed frame for as long as a vision
    * sweep plays (`applyCommittedLighting`): the post-move frame lights the cells seen from the
@@ -562,6 +573,7 @@ export class RenderEngine implements SceneToolHost {
       this.lightSweeps.clear();
       this.lighting.setSweep(null);
     }
+    this.lightingBeforeLightSweep = null;
     this.lightingBeforeSweep = null;
     if (this.lastRawPayload !== undefined) {
       this.retargetLighting(this.toLighting(this.lastRawPayload));
@@ -796,12 +808,13 @@ export class RenderEngine implements SceneToolHost {
     this.applyCommittedLighting();
   }
 
-  /** Apply the committed lighting the viewer should see now: nothing while a carried-light
-   * sweep is in flight (`lastLightingInput` stays parked until `tickLightSweep` ends the last
-   * sweep — see `lightSweeps` for why a mid-walk frame must not paint); the union of the
-   * lighting held when the viewer's own vision sweep began and the newest frame while a vision
-   * sweep plays (`lightingBeforeSweep`); the newest frame alone otherwise. THE one path that
-   * retargets `Lighting` from a committed frame.
+  /** Apply the committed lighting the viewer should see now: the union of the lighting held
+   * when the viewer's own vision sweep began and the newest frame while a vision sweep plays
+   * (`lightingBeforeSweep`), the newest frame alone otherwise — and, while a carried-light
+   * sweep plays, with every active sweep's `endKeys` cells held at their pre-sweep values
+   * (`lightingBeforeLightSweep`, `holdLightingCells` — see `lightSweeps` for why a torch's
+   * end cells must not paint mid-walk while everything else in the frame must). THE one path
+   * that retargets `Lighting` from a committed frame.
    * @example
    * ```
    * // private method; not part of the public API
@@ -809,10 +822,27 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   private applyCommittedLighting(): void {
-    if (this.lightSweeps.size > 0) return;
     const li = this.lastLightingInput;
     const before = this.visionSweeps.size > 0 ? this.lightingBeforeSweep : null;
-    this.lighting.setTarget(before && li ? unionLightingInputs(before, li) : li);
+    let next = before && li ? unionLightingInputs(before, li) : li;
+    const heldFrom = this.lightSweeps.size > 0 ? this.lightingBeforeLightSweep : null;
+    if (next && heldFrom) next = holdLightingCells(heldFrom, next, this.lightSweepEndKeys());
+    this.lighting.setTarget(next);
+  }
+
+  /** The union of every active light sweep's `endKeys` — the cells `applyCommittedLighting`
+   * holds while the sweeps play.
+   * @returns The held cell keys (empty when no light sweep plays).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.lightSweepEndKeys();
+   * ```
+   */
+  private lightSweepEndKeys(): Set<string> {
+    const out = new Set<string>();
+    for (const sweep of this.lightSweeps.values()) for (const k of sweep.endKeys) out.add(k);
+    return out;
   }
 
   /** Test seam: exposes toLighting for unit tests (cosmetic parse has no secrecy implication).
@@ -1130,7 +1160,8 @@ export class RenderEngine implements SceneToolHost {
    * alongside the position tween.
    * @param moverLight Per-sample carried-light polygons — present for any recipient the server
    * admitted at least one sample to; presence starts a lighting sweep (`lightSweeps`) whose
-   * duration extends to the last admitted sample's `tMs`. A GLOW-ONLY frame (`samples` empty,
+   * duration extends to the last admitted sample's `tMs` and whose last sample's cells are
+   * held at their current committed values until it ends. A GLOW-ONLY frame (`samples` empty,
    * `moverLight` present: the light reached this viewer, the token never did) starts the light
    * sweep alone — no token tween, since there is no position to play.
    * @example
@@ -1170,16 +1201,25 @@ export class RenderEngine implements SceneToolHost {
       this.applyVisionSweep();
     }
     if (moverLight && moverLight.length > 0) {
-      const lastTMs = moverLight[moverLight.length - 1].tMs;
-      this.lightSweeps.set(id, { samples: moverLight, elapsed: initialElapsed, durationMs: Math.max(durationMs, lastTMs) });
+      // The first light sweep captures the lighting in force — the source of the held end
+      // cells for as long as any light sweep plays.
+      if (this.lightSweeps.size === 0) this.lightingBeforeLightSweep = this.lastLightingInput;
+      const last = moverLight[moverLight.length - 1];
+      this.lightSweeps.set(id, {
+        samples: moverLight,
+        elapsed: initialElapsed,
+        durationMs: Math.max(durationMs, last.tMs),
+        endKeys: lightSampleCellKeys(last, this.grid),
+      });
       this.applyLightSweep();
     }
   }
 
   /** Advance every in-flight carried-light sweep by `dtMs` (backend ticker, beside
    * `tickVisionSweep`). Each sweep completes on its own `durationMs`; once ALL have completed
-   * the overlay clears and the parked committed lighting (`lastLightingInput`, which by then
-   * carries the light at its final position) applies through `applyCommittedLighting`.
+   * the overlay clears and the committed lighting (`lastLightingInput`, which by then carries
+   * the light at its final position) applies in full through `applyCommittedLighting` — the
+   * held end cells included.
    * @param dtMs Milliseconds elapsed since the previous tick.
    * @example
    * ```
@@ -1195,6 +1235,7 @@ export class RenderEngine implements SceneToolHost {
     }
     if (this.lightSweeps.size === 0) {
       this.lighting.setSweep(null);
+      this.lightingBeforeLightSweep = null;
       this.applyCommittedLighting();
       return;
     }
