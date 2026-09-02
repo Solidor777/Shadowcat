@@ -249,6 +249,6 @@ display name.
   agents have in-flight edits in that repo).
 - [x] Docs updates committed on the branch.
 - [x] Full gate suite (Global Constraints list) green.
-- [ ] Final two-reviewer buddy review of the whole branch; fold findings.
+- [x] Final two-reviewer buddy review of the whole branch; fold findings.
 - [ ] Merge to main via temp detached worktree (`git merge --no-ff`), push, `gh run watch` to
   green, remove temp worktree.
