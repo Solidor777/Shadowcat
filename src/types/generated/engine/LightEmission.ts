@@ -6,6 +6,7 @@ import type { Falloff } from "./Falloff";
  * where it is: shared by standalone `light` documents (`LightEngine.emission`)
  * and token/actor-carried emissions (`ActorEngine.light`,
  * `TokenOverrides.light`). `brightRadius`/`dimRadius` are in grid cells.
+ * Every carrier validates it at ingress through `LightEmission::validate`.
  */
 export type LightEmission = { 
 /**

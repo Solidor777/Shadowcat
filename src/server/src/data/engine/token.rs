@@ -89,6 +89,11 @@ impl TokenEngine {
         if self.x.abs() > bound || self.y.abs() > bound {
             return Err(format!("position exceeds coordinate bound {bound}"));
         }
+        if let Some(light) = self.overrides.as_ref().and_then(|o| o.light.as_ref()) {
+            light
+                .validate()
+                .map_err(|m| format!("overrides.light: {m}"))?;
+        }
         Ok(())
     }
 }
@@ -316,4 +321,15 @@ pub struct ActorEngine {
     /// with the linked faction's `Faction.movement`; a token override replaces the whole set.
     #[serde(default)]
     pub movement: Vec<String>,
+}
+
+impl ActorEngine {
+    /// Ingress validation beyond serde shape: the carried emission, when
+    /// present, through `LightEmission::validate`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        match &self.light {
+            Some(light) => light.validate().map_err(|m| format!("light: {m}")),
+            None => Ok(()),
+        }
+    }
 }

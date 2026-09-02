@@ -575,7 +575,7 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
 }
 
 #[test]
-fn glow_reaches_fails_closed_on_a_degenerate_reach_and_keeps_the_disc_verdict_past_the_cap() {
+fn glow_reaches_fails_closed_on_a_degenerate_reach_and_never_falls_open_on_a_wide_one() {
     // Lighting off: every line-of-sight cell qualifies, so reach geometry alone decides.
     let ecs = fixture(true, None);
     let sight = sight(&ecs, &[]);
@@ -590,14 +590,18 @@ fn glow_reaches_fails_closed_on_a_degenerate_reach_and_keeps_the_disc_verdict_pa
         &[],
         &light(0, 0.0, [50.0, 50.0], 0.0)
     ));
-    // A reach of 10,000 units is a 200×200-cell box, past `MAX_GLOW_ADMISSION_CELLS`: the disc
-    // test decides — it touches the target's sight, so the sample is admitted even though its
-    // polygon has been emptied.
+    // A reach of 10,000 units is a 200×200-cell disc box. The fine test still runs — over the
+    // disc box ∩ the target's line-of-sight box ∩ the sample's own polygon box, never the whole
+    // disc — so a glow that wide whose own polygon excludes every cell the target sees is
+    // DROPPED (a light behind a `blocksLight` wall never discloses its bearer by being large),
+    // while the same glow with no occluder lights the target's own cell and is admitted.
     let mut huge = light(0, 0.0, [50.0, 50.0], 10_000.0);
+    huge.polygons = vec![vec![[5000.0, 5000.0], [5001.0, 5000.0], [5001.0, 5001.0]]];
+    assert!(!glow_reaches(&instant, &[], &huge));
     huge.polygons.clear();
     assert!(glow_reaches(&instant, &[], &huge));
-    // An emptied polygon under the cap composes as an unoccluded light and reaches its own
-    // cell; a polygon that excludes every cell in reach paints nothing → dropped.
+    // An emptied polygon composes as an unoccluded light and reaches its own cell; a polygon
+    // that excludes every cell in reach paints nothing → dropped.
     let mut small = light(0, 0.0, [50.0, 50.0], 100.0);
     small.polygons.clear();
     assert!(glow_reaches(&instant, &[], &small));

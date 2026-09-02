@@ -388,6 +388,7 @@ pub struct LightEngine {
 /// where it is: shared by standalone `light` documents (`LightEngine.emission`)
 /// and token/actor-carried emissions (`ActorEngine.light`,
 /// `TokenOverrides.light`). `brightRadius`/`dimRadius` are in grid cells.
+/// Every carrier validates it at ingress through `LightEmission::validate`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -406,6 +407,58 @@ pub struct LightEmission {
     /// GM toggle; a disabled emission contributes nothing (the suppress path
     /// for a carried emission, the on/off switch for a standalone light).
     pub enabled: bool,
+}
+
+impl LightEmission {
+    /// Ingress validation beyond serde shape, the posture every engine struct
+    /// carries: `intensity` finite (its `0..=1` range is a read-side clamp),
+    /// both radii finite, non-negative and bounded by the shared cell cap
+    /// `scene::pathfinding::MAX_FOOTPRINT_CELLS` — the bound the aura and the
+    /// footprint already share — so no authored glow can reach a scan bound
+    /// the egress clip would otherwise have to fail closed on
+    /// (`ws::move_clip::glow_reaches`).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// emission.validate()  // Err("dimRadius exceeds 64") past the cap
+    /// ```
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !self.intensity.is_finite() {
+            return Err("intensity must be finite".to_string());
+        }
+        let cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS;
+        for (name, r) in [
+            ("brightRadius", self.bright_radius),
+            ("dimRadius", self.dim_radius),
+        ] {
+            if !r.is_finite() || r < 0.0 {
+                return Err(format!("{name} must be finite and non-negative"));
+            }
+            if r > cap {
+                return Err(format!("{name} exceeds {cap}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl LightEngine {
+    /// Ingress validation beyond serde shape: position and elevation finite,
+    /// and the emission through `LightEmission::validate`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (name, v) in [("x", self.x), ("y", self.y)] {
+            if !v.is_finite() {
+                return Err(format!("{name} must be finite"));
+            }
+        }
+        if let Some(e) = self.elevation {
+            if !e.is_finite() {
+                return Err("elevation must be finite".to_string());
+            }
+        }
+        self.emission.validate()
+    }
 }
 
 /// A falloff curve wrapper. `curve` defaults to `FalloffCurve::Linear`

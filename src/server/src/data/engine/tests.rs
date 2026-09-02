@@ -460,6 +460,65 @@ fn light_wrong_typed_intensity_is_rejected() {
 }
 
 #[test]
+fn light_emission_radii_are_finite_non_negative_and_capped_at_every_carrier() {
+    // The ONE emission payload is validated wherever it enters: a standalone light, an actor's
+    // carried emission, and a token override — radii in cells, bounded by the shared cell cap
+    // `MAX_FOOTPRINT_CELLS`; a negative radius is refused; the cap itself is admitted.
+    let cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS;
+    let emission = |bright: f64, dim: f64| json!({ "color": "#fff", "intensity": 1.0, "brightRadius": bright, "dimRadius": dim, "enabled": true });
+    let light = |e: serde_json::Value| json!({ "x": 0.0, "y": 0.0, "emission": e });
+    let actor = |e: serde_json::Value| {
+        json!({
+            "displayName": "A", "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
+            "prototype": true, "light": e
+        })
+    };
+    let token = |e: serde_json::Value| json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0, "overrides": { "light": e } });
+    assert!(validate_engine("light", Some(&light(emission(cap / 2.0, cap)))).is_ok());
+    assert!(validate_engine("light", Some(&light(emission(1.0, cap + 1.0)))).is_err());
+    assert!(validate_engine("light", Some(&light(emission(-1.0, 2.0)))).is_err());
+    assert!(validate_engine("actor", Some(&actor(emission(1.0, 2.0)))).is_ok());
+    assert!(validate_engine("actor", Some(&actor(emission(1.0, cap + 1.0)))).is_err());
+    assert!(validate_engine("actor", Some(&actor(emission(-1.0, 2.0)))).is_err());
+    assert!(validate_engine("token", Some(&token(emission(1.0, 2.0)))).is_ok());
+    assert!(validate_engine("token", Some(&token(emission(1.0, cap + 1.0)))).is_err());
+    assert!(validate_engine("token", Some(&token(emission(-1.0, 2.0)))).is_err());
+}
+
+#[test]
+fn light_position_and_elevation_must_be_finite() {
+    // JSON cannot carry a non-finite number, so the finiteness guard is exercised through the
+    // struct directly — the same path `normalize_engine`'s "light" arm runs.
+    let ok = LightEngine {
+        x: 0.0,
+        y: 0.0,
+        elevation: Some(1.0),
+        emission: LightEmission {
+            color: "#fff".into(),
+            intensity: 1.0,
+            bright_radius: 1.0,
+            dim_radius: 2.0,
+            falloff: None,
+            enabled: true,
+        },
+    };
+    assert!(ok.validate().is_ok());
+    let mut bad = ok.clone();
+    bad.x = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = ok.clone();
+    bad.elevation = Some(f64::INFINITY);
+    assert!(bad.validate().is_err());
+    let mut bad = ok.clone();
+    bad.emission.intensity = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = ok;
+    bad.emission.dim_radius = f64::INFINITY;
+    assert!(bad.validate().is_err());
+}
+
+#[test]
 fn light_falloff_curve_is_a_closed_enum() {
     for curve in ["linear", "quadratic", "none"] {
         let v = json!({

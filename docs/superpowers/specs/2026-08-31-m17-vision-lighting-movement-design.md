@@ -230,7 +230,13 @@ per-recipient egress clip, client sweeps).
   inputs the existing clip already resolves). A recipient across the map learns nothing; a
   recipient whose corridor the glow spills into gets the timeline. Within an admitted timeline the
   polygons are *not* further clipped — the client intersects them with its own LOS for rendering,
-  which it already has. (Residual disclosed: an admitted recipient receives glow geometry slightly
+  which it already has. Cost of the clip, per recipient per frame: one LOS raycast per vision
+  source (`sight_sources`) plus one per distinct sample instant for each of the recipient's own
+  in-flight tokens; the illumination field (`lighting_inputs_excluding`) raycast once per
+  (scene, in-flight set) and shared by every recipient of the frame, the lit mask and the
+  movement gate; every distinct instant resolved once for both gates (`clip_frame`); the glow's
+  cell test bounded to the disc ∩ line-of-sight ∩ polygon boxes. The timeline itself stays one
+  light raycast per sample. (Residual disclosed: an admitted recipient receives glow geometry slightly
   outside its LOS — light spilling around a corner carries that information physically; logged as
   the invariant-11 trade, fidelity over wire-minimality, with the admission gate bounding the
   radius of disclosure to the light's own reach.)
@@ -398,15 +404,25 @@ They amend §6.2/§8 above where they conflict; the code is the truth.
   non-empty". A second frame type was rejected: it would fork the client's playback keying and
   the re-emit path for no information the empty-samples shape does not already carry. The
   client starts the light sweep alone (no token tween — there is no position to play).
-- **Light admission is "lights a cell the recipient sees", not "disc touches sight".**
-  `glow_reaches` requires a cell center within `dim`, inside the sample's own occluded
-  polygon and in the target's line of sight — the cells `lightSampleCells` paints — so a
+- **Light admission is "this glow lights a cell the recipient sees" — the ONE visibility
+  predicate, never line of sight alone.** `glow_reaches` requires a cell center within `dim`
+  that the sample's own light reaches (`lighting::source_level`, the per-source rule the
+  field's composition sums — its occluder polygon and taper apply) AND that the recipient sees
+  with the instant's field composed (`InstantSight::sees`: line of sight, the composed
+  illumination against the source's floor, darkvision range), so an ember below a
+  normal-vision observer's dim floor is not admitted while a darkvision observer within range
+  is shown it — exactly what `player_lit_mask` decides for the same cell at rest — and a
   `blocksLight`-occluded glow whose disc merely crosses a sight wall is not admitted (the
   disc rule would have sent a glow-only frame that paints nothing and discloses a light
-  moving behind the wall). The disc test stays as the pre-filter and, past
-  `MAX_GLOW_ADMISSION_CELLS`, the verdict: a scene-wide glow keeps the coarse admission rather
-  than being dropped — fail-open on reach, because a huge light reaching a recipient's sight is
-  not a secret the fine test protects.
+  moving behind the wall). The disc test stays as the pre-filter only. The fine test always
+  runs — over the disc box ∩ the recipient's line-of-sight box ∩ the sample's polygon box,
+  under the lit mask's own scan bound — and never falls open: a box past that bound admits
+  nothing. The earlier ruling that a glow past a per-sample cell cap keeps the coarse disc
+  admission is withdrawn: it was reachable by GM-authored data (`dimRadius` had no ingress
+  validation) and disclosed a bearer's position behind `blocksLight` walls. `LightEmission`
+  is ingress-validated at every carrier (standalone light, actor, token override): finite
+  intensity, finite non-negative radii bounded by the shared cell cap `MAX_FOOTPRINT_CELLS`,
+  unknown fields refused.
 - **Client lighting during the mover's own vision sweep: union, then newest.** The
   post-move `vision` frame lights the cells seen from the STOP; the sweeping fog runs from the
   START. `applyCommittedLighting` paints `unionLightingInputs(lightingBeforeSweep, newest)`

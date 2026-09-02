@@ -222,13 +222,6 @@ pub(crate) fn disc_intersects_polys<'a>(
     })
 }
 
-/// Upper bound on the cells `glow_reaches` enumerates for one carried-light sample: the
-/// pixel bounding box of its dim disc, in cells. A wider glow keeps the coarse disc admission
-/// rather than being dropped — a scene-wide light reaching a recipient's sight is not the
-/// secret the fine test protects, and an unbounded per-sample scan is the DoS surface the cap
-/// removes.
-pub(crate) const MAX_GLOW_ADMISSION_CELLS: i64 = 4096;
-
 /// Whether `sample`'s glow lights a cell the recipient sees at `sight`'s instant: some cell
 /// center within `sample.dim` of its position that the sample's own light reaches
 /// (`InstantSight::light_reaches` — `lighting::source_level` over the sample composed as an
@@ -239,9 +232,14 @@ pub(crate) const MAX_GLOW_ADMISSION_CELLS: i64 = 4096;
 /// carries this very sample as its own timeline's chosen light, so an ember below a normal-
 /// vision recipient's dim floor lights nothing they see and is not admitted, while a
 /// darkvision recipient within range is shown it — exactly the cells `player_lit_mask` would
-/// light at rest. The disc test (`disc_intersects_polys`) is the cheap pre-filter; past
-/// `MAX_GLOW_ADMISSION_CELLS` it is also the verdict. A non-finite or non-positive reach
-/// admits nothing.
+/// light at rest. The disc test (`disc_intersects_polys`) is the cheap pre-filter. The fine
+/// test ALWAYS runs and NEVER falls open: it scans the dim disc's box ∩ the recipient's
+/// line-of-sight box (`InstantSight::los_bbox`) ∩ the sample's own occluder box — a cell
+/// outside any of the three can be neither lit by this glow nor seen — under the lit mask's
+/// own scan bound (`explored::MAX_CELLS_PER_POLYGON`), and a box past even that bound admits
+/// nothing (fail-closed). A `dimRadius` is ingress-bounded by `MAX_FOOTPRINT_CELLS`
+/// (`LightEmission::validate`), so no authored light reaches the bound. A non-finite or
+/// non-positive reach admits nothing.
 pub(crate) fn glow_reaches(
     sight: &InstantSight<'_>,
     lights: &[InstantLight],
@@ -256,16 +254,35 @@ pub(crate) fn glow_reaches(
         return false;
     }
     let own = sight.sample_light(sample);
-    let Some(centers) = sight.cell_centers_in(
-        (px - dim, py - dim),
-        (px + dim, py + dim),
-        MAX_GLOW_ADMISSION_CELLS,
-    ) else {
-        return true;
+    let Some((mut lo, mut hi)) = sight.los_bbox() else {
+        return false;
+    };
+    lo = (lo.0.max(px - dim), lo.1.max(py - dim));
+    hi = (hi.0.min(px + dim), hi.1.min(py + dim));
+    if let Some((olo, ohi)) = bbox_of(&own.occluder) {
+        lo = (lo.0.max(olo.0), lo.1.max(olo.1));
+        hi = (hi.0.min(ohi.0), hi.1.min(ohi.1));
+    }
+    if lo.0 > hi.0 || lo.1 > hi.1 {
+        return false;
+    }
+    let Some(centers) =
+        sight.cell_centers_in(lo, hi, crate::scene::explored::MAX_CELLS_PER_POLYGON)
+    else {
+        return false;
     };
     centers
         .into_iter()
         .any(|c| sight.light_reaches(&own, c) && sight.sees(c, lights))
+}
+
+/// The AABB `(min, max)` of `poly`'s vertices; `None` for an empty polygon.
+fn bbox_of(poly: &[P]) -> Option<(P, P)> {
+    let mut it = poly.iter().copied();
+    let first = it.next()?;
+    Some(it.fold((first, first), |(lo, hi), (x, y)| {
+        ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y)))
+    }))
 }
 
 /// The carried-light half of `clip_frame` alone (a frame with no position samples): `None`

@@ -515,6 +515,22 @@ impl InstantSight<'_> {
         )
     }
 
+    /// The pixel AABB `(min, max)` of every source's LOS polygon at this instant — the box a
+    /// cell-scan over "cells the recipient might see" is bounded to; `None` when no source
+    /// has a polygon (nothing is visible, so nothing need be scanned).
+    pub(crate) fn los_bbox(&self) -> Option<(vision::P, vision::P)> {
+        let mut out: Option<(vision::P, vision::P)> = None;
+        for (_, poly) in &self.views {
+            for &(x, y) in poly.iter() {
+                out = Some(match out {
+                    None => ((x, y), (x, y)),
+                    Some((lo, hi)) => ((lo.0.min(x), lo.1.min(y)), (hi.0.max(x), hi.1.max(y))),
+                });
+            }
+        }
+        out
+    }
+
     /// `RecipientSight::sample_light` for this instant's sight — the field light a carried-
     /// light sample composes as.
     pub(crate) fn sample_light(&self, sample: &crate::ws::protocol::LightSample) -> InstantLight {
