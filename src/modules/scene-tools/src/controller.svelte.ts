@@ -3,8 +3,8 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup } from "@shadowcat/core";
-import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type CombatApi, type CombatEngine } from "@shadowcat/core";
+import type { SceneInteraction, ActorSelection, TokenSelection, TFunc } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
 
@@ -81,6 +81,16 @@ export interface ToolContext {
    * ring and the place tool all read their extents from here rather than computing any; absent ⇒
    * an empty lookup, under which a token's own authored `w`/`h` stand. */
   footprints?: () => FootprintLookup;
+  /** The combat seam (from `AppContext.combat`). `requestRoute` reads the viewed scene's active
+   * combat's movement enforcement to label a Warn overage or a Hard stop on the route preview;
+   * absent ⇒ the plain budget label (no overage/stop suffix), matching an older host or no
+   * active combat. */
+  combat?: CombatApi;
+  /** Translate function (from `AppContext.t`), for the Warn-overage/Hard-stop route labels.
+   * Absent ⇒ `requestRoute` falls back to the same plain-English strings `en.ts` declares for
+   * `tools.overBudget`/`tools.budgetStop`, so a `ToolContext` built without one (e.g. most
+   * existing tests) still renders sensible text. */
+  t?: TFunc;
 }
 
 /** The active (viewed) scene + its grid cell size (default 100 when
@@ -184,6 +194,30 @@ function footprintsOf(ctx: ToolContext): FootprintLookup {
 
 /** Route color for the A* preview polyline (blue-teal, distinct from walls and selection). */
 const ROUTE_COLOR = 0x3399ff;
+/** Route color for a Warn-enforcement preview whose cost exceeds the mover's remaining
+ * movement budget (amber, distinct from the plain route color). The polyline itself is
+ * unchanged under Hard enforcement — the server already truncated it — so this color applies
+ * to the Warn overage case only. */
+const ROUTE_WARN_COLOR = 0xffa500;
+
+/** Fallback translator `requestRoute` uses when `ctx.t` is absent (e.g. a `ToolContext` built
+ * directly, without a host `AppContext`) — mirrors `en.ts`'s own `tools.overBudget`/
+ * `tools.budgetStop` catalog strings exactly, so the plain-English default a caller sees
+ * without a translator matches the localized string it stands in for.
+ * @param key The message key.
+ * @param params Interpolation values (`over` for `tools.overBudget`).
+ * @returns The resolved string, or `key` verbatim for an unrecognized key.
+ * @example
+ * ```
+ * // internal helper; not part of the public API
+ * fallbackT("tools.budgetStop"); // "stops at budget"
+ * ```
+ */
+function fallbackT(key: string, params?: Record<string, string | number>): string {
+  if (key === "tools.overBudget") return `${params?.over} over budget`;
+  if (key === "tools.budgetStop") return "stops at budget";
+  return key;
+}
 /** Maximum milliseconds between two pointer-downs to count as a double-click. */
 const DOUBLE_CLICK_MS = 350;
 /** Maximum scene-coord distance between two pointer-downs to count as a double-click
@@ -731,18 +765,37 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         if (seq !== pendingSeq) return; // superseded by a newer move
         // Cache the resolved path for reuse by commitRoute (avoids a second pathfind).
         lastPreviewedPath = result.path;
-        // Render the routed polyline via previewOverlay.
-        const pts = result.path.flat();
-        ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: ROUTE_COLOR, width: 3 }, fill: null }]);
         // Budget label: `formatCellDistance` rounds to whole distance units for display; the
         // server-side cost stays exact (diagonal rules like alternating/euclidean yield
         // fractional cells).
         const budgetLabel = formatCellDistance(result.cost, scene);
         const startPt: Point = { x: start[0], y: start[1] };
+        const t = ctx.t ?? fallbackT;
+        // Overage/stop suffix: only meaningful under an active combat's Warn/Hard movement
+        // enforcement, and only when the reply carried a budget to compare the cost against
+        // (no active combat, no combat.movement.enforcement === "none", or a budget-less reply
+        // all leave `suffix` unset).
+        const combatDoc = ctx.combat?.activeFor(scene.id);
+        const enforcement = combatDoc ? (combatDoc.engine as CombatEngine).movement.enforcement : "none";
+        let strokeColor = ROUTE_COLOR;
+        let suffix: string | null = null;
+        if (result.budgetCells != null && enforcement !== "none") {
+          if (enforcement === "warn" && result.cost > result.budgetCells) {
+            const overLabel = formatCellDistance(result.cost - result.budgetCells, scene);
+            suffix = t("tools.overBudget", { over: overLabel });
+            strokeColor = ROUTE_WARN_COLOR;
+          } else if (enforcement === "hard" && result.truncated) {
+            // Polyline unchanged: the server already cut the route at the budget.
+            suffix = t("tools.budgetStop");
+          }
+        }
+        const pts = result.path.flat();
+        ctx.scene.previewOverlay([{ points: pts, closed: false, stroke: { color: strokeColor, width: 3 }, fill: null }]);
+        const withSuffix = suffix ? `${budgetLabel} · ${suffix}` : budgetLabel;
         // An arrested result means the server truncated the route at an arrest region; only this
         // branch knows that, so it appends the ⚠ marker itself — the shared formatter has no
         // arrest concept — signalling the previewed budget covers a shorter, non-final stop.
-        const label = result.arrested ? `${budgetLabel} ⚠` : budgetLabel;
+        const label = result.arrested ? `${withSuffix} ⚠` : withSuffix;
         ctx.scene.drawMeasure(startPt, goal, label);
       },
       () => {

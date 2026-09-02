@@ -20,6 +20,7 @@
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
+    combat: ctx.combat,
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
   });

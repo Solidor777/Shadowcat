@@ -53,6 +53,10 @@ function setupRoute(over: {
   clearScheduledTimeout?: ToolContext["clearScheduledTimeout"];
   /** Scene-level vision overrides. Absent ⇒ grid-stepped default. */
   sceneVision?: { movementModel?: "grid-stepped" | "continuous" };
+  /** Advisory combat seam; absent ⇒ no active combat (plain budget label). */
+  combat?: ToolContext["combat"];
+  /** Translate seam; absent ⇒ `requestRoute`'s own English fallback. */
+  t?: ToolContext["t"];
 } = {}) {
   const docs = new DocumentStore();
   // Scene with grid.distance so the budget label can be computed.
@@ -112,9 +116,23 @@ function setupRoute(over: {
     now: over.now,
     scheduleTimeout: over.scheduleTimeout,
     clearScheduledTimeout: over.clearScheduledTimeout,
+    combat: over.combat,
+    t: over.t,
   };
 
   return { tool: makeMeasureTool(ctx), overlays, measures, overlayClears: () => overlayClears, measureClears: () => measureClears };
+}
+
+/** A fake `CombatApi` exposing only `activeFor`, returning a combat whose
+ * `engine.movement.enforcement` is `enforcement` for every scene. */
+function fakeCombat(enforcement: "none" | "warn" | "hard"): ToolContext["combat"] {
+  return {
+    activeFor: () =>
+      ({
+        id: "combat-1",
+        engine: { movement: { resource: null, interpretation: "per_cell", enforcement } },
+      }) as never,
+  } as unknown as ToolContext["combat"];
 }
 
 test("measure tool routes via pathfind for the selected token and previews the path", async () => {
@@ -134,6 +152,95 @@ test("measure tool routes via pathfind for the selected token and previews the p
   expect(overlays.length).toBeGreaterThan(0); // a routed polyline was previewed
   expect(measures.length).toBeGreaterThan(0);
   expect(measures.at(-1)!.label).toContain("10 ft"); // budget = cost(2) × perCell(5)
+});
+
+test("Warn overage: label gets the over-budget suffix, stroke turns ROUTE_WARN_COLOR", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 7,
+    arrested: false,
+    truncated: false,
+    budgetCells: 5,
+  });
+  const { tool, overlays, measures } = setupRoute({ pathfind, combat: fakeCombat("warn") });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(measures.at(-1)!.label).toBe("35 ft · 10 ft over budget");
+  const stroke = (overlays.at(-1)![0] as { stroke: { color: number } }).stroke;
+  expect(stroke.color).toBe(0xffa500);
+});
+
+test("Hard truncation: label gets the budget-stop suffix, polyline stroke is unchanged", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 7,
+    arrested: false,
+    truncated: true,
+    budgetCells: 5,
+  });
+  const { tool, overlays, measures } = setupRoute({ pathfind, combat: fakeCombat("hard") });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(measures.at(-1)!.label).toBe("35 ft · stops at budget");
+  const stroke = (overlays.at(-1)![0] as { stroke: { color: number } }).stroke;
+  expect(stroke.color).toBe(0x3399ff);
+});
+
+test("no overage/stop suffix under none enforcement, a null budget, or no active combat", async () => {
+  const base = { path: [[50, 50], [150, 50]] as [number, number][], cost: 7, arrested: false };
+
+  // enforcement: "none"
+  {
+    const pathfind: ToolContext["pathfind"] = async () => ({ ...base, truncated: false, budgetCells: 5 });
+    const { tool, measures } = setupRoute({ pathfind, combat: fakeCombat("none") });
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 150, y: 50 }, ev());
+    await flush();
+    expect(measures.at(-1)!.label).toBe("35 ft");
+  }
+
+  // budgetCells: null under Warn
+  {
+    const pathfind: ToolContext["pathfind"] = async () => ({ ...base, truncated: false, budgetCells: null });
+    const { tool, measures } = setupRoute({ pathfind, combat: fakeCombat("warn") });
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 150, y: 50 }, ev());
+    await flush();
+    expect(measures.at(-1)!.label).toBe("35 ft");
+  }
+
+  // no active combat
+  {
+    const pathfind: ToolContext["pathfind"] = async () => ({ ...base, truncated: false, budgetCells: 5 });
+    const { tool, measures } = setupRoute({ pathfind });
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 150, y: 50 }, ev());
+    await flush();
+    expect(measures.at(-1)!.label).toBe("35 ft");
+  }
+});
+
+test("arrested keeps its warning suffix alongside a Warn overage label", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 7,
+    arrested: true,
+    truncated: false,
+    budgetCells: 5,
+  });
+  const { tool, measures } = setupRoute({ pathfind, combat: fakeCombat("warn") });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(measures.at(-1)!.label).toBe("35 ft · 10 ft over budget ⚠");
 });
 
 test("measure tool falls back to plain anchor-point measure when no token is selected", () => {
