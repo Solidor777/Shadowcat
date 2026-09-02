@@ -593,7 +593,10 @@ export const MergeConflictSchema: z.ZodType<WireMergeConflict> = mergeConflictSc
  * client modal's input. In the fresh outcome carried by a `stale_resolutions`/
  * `unknown_resolution` rejection, `applied` instead means "the merge is currently
  * conflict-free; the rejected call wrote nothing". Mirrors `ws::protocol::MergePullStatus`. */
-export type WireMergePullStatus = "applied" | { conflicts: WireMergeConflict[] };
+export type WireMergePullStatus = "applied" | {
+  /** The conflict set the client's modal input reads. */
+  conflicts: WireMergeConflict[];
+};
 
 // Unannotated impl const — see the module-level note above the `z` import.
 export const mergePullStatusSchemaImpl = z.union([
@@ -607,7 +610,10 @@ export const MergePullStatusSchema: z.ZodType<WireMergePullStatus> = mergePullSt
  * instance is VISIBLE to the pusher but not writable by them per the per-path derivation.
  * An instance the pusher cannot see at all is omitted from the outcome — no entry, name,
  * or count — mirroring redaction's existence-hiding. Mirrors `ws::protocol::PushInstanceStatus`. */
-export type WirePushInstanceStatus = "applied" | { conflicts: WireMergeConflict[] } | "excluded";
+export type WirePushInstanceStatus = "applied" | {
+  /** The conflict set the client's modal input reads for this instance. */
+  conflicts: WireMergeConflict[];
+} | "excluded";
 
 // Unannotated impl const — see the module-level note above the `z` import.
 export const pushInstanceStatusSchemaImpl = z.union([
@@ -704,8 +710,14 @@ export type WireMergeErrorKind =
   | "not_an_instance"
   | "forbidden"
   | "corrupt_base"
-  | { stale_resolutions: WireMergeOutcome }
-  | { unknown_resolution: WireMergeOutcome }
+  | {
+      /** The outcome as recomputed from live documents at rejection time. */
+      stale_resolutions: WireMergeOutcome;
+    }
+  | {
+      /** The outcome as recomputed from live documents at rejection time. */
+      unknown_resolution: WireMergeOutcome;
+    }
   | "internal";
 
 // Unannotated impl const — see the module-level note above the `z` import.

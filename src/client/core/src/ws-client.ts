@@ -13,6 +13,8 @@ import {
   type WireActorOwnerRef,
   type WireAudience,
   type WireRecalcOp,
+  type WireMergeOutcome,
+  type WireMergeErrorKind,
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
 
@@ -102,6 +104,52 @@ export interface MoveStream {
 
 /** The union of results a correlated request in `pending` can resolve to. */
 export type PendingResult = SearchPage | PathResult | MoveStream;
+
+/** Rejection carried by a failed merge intent (`WsClient.merge`). `reason` is the raw
+ * `WireMergeErrorKind` — `stale_resolutions`/`unknown_resolution` carry the outcome as
+ * recomputed from live documents at rejection time, so a caller re-opens its conflict modal
+ * with it rather than round-tripping again. Every other variant (`not_found`/`not_an_instance`/
+ * `forbidden`/`corrupt_base`/`internal`) is a plain refusal with no payload to recover. */
+export class MergeIntentError extends Error {
+  /** Construct from the wire `MergeErrorKind`, deriving a player-presentable `message`.
+   * @param reason The raw rejection reason from `ServerMsg::MergeError`.
+   * @example new MergeIntentError("forbidden");
+   */
+  constructor(public readonly reason: WireMergeErrorKind) {
+    super(mergeErrorMessage(reason));
+  }
+}
+
+/** Player-presentable text for a `WireMergeErrorKind`. Not exported (folded into
+ * `MergeIntentError`'s public surface).
+ * @param reason The rejection reason to describe.
+ * @returns A short, human-readable description.
+ * @example
+ * ```
+ * // internal helper; not part of the public API
+ * declare const reason: WireMergeErrorKind;
+ * mergeErrorMessage(reason);
+ * ```
+ */
+function mergeErrorMessage(reason: WireMergeErrorKind): string {
+  if (typeof reason !== "string") {
+    return "stale_resolutions" in reason
+      ? "the documents changed since the conflicts were reported"
+      : "one of the submitted resolutions no longer applies";
+  }
+  switch (reason) {
+    case "not_found":
+      return "the template or instance no longer exists";
+    case "not_an_instance":
+      return "this document is not a template instance";
+    case "forbidden":
+      return "you do not have permission to do that";
+    case "corrupt_base":
+      return "the stored template snapshot is corrupt";
+    case "internal":
+      return "an internal error occurred";
+  }
+}
 
 /** Handle to an active live search subscription (Core.subscribeSearch). */
 export interface SubscriptionHandle {
@@ -381,6 +429,23 @@ export class WsClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
+  /** In-flight merge intents (`MergePull`/`MergePush`/`MergeRevert`), keyed by request_id. Unlike
+   * `combatPending`/`chatPending`, a merge intent's reply IS a correlated frame carrying real
+   * payload (`ServerMsg::MergeResult`'s `outcome`) — the same one-shot request/reply shape as
+   * `pending` (search/pathfind/moveRequest), kept in its own map only because its reject value is
+   * a structured `MergeIntentError`, not a plain `Error`. */
+  private mergePending = new Map<
+    string,
+    {
+      /** Resolves with the correlated `merge_result`'s outcome. */
+      resolve: (outcome: WireMergeOutcome) => void;
+      /** Rejects with a `MergeIntentError` on a correlated `merge_error`, a plain `Error` on
+       * timeout or disconnect. */
+      reject: (e: Error) => void;
+      /** Timeout handle that rejects if no correlated reply arrives in time. */
+      timer: ReturnType<typeof setTimeout>;
+    }
+  >();
 
   /** Resolved `WsClientOptions.now`. */
   private readonly now: () => number;
@@ -569,6 +634,13 @@ export class WsClient {
       p.reject(new Error(reason));
     }
     this.combatPending.clear();
+    // Merge intents were sent on a socket that will not answer; whether the intent landed is
+    // unknown, so reject rather than silently resolve (mirrors the combat-intent cleanup above).
+    for (const p of this.mergePending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error(reason));
+    }
+    this.mergePending.clear();
   }
 
   /** Run a consumer callback in isolation: a throw is routed to `onError` and
@@ -947,6 +1019,24 @@ export class WsClient {
           clearTimeout(p.timer);
           this.combatPending.delete(msg.request_id);
           p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "merge_result": {
+        const p = this.mergePending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.mergePending.delete(msg.request_id);
+          p.resolve(msg.outcome);
+        }
+        break;
+      }
+      case "merge_error": {
+        const p = this.mergePending.get(msg.request_id);
+        if (p) {
+          clearTimeout(p.timer);
+          this.mergePending.delete(msg.request_id);
+          p.reject(new MergeIntentError(msg.reason));
         }
         break;
       }
@@ -1476,6 +1566,53 @@ export class WsClient {
         reject(new Error("combat request timeout"));
       }, timeoutMs);
       this.combatPending.set(msg.request_id, { resolve, reject, timer });
+      this.send(msg);
+    });
+  }
+
+  /**
+   * Send one of the three merge intent frames (`merge_pull`/`merge_push`/`merge_revert`).
+   * Resolves with the correlated `merge_result`'s `WireMergeOutcome`; rejects with a
+   * `MergeIntentError` on a correlated `merge_error`, or a plain `Error` on timeout/disconnect.
+   * A one-shot correlated request/reply, the same shape as `pathfind`/`search` — unlike
+   * `combat`/chat ops, the reply carries the actual computed outcome rather than confirming via
+   * the broadcast `event` echo.
+   * @param msg The merge frame to send, already carrying its own `request_id`.
+   * @param opts Request options; `timeoutMs` defaults to 10000.
+   * @returns The correlated `WireMergeOutcome`.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.merge({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: "c1" });
+   * ```
+   */
+  merge(
+    msg: Extract<
+      ClientMsg,
+      {
+        /** Merge frame discriminant literal (`merge_pull`/`merge_push`/`merge_revert`). */
+        type: "merge_pull" | "merge_push" | "merge_revert";
+      }
+    >,
+    opts: WsTimeoutOptions = {},
+  ): Promise<WireMergeOutcome> {
+    const timeoutMs = opts.timeoutMs ?? 10_000;
+    return new Promise<WireMergeOutcome>((resolve, reject) => {
+      if (!this.transport) {
+        reject(new Error("not connected"));
+        return;
+      }
+      const timer = setTimeout(() => {
+        this.mergePending.delete(msg.request_id);
+        reject(new Error("merge request timeout"));
+      }, timeoutMs);
+      this.mergePending.set(msg.request_id, { resolve, reject, timer });
       this.send(msg);
     });
   }
