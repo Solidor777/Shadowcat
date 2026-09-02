@@ -283,12 +283,13 @@ pub async fn handle_merge_intent(
 /// The documents a pull/revert operates on, loaded and gated: the child must be a
 /// stamped instance OF THIS WORLD and the requester its effective owner (or GM)
 /// holding whole-document READ; the template must be readable by the requester.
-/// The template gate replicates the client flow's reach — the client only ever
-/// merged against templates in the requester's own store — and it is what keeps a
-/// `Conflicts` reply (whose entries carry template-side values) from disclosing a
-/// template the requester could not already read. A template in ANOTHER world is
-/// reported `NotFound`, the same existence-hiding the child's own world check
-/// applies.
+/// The template gate bounds the merge to templates the requester could already
+/// receive, and it is what keeps a `Conflicts` reply (whose entries carry
+/// template-side values) from disclosing a template the requester cannot read. A
+/// template the requester cannot READ, like one in ANOTHER world or one that does
+/// not exist, is reported `NotFound` — existence-hiding, the same posture `push`
+/// takes for a missing template: a distinguishable `Forbidden` would confirm that
+/// the `source` id names a real document.
 struct PullDocs {
     /// The instance being merged into / reset (unredacted: the requester is
     /// its owner or a GM, and the instance's own hidden fields must survive the
@@ -354,7 +355,7 @@ async fn load_pull_docs(
         .await
         .map_err(|_| MergeErrorKind::Internal)?;
     if !template_access.has(cap::READ) {
-        return Err(MergeErrorKind::Forbidden);
+        return Err(MergeErrorKind::NotFound);
     }
     let template = visible_template(&template, &template_access)?;
     Ok(PullDocs {

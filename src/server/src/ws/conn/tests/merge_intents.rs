@@ -2160,3 +2160,52 @@ async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_f
     .expect("a reply");
     assert!(matches!(pull_status(third), MergePullStatus::Applied));
 }
+
+/// A template the requester cannot READ is reported exactly like a missing one
+/// (`NotFound`, never `Forbidden`): the instance's `source` id must not confirm
+/// that a document the requester cannot see exists.
+#[tokio::test]
+async fn pull_against_an_unreadable_template_is_not_found() {
+    let h = merge_harness().await;
+    let (template, child) = (Uuid::from_u128(0xE811), Uuid::from_u128(0xE812));
+    h.create(template_doc(
+        h.world_id,
+        template,
+        h.gm.user_id,
+        DocRole::None,
+        json!({ "hp": 10 }),
+    ))
+    .await;
+    let mut inst = instance_doc(
+        h.world_id,
+        child,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10 }),
+    );
+    inst.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    h.create(inst).await;
+
+    for msg in [
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        ClientMsg::MergeRevert {
+            request_id: Uuid::from_u128(2),
+            child_id: child,
+        },
+    ] {
+        let reply = handle_merge_intent(&h.room, h.repo.as_ref(), &h.player, msg, 0)
+            .await
+            .expect("a reply");
+        assert!(
+            matches!(error_reason(reply), MergeErrorKind::NotFound),
+            "an unreadable template is indistinguishable from a missing one"
+        );
+    }
+}
