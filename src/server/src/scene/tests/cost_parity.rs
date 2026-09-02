@@ -136,7 +136,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
 
 /// `ignore_terrain` flags — the shape both seams hand the router and executor for a mover
 /// carrying a reserved terrain-exempt tag.
-const EXEMPT: MoveTraits = MoveTraits {
+const EXEMPT_TRAITS: MoveTraits = MoveTraits {
     ignore_terrain: true,
 };
 
@@ -202,7 +202,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT,
+                traits: EXEMPT_TRAITS,
             },
         )
         .expect("routable");
@@ -219,7 +219,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT,
+            traits: EXEMPT_TRAITS,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -275,7 +275,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT,
+                traits: EXEMPT_TRAITS,
             },
         )
         .expect("routable");
@@ -298,7 +298,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT,
+            traits: EXEMPT_TRAITS,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -354,7 +354,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT,
+                traits: EXEMPT_TRAITS,
             },
         )
         .expect("a route around the band exists");
@@ -371,7 +371,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT,
+            traits: EXEMPT_TRAITS,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -448,7 +448,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
-                traits: EXEMPT,
+                traits: EXEMPT_TRAITS,
             },
         )
         .expect("routable");
@@ -488,7 +488,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
             visible: &Default::default(),
             cell: 100.0,
             budget: None,
-            traits: EXEMPT,
+            traits: EXEMPT_TRAITS,
         },
         Uuid::from_u128(2),
         &route.path,

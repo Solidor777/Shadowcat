@@ -197,7 +197,7 @@ fn hex_steps_cost_one_regardless_of_the_square_rule() {
 
 /// The exempt-mover flag set: the shape `MoveGateInputs.traits` takes when the caller resolved
 /// a terrain-exempt tag off the mover.
-const EXEMPT: MoveTraits = MoveTraits {
+const EXEMPT_TRAITS: MoveTraits = MoveTraits {
     ignore_terrain: true,
 };
 
@@ -223,7 +223,8 @@ fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_
         "ground mover pays ×3, got {}",
         grounded.cost
     );
-    let exempt = execute_move(&ecs, gate(EXEMPT), token, &path, false, 0.4).expect("admissible");
+    let exempt =
+        execute_move(&ecs, gate(EXEMPT_TRAITS), token, &path, false, 0.4).expect("admissible");
     assert!(
         (exempt.cost - 1.0).abs() < 1e-9,
         "exempt mover pays the unweighted step, got {}",
@@ -247,7 +248,7 @@ fn exempt_mover_budget_stop_uses_the_exempt_cost() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(2.0),
-            traits: EXEMPT,
+            traits: EXEMPT_TRAITS,
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)],
@@ -289,7 +290,8 @@ fn exempt_mover_continuous_transition_and_tail_both_read_unweighted() {
         "ground mover pays ×3 on transition AND tail, got {}",
         grounded.cost
     );
-    let exempt = execute_move(&ecs, gate(EXEMPT), token, &path, false, 0.4).expect("admissible");
+    let exempt =
+        execute_move(&ecs, gate(EXEMPT_TRAITS), token, &path, false, 0.4).expect("admissible");
     assert!(
         (exempt.cost - 1.1).abs() < 1e-9,
         "exempt mover pays the raw Euclidean span, got {}",
@@ -309,7 +311,7 @@ fn exemption_never_covers_impassable_or_arrest() {
         visible: &mask,
         cell: FIXTURE_GRID_SIZE,
         budget: None,
-        traits: EXEMPT,
+        traits: EXEMPT_TRAITS,
     };
     let blocked = execute_move(
         &ecs,
