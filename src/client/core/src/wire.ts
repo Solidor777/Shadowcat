@@ -1293,6 +1293,24 @@ export type ClientMsg =
       ops: WireRecalcOp[];
     }
   | {
+      /** Draw one or more rows from a `table` document, posted as ONE `kind: "roll"` message
+       * (a `table_draw` segment, recursive through any nested draws). Same asymmetric reply
+       * protocol as `send_message`; a refusal is a correlated `chat_error`. */
+      type: "draw_table";
+      /** Correlation token for a `chat_error` rejection. */
+      request_id: string;
+      /** The table to draw from. */
+      table_id: string;
+      /** Target channel id. */
+      channel: string;
+      /** Number of top-level draws. */
+      count: number;
+      /** Optional in-character attribution; authz-checked server-side. */
+      actor_owner: WireActorOwnerRef | null;
+      /** Visibility policy (public / gm-only / whisper). */
+      audience: WireAudience;
+    }
+  | {
       /** Activate a combat: pauses any other active combat on its scene in the same command;
        * a combat with no current turn initializes (round 1, first turn), one with a turn
        * resumes. A rejection replies `combat_error`, correlated by `request_id`; success is

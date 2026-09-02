@@ -198,7 +198,31 @@ roll_id: string,
 /**
  * The targeted mutation(s) to apply.
  */
-ops: Array<WireRecalcOp>, } | { "type": "combat_start", 
+ops: Array<WireRecalcOp>, } | { "type": "draw_table", 
+/**
+ * Correlation token for a `ChatError` rejection.
+ */
+request_id: string, 
+/**
+ * The table to draw from.
+ */
+table_id: string, 
+/**
+ * Target channel id.
+ */
+channel: string, 
+/**
+ * Number of top-level draws (`1..=tables::MAX_TOP_LEVEL_DRAWS`).
+ */
+count: number, 
+/**
+ * Optional in-character attribution (authz-checked server-side).
+ */
+actor_owner: ActorOwnerRef | null, 
+/**
+ * Visibility policy (public / gm-only / whisper).
+ */
+audience: Audience, } | { "type": "combat_start", 
 /**
  * Correlation token for `CombatError`.
  */

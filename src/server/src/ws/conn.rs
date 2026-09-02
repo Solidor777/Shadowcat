@@ -689,6 +689,44 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(ClientMsg::DrawTable {
+                                    request_id,
+                                    table_id,
+                                    channel,
+                                    count,
+                                    actor_owner,
+                                    audience,
+                                }) => {
+                                    // Same confirm-by-broadcast-echo shape as
+                                    // SendMessage/EditMessage/DeleteMessage/RecalcRoll; a
+                                    // rejection is surfaced to the sender only via a
+                                    // correlated `ChatError`.
+                                    if let Err(e) = crate::tables::handle_draw_table(
+                                        crate::tables::DrawTableRequestCtx {
+                                            room: &room,
+                                            repo: repo.as_ref(),
+                                            ctx: &ctx,
+                                            rate: &message_rate,
+                                            now: now_millis(),
+                                            budget_per_min: MESSAGE_RATE_PER_MIN,
+                                        },
+                                        table_id,
+                                        channel,
+                                        count,
+                                        actor_owner,
+                                        audience,
+                                    )
+                                    .await
+                                    {
+                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "draw_table rejected");
+                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                            request_id,
+                                            message: e.to_string(),
+                                        }))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(
                                     m @ ClientMsg::CombatStart { .. }
                                     | m @ ClientMsg::CombatPause { .. }
