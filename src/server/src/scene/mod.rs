@@ -2424,7 +2424,6 @@ impl SceneEcs {
         footprint::FootprintsPayload {
             scenes: by_scene.into_values().map(|(_, s)| s).collect(),
         }
-
     }
     /// The resolved `"combat"` derived-channel payload for `ctx`: every combat `ctx` may READ,
     /// each with every combatant `ctx` may READ, each with the registry's resolved resource
@@ -2473,8 +2472,7 @@ impl SceneEcs {
                 if !c_access.has(crate::data::permission::cap::READ) {
                     continue;
                 }
-                let Some(cengine) =
-                    self.engine_as_cached::<eng::CombatantEngine>(e.doc.id, &e.doc)
+                let Some(cengine) = self.engine_as_cached::<eng::CombatantEngine>(e.doc.id, &e.doc)
                 else {
                     continue;
                 };

@@ -410,18 +410,27 @@ mod resolved_combats {
     #[test]
     fn gm_sees_every_combatant_with_resolved_numbers() {
         let f = build();
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         assert_eq!(payload.combats.len(), 1);
         let combat = &payload.combats[0];
         assert_eq!(combat.scene_id, f.scene);
-        assert_eq!(combat.combatants.len(), 3, "the GM sees pc, npc, and the hidden combatant");
+        assert_eq!(
+            combat.combatants.len(),
+            3,
+            "the GM sees pc, npc, and the hidden combatant"
+        );
 
         let pc = combat
             .combatants
             .iter()
             .find(|c| c.id == f.pc_combatant)
             .unwrap();
-        let resources = pc.resources.as_ref().expect("pc resources visible to the GM");
+        let resources = pc
+            .resources
+            .as_ref()
+            .expect("pc resources visible to the GM");
         let movement = &resources["movement"];
         assert_eq!(movement.current, Some(30.0));
         assert_eq!(movement.max, Some(30.0));
@@ -429,7 +438,11 @@ mod resolved_combats {
         let hp = &resources["hp"];
         assert_eq!(hp.current, Some(12.0));
         assert_eq!(hp.max, Some(12.0));
-        assert_eq!(pc.movement_cells, Some(6.0), "30 movement divided by 5 per_cell is 6 cells");
+        assert_eq!(
+            pc.movement_cells,
+            Some(6.0),
+            "30 movement divided by 5 per_cell is 6 cells"
+        );
 
         let hidden = combat
             .combatants
@@ -451,17 +464,17 @@ mod resolved_combats {
             2,
             "the hidden combatant is absent for a player"
         );
-        assert!(!combat
-            .combatants
-            .iter()
-            .any(|c| c.id == f.hidden_combatant));
+        assert!(!combat.combatants.iter().any(|c| c.id == f.hidden_combatant));
 
         let pc = combat
             .combatants
             .iter()
             .find(|c| c.id == f.pc_combatant)
             .unwrap();
-        assert_eq!(pc.resources.as_ref().unwrap()["movement"].current, Some(30.0));
+        assert_eq!(
+            pc.resources.as_ref().unwrap()["movement"].current,
+            Some(30.0)
+        );
 
         let npc = combat
             .combatants
@@ -480,7 +493,9 @@ mod resolved_combats {
         let f = build();
         // The npc combatant has no host document, so its Tracked movement.max: "speed"
         // formula evaluates against NoHostResolver and fails with an unknown-reference error.
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         let combat = &payload.combats[0];
         let npc = combat
             .combatants
@@ -500,7 +515,9 @@ mod resolved_combats {
             doc_id: f.pc_combatant,
             changes: vec![fc("/engine/resources/movement", json!({ "current": 10.0 }))],
         });
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         let pc = payload.combats[0]
             .combatants
             .iter()
@@ -509,7 +526,11 @@ mod resolved_combats {
         let movement = &pc.resources.as_ref().unwrap()["movement"];
         assert_eq!(movement.current, Some(10.0));
         assert_eq!(movement.max, Some(30.0));
-        assert_eq!(pc.movement_cells, Some(2.0), "10 divided by 5 per_cell is 2 cells");
+        assert_eq!(
+            pc.movement_cells,
+            Some(2.0),
+            "10 divided by 5 per_cell is 2 cells"
+        );
     }
 
     #[test]
@@ -527,7 +548,9 @@ mod resolved_combats {
             doc_id: Uuid::from_u128(3),
             changes: vec![fc("/engine", serde_json::to_value(&engine).unwrap())],
         });
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         let pc = payload.combats[0]
             .combatants
             .iter()
@@ -543,7 +566,9 @@ mod resolved_combats {
             f.scene,
             json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
         );
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         let pc = payload.combats[0]
             .combatants
             .iter()
@@ -559,15 +584,25 @@ mod resolved_combats {
             doc_id: Uuid::from_u128(3),
             changes: vec![fc("/engine/active", json!(false))],
         });
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
-        assert_eq!(payload.combats.len(), 1, "a paused combat is still readable");
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        assert_eq!(
+            payload.combats.len(),
+            1,
+            "a paused combat is still readable"
+        );
     }
 
     #[test]
     fn the_payload_is_stable_across_two_computations() {
         let f = build();
-        let a = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
-        let b = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let a = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let b = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         assert_eq!(a, b);
     }
 
@@ -577,7 +612,9 @@ mod resolved_combats {
     #[test]
     fn movement_cells_matches_the_hard_budget_gate_ceiling_for_the_turn_owner() {
         let f = build();
-        let payload = f.ecs.resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
+        let payload = f
+            .ecs
+            .resolved_combats(&gm_ctx(), &WorldCapDefaults::default());
         let pc = payload.combats[0]
             .combatants
             .iter()
