@@ -2209,3 +2209,37 @@ async fn pull_against_an_unreadable_template_is_not_found() {
         );
     }
 }
+
+/// An instance already in sync with its template yields a merge with no
+/// changes: the reply is `Applied` and NOTHING is published — the world's
+/// sequence does not advance, so a clean instance costs no `Event` per
+/// pull (or per push resolution round).
+#[tokio::test]
+async fn pull_on_an_in_sync_instance_publishes_nothing() {
+    let h = merge_harness().await;
+    let (template, child) =
+        player_pullable(&h, Uuid::from_u128(0xE821), Uuid::from_u128(0xE822)).await;
+    h.set_system(template, json!({ "hp": 12 })).await;
+    let pull = |request_id: u128| ClientMsg::MergePull {
+        request_id: Uuid::from_u128(request_id),
+        child_id: child,
+        resolutions: None,
+    };
+
+    let first = handle_merge_intent(&h.room, h.repo.as_ref(), &h.player, pull(1), 0)
+        .await
+        .expect("a reply");
+    assert!(matches!(pull_status(first), MergePullStatus::Applied));
+    let seq_after_first = h.room.current_seq();
+    assert_eq!(h.get(child).await.system, json!({ "hp": 12 }));
+
+    let second = handle_merge_intent(&h.room, h.repo.as_ref(), &h.player, pull(2), 0)
+        .await
+        .expect("a reply");
+    assert!(matches!(pull_status(second), MergePullStatus::Applied));
+    assert_eq!(
+        h.room.current_seq(),
+        seq_after_first,
+        "an in-sync pull publishes no Event"
+    );
+}

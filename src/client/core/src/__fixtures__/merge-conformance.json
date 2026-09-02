@@ -1,4 +1,7 @@
 {
+  "amendments": [
+    "revert-bands-take-template, revert-restores-locally-deleted, revert-nested-embedded, revert-no-op-emits-no-changes (generated as revert-no-op-still-emits-base): the /base change whose old value structurally equalled its new value was removed from expect.update.changes by hand — the server engine emits /base, like every other change, only when it differs from the stored value (deep, key-order-independent equality); the generator's engine emitted it unconditionally. Every other byte is the generator's output (see scripts/merge-corpus-generation.log)."
+  ],
   "cases": [
     {
       "name": "parent-set-applies",
@@ -6591,31 +6594,6 @@
               "new": {
                 "s": 1
               }
-            },
-            {
-              "path": "/base",
-              "old": {
-                "name": "T",
-                "engine": {
-                  "x": 99,
-                  "hp": 5
-                },
-                "system": {
-                  "s": 1
-                },
-                "embedded": {}
-              },
-              "new": {
-                "name": "T",
-                "engine": {
-                  "x": 99,
-                  "hp": 5
-                },
-                "system": {
-                  "s": 1
-                },
-                "embedded": {}
-              }
             }
           ]
         }
@@ -7017,45 +6995,6 @@
                   "updated_at": 0
                 }
               ]
-            },
-            {
-              "path": "/base",
-              "old": {
-                "name": null,
-                "engine": null,
-                "system": {},
-                "embedded": {
-                  "items": [
-                    {
-                      "name": null,
-                      "engine": null,
-                      "system": {
-                        "k": 1
-                      },
-                      "embedded": {},
-                      "sourceId": "tc1"
-                    }
-                  ]
-                }
-              },
-              "new": {
-                "name": null,
-                "engine": null,
-                "system": {},
-                "embedded": {
-                  "items": [
-                    {
-                      "sourceId": "tc1",
-                      "name": null,
-                      "engine": null,
-                      "system": {
-                        "k": 1
-                      },
-                      "embedded": {}
-                    }
-                  ]
-                }
-              }
             }
           ]
         }
@@ -7566,94 +7505,13 @@
                   "updated_at": 0
                 }
               ]
-            },
-            {
-              "path": "/base",
-              "old": {
-                "name": null,
-                "engine": null,
-                "system": {},
-                "embedded": {
-                  "items": [
-                    {
-                      "name": null,
-                      "engine": null,
-                      "system": {
-                        "a": 5
-                      },
-                      "embedded": {
-                        "sub": [
-                          {
-                            "name": null,
-                            "engine": null,
-                            "system": {
-                              "deep": 7
-                            },
-                            "embedded": {},
-                            "sourceId": "gc1"
-                          },
-                          {
-                            "name": null,
-                            "engine": null,
-                            "system": {
-                              "deep": 8
-                            },
-                            "embedded": {},
-                            "sourceId": "gc2"
-                          }
-                        ]
-                      },
-                      "sourceId": "tc1"
-                    }
-                  ]
-                }
-              },
-              "new": {
-                "name": null,
-                "engine": null,
-                "system": {},
-                "embedded": {
-                  "items": [
-                    {
-                      "sourceId": "tc1",
-                      "name": null,
-                      "engine": null,
-                      "system": {
-                        "a": 5
-                      },
-                      "embedded": {
-                        "sub": [
-                          {
-                            "sourceId": "gc1",
-                            "name": null,
-                            "engine": null,
-                            "system": {
-                              "deep": 7
-                            },
-                            "embedded": {}
-                          },
-                          {
-                            "sourceId": "gc2",
-                            "name": null,
-                            "engine": null,
-                            "system": {
-                              "deep": 8
-                            },
-                            "embedded": {}
-                          }
-                        ]
-                      }
-                    }
-                  ]
-                }
-              }
             }
           ]
         }
       }
     },
     {
-      "name": "revert-no-op-still-emits-base",
+      "name": "revert-no-op-emits-no-changes",
       "kind": "revert",
       "base": {
         "name": "T",
@@ -7729,27 +7587,7 @@
         "update": {
           "op": "update",
           "doc_id": "c1",
-          "changes": [
-            {
-              "path": "/base",
-              "old": {
-                "name": "T",
-                "engine": null,
-                "system": {
-                  "s": 1
-                },
-                "embedded": {}
-              },
-              "new": {
-                "name": "T",
-                "engine": null,
-                "system": {
-                  "s": 1
-                },
-                "embedded": {}
-              }
-            }
-          ]
+          "changes": []
         }
       }
     }

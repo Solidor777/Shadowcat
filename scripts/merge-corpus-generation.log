@@ -149,3 +149,15 @@ exit=0
 $ sha256sum (both)
 3521af308a71efa0524a6c85982bb68d5f14ecea98b401e3bd61fb1fd78a1c51 *src/client/core/src/__fixtures__/merge-conformance.json
 3521af308a71efa0524a6c85982bb68d5f14ecea98b401e3bd61fb1fd78a1c51 */c/Dev/Shadowcat-m14c5/src/client/core/src/__fixtures__/merge-conformance.json
+
+# ---- post-generation amendment (by hand, after the runs above) ----
+# The server engine emits the `/base` refresh only when it differs (deep, key-order-independent
+# equality) from the stored value; the generator's engine emitted it unconditionally. Four revert
+# cases whose expected update carried a `/base` change with old == new were amended to drop that
+# change, and one was renamed:
+#   revert-bands-take-template       — `/base` change removed
+#   revert-restores-locally-deleted  — `/base` change removed
+#   revert-nested-embedded           — `/base` change removed
+#   revert-no-op-still-emits-base    — `/base` change removed; renamed revert-no-op-emits-no-changes
+# The fixture also gained a top-level `amendments` key stating the same. Every other byte of the
+# fixture is the generator's output above.

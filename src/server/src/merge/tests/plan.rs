@@ -59,13 +59,14 @@ fn compute_pull_falls_back_to_self_snapshot_on_an_absent_base() {
 }
 
 #[test]
-fn plan_to_update_targets_the_child_and_always_refreshes_base() {
+fn plan_to_update_targets_the_child_and_refreshes_base_only_when_it_changed() {
     let mut template = doc("t1");
     template.name = Some("T".to_string());
     let mut child = doc("c1");
     child.source = Some(source_from("t1"));
     child.name = Some("T".to_string());
 
+    // No stored base: the refresh is a change (null -> snapshot).
     let plan =
         compute_pull(&child, &template, &AllVisible).expect("no base is stored on this child");
     let op = plan_to_update(&child, &template, &plan.merged_bands);
@@ -73,14 +74,20 @@ fn plan_to_update_targets_the_child_and_always_refreshes_base() {
         panic!("plan_to_update emits an update");
     };
     assert_eq!(doc_id, test_id("c1"));
-    // Nothing but the unconditional `/base` refresh: no band changed.
-    assert_eq!(changes.len(), 1);
+    assert_eq!(changes.len(), 1, "no band changed; only the base refresh");
     assert_eq!(changes[0].path, "/base");
-    assert_eq!(
-        changes[0].new,
-        serde_json::to_value(snapshot_base(&template)).expect("snapshot serializes")
-    );
+    let snapshot = serde_json::to_value(snapshot_base(&template)).expect("snapshot serializes");
+    assert_eq!(changes[0].new, snapshot);
     assert!(!changes[0].remove);
+
+    // Stored base already equal to the template snapshot: nothing to write.
+    child.base = Some(snapshot);
+    let plan = compute_pull(&child, &template, &AllVisible).expect("merges");
+    let Operation::Update { changes, .. } = plan_to_update(&child, &template, &plan.merged_bands)
+    else {
+        panic!("plan_to_update emits an update");
+    };
+    assert!(changes.is_empty(), "an in-sync instance yields no changes");
 }
 
 #[test]
@@ -126,8 +133,10 @@ fn compute_revert_keeps_token_placement_and_refreshes_base() {
     child.source = Some(source_from("t1"));
     child.engine = Some(json!({ "x": 3, "hp": 8 }));
     child.system = json!({ "s": 2, "extra": true });
+    // A stale snapshot (`s` moved on the template since), so the refresh is
+    // a real change.
     child.base = Some(
-        json!({ "name": null, "engine": { "x": 99, "hp": 5 }, "system": { "s": 1 }, "embedded": {} }),
+        json!({ "name": null, "engine": { "x": 99, "hp": 5 }, "system": { "s": 0 }, "embedded": {} }),
     );
 
     let op = compute_revert(&child, &template, &AllVisible).expect("reverts");

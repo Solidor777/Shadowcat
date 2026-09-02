@@ -166,10 +166,14 @@ fn is_empty_collection(v: &Value) -> bool {
 /// Turn merged bands into ONE `Operation::Update`: at most one whole-band
 /// change per changed band (`/name`, `/engine`, `/system`), one per changed
 /// embedded collection (whole array), plus a `/base` refresh whose new value
-/// is the template's CURRENT snapshot (emitted unconditionally, even when it
-/// equals the old one). Every `old` is the child's REAL current stored value
-/// (the OCC pre-image). Whole-band/whole-collection writes are the only
-/// deletion-capable form the write path accepts.
+/// is `template`'s CURRENT snapshot — `template` being the requester-visible
+/// template the merge ran against — emitted, like every other change, only
+/// when it differs from the stored value. An instance already in sync with
+/// its template therefore yields an update with NO changes, which the
+/// handlers report as applied without publishing (no no-op `Event` per
+/// clean instance per resolution round). Every `old` is the child's REAL
+/// current stored value (the OCC pre-image). Whole-band/whole-collection
+/// writes are the only deletion-capable form the write path accepts.
 ///
 /// A collection key genuinely absent from `child.embedded` falls back to
 /// `null` as its pre-image, NOT `[]`: the write path reads a missing JSON
@@ -226,12 +230,12 @@ pub fn plan_to_update(
             });
         }
     }
-    changes.push(FieldChange {
-        path: "/base".to_string(),
-        old: child.base.clone().unwrap_or(Value::Null),
-        new: serde_json::to_value(snapshot_base(template)).expect("MergeBase serializes to JSON"),
-        remove: false,
-    });
+    push_if_changed(
+        &mut changes,
+        "/base",
+        child.base.clone().unwrap_or(Value::Null),
+        serde_json::to_value(snapshot_base(template)).expect("MergeBase serializes to JSON"),
+    );
     Operation::Update {
         doc_id: child.id,
         changes,

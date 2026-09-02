@@ -110,6 +110,15 @@ fn update_authorized(update: &Operation, access: &Access, inputs: &AuthInputs) -
     })
 }
 
+/// Whether `update` carries no changes at all — an instance already in sync
+/// with its template (`plan_to_update` emits only what differs, the `/base`
+/// refresh included). Such an update is reported applied without a publish:
+/// there is nothing to write, and a no-op `Event` per clean instance per
+/// resolution round is pure broadcast noise.
+fn writes_nothing(update: &Operation) -> bool {
+    matches!(update, Operation::Update { changes, .. } if changes.is_empty())
+}
+
 /// Whether `path` lies on the mergeable surface — the only paths a merge conflict
 /// can ever name (`merge::plan::merge3` diffs the `name`/`engine`/`system`
 /// synthetic tree and the `embedded` collections, nothing else). A resolutions
@@ -452,17 +461,21 @@ async fn pull(
             outcome: pull_outcome(child_id, &plan),
         };
     }
+    let applied = ServerMsg::MergeResult {
+        request_id,
+        outcome: MergeOutcome::Pull {
+            child_id,
+            status: MergePullStatus::Applied,
+        },
+    };
+    if writes_nothing(&update) {
+        return applied;
+    }
     match room
         .publish(repo, ctx, vec![update], now, WriteOrigin::TemplateMerge)
         .await
     {
-        Ok(_) => ServerMsg::MergeResult {
-            request_id,
-            outcome: MergeOutcome::Pull {
-                child_id,
-                status: MergePullStatus::Applied,
-            },
-        },
+        Ok(_) => applied,
         Err(e) => {
             commit_error(request_id, e, || async {
                 let inputs = AuthInputs::load(repo, room.world_id)
@@ -514,17 +527,21 @@ async fn revert(
     if !update_authorized(&update, &docs.child_access, &inputs) {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
+    let applied = ServerMsg::MergeResult {
+        request_id,
+        outcome: MergeOutcome::Revert {
+            child_id,
+            status: MergeRevertStatus::Applied,
+        },
+    };
+    if writes_nothing(&update) {
+        return applied;
+    }
     match room
         .publish(repo, ctx, vec![update], now, WriteOrigin::TemplateMerge)
         .await
     {
-        Ok(_) => ServerMsg::MergeResult {
-            request_id,
-            outcome: MergeOutcome::Revert {
-                child_id,
-                status: MergeRevertStatus::Applied,
-            },
-        },
+        Ok(_) => applied,
         Err(e) => {
             commit_error(request_id, e, || async {
                 Ok(MergeOutcome::Revert {
@@ -777,6 +794,14 @@ async fn push(
                 instance_id: id,
                 name: p.name.clone(),
                 status: PushInstanceStatus::Conflicts(p.plan.conflicts.clone()),
+            });
+            continue;
+        }
+        if writes_nothing(&update) {
+            outcomes.push(PushInstanceOutcome {
+                instance_id: id,
+                name: p.name.clone(),
+                status: PushInstanceStatus::Applied,
             });
             continue;
         }
