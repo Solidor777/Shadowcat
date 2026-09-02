@@ -551,6 +551,19 @@ pub enum MergeOutcome {
 /// documents at rejection time — so the client re-opens its modal without a
 /// round trip; their client-side handling is identical, the distinction is
 /// diagnostic.
+///
+/// Push commit contract: a `MergePush` commits its instances ONE BY ONE, each
+/// under the ordinary `Event` broadcast, and is not atomic across instances.
+/// Every resolution is validated and folded before the first commit, so a
+/// resolutions rejection (`StaleResolutions`/`UnknownResolution`/
+/// `Unresolvable`) raised there precedes any write. A rejection raised by a
+/// commit itself (an OCC pre-image that no longer holds -> `StaleResolutions`;
+/// `Forbidden`; `Internal`) leaves every instance committed before it in
+/// place, their `Event`s already broadcast. No per-instance ledger rides the
+/// error: the fresh outcome a `StaleResolutions` carries is recomputed from
+/// live documents, so an instance committed before the failure reads as
+/// `Applied` (in sync, nothing left to write) and the remainder carry their
+/// current conflicts. Re-sending the intent commits what remains.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]

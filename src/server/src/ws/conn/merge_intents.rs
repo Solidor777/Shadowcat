@@ -679,6 +679,15 @@ fn check_push_resolutions(
 /// parity with redaction, not an `Excluded` entry) and pass the per-path
 /// derivation against the actual computed Update, else it reports `Excluded`
 /// (visible but not writable — the one thing `Excluded` means).
+///
+/// Instances commit ONE BY ONE through `Room::publish`, not atomically: every
+/// resolution is validated and folded (`resolved`) before the first commit, so
+/// a resolutions rejection precedes any write, while a commit failure mid-loop
+/// (`commit_error`) leaves the instances before it committed and broadcast.
+/// The reply for that case carries no ledger of its own — the fresh outcome is
+/// recomputed from live documents, in which an already-committed instance
+/// reads as `Applied` — and a re-sent intent commits the remainder
+/// (`MergeErrorKind`'s push commit contract).
 async fn push(
     room: &Room,
     repo: &dyn Repository,

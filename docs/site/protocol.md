@@ -137,7 +137,14 @@ intent and renders whatever conflict set comes back. Each intent is a stateless 
 
 `merge_push` reports each same-world instance individually: `applied`, `conflicts`, or `excluded`
 (visible to the pusher but not writable by them). An instance the pusher cannot see at all is
-omitted from the reply entirely, matching redaction's own existence-hiding. Every conflict set is
+omitted from the reply entirely, matching redaction's own existence-hiding. A push commits its
+instances one by one, each under its own `event`, and is not atomic across them: every submitted
+resolution is validated before the first commit, so a resolutions rejection precedes any write,
+but a rejection raised by a commit itself (`stale_resolutions` from an OCC pre-image that no
+longer holds, `forbidden`, `internal`) leaves the instances committed before it in place with
+their `event`s already broadcast. The fresh outcome a `stale_resolutions` carries is recomputed
+from live documents, so an already-committed instance reads as `applied` there and the remainder
+carry their current conflicts; re-sending the intent commits what remains. Every conflict set is
 filtered to the paths the requester can see in both documents before it reaches the wire; a
 hidden conflict resolves to the instance's own (child) value automatically.
 
