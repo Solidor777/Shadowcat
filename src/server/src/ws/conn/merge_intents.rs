@@ -576,7 +576,8 @@ async fn revert(
     }
 }
 
-/// A visible instance's phase-1 state.
+/// A visible instance as PLANNED — loaded, access-resolved and merged in
+/// memory, nothing committed yet.
 struct PlannedInstance {
     /// The instance document as loaded.
     doc: Document,
@@ -594,7 +595,9 @@ struct PlannedInstance {
     same_owner: bool,
 }
 
-/// Phase 1 of a push: load every same-world instance and compute its plan.
+/// Plan every same-world instance of a push before any commit: load each,
+/// resolve the pusher's access, compute its plan. Planning the whole set
+/// first is what lets a resolutions rejection precede every write.
 /// An instance the pusher cannot READ is OMITTED from the outcome entirely —
 /// true existence-hiding parity with redaction (the pusher's store never
 /// contained it), so the reply carries no entry, name, or count for it.
@@ -648,7 +651,7 @@ async fn plan_push(
     Ok(planned)
 }
 
-/// The push outcome a phase-1 instance set describes WITHOUT writing anything:
+/// The push outcome a planned instance set describes WITHOUT writing anything:
 /// `Conflicts` for a conflicted instance, `Applied` for a clean one ("currently
 /// conflict-free" — `MergePullStatus`'s contract covers the uncommitted reading).
 /// A VISIBLE instance whose child-wins update fails the per-path derivation is
@@ -685,7 +688,7 @@ fn push_outcome(
     }
 }
 
-/// Validate a resolutions MAP against the phase-1 set: every key must name a
+/// Validate a resolutions MAP against the planned set: every key must name a
 /// visible push target, and every path a current conflict of that instance.
 fn check_push_resolutions(
     resolutions: &BTreeMap<Uuid, Vec<String>>,
