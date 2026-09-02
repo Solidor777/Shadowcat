@@ -139,9 +139,11 @@
           // Read-only observability signals: the painted lighting overlay's cell count and
           // whether a carried-light sweep is driving it — an e2e can see a torch light a
           // corridor mid-walk (the count rises while `data-light-sweep` is "1") without
-          // reading WebGL pixels.
-          host.dataset.litCells = String(frame.cells.length);
-          host.dataset.lightSweep = sweeping ? "1" : "0";
+          // reading WebGL pixels. Each attribute is written only when its value changes:
+          // the engine paints on every fade tick and sweep step, and a dataset write is a
+          // DOM attribute mutation each time.
+          const litCells = String(frame.cells.length);
+          const lightSweep = sweeping ? "1" : "0";
           // Axial bounding box of the lit cells ("minI,minJ,maxI,maxJ"; "" when nothing is lit)
           // — how far along a corridor the glow currently reaches.
           let minI = Infinity, minJ = Infinity, maxI = -Infinity, maxJ = -Infinity;
@@ -151,7 +153,10 @@
             if (c.i > maxI) maxI = c.i;
             if (c.j > maxJ) maxJ = c.j;
           }
-          host.dataset.litBbox = frame.cells.length === 0 ? "" : `${minI},${minJ},${maxI},${maxJ}`;
+          const litBbox = frame.cells.length === 0 ? "" : `${minI},${minJ},${maxI},${maxJ}`;
+          if (host.dataset.litCells !== litCells) host.dataset.litCells = litCells;
+          if (host.dataset.lightSweep !== lightSweep) host.dataset.lightSweep = lightSweep;
+          if (host.dataset.litBbox !== litBbox) host.dataset.litBbox = litBbox;
         },
       });
       const e = engine;

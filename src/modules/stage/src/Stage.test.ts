@@ -281,6 +281,61 @@ test("exposes the viewed scene's committed token positions as data-token-positio
   await vi.waitFor(() => expect(host.dataset.tokenPositions).toBe("t-a:100,50;t-b:250,-125"));
 });
 
+test("writes the lighting observability attributes only when their values change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [{ op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "s1") }],
+  } as never);
+  let onVision: ((f: { payload: unknown; computedAtSeq: number }) => void) | undefined;
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "s1",
+      subscribeScene: (channel: string, cb: (f: { payload: unknown; computedAtSeq: number }) => void) => {
+        if (channel === "vision") onVision = cb;
+        return { unsubscribe() {} };
+      },
+    }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  await vi.waitFor(() => expect(onVision).toBeDefined());
+  /** A masked frame lighting `cells` (5-int tuples) in the viewed scene. */
+  const lit = (cells: number[]): unknown => ({
+    mode: "masked",
+    polygons: [{ scene: "s1", points: [-1000, -1000, 1000, -1000, 1000, 1000, -1000, 1000] }],
+    bands: [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }],
+    renderHints: [],
+    lit: [{ scene: "s1", cell: 100, cells }],
+    perceived: [],
+  });
+  onVision!({ payload: lit([0, 0, 0, 0, -1]), computedAtSeq: 1 });
+  expect(host.dataset.litCells).toBe("1");
+  expect(host.dataset.lightSweep).toBe("0");
+  expect(host.dataset.litBbox).toBe("0,0,0,0");
+  const observer = new MutationObserver(() => {});
+  observer.observe(host, { attributes: true, attributeFilter: ["data-lit-cells", "data-light-sweep", "data-lit-bbox"] });
+  // An identical frame repaints the overlay (lighting applies eagerly per frame) but changes
+  // no value: zero attribute mutations.
+  onVision!({ payload: lit([0, 0, 0, 0, -1]), computedAtSeq: 2 });
+  expect(observer.takeRecords()).toEqual([]);
+  // A frame lighting one more cell changes the count and the bbox, not the sweep flag.
+  onVision!({ payload: lit([0, 0, 0, 0, -1, 2, 3, 0, 0, -1]), computedAtSeq: 3 });
+  expect(observer.takeRecords().map((r) => r.attributeName).sort()).toEqual(["data-lit-bbox", "data-lit-cells"]);
+  expect(host.dataset.litCells).toBe("2");
+  expect(host.dataset.litBbox).toBe("0,0,2,3");
+  observer.disconnect();
+});
+
 test("exposes the server's move-resolution outcome as data-last-move-outcome", async () => {
   const createBackend = vi.fn(async () => fakeBackend());
   let capturedCb: ((msg: { tokenId: string; outcome: "executed" | "truncated" | "rejected" }) => void) | null = null;
