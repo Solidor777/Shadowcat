@@ -2052,6 +2052,51 @@ security section — owner-writable token elevation can lift a carried GM-author
 deliberately banded wall (bounded by the emission's reach; GM-gating it would fork the movement
 model ahead of M17c's flight tags).
 
+### M17c · Movement-type tags + terrain exemptions ✅
+Branch `m17`, executed from the same design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D5, D9-tags) and plan
+[`superpowers/plans/2026-08-31-m17c-movement-tags.md`](superpowers/plans/2026-08-31-m17c-movement-tags.md);
+M17d (moving light mid-walk) remains. Delivered, data: `ActorEngine.movement: Vec<String>`
+(`#[serde(default)]`), `TokenOverrides.movement: Option<Vec<String>>` (wholesale replacement, the
+`vision` shape) and `Faction.movement: Vec<String>` — the first faction-record property that flows
+into an effective actor; ts-rs + Zod + builders + round-trip tests. Resolution: the client's
+`EffectiveActor.movement` is the token override, else dedup(actor ∪ faction record) read inside
+`resolveTokenActor`; the server twin `SceneEcs::token_movement_tags` (`scene::movement_tags`)
+walks the same linked/instanced/override precedence as `token_vision_floors`, with the faction
+registry hydrated into the ECS config side-tables beside `vision_modes`/`gradation` and a dangling
+link resolving to the empty set (never exempt). Threading: `ignores_terrain_cost` over
+`TERRAIN_EXEMPT_TAGS` (`flying`, `incorporeal`) is resolved ONCE per request at the two seams —
+`handle_pathfind` (named, authorized token only) and `Room::execute_move` (same guard block as
+`footprint`) — into `pathfinding::MoveTraits { ignore_terrain }`, carried by the new
+`RouteMover` (`SceneEcs::pathfind`'s mover bundle: footprint, budget clamp, traits) and
+`MoveGateInputs.traits`, and read at every multiplier site through the single
+`pathfinding::terrain_cost` chokepoint: `astar_leg`, `replay_step_costs`, `navmesh::los_smooth`'s
+per-span cost (its chord rule drops the terrain refusal for an exempt mover, never impassable or
+arrest), and `execute_move`'s per-transition and Continuous tail pricing. The continuous dispatch
+predicate splits into `RegionField::has_impassable`/`has_weighted_terrain`: an exempt mover's
+terrain-only field takes the plain any-angle route, impassable still forces the weighted sub-path
+for everyone. `los_smooth` now takes the same `PathInputs` bundle `find` searched under (the caller
+hands `find` a copy differing only in `shape`), so mask/walls/field/footprint/traits cannot diverge
+between search and smoothing. Found and fixed in flight by the new parity test: `navmesh_find`
+reported polyanya's f32 leg length, which `clip_to_visible_mask` passes through unrecomputed on a
+wall-less GM preview — a cost the executor's f64 span sum could not reproduce; it now sums its own
+polyline in f64. Walls, impassable, arrest and the visibility mask gate an exempt mover exactly as
+anyone else, and the per-requester region-field secrecy rules are untouched. Tests:
+`scene::tests::cost_parity` gains four exempt-mover cases (grid preview == execution == unweighted
+Chebyshev; pure-polyanya continuous; impassable-forced weighted continuous; the `los_smooth` chord
+path — the last mutation-checked against the chord rule), the `move_exec` unified-cost suite gains
+the exempt transition/tail/budget-stop cases plus `exemption_never_covers_impassable_or_arrest`, and
+the movement-budget suite proves the decrement consumes the exempt cost (ground 6, flying 2, same
+move). Authoring: `MovementTagsEditor` (ui-kit chip editor: reserved-tag toggles + free-form chips)
+on actor rows, the actor create form, the actor sheet and faction rows, plus `TokenMovementControl`
+(inherit / custom wholesale override on `/engine/overrides`) beside the other per-token controls —
+every write with the raw stored value as the OCC pre-image. Skill updates: the stale
+`los_smooth` claim that `cost` was carried through unchanged (the code recomputes it per span) was
+corrected while extending the bullet. Gate note: `pnpm run test:scripts` and the e2e suites
+timed out on vitest worker start-up while a sibling worktree's cargo build was running; each
+failing file passed in isolation once the machine quieted, with no assertion failure at any point.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

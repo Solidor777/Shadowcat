@@ -70,12 +70,9 @@ further at design time. Numbering continues from Phase 1.
 - **M17a (photometric field + carried emitters + light/wall authoring) is DONE** — delivery
   notes in [`HISTORY.md`](HISTORY.md).
 - **M17b (vision-mode descriptor v2, tremorsense + the perceived channel, elevation) is DONE** —
-  delivery notes in [`HISTORY.md`](HISTORY.md). Remaining: M17c (movement-type tags + terrain
-  exemptions), M17d (moving light mid-walk).
-- Photometric lighting (illumination coupling replacing the flat/edge-projected environment light
-  model), darkvision / tremorsense / height.
-- **Per-actor/faction movement exemptions** (deferred from M10g): flying/incorporeal ignore
-  difficult terrain; needs movement-type tags on actors.
+  delivery notes in [`HISTORY.md`](HISTORY.md).
+- **M17c (movement-type tags + terrain exemptions) is DONE** — delivery notes in
+  [`HISTORY.md`](HISTORY.md). Remaining: M17d (moving light mid-walk).
 - **Moving light source mid-walk** (residual of the move-stream live clip): a third-party mover
   carrying a light that opens a sightline reveals per sample of that move, not at its stop — the
   observer's vision recomputed per light-carrying sample; cost only on request.
