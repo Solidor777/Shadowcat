@@ -239,7 +239,7 @@
   }
   .hint {
     margin: 0;
-    color: var(--text-secondary);
+    color: var(--text-muted);
     font-size: 0.85em;
     display: flex;
     align-items: center;

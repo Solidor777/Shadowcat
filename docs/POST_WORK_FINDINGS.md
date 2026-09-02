@@ -720,3 +720,27 @@ are observations awaiting triage, not committed work.
   future CI-parity check should confirm the default (parallel) mode is stable
   when run alone.
 
+- Title: Skill symbol citations reference unbuilt combat-resolution symbols. Summary: the
+  local-only `check-skill-symbol-refs` gate reports 25 broken citations in the
+  `shadowcat-codebase-combat`, `-formula`, and `-scene-rendering` skills (`resolve_budget`,
+  `eval_formula`, `formula_host`, `budget_cells`, `replay_step_costs`, and kin) — symbols the
+  combat-resolution sub-project of M14c describes but has not yet built. Surfaced during the
+  M15b skill-update gate (whose own four skill diffs verify clean); the fix belongs to that
+  sub-project's close-out, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.
+
+- Title: Skill symbol citations run ahead of the code for M14c/M17/M18 symbols.
+  Summary: the local-only `check-skill-symbol-refs` gate reports 59 broken
+  citations against the skills corpus at its HEAD commit (measured via a HEAD
+  extraction through `SHADOWCAT_CODEBASE_SKILLS_DIR`), spread across the
+  actors-tokens, chat, client-shell, combat, dice, documents-permissions,
+  formula, module-toolchain, panels, and scene-rendering skills — symbols the
+  M14c combat-resolution sub-projects, M17 (vision/lighting), and M18 (token
+  enrichment: `ActorEngine.aura`, `sound`, `vfx`, `VfxAnchor`,
+  `TokenNodeSpec.aura`, `updateTokenAura`, `auraKey`, `regionTriggers`, and
+  kin) describe but have not built. Surfaced during the M16 close-out gates;
+  M16's own skill diffs (panels rewrite, client-shell theming bullet) add zero
+  new breakage against that baseline. Same class as the M15b
+  combat-resolution finding above: the fix belongs to those milestones'
+  close-outs, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.

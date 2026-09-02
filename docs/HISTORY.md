@@ -2001,6 +2001,140 @@ returning an id for a discarded op. `parseCombats` reports a malformed frame thr
 session logger, never `console.warn`. The core e2e asserts the GM's exact nine-event list
 (the event's turn pair included) against the player's seven-event subset.
 
+### M16 · Layout + theming completion ✅
+Branch `m16-layout-theming`, executed mainline (Kimi) from the approved design
+`docs/superpowers/specs/2026-08-31-m16-layout-theming-completion-design.md`; plans
+`docs/superpowers/plans/2026-08-31-m16a-theme-engine.md`,
+`...-m16b-layout-completion.md`, `...-m16c-user-themes-styling-modes.md`. M16 is
+complete in three sub-milestones.
+M16a (theme engine): the ui-kit theme data module (`THEME_TOKEN_NAMES`, 46 tokens;
+`BUILTIN_THEMES` slate-dark/slate-light/contrast-dark; `resolveTheme` + custom-theme
+sanitizers) and the `ThemeController` singleton (`theme`, `activeTheme`) writing every
+token and the color scheme as inline styles on each registered document's root — pop-out
+windows via `registerDocument`, so every open window follows a swap. Persistence rides
+`UiState.global.theme` through the sessionState leaf-key patch pipeline plus a
+localStorage mirror (`THEME_MIRROR_STORAGE_KEY`) the `main` entry applies pre-login, so
+neither the login screen nor the first paint flashes the default. Stage canvas runtime
+recolor (`RenderEngine.setThemeColors` over a named `ThemeColors`), all dockview chrome
+skinned onto theme tokens (with the library's own theme class bridged off), the settings
+theme picker, a token-mismatch sweep, an executable WCAG contrast audit of the built-ins,
+and a stylesheet↔theme-data parity test. e2e: theme switch applies immediately, persists,
+survives reload.
+M16b (layout completion): the layout tree carries `popouts: PopoutWindowLayout[]` (one
+record per window — engine-minted key, tab-ordered panels, screen-absolute rect, dormant
+marker) with the `withPopouts` codec migration (a legacy `poppedOut` id array becomes one
+single-panel window per id, key derived deterministically); ops `popOut` (carries
+key/rect), `updatePopoutGeometry`, `popOutInto`. `apply()` reconciles already-floating
+panels onto the tree rect instead of resetting them; floating windows move with Arrow
+keys (Shift for the coarse step) and resize with Ctrl+Arrows; resize hit targets meet the
+24/44px a11y floor. Popout geometry is captured from the live window, never the event
+payload — vendored dockview-core 7.0.2 populates screenY from screenX (logged in
+`OPEN_BUGS.md`). The restore flow: dormant records survive rehydrate, the
+`panels.popoutRestoredFloating` notice carries a Reopen action (info notifications with
+an action never auto-dismiss), `flushPendingNotice` withholds action notices until
+`restorablePopouts()` is non-empty (PanelHost re-flushes on `visibleRegs`), and
+`restorePopouts()` reopens each window in one user gesture. Found in flight: a
+stale-tree `apply()` from a resizeZone op yanked panels out of in-flight popups —
+`#pendingPopouts` guards both placement loops in `DockviewEngine.apply`;
+`placeFromPersistedLocation`'s popped-out branch restores the dormant record so
+trickle-prune cannot destroy the arrangement server-side. e2e: panels-floating.spec
+(keyboard resize persistence; the popout/restore round trip).
+M16c (user themes + styling modes): the settings `ThemeEditor.svelte` — name, base
+theme, every curated color token via color inputs, per-token reset, advisory WCAG
+contrast warnings (`contrastWarnings`/`CONTRAST_PAIRINGS`/`wcagContrast`) — with live
+whole-app preview through `previewCustom(draft, owner)`, presentational only and never
+serialized. Module styling modes: `Contribution.styling` host/isolated; isolated content
+is wrapped by `Surface.svelte` and slot-classed by `PanelHost.svelte` with
+`THEME_ISOLATION_CLASS`, whose rule (`themeIsolationCss`, generated from the default
+theme's data, installed per themed document under `THEME_ISOLATION_SHEET_ID`)
+re-declares every token at its engine default for that subtree only. External modules
+ship a stylesheet via the manifest `style` field (schema-validated relative `.css`,
+traversal rejected), installed as one link per enabled module by the world session with
+disable/leave cleanup; the initiative-tracker example declares it and the
+creating-a-module guide documents it. e2e: the custom-theme lifecycle — author, live
+preview, persist, reload, delete with fallback to the default. Found in flight: a
+component destroyed in the same flush that mutated controller state reads its `$state`
+fields stale (minimally reproduced under Svelte 5.56.3) — the editor's teardown clear is
+microtask-deferred and owner-scoped (`clearPreview(owner)`), and the preview entry is
+`$state.raw` because the deep proxy breaks owner identity; the e2e settings re-open is
+toggle-aware because the persisted panel layout may restore the panel open; typedoc
+cannot attach nested `@param`s to an inline object literal nor `{@link}` a private.
+Coverage: repo unit suites green (core 564, ui-kit 183, settings 42, panels 270, shell
+127, render 192, scripts 427), full gate battery including strict typedoc
+(`pnpm build:all`), and the full e2e suite 23/23 quiet. The close-out whole-branch
+adversarial review found one Important issue — spec §F's drag-into-existing-popout
+producer had never been wired (a will-drop on an open popout's group was silently
+converted to a pseudo-edge dock; shipped now as `#handlePopoutWillDrop`, classifying via
+`#popoutWindowKeys` ahead of `#toDropSite` with flat placement semantics and imperative
+moving-locked joins) — and nine Minor items, all fixed in the same campaign: the
+isolation sheet now re-declares `color-scheme`; `saveCustom` ignores a sanitizer-rejected
+entry; the manifest `style` refine rejects backslash separators; module stylesheets
+install only for modules that actually activated; the codec's referential guard rejects a
+panel id in two live locations (dormant records are tombstones, not locations);
+`#popOutPanel`'s success continuation skips a mid-flight-closed panel instead of ghosting
+it; `describeOp`'s fallthrough comment is current (and `popOutInto` stays unnarrated by
+design); PanelMenu documents the floating-window keyboard shortcuts; and the theme e2e
+gains an isolation-under-non-default-theme case plus a multi-panel restore case. Skills
+updated in the plugin checkout (panels rewritten to the
+popouts-record model, client-shell theming bullet; plugin v1.4.1); the pre-existing
+skill-citation drift naming unbuilt M14c/M17/M18 symbols (59 at the skills-corpus HEAD
+baseline, zero added by M16) is logged in `POST_WORK_FINDINGS.md`.
+
+### M15b · Asset browser + generic document Move ✅
+Branch `m15b-asset-browser`, executed mainline (Fable) from the approved design
+`docs/superpowers/specs/2026-08-30-m15b-asset-browser-design.md` and plan
+`docs/superpowers/plans/2026-08-30-m15b-asset-browser.md`. M15 is complete.
+Delivered, server: `Operation::Move { doc_id, parent_id, old_parent_id }` — the one write path
+for the envelope `parent_id`, riding the ordinary intent pipeline. GM-only AND uncapped
+(`WorldRole::Gm` whose resolved `Access.all` holds; `CombatTransition` exempt like the other
+capability gates; stored `message` docs refuse it), OCC on `old_parent_id`, invert-by-swap,
+no-op short-circuit; validity is Create-validity through the shared `check_parent_placement`
+helper extracted from the Create arm plus `validate_containment`, and `check_move_acyclic`'s
+batch-aware ancestor walk (the cycle check M15a found unreachable, now real — incl. the
+same-batch create-then-move cycle). Both authoritative loops implement the arm (replay keeps
+structural checks, drops capability/OCC); a moved folder recomputes its subtree's derived tags;
+`filter_command`'s Move arm delivers verbatim iff whole-document READ holds at commit AND now
+(generation-guarded; no transition synthesis — access never consults `parent_id`, test-pinned);
+the scene mirror re-evaluates `is_scene_entity` (top-level despawns; source scene forgets, the
+destination gains, region fields re-derive). Client: Zod member pinning the serde bytes,
+`applyOperation` move arm, optimistic rollback; ts-rs regenerated.
+Delivered, client: `@shadowcat/module-asset-browser` replaces the retired
+`@shadowcat/module-assets` — reactive `FolderTree` (create, inline rename with OCC pre-image,
+drag + accessible Move-to with the own-subtree drag guard, delete dialog mapping
+reparent-vs-purge onto the new core `deleteAssetFolder`), `FilterBar` mapped 1:1 onto
+`queryAssets` (name/regex exclusive) with leading-edge debounce + generation guard + keyset
+load-more, `computeGridWindow`-virtualized multi-select `AssetGrid` (click/ctrl/shift; ordered
+append mode with pick-order badges), `PreviewPane` (metadata, explicit-tag editor with derived
+tags read-only, rename, byte Replace — restored deliberately: neither design section carried the
+old panel's stable-UUID byte swap and dropping it silently would have been a capability
+regression — download original + reconvert gated on `original_retained`, confirmed delete),
+`BulkBar`, sequential `UploadQueue` (per-file progress/retry/abort; a partial-placement failure
+surfaces done-with-warning and never re-uploads), drop-zones + file-input fallback, compact-mode
+tree drawer. Pick mode: ui-kit `AssetPickController` + overloaded `AppContext.pickAsset`
+(`PickAssetMultiple` → ordered ids; one active pick, a new request cancels the previous; settle
+clears before resolving), rendered by `AssetPickOverlay` contributed into the new
+`shadowcat.surface:overlay` core-ui surface (outside the layout grid; deliberately un-gated —
+any member picks, while the browser panel contribution is `gmOnly`). Consumers converted:
+scene-tools `AssetPicker` browse affordance; `VisualKindEditor`'s face/sheet/image single picks
+through its shared snippet and frames as one ordered multi-pick replacing the list wholesale
+(the in-editor `listAssets` grid deleted).
+Decisions taken in the brainstorm (user-confirmed): fully generic Move from day one over
+per-type opt-in; GM-only authz; modal pick over a floating panel; multi-capable seam converting
+every picking surface. Found in flight: `AppContext.assets` was already the resolver, so the
+pick seam is `pickAsset`/`assetPick`; a case-insensitive filesystem cannot hold
+`uploadQueue.svelte.ts` beside `UploadQueue.svelte` (model renamed `uploadQueueModel.svelte.ts`,
+one shared queue test file); the e2e sweep for retired panel testids initially missed
+`panels.spec.ts`/`stage.spec.ts` because the grep output was head-truncated — re-swept
+untruncated; hex-movement's final assertion raced panel-open under machine load while trace
+screenshots proved the app state correct (assertion now waits for control visibility first);
+the wildly slow e2e runs were machine contention from concurrent gate batteries — the suite is
+19/19 in ~27s quiet. e2e: the carried multi-chunk-upload-found-by-tag scenario, a folder
+re-parent through the accessible control (the Move op end to end), and the preview-pane
+replace/delete flow. Coverage: 15 server Move tests (+ replay, egress ×5, ECS mirror ×3),
+46 asset-browser module tests, consumer conversions, full repo gates + `build:all` green.
+Pre-existing findings surfaced (not fixed here): 25 broken skill symbol citations in the
+combat/formula/scene-rendering skills naming not-yet-built combat-resolution symbols — logged in
+`POST_WORK_FINDINGS.md`.
 
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
@@ -2065,6 +2199,61 @@ rule for every writer); the client's single-shot placement failure hid the creat
 Coverage added: 8 `process` unit tests on generated fixtures, tag/query/upload/mutate unit tests,
 and five new integration files (`assets_chunked`, `assets_query`, `assets_mutate`, plus the
 extended `assets` and bundle round-trips).
+
+### M18 · Token enrichment ✅
+Branch `m18-token-enrichment`, executed from the approved brainstorm + design
+`docs/superpowers/specs/2026-08-31-m18-token-enrichment-brainstorm.md` and
+`docs/superpowers/specs/2026-08-31-m18-token-enrichment-design.md` as six sub-projects
+(M18c generated visuals, M18b trigger regions, M18a emitters, M18d built-in fx, M18e emotes,
+M18f art tooling), each landed with the full gate battery green; M18 is complete.
+Delivered, tokens: the `RenderVisual::Generated`/`TokenVisual::Generated` parametric compositor
+(art + shape crop + decorative border ring + background fill — authored data, distinct from the
+faction ring), resolved fail-closed in `resolveTokenVisual` (`isValidGeneratedArt`) and drawn by
+the PixiBackend `generated` frame (background → masked art → ring, inside `visualContainer`).
+Token art tooling closes the authoring loop: `VisualKindEditor` gained the `generated` kind and
+an `initial?: TokenVisual` prop (mount-time initialization from an existing visual, fail-closed
+on shapes the editor can't represent), the actors panel edits an existing actor's visual
+post-create through the panel's raw-`old` OCC convention, and `TokenVisualControl` writes the
+per-token `/engine/overrides/visual` override (clear writes `null`) — every pick through the
+M15b `ctx.pickAsset` seam.
+Delivered, scene: **trigger regions** — `RegionEngine.triggers` (`enter`/`arrest`;
+`condition_add`/`condition_remove`/`resource_delta`/`chat_notice` effects) sharing
+`regions::rasterize` with the composed field via the `SceneEcs::trigger_regions` identity
+side-table (parity-pinned), `MoveOutcome.entered_cells`+`arrested` keeping the move executor
+pure, `Room::fire_region_triggers` the single application path (placement fires on genuine
+token Creates/position Updates; region edits never re-fire; disabled regions inert), effects
+committed under `WriteOrigin::CombatTransition`, secret-region notices forced GM-only via
+`engine_geometry_visible_to_world`, resource deltas combat-scoped with a net-sum per key and
+GM-only failure notices. **Emote overlays** — `ClientMsg::Emote`/`ServerMsg::Emote` aux frames
+mirroring every ScenePing touch point (per-user rate limit in a separate bucket, effective-owner
+authz fail-closed via `token_scene_and_effective_owner`, ≤16-byte payload, `broadcast_aux`),
+the Zod/ws-client/worldSession chain with the `viewedSceneId` cross-scene guard, `EmoteView`
+(pure age-tracker; the glyph anchors at fire position and tracks nothing), and the scene-tools
+rail palette sharing speak-as's ownership predicate.
+Delivered, render: the emission component model — `AuraEmission`/`SoundEmission`/`VfxEmission`/
+`VfxAnchor` on `ActorEngine`+`TokenOverrides` (Option, wholesale-override like `vision`),
+`EffectiveActor.aura/sound/vfx` projections, the aura disc drawn under the art
+(`updateTokenAura`, `auraKey` memoization) with `EmissionEditor`/`TokenEmissionControl`
+authoring; and per-token built-in fx — `TokenNodeSpec.fx` (`tint`/`desaturate`/`highlight`),
+`composeTokenFxMatrix` folding the list into one `ColorMatrixFilter` on
+`visualContainer.filters` (art fx rotate with the art; badges stay clean; filters disposed with
+the node), condition-driven via `Condition.fx` (registry + ConditionsPanel editor) folded in
+effective-condition order by `TokenView.toSpec`, and the selection signifier moved onto the node
+as a `highlight` entry (`RenderEngineOpts.selectedTokens` + `reapplyTokenSelection`; the
+scene-tools overlay-ring draw deleted — one highlight mechanism; `"target"` a reserved source
+with no producer).
+Decisions taken: emissions follow standard write rules (no GM-only predicate — the spec was
+amended in-range); no server ECS emission accessors (no consumer; dead code fails lint);
+condition-fx strengths fixed at 0.5 (the registry authors colors, not strengths); selection
+highlight 0.4 at the preserved accent `0xffd400`. Found in flight: the m15b merge's auto-merge
+silently dropped the actors suite's `listAssets` module mock (the suite caught it — restored
+with the pickAsset flow); the merge itself was pulled forward onto the branch (origin/main +
+`m15b-asset-browser`) because M18f's editor targets `ctx.pickAsset` and main had not landed it.
+Sound/VFX playback stays Phase 3 by PLAN's own scoping — the component model is the deliverable.
+Coverage: 7 room region-trigger tests + 4 executor `entered_cells` tests (+ the rasterization
+parity pin), 6 `updateTokenFx` + condition-fx/selection tests across render/engine/stage, emote
+protocol + convergence + cross-scene guard tests, 17 new actors-module tests; full repo gates
+(`cargo test`/`clippy`/`fmt`, every `pnpm` gate, docs example check) green at every commit.
 
 ## Documentation campaign — completed sweeps
 

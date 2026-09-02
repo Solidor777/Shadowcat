@@ -98,6 +98,9 @@ const actorEngine = (prototype: boolean) => ({
   conditions: [],
   prototype,
   vision: null,
+  aura: null,
+  sound: null,
+  vfx: null,
 });
 
 function docsWithSceneAndActor(id: string, prototype: boolean): DocumentStore {

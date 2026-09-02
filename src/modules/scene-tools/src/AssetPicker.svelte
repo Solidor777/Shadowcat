@@ -8,7 +8,7 @@
     /** The shared tool-controller instance; clicking a tile sets `controller.selectedAsset`. */
     controller: ToolController;
   } = $props();
-  const { world, assets, t } = getAppContext();
+  const { world, assets, t, pickAsset } = getAppContext();
 
   let items = $state<Asset[]>([]);
   let failed = $state(false);
@@ -34,6 +34,15 @@
 
 <div class="asset-picker">
   <p class="hint">{t("tools.placeHint")}</p>
+  <button
+    type="button"
+    class="browse"
+    data-testid="picker-browse"
+    onclick={() =>
+      void pickAsset({ kind: "image" }).then((id) => {
+        if (id) controller.selectedAsset = id;
+      })}
+  >{t("tools.browseAssets")}</button>
   {#if failed}
     <p class="error">{t("assets.error", { message: "" })}</p>
   {:else if items.length === 0}

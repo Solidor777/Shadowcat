@@ -425,6 +425,24 @@ test("addPing renders an expanding ring driven by the ticker", () => {
   expect(backend.pings[0].alpha).toBeLessThan(1); // fading
 });
 
+test("addEmote anchors above the token at fire time, driven by the ticker; unknown ids drop", () => {
+  const { store, backend, engine } = makeEngine();
+  store.applyCommand(tokenCmd(1, "t1", 50)); // center (50, 0), extent 100×100
+  engine.start();
+  engine.addEmote("t1", "😀");
+  backend.tick!(100); // drive one frame
+  expect(backend.emotes).toHaveLength(1);
+  expect(backend.emotes[0].emote).toBe("😀");
+  // Top-center of the token box: center x, top edge y (0 − 100/2 = −50), already rising.
+  expect(backend.emotes[0].x).toBe(50);
+  expect(backend.emotes[0].y).toBeLessThan(-50);
+  expect(backend.emotes[0].alpha).toBeLessThan(1); // fading
+
+  engine.addEmote("unknown-token", "🔥"); // no overlay for an id this viewer cannot resolve
+  backend.tick!(100);
+  expect(backend.emotes).toHaveLength(1);
+});
+
 test("start registers the backend ticker", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
@@ -1139,5 +1157,59 @@ test("the engine renders a token at the footprint lookup it was constructed with
   engine.reapplyFootprints();
   expect(backend.tokens.get("t1")!.w).toBe(346.4);
   expect(backend.tokens.get("t1")!.h).toBe(400);
+  engine.destroy();
+});
+
+test("setThemeColors routes the background to the backend clear color and redraws the grid in the new color", () => {
+  const { backend, engine } = makeEngine();
+  engine.setViewport(300, 200);
+  engine.start();
+  expect(backend.clearColor).toBeNull();
+  expect(backend.gridColor).toBe(0x3a3a4a); // the default slate
+
+  engine.setThemeColors({ background: 0x112233, gridColor: 0x445566 });
+
+  expect(backend.clearColor).toBe(0x112233);
+  expect(backend.gridColor).toBe(0x445566);
+});
+
+test("setThemeColors with only a background leaves the grid untouched (no redraw, same color)", () => {
+  const { backend, engine } = makeEngine();
+  engine.setViewport(300, 200);
+  engine.start();
+  backend.gridLineCount = -1; // sentinel: any redraw overwrites this
+
+  engine.setThemeColors({ background: 0x000001 });
+
+  expect(backend.clearColor).toBe(0x000001);
+  expect(backend.gridLineCount).toBe(-1);
+  expect(backend.gridColor).toBe(0x3a3a4a);
+});
+
+test("the engine highlights selected tokens via the selectedTokens accessor, refreshed by reapplyTokenSelection", () => {
+  // The wiring under test is the engine passing its `selectedTokens` accessor down to
+  // `TokenView`. The accessor is read per reconcile, so changing the selection and calling
+  // `reapplyTokenSelection` repaints without any document change.
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let selected: ReadonlySet<string> = new Set();
+  const engine = new RenderEngine({
+    store,
+    assets: new AssetResolver(),
+    backend,
+    grid: { kind: "square", size: 100 },
+    selectedTokens: () => selected,
+  });
+  engine.start();
+  store.applyCommand(tokenCmd(1, "t1", 0));
+  expect(backend.tokens.get("t1")!.fx).toBeUndefined();
+
+  selected = new Set(["t1"]);
+  engine.reapplyTokenSelection();
+  expect(backend.tokens.get("t1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+
+  selected = new Set();
+  engine.reapplyTokenSelection();
+  expect(backend.tokens.get("t1")!.fx).toBeUndefined();
   engine.destroy();
 });

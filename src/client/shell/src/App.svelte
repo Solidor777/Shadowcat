@@ -16,7 +16,7 @@
   import { statusBar } from "@shadowcat/module-statusbar";
   import { stage } from "@shadowcat/module-stage";
   import { settings } from "@shadowcat/module-settings";
-  import { assets } from "@shadowcat/module-assets";
+  import { assetBrowser } from "@shadowcat/module-asset-browser";
   import { actors } from "@shadowcat/module-actors";
   import { factions } from "@shadowcat/module-factions";
   import { conditions } from "@shadowcat/module-conditions";
@@ -173,7 +173,7 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assets, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem], onEvicted: () => leaveWorld() });
+    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem], onEvicted: () => leaveWorld() });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);

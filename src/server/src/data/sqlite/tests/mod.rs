@@ -4,6 +4,7 @@ mod assets;
 mod combat_batches;
 mod commands_and_intents;
 mod invites_and_ownership;
+mod moves;
 mod rows_and_validation;
 mod search_and_worlds;
 
@@ -157,4 +158,32 @@ pub(super) fn combatant_doc(id: u128, world: Uuid, parent: Uuid) -> Document {
     d.parent_id = Some(parent);
     d.engine = crate::data::document::tests::default_test_engine("combatant");
     d
+}
+
+/// An `asset_folder` document named `name` under `parent`.
+pub(super) fn folder_doc(id: u128, world: Uuid, name: &str, parent: Option<Uuid>) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "asset_folder".into();
+    d.name = Some(name.into());
+    d.parent_id = parent;
+    d.engine = Some(serde_json::json!({ "sort": 0 }));
+    d
+}
+
+/// A GM-owned world plus its GM `PermissionContext`.
+pub(super) async fn gm_world(
+    repo: &SqliteRepository,
+) -> (Uuid, crate::data::membership::PermissionContext) {
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    (
+        w.id,
+        crate::data::membership::PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        },
+    )
 }

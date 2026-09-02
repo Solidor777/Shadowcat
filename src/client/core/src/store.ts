@@ -178,6 +178,14 @@ export function applyOperation(
     case "delete":
       docs.delete(op.doc.id);
       break;
+    case "move": {
+      // Envelope re-parent: rewrites `parent_id` and nothing else, the same
+      // single-field assignment the server's authoritative loops perform.
+      const cur = docs.get(op.doc_id);
+      if (!cur) return; // unknown doc (e.g. not yet resynced); server is authoritative
+      docs.set(op.doc_id, { ...cur, parent_id: op.parent_id });
+      break;
+    }
     case "update": {
       const cur = docs.get(op.doc_id);
       if (!cur) return; // unknown doc (e.g. not yet resynced); server is authoritative

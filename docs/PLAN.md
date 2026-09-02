@@ -33,41 +33,30 @@ further at design time. Numbering continues from Phase 1.
   - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
     conflict set returned for human review; `Document.base` under engine-tree validation.
   - **M14c-6 — combat client seams** — DONE (see [`HISTORY.md`](HISTORY.md)).
-- **M14d — tracker module + settings editors**: the default tracker UI
+- **M14d — tracker module + settings editors** (panel + settings-editor conventions to follow
+  the M15b asset-browser module, which landed first): the default tracker UI
   (`@shadowcat/module-combat-tracker`), the world/scene combat settings editors inside
   `@shadowcat/module-game-settings` (the combat chain editor over `resolve_combat_rules`'s
   engine→system-defaults→world→scene precedence, plus the resource-registry editor), and
   end-to-end coverage. Design:
   [`superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md`](superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md);
   plan: [`superpowers/plans/2026-09-02-m14d-tracker-module-settings-editors.md`](superpowers/plans/2026-09-02-m14d-tracker-module-settings-editors.md).
-  Builds after the M16/M17/M18 branches merge (theme tokens, condition fx, actor controls are
-  consumed through stable seams only).
+  M16 and M18 have merged; builds after the M17 branch merges (theme tokens, condition fx,
+  actor controls are consumed through stable seams only).
 - Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
-### M15 · Asset pipeline + browser
-- Design: [`superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md`](superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md).
-- **M15a (pipeline: server + client core) is DONE** — delivery notes in
-  [`HISTORY.md`](HISTORY.md)'s M15a entry.
-- **Remaining (M15b — browser module)**: the GM asset browser (`@shadowcat/module-asset-browser`,
-  replacing `@shadowcat/module-assets`): folder tree, filter bar (name / regex / tags / kind /
-  sort), virtualized thumbnail grid over `?variant=thumb`, preview pane (metadata, tag editor,
-  download original, reconvert), multi-select bulk move/tag/delete, drop-zone uploads driven by
-  `startChunkedUpload`, `AssetPicker` "browse…" pick mode via `AppContext.assets`; mobile
-  reflow. Open design point carried from M15a: **folder move** — `parent_id` is an immutable
-  envelope path, so a move needs its own server-authored route (or delete + recreate with asset
-  reparenting); decide in the M15b brainstorm. The §5 e2e ("upload a >1-chunk file and find it
-  by tag") lands here with the tag UI. Re-review `AppContext` (M14c adds `.combat`), M14d's
-  panel/settings-editor conventions, and `AssetPicker`'s consumers before writing the plan.
-- Excludes: audio transcode + animated-WebP encoding (Phase 3 audio); FTS-backed asset search
-  (M21 — M15 ships SQL substring/tag/folder filters plus a size-limited Rust `regex` filter).
+### M15 · Asset pipeline + browser ✅
+Complete: M15a (pipeline) and M15b (browser module + the generic GM-only document `Move`
+operation) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M15a/M15b entries. The FTS
+integration for asset search remains deferred to M21 by design.
 
-### M16 · Layout + theming completion
-- Drag-resize of floating panels where the M12 panel engine does not already provide it;
-  multi-window arrangement persistence.
-- Multiple themes + user themes over the 3-tier SCSS token system; module styling modes
-  (how a module opts into or out of the host theme).
-- Excludes: pop-out windows (shipped, M12e).
+### M16 · Layout + theming completion ✅
+Complete: M16a (theme engine — token data, controller, ui-state + pre-login persistence,
+picker, dockview chrome, stage recolor), M16b (floating-window arrangement persistence and
+gesture restore, keyboard move/resize, a11y resize targets), and M16c (custom theme editor
+with live preview and contrast warnings, module styling modes, external-module stylesheets)
+— delivery notes in [`HISTORY.md`](HISTORY.md)'s M16 entry.
 
 ### M17 · Vision, lighting + movement completion
 - Photometric lighting (illumination coupling replacing the flat/edge-projected environment light
@@ -80,21 +69,11 @@ further at design time. Numbering continues from Phase 1.
 - Depends on: M14 for anything keyed to the turn owner.
 - Excludes: Web-Worker optimistic vision (stays server-authoritative by design).
 
-### M18 · Token enrichment
-- Aura / light / sound / VFX emitters as token components (sound and VFX emit into the Phase-3
-  audio/VFX seams; the component model lands here).
-- **Trigger regions** — mechanical/trigger effects on the M10g region primitive: damage, condition
-  application, scripted triggers on enter/arrest.
-- Token art tooling.
-- **Generated token visuals** (deferred from M10i): a parametric compositor that frames existing
-  actor art into a token — decorative border + shape-crop mask + background, distinct from the
-  dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union.
-- **Per-token built-in fx** (deferred from M10j): condition-driven tint / desaturate / highlight +
-  selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token
-  `Container`; the custom shader-filter seam stays Phase 3 VFX.
-- **Emote / reaction overlays** (deferred from M10j): transient overlay above the token via a new
-  ping-style `emote` aux frame + fading child.
-- Depends on: M14 (condition/damage triggers on the combat clock), M17 (light emitters).
+### M18 · Token enrichment ✅
+Complete: generated token visuals, trigger regions, the aura/sound/VFX emitter component model,
+per-token built-in fx (condition-driven + selection highlight), emote overlays, and token art
+tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX PLAYBACK remains
+Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
 ### M19 · Tables, notes + chat media
 - Rollable tables on the dice engine + document model (weighted rows, nested draws, results to

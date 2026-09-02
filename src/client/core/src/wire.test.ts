@@ -12,6 +12,7 @@ import {
   SendMessageSchema,
   PathfindSchema,
   DocumentSchema,
+  OperationSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
   FieldChangeSchema,
@@ -264,6 +265,18 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses an inbound emote frame", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "emote", scene: "s1", token: "t1", user: "u1", emote: "😀" }),
+    );
+    expect(m?.type).toBe("emote");
+    if (m?.type === "emote") {
+      expect(m.token).toBe("t1");
+      expect(m.user).toBe("u1");
+      expect(m.emote).toBe("😀");
+    }
+  });
+
   it("parses path_result and path_error server frames", () => {
     const ok = parseServerMsg(
       JSON.stringify({
@@ -470,6 +483,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     scene_error: { type: "scene_error", request_id: "r", message: "x" },
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
+    emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
     path_result: {
       type: "path_result",
       request_id: "r",
@@ -787,5 +801,26 @@ describe("parseCombats", () => {
   it("CombatsPayloadSchema round-trips the same shape parseCombats accepts", () => {
     const raw = { combats: [{ id: "c1", scene_id: "s1", combatants: [] }] };
     expect(CombatsPayloadSchema.safeParse(raw).success).toBe(true);
+  });
+});
+
+describe("OperationSchema move member", () => {
+  // The exact serde wire bytes the server emits: `#[serde(tag = "op",
+  // rename_all = "snake_case")]` with uuid strings and a null Option.
+  const MOVE_WIRE = {
+    op: "move",
+    doc_id: "00000000-0000-0000-0000-000000000001",
+    parent_id: "00000000-0000-0000-0000-000000000002",
+    old_parent_id: null,
+  };
+
+  it("accepts the serde wire shape of a move operation", () => {
+    const parsed = OperationSchema.parse(MOVE_WIRE);
+    expect(parsed).toEqual(MOVE_WIRE);
+  });
+
+  it("rejects a move missing doc_id", () => {
+    const { doc_id: _dropped, ...rest } = MOVE_WIRE;
+    expect(() => OperationSchema.parse(rest)).toThrow();
   });
 });

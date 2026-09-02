@@ -1,6 +1,7 @@
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
+import type { EmoteGlyph } from "./emote-view";
 
 /** The background-layer sprite spec — the statement of record for this shape; every
  * implementation/recording site (`PixiBackend`, `MockBackend`) references this type rather
@@ -19,6 +20,11 @@ export interface DisplayBackend {
   /** Set or clear the background-layer sprite.
    * @param spec The background image, or `null` to clear it. */
   setBackground(spec: BackgroundSpec | null): void;
+  /** Set the renderer's clear color (the background fill behind every layer) at
+   * runtime, packed `0xRRGGBB` — the canvas half of a theme swap, alongside a
+   * `RenderEngine.setThemeColors` grid recolor.
+   * @param color The new clear color, `0xRRGGBB`. */
+  setClearColor(color: number): void;
   /** Replace the grid-layer line set (scene coords) with the given color (0xRRGGBB).
    * @param lines The grid line segments to draw, in scene coordinates.
    * @param color Line color, `0xRRGGBB`. */
@@ -79,6 +85,9 @@ export interface DisplayBackend {
   /** Redraw the transient ping rings (expanding/fading outline circles).
    * @param rings The ping rings to draw — see `PingRing`. */
   drawPings(rings: PingRing[]): void;
+  /** Redraw the transient emote glyphs (rising/fading emoji over tokens).
+   * @param glyphs The emote glyphs to draw — see `EmoteGlyph`. */
+  drawEmotes(glyphs: EmoteGlyph[]): void;
   /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint.
    * @param frame The resolved lighting overlay to paint. */
   setLighting(frame: LightingFrame): void;

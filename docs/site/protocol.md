@@ -43,7 +43,12 @@ Clients never mutate state — they send an `intent` carrying operations
   ([`WireFieldChange`](/api/ts/types/_shadowcat_core.WireFieldChange.html)):
   JSON-pointer `path`, the OCC pre-image `old`, the value `new`, and an optional
   `remove: true` meaning *delete the key* (genuine absence, distinct from
-  `null`).
+  `null`),
+- `move` — re-parent a top-level document: `doc_id`, the new `parent_id`
+  (`null` = top level), and `old_parent_id` as the OCC pre-image. GM-only, and
+  legal exactly where a `create` with that parent would be (the server enforces
+  placement and folder-cycle rules); the one write path for the envelope's
+  otherwise-immutable `parent_id`.
 
 The server validates (permissions, OCC, schema), applies, and broadcasts a
 [`WireCommand`](/api/ts/types/_shadowcat_core.WireCommand.html) inside an
