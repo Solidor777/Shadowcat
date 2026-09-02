@@ -1,45 +1,53 @@
-// Template merge orchestration. Thin glue: pure core functions → the conflict modal →
-// `dispatchIntent`. Holds a reactive `pending` conflict session the `TemplateModalHost` renders.
-// Constructed by the shell alongside `SheetsController`; imports no module.
+// Template merge orchestration. Thin glue: the controller sends the three merge intents
+// (`MergePull`/`MergePush`/`MergeRevert`) and lets the server compute the 3-way merge — the
+// conflict modal renders whatever conflict set the server reports, and a resolution re-sends the
+// intent with the user's per-path "theirs" choices. Holds a reactive `pending` conflict session
+// the `TemplateModalHost` renders. Constructed by the shell alongside `SheetsController`; imports
+// no module.
 import {
-  computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState, stampInstance,
-  effectiveOwner,
-  type WireDocument, type WireOperation, type StampOpts, type SyncState, type Logger,
-  type DocumentStore, type ReadableDocuments, type MergePlan, type NotificationLevel,
+  findInstances, syncState, stampInstance, effectiveOwner, MergeIntentError,
+  type WireDocument, type StampOpts, type SyncState, type Logger,
+  type DocumentStore, type ReadableDocuments, type NotificationLevel,
+  type ClientMsg, type WireMergeOutcome, type WireMergeConflict, type WirePushInstanceOutcome,
 } from "@shadowcat/core";
 import type { ConflictGroup } from "./mergeConflict";
 
-/** The child/template/plan triple a conflict group's key resolves back to, so
- * `#openSession`'s `resolve` callback can find what to merge and dispatch once the
- * modal reports its per-group "theirs" choices. */
+/** A merge intent frame, already carrying its own `request_id`. */
+type MergeIntentMsg = Extract<
+  ClientMsg,
+  {
+    /** Merge frame discriminant literal (`merge_pull`/`merge_push`/`merge_revert`). */
+    type: "merge_pull" | "merge_push" | "merge_revert";
+  }
+>;
+
+/** A pending session's per-group correlation data: which merge intent to re-send (with
+ * resolutions) when the modal reports its choices. */
 interface ConflictEntry {
-  /** The instance document a conflict group's resolution applies to. */
-  child: WireDocument;
-  /** The child's template document, already resolved via `#templateOf`. */
-  template: WireDocument;
-  /** The precomputed merge plan (`mergedBands` + `conflicts`) from `computePull`. */
-  plan: MergePlan;
+  /** The instance id this group's conflicts belong to (`child_id` for pull, the push
+   * instance's own id for push). */
+  instanceId: string;
 }
 
 /** The controller's collaborators, supplied once at construction. */
 export interface TemplatesControllerDeps {
-  /** Authoritative document mirror `findInstances` snapshots from. */
+  /** Authoritative document mirror `findInstances` snapshots from (display only). */
   store: DocumentStore;
-  /** Optimistic document view `#get`/`#templateOf` resolve ids against. */
+  /** Optimistic document view `#get`/`#templateOf`/`canPull`/`canPush` resolve ids against. */
   documents: ReadableDocuments;
-  /** Transmits the merge/stamp/revert operations the controller computes. */
-  dispatchIntent: (ops: WireOperation[]) => void;
+  /** Sends a merge intent and resolves with the server's computed outcome (or rejects with a
+   * `MergeIntentError`/`Error`). */
+  sendMergeIntent: (msg: MergeIntentMsg) => Promise<WireMergeOutcome>;
   /** The current user's world-scoped role; `"gm"` short-circuits `#isOwnerOrGm`. */
   role: "gm" | "player" | "spectator";
   /** The current user's id, compared against `effectiveOwner` in `#isOwnerOrGm`. */
   selfId: string;
   /** Advisory write gate (mirrors the server). */
   canEdit: (doc: WireDocument, path: string) => boolean;
-  /** Sink for the warnings logged on an unresolvable child/template. */
+  /** Sink for the warnings logged on an unresolvable child/template or a rejected intent. */
   logger: Logger;
-  /** UI-visible notification seam (`AppContext.notify`), called alongside `logger.warn` at both
-   * exclusion-warning sites with a player-presentable message — the logger's own message lists
-   * raw instance ids, useful for a developer but not meaningful to a GM. */
+  /** UI-visible notification seam (`AppContext.notify`), called alongside `logger.warn` on a
+   * rejected or partially-excluded intent with a player-presentable message. */
   notify: (message: string, level?: NotificationLevel) => void;
 }
 
@@ -47,15 +55,17 @@ export interface TemplatesControllerDeps {
 export interface PendingSession {
   /** The conflict groups to present, one per instance. */
   groups: ConflictGroup[];
-  /** Applies the modal's per-group "theirs" choices and dispatches the resulting Update(s). */
+  /** Applies the modal's per-group "theirs" choices and re-sends the merge intent with
+   * `resolutions`. */
   resolve: (theirsByGroup: Map<string, Set<string>>) => void;
 }
 
 /**
- * Template pull/push/revert/stamp orchestration, backing `AppContext.templates`. Thin
- * glue: pure core merge functions → the conflict modal → `dispatchIntent`. Holds a reactive
- * `pending` conflict session that `TemplateModalHost` renders. Constructed by the shell
- * alongside `SheetsController`; imports no module.
+ * Template pull/push/revert/stamp orchestration, backing `AppContext.templates`. The server
+ * computes the 3-way merge; this controller sends the intent, opens the conflict modal on a
+ * conflicted reply, and re-sends with resolutions. Holds a reactive `pending` conflict session
+ * that `TemplateModalHost` renders. Constructed by the shell alongside `SheetsController`;
+ * imports no module.
  */
 export class TemplatesController {
   /** The controller's collaborators, fixed at construction. */
@@ -66,8 +76,9 @@ export class TemplatesController {
   pending = $state<PendingSession | null>(null);
 
   /** Build a controller wired to its collaborators.
-   * @param deps - The controller's collaborators (store/documents/dispatch/role/canEdit/logger).
-   * @example new TemplatesController({ store, documents, dispatchIntent, role, selfId, canEdit, logger });
+   * @param deps - The controller's collaborators (store/documents/sendMergeIntent/role/canEdit/
+   * logger/notify).
+   * @example new TemplatesController({ store, documents, sendMergeIntent, role, selfId, canEdit, logger, notify });
    */
   constructor(deps: TemplatesControllerDeps) {
     this.#deps = deps;
@@ -115,7 +126,8 @@ export class TemplatesController {
   }
 
   /** In-store instances stamped from `templateId` (same-world only; see the core
-   * `findInstances` doc comment for the exact scoping rule).
+   * `findInstances` doc comment for the exact scoping rule). Display only — `push` finds its
+   * own authoritative instance set server-side.
    * @param templateId - The template document's id.
    * @returns Every in-store instance whose `source.id` is `templateId`.
    * @example templates.findInstances(templateId);
@@ -144,14 +156,16 @@ export class TemplatesController {
   canPull(childId: string): boolean {
     const child = this.#get(childId);
     if (!child || !this.#templateOf(child)) return false;
-    // Advisory client-side mirror of the server cap union: WRITE_FIELDS
-    // (base/system) ∪ MANAGE_EMBEDDED. A merge plan is not computed here (expensive/premature —
-    // it isn't computed until the user clicks pull), so a user missing MANAGE_EMBEDDED is
-    // withheld even for a merge that happens to touch no embedded content (false negative, safe
-    // direction to err in).
+    // Advisory client-side mirror of the server cap union: WRITE_FIELDS (system) ∪
+    // MANAGE_EMBEDDED — `/base` dropped: the server writes `/base` unconditionally under
+    // `WriteOrigin::TemplateMerge` (no client capability maps to it at all), so gating this
+    // advisory check on `canEdit(child, "/base")` would hide pull/revert from exactly the users
+    // the server now authorizes. A merge plan is not computed here (expensive/premature — it
+    // isn't computed until the user clicks pull), so a user missing MANAGE_EMBEDDED is withheld
+    // even for a merge that happens to touch no embedded content (false negative, safe direction
+    // to err in).
     return (
       this.#isOwnerOrGm(child) &&
-      this.#deps.canEdit(child, "/base") &&
       this.#deps.canEdit(child, "/system") &&
       this.#deps.canEdit(child, "/embedded")
     );
@@ -159,12 +173,11 @@ export class TemplatesController {
 
   /** Whether the current user may push `templateId`: owner-or-GM plus `MANAGE_EMBEDDED`
    * (`/embedded`) on the TEMPLATE doc — ONE leg of `canPull`'s union, not the same check
-   * (`canPull` also requires `/base` + `/system` on the instance). `false` when the template
+   * (`canPull` also requires `/system` on the instance). `false` when the template
    * has no in-store instances to push to.
    *
    * This gate covers the TEMPLATE only. Per-instance write authorization is derived
-   * separately inside `push`, via `#canApplyUpdate` against the Update each instance's merge
-   * actually produces — see that method's doc comment.
+   * server-side, per instance, against the actual computed Update — see `push`'s doc comment.
    * @param templateId - The template document's id.
    * @returns Whether push is currently permitted.
    * @example templates.canPush(templateId);
@@ -179,9 +192,21 @@ export class TemplatesController {
     );
   }
 
-  /** Merge the template into `childId`. Dispatches directly when the merge is
-   * conflict-free; otherwise opens a single-group conflict session for the modal.
-   * A no-op (with a logged warning) if `childId` is unresolvable or has no template.
+  /** Warn (logger + player-presentable notify) once with `message`. Not exported (folded into
+   * the intent methods' public surface).
+   * @param message - The player-presentable text to notify with; also logged verbatim.
+   * @example this.#warn("templates.pull: rejected");
+   */
+  #warn(message: string): void {
+    this.#deps.logger.warn(message);
+    this.#deps.notify(message, "warning");
+  }
+
+  /** Send `MergePull` for `childId` and handle the outcome: conflict-free applies via the
+   * ordinary broadcast Event echo (nothing further to do here); conflicted opens a single-group
+   * session. A no-op (with a logged warning) if `childId` is unresolvable. A rejection
+   * (`not_found`/`not_an_instance`/`forbidden`/`corrupt_base`/`internal`) warns with the
+   * server's player-presentable reason.
    * @param childId - The instance document's id to pull into.
    * @example templates.pull(childId);
    */
@@ -191,23 +216,62 @@ export class TemplatesController {
       this.#deps.logger.warn(`templates.pull: child ${childId} not in store; pull unavailable`);
       return;
     }
-    const template = this.#templateOf(child);
-    if (!template) {
-      this.#deps.logger.warn(`templates.pull: template ${child.source?.id ?? "?"} not in store; pull unavailable`);
-      return;
-    }
-    const plan = computePull(child, template);
-    if (plan.conflicts.length === 0) {
-      this.#deps.dispatchIntent([planToUpdate(child, template, plan.mergedBands)]);
-      return;
-    }
-    this.#openSession([{ key: childId, label: null, conflicts: plan.conflicts }], new Map([[childId, { child, template, plan }]]));
+    void this.#sendPull(childId);
   }
 
-  /** Reset `childId`'s mergeable bands to the template (keeping placement) and dispatch
-   * immediately — reverting never opens the conflict modal (the child's own changes are
-   * discarded outright, so there is nothing to reconcile). A no-op (with a logged warning)
-   * if `childId` is unresolvable or has no template.
+  /** Send (or re-send with `resolutions`) `MergePull` for `childId` and route the outcome.
+   * Not exported (folded into `pull`'s public surface).
+   * @param childId - The instance document's id.
+   * @param resolutions - Second-call resolutions (conflict paths to take the template side of).
+   * @example this.#sendPull(childId);
+   */
+  async #sendPull(childId: string, resolutions?: string[]): Promise<void> {
+    try {
+      const outcome = await this.#deps.sendMergeIntent({
+        type: "merge_pull",
+        request_id: crypto.randomUUID(),
+        child_id: childId,
+        resolutions,
+      });
+      if (outcome.kind !== "pull") return;
+      if (outcome.status === "applied") {
+        this.pending = null;
+        return;
+      }
+      this.#openPullSession(childId, outcome.status.conflicts);
+    } catch (err) {
+      if (err instanceof MergeIntentError && typeof err.reason !== "string") {
+        const fresh = "stale_resolutions" in err.reason ? err.reason.stale_resolutions : err.reason.unknown_resolution;
+        if (fresh.kind === "pull" && fresh.status !== "applied") {
+          this.#openPullSession(childId, fresh.status.conflicts);
+          return;
+        }
+      }
+      this.#warn(err instanceof Error ? err.message : "templates.pull: rejected");
+    }
+  }
+
+  /** Open a single-group pull conflict session.
+   * @param childId - The instance document's id the conflicts belong to.
+   * @param conflicts - The server-reported conflict set.
+   * @example this.#openPullSession(childId, conflicts);
+   */
+  #openPullSession(childId: string, conflicts: WireMergeConflict[]): void {
+    this.#openSession(
+      [{ key: childId, label: null, conflicts }],
+      new Map([[childId, { instanceId: childId }]]),
+      (byKey, theirsByGroup) => {
+        const entry = byKey.get(childId);
+        if (!entry) return;
+        const resolutions = [...(theirsByGroup.get(childId) ?? new Set<string>())];
+        void this.#sendPull(childId, resolutions);
+      },
+    );
+  }
+
+  /** Reset `childId`'s mergeable bands to the template (keeping placement) via `MergeRevert`.
+   * Revert never conflicts — there is nothing to reconcile — so it always applies or is
+   * rejected outright. A no-op (with a logged warning) if `childId` is unresolvable.
    * @param childId - The instance document's id to revert.
    * @example templates.revert(childId);
    */
@@ -217,81 +281,98 @@ export class TemplatesController {
       this.#deps.logger.warn(`templates.revert: child ${childId} not in store; revert unavailable`);
       return;
     }
-    const template = this.#templateOf(child);
-    if (!template) {
-      this.#deps.logger.warn(`templates.revert: template ${child.source?.id ?? "?"} not in store; revert unavailable`);
-      return;
-    }
-    this.#deps.dispatchIntent([computeRevert(child, template)]);
+    void this.#deps
+      .sendMergeIntent({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId })
+      .catch((err: unknown) => {
+        this.#warn(err instanceof Error ? err.message : "templates.revert: rejected");
+      });
   }
 
-  /** Whether every field path `op` writes is one `inst`'s current writer may write, derived
-   * from the Update actually produced rather than a guessed list of bands — the paths
-   * `planToUpdate` emits vary per instance (a whole-band write only appears when that band
-   * changed), so a fixed list of capabilities to check drifts the moment `planToUpdate` starts
-   * emitting a path nobody enumerated. Both `push` and `#openSession`'s `resolve` compute their
-   * Update first, then call this on the result, so agreement is structural rather than a
-   * pairing someone has to keep in sync by hand.
-   * @param inst - The instance the Update targets.
-   * @param op - The computed Update, e.g. from `planToUpdate`.
-   * @returns Whether every changed path in `op` passes `canEdit`; `false` for any operation
-   * kind other than `"update"`.
-   * @example this.#canApplyUpdate(inst, planToUpdate(inst, template, plan.mergedBands));
-   */
-  #canApplyUpdate(inst: WireDocument, op: WireOperation): boolean {
-    if (op.op !== "update") return false;
-    return op.changes.every((change) => this.#deps.canEdit(inst, change.path));
-  }
-
-  /** Push `templateId` to every in-store instance the pusher can see + write. `findInstances`
-   * is same-world only (see the core `findInstances` doc comment) and says nothing about
-   * per-instance write authorization, which can differ from the template's own ownership (an
-   * instance may belong to a different player) — write authorization is derived per instance via
-   * `#canApplyUpdate`, computed against the actual Update that instance's merge produces, never
-   * against a guessed set of bands. An instance whose provisional Update (from its
-   * `computePull`-produced `mergedBands`, before any conflict resolution) already touches a path
-   * the pusher cannot write is excluded before it can even enter the conflict modal; an instance
-   * that clears that gate but whose FINAL resolved Update touches a path the pusher cannot write
-   * (`#openSession`'s `resolve` checks this) is excluded there instead. Either way the caller
-   * is warned once, listing every excluded instance, so the push's partial reach is visible
-   * rather than silently stale.
-   * A no-op (with a logged warning) if `templateId` is unresolvable.
+  /** Push `templateId` to every same-world instance the server reports: applied instances need
+   * nothing further (the ordinary broadcast Event echo confirms them); conflicted instances open
+   * one group each in the same modal session; excluded instances (visible but not writable by
+   * the pusher) are warned once, listing every excluded instance's id. An instance invisible to
+   * the pusher is omitted from the server's outcome entirely (existence-hiding) and never
+   * appears here at all. A no-op (with a logged warning) if `templateId` is unresolvable. A
+   * whole-intent rejection warns with the server's player-presentable reason.
    * @param templateId - The template document's id to push.
    * @example templates.push(templateId);
    */
   push(templateId: string): void {
-    const template = this.#get(templateId);
-    if (!template) {
+    const tmpl = this.#get(templateId);
+    if (!tmpl) {
       this.#deps.logger.warn(`templates.push: template ${templateId} not in store; push unavailable`);
       return;
     }
+    void this.#sendPush(templateId);
+  }
+
+  /** Send (or re-send with `resolutions`) `MergePush` for `templateId` and route the outcome.
+   * Not exported (folded into `push`'s public surface).
+   * @param templateId - The template document's id.
+   * @param resolutions - Second-call resolutions, per instance.
+   * @example this.#sendPush(templateId);
+   */
+  async #sendPush(templateId: string, resolutions?: Record<string, string[]>): Promise<void> {
+    try {
+      const outcome = await this.#deps.sendMergeIntent({
+        type: "merge_push",
+        request_id: crypto.randomUUID(),
+        template_id: templateId,
+        resolutions,
+      });
+      if (outcome.kind !== "push") return;
+      this.#routePushOutcome(templateId, outcome.instances);
+    } catch (err) {
+      if (err instanceof MergeIntentError && typeof err.reason !== "string") {
+        const fresh = "stale_resolutions" in err.reason ? err.reason.stale_resolutions : err.reason.unknown_resolution;
+        if (fresh.kind === "push") {
+          this.#routePushOutcome(templateId, fresh.instances);
+          return;
+        }
+      }
+      this.#warn(err instanceof Error ? err.message : "templates.push: rejected");
+    }
+  }
+
+  /** Route one push outcome: open a conflict session for any conflicted instances, warn once
+   * about excluded ones, and leave applied instances to the broadcast Event echo. Not exported
+   * (folded into `push`'s public surface).
+   * @param templateId - The template pushed.
+   * @param instances - The per-instance outcomes to route.
+   * @example this.#routePushOutcome(templateId, outcome.instances);
+   */
+  #routePushOutcome(
+    templateId: string,
+    instances: WirePushInstanceOutcome[],
+  ): void {
     const groups: ConflictGroup[] = [];
-    const conflicted = new Map<string, ConflictEntry>();
+    const byKey = new Map<string, ConflictEntry>();
     const excluded: string[] = [];
-    for (const inst of this.findInstances(templateId)) {
-      const plan = computePull(inst, template);
-      const op = planToUpdate(inst, template, plan.mergedBands);
-      if (!this.#canApplyUpdate(inst, op)) {
-        excluded.push(inst.id);
+    for (const inst of instances) {
+      if (inst.status === "applied") continue;
+      if (inst.status === "excluded") {
+        excluded.push(inst.instance_id);
         continue;
       }
-      if (plan.conflicts.length === 0) {
-        this.#deps.dispatchIntent([op]);
-      } else {
-        groups.push({ key: inst.id, label: inst.name ?? inst.id, conflicts: plan.conflicts });
-        conflicted.set(inst.id, { child: inst, template, plan });
-      }
+      groups.push({ key: inst.instance_id, label: inst.name ?? inst.instance_id, conflicts: inst.status.conflicts });
+      byKey.set(inst.instance_id, { instanceId: inst.instance_id });
     }
     if (excluded.length > 0) {
-      this.#deps.logger.warn(
-        `templates.push: excluded instance(s) not writable by the pusher: ${excluded.join(", ")}`,
-      );
-      this.#deps.notify(
-        `Push skipped ${excluded.length} instance(s) you don't have permission to edit.`,
-        "warning",
-      );
+      this.#warn(`Push skipped ${excluded.length} instance(s) you don't have permission to edit.`);
     }
-    if (groups.length > 0) this.#openSession(groups, conflicted);
+    if (groups.length === 0) {
+      this.pending = null;
+      return;
+    }
+    this.#openSession(groups, byKey, (byKeyNow, theirsByGroup) => {
+      const resolutions: Record<string, string[]> = {};
+      for (const [key] of byKeyNow) {
+        const paths = [...(theirsByGroup.get(key) ?? new Set<string>())];
+        if (paths.length > 0) resolutions[key] = paths;
+      }
+      void this.#sendPush(templateId, resolutions);
+    });
   }
 
   /** Dismiss the open conflict session without applying anything.
@@ -301,44 +382,28 @@ export class TemplatesController {
     this.pending = null;
   }
 
-  /** Open a conflict-resolution session: publish `pending` for `TemplateModalHost` to
-   * render, and wire its `resolve` to apply each group's chosen theirs-paths, derive write
-   * authorization from the resulting Update via `#canApplyUpdate`, dispatch it if authorized
-   * (warning once, listing every excluded instance, if not), then clear `pending`. A group
-   * absent from the resolver's map (nothing chosen "theirs") resolves with an empty
-   * theirs-set — everything stays "mine".
+  /** Open a conflict-resolution session: publish `pending` for `TemplateModalHost` to render,
+   * wiring its `resolve` to `onResolve`. Not exported (folded into `pull`/`push`'s public
+   * surface).
    * @param groups - The conflict groups to present, one per instance.
-   * @param byKey - Each group's child/template/plan, keyed by the same key used in `groups`.
-   * @example this.#openSession(groups, byKey);
+   * @param byKey - Each group's correlation data, keyed by the same key used in `groups`.
+   * @param onResolve - Called with `byKey` and the modal's per-group "theirs" choices; the
+   * caller re-sends the underlying merge intent with `resolutions`.
+   * @example this.#openSession(groups, byKey, onResolve);
    */
   #openSession(
     groups: ConflictGroup[],
     byKey: Map<string, ConflictEntry>,
+    onResolve: (byKey: Map<string, ConflictEntry>, theirsByGroup: Map<string, Set<string>>) => void,
   ): void {
     this.pending = {
       groups,
       resolve: (theirsByGroup) => {
-        const excluded: string[] = [];
-        for (const [key, entry] of byKey) {
-          const theirs = theirsByGroup.get(key) ?? new Set<string>();
-          const resolved = applyResolutions(entry.plan.mergedBands, entry.plan.conflicts, theirs);
-          const op = planToUpdate(entry.child, entry.template, resolved);
-          if (this.#canApplyUpdate(entry.child, op)) {
-            this.#deps.dispatchIntent([op]);
-          } else {
-            excluded.push(entry.child.id);
-          }
-        }
+        // Close eagerly on submit — the round trip re-opens a fresh session (with the
+        // server-recomputed conflict set) if the resolution turns out stale/incomplete, or a
+        // still-conflicted push instance remains conflicted.
         this.pending = null;
-        if (excluded.length > 0) {
-          this.#deps.logger.warn(
-            `templates: excluded instance(s) not writable by the resolving user: ${excluded.join(", ")}`,
-          );
-          this.#deps.notify(
-            `Push skipped ${excluded.length} instance(s) you don't have permission to edit.`,
-            "warning",
-          );
-        }
+        onResolve(byKey, theirsByGroup);
       },
     };
   }
