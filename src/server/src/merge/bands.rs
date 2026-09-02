@@ -13,17 +13,16 @@ use crate::data::document::Document;
 
 /// The mergeable bands of a live document; `embedded` children are full
 /// documents (envelope preserved). Produced by `merge3`, written whole-band
-/// by `plan_to_update`. Mirrors the client `MergeBands`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../types/generated/")]
+/// by `plan_to_update`. Server-internal: it never crosses the wire (a
+/// `MergeResult` carries conflicts, the committed bands ride the ordinary
+/// `Event`), so it has no ts-rs export.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MergeBands {
     /// The document's `name` band after merge.
     pub name: Option<String>,
     /// The document's `engine` band after merge (`null` when absent).
-    #[ts(type = "unknown")]
     pub engine: Value,
     /// The document's `system` band after merge (`null` when absent).
-    #[ts(type = "unknown")]
     pub system: Value,
     /// Merged embedded collections, keyed by collection name; each child is a
     /// full document (envelope preserved), not a bands-only record.

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { structuralDiff, deletePointer, deepEqual } from "./merge";
+import { structuralDiff, deepEqual } from "./merge";
 import { isPlacementExcluded, restampSubtree, placementExclusions } from "./merge";
 import type { WireDocument } from "./wire";
 
@@ -54,26 +54,6 @@ describe("structuralDiff", () => {
   it("emits sorted, RFC-6901-escaped pointers", () => {
     const diffs = structuralDiff({}, { "b/x": 1, "a~y": 2 });
     expect(diffs.map((d) => d.path)).toEqual(["/a~0y", "/b~1x"]);
-  });
-});
-
-describe("deletePointer", () => {
-  it("removes an object key", () => {
-    const root = { a: { b: 1, c: 2 } };
-    deletePointer(root, "/a/b");
-    expect(root).toEqual({ a: { c: 2 } });
-  });
-
-  it("splices an array element", () => {
-    const root = { xs: [10, 20, 30] };
-    deletePointer(root, "/xs/1");
-    expect(root).toEqual({ xs: [10, 30] });
-  });
-
-  it("no-ops on a missing intermediate segment", () => {
-    const root = { a: 1 };
-    deletePointer(root, "/b/c");
-    expect(root).toEqual({ a: 1 });
   });
 });
 

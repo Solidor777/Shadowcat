@@ -1,8 +1,8 @@
 // Pure structural-diff/clone primitives shared by the stamp/sync side of the templates system
-// (`templates.ts`). The 3-way merge computation itself runs server-side
-// (`crate::merge`, the Rust behavioural twin) — see that module's doc comment; this file keeps
-// only what `snapshotBase`/`syncState`/`stampInstance` need locally. Every value is plain JSON
-// (objects recurse key-by-key, arrays are opaque leaves, scalars are leaves).
+// (`templates.ts`). The 3-way merge computation itself runs server-side (`crate::merge`) — see
+// that module's doc comment; this file keeps only what `snapshotBase`/`syncState`/`stampInstance`
+// need locally. Every value is plain JSON (objects recurse key-by-key, arrays are opaque leaves,
+// scalars are leaves).
 import type { WireDocument } from "./wire";
 
 /** One structural change between two JSON trees at an RFC-6901 pointer. */
@@ -115,53 +115,6 @@ export function structuralDiff(base: unknown, now: unknown, prefix = ""): Diff[]
   return [{ path: prefix, kind: "set", value: now }];
 }
 
-/** Split an RFC-6901 pointer into unescaped tokens (drops the leading empty segment). Not
- * exported.
- * @param pointer An RFC-6901 JSON pointer, e.g. `"/a/b~1c"`.
- * @returns The unescaped path segments, e.g. `["a", "b/c"]`.
- * @example
- * ```
- * // internal helper; not part of the public API
- * tokenize("/a/b~1c"); // ["a", "b/c"]
- * ```
- */
-function tokenize(pointer: string): string[] {
-  return pointer.split("/").slice(1).map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
-}
-
-/**
- * Remove the object key or array element at `pointer` in `root` (mutates). No-op on any missing
- * intermediate segment. The set-only server `set_pointer` cannot delete; a whole-band merge
- * result that removes a key/element rewrites the whole enclosing container server-side.
- * @param root The tree to mutate.
- * @param pointer The RFC-6901 pointer of the key/element to remove.
- * @example
- * ```ts
- * import { deletePointer } from "@shadowcat/core";
- *
- * const doc = { system: { hp: 10 } };
- * deletePointer(doc, "/system/hp");
- * doc; // { system: {} }
- * ```
- */
-export function deletePointer(root: unknown, pointer: string): void {
-  if (pointer === "") throw new Error("cannot delete the document root");
-  const tokens = tokenize(pointer);
-  let cur: unknown = root;
-  for (const tok of tokens.slice(0, -1)) {
-    if (Array.isArray(cur)) cur = cur[Number(tok)];
-    else if (isPlainObject(cur)) cur = cur[tok];
-    else return;
-  }
-  const last = tokens[tokens.length - 1];
-  if (Array.isArray(cur)) {
-    const i = Number(last);
-    if (Number.isInteger(i) && i >= 0 && i < cur.length) cur.splice(i, 1);
-  } else if (isPlainObject(cur)) {
-    delete cur[last];
-  }
-}
-
 /** Whether `path` is inside the placement exclusion set (equal or a descendant).
  * @param path The RFC-6901 pointer to test.
  * @param exclusions The placement-excluded pointers (see `placementExclusions`).
@@ -178,49 +131,11 @@ export function isPlacementExcluded(path: string, exclusions: string[]): boolean
   return exclusions.some((e) => path === e || path.startsWith(`${e}/`));
 }
 
-/** The mergeable bands of a live document; `embedded` children are full documents (envelope
- * preserved). Written whole-band by the server's `merge::plan::plan_to_update`. */
-export type MergeBands = {
-  /** The document's `name` band after merge. */
-  name: string | null;
-  /** The document's `engine` band after merge. */
-  engine: unknown;
-  /** The document's `system` band after merge. */
-  system: unknown;
-  /** Merged embedded collections, keyed by collection name; each child is a full document
-   * (envelope preserved), not a bands-only record. */
-  embedded: Record<string, WireDocument[]>;
-};
-
-/** One embedded child inside a `base` snapshot: bands + the `sourceId` correlation key (the
- * child's `source.id` at sync time — the template child's id). Recurses (finite-depth embedding). */
-export type EmbeddedBaseChild = {
-  /** The child's `source.id` at sync time — the correlation key the server's merge engine
-   * matches instance/template children by. */
-  sourceId: string;
-  /** The child's `name` band at sync time. */
-  name: string | null;
-  /** The child's `engine` band at sync time. */
-  engine: unknown;
-  /** The child's `system` band at sync time. */
-  system: unknown;
-  /** The child's own embedded collections at sync time, recursively in the same shape. */
-  embedded: Record<string, EmbeddedBaseChild[]>;
-};
-
-/** The opaque `Document.base` snapshot shape (server-derived, client-read). Top-level bands +
- * recursive embedded content keyed for provenance correlation. */
-export type MergeBase = {
-  /** The document's `name` band at sync time. */
-  name: string | null;
-  /** The document's `engine` band at sync time. */
-  engine: unknown;
-  /** The document's `system` band at sync time. */
-  system: unknown;
-  /** Embedded collections at sync time, keyed by collection name, each reduced to
-   * `EmbeddedBaseChild` records (not full documents). */
-  embedded: Record<string, EmbeddedBaseChild[]>;
-};
+/** The `Document.base` snapshot shape and its embedded-child record — the ts-rs output of the
+ * server's `merge::bands::MergeBase`/`EmbeddedBaseChild` (server-derived, client-read), re-exported
+ * so the stamp/sync helpers here and their consumers name the ONE generated declaration rather
+ * than a hand-written copy of it. */
+export type { MergeBase, EmbeddedBaseChild } from "@shadowcat/types";
 
 /** Per-`doc_type` instance-local paths that never merge.
  * @param docType The document's `doc_type`.

@@ -185,6 +185,15 @@ describe("wire drift guard — non-vacuous schema/type assertions", () => {
   });
   it("MergeConflict", () => {
     expectTypeOf<z.infer<typeof mergeConflictSchemaImpl>>().toEqualTypeOf<WireMergeConflict>();
+    expectTypeOf<WireMergeConflict>().toEqualTypeOf<Ts.MergeConflict>();
+    expectTypeOf<WireMergeConflict["parentKind"]>().toEqualTypeOf<Ts.ParentKind>();
+  });
+  it("MergeErrorKind / MergePullStatus / PushInstanceStatus / MergeOutcome match ts-rs", () => {
+    expectTypeOf<WireMergeErrorKind>().toEqualTypeOf<Ts.MergeErrorKind>();
+    expectTypeOf<WireMergePullStatus>().toEqualTypeOf<Ts.MergePullStatus>();
+    expectTypeOf<WirePushInstanceStatus>().toEqualTypeOf<Ts.PushInstanceStatus>();
+    expectTypeOf<WirePushInstanceOutcome>().toEqualTypeOf<Ts.PushInstanceOutcome>();
+    expectTypeOf<WireMergeOutcome>().toEqualTypeOf<Ts.MergeOutcome>();
   });
   it("MergePullStatus", () => {
     expectTypeOf<z.infer<typeof mergePullStatusSchemaImpl>>().toEqualTypeOf<WireMergePullStatus>();
