@@ -75,15 +75,9 @@ Phase 3 by design (the component model landed here; the emit seams are Phase-3 a
   (decision log §11; YouTube thumbnail + external link is already delivered by the Bucket C
   oEmbed work and is recorded there as evidence, not rebuilt). Three sub-projects in build order,
   each a branch off `main` merged before the next:
-  - **M19a — Chat media** (plan:
-    [`superpowers/plans/2026-09-02-m19a-chat-media.md`](superpowers/plans/2026-09-02-m19a-chat-media.md)):
-    `Segment::Image` over asset ids from `[[asset:<uuid>|alt]]` spans (composer picker over the
-    M15b `pickAsset` seam) and from external image URLs fetched server-side through the
-    SSRF-guarded client and asset-ified post-publish (`Provenance::ChatImage`); the sanitizer
-    never emits a hotlinked `<img>` (closes the tracking-pixel gap its own comment names); the
-    `chat::body` composer extracted for reuse; edits keep doc links/images/buttons; the segment
-    renderer moves to ui-kit's `SegmentList` as the client's single `{@html}` sink.
-    Prerequisite: M15b merged.
+  - **M19a — Chat media ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s M19a entry.
+    The Playwright `chat-media.spec.ts` browser e2e spec is still owed (deferred to the phase-2
+    campaign's dispatcher-serialized e2e slot — see that entry's deviation note).
   - **M19b — Rollable tables** (plan:
     [`superpowers/plans/2026-09-02-m19b-rollable-tables.md`](superpowers/plans/2026-09-02-m19b-rollable-tables.md)):
     `table` engine documents (`Weighted` rows or a reference-free `Formula` with ranges; rows

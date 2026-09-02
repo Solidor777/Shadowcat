@@ -103,7 +103,7 @@ Every `ClientMsg` variant:
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
-| `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding |
+| `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
 
@@ -116,6 +116,15 @@ combatant's formula host. A referencing roll with no binding fails with an
 `unknown-ref` system notice. The same raw-template rule applies to the
 `notation` of every combat-roll entry, and a combat roll's `channel` is
 validated against the channel registry the same way a message's is.
+
+Images are asset-served, never hotlinked: a `[[asset:<uuid>|alt]]` span
+references an existing in-world asset directly, and a Markdown/HTML image URL
+in a `markdown`/`html`-enabled message is fetched by the server (the same
+SSRF-guarded pipeline link previews use) and asset-ified in the background
+before the resulting `image` segment is appended to the stored message — the
+client never fetches an external image URL itself. A YouTube/Vimeo link
+similarly becomes an oEmbed card (thumbnail + link, structured fields only,
+never the provider's own embed HTML) rather than a raw hotlink.
 
 ## Scene channels
 

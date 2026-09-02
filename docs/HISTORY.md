@@ -2106,6 +2106,52 @@ parity pin), 6 `updateTokenFx` + condition-fx/selection tests across render/engi
 protocol + convergence + cross-scene guard tests, 17 new actors-module tests; full repo gates
 (`cargo test`/`clippy`/`fmt`, every `pnpm` gate, docs example check) green at every commit.
 
+### M19a · Chat media ✅
+Branch `m19`, executed from the approved plan
+`docs/superpowers/plans/2026-09-02-m19a-chat-media.md` (design:
+`docs/superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`), as 11 sequential
+tasks. Delivered: `chat::body::compose_message`, the shared chunk→segment composer extracted from
+`handle_send_message`'s Normal/Emote arm and reused (under `ScanMode::NoExecute`) by
+`handle_edit_message`, so an edit's `[[doc:...]]`/`[[asset:...]]`/`[[roll:...]]` spans resolve
+exactly like a send while an inline `[[formula]]` roll stays refused (`RollImmutable`);
+`Segment::Image { asset_id, alt }` from an author-placed `[[asset:<uuid>|alt]]` span (in-world,
+`policy.images()`-gated, alt capped at `MAX_IMAGE_ALT_CHARS`) and from a Markdown/HTML image URL
+the sanitizer collects (`Sanitized.image_urls: Vec<ImageSource>`) — the sanitizer rewrites every
+Markdown image to inert alt text and unconditionally strips any raw `<img>` post-clean, so an
+`<img>` carrying a `src` never survives `sanitize` regardless of the `images` toggle;
+`link_preview::enrich` queues the collected sources as `PendingEnrichment::InlineImage` behind the
+same SSRF guard/per-URL lock/rate limiter the link-preview image pipeline already uses, and
+`post_publish::resolve_inline_image` asset-ifies the fetch with `Provenance::ChatImage`; the
+client mirror (`chat-docs.ts`'s `image` segment kind) and the segment renderer extracted from
+`MessageCard` into ui-kit's `SegmentList` (alongside `RollTooltip`), now the client's single
+`{@html}` sink; a composer "Insert image" button over the M15b `ctx.pickAsset` seam, gated on the
+world's `chat-settings.images` toggle (Game Settings panel gains that toggle).
+Deviation from plan: Task 6's `enrich`/`handle_send_message`+`handle_edit_message` gating was
+widened from "only when `previews_enabled`" to "when `previews_enabled` OR the composer collected
+inline image sources" — a world can enable images without hyperlinks, and the narrower gate would
+have collected `image_urls` in vain. Task 6's/7's git history landed as two commits rather than
+the plan's three (a `git add -p` split staged the edit-path routing alongside the image-urls
+plumbing); a follow-up commit added Task 7's tests with a note pointing at the implementation
+commit. Task 8 kept the pre-existing `MessageCard`/`SegmentList` split tests in place rather than
+physically relocating ~700 lines (they already exercise the delegated render path unchanged) and
+added a fresh `SegmentList.test.ts` covering every segment kind including the new `image` arm.
+`SegmentList`'s `messageId` prop from the plan's literal signature was dropped — nothing in the
+extracted renderer logic reads it. The client-side asset-picker label always falls back to the
+picked id's first 8 characters (no asset-name-listing surface exists on `AppContext`, contra the
+plan's "name from `ctx.assets`' listing if available"). Task 10 delivers only the
+`chat-image.e2e.test.ts` WS-level suite; the Playwright `chat-media.spec.ts` browser spec is
+deferred to the phase-2 campaign's dispatcher-serialized e2e slot (a stray `shadowcat.exe` from a
+concurrent worktree was found holding the shared e2e port during this campaign, so browser e2e
+runs are coordinator-scheduled one at a time).
+Coverage: 292 server `chat::` unit/integration tests (server-side pipeline, sanitizer,
+link-preview/inline-image enrichment, post-publish resolution), 45 `chat-docs.test.ts` cases, a
+new `SegmentList.test.ts` (23 tests) + the untouched `MessageCard`/`RollTooltip` suites (82 + moved
+tests, all green through the delegation), `Composer.test.ts` + `chat-settings.test.ts` additions
+for the insert-image button and toggle, and the `chat-image.e2e.test.ts` Node↔Rust suite (image
+segment delivery to every recipient; an unknown-asset span refused as a whisper-to-sender System
+notice, never a hard `ChatError`). Full repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`,
+typecheck, lint) green at every commit.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference
