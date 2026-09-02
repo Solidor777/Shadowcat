@@ -350,12 +350,10 @@ fn faction_movement_absent_defaults_to_empty() {
     }))
     .unwrap();
     assert_eq!(f.movement, Vec::<String>::new());
-    assert!(
-        FactionRegistryEngine::seed()
-            .factions
-            .values()
-            .all(|f| f.movement.is_empty())
-    );
+    assert!(FactionRegistryEngine::seed()
+        .factions
+        .values()
+        .all(|f| f.movement.is_empty()));
 }
 
 #[test]

@@ -47,7 +47,7 @@ impl SceneEcs {
     ///   branch follows). Overrides do not apply to instanced tokens; the embedded copy's
     ///   `faction` key joins the same world registry.
     /// - a raw (actorless) or unknown token id yields the empty set — fail-closed: a mover
-    ///     whose tags cannot be resolved is never treated as exempt.
+    ///   whose tags cannot be resolved is never treated as exempt.
     pub(crate) fn token_movement_tags(&self, token: Uuid) -> BTreeSet<String> {
         let mut out = BTreeSet::new();
         let Some(&e) = self.index.get(&token) else {
@@ -73,8 +73,10 @@ impl SceneEcs {
             }
         };
         match token_eng.as_ref().and_then(|t| t.actor_id) {
-            Some(id) => match self.actors.get(&id) {
-                Some(actor) => {
+            Some(id) => {
+                // A dangling actor link (no `actors` entry) yields the empty set, overrides
+                // ignored — the same fail-closed arm `token_vision_assignments` takes.
+                if let Some(actor) = self.actors.get(&id) {
                     if let Some(replacement) = token_eng
                         .as_ref()
                         .and_then(|t| t.overrides.as_ref())
@@ -87,8 +89,7 @@ impl SceneEcs {
                         union_faction(a.faction.as_ref(), &mut out);
                     }
                 }
-                None => {} // dangling actor link → empty (overrides ignored)
-            },
+            }
             None => {
                 if let Some(a) = ent
                     .doc

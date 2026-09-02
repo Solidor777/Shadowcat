@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::data::document::{Document, WorldCapDefaults, WorldRole};
 use crate::scene::grid_shape::SquareGrid;
 use crate::scene::move_exec::{execute_move, MoveGateInputs};
+use crate::scene::pathfinding::MoveTraits;
 use crate::scene::pathfinding::{find, DiagonalRule, PathInputs, PathOutcome};
 use crate::scene::regions::{rasterize, RegionBehavior, RegionField, RegionShape};
 use crate::scene::{MovementRestriction, SceneEcs};
@@ -106,6 +107,7 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
                 rule,
             },
             budget_cells: None,
+            traits: MoveTraits::default(),
         },
     )
     .expect("forced diagonal staircase is reachable under every rule")
@@ -200,6 +202,7 @@ fn gate_walk_mask_gate_parity_pins_diagonal_truncation_point() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -267,6 +270,7 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -316,11 +320,31 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
             explored: None,
         };
         let full = ecs
-            .pathfind(req(), scene, (0.0, 0.0), &[goal], 0.1, None)
+            .pathfind(
+                req(),
+                scene,
+                (0.0, 0.0),
+                &[goal],
+                crate::scene::RouteMover {
+                    footprint_radius: 0.1,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
+            )
             .expect("unclamped route");
         assert!(!full.truncated);
         let clamped = ecs
-            .pathfind(req(), scene, (0.0, 0.0), &[goal], 0.1, Some(2.0))
+            .pathfind(
+                req(),
+                scene,
+                (0.0, 0.0),
+                &[goal],
+                crate::scene::RouteMover {
+                    footprint_radius: 0.1,
+                    budget_cells: Some(2.0),
+                    traits: MoveTraits::default(),
+                },
+            )
             .expect("clamped route");
         assert!(clamped.truncated, "budget 2 cuts a 3+-step route");
         let out = execute_move(
@@ -331,6 +355,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                 visible: &BTreeSet::new(),
                 cell: FIXTURE_GRID_SIZE,
                 budget: Some(2.0),
+                traits: MoveTraits::default(),
             },
             token,
             &full.path,

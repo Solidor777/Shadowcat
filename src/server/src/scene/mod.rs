@@ -344,12 +344,13 @@ impl VisionMoveInputs {
 /// (`SceneEcs::visible_cells`), the routing wall set (`SceneEcs::move_walls`) and the region field
 /// (`SceneEcs::region_field`).
 ///
-/// INVARIANT: this describes the requester ONLY. The route itself (`scene`, `start`, `waypoints`,
-/// `footprint_radius`) stays in `pathfind`'s own parameters, and the wire frame that ultimately
-/// supplies those values has its own type — `ws::conn`'s `PathfindRequest`, which is
-/// client-controlled and unauthorized. The two are deliberately not one type: `PathfindRequest`
-/// crosses into this layer only after the presence gate and the named-token ownership check have
-/// run, and `footprint_radius` is REPLACED with the token-derived value on the way through.
+/// INVARIANT: this describes the requester ONLY. The route itself (`scene`, `start`, `waypoints`)
+/// stays in `pathfind`'s own parameters and the mover's request-scoped quantities travel in
+/// `RouteMover`; the wire frame that ultimately supplies those values has its own type —
+/// `ws::conn`'s `PathfindRequest`, which is client-controlled and unauthorized. The two are
+/// deliberately not one type: `PathfindRequest` crosses into this layer only after the presence
+/// gate and the named-token ownership check have run, and `RouteMover::footprint_radius` is
+/// REPLACED with the token-derived value on the way through.
 pub struct RouteRequester<'a> {
     /// The requesting user. Selects the per-requester wall/region view via
     /// `move_walls(scene, Some(user))` / `region_field(scene, Some(user))`, and the visibility
@@ -372,6 +373,29 @@ pub struct RouteRequester<'a> {
     /// lock. Consulted ONLY under `MovementRestriction::Revealed`, where it is unioned into the
     /// mask; `None` degrades `Revealed` to visible-only, which is the fail-closed direction.
     pub explored: Option<&'a crate::scene::explored::ExploredSet>,
+}
+
+/// The MOVER's request-scoped quantities for one `SceneEcs::pathfind` call — everything the
+/// caller resolves from (or, for a token-less hypothetical preview, in place of) the named token,
+/// as opposed to `RouteRequester`'s description of who is asking. Resolved ONCE by the caller
+/// (`ws::conn::handle_pathfind`) and never re-derived inside the router; the executor's twin is
+/// `move_exec::MoveGateInputs`, whose `budget`/`traits` these two fields mirror so preview and
+/// execution are priced from the same resolved values.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RouteMover {
+    /// Mover footprint radius in CELLS — token-derived via `SceneEcs::resolve_token_footprint`
+    /// when the request names a token, else the wire's own hypothetical value.
+    pub footprint_radius: f64,
+    /// The movement-budget preview clamp in cells: `Some` cuts the route at the last step whose
+    /// cumulative weighted cost fits, setting `PathOutcome.truncated` (both engines; the caller
+    /// resolves it through the same gate the executor enforces).
+    pub budget_cells: Option<f64>,
+    /// The mover's resolved locomotion flags (`pathfinding::MoveTraits`), computed once by the
+    /// caller from the named token — an `ignore_terrain` mover routes and prices with every
+    /// terrain multiplier read as 1.0, and a terrain-only region field no longer forces the
+    /// weighted sub-path on a Continuous scene (impassable still does: the exemption is terrain
+    /// COST, never solidity).
+    pub traits: pathfinding::MoveTraits,
 }
 
 /// The per-world derived world. Writes are serialized by the caller
@@ -1628,10 +1652,8 @@ impl SceneEcs {
     /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ requester.explored`.
     /// An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
     /// the dark-scene freeze that mirrors the movement gate, by design).
-    /// `budget_cells` is the movement-budget preview clamp: `Some` cuts the
-    /// route at the last step whose cumulative weighted cost fits, setting
-    /// `PathOutcome.truncated` (both engines; the caller resolves it through
-    /// the same gate the executor enforces).
+    /// `mover` carries the request-scoped mover quantities — footprint, the movement-budget
+    /// preview clamp, and the resolved locomotion flags — see `RouteMover`'s field docs.
     ///
     /// Coupling: `visible_cells` is the ONE canonical mask shared between this
     /// method, the movement gate (`move_exec::execute_move`, reached via
@@ -1643,8 +1665,7 @@ impl SceneEcs {
         scene: Uuid,
         start: (f64, f64),
         waypoints: &[(f64, f64)],
-        footprint_radius: f64,
-        budget_cells: Option<f64>,
+        mover: RouteMover,
     ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
         let RouteRequester {
             user,
@@ -1653,6 +1674,11 @@ impl SceneEcs {
             world_defaults,
             explored,
         } = requester;
+        let RouteMover {
+            footprint_radius,
+            budget_cells,
+            traits,
+        } = mover;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
         // refuse a scene with no document, so the router agrees with them on which scenes are
@@ -1727,6 +1753,7 @@ impl SceneEcs {
                         regions: Some(&regions),
                         shape: &*grid_shape,
                         budget_cells,
+                        traits,
                     },
                 )
             }
@@ -1742,7 +1769,16 @@ impl SceneEcs {
                 else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
-                if regions.has_terrain_or_impassable() {
+                // An exempt mover's terrain does not force the weighted sub-path: the
+                // exemption is terrain COST only, so for them a terrain-only field routes
+                // like an empty one. Impassable forces the weighted route for EVERY mover —
+                // it blocks, and a straight chord must never skip the refusal.
+                let needs_weighted = if traits.ignore_terrain {
+                    regions.has_impassable()
+                } else {
+                    regions.has_terrain_or_impassable()
+                };
+                if needs_weighted {
                     // Euclidean base metric: the grid's step cost AND its admissible
                     // heuristic both come from this shape, so the weighted continuous route ignores
                     // the world's configured diagonal rule — only cell topology + terrain multiplier
@@ -1752,20 +1788,29 @@ impl SceneEcs {
                         cell,
                         pathfinding::DiagonalRule::Euclidean,
                     );
+                    // ONE inputs bundle for both the weighted search and the smoother, so the
+                    // mask, walls, region field, footprint and traits the chord rule checks are
+                    // structurally the same values the search admitted cells under. Only
+                    // `shape` differs between the two (see below).
+                    let inputs = pathfinding::PathInputs {
+                        footprint_radius_cells: footprint_radius,
+                        cell,
+                        walls: &walls,
+                        mask: mask.as_ref(),
+                        regions: Some(&regions),
+                        shape: &*grid_shape,
+                        // The budget cuts the PRE-smooth route: `los_smooth` only ever
+                        // shortens a chord, so the smoothed result stays within budget —
+                        // an occasional under-reach, never an over-show.
+                        budget_cells,
+                        traits,
+                    };
                     let weighted = pathfinding::find(
                         start,
                         waypoints,
                         pathfinding::PathInputs {
-                            footprint_radius_cells: footprint_radius,
-                            cell,
-                            walls: &walls,
-                            mask: mask.as_ref(),
-                            regions: Some(&regions),
                             shape: &*euclid_shape,
-                            // The budget cuts the PRE-smooth route: `los_smooth` only ever
-                            // shortens a chord, so the smoothed result stays within budget —
-                            // an occasional under-reach, never an over-show.
-                            budget_cells,
+                            ..inputs
                         },
                     )?;
                     // `find` already reports cost in CELLS — the wire contract `PathResult`'s
@@ -1782,15 +1827,7 @@ impl SceneEcs {
                     // `neighbors_with_cost`/`heuristic` (step cost + search order), never
                     // `cell_of`/`footprint_cells`/`line_traversal` — so this is an identity
                     // statement, not a behavior change.
-                    Ok(navmesh::los_smooth(
-                        weighted,
-                        &walls,
-                        mask.as_ref(),
-                        &regions,
-                        cell,
-                        footprint_radius,
-                        &*grid_shape,
-                    ))
+                    Ok(navmesh::los_smooth(weighted, &inputs))
                 } else {
                     let nav = self
                         .navmesh_for(scene, footprint_radius, &walls)

@@ -1,4 +1,5 @@
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 use crate::scene::pathfinding::PathOutcome;
 use crate::scene::regions::{RegionBehavior, RegionField, RegionShape};
 
@@ -123,12 +124,16 @@ const L_ROUTE: [(f64, f64); 3] = [(50.0, 50.0), (250.0, 50.0), (250.0, 150.0)];
 fn los_smooth_straightens_an_open_l_route() {
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
-        &[],
-        None,
-        &empty_field(),
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&empty_field()),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(out.path.first().copied(), Some((50.0, 50.0)));
     assert_eq!(out.path.last().copied(), Some((250.0, 150.0)));
@@ -154,12 +159,16 @@ fn los_smooth_kept_grid_steps_keep_their_weighted_cost() {
     let field = terrain_on(200.0, 0.0, 300.0, 100.0, 2.0);
     let out = los_smooth(
         oc(route.clone()),
-        &[],
-        None,
-        &field,
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&field),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path, route,
@@ -178,12 +187,16 @@ fn los_smooth_refuses_shortcut_through_terrain() {
     let field = terrain_on(100.0, 100.0, 200.0, 200.0, 2.0);
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
-        &[],
-        None,
-        &field,
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&field),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path,
@@ -209,12 +222,16 @@ fn los_smooth_refuses_shortcut_through_impassable() {
     );
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
-        &[],
-        None,
-        &b.build(),
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&b.build()),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path,
@@ -234,12 +251,16 @@ fn los_smooth_refuses_shortcut_across_a_wall() {
     };
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
-        &[wall],
-        None,
-        &empty_field(),
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[wall],
+            mask: None,
+            regions: Some(&empty_field()),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path,
@@ -258,12 +279,16 @@ fn los_smooth_refuses_shortcut_leaving_the_mask() {
     }
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
-        &[],
-        Some(&mask),
-        &empty_field(),
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: Some(&mask),
+            regions: Some(&empty_field()),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path,
@@ -276,12 +301,16 @@ fn los_smooth_refuses_shortcut_leaving_the_mask() {
 fn los_smooth_two_point_route_is_unchanged() {
     let out = los_smooth(
         oc(vec![(50.0, 50.0), (250.0, 50.0)]),
-        &[],
-        None,
-        &empty_field(),
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&empty_field()),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(out.path.len(), 2, "nothing to straighten with < 3 vertices");
 }
@@ -312,12 +341,16 @@ fn los_smooth_refuses_shortcut_with_coincident_endpoints_in_impassable_cell() {
     let mid = (250.0, 50.0);
     let out = los_smooth(
         oc(vec![a, mid, c]),
-        &[],
-        None,
-        &field,
-        100.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 100.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&field),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path,
@@ -330,12 +363,16 @@ fn los_smooth_refuses_shortcut_with_coincident_endpoints_in_impassable_cell() {
 fn los_smooth_degenerate_cell_fails_closed_to_input() {
     let out = los_smooth(
         oc(L_ROUTE.to_vec()),
-        &[],
-        None,
-        &empty_field(),
-        0.0,
-        0.1,
-        &test_grid(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: 0.0,
+            walls: &[],
+            mask: None,
+            regions: Some(&empty_field()),
+            shape: &test_grid(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         out.path,
@@ -980,7 +1017,19 @@ fn los_smooth_on_hex_refuses_a_chord_through_an_impassable_hex_square_indexing_m
         g.cell_center((2, 0)),
         g.cell_center((4, -2)),
     ];
-    let hexed = los_smooth(oc(path.clone()), &[], None, &field, HEX_SIZE, 0.1, &g);
+    let hexed = los_smooth(
+        oc(path.clone()),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: HEX_SIZE,
+            walls: &[],
+            mask: None,
+            regions: Some(&field),
+            shape: &g,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
+    );
     assert_eq!(
         hexed.path, path,
         "the chord enters impassable hex (2,-1): the route must stay unsmoothed"
@@ -988,12 +1037,16 @@ fn los_smooth_on_hex_refuses_a_chord_through_an_impassable_hex_square_indexing_m
 
     let squared = los_smooth(
         oc(path.clone()),
-        &[],
-        None,
-        &field,
-        HEX_SIZE,
-        0.1,
-        &sq_same_size(),
+        &crate::scene::pathfinding::PathInputs {
+            footprint_radius_cells: 0.1,
+            cell: HEX_SIZE,
+            walls: &[],
+            mask: None,
+            regions: Some(&field),
+            shape: &sq_same_size(),
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(
         squared.path,

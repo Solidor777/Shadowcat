@@ -251,17 +251,32 @@ impl RegionField {
         }
     }
 
+    /// True iff any cell composes to `Impassable`. Split from
+    /// `has_terrain_or_impassable` because the continuous router's dispatch predicate reads the
+    /// two halves differently for an `MoveTraits::ignore_terrain` mover: impassable still forces
+    /// the weighted sub-path (the exemption is terrain-COST only — impassable blocks everyone),
+    /// while weighted terrain does not.
+    pub(crate) fn has_impassable(&self) -> bool {
+        self.cells
+            .values()
+            .any(|e| matches!(e, RegionEffect::Impassable))
+    }
+
+    /// True iff any cell is weighted `Terrain` (multiplier > 1.0).
+    pub(crate) fn has_weighted_terrain(&self) -> bool {
+        self.cells
+            .values()
+            .any(|e| matches!(e, RegionEffect::Terrain(m) if *m > 1.0))
+    }
+
     /// True iff any cell is `Impassable` or weighted `Terrain` (multiplier > 1.0). The
     /// dispatch predicate the continuous router uses to decide between the weighted grid
-    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither).
-    /// Arrest is excluded: it neither bends the route nor requires route-around, so an
-    /// arrest-only scene stays on the polyanya path with an arrest post-filter.
+    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither) for
+    /// a NON-exempt mover. Arrest is excluded: it neither bends the route nor requires
+    /// route-around, so an arrest-only scene stays on the polyanya path with an arrest
+    /// post-filter.
     pub(crate) fn has_terrain_or_impassable(&self) -> bool {
-        self.cells.values().any(|e| match e {
-            RegionEffect::Impassable => true,
-            RegionEffect::Terrain(m) => *m > 1.0,
-            RegionEffect::Arrest => false,
-        })
+        self.has_impassable() || self.has_weighted_terrain()
     }
 }
 

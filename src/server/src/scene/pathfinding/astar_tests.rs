@@ -1,4 +1,5 @@
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 use crate::scene::vision::Seg;
 
 fn open(rule: DiagonalRule, footprint: f64) -> PathGrid<'static> {
@@ -17,6 +18,7 @@ fn open(rule: DiagonalRule, footprint: f64) -> PathGrid<'static> {
             regions: None,
             shape,
             budget_cells: None,
+            traits: MoveTraits::default(),
         },
         window: (-50, -50, 50, 50),
     }
@@ -96,6 +98,7 @@ fn walled_off_goal_is_unreachable() {
             regions: None,
             shape: &shape,
             budget_cells: None,
+            traits: MoveTraits::default(),
         },
         window: (-10, -10, 10, 10),
     };
@@ -140,6 +143,7 @@ fn open_hex(footprint: f64) -> PathGrid<'static> {
             regions: None,
             shape,
             budget_cells: None,
+            traits: MoveTraits::default(),
         },
         window: (-50, -50, 50, 50),
     }
@@ -228,6 +232,7 @@ fn hex_astar_returns_the_true_shortest_route_via_the_admissible_heuristic() {
             regions: None,
             shape: &hx,
             budget_cells: None,
+            traits: MoveTraits::default(),
         },
         window: (-50, -50, 50, 50),
     };

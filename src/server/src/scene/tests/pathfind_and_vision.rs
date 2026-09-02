@@ -1,5 +1,6 @@
 //! The grid and continuous (navmesh) pathfinders, streamed per-move vision sampling, and hex-grid vision/lighting range parity.
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 
 /// Builds a SceneEcs with one scene (id 10), one player-owned token at (50, 50), and
 /// world-settings that set `movementRestriction = "revealed"` with no placed lights (env
@@ -48,8 +49,11 @@ fn pathfind_gm_unconstrained_routes_without_a_mask() {
         scene,
         (50.0, 50.0),
         &[(250.0, 50.0)],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     let outcome = r.expect("GM route");
     assert!((outcome.cost - 2.0).abs() < 1e-9);
@@ -93,8 +97,11 @@ explored: // GM: unrestricted mask
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(950.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("continuous route over an open bounded scene");
     // Euclidean straight line ≈ 900 scene units, unlike a grid diagonal-rule cost — proves
@@ -144,8 +151,11 @@ fn pathfind_continuous_budget_cut_truncates_the_final_span_at_the_boundary() {
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(950.0, 50.0)],
-            0.1,
-            Some(4.0),
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: Some(4.0),
+                traits: MoveTraits::default(),
+            },
         )
         .expect("continuous route over an open bounded scene");
     assert!(outcome.truncated, "a ~9-cell route cuts at a 4-cell budget");
@@ -193,10 +203,30 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
     let goal = (550.0, 50.0);
 
     let grid_out = grid_ecs
-        .pathfind(requester(), Uuid::from_u128(10), start, &[goal], 0.1, None)
+        .pathfind(
+            requester(),
+            Uuid::from_u128(10),
+            start,
+            &[goal],
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
+        )
         .expect("grid-stepped straight route");
     let continuous_out = continuous_ecs
-        .pathfind(requester(), Uuid::from_u128(10), start, &[goal], 0.1, None)
+        .pathfind(
+            requester(),
+            Uuid::from_u128(10),
+            start,
+            &[goal],
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
+        )
         .expect("continuous straight route");
 
     assert!(
@@ -259,8 +289,11 @@ explored: // GM: unrestricted mask
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(50.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("start == goal must succeed, not Unreachable");
     assert_eq!(outcome.path, vec![(50.0, 50.0)]);
@@ -379,8 +412,11 @@ fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("weighted continuous route");
     // Tight pin (not a loose range): the forced-Euclidean detour is exactly 2 diagonal steps
@@ -479,8 +515,11 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
             Uuid::from_u128(10),
             g.cell_center((0, 1)),
             &[g.cell_center((4, 1))],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("hex continuous route");
     assert!(out.arrested, "the arrest hex truncates the preview");
@@ -523,8 +562,11 @@ fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("polyanya route");
     // Tolerance is the pre-conversion 3.0-scene-unit bound divided through the fixture's
@@ -567,8 +609,11 @@ fn pathfind_continuous_impassable_routes_around() {
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(250.0, 350.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("route around impassable");
     // No route point falls inside an impassable cell (column 1, y in [0,300)).
@@ -624,8 +669,11 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("player route");
     // Pure-polyanya sub-path: 200 scene units / cell(100) = 2 cells. Tolerance is the
@@ -648,8 +696,11 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
             Uuid::from_u128(10),
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("gm route");
     // Weighted sub-path: `pathfinding::find`'s cost is already in cells, no conversion — the
@@ -693,8 +744,11 @@ fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
             scene,
             (50.0, 50.0),
             &[far_goal],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("clip truncates the route short of the unseen goal rather than failing outright");
     // `outcome.cost` is now in CELLS (the `pathfind` boundary conversion) while a raw
@@ -801,8 +855,11 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
             scene_id,
             (50.0, 50.0),
             &[near_goal],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("weighted route to a visible goal succeeds");
     for &(px, py) in &near.path {
@@ -829,8 +886,11 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
         scene_id,
         (50.0, 50.0),
         &[far_goal],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert!(
         far.is_err(),
@@ -894,8 +954,11 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
             scene,
             (50.0, 50.0),
             &[(450.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("player route");
     assert!(
@@ -923,8 +986,11 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
             scene,
             (50.0, 50.0),
             &[(450.0, 50.0)],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("gm route");
     assert!(
@@ -946,6 +1012,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 .get(&scene)
                 .expect("the fixture's scene declares a grid size"),
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &p.path,
@@ -1018,8 +1085,11 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
             scene,
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.4,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.4,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("the player's route ignores a wall it cannot see");
     assert!(
@@ -1039,6 +1109,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
                 .get(&scene)
                 .expect("the fixture's scene declares a grid size"),
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &out.path,
@@ -1071,8 +1142,11 @@ fn gm_route_does_not_cross_a_gm_only_wall() {
             scene,
             (50.0, 50.0),
             &[(250.0, 50.0)],
-            0.4,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.4,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
     let wall = ((150.0, 0.0), (150.0, 100.0));
@@ -1102,8 +1176,11 @@ fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
         scene,
         (50.0, 50.0),
         &[(250.0, 50.0)],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     let outcome = r.expect("GM route");
     assert!(
@@ -1131,8 +1208,11 @@ fn pathfind_nongm_visible_is_bounded_by_the_mask() {
         scene,
         (50.0, 50.0),
         &[(5000.0, 5000.0)],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
 }
@@ -1168,8 +1248,11 @@ fn pathfind_revealed_unions_explored_memory() {
         scene,
         (50.0, 50.0),
         &[(350.0, 50.0)],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert!(
         r.is_ok(),
@@ -1783,6 +1866,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
             visible: &lenient_mask,
             cell,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), dest],
@@ -1805,6 +1889,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
             visible: &strict_mask,
             cell,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), dest],
@@ -2298,8 +2383,11 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
                 Uuid::from_u128(10),
                 from,
                 &[to],
-                0.1,
-                None,
+                crate::scene::RouteMover {
+                    footprint_radius: 0.1,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
             )
             .unwrap_or_else(|e| panic!("routing {label} along row 0 must succeed, got {e:?}"));
         assert!(
@@ -2366,8 +2454,11 @@ fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
             Uuid::from_u128(10),
             from,
             &[to],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("a position inside an authored hex must be on-mesh and routable");
     // Same conversion as `hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh`:
@@ -2423,8 +2514,11 @@ fn hex_continuous_navmesh_spans_the_authored_play_area() {
             Uuid::from_u128(10),
             g.cell_center((1, 1)),
             &[dest],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("a hex cell inside the authored bounds must be routable");
     assert!(
@@ -2494,8 +2588,11 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
             Uuid::from_u128(10),
             a,
             &[b],
-            0.1,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: 0.1,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("hex continuous weighted route");
     // Bounded on BOTH sides. The endpoints are nine collinear hex steps apart with no terrain

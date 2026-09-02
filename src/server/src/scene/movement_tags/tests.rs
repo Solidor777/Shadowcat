@@ -6,11 +6,8 @@ use serde_json::json;
 
 /// Builds a world-scoped fixture document of type `ty`, parented to `parent` when given.
 fn doc(id: u128, parent: Option<u128>, ty: &str) -> crate::data::document::Document {
-    let mut d = crate::data::document::tests::world_scoped_doc(
-        Uuid::from_u128(9),
-        Uuid::from_u128(id),
-        ty,
-    );
+    let mut d =
+        crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), Uuid::from_u128(id), ty);
     d.parent_id = parent.map(Uuid::from_u128);
     d
 }
@@ -69,7 +66,8 @@ fn faction_registry_doc() -> crate::data::document::Document {
 /// `set_actors`, the SAME slot the room hydration uses — `from_documents` hydrates scene
 /// entities only), and the faction registry hydrated through `set_world_config`.
 fn ecs_with(docs: Vec<crate::data::document::Document>) -> SceneEcs {
-    let (actors, entities): (Vec<_>, Vec<_>) = docs.into_iter().partition(|d| d.doc_type == "actor");
+    let (actors, entities): (Vec<_>, Vec<_>) =
+        docs.into_iter().partition(|d| d.doc_type == "actor");
     let mut all = vec![doc(10, None, "scene")];
     all.extend(entities);
     let mut ecs = SceneEcs::from_documents(all, 0);
@@ -129,7 +127,9 @@ fn token_override_replaces_the_whole_set_even_when_empty() {
     let ecs = ecs_with(vec![actor, burrower]);
     let tags = ecs.token_movement_tags(Uuid::from_u128(301));
     assert_eq!(tags.into_iter().collect::<Vec<_>>(), vec!["burrowing"]);
-    assert!(!ignores_terrain_cost(&ecs.token_movement_tags(Uuid::from_u128(301))));
+    assert!(!ignores_terrain_cost(
+        &ecs.token_movement_tags(Uuid::from_u128(301))
+    ));
 }
 
 #[test]
@@ -215,7 +215,10 @@ fn embedded_actor_edits_are_never_stale() {
         }],
     });
     let tags = ecs.token_movement_tags(Uuid::from_u128(300));
-    assert_eq!(tags.iter().cloned().collect::<Vec<_>>(), vec!["incorporeal"]);
+    assert_eq!(
+        tags.iter().cloned().collect::<Vec<_>>(),
+        vec!["incorporeal"]
+    );
     assert!(ignores_terrain_cost(&tags));
 }
 

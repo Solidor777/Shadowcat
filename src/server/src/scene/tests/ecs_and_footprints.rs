@@ -1,5 +1,6 @@
 //! `SceneEcs` hydration/apply-op, movement-collision geometry, the `footprints` derived channel, and the vision/lighting config-doc resolvers.
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 
 #[test]
 fn hydrate_counts_scene_entities_only() {
@@ -576,8 +577,11 @@ fn pathfind_refuses_a_scene_with_no_document() {
         Uuid::from_u128(404),
         (50.0, 50.0),
         &[(450.0, 50.0)],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert!(
         matches!(out, Err(pathfinding::PathFail::Invalid)),

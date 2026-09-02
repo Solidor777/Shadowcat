@@ -1,4 +1,5 @@
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 use serde_json::json;
 
 /// Scene identical to `clear_scene`, with `world-settings.pathfinding.diagonalRule` set to
@@ -29,6 +30,7 @@ fn diagonal_steps_are_priced_by_the_world_rule() {
                 visible: &empty_mask(),
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &[(0.0, 0.0), (100.0, 100.0)],
@@ -55,6 +57,7 @@ fn alternating_rule_threads_parity_across_consecutive_diagonals() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -76,6 +79,7 @@ fn budget_truncates_at_the_last_affordable_step_and_reports_truncated() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(2.0),
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)],
@@ -99,6 +103,7 @@ fn budget_exactly_equal_to_the_cost_is_affordable() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(3.0),
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -124,6 +129,7 @@ fn gm_move_ignores_budget_but_still_accrues_cost() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(0.0),
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -150,6 +156,7 @@ fn non_finite_budget_is_rejected_as_degenerate() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: Some(f64::NAN),
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0)],
@@ -177,6 +184,7 @@ fn hex_steps_cost_one_regardless_of_the_square_rule() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[a, b],
@@ -185,4 +193,167 @@ fn hex_steps_cost_one_regardless_of_the_square_rule() {
     )
     .expect("admissible");
     assert!((out.cost - 1.0).abs() < 1e-9);
+}
+
+/// The exempt-mover flag set: the shape `MoveGateInputs.traits` takes when the caller resolved
+/// a terrain-exempt tag off the mover.
+const EXEMPT: MoveTraits = MoveTraits {
+    ignore_terrain: true,
+};
+
+#[test]
+fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_multiplier() {
+    // Both movers walk the SAME step through the SAME ×3 cell: the exemption flattens exactly
+    // the terrain cost and nothing else.
+    let (ecs, scene, token) = scene_with_terrain_multiplier_3();
+    let path = [(50.0, 50.0), (150.0, 50.0)];
+    let mask = empty_mask();
+    let gate = |traits| MoveGateInputs {
+        scene,
+        restriction: MovementRestriction::Unrestricted,
+        visible: &mask,
+        cell: FIXTURE_GRID_SIZE,
+        budget: None,
+        traits,
+    };
+    let grounded = execute_move(&ecs, gate(MoveTraits::default()), token, &path, false, 0.4)
+        .expect("admissible");
+    assert!(
+        (grounded.cost - 3.0).abs() < 1e-9,
+        "ground mover pays ×3, got {}",
+        grounded.cost
+    );
+    let exempt = execute_move(&ecs, gate(EXEMPT), token, &path, false, 0.4).expect("admissible");
+    assert!(
+        (exempt.cost - 1.0).abs() < 1e-9,
+        "exempt mover pays the unweighted step, got {}",
+        exempt.cost
+    );
+    assert_eq!(exempt.stop, (150.0, 50.0));
+    assert!(!exempt.truncated);
+}
+
+#[test]
+fn exempt_mover_budget_stop_uses_the_exempt_cost() {
+    // Budget 2 cells over a two-step path through ×3 terrain: the ground mover cannot afford
+    // the FIRST step (3 > 2 — `budget_truncates_at_the_last_affordable_step_and_reports_truncated`
+    // pins that), while the exempt mover's 1+1 fits exactly.
+    let (ecs, scene, token) = scene_with_terrain_multiplier_3();
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &empty_mask(),
+            cell: FIXTURE_GRID_SIZE,
+            budget: Some(2.0),
+            traits: EXEMPT,
+        },
+        token,
+        &[(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)],
+        false,
+        0.4,
+    )
+    .expect("admissible");
+    assert_eq!(out.stop, (250.0, 50.0), "the exempt cost 1+1 fits budget 2");
+    assert!(!out.truncated);
+    assert!((out.cost - 2.0).abs() < 1e-9, "got {}", out.cost);
+}
+
+#[test]
+fn exempt_mover_continuous_transition_and_tail_both_read_unweighted() {
+    // A continuous move halting mid-cell inside the ×3 region: `gate_walk` subdivides
+    // (50,50)->(160,50) at (105,50), so the cost is a TRANSITION charge (the 0.55-cell span
+    // entering the region cell, priced at its multiplier) plus a TAIL charge (the remaining
+    // 0.55 cells to the mid-cell stop, priced at the stop cell's multiplier) — both must read
+    // the exempt 1.0.
+    let (mut ecs, scene, token) = scene_with_terrain_multiplier_3();
+    ecs.set_world_settings_for_test(super::super::super::tests::ws_body(&[(
+        "/scene/movementModel",
+        json!("continuous"),
+    )]));
+    let mask = empty_mask();
+    let gate = |traits| MoveGateInputs {
+        scene,
+        restriction: MovementRestriction::Unrestricted,
+        visible: &mask,
+        cell: FIXTURE_GRID_SIZE,
+        budget: None,
+        traits,
+    };
+    let path = [(50.0, 50.0), (160.0, 50.0)];
+    let grounded = execute_move(&ecs, gate(MoveTraits::default()), token, &path, false, 0.4)
+        .expect("admissible");
+    assert!(
+        (grounded.cost - 1.1 * 3.0).abs() < 1e-9,
+        "ground mover pays ×3 on transition AND tail, got {}",
+        grounded.cost
+    );
+    let exempt = execute_move(&ecs, gate(EXEMPT), token, &path, false, 0.4).expect("admissible");
+    assert!(
+        (exempt.cost - 1.1).abs() < 1e-9,
+        "exempt mover pays the raw Euclidean span, got {}",
+        exempt.cost
+    );
+}
+
+#[test]
+fn exemption_never_covers_impassable_or_arrest() {
+    // The reserved tags ignore terrain COST only: the impassable cell still stops the walk
+    // before entry and the arrest cell still truncates, exactly as for a ground mover.
+    let (ecs, scene, token) = scene_with_impassable_then_arrest_region();
+    let mask = empty_mask();
+    let gate = || MoveGateInputs {
+        scene,
+        restriction: MovementRestriction::Unrestricted,
+        visible: &mask,
+        cell: FIXTURE_GRID_SIZE,
+        budget: None,
+        traits: EXEMPT,
+    };
+    let blocked = execute_move(
+        &ecs,
+        gate(),
+        token,
+        &[(50.0, 50.0), (150.0, 50.0)],
+        false,
+        0.4,
+    )
+    .expect("a stopped walk is still a well-formed outcome");
+    assert_eq!(
+        blocked.stop,
+        (50.0, 50.0),
+        "impassable stops an exempt mover at the threshold, exactly as anyone else"
+    );
+    assert!(blocked.truncated);
+    assert!(
+        blocked.cost.abs() < 1e-9,
+        "nothing entered, nothing charged"
+    );
+
+    // Detouring around the impassable cell and then turning INTO the arrest cell: the arrest
+    // entry is charged (unweighted) and stops the walk.
+    let out = execute_move(
+        &ecs,
+        gate(),
+        token,
+        &[
+            (50.0, 50.0),
+            (50.0, 150.0),
+            (150.0, 150.0),
+            (250.0, 150.0),
+            (250.0, 50.0),
+            (350.0, 50.0),
+        ],
+        false,
+        0.4,
+    )
+    .expect("admissible");
+    assert_eq!(out.stop, (250.0, 50.0), "arrest stops the exempt mover too");
+    assert!(out.truncated);
+    assert!(
+        (out.cost - 4.0).abs() < 1e-9,
+        "four unweighted steps incl. the arrest entry, got {}",
+        out.cost
+    );
 }

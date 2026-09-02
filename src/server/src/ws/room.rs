@@ -987,6 +987,12 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The mover's resolved locomotion traits (terrain exemption), resolved in the SAME
+        // first guard block as `footprint` and threaded into `MoveGateInputs` — the executor
+        // never re-derives them (that struct's caller-resolves invariant). The tags belong to
+        // the token/actor, so a GM moving a flying token is priced as flying too: the GM
+        // exemption covers the gameplay GATES, never the cost accounting.
+        let move_traits: crate::scene::pathfinding::MoveTraits;
         // The per-turn movement-budget gate, resolved off this same read guard (combat lookup is
         // step 2 below, under the same lock as restriction/cell/visible_cells/start). `None` means
         // no active combat on the token's scene, or the token names no combatant in it — either
@@ -1019,6 +1025,11 @@ impl Room {
                 return Err(DataError::Forbidden);
             };
             footprint = fp;
+            move_traits = crate::scene::pathfinding::MoveTraits {
+                ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
+                    &scene.token_movement_tags(token),
+                ),
+            };
 
             let settings = scene.resolve_scene(token_scene);
             // Captured under this same read guard for the same reason `cell` is: the explored
@@ -1149,6 +1160,7 @@ impl Room {
                     // `budget_gate` (never `Some` for a caller the gate exempts: a GM, or one
                     // the combatant is hidden from — see `BudgetGate::enforced`).
                     budget: move_budget_cells,
+                    traits: move_traits,
                 },
                 token,
                 &path,

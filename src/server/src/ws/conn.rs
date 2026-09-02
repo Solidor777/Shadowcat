@@ -904,6 +904,11 @@ async fn handle_pathfind(
     // gets, disclosing nothing about the token's existence. A GM is exempt from the ownership half
     // (they control the scene) but not from the scene-membership half.
     let s = room.scene().read().await;
+    // The mover's resolved locomotion traits, computed ONCE here from the SAME authorized token
+    // the footprint derives from (a hypothetical-footprint preview names no mover and is
+    // non-exempt; an unauthorized token id fails closed behind the generic error before any
+    // tag resolution happens). The router never re-derives them — `PathInputs.traits`'s doc.
+    let mut traits = crate::scene::pathfinding::MoveTraits::default();
     let footprint_radius = match token {
         Some(t) => {
             let derived = match s.token_scene_and_effective_owner(t) {
@@ -913,7 +918,14 @@ async fn handle_pathfind(
                 None => None,
             };
             match derived {
-                Some(r) => r,
+                Some(r) => {
+                    traits = crate::scene::pathfinding::MoveTraits {
+                        ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
+                            &s.token_movement_tags(t),
+                        ),
+                    };
+                    r
+                }
                 None => {
                     return ServerMsg::PathError {
                         request_id,
@@ -962,8 +974,11 @@ async fn handle_pathfind(
         scene,
         start,
         &waypoints,
-        footprint_radius,
-        budget_cells,
+        crate::scene::RouteMover {
+            footprint_radius,
+            budget_cells,
+            traits,
+        },
     ) {
         Ok(outcome) => ServerMsg::PathResult {
             request_id,

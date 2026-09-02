@@ -33,6 +33,39 @@ use std::collections::{BTreeSet, BinaryHeap, HashMap};
 /// A grid cell `(i, j)`; cell `(i,j)` covers `[i*cell,(i+1)*cell) × [j*cell,(j+1)*cell)`.
 pub type Cell = (i32, i32);
 
+/// A mover's resolved locomotion traits for one route/gate request — the flags form of the
+/// token's movement-type tags, computed ONCE per request by the caller
+/// (`ws::conn::handle_pathfind` / `ws::room::Room::execute_move`, both via
+/// `movement_tags::ignores_terrain_cost` over `SceneEcs::token_movement_tags`) and never
+/// re-derived inside the router or the executor. Room to grow: each future engine-reserved tag
+/// lands as a flag here rather than as a new parameter threaded site by site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MoveTraits {
+    /// The mover carries a terrain-exempt tag (`movement_tags::TERRAIN_EXEMPT_TAGS`):
+    /// `terrain_cost` flattens every multiplier to 1.0 — and NOTHING else changes (walls,
+    /// impassable, arrest, and the visibility mask all still gate).
+    pub ignore_terrain: bool,
+}
+
+/// The ONE terrain-cost read every pricing site shares: an `ignore_terrain` mover is
+/// unweighted (the multiplier reads as 1.0); otherwise the field's own
+/// `RegionField::terrain_multiplier` answers. `regions: None` (no region enforcement) is
+/// unweighted either way. Both the router (`astar_leg`, `replay_step_costs`,
+/// `navmesh::los_smooth`) and the executor (`move_exec::execute_move`'s per-transition and
+/// tail pricing) read this symbol, so preview and execution cannot disagree on what an
+/// exempt mover pays.
+pub(crate) fn terrain_cost(
+    regions: Option<&crate::scene::regions::RegionField>,
+    c: Cell,
+    traits: MoveTraits,
+) -> f64 {
+    if traits.ignore_terrain {
+        1.0
+    } else {
+        regions.map_or(1.0, |r| r.terrain_multiplier(c))
+    }
+}
+
 /// The caller-supplied half of an A* search: the scene's traversal geometry, the requester's view
 /// of it, and the mover's size. `find` derives the remaining piece — the search `window` — from
 /// `start`/`waypoints`/`walls`, then assembles both into the `PathGrid` its search runs against, so
@@ -43,6 +76,7 @@ pub type Cell = (i32, i32);
 /// `regions` omit whatever tier the requester may not see. `shape` MUST be the same `GridShape`
 /// those three sets were built with; a mask indexed in one coordinate system and tested in another
 /// is not a shared mask.
+#[derive(Clone, Copy)]
 pub struct PathInputs<'a> {
     /// Mover footprint radius in CELLS; `find` rejects anything outside
     /// `[0, MAX_FOOTPRINT_CELLS]` (NaN and ±Inf included).
@@ -65,6 +99,9 @@ pub struct PathInputs<'a> {
     /// `PathOutcome.truncated` set — the preview half of the executor's own
     /// budget stop, priced through the same per-step symbols.
     pub budget_cells: Option<f64>,
+    /// The mover's resolved locomotion traits (see `MoveTraits`); the caller resolves them
+    /// once per request — `find` never re-derives them from a token.
+    pub traits: MoveTraits,
 }
 
 /// Assembled, borrow-only inputs for one A* search: the caller-supplied `PathInputs` plus the
@@ -240,7 +277,7 @@ pub(crate) fn budget_admits_step(spent_cells: f64, step_cells: f64, budget_cells
 }
 
 /// Per-window step costs over `cells`, re-priced from parity 0 through the
-/// SAME `neighbors_with_cost` + `terrain_multiplier` pair the original
+/// SAME `neighbors_with_cost` + `terrain_cost` pair the original
 /// accumulation used — parity threading is purely sequential, so a replay
 /// from 0 reproduces the original cost of any prefix exactly. Shared by the
 /// arrest and budget truncations in `find`, so a pricing fix cannot land in
@@ -258,12 +295,7 @@ fn replay_step_costs(grid: &PathGrid<'_>, cells: &[Cell]) -> Vec<f64> {
             .expect(
                 "cells adjacent along an already-found route are a valid grid_shape neighbor pair",
             );
-        out.push(
-            sc * grid
-                .inputs
-                .regions
-                .map_or(1.0, |rf| rf.terrain_multiplier(w[1])),
-        );
+        out.push(terrain_cost(grid.inputs.regions, w[1], grid.inputs.traits) * sc);
         p = next_p;
     }
     out
@@ -302,10 +334,12 @@ impl PartialOrd for QNode {
 }
 
 /// ADMISSIBILITY WITH TERRAIN: `astar_leg`'s actual step cost is `step_cost(...) *
-/// terrain_multiplier(next)`, and every multiplier is >= 1.0 (validated where `RegionField` is
+/// terrain_cost(next)` (the multiplier, or 1.0 for an `MoveTraits::ignore_terrain` mover), and
+/// every multiplier is >= 1.0 (validated where `RegionField` is
 /// built, `SceneEcs::region_field`). This heuristic already lower-bounds the UNWEIGHTED
 /// step cost, so it remains a valid (never-overestimating) lower bound on the weighted cost too —
-/// terrain can only make the real path more expensive, never cheaper than this heuristic assumes.
+/// terrain can only make the real path more expensive, never cheaper than this heuristic assumes,
+/// and an exempt mover's cost equals the unweighted assumption exactly.
 /// Consistent (not merely admissible) heuristic from `c` to `goal` under `rule`. Consistency
 /// holds because Δh per king-move never exceeds that move's minimum step cost: orthogonal Δh ≤ 1 =
 /// orthogonal cost; diagonal Δh ≤ √2 ≤ each rule's diagonal cost (Chebyshev 1, Manhattan 2,
@@ -387,10 +421,7 @@ pub(crate) fn astar_leg(
             if !cell_enterable(grid, cell, next) {
                 continue;
             }
-            let mult = grid
-                .inputs
-                .regions
-                .map_or(1.0, |r| r.terrain_multiplier(next));
+            let mult = terrain_cost(grid.inputs.regions, next, grid.inputs.traits);
             let tentative = g_popped + sc * mult;
             let key = (next, next_parity);
             if tentative < *g_score.get(&key).unwrap_or(&f64::INFINITY) {
