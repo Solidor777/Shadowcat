@@ -427,8 +427,8 @@ export class RenderEngine implements SceneToolHost {
     this.lastRawPayload = frame.payload;
     // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
     // guards above), NOT held behind the appliedSeq watermark that fog uses for document
-    // consistency. Exactly one retarget per non-dropped frame (parked while a light sweep
-    // plays — see `lightSweeps`).
+    // consistency. Exactly one retarget per non-dropped frame (a light sweep's end cells are
+    // held, never the frame — see `lightSweeps`).
     this.retargetLighting(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       // Immediate: filter against the CURRENT viewed scene now (toVisibility reads viewedScene()).
