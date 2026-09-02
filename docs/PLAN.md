@@ -32,11 +32,22 @@ further at design time. Numbering continues from Phase 1.
   - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
     conflict set returned for human review; `Document.base` under engine-tree validation.
-  - **M14c-6 — combat client seams**: `AppContext.combat`, `CoreHooks` first entries +
-    delta-derived emission, `Warn` overage label.
-- **M14d — tracker module + settings editors**: the default tracker UI, the world/scene combat
-  settings editors (including the combat chain editor over `resolve_combat_rules`'s
-  engine→system-defaults→world→scene precedence), and end-to-end coverage.
+  - **M14c-6 — combat client seams**: `AppContext.combat` (a framework-neutral
+    `CombatController` in `@shadowcat/core`, also the `shadowcat.service:combat` service),
+    the first nine `CoreHooks` entries derived from applied command deltas, server-resolved
+    resource numbers over a `"combat"` derived channel, a correlated `combat_result` reply, and
+    the `Warn` overage label over `PathResult.budget_cells`. Design:
+    [`superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md`](superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md);
+    plan: [`superpowers/plans/2026-09-02-m14c-6-combat-client-seams.md`](superpowers/plans/2026-09-02-m14c-6-combat-client-seams.md).
+- **M14d — tracker module + settings editors**: the default tracker UI
+  (`@shadowcat/module-combat-tracker`), the world/scene combat settings editors inside
+  `@shadowcat/module-game-settings` (the combat chain editor over `resolve_combat_rules`'s
+  engine→system-defaults→world→scene precedence, plus the resource-registry editor), and
+  end-to-end coverage. Design:
+  [`superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md`](superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md);
+  plan: [`superpowers/plans/2026-09-02-m14d-tracker-module-settings-editors.md`](superpowers/plans/2026-09-02-m14d-tracker-module-settings-editors.md).
+  Builds after the M16/M17/M18 branches merge (theme tokens, condition fx, actor controls are
+  consumed through stable seams only).
 - Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
