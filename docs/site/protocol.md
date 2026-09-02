@@ -79,7 +79,7 @@ Every `ServerMsg` variant:
 | `chat_error` | Chat send/edit/delete failed |
 | `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
 | `merge_result` | Outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`: applied, or the conflict set to resolve |
-| `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown resolutions carrying the fresh outcome) |
+| `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown/unresolvable resolutions carrying the fresh outcome) |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
@@ -128,9 +128,12 @@ intent and renders whatever conflict set comes back. Each intent is a stateless 
    writes nothing.
 2. **Resolution call** (`resolutions`: the conflict paths whose template side to take — per
    instance for `merge_push`, keyed by instance id): the server RECOMPUTES the merge from live
-   documents and rejects with `merge_error` (`stale_resolutions`/`unknown_resolution`, both
-   carrying the freshly recomputed outcome) unless every submitted path is a current conflict —
-   there is no server-side session between the two calls.
+   documents and rejects with `merge_error` (`stale_resolutions`/`unknown_resolution`/
+   `unresolvable`, each carrying the freshly recomputed outcome) unless every submitted path is
+   a current conflict whose template side the current merged shape can take — `unresolvable`
+   is the ancestor/descendant case, where the instance replaced a container the template
+   edited inside, so the template's leaf has nowhere to land and the user picks the instance's
+   side instead — there is no server-side session between the two calls.
 
 `merge_push` reports each same-world instance individually: `applied`, `conflicts`, or `excluded`
 (visible to the pusher but not writable by them). An instance the pusher cannot see at all is

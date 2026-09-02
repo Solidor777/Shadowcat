@@ -106,10 +106,11 @@ export interface MoveStream {
 export type PendingResult = SearchPage | PathResult | MoveStream;
 
 /** Rejection carried by a failed merge intent (`WsClient.merge`). `reason` is the raw
- * `WireMergeErrorKind` — `stale_resolutions`/`unknown_resolution` carry the outcome as
- * recomputed from live documents at rejection time, so a caller re-opens its conflict modal
- * with it rather than round-tripping again. Every other variant (`not_found`/`not_an_instance`/
- * `forbidden`/`corrupt_base`/`internal`) is a plain refusal with no payload to recover. */
+ * `WireMergeErrorKind` — `stale_resolutions`/`unknown_resolution`/`unresolvable` carry the
+ * outcome as recomputed from live documents at rejection time, so a caller re-opens its conflict
+ * modal with it rather than round-tripping again. Every other variant (`not_found`/
+ * `not_an_instance`/`forbidden`/`corrupt_base`/`internal`) is a plain refusal with no payload to
+ * recover. */
 export class MergeIntentError extends Error {
   /** Construct from the wire `MergeErrorKind`, deriving a player-presentable `message`.
    * @param reason The raw rejection reason from `ServerMsg::MergeError`.
@@ -133,9 +134,9 @@ export class MergeIntentError extends Error {
  */
 function mergeErrorMessage(reason: WireMergeErrorKind): string {
   if (typeof reason !== "string") {
-    return "stale_resolutions" in reason
-      ? "the documents changed since the conflicts were reported"
-      : "one of the submitted resolutions no longer applies";
+    if ("stale_resolutions" in reason) return "the documents changed since the conflicts were reported";
+    if ("unknown_resolution" in reason) return "one of the submitted resolutions no longer applies";
+    return "the template's side of one conflict cannot be applied here; keep the instance's value instead";
   }
   switch (reason) {
     case "not_found":

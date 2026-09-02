@@ -9,8 +9,29 @@ import {
   type WireDocument, type StampOpts, type SyncState, type Logger,
   type DocumentStore, type ReadableDocuments, type NotificationLevel,
   type ClientMsg, type WireMergeOutcome, type WireMergeConflict, type WirePushInstanceOutcome,
+  type WireMergeErrorKind,
 } from "@shadowcat/core";
 import type { ConflictGroup } from "./mergeConflict";
+
+/** The fresh outcome a resolutions rejection carries (`stale_resolutions`/`unknown_resolution`/
+ * `unresolvable` — the merge as recomputed from live documents at rejection time), or `null` for
+ * a plain refusal with no payload to recover. Not exported (folded into the controller's
+ * intent methods).
+ * @param reason - The rejection reason from a `MergeIntentError`.
+ * @returns The carried outcome, or `null`.
+ * @example
+ * ```
+ * // internal helper; not part of the public API
+ * declare const reason: WireMergeErrorKind;
+ * freshOutcome(reason);
+ * ```
+ */
+function freshOutcome(reason: WireMergeErrorKind): WireMergeOutcome | null {
+  if (typeof reason === "string") return null;
+  if ("stale_resolutions" in reason) return reason.stale_resolutions;
+  if ("unknown_resolution" in reason) return reason.unknown_resolution;
+  return reason.unresolvable;
+}
 
 /** A merge intent frame, already carrying its own `request_id`. */
 type MergeIntentMsg = Extract<
@@ -240,12 +261,10 @@ export class TemplatesController {
       }
       this.#openPullSession(childId, outcome.status.conflicts);
     } catch (err) {
-      if (err instanceof MergeIntentError && typeof err.reason !== "string") {
-        const fresh = "stale_resolutions" in err.reason ? err.reason.stale_resolutions : err.reason.unknown_resolution;
-        if (fresh.kind === "pull" && fresh.status !== "applied") {
-          this.#openPullSession(childId, fresh.status.conflicts);
-          return;
-        }
+      const fresh = err instanceof MergeIntentError ? freshOutcome(err.reason) : null;
+      if (fresh?.kind === "pull" && fresh.status !== "applied") {
+        this.#openPullSession(childId, fresh.status.conflicts);
+        return;
       }
       this.#warn(err instanceof Error ? err.message : "templates.pull: rejected");
     }
@@ -324,12 +343,10 @@ export class TemplatesController {
       if (outcome.kind !== "push") return;
       this.#routePushOutcome(templateId, outcome.instances);
     } catch (err) {
-      if (err instanceof MergeIntentError && typeof err.reason !== "string") {
-        const fresh = "stale_resolutions" in err.reason ? err.reason.stale_resolutions : err.reason.unknown_resolution;
-        if (fresh.kind === "push") {
-          this.#routePushOutcome(templateId, fresh.instances);
-          return;
-        }
+      const fresh = err instanceof MergeIntentError ? freshOutcome(err.reason) : null;
+      if (fresh?.kind === "push") {
+        this.#routePushOutcome(templateId, fresh.instances);
+        return;
       }
       this.#warn(err instanceof Error ? err.message : "templates.push: rejected");
     }

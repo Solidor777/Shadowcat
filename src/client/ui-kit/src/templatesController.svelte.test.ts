@@ -95,6 +95,25 @@ describe("TemplatesController", () => {
     expect(ctrl.pending!.groups[0].conflicts[0].path).toBe("/system/mp");
   });
 
+  it("pull reopens the modal with the fresh conflict set on Unresolvable", async () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const freshOutcome: WireMergeOutcome = {
+      kind: "pull", child_id: "C",
+      status: { conflicts: [{ path: "/system/obj/x", base: 1, parent: 2, parentKind: "set" }] },
+    };
+    const { ctrl, sent } = make([tmpl, child], async (msg) => {
+      if (!("resolutions" in msg) || !msg.resolutions) return freshOutcome;
+      throw new MergeIntentError({ unresolvable: freshOutcome });
+    });
+    ctrl.pull("C");
+    await vi.waitFor(() => expect(ctrl.pending).not.toBeNull());
+    ctrl.pending!.resolve(new Map([["C", new Set(["/system/obj/x"])]]));
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    await vi.waitFor(() => expect(ctrl.pending).not.toBeNull());
+    expect(ctrl.pending!.groups[0].conflicts[0].path).toBe("/system/obj/x");
+  });
+
   it("pull is a no-op with a logged warning when the child is not in store", () => {
     const warned: string[] = [];
     const sendMergeIntent = vi.fn(() => Promise.resolve({ kind: "revert", child_id: "x", status: "applied" } as WireMergeOutcome));

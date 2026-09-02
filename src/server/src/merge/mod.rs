@@ -62,6 +62,7 @@ pub use bands::{
 pub use plan::{
     apply_resolutions, compute_pull, compute_revert, merge3, plan_to_update, MergePlan,
 };
+pub use tree::PointerError;
 pub use visibility::{AllVisible, MergeVisibility, RequesterView, Side};
 
 /// A merge computation that refused to run. Wire-level errors (missing
@@ -80,6 +81,12 @@ pub enum MergeError {
     /// see of a document (an override pointer the redaction classifier cannot
     /// place). The merge discloses nothing and writes nothing.
     VisibilityUnknown,
+    /// The merge's own apply of a parent-only diff could not write its
+    /// pointer. Unreachable by construction (`set_pointer`'s doc states why)
+    /// but propagated rather than asserted: the release profile aborts on
+    /// panic, so an invariant breach here must surface as a refused intent,
+    /// never as a dead server.
+    Pointer(PointerError),
 }
 
 impl std::fmt::Display for MergeError {
@@ -91,6 +98,7 @@ impl std::fmt::Display for MergeError {
             MergeError::VisibilityUnknown => {
                 f.write_str("the requester's view of a merged document could not be resolved")
             }
+            MergeError::Pointer(e) => write!(f, "the merge could not write a pointer: {e}"),
         }
     }
 }

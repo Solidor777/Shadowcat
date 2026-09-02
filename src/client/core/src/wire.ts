@@ -701,10 +701,10 @@ export const mergeOutcomeSchemaImpl = z.discriminatedUnion("kind", [
 /** Validator for a `WireMergeOutcome`. */
 export const MergeOutcomeSchema: z.ZodType<WireMergeOutcome> = mergeOutcomeSchemaImpl;
 
-/** Why a merge intent was rejected. The `stale_resolutions`/`unknown_resolution` objects carry
- * the FRESH outcome — the merge as recomputed from live documents at rejection time — so the
- * client re-opens its modal without a round trip; their client-side handling is identical, the
- * distinction is diagnostic. Mirrors `ws::protocol::MergeErrorKind`. */
+/** Why a merge intent was rejected. The `stale_resolutions`/`unknown_resolution`/`unresolvable`
+ * objects carry the FRESH outcome — the merge as recomputed from live documents at rejection
+ * time — so the client re-opens its modal without a round trip; their client-side handling is
+ * identical, the distinction is diagnostic. Mirrors `ws::protocol::MergeErrorKind`. */
 export type WireMergeErrorKind =
   | "not_found"
   | "not_an_instance"
@@ -718,6 +718,13 @@ export type WireMergeErrorKind =
       /** The outcome as recomputed from live documents at rejection time. */
       unknown_resolution: WireMergeOutcome;
     }
+  | {
+      /** The outcome as recomputed at rejection time: a submitted path IS a current conflict,
+       * but the template's side cannot be applied to the current merged shape (the instance
+       * replaced a container the template edited inside); the user can choose the instance's
+       * side instead. */
+      unresolvable: WireMergeOutcome;
+    }
   | "internal";
 
 // Unannotated impl const — see the module-level note above the `z` import.
@@ -728,6 +735,7 @@ export const mergeErrorKindSchemaImpl = z.union([
   z.literal("corrupt_base"),
   z.object({ stale_resolutions: mergeOutcomeSchemaImpl }),
   z.object({ unknown_resolution: mergeOutcomeSchemaImpl }),
+  z.object({ unresolvable: mergeOutcomeSchemaImpl }),
   z.literal("internal"),
 ]);
 /** Validator for a `WireMergeErrorKind`. */

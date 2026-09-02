@@ -290,7 +290,10 @@ fn run_case(case: &Value) -> Value {
                         .collect()
                 })
                 .unwrap_or_default();
-            let resolved = apply_resolutions(&plan.merged_bands, &plan.conflicts, &theirs);
+            let resolved = apply_resolutions(&plan.merged_bands, &plan.conflicts, &theirs)
+                .unwrap_or_else(|e| {
+                    panic!("case '{name}': a corpus resolution always applies: {e}")
+                });
             let update = plan_to_update(&child, &parent, &resolved);
             json!({
                 "mergedBands": plan.merged_bands,

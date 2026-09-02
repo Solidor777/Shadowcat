@@ -279,7 +279,8 @@ pub(crate) fn revert_child(
         template,
         &placement_exclusions(&child.doc_type),
         vis.hidden(Side::Template, template)?,
-    );
+    )
+    .map_err(MergeError::Pointer)?;
     let mut out = child.clone();
     out.name = bands.name;
     out.engine = if bands.engine.is_null() {

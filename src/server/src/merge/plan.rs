@@ -13,7 +13,7 @@ use crate::data::command::{FieldChange, Operation};
 use crate::data::document::Document;
 use crate::merge::bands::{bands_tree, placement_exclusions, snapshot_base, MergeBands, MergeBase};
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
-use crate::merge::tree::{deep_equal, merge3_tree, take_template, HiddenPointers};
+use crate::merge::tree::{deep_equal, merge3_tree, take_template, HiddenPointers, PointerError};
 use crate::merge::visibility::{MergeVisibility, Side};
 use crate::merge::{MergeConflict, MergeError};
 
@@ -86,7 +86,8 @@ pub fn merge3(
         ),
         exclusions,
         &hidden,
-    );
+    )
+    .map_err(MergeError::Pointer)?;
     let bands = split_bands_tree(&tree);
     let (embedded, embedded_conflicts) = merge3_embedded(
         &base.embedded,
@@ -236,13 +237,18 @@ pub fn plan_to_update(
 
 /// Apply the user's per-field conflict choices: for each conflict whose path
 /// is in `theirs`, take the template value/deletion; the rest keep the child
-/// ("mine") value already in `merged_bands`. Pure (clones its input). Twin of
-/// the client `applyResolutions`.
+/// ("mine") value already in `merged_bands`. Pure (clones its input).
+///
+/// `Err` means a chosen resolution cannot be applied to the CURRENT merged
+/// shape (`take_template`'s refusal — the ancestor/descendant conflict shape
+/// is the reachable case) or the resolved tree no longer parses as embedded
+/// documents; nothing is written and the caller reports the set as
+/// unresolvable.
 pub fn apply_resolutions(
     merged_bands: &MergeBands,
     conflicts: &[MergeConflict],
     theirs: &BTreeSet<String>,
-) -> MergeBands {
+) -> Result<MergeBands, PointerError> {
     let mut root = serde_json::json!({
         "name": merged_bands.name,
         "engine": merged_bands.engine,
@@ -251,18 +257,18 @@ pub fn apply_resolutions(
     });
     for c in conflicts {
         if theirs.contains(&c.path) {
-            take_template(&mut root, c);
+            take_template(&mut root, c)?;
         }
     }
     let bands = split_bands_tree(&root);
     let embedded = serde_json::from_value(root.get("embedded").cloned().unwrap_or(Value::Null))
-        .expect("merged embedded collections round-trip through JSON");
-    MergeBands {
+        .map_err(|_| PointerError::Unrepresentable)?;
+    Ok(MergeBands {
         name: bands.name,
         engine: bands.engine,
         system: bands.system,
         embedded,
-    }
+    })
 }
 
 /// Reset one node's own bands to the template's current value, keeping
@@ -276,7 +282,7 @@ pub(crate) fn revert_bands(
     template: &Document,
     exclusions: &[String],
     hidden_template: Vec<String>,
-) -> BandTriple {
+) -> Result<BandTriple, PointerError> {
     let self_base = bands_tree(
         child.name.as_deref(),
         child.engine.as_ref(),
@@ -291,8 +297,8 @@ pub(crate) fn revert_bands(
         template: hidden_template,
         child: Vec::new(),
     };
-    let (merged, _) = merge3_tree(&self_base, &template_now, &self_base, exclusions, &hidden);
-    split_bands_tree(&merged)
+    let (merged, _) = merge3_tree(&self_base, &template_now, &self_base, exclusions, &hidden)?;
+    Ok(split_bands_tree(&merged))
 }
 
 /// Revert: discard the child's local diffs on the mergeable bands — every
@@ -312,7 +318,8 @@ pub fn compute_revert(
         template,
         &placement_exclusions(&child.doc_type),
         vis.hidden(Side::Template, template)?,
-    );
+    )
+    .map_err(MergeError::Pointer)?;
     let merged_bands = MergeBands {
         name: bands.name,
         engine: bands.engine,

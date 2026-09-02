@@ -108,7 +108,7 @@ fn apply_resolutions_takes_the_template_value_for_their_paths_only() {
         },
     ];
     let theirs = BTreeSet::from(["/system/a".to_string()]);
-    let resolved = apply_resolutions(&bands, &conflicts, &theirs);
+    let resolved = apply_resolutions(&bands, &conflicts, &theirs).expect("applies");
     assert_eq!(resolved.system, json!({ "a": "theirs", "b": "mine" }));
     // The input bands are untouched (the client engine is pure here too).
     assert_eq!(bands.system, json!({ "a": "mine", "b": "mine" }));
@@ -145,4 +145,30 @@ fn compute_revert_keeps_token_placement_and_refreshes_base() {
     assert_eq!(find("/base").old, child.base.clone().expect("base present"));
     // Revert never conflicts and never emits removals — whole-band writes only.
     assert!(changes.iter().all(|c: &FieldChange| !c.remove));
+}
+
+#[test]
+fn apply_resolutions_reports_an_unresolvable_take_template() {
+    // The ancestor/descendant conflict shape: the child replaced `/system/obj`
+    // with a scalar, the template edited `/system/obj/x`, and the conflict
+    // sits at the template's path. Taking the template there has nowhere to
+    // write; the refusal is an error, never a panic.
+    let bands = crate::merge::MergeBands {
+        name: None,
+        engine: json!(null),
+        system: json!({ "obj": 5 }),
+        embedded: Default::default(),
+    };
+    let conflicts = vec![MergeConflict {
+        path: "/system/obj/x".to_string(),
+        base: Some(json!(1)),
+        parent: Some(json!(2)),
+        child: None,
+        parent_kind: ParentKind::Set,
+    }];
+    let theirs = BTreeSet::from(["/system/obj/x".to_string()]);
+    assert_eq!(
+        apply_resolutions(&bands, &conflicts, &theirs),
+        Err(crate::merge::PointerError::NotAContainer)
+    );
 }

@@ -546,10 +546,11 @@ pub enum MergeOutcome {
     },
 }
 
-/// Why a merge intent was rejected. `StaleResolutions` and `UnknownResolution`
-/// carry the FRESH outcome — the merge as recomputed from live documents at
-/// rejection time — so the client re-opens its modal without a round trip; their
-/// client-side handling is identical, the distinction is diagnostic.
+/// Why a merge intent was rejected. `StaleResolutions`, `UnknownResolution` and
+/// `Unresolvable` carry the FRESH outcome — the merge as recomputed from live
+/// documents at rejection time — so the client re-opens its modal without a
+/// round trip; their client-side handling is identical, the distinction is
+/// diagnostic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -574,6 +575,14 @@ pub enum MergeErrorKind {
     /// `/embedded`), or, for push, an instance id that is not a visible push target.
     /// Carries the fresh outcome, same as `StaleResolutions`.
     UnknownResolution(MergeOutcome),
+    /// A submitted path IS a current conflict, but taking the template's side
+    /// there cannot be applied to the current merged shape — the
+    /// ancestor/descendant conflict shape, where the instance replaced a
+    /// container with a scalar the template edited inside, so the template's
+    /// leaf has nowhere to land. Nothing was written. Carries the fresh outcome
+    /// (the same conflict set) so the user can choose the instance's side
+    /// instead.
+    Unresolvable(MergeOutcome),
     /// Unexpected server-side failure (details logged, never echoed).
     Internal,
 }

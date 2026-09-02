@@ -2,9 +2,10 @@
 import type { MergeOutcome } from "./MergeOutcome";
 
 /**
- * Why a merge intent was rejected. `StaleResolutions` and `UnknownResolution`
- * carry the FRESH outcome — the merge as recomputed from live documents at
- * rejection time — so the client re-opens its modal without a round trip; their
- * client-side handling is identical, the distinction is diagnostic.
+ * Why a merge intent was rejected. `StaleResolutions`, `UnknownResolution` and
+ * `Unresolvable` carry the FRESH outcome — the merge as recomputed from live
+ * documents at rejection time — so the client re-opens its modal without a
+ * round trip; their client-side handling is identical, the distinction is
+ * diagnostic.
  */
-export type MergeErrorKind = "not_found" | "not_an_instance" | "forbidden" | "corrupt_base" | { "stale_resolutions": MergeOutcome } | { "unknown_resolution": MergeOutcome } | "internal";
+export type MergeErrorKind = "not_found" | "not_an_instance" | "forbidden" | "corrupt_base" | { "stale_resolutions": MergeOutcome } | { "unknown_resolution": MergeOutcome } | { "unresolvable": MergeOutcome } | "internal";

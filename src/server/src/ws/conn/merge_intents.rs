@@ -9,10 +9,10 @@
 //!
 //! The flow is STATELESS: there is no server-side merge session. A resolutions
 //! call recomputes the merge from live documents and rejects resolution paths
-//! that
-//! no longer match (`MergeErrorKind::StaleResolutions`/`UnknownResolution`, both
-//! carrying the fresh outcome so the client re-opens its modal without a round
-//! trip). Authorization lives HERE, not in the write path: `TemplateMerge` waives
+//! that no longer match, or that name a conflict whose template side cannot be
+//! applied to the current merged shape (`MergeErrorKind::StaleResolutions`/
+//! `UnknownResolution`/`Unresolvable`, each carrying the fresh outcome so the
+//! client re-opens its modal without a round trip). Authorization lives HERE, not in the write path: `TemplateMerge` waives
 //! `apply_intent`'s per-op capability gates, so `update_authorized` — which reads
 //! the same `required_cap_for_path`/`declared_caps_for_path` predicates that arm
 //! applies — is the only capability check these writes get.
@@ -123,13 +123,14 @@ fn on_merge_surface(path: &str) -> bool {
 }
 
 /// Map a merge-engine refusal to the wire vocabulary: a corrupt snapshot is
-/// its own kind; an unanswerable visibility question fails closed to
+/// its own kind; an unanswerable visibility question and the engine's own
+/// (by-construction unreachable) pointer refusal both fail closed to
 /// `Internal` (nothing about the documents' conflicts may be disclosed).
 fn engine_error(child_id: Uuid, e: MergeError) -> MergeErrorKind {
     match e {
         MergeError::CorruptBase => MergeErrorKind::CorruptBase,
-        MergeError::VisibilityUnknown => {
-            tracing::warn!(doc_id = %child_id, error = %e, "merge: visibility unresolvable; failing closed");
+        MergeError::VisibilityUnknown | MergeError::Pointer(_) => {
+            tracing::warn!(doc_id = %child_id, error = %e, "merge: engine refused; failing closed");
             MergeErrorKind::Internal
         }
     }
@@ -185,6 +186,22 @@ enum ResolutionsRejection {
     /// A submitted path is on-surface but not a CURRENT conflict — the documents
     /// moved between the conflict report and this call.
     Stale,
+    /// Every submitted path is a current conflict, but taking the template's
+    /// side at one of them cannot be applied to the current merged shape
+    /// (`merge::apply_resolutions`'s refusal).
+    Unresolvable,
+}
+
+impl ResolutionsRejection {
+    /// The wire kind for this rejection, carrying `fresh` — the outcome as
+    /// recomputed from live documents, so the client re-opens its modal.
+    fn into_kind(self, fresh: MergeOutcome) -> MergeErrorKind {
+        match self {
+            ResolutionsRejection::Unknown => MergeErrorKind::UnknownResolution(fresh),
+            ResolutionsRejection::Stale => MergeErrorKind::StaleResolutions(fresh),
+            ResolutionsRejection::Unresolvable => MergeErrorKind::Unresolvable(fresh),
+        }
+    }
 }
 
 /// Check `theirs` against the CURRENT conflict set: every submitted path must be
@@ -376,11 +393,8 @@ fn resolved_bands(
         Some(paths) => {
             let theirs: BTreeSet<String> = paths.into_iter().collect();
             check_resolutions(&theirs, &plan.conflicts)?;
-            Ok(apply_resolutions(
-                &plan.merged_bands,
-                &plan.conflicts,
-                &theirs,
-            ))
+            apply_resolutions(&plan.merged_bands, &plan.conflicts, &theirs)
+                .map_err(|_| ResolutionsRejection::Unresolvable)
         }
     }
 }
@@ -419,16 +433,10 @@ async fn pull(
     };
     let bands = match resolved_bands(&plan, resolutions) {
         Ok(b) => b,
-        Err(ResolutionsRejection::Unknown) => {
+        Err(rejection) => {
             return merge_error(
                 request_id,
-                MergeErrorKind::UnknownResolution(pull_outcome(child_id, &plan)),
-            );
-        }
-        Err(ResolutionsRejection::Stale) => {
-            return merge_error(
-                request_id,
-                MergeErrorKind::StaleResolutions(pull_outcome(child_id, &plan)),
+                rejection.into_kind(pull_outcome(child_id, &plan)),
             );
         }
     };
@@ -715,32 +723,45 @@ async fn push(
     if let Some(map) = &resolutions {
         if let Err(rejection) = check_push_resolutions(map, &instances) {
             let fresh = push_outcome(template_id, &instances, &inputs, &template);
-            let reason = match rejection {
-                ResolutionsRejection::Unknown => MergeErrorKind::UnknownResolution(fresh),
-                ResolutionsRejection::Stale => MergeErrorKind::StaleResolutions(fresh),
-            };
-            return merge_error(request_id, reason);
+            return merge_error(request_id, rejection.into_kind(fresh));
         }
     }
-    // Phase 2: per instance, compute THIS call's update (child-wins on a first
-    // call, resolutions folded in on a second), derive authorization against it,
-    // then commit — or, on a first call with conflicts, report without writing.
-    let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(instances.len());
-    for (id, p) in instances {
+    // Fold THIS call's resolutions into every instance's bands (child-wins on a
+    // first call) BEFORE any commit, so a resolution the current merged shape
+    // cannot take rejects the whole call with nothing written — the same
+    // all-or-nothing posture as the resolutions check above.
+    let mut resolved: Vec<(Uuid, &PlannedInstance, MergeBands)> =
+        Vec::with_capacity(instances.len());
+    for (id, p) in &instances {
         let theirs = resolutions
             .as_ref()
-            .and_then(|m| m.get(&id))
+            .and_then(|m| m.get(id))
             .cloned()
             .unwrap_or_default();
         let bands = if first_call {
             p.plan.merged_bands.clone()
         } else {
-            apply_resolutions(
+            match apply_resolutions(
                 &p.plan.merged_bands,
                 &p.plan.conflicts,
                 &theirs.into_iter().collect(),
-            )
+            ) {
+                Ok(b) => b,
+                Err(_) => {
+                    let fresh = push_outcome(template_id, &instances, &inputs, &template);
+                    return merge_error(
+                        request_id,
+                        ResolutionsRejection::Unresolvable.into_kind(fresh),
+                    );
+                }
+            }
         };
+        resolved.push((*id, p, bands));
+    }
+    // Then, per instance, derive authorization against the actual update and
+    // commit — or, on a first call with conflicts, report without writing.
+    let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(resolved.len());
+    for (id, p, bands) in resolved {
         let update = plan_to_update(&p.doc, &template, &bands);
         if !update_authorized(&update, &p.access, &inputs) {
             outcomes.push(PushInstanceOutcome {

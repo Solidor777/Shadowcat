@@ -6,7 +6,7 @@ use serde_json::json;
 
 use crate::merge::tree::{
     deep_equal, delete_pointer, escape_token, get_pointer, paths_overlap, set_pointer,
-    structural_diff, take_template, tokenize,
+    structural_diff, take_template, tokenize, PointerError,
 };
 use crate::merge::{MergeConflict, ParentKind};
 
@@ -75,26 +75,26 @@ fn escape_and_tokenize_round_trip() {
 #[test]
 fn delete_pointer_removes_keys_and_splices_elements() {
     let mut obj = json!({ "a": { "b": 1, "c": 2 } });
-    delete_pointer(&mut obj, "/a/b");
+    delete_pointer(&mut obj, "/a/b").expect("deletes");
     assert_eq!(obj, json!({ "a": { "c": 2 } }));
 
     let mut arr = json!({ "xs": [10, 20, 30] });
-    delete_pointer(&mut arr, "/xs/1");
+    delete_pointer(&mut arr, "/xs/1").expect("deletes");
     assert_eq!(arr, json!({ "xs": [10, 30] }));
 
     let mut missing = json!({ "a": 1 });
-    delete_pointer(&mut missing, "/b/c");
+    delete_pointer(&mut missing, "/b/c").expect("no-ops");
     assert_eq!(missing, json!({ "a": 1 }));
 }
 
 #[test]
 fn set_pointer_creates_missing_intermediates_and_recreates_null_ones() {
     let mut root = json!({ "a": null });
-    set_pointer(&mut root, "/a/b/c", json!(7));
+    set_pointer(&mut root, "/a/b/c", json!(7)).expect("sets");
     assert_eq!(root, json!({ "a": { "b": { "c": 7 } } }));
 
     let mut arr = json!({ "xs": [1, 2] });
-    set_pointer(&mut arr, "/xs/0", json!(9));
+    set_pointer(&mut arr, "/xs/0", json!(9)).expect("sets");
     assert_eq!(arr, json!({ "xs": [9, 2] }));
 }
 
@@ -128,7 +128,8 @@ fn take_template_applies_set_and_delete() {
             child: Some(json!(3)),
             parent_kind: ParentKind::Set,
         },
-    );
+    )
+    .expect("takes the template value");
     assert_eq!(root, json!({ "a": 2, "b": 5 }));
     take_template(
         &mut root,
@@ -139,6 +140,60 @@ fn take_template_applies_set_and_delete() {
             child: Some(json!(5)),
             parent_kind: ParentKind::Delete,
         },
-    );
+    )
+    .expect("takes the template deletion");
     assert_eq!(root, json!({ "a": 2 }));
+}
+
+#[test]
+fn set_pointer_refuses_instead_of_panicking() {
+    // A scalar intermediate (the ancestor/descendant conflict shape: the
+    // child wrote `5` where the template edits `x` inside), a missing array
+    // position, a terminal index past the end, and a malformed pointer each
+    // refuse and leave the tree untouched.
+    let mut root = json!({ "system": { "obj": 5, "xs": [1] } });
+    let before = root.clone();
+    assert_eq!(
+        set_pointer(&mut root, "/system/obj/x", json!(2)),
+        Err(PointerError::NotAContainer),
+        "the scalar is met at the terminal step"
+    );
+    assert_eq!(
+        set_pointer(&mut root, "/system/obj/x/y", json!(2)),
+        Err(PointerError::NotAContainer),
+        "the scalar is met at an intermediate step"
+    );
+    assert_eq!(
+        set_pointer(&mut root, "/system/xs/3/y", json!(2)),
+        Err(PointerError::NotAContainer)
+    );
+    assert_eq!(
+        set_pointer(&mut root, "/system/xs/3", json!(2)),
+        Err(PointerError::IndexOutOfRange)
+    );
+    assert_eq!(
+        set_pointer(&mut root, "", json!(2)),
+        Err(PointerError::Malformed)
+    );
+    assert_eq!(
+        set_pointer(&mut root, "system/obj", json!(2)),
+        Err(PointerError::Malformed)
+    );
+    assert_eq!(delete_pointer(&mut root, ""), Err(PointerError::Malformed));
+    assert_eq!(root, before);
+
+    // A set-kind conflict without a parent value cannot be taken.
+    assert_eq!(
+        take_template(
+            &mut root,
+            &MergeConflict {
+                path: "/system/obj".to_string(),
+                base: None,
+                parent: None,
+                child: Some(json!(5)),
+                parent_kind: ParentKind::Set,
+            },
+        ),
+        Err(PointerError::MissingValue)
+    );
 }

@@ -2065,3 +2065,98 @@ async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_can
     );
     assert_base_is_the_visible_snapshot(&h, &h.player, template, instance).await;
 }
+
+/// A resolution whose "take template" cannot be applied to the current merged
+/// shape — the instance replaced `/system/obj` with a scalar while the
+/// template edited `/system/obj/x`, so the conflict sits at the template's
+/// path with nowhere to write — is rejected as `Unresolvable` carrying the
+/// fresh conflict set. The connection survives (the release profile aborts on
+/// panic, so this path may never panic) and the instance is untouched.
+#[tokio::test]
+async fn pull_resolution_under_an_ancestor_descendant_conflict_is_rejected_not_fatal() {
+    let h = merge_harness().await;
+    let (template, child) = (Uuid::from_u128(0xE801), Uuid::from_u128(0xE802));
+    h.create(template_doc(
+        h.world_id,
+        template,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({ "obj": { "x": 1 } }),
+    ))
+    .await;
+    let mut inst = instance_doc(
+        h.world_id,
+        child,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "obj": { "x": 1 } }),
+    );
+    inst.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    h.create(inst).await;
+    h.set_system(template, json!({ "obj": { "x": 2 } })).await;
+    h.set_system(child, json!({ "obj": 5 })).await;
+
+    let first = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let MergePullStatus::Conflicts(conflicts) = pull_status(first) else {
+        panic!("the overlap is reported as a conflict at the template's path");
+    };
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].path, "/system/obj/x");
+
+    let second = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(2),
+            child_id: child,
+            resolutions: Some(vec!["/system/obj/x".into()]),
+        },
+        0,
+    )
+    .await
+    .expect("a reply, not an abort");
+    let MergeErrorKind::Unresolvable(fresh) = error_reason(second) else {
+        panic!("taking the template under a scalar is rejected as Unresolvable");
+    };
+    assert!(
+        matches!(fresh, MergeOutcome::Pull { status: MergePullStatus::Conflicts(ref c), .. } if c.len() == 1),
+        "the rejection carries the fresh conflict set: {fresh:?}"
+    );
+    assert_eq!(
+        h.get(child).await.system,
+        json!({ "obj": 5 }),
+        "nothing was written"
+    );
+
+    // The same connection keeps working: choosing the instance's side applies.
+    let third = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(3),
+            child_id: child,
+            resolutions: Some(vec![]),
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    assert!(matches!(pull_status(third), MergePullStatus::Applied));
+}

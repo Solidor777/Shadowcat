@@ -111,29 +111,66 @@ fn structural_diff_at(base: &Value, now: &Value, prefix: &str) -> Vec<Diff> {
     }]
 }
 
+/// Why an in-memory pointer write could not be applied. Every variant is
+/// reachable from client input through `apply_resolutions` (a resolution
+/// path names a real conflict, but the merged tree's shape at that path can
+/// still refuse the template's write — the ancestor/descendant conflict
+/// shape, where the child replaced a container with a scalar the template
+/// edited inside), so none of them may panic: the release profile aborts on
+/// panic, and one frame must never take the server down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerError {
+    /// The pointer is empty or does not start with `/`.
+    Malformed,
+    /// An intermediate segment lands on a scalar, or names an array position
+    /// that does not exist — nothing to descend into.
+    NotAContainer,
+    /// The terminal segment names an array position that does not exist.
+    IndexOutOfRange,
+    /// A `Set`-kind conflict carries no parent value to write.
+    MissingValue,
+    /// The written tree no longer parses as the typed structure it stands in
+    /// for (embedded collections of documents).
+    Unrepresentable,
+}
+
+impl std::fmt::Display for PointerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PointerError::Malformed => "malformed JSON pointer",
+            PointerError::NotAContainer => "pointer descends into a non-container",
+            PointerError::IndexOutOfRange => "array index out of range",
+            PointerError::MissingValue => "a set-kind conflict carries no parent value",
+            PointerError::Unrepresentable => "the written tree no longer parses as documents",
+        })
+    }
+}
+
+impl std::error::Error for PointerError {}
+
 /// Remove the object key or array element at `pointer` in `root`. No-op on
-/// any missing intermediate segment. Twin of the client `deletePointer`: the
-/// set-only write path cannot delete, so a merge that removes a key/element
-/// rewrites the whole enclosing container (see `plan_to_update`), and this
-/// builds that rewritten container in memory first.
-pub(crate) fn delete_pointer(root: &mut Value, pointer: &str) {
-    assert!(!pointer.is_empty(), "cannot delete the document root");
+/// any missing intermediate segment; `Malformed` on the empty pointer (the
+/// document root cannot be deleted). The set-only write path cannot delete,
+/// so a merge that removes a key/element rewrites the whole enclosing
+/// container (see `plan_to_update`), and this builds that rewritten
+/// container in memory first.
+pub(crate) fn delete_pointer(root: &mut Value, pointer: &str) -> Result<(), PointerError> {
     let tokens = tokenize(pointer);
     let Some((last, intermediates)) = tokens.split_last() else {
-        unreachable!("a non-empty pointer tokenizes to at least one token");
+        return Err(PointerError::Malformed);
     };
     let mut cur = root;
     for tok in intermediates {
         cur = match cur {
             Value::Array(arr) => match tok.parse::<usize>().ok().and_then(|i| arr.get_mut(i)) {
                 Some(v) => v,
-                None => return,
+                None => return Ok(()),
             },
             Value::Object(obj) => match obj.get_mut(tok) {
                 Some(v) => v,
-                None => return,
+                None => return Ok(()),
             },
-            _ => return,
+            _ => return Ok(()),
         };
     }
     match cur {
@@ -149,6 +186,7 @@ pub(crate) fn delete_pointer(root: &mut Value, pointer: &str) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Read the value at `pointer`, or `None` when any segment is missing (the
@@ -173,20 +211,25 @@ pub(crate) fn get_pointer<'a>(root: &'a Value, pointer: &str) -> Option<&'a Valu
 }
 
 /// Write `value` at `pointer` in `root`, creating missing object
-/// intermediates (an explicit `null` intermediate is recreated as `{}`, the
-/// client `setPointer`'s rule). Panics on a malformed pointer, an
-/// out-of-range array index, or a scalar intermediate — the client throws at
-/// the same points, and every path reaching this from the merge is valid by
-/// construction (diffs and conflicts are generated against the tree being
-/// mutated).
-pub(crate) fn set_pointer(root: &mut Value, pointer: &str, value: Value) {
-    assert!(
-        !pointer.is_empty() && pointer.starts_with('/'),
-        "invalid JSON pointer: {pointer}"
-    );
+/// intermediates (an explicit `null` intermediate is recreated as `{}`).
+/// Refuses — never panics — on a malformed pointer, an out-of-range array
+/// index, or a scalar intermediate. The merge's OWN applies (`apply_diff`)
+/// cannot hit a refusal: a parent-only diff is applied only when no child
+/// diff overlaps its path, so the child tree still holds the container
+/// structure the diff was computed against. `take_template` CAN: a
+/// resolution at the parent's path of an ancestor/descendant conflict
+/// descends through the scalar the child wrote.
+pub(crate) fn set_pointer(
+    root: &mut Value,
+    pointer: &str,
+    value: Value,
+) -> Result<(), PointerError> {
+    if !pointer.starts_with('/') {
+        return Err(PointerError::Malformed);
+    }
     let tokens = tokenize(pointer);
     let Some((last, intermediates)) = tokens.split_last() else {
-        unreachable!("a non-empty pointer tokenizes to at least one token");
+        return Err(PointerError::Malformed);
     };
     let mut cur = root;
     for tok in intermediates {
@@ -196,7 +239,7 @@ pub(crate) fn set_pointer(root: &mut Value, pointer: &str, value: Value) {
                     .parse::<usize>()
                     .ok()
                     .filter(|&i| i < arr.len())
-                    .unwrap_or_else(|| panic!("cannot descend into non-container at {pointer}"));
+                    .ok_or(PointerError::NotAContainer)?;
                 &mut arr[i]
             }
             Value::Object(obj) => {
@@ -206,7 +249,7 @@ pub(crate) fn set_pointer(root: &mut Value, pointer: &str, value: Value) {
                 }
                 entry
             }
-            _ => panic!("cannot descend into non-container at {pointer}"),
+            _ => return Err(PointerError::NotAContainer),
         };
     }
     match cur {
@@ -215,14 +258,15 @@ pub(crate) fn set_pointer(root: &mut Value, pointer: &str, value: Value) {
                 .parse::<usize>()
                 .ok()
                 .filter(|&i| i < arr.len())
-                .unwrap_or_else(|| panic!("array index out of range at {pointer}"));
+                .ok_or(PointerError::IndexOutOfRange)?;
             arr[i] = value;
         }
         Value::Object(obj) => {
             obj.insert(last.clone(), value);
         }
-        _ => panic!("cannot descend into non-container at {pointer}"),
+        _ => return Err(PointerError::NotAContainer),
     }
+    Ok(())
 }
 
 /// JSON-pointer subtree overlap (either contains the other, or equal). Twin
@@ -247,7 +291,7 @@ fn same_result(a: &Diff, b: &Diff) -> bool {
 /// produced from the source tree — cloning is the crossing point the client
 /// marks with `structuredClone`), `Delete` removes the key/element via
 /// `delete_pointer`. Twin of the client `applyDiff`.
-fn apply_diff(root: &mut Value, d: &Diff) {
+fn apply_diff(root: &mut Value, d: &Diff) -> Result<(), PointerError> {
     match d {
         Diff::Set { path, value } => set_pointer(root, path, value.clone()),
         Diff::Delete { path } => delete_pointer(root, path),
@@ -314,7 +358,7 @@ pub(crate) fn merge3_tree(
     child_now: &Value,
     exclusions: &[String],
     hidden: &HiddenPointers,
-) -> (Value, Vec<MergeConflict>) {
+) -> Result<(Value, Vec<MergeConflict>), PointerError> {
     let parent_diff: Vec<Diff> = structural_diff(base, parent_now)
         .into_iter()
         .filter(|d| {
@@ -330,7 +374,7 @@ pub(crate) fn merge3_tree(
             .filter(|c| paths_overlap(c.path(), p.path()))
             .collect();
         if overlapping.is_empty() {
-            apply_diff(&mut merged, p);
+            apply_diff(&mut merged, p)?;
             continue;
         }
         let exact = overlapping.iter().find(|c| c.path() == p.path());
@@ -361,20 +405,19 @@ pub(crate) fn merge3_tree(
             },
         });
     }
-    (merged, conflicts)
+    Ok((merged, conflicts))
 }
 
-/// Apply the parent's decision for a conflict into `root` (in place). Twin
-/// of the client `takeTemplate`.
-pub(crate) fn take_template(root: &mut Value, c: &MergeConflict) {
+/// Apply the parent's decision for a conflict into `root` (in place). A
+/// refusal means the current merged shape cannot take the template's side
+/// at this path (see `set_pointer`); the caller reports it, it never aborts.
+pub(crate) fn take_template(root: &mut Value, c: &MergeConflict) -> Result<(), PointerError> {
     match c.parent_kind {
         ParentKind::Delete => delete_pointer(root, &c.path),
         ParentKind::Set => set_pointer(
             root,
             &c.path,
-            c.parent
-                .clone()
-                .expect("a set-kind conflict carries the parent value"),
+            c.parent.clone().ok_or(PointerError::MissingValue)?,
         ),
     }
 }
