@@ -650,6 +650,62 @@ fn bearer<'a>(positions: &'a [PosSample], light: &'a [LightSample]) -> [InFlight
     }]
 }
 
+// --- One `at` per distinct instant (`clip_frame`) ---
+
+#[test]
+fn clip_frame_resolves_each_distinct_instant_once_for_both_gates() {
+    // Three position samples and three light samples share three instants, plus one position
+    // sample at a fourth: four `RecipientSight::at` resolutions serve all seven samples, and
+    // the outputs are exactly what the two single-gate wrappers produce.
+    let ecs = fixture(true, None);
+    let sight = sight(&ecs, &[]);
+    let positions = vec![
+        pos(0.0, 50.0, 60.0),
+        pos(100.0, 60.0, 60.0),
+        pos(200.0, 150.0, 60.0),
+        pos(300.0, 70.0, 60.0),
+    ];
+    let lights = vec![
+        light(0, 0.0, [50.0, 60.0], 60.0),
+        light(1, 100.0, [60.0, 60.0], 60.0),
+        light(2, 200.0, [300.0, 60.0], 10.0),
+    ];
+    let flight = [InFlight {
+        start_server_ms: 1000.0,
+        mover: STRANGER,
+        token: MOVER_TOKEN,
+        positions: &positions,
+        light: Some(&lights),
+    }];
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &flight,
+        target: TARGET,
+    };
+    let (visible, admitted) = clip_frame(&positions, Some(&lights), 1000.0, &inputs);
+    assert_eq!(sight.at_calls(), 4, "one resolution per distinct instant");
+    assert_eq!(
+        visible,
+        vec![
+            pos(0.0, 50.0, 60.0),
+            pos(100.0, 60.0, 60.0),
+            pos(300.0, 70.0, 60.0)
+        ]
+    );
+    assert_eq!(
+        admitted
+            .as_deref()
+            .map(|l| l.iter().map(tag_of).collect::<Vec<_>>()),
+        Some(vec![0, 1])
+    );
+    // The single-gate wrappers agree sample for sample.
+    assert_eq!(clip_samples(&positions, 1000.0, &inputs), visible);
+    assert_eq!(
+        admit_light_samples(Some(&lights), 1000.0, &inputs),
+        admitted
+    );
+}
+
 // --- Creature senses (`InstantSight::sees_token`) ---
 
 /// Clip inputs over `sight` alone (no in-flight move).

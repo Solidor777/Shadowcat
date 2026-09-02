@@ -2,11 +2,12 @@
 //!
 //! No locks, no I/O. `clip_move_stream` (in `conn`) resolves the clip target's authoritative
 //! sight (`SceneEcs::recipient_sight`) and the scene's in-flight moves, then delegates the
-//! per-sample decisions here: the position clip (`clip_samples`) and the carried-light
-//! admission (`admit_light_samples`). Both read the recipient's sight AT A SAMPLE'S INSTANT
-//! through the ONE `ClipInputs::at` — the recipient's own in-flight tokens re-raycast at their
-//! instant viewpoints and every in-flight torch composed in at its instant position — so the two
-//! can never disagree about what the recipient sees at a given moment.
+//! per-sample decisions here through `clip_frame`: the position clip and the carried-light
+//! admission. Both read the recipient's sight AT A SAMPLE'S INSTANT through the ONE
+//! `ClipInputs::at` — the recipient's own in-flight tokens re-raycast at their instant
+//! viewpoints and every in-flight torch composed in at its instant position — resolved ONCE
+//! per distinct instant of the frame and shared by both gates, so the two can never disagree
+//! about what the recipient sees at a given moment and no instant is paid for twice.
 //!
 //! INVARIANT (client parity): `chosen_vision_sample` implements the same rule as the client's
 //! `chooseVisionSample` — greatest `t_ms <= elapsed`, first sample before
@@ -17,6 +18,8 @@
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
+
+use std::collections::HashMap;
 
 use uuid::Uuid;
 
@@ -74,8 +77,8 @@ impl InFlight<'_> {
 }
 
 /// The per-recipient clip inputs for one frame: the clip target's sight plus the scene's
-/// in-flight moves. `at` resolves the sight at one instant — THE per-instant read both
-/// `clip_samples` and `admit_light_samples` go through.
+/// in-flight moves. `at` resolves the sight at one instant — THE per-instant read
+/// `clip_frame` resolves once per distinct instant for both gates.
 pub(crate) struct ClipInputs<'a> {
     /// The clip target's authoritative sight (`SceneEcs::recipient_sight`, with every in-flight
     /// mover's carried emission excluded from the committed field).
@@ -113,14 +116,6 @@ impl ClipInputs<'_> {
         }
         (self.sight.at(&moved), lights)
     }
-
-    /// Whether the target perceives the frame's moving token at scene point `point` at
-    /// absolute instant `t_abs_ms` (`InstantSight::sees_token`: some source's LOS contains it
-    /// and it is lit for that source, OR a source's creature sense reaches it).
-    pub(crate) fn sees_at(&self, t_abs_ms: f64, point: P) -> bool {
-        let (sight, lights) = self.at(t_abs_ms);
-        sight.sees_token(point, &lights)
-    }
 }
 
 /// The sample with the greatest `t_ms <= elapsed_ms`; the first sample when `elapsed_ms`
@@ -136,20 +131,68 @@ pub(crate) fn chosen_vision_sample<T: Timed>(samples: &[T], elapsed_ms: f64) -> 
     Some(chosen)
 }
 
-/// Keep each sample whose position the clip target perceives AT THAT SAMPLE'S INSTANT
-/// (`ClipInputs::sees_at`: inside a source's line of sight AND lit for that source, the mover's
-/// own carried light composed in — a torch bearer lights the cell it stands in — OR within
-/// reach of a source's creature sense, walls and darkness notwithstanding).
+/// One recipient's clip of one frame: the position samples the target perceives at their
+/// instants and the carried-light samples whose glow lights a cell the target sees at theirs
+/// — `(visible positions, admitted light)`, the light `None` when the frame carries none or
+/// no sample is admitted (never an empty list: the recipient learns nothing, not even that a
+/// light moved). `ClipInputs::at` is resolved ONCE per distinct instant of the frame (a
+/// position and a light sample at the same `t_ms` share it), then each sample is judged from
+/// its instant: a position through `InstantSight::sees_token` (inside a source's line of
+/// sight AND lit for that source, the mover's own carried light composed in — a torch bearer
+/// lights the cell it stands in — OR within reach of a source's creature sense), a light
+/// sample through `glow_reaches`. PRECONDITION: the frame's own move is among
+/// `inputs.in_flight` (as `clip_move_stream` guarantees), so a light sample is composed into
+/// the field it is judged against exactly once.
+pub(crate) fn clip_frame(
+    samples: &[PosSample],
+    light: Option<&[LightSample]>,
+    start_server_ms: f64,
+    inputs: &ClipInputs<'_>,
+) -> (Vec<PosSample>, Option<Vec<LightSample>>) {
+    // Distinct instants by exact `t_ms` bits — the value both timelines were sampled with.
+    let mut instants: HashMap<u64, (InstantSight<'_>, Vec<InstantLight>)> = HashMap::new();
+    let ts = samples
+        .iter()
+        .map(|s| s.t_ms)
+        .chain(light.into_iter().flatten().map(|l| l.t_ms));
+    for t in ts {
+        instants
+            .entry(t.to_bits())
+            .or_insert_with(|| inputs.at(start_server_ms + t));
+    }
+    let visible: Vec<PosSample> = samples
+        .iter()
+        .filter(|s| {
+            instants
+                .get(&s.t_ms.to_bits())
+                .is_some_and(|(sight, lights)| sight.sees_token((s.pos[0], s.pos[1]), lights))
+        })
+        .copied()
+        .collect();
+    let admitted: Option<Vec<LightSample>> = light
+        .map(|ls| {
+            ls.iter()
+                .filter(|l| {
+                    instants
+                        .get(&l.t_ms.to_bits())
+                        .is_some_and(|(sight, lights)| glow_reaches(sight, lights, l))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| !v.is_empty());
+    (visible, admitted)
+}
+
+/// The position half of `clip_frame` alone (a frame with no light timeline) — a test
+/// convenience; production clips through `clip_frame`.
+#[cfg(test)]
 pub(crate) fn clip_samples(
     samples: &[PosSample],
     start_server_ms: f64,
     inputs: &ClipInputs<'_>,
 ) -> Vec<PosSample> {
-    samples
-        .iter()
-        .filter(|s| inputs.sees_at(start_server_ms + s.t_ms, (s.pos[0], s.pos[1])))
-        .copied()
-        .collect()
+    clip_frame(samples, None, start_server_ms, inputs).0
 }
 
 /// Whether the disc `(center, radius)` touches any polygon: the center lies inside one
@@ -225,28 +268,16 @@ pub(crate) fn glow_reaches(
         .any(|c| sight.light_reaches(&own, c) && sight.sees(c, lights))
 }
 
-/// Per-recipient admission of a carried-light timeline: keep each sample whose glow lights a
-/// cell the clip target sees AT THAT SAMPLE'S INSTANT (`glow_reaches` against the SAME
-/// instant sight and composed field the position clip reads, `ClipInputs::at` — never a
-/// second rule). PRECONDITION: the frame's own move is among `inputs.in_flight` (as
-/// `clip_move_stream` guarantees), so the sample under test is composed into the field it is
-/// judged against exactly once. `None` in and `None` out; a timeline no sample of which
-/// reaches the recipient is `None` too (the recipient learns nothing, not even that a light
-/// moved), never an empty list.
+/// The carried-light half of `clip_frame` alone (a frame with no position samples): `None`
+/// in and `None` out; a timeline no sample of which reaches the recipient is `None` too — a
+/// test convenience; production clips through `clip_frame`.
+#[cfg(test)]
 pub(crate) fn admit_light_samples(
     samples: Option<&[LightSample]>,
     start_server_ms: f64,
     inputs: &ClipInputs<'_>,
 ) -> Option<Vec<LightSample>> {
-    let admitted: Vec<LightSample> = samples?
-        .iter()
-        .filter(|s| {
-            let (sight, lights) = inputs.at(start_server_ms + s.t_ms);
-            glow_reaches(&sight, &lights, s)
-        })
-        .cloned()
-        .collect();
-    (!admitted.is_empty()).then_some(admitted)
+    clip_frame(&[], samples, start_server_ms, inputs).1
 }
 
 #[cfg(test)]

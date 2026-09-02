@@ -1304,11 +1304,11 @@ async fn clip_move_stream(
         in_flight: &in_flight,
         target: target.user_id,
     };
-    let visible = crate::ws::move_clip::clip_samples(samples, *start_server_ms, &inputs);
-    // Per-sample admission through the SAME per-instant sight the position clip read: a
-    // sample stays only where its dim-reach disc touches that line of sight; none admitted ⇒
-    // `None`, never an empty timeline.
-    let admitted_light = crate::ws::move_clip::admit_light_samples(
+    // Both gates from ONE resolution of each distinct instant: a position sample stays where
+    // the target perceives it, a light sample where its glow lights a cell the target sees;
+    // no light admitted ⇒ `None`, never an empty timeline.
+    let (visible, admitted_light) = crate::ws::move_clip::clip_frame(
+        samples,
         mover_light.as_deref(),
         *start_server_ms,
         &inputs,

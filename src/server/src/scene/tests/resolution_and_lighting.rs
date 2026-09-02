@@ -1122,6 +1122,85 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
 }
 
 #[test]
+fn lighting_inputs_are_raycast_once_per_scene_and_exclude_set_and_shared_by_mask_and_clip() {
+    let (mut ecs, user, scene) = scene_with_lit_player_token();
+    let ctx = PermissionContext {
+        user_id: user,
+        world_role: WorldRole::Player,
+    };
+    let sight = |ecs: &SceneEcs, exclude: &[Uuid]| {
+        ecs.recipient_sight(&ctx, &no_world_grants(), scene, exclude, Uuid::nil())
+    };
+    sight(&ecs, &[]);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "cold: one raycast"
+    );
+    sight(&ecs, &[]);
+    sight(&ecs, &[]);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "every further recipient of the same frame shares the first raycast"
+    );
+    // The lit mask and the movement gate read the same memo.
+    ecs.player_lit_mask(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    );
+    ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 1);
+    // A different exclude set is a different field: one more raycast, then shared again.
+    let mover = Uuid::from_u128(11);
+    sight(&ecs, &[mover]);
+    sight(&ecs, &[mover]);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 2);
+    // A new light changes the snapshot: the stale entry is never served.
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            21,
+            10,
+            "light",
+            json!({
+                "x": 350.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": true }
+            }),
+        ),
+    });
+    sight(&ecs, &[]);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 3);
+    assert!(
+        sight(&ecs, &[]).at(&[]).sees((350.0, 50.0), &[]),
+        "the recomputed field carries the new light"
+    );
+}
+
+#[test]
+fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
+    // The engine default lights the environment at 0.0: `cell_illumination_from` admits no
+    // environment then, so the boundary projection is skipped outright (zero raycasts) and
+    // the field is identical. A positive intensity projects it.
+    let (mut ecs, _, scene) = scene_with_lit_player_token();
+    let settings = ecs.resolve_scene(scene);
+    assert_eq!(settings.env_intensity, 0.0);
+    assert!(ecs
+        .lighting_inputs(scene, &settings, 100.0)
+        .env_polys
+        .is_empty());
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "environment": { "color": "#ffffff", "intensity": 0.5 } }
+    }));
+    let settings = ecs.resolve_scene(scene);
+    assert_eq!(settings.env_intensity, 0.5);
+    assert!(!ecs
+        .lighting_inputs(scene, &settings, 100.0)
+        .env_polys
+        .is_empty());
+}
+
+#[test]
 fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() {
     let (ecs, user, scene) = scene_with_lit_player_token();
 

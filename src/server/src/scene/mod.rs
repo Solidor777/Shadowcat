@@ -420,8 +420,14 @@ pub(crate) struct InstantLight {
 pub(crate) struct RecipientSight {
     /// The LOS half.
     los: SightSources,
-    /// The scene's illumination inputs, minus the excluded emitters.
-    li: LightingInputs,
+    /// The scene's illumination inputs, minus the excluded emitters — shared with every other
+    /// recipient of the same frame through `SceneEcs::lighting_inputs_excluding`'s memo.
+    li: std::sync::Arc<LightingInputs>,
+    /// Test-only instrumentation: how many instants `at` has resolved, so a test can pin that a
+    /// frame's clip resolves each DISTINCT instant once (`ws::move_clip::clip_frame`), never
+    /// once per sample per gate.
+    #[cfg(test)]
+    at_calls: std::sync::atomic::AtomicU64,
     /// `GridShape::world_units_per_cell` — converts cell radii/ranges, never the indexing scale.
     world_units_per_cell: f64,
     /// The moving token creature senses may perceive, `(token id, elevation)`: `Some` only
@@ -437,12 +443,22 @@ impl RecipientSight {
         !self.los.is_empty()
     }
 
-    /// The sight at one instant (`SightSources::los_at` for the LOS half).
+    /// The sight at one instant (`SightSources::los_at` for the LOS half — one raycast per
+    /// `moved` source, none for the rest).
     pub(crate) fn at(&self, moved: &[(Uuid, vision::P)]) -> InstantSight<'_> {
+        #[cfg(test)]
+        self.at_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         InstantSight {
             sight: self,
             views: self.los.los_at(moved),
         }
+    }
+
+    /// Test-only: the number of instants `at` has resolved on this sight.
+    #[cfg(test)]
+    pub(crate) fn at_calls(&self) -> u64 {
+        self.at_calls.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// The field `Light` for an in-flight carried-light sample: `bright`/`dim` arrive in scene
@@ -748,6 +764,48 @@ pub struct SceneEcs {
     /// NOT bump this), not merely that the returned mask was correct both times.
     #[cfg(test)]
     visible_cells_recompute_count: std::sync::atomic::AtomicU64,
+    /// Memo of `lighting_inputs_excluding` per `(scene, sorted excluded emitters)` — the
+    /// scene's light + environment raycasts, computed once and shared by every recipient of a
+    /// frame (the clip's `recipient_sight`), the lit mask and the movement gate. VALUE-
+    /// COMPARISON reuse like `visible_cells_cache`: an entry is served only when a freshly
+    /// gathered `LightingInputsSnapshot` equals the one it was built from, so correctness never
+    /// depends on which path mutated a document. Bounded by `MAX_LIGHTING_INPUTS_CACHE_ENTRIES`
+    /// (cleared wholesale past it — over-invalidation is the safe direction). `Mutex`, never
+    /// locked across an `.await`.
+    lighting_inputs_cache:
+        std::sync::Mutex<HashMap<LightingInputsCacheKey, LightingInputsCacheEntry>>,
+    /// Test-only instrumentation: counts `lighting_inputs_excluding` snapshot-mismatch
+    /// recomputes, so a test can pin that N recipients of one frame raycast the field once.
+    #[cfg(test)]
+    lighting_inputs_recompute_count: std::sync::atomic::AtomicU64,
+}
+
+/// `lighting_inputs_cache`'s key: the scene and the SORTED token ids whose carried emissions
+/// the entry leaves out (`scene_lights_excluding`).
+type LightingInputsCacheKey = (Uuid, Vec<Uuid>);
+
+/// `lighting_inputs_cache`'s value: the snapshot the inputs were raycast from, paired with them.
+type LightingInputsCacheEntry = (LightingInputsSnapshot, std::sync::Arc<LightingInputs>);
+
+/// Entries `lighting_inputs_cache` holds before it is cleared wholesale: exclude sets come and
+/// go with in-flight moves, so the key space is unbounded while the live set is tiny.
+const MAX_LIGHTING_INPUTS_CACHE_ENTRIES: usize = 64;
+
+/// Everything `lighting_inputs_from` reads, gathered WITHOUT raycasting (cached document
+/// decodes only) — the reuse fingerprint of `lighting_inputs_cache`, the same shape
+/// `VisibilityInputsSnapshot` uses for the movement-gate mask.
+#[derive(PartialEq)]
+struct LightingInputsSnapshot {
+    /// The resolved scene settings (`all_bright`, bounds, environment intensity).
+    settings: ResolvedScene,
+    /// Grid cell size in scene units.
+    cell: f64,
+    /// Resolved scene lights minus the excluded emitters (empty under `all_bright`).
+    lights: Vec<lighting::Light>,
+    /// `blocksLight` wall segments with their elevation bands (empty under `all_bright`).
+    light_walls: Vec<elevation::BandedWall>,
+    /// `blocksSight` wall segments with their elevation bands.
+    sight_walls: Vec<elevation::BandedWall>,
 }
 
 /// Whether the changes being mirrored have cleared the authoritative write path.
@@ -947,6 +1005,9 @@ impl SceneEcs {
             visible_cells_cache: std::sync::Mutex::new(HashMap::new()),
             #[cfg(test)]
             visible_cells_recompute_count: std::sync::atomic::AtomicU64::new(0),
+            lighting_inputs_cache: std::sync::Mutex::new(HashMap::new()),
+            #[cfg(test)]
+            lighting_inputs_recompute_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -1760,6 +1821,8 @@ impl SceneEcs {
             los,
             li,
             sensed,
+            #[cfg(test)]
+            at_calls: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -2726,15 +2789,15 @@ impl SceneEcs {
         }
     }
 
-    /// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
-    /// dispatch and reused for every vision source via `lighting_inputs`. `all_bright`
-    /// short-circuits light raycasts under lighting-off or globalIllumination.
+    /// Scene-shared lighting/wall inputs for the visibility mask — `lighting_inputs_excluding`
+    /// with nothing excluded, memoised the same way. `all_bright` short-circuits light
+    /// raycasts under lighting-off or globalIllumination.
     pub(crate) fn lighting_inputs(
         &self,
         scene: Uuid,
         settings: &ResolvedScene,
         cell: f64,
-    ) -> LightingInputs {
+    ) -> std::sync::Arc<LightingInputs> {
         self.lighting_inputs_excluding(scene, settings, cell, &[])
     }
 
@@ -2742,13 +2805,20 @@ impl SceneEcs {
     /// of the field — `recipient_sight`'s read for the egress clip, which composes in-flight
     /// movers' torches back in per instant from their timelines rather than at their committed
     /// (end-of-move) positions. Standalone lights are never excluded.
+    ///
+    /// MEMOISED per `(scene, sorted exclude set)` in `lighting_inputs_cache`: every recipient of
+    /// one frame excludes the same in-flight set, so the field's light + environment raycasts
+    /// run once per frame per scene rather than once per recipient, and the lit mask, the
+    /// movement gate and the clip share one computation. Reuse is decided by comparing a
+    /// freshly gathered `LightingInputsSnapshot` (cheap document decodes, no geometry) against
+    /// the stored one — a changed light, wall, setting or cell size misses and recomputes.
     pub(crate) fn lighting_inputs_excluding(
         &self,
         scene: Uuid,
         settings: &ResolvedScene,
         cell: f64,
         exclude_emitters: &[Uuid],
-    ) -> LightingInputs {
+    ) -> std::sync::Arc<LightingInputs> {
         let all_bright = settings.all_bright();
         let lights = if all_bright {
             Vec::new()
@@ -2760,23 +2830,63 @@ impl SceneEcs {
         } else {
             self.light_wall_entries(scene)
         };
-        let grid = self.resolve_grid_shape(scene, cell);
-        Self::lighting_inputs_from(
-            all_bright,
+        let sight_walls = self.sight_wall_entries(scene);
+        let mut excluded: Vec<Uuid> = exclude_emitters.to_vec();
+        excluded.sort_unstable();
+        excluded.dedup();
+        let key = (scene, excluded);
+        let snapshot = LightingInputsSnapshot {
+            settings: settings.clone(),
+            cell,
             lights,
-            &light_walls,
-            self.sight_wall_entries(scene),
+            light_walls,
+            sight_walls,
+        };
+        {
+            let cache = self.lighting_inputs_cache.lock().unwrap();
+            if let Some((cached_snapshot, cached)) = cache.get(&key) {
+                if *cached_snapshot == snapshot {
+                    return cached.clone();
+                }
+            }
+        }
+        #[cfg(test)]
+        self.lighting_inputs_recompute_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let grid = self.resolve_grid_shape(scene, cell);
+        let li = std::sync::Arc::new(Self::lighting_inputs_from(
+            &snapshot.settings,
+            snapshot.lights.clone(),
+            &snapshot.light_walls,
+            snapshot.sight_walls.clone(),
             grid.world_extent(settings.bounds),
             cell,
             grid.world_units_per_cell(),
-        )
+        ));
+        let mut cache = self.lighting_inputs_cache.lock().unwrap();
+        if cache.len() >= MAX_LIGHTING_INPUTS_CACHE_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, (snapshot, li.clone()));
+        li
     }
 
-    /// Raycast step of `lighting_inputs`, split out so `visible_cells_cached` can gather the
-    /// pre-raycast `lights`/`light_walls`/`sight_walls` (cheap: cached document decodes only, no
-    /// geometry) to build its invalidation fingerprint WITHOUT paying for `lit_polys`' raycasts,
-    /// then call this to do the raycast only on a fingerprint mismatch. `lighting_inputs` itself
-    /// takes no such split: it always gathers then immediately raycasts in one call.
+    /// Test-only: the number of times `lighting_inputs_excluding` has fallen through to a full
+    /// raycast (snapshot mismatch or first call), so a test can pin that N recipients of one
+    /// frame — and the mask and gate beside them — share one computation.
+    #[cfg(test)]
+    pub(crate) fn lighting_inputs_recompute_count(&self) -> u64 {
+        self.lighting_inputs_recompute_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Raycast step of `lighting_inputs_excluding`, run only on a `LightingInputsSnapshot`
+    /// miss: the per-light occlusion polygons and — when `settings.env_intensity` is positive
+    /// — the boundary-projected environment polygons. A zero intensity (the engine default)
+    /// skips `env_light_polys` outright: `cell_illumination_from` admits the environment only
+    /// for a positive intensity, so an empty polygon set is the identical field at zero
+    /// raycasts. `settings.all_bright()` skips every raycast (lighting off or
+    /// `GlobalIllumination`).
     ///
     /// `extent` is the scene's WORLD-unit envelope, produced by
     /// `GridShape::world_extent` from the scene's authored bounds — those are measured in grid
@@ -2790,7 +2900,7 @@ impl SceneEcs {
     /// wall endpoints and `VISION_BOUND_MARGIN` alone, capping its reach independent of the radii the
     /// light was authored with.
     fn lighting_inputs_from(
-        all_bright: bool,
+        settings: &ResolvedScene,
         lights: Vec<lighting::Light>,
         light_walls: &[elevation::BandedWall],
         sight_walls: Vec<elevation::BandedWall>,
@@ -2811,10 +2921,12 @@ impl SceneEcs {
             })
             .collect();
         // Boundary-projected environment occlusion. Empty under all_bright (env is not
-        // the mechanism there). Environment ambient keeps the FULL light-wall set at every
-        // elevation (it is sky-light; walls always shadow it, or daylight would flood
+        // the mechanism there) and at zero intensity (nothing to occlude — the composition
+        // admits no environment then). Environment ambient keeps the FULL light-wall set at
+        // every elevation (it is sky-light; walls always shadow it, or daylight would flood
         // interiors) — the one place elevation does not filter occlusion.
-        let env_polys = if all_bright {
+        let all_bright = settings.all_bright();
+        let env_polys = if all_bright || settings.env_intensity <= 0.0 {
             Vec::new()
         } else {
             let full: Vec<vision::Seg> = light_walls.iter().map(|(s, _)| *s).collect();
@@ -3144,9 +3256,9 @@ impl SceneEcs {
                 .iter()
                 .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
                 .collect(),
-            lights: lights.clone(),
-            light_walls: light_walls.clone(),
-            sight_walls: sight_walls.clone(),
+            lights,
+            light_walls,
+            sight_walls,
         };
 
         {
@@ -3163,15 +3275,9 @@ impl SceneEcs {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let grid = self.resolve_grid_shape(scene, cell);
-        let li = Self::lighting_inputs_from(
-            all_bright,
-            lights,
-            &light_walls,
-            sight_walls,
-            grid.world_extent(settings.bounds),
-            cell,
-            grid.world_units_per_cell(),
-        );
+        // The field itself comes from the shared memo (a hit whenever the clip or the lit
+        // mask already raycast this scene's lights); only the per-source cell scan is ours.
+        let li = self.lighting_inputs(scene, &settings, cell);
         let mut mask = BTreeSet::new();
         accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
 

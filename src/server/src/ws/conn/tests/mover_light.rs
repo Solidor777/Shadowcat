@@ -113,6 +113,32 @@ async fn observer_admits_a_light_sample_whose_glow_reaches_past_its_clipped_posi
 }
 
 #[tokio::test]
+async fn every_recipient_of_one_frame_shares_one_lighting_raycast() {
+    // Three observers clip the same torch frame: the scene's illumination field (its light
+    // and environment raycasts) is computed once and served from the memo to the other two.
+    let (room, _, obs_ctx, scene_id, _) =
+        setup_dark_clip_room(Some((50.0, 50.0)), Some(wall())).await;
+    let now = crate::ws::time::now_millis();
+    let frame = torch_walk(scene_id, now, 300.0);
+    let before = room.scene().read().await.lighting_inputs_recompute_count();
+    let others = [
+        PermissionContext {
+            user_id: Uuid::from_u128(0x0B1),
+            world_role: crate::data::document::WorldRole::Player,
+        },
+        PermissionContext {
+            user_id: Uuid::from_u128(0x0B2),
+            world_role: crate::data::document::WorldRole::Player,
+        },
+    ];
+    clip_for(&frame, &obs_ctx, None, &room).await;
+    clip_for(&frame, &others[0], None, &room).await;
+    clip_for(&frame, &others[1], None, &room).await;
+    let after = room.scene().read().await.lighting_inputs_recompute_count();
+    assert_eq!(after - before, 1, "one raycast for three recipients");
+}
+
+#[tokio::test]
 async fn observer_drops_a_light_sample_out_of_reach() {
     let (room, _, obs_ctx, scene_id, _) =
         setup_dark_clip_room(Some((50.0, 50.0)), Some(wall())).await;
