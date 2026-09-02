@@ -200,11 +200,40 @@ interface CombatTouch {
   a: CombatEngine | undefined;
 }
 
+/** The combatant kind a document's `engine.kind.type` names, or `null` for a non-combatant document.
+ * @param doc The document to inspect, or `undefined` for a doc that no longer exists.
+ * @returns `"actor"` | `"event"` | `null`.
+ * @example
+ * ```ts
+ * import type { WireDocument } from "@shadowcat/core";
+ *
+ * declare const combatantDoc: WireDocument;
+ * combatantKindOf(combatantDoc); // "actor" | "event"
+ * combatantKindOf(undefined); // null
+ * ```
+ */
 function combatantKindOf(doc: WireDocument | undefined): "actor" | "event" | null {
   const engine = doc?.engine as CombatantEngine | undefined;
   return engine?.kind.type ?? null;
 }
 
+/** Walks one command's ops for every touched `combat` document's before/after engine pair.
+ * @param cmd The applied command whose ops to scan.
+ * @param before Looks up a document's pre-image by id (`undefined` for a `create`).
+ * @param after The post-command document view (a `DocumentStore`-shaped reader).
+ * @returns One `CombatTouch` per touched combat, keyed by its document id.
+ * @example
+ * ```ts
+ * import { DocumentStore } from "@shadowcat/core";
+ * import type { WireCommand } from "@shadowcat/core";
+ *
+ * const store = new DocumentStore();
+ * declare const cmd: WireCommand;
+ * declare const combatId: string;
+ * const touches = collectCombatTouches(cmd, (id) => store.get(id), store);
+ * touches.get(combatId)?.a?.active; // true | undefined
+ * ```
+ */
 function collectCombatTouches(
   cmd: WireCommand,
   before: (id: string) => WireDocument | undefined,
@@ -235,6 +264,24 @@ interface IntermediateEvent {
   doc: WireDocument;
 }
 
+/** Collects a combat's `event`-kind combatants a `settle_turn` walk auto-resolved this command, keyed by pre-image.
+ * @param cmd The applied command whose ops to scan.
+ * @param combatId The combat these combatants must be parented to.
+ * @param before Looks up a document's pre-image by id.
+ * @param after The post-command document view (a `DocumentStore`-shaped reader).
+ * @returns One entry per exhausted or lifespan-decremented `event` combatant, in op order.
+ * @example
+ * ```ts
+ * import { DocumentStore } from "@shadowcat/core";
+ * import type { WireCommand } from "@shadowcat/core";
+ *
+ * const store = new DocumentStore();
+ * declare const cmd: WireCommand;
+ * declare const combatId: string;
+ * const intermediates = gatherIntermediateEvents(cmd, combatId, (id) => store.get(id), store);
+ * intermediates[0]?.doc.engine; // the event combatant's pre-image engine
+ * ```
+ */
 function gatherIntermediateEvents(
   cmd: WireCommand,
   combatId: string,
@@ -266,6 +313,25 @@ function gatherIntermediateEvents(
   return out;
 }
 
+/** Derives one combat's `combat:*` hook events from its before/after engine pair.
+ * @param touch The combat's before/after engine pair.
+ * @param cmd The applied command touch's ops came from.
+ * @param before Looks up a document's pre-image by id.
+ * @param after The post-command document view (a `DocumentStore`-shaped reader).
+ * @returns Every `combat:start`/`end`/`round-start`/`round-end`/`turn-start`/`turn-end`/`rewind`
+ * event this touch's transition produced, in derivation order.
+ * @example
+ * ```ts
+ * import { DocumentStore } from "@shadowcat/core";
+ * import type { WireCommand, CombatEngine } from "@shadowcat/core";
+ *
+ * const store = new DocumentStore();
+ * declare const cmd: WireCommand;
+ * declare const touch: { id: string; b: CombatEngine | undefined; a: CombatEngine | undefined };
+ * const events = processCombat(touch, cmd, (id) => store.get(id), store);
+ * events.map((e) => e.name); // ["combat:round-start", "combat:turn-start"]
+ * ```
+ */
 function processCombat(
   touch: CombatTouch,
   cmd: WireCommand,
@@ -344,6 +410,25 @@ function processCombat(
   return events;
 }
 
+/** Derives `combat:effect-tick`/`combat:effect-expired` hook events for one combat's command.
+ * @param cmd The applied command whose ops to scan for effect changes.
+ * @param attributed The combat this command's effect changes are attributed to.
+ * @param before Looks up a document's pre-image by id.
+ * @param after The post-command document view (a `DocumentStore`-shaped reader).
+ * @returns Every `combat:effect-tick`/`combat:effect-expired` event the command's effect
+ * mutations produced, in op order.
+ * @example
+ * ```ts
+ * import { DocumentStore } from "@shadowcat/core";
+ * import type { WireCommand, CombatEngine } from "@shadowcat/core";
+ *
+ * const store = new DocumentStore();
+ * declare const cmd: WireCommand;
+ * declare const attributed: { id: string; b: CombatEngine | undefined; a: CombatEngine | undefined };
+ * const events = deriveEffectEvents(cmd, attributed, (id) => store.get(id), store);
+ * events[0]?.name; // "combat:effect-tick"
+ * ```
+ */
 function deriveEffectEvents(
   cmd: WireCommand,
   attributed: CombatTouch,
@@ -441,6 +526,7 @@ export class CombatHookEmitter {
   #tail: Promise<void> = Promise.resolve();
 
   /**
+   * Constructs an emitter bound to one `HookBus`.
    * @param hooks The bus to emit on (must already have `defineCombatHooks` called against it).
    * @param logger Diagnostic sink for a queue-level failure (never expected in practice, since
    * `HookBus.emitInfo` itself never rejects).

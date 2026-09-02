@@ -91,6 +91,7 @@ export class CombatClientError extends Error {
   /** Which client-side rule was violated. */
   code: "no-host" | "turn-owner" | "order-mismatch" | "not-found";
   /**
+   * Constructs a client-side combat rule violation.
    * @param code Which rule was violated.
    * @param message Human-readable detail.
    * @example
@@ -281,6 +282,7 @@ export class CombatController implements CombatApi {
   #listeners = new Set<() => void>();
 
   /**
+   * Constructs a controller bound to one world session's dependencies.
    * @param deps The controller's dependencies (document view, intent dispatch, combat send,
    * identity, capability check).
    * @example
