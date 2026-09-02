@@ -360,9 +360,10 @@ pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
 /// never embedded; a `combatant`/`combat-history` is always parented (its
 /// parent must be a `combat`, checked at the persistence chokepoint where
 /// the parent can be loaded) and never embedded; an `asset_folder` is never
-/// embedded (its parent-type and cycle rules also live at the chokepoint,
-/// `SqliteRepository::check_asset_folder_parent`). Recurses into every
-/// embedded descendant.
+/// embedded (its parent-type rule lives at the persistence chokepoint,
+/// `SqliteRepository::check_asset_folder_parent`; the ancestor cycle walk
+/// for a Move is `SqliteRepository::check_move_acyclic`). Recurses into
+/// every embedded descendant.
 pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
     match doc.doc_type.as_str() {
         t if t == engine::COMBAT_DOC_TYPE && doc.parent_id.is_some() => {
