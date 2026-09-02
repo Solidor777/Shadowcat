@@ -1984,6 +1984,23 @@ derivation reads the authoritative `DocumentStore` pre/post image, never the opt
 predicted event a rejection would have to un-emit); an unresolvable `turn` still emits its hook
 rather than being suppressed.
 
+Post-close fold-ins (two-reviewer findings on the range): turn hooks derive from the
+`combat-history` records a command appended (`crossedRecords`/`turnWalk`) instead of inferring
+intermediate turns from `lifespan`/delete deltas — a `lifespan: null` event's turn and a
+same-actor lap (the coalesced `/engine/turn` write folds to a same-value change) were invisible
+to every recipient, the GM included; the GM-only history reaches the GM alone, so a player's
+hooks are the combat document's endpoints (a subsequence). One movement-budget resolution,
+`combat::budget::resolve_movement_budget`, now backs the gate, the `"combat"` channel and the
+route preview — the channel had priced a `Mirror`-bound movement resource the gate refused.
+`ToolRail` wires `AppContext.t` (the overage/stop labels rendered a hardcoded English fallback
+in every locale) and builds its controller argument `satisfies HostToolContext`, so an
+AppContext-supplied seam can no longer be omitted without a type error; `fallbackT` is gone and
+`ToolContext.t` is required. `WorldSession.dispatchIntent` reports a dropped intent (`false`)
+and `CombatApi`'s document helpers throw `CombatClientError` `"not-connected"` instead of
+returning an id for a discarded op. `parseCombats` reports a malformed frame through the
+session logger, never `console.warn`. The core e2e asserts the GM's exact nine-event list
+(the event's turn pair included) against the player's seven-event subset.
+
 
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design

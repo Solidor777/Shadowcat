@@ -139,8 +139,11 @@ receives it (the nullable `cost` exists for the same reason: the true cost can
 leak secret terrain).
 
 The `"combat"` channel carries every combat's resolved per-combatant resource numbers
-(`current`/`max`/`error` for each registry-key binding) and movement-in-cells conversion,
-recomputed on every combat/combatant mutation. There is no client-side formula evaluation for
+(`current`/`max`/`error` for each registry-key binding) and movement-in-cells conversion
+(`movement_cells` — present only when the combat's movement resource is a `tracked` binding
+that resolves, through the same resolution the movement-budget gate reads, so a `mirror`
+binding is `null` here exactly as the gate refuses it), recomputed on every combat/combatant
+mutation. There is no client-side formula evaluation for
 combat resources: a hidden combatant is absent from the payload entirely, and a visible
 combatant's `resources` is `null` for a recipient the `/engine/resources` property tier does not
 admit (a non-owner, non-GM reader) — the same two-gate discipline the `"footprints"` channel
