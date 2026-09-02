@@ -25,7 +25,7 @@ function setup() {
     clearMeasure: () => { cleared++; },
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {} };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
   return { tool: makeMeasureTool(ctx), measures, sent, clears: () => cleared };
 }
 
@@ -44,6 +44,10 @@ test("measuring draws the distance label and persists nothing", () => {
 
 // --- Route-mode tests ---
 
+/** A translator that marks every call with its key and params, so a label assertion proves the
+ * string went through `ctx.t` — there is no English default a label could have come from. */
+const markedT: ToolContext["t"] = (key, params) => `<${key}${params ? ":" + JSON.stringify(params) : ""}>`;
+
 /** Build a ToolContext with a scene + token seeded, a single token selected, and a pathfind stub. */
 function setupRoute(over: {
   pathfind?: ToolContext["pathfind"];
@@ -55,7 +59,7 @@ function setupRoute(over: {
   sceneVision?: { movementModel?: "grid-stepped" | "continuous" };
   /** Advisory combat seam; absent ⇒ no active combat (plain budget label). */
   combat?: ToolContext["combat"];
-  /** Translate seam; absent ⇒ `requestRoute`'s own English fallback. */
+  /** Translate seam; absent ⇒ `markedT`. */
   t?: ToolContext["t"];
 } = {}) {
   const docs = new DocumentStore();
@@ -117,7 +121,7 @@ function setupRoute(over: {
     scheduleTimeout: over.scheduleTimeout,
     clearScheduledTimeout: over.clearScheduledTimeout,
     combat: over.combat,
-    t: over.t,
+    t: over.t ?? markedT,
   };
 
   return { tool: makeMeasureTool(ctx), overlays, measures, overlayClears: () => overlayClears, measureClears: () => measureClears };
@@ -168,7 +172,7 @@ test("Warn overage: label gets the over-budget suffix, stroke turns ROUTE_WARN_C
   tool.onPointerMove({ x: 150, y: 50 }, ev());
   await flush();
 
-  expect(measures.at(-1)!.label).toBe("35 ft · 10 ft over budget");
+  expect(measures.at(-1)!.label).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}>');
   const stroke = (overlays.at(-1)![0] as { stroke: { color: number } }).stroke;
   expect(stroke.color).toBe(0xffa500);
 });
@@ -187,7 +191,7 @@ test("Hard truncation: label gets the budget-stop suffix, polyline stroke is unc
   tool.onPointerMove({ x: 150, y: 50 }, ev());
   await flush();
 
-  expect(measures.at(-1)!.label).toBe("35 ft · stops at budget");
+  expect(measures.at(-1)!.label).toBe("35 ft · <tools.budgetStop>");
   const stroke = (overlays.at(-1)![0] as { stroke: { color: number } }).stroke;
   expect(stroke.color).toBe(0x3399ff);
 });
@@ -240,7 +244,7 @@ test("arrested keeps its warning suffix alongside a Warn overage label", async (
   tool.onPointerMove({ x: 150, y: 50 }, ev());
   await flush();
 
-  expect(measures.at(-1)!.label).toBe("35 ft · 10 ft over budget ⚠");
+  expect(measures.at(-1)!.label).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}> ⚠');
 });
 
 test("measure tool falls back to plain anchor-point measure when no token is selected", () => {
@@ -298,7 +302,7 @@ test("measure tool with no pathfind function falls back to plain measure", () =>
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
     tokenSelection: sel,
     // pathfind intentionally omitted — defensive fallback
   };
@@ -357,7 +361,7 @@ test("ToolController.toggle fires onDeactivate on outgoing measure tool", () => 
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
   };
 
   const controller = new ToolController(ctx);
@@ -391,7 +395,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
 
   const sel = new TokenSelection();
   sel.set(["tok-1"]);
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: () => {}, documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, tokenSelection: sel, pathfind };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: () => {}, documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, tokenSelection: sel, pathfind };
 
   const tool = makeMeasureTool(ctx);
 
@@ -714,6 +718,7 @@ function seedRouteCtx(over: {
     scene: bridge,
     dispatchIntent: over.dispatchIntent ?? defaultDispatch,
     documents: docs,
+    t: (k) => k,
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",

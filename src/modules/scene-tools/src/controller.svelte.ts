@@ -4,7 +4,7 @@
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type CombatApi, type CombatEngine } from "@shadowcat/core";
-import type { SceneInteraction, ActorSelection, TokenSelection, TFunc } from "@shadowcat/ui-kit";
+import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt } from "./hit-test";
 
@@ -86,12 +86,20 @@ export interface ToolContext {
    * absent ⇒ the plain budget label (no overage/stop suffix), matching an older host or no
    * active combat. */
   combat?: CombatApi;
-  /** Translate function (from `AppContext.t`), for the Warn-overage/Hard-stop route labels.
-   * Absent ⇒ `requestRoute` falls back to the same plain-English strings `en.ts` declares for
-   * `tools.overBudget`/`tools.budgetStop`, so a `ToolContext` built without one (e.g. most
-   * existing tests) still renders sensible text. */
-  t?: TFunc;
+  /** Translate function (from `AppContext.t`), for the Warn-overage/Hard-stop route labels
+   * (`tools.overBudget`/`tools.budgetStop`). Required: there is no English default here — a
+   * second copy of the catalog strings would fork the catalog, and a host that forgets to wire
+   * it would silently render that copy for every locale. */
+  t: TFunc;
 }
+
+/** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
+ * required. `ToolRail` builds its `ToolController` argument `satisfies HostToolContext`, so a
+ * `ToolContext` member that also exists on `AppContext` cannot be left unwired without a type
+ * error — an omitted optional member otherwise compiles and degrades silently (a route commit
+ * that never reaches `moveRequest`, a label that never reaches `t`). A member only a test
+ * injects (`now`, the timer seams) is not on `AppContext` and stays optional. */
+export type HostToolContext = { [K in keyof ToolContext & keyof AppContext]-?: ToolContext[K] };
 
 /** The active (viewed) scene + its grid cell size (default 100 when
  * `grid.size` is absent) and distance scale (default `{ perCell: 5, unit: "ft" }` when
@@ -200,24 +208,6 @@ const ROUTE_COLOR = 0x3399ff;
  * to the Warn overage case only. */
 const ROUTE_WARN_COLOR = 0xffa500;
 
-/** Fallback translator `requestRoute` uses when `ctx.t` is absent (e.g. a `ToolContext` built
- * directly, without a host `AppContext`) — mirrors `en.ts`'s own `tools.overBudget`/
- * `tools.budgetStop` catalog strings exactly, so the plain-English default a caller sees
- * without a translator matches the localized string it stands in for.
- * @param key The message key.
- * @param params Interpolation values (`over` for `tools.overBudget`).
- * @returns The resolved string, or `key` verbatim for an unrecognized key.
- * @example
- * ```
- * // internal helper; not part of the public API
- * fallbackT("tools.budgetStop"); // "stops at budget"
- * ```
- */
-function fallbackT(key: string, params?: Record<string, string | number>): string {
-  if (key === "tools.overBudget") return `${params?.over} over budget`;
-  if (key === "tools.budgetStop") return "stops at budget";
-  return key;
-}
 /** Maximum milliseconds between two pointer-downs to count as a double-click. */
 const DOUBLE_CLICK_MS = 350;
 /** Maximum scene-coord distance between two pointer-downs to count as a double-click
@@ -770,7 +760,7 @@ export function makeMeasureTool(ctx: ToolContext): SceneTool {
         // fractional cells).
         const budgetLabel = formatCellDistance(result.cost, scene);
         const startPt: Point = { x: start[0], y: start[1] };
-        const t = ctx.t ?? fallbackT;
+        const t = ctx.t;
         // Overage/stop suffix: only meaningful under an active combat's Warn/Hard movement
         // enforcement, and only when the reply carried a budget to compare the cost against
         // (no active combat, no combat.movement.enforcement === "none", or a budget-less reply

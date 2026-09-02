@@ -26,7 +26,7 @@ function setup() {
   let t = 0;
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, now: () => t,
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, now: () => t,
     tokenSelection: new TokenSelection(),
   };
   const tool = makeSelectMoveTool(ctx);
@@ -48,7 +48,7 @@ function setupTwo() {
   const sent: WireOperation[][] = [];
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, now: () => 0,
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, now: () => 0,
     tokenSelection: new TokenSelection(),
   };
   return { ctx, sent };
@@ -145,7 +145,7 @@ test("circle-shaped token gets an ellipse selection ring (> 8 points), not a rec
   bridge.attach(fakeSceneHost({ previewOverlay: (s) => overlays.push(s as Array<{ points: number[] }>) }));
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: () => {}, documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, now: () => 0,
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, now: () => 0,
     tokenSelection: new TokenSelection(),
   };
   const tool = makeSelectMoveTool(ctx);
@@ -210,7 +210,7 @@ function harness(opts: {
     assets: new AssetResolver(),
     world: "w1",
     role: opts.role,
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
     now: () => t,
     tokenSelection: sel,
     pathfind,
