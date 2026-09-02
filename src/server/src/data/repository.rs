@@ -290,4 +290,11 @@ pub trait Repository: Send + Sync {
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError>;
+
+    /// Fetch one asset row by id, or `None` if it does not exist. Unredacted
+    /// (assets have no per-recipient redaction of their own — see
+    /// `shadowcat-codebase-assets`'s GM-only mutation invariant); a caller
+    /// resolving a chat `[[asset:...]]` span must independently check
+    /// `Asset.world_id` against the sending room's world.
+    async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError>;
 }

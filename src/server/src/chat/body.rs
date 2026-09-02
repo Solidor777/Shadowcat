@@ -129,6 +129,28 @@ pub(crate) async fn compose_message(
                     label: label.to_string(),
                 });
             }
+            rolls::BodyChunk::Image { asset_id, alt } => {
+                if !deps.policy.images() {
+                    return Err(ComposeError::Roll(rolls::RollError::ImagesDisabled));
+                }
+                let alt = alt.unwrap_or("");
+                if alt.chars().count() > super::MAX_IMAGE_ALT_CHARS {
+                    return Err(ComposeError::Roll(rolls::RollError::AltTooLong));
+                }
+                let asset = deps
+                    .repo
+                    .get_asset(asset_id)
+                    .await
+                    .map_err(ComposeError::Data)?;
+                let in_world = matches!(&asset, Some(a) if a.world_id == deps.world_id);
+                if !in_world {
+                    return Err(ComposeError::Roll(rolls::RollError::UnknownAsset));
+                }
+                segments.push(Segment::Image {
+                    asset_id,
+                    alt: alt.to_string(),
+                });
+            }
         }
     }
     Ok(segments)

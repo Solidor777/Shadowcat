@@ -87,6 +87,16 @@ pub(crate) enum BodyChunk<'a> {
         /// empty (an empty/absent label is a `RollError::MalformedDocLink`).
         label: &'a str,
     },
+    /// A `[[asset:<uuid>[|<alt>]]]` span: an author-inserted image reference.
+    /// `alt` is `None` when the span carries no `|<alt>` suffix, or when the
+    /// suffix is empty/all-whitespace after trimming.
+    Image {
+        /// The referenced asset's id (world/policy checks happen in
+        /// `chat::body::compose_message`, not here).
+        asset_id: Uuid,
+        /// Trimmed alt text, or `None`.
+        alt: Option<&'a str>,
+    },
 }
 
 /// Balanced span scanner. A span opens at `[[` and closes at the first `]]`
@@ -164,9 +174,9 @@ pub(crate) fn scan_body_capped(
         if non_text > max_spans {
             return Err(RollError::TooManyInline(non_text));
         }
-        match parse_doc_link(content) {
+        match parse_ref_span(content) {
             Ok(Some(chunk)) => chunks.push(chunk),
-            Err(()) => return Err(RollError::MalformedDocLink),
+            Err(e) => return Err(e),
             Ok(None) => {
                 if let Some(rest) = content.strip_prefix("roll:") {
                     let (formula, label) = match rest.split_once('|') {
@@ -190,27 +200,30 @@ pub(crate) fn scan_body_capped(
     Ok(chunks)
 }
 
-/// Parses `content` as a `doc:`/`token:`-prefixed span. `Ok(None)` when `content` carries
-/// neither prefix (the caller falls through to `roll:`/`Inline` handling); `Err(())` when the
-/// prefix is recognized but the id/label grammar is malformed (the caller returns
-/// `RollError::MalformedDocLink`); `Ok(Some(chunk))` on success. Grammar:
-/// `doc:<uuid>[/<embedded_path>]|<label>` or `token:<uuid>|<label>` — the id/path is
-/// everything before the FIRST `|`, split from an optional `/<embedded_path>` at the first `/`
-/// after the `doc:`/`token:` prefix; the label is everything after that `|`, trimmed, and must
-/// be non-empty (`Segment::DocLink.label` is a required field, unlike `Button`'s optional
-/// label).
-fn parse_doc_link(content: &str) -> Result<Option<BodyChunk<'_>>, ()> {
+/// Parses `content` as a `doc:`/`token:`/`asset:`-prefixed span. `Ok(None)` when `content`
+/// carries none of the three prefixes (the caller falls through to `roll:`/`Inline` handling);
+/// `Err(RollError::MalformedDocLink)`/`Err(RollError::MalformedAssetSpan)` when a recognized
+/// prefix's id/label grammar is malformed; `Ok(Some(chunk))` on success. Grammar:
+/// `doc:<uuid>[/<embedded_path>]|<label>`, `token:<uuid>|<label>`, or
+/// `asset:<uuid>[|<alt>]` — for `doc:`/`token:`, the id/path is everything before the FIRST
+/// `|`, split from an optional `/<embedded_path>` at the first `/` after the `doc:`/`token:`
+/// prefix, and the label is everything after that `|`, trimmed, required non-empty
+/// (`Segment::DocLink.label` is a required field, unlike `Button`'s optional label); for
+/// `asset:`, the `|<alt>` suffix is OPTIONAL and, when present, trimmed to `None` if empty
+/// (`Segment::Image.alt` renders as an empty string either way — see
+/// `chat::body::compose_message`'s `Image` arm).
+fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
     if let Some(rest) = content.strip_prefix("doc:") {
-        let (id_and_path, label) = rest.split_once('|').ok_or(())?;
+        let (id_and_path, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
         let label = label.trim();
         if label.is_empty() {
-            return Err(());
+            return Err(RollError::MalformedDocLink);
         }
         let (id_part, embedded_path) = match id_and_path.split_once('/') {
             Some((id, p)) => (id, Some(format!("/{p}"))),
             None => (id_and_path, None),
         };
-        let doc_id = Uuid::parse_str(id_part).map_err(|_| ())?;
+        let doc_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedDocLink)?;
         return Ok(Some(BodyChunk::DocLink {
             target: DocLinkTarget::Doc {
                 doc_id,
@@ -220,16 +233,27 @@ fn parse_doc_link(content: &str) -> Result<Option<BodyChunk<'_>>, ()> {
         }));
     }
     if let Some(rest) = content.strip_prefix("token:") {
-        let (id_part, label) = rest.split_once('|').ok_or(())?;
+        let (id_part, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
         let label = label.trim();
         if label.is_empty() {
-            return Err(());
+            return Err(RollError::MalformedDocLink);
         }
-        let token_id = Uuid::parse_str(id_part).map_err(|_| ())?;
+        let token_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedDocLink)?;
         return Ok(Some(BodyChunk::DocLink {
             target: DocLinkTarget::Token { token_id },
             label,
         }));
+    }
+    if let Some(rest) = content.strip_prefix("asset:") {
+        let (id_part, alt) = match rest.split_once('|') {
+            Some((id, a)) => {
+                let a = a.trim();
+                (id, if a.is_empty() { None } else { Some(a) })
+            }
+            None => (rest, None),
+        };
+        let asset_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedAssetSpan)?;
+        return Ok(Some(BodyChunk::Image { asset_id, alt }));
     }
     Ok(None)
 }
@@ -278,6 +302,21 @@ pub enum RollError {
     /// non-integer value, or a scan error from the template grammar itself.
     /// Carries the formula engine's error; its `detail` is player-presentable.
     Reference(crate::formula::FormulaError),
+    /// A `[[asset:...]]` span recognized by its prefix but carrying an
+    /// unparseable id.
+    MalformedAssetSpan,
+    /// A `[[asset:<uuid>...]]` span's id does not resolve to an asset in the
+    /// sending room's world — either the asset does not exist at all, or it
+    /// belongs to a different world (world-pinned, same policy as
+    /// `Segment::DocLink`'s attribution checks).
+    UnknownAsset,
+    /// A `[[asset:...]]` span was posted while the world's `chat-settings`
+    /// `images` toggle is off.
+    ImagesDisabled,
+    /// A `[[asset:<uuid>|alt]]` span's `alt` text exceeds
+    /// `super::MAX_IMAGE_ALT_CHARS` -- refused rather than silently
+    /// truncated.
+    AltTooLong,
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -322,6 +361,18 @@ impl std::fmt::Display for RollError {
                 write!(f, "that document/token link is malformed")
             }
             RollError::Reference(e) => write!(f, "{}", e.detail),
+            RollError::MalformedAssetSpan => {
+                write!(f, "that image link is malformed")
+            }
+            RollError::UnknownAsset => {
+                write!(f, "that image could not be found")
+            }
+            RollError::ImagesDisabled => {
+                write!(f, "images are disabled in this world")
+            }
+            RollError::AltTooLong => {
+                write!(f, "that image's alt text is too long")
+            }
         }
     }
 }

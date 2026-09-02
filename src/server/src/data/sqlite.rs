@@ -4496,6 +4496,10 @@ impl Repository for SqliteRepository {
     ) -> Result<(), DataError> {
         SqliteRepository::set_link_preview_cache_image(self, url, image_asset_id).await
     }
+
+    async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
+        SqliteRepository::get_asset(self, id).await
+    }
 }
 
 /// Settings key holding a world's default capability grants (JSON).

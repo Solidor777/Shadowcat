@@ -330,7 +330,30 @@ pub enum Segment {
         /// Rendering never re-resolves a live name lookup for this field.
         label: String,
     },
+    /// An image served exclusively through THIS server's own asset endpoint —
+    /// the sanitizer never emits an `<img>` carrying a raw `src` (see
+    /// `chat::sanitize`'s module doc), so this is the only way an image ever
+    /// reaches chat: authored via a `[[asset:<uuid>|alt]]` span (this
+    /// variant, `chat::rolls::parse_ref_span`'s `asset:` arm), or fetched
+    /// server-side from an external URL and asset-ified post-publish
+    /// (`chat::post_publish::resolve_inline_image`, which appends a fresh
+    /// one of these). Produced ONLY by `chat::body::compose_message`'s
+    /// `Image` arm and `resolve_inline_image` — never by the sanitizer.
+    Image {
+        /// The asset this segment renders, world-pinned at authoring time
+        /// (`asset_id`'s `Asset.world_id` must equal the sending room's
+        /// world -- `RollError::UnknownAsset` otherwise).
+        asset_id: Uuid,
+        /// Alt text captured at authoring time (plain data, never markup).
+        /// Empty when the span carried no `|alt` suffix.
+        alt: String,
+    },
 }
+
+/// Max characters accepted for a `Segment::Image.alt` string -- an
+/// over-length span is REFUSED (`RollError::AltTooLong`), never silently
+/// truncated (a truncated alt would misrepresent what the author wrote).
+pub const MAX_IMAGE_ALT_CHARS: usize = 200;
 
 /// What a `Segment::DocLink` points at — mirrors the client's `SheetRef` shape (the
 /// established "one anonymous cross-file-shared shape gets one name" precedent), given a

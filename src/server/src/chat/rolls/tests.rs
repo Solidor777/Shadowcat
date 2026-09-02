@@ -468,10 +468,14 @@ fn roll_error_display_has_no_debug_artifacts() {
             crate::formula::FormulaErrorKind::UnknownRef,
             "unknown reference 'stats.str'",
         )),
+        RollError::MalformedAssetSpan,
+        RollError::UnknownAsset,
+        RollError::ImagesDisabled,
+        RollError::AltTooLong,
     ];
     assert_eq!(
         variants.len(),
-        10,
+        14,
         "update this test if a RollError variant is added or removed"
     );
     for v in variants {

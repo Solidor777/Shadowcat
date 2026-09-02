@@ -50,9 +50,10 @@ fn render(segs: &[Segment]) -> String {
             | Segment::RollButton { .. }
             | Segment::LinkPreview { .. }
             | Segment::OEmbed(_)
-            | Segment::DocLink { .. } => {
+            | Segment::DocLink { .. }
+            | Segment::Image { .. } => {
                 unreachable!(
-                    "sanitize() never produces roll, preview, oembed, or doc-link segments"
+                    "sanitize() never produces roll, preview, oembed, doc-link, or image segments"
                 )
             }
         })
