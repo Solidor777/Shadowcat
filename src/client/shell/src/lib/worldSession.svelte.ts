@@ -865,6 +865,7 @@ export class WorldSession {
         stream.startServerMs,
         () => ws.serverNow(),
         stream.moverVision,
+        stream.moverLight,
       );
     });
     // Session-owned, not engine-owned: the resolved footprints feed the canvas, the hit-test, the

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { computeFogBlendFactor, fogBlendRtStale, chooseVisionSample } from "./fog-blend";
-import type { MoveVisionSample } from "./types";
+import type { MoveLightSample, MoveVisionSample } from "./types";
 
 describe("computeFogBlendFactor", () => {
   test("is 0 at tCur and 1 at tNext", () => {
@@ -61,5 +61,22 @@ test("chooseVisionSample matches the server's chosen_vision_sample on the shared
   }));
   for (const { elapsed, expectIndex } of raw.probes) {
     expect(chooseVisionSample(samples, elapsed).polygons[0][0][0]).toBe(expectIndex);
+  }
+});
+
+test("chooseVisionSample selects a light timeline by the same shared-fixture rule (one rule, two sample kinds)", () => {
+  const raw = JSON.parse(
+    readFileSync(new URL("./__fixtures__/chosen-vision-sample.json", import.meta.url), "utf8"),
+  ) as { samples: number[]; probes: { elapsed: number; expectIndex: number }[] };
+  const samples: MoveLightSample[] = raw.samples.map((tMs, i) => ({
+    tMs,
+    pos: [i, 0],
+    bright: 1,
+    dim: 2,
+    color: 0xffcc66,
+    polygons: [[[i, 0], [i, 1], [i + 1, 1]]],
+  }));
+  for (const { elapsed, expectIndex } of raw.probes) {
+    expect(chooseVisionSample(samples, elapsed).pos[0]).toBe(expectIndex);
   }
 });

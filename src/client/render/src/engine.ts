@@ -1,14 +1,15 @@
 import { EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
+import { blendLightCells, lightSampleCells } from "./light-sweep";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
-import { Lighting } from "./lighting";
+import { Lighting, type LightingFrame, type LitDrawCell } from "./lighting";
 import { SceneReconciler } from "./reconciler";
 import { TokenView } from "./token-view";
 import { DrawingView } from "./drawing-view";
@@ -87,6 +88,10 @@ export interface RenderEngineOpts {
   /** Called when a derived frame is applied (host observability hook); carries the applied
    * visibility so the host can surface the fog mode. */
   onDerivedApplied?: (input: VisibilityInput) => void;
+  /** Called on every painted lighting frame (host observability hook) with the frame the
+   * backend was handed and whether a carried-light sweep is in flight — so a host can surface
+   * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
+  onLightingApplied?: (frame: LightingFrame, sweeping: boolean) => void;
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
@@ -207,6 +212,30 @@ export class RenderEngine implements SceneToolHost {
       durationMs: number;
     }
   >();
+  /** Active carried-light sweeps, keyed by token id — the lighting twin of `visionSweeps`.
+   * While non-empty, `Lighting` paints the held committed frame unioned with every sweep's
+   * chosen sample (`applyLightSweep`), and a committed lighting frame arriving meanwhile is
+   * parked in `lastLightingInput` rather than applied: the post-commit rebroadcast already
+   * carries the light at its FINAL position, and applying it mid-walk would show the corridor's
+   * far end lit before the torch gets there. Any recipient may populate this — the mover, a
+   * GM, or an observer whose vision the glow reached (`MoveStream.mover_light`). */
+  private readonly lightSweeps = new Map<
+    string,
+    {
+      /** The sweep's ordered light samples. */
+      samples: MoveLightSample[];
+      /** Milliseconds elapsed since the sweep started. */
+      elapsed: number;
+      /** The sweep's total duration, in ms: the MoveStream's `durationMs`, extended to the last
+       * admitted light sample's `tMs` — an observer's clipped duration can end before a still-
+       * admitted glow does. */
+      durationMs: number;
+    }
+  >();
+  /** The last parsed lighting input for the viewed scene (`toLighting`), applied or parked —
+   * see `lightSweeps`. `null` = no overlay (GM `mode:"all"`, or no frame yet); a light sweep
+   * has no darkness model to lift then and paints nothing. */
+  private lastLightingInput: LightingInput | null = null;
   /** Resolved viewed scene, falling back to the first scene so single-scene tests/hosts are
    * unaffected. The single definition every view + reconciler + fog filter reads.
    * @returns The viewed scene's document id, or `null` when no scene document exists yet.
@@ -250,7 +279,7 @@ export class RenderEngine implements SceneToolHost {
     this.regions = new RegionView(opts.store, opts.backend, this.viewedScene);
     this.lights = new LightView(opts.store, opts.backend, this.viewedScene);
     this.compositor = new Compositor(opts.backend);
-    this.lighting = new Lighting(opts.backend);
+    this.lighting = new Lighting(opts.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
   }
 
   /** Wires the engine to its backend and store. In order: creates the backend's layer
@@ -299,6 +328,7 @@ export class RenderEngine implements SceneToolHost {
       this.tokens.tick(dt);
       this.lighting.tick(dt);
       this.tickVisionSweep(dt);
+      this.tickLightSweep(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
@@ -379,8 +409,9 @@ export class RenderEngine implements SceneToolHost {
     this.lastRawPayload = frame.payload;
     // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
     // guards above), NOT held behind the appliedSeq watermark that fog uses for document
-    // consistency. Exactly one setTarget call per non-dropped frame.
-    this.lighting.setTarget(this.toLighting(frame.payload));
+    // consistency. Exactly one retarget per non-dropped frame (parked while a light sweep
+    // plays — see `lightSweeps`).
+    this.retargetLighting(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       // Immediate: filter against the CURRENT viewed scene now (toVisibility reads viewedScene()).
       this.applyDerived(this.toVisibility(frame.payload), frame.computedAtSeq);
@@ -513,8 +544,14 @@ export class RenderEngine implements SceneToolHost {
     // Re-filter the cached raw payload FIRST: `TokenView.toSpec` reads the `perceived` set
     // through the injected lookup, so it must reflect the newly-viewed scene before the token
     // reconcile below runs.
+    // A light sweep belongs to a token of the scene being left; it ends here so the newly
+    // viewed scene's committed lighting applies at once rather than after the walk.
+    if (this.lightSweeps.size > 0) {
+      this.lightSweeps.clear();
+      this.lighting.setSweep(null);
+    }
     if (this.lastRawPayload !== undefined) {
-      this.lighting.setTarget(this.toLighting(this.lastRawPayload));
+      this.retargetLighting(this.toLighting(this.lastRawPayload));
       this.lastInput = this.toVisibility(this.lastRawPayload);
       this.perceived = new Set(this.lastInput.perceived);
     }
@@ -730,6 +767,21 @@ export class RenderEngine implements SceneToolHost {
       : [];
     const hints = Array.isArray(p.renderHints) ? p.renderHints.map(String) : [];
     return { cell: group.cell, bands, hints, cells };
+  }
+
+  /** Records the viewed scene's parsed lighting and applies it unless a carried-light sweep is
+   * in flight, in which case it is parked and applied when the last sweep ends
+   * (`tickLightSweep`) — see `lightSweeps` for why a mid-walk frame must not paint.
+   * @param input The parsed lighting for the viewed scene, or `null` to clear the overlay.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.retargetLighting(null);
+   * ```
+   */
+  private retargetLighting(input: LightingInput | null): void {
+    this.lastLightingInput = input;
+    if (this.lightSweeps.size === 0) this.lighting.setTarget(input);
   }
 
   /** Test seam: exposes toLighting for unit tests (cosmetic parse has no secrecy implication).
@@ -1045,6 +1097,9 @@ export class RenderEngine implements SceneToolHost {
    * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers, because
    * the server's per-recipient egress clip omits it for them); presence starts a fog vision-sweep
    * alongside the position tween.
+   * @param moverLight Per-sample carried-light polygons — present for any recipient the server
+   * admitted at least one sample to; presence starts a lighting sweep (`lightSweeps`) whose
+   * duration extends to the last admitted sample's `tMs`.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -1070,13 +1125,100 @@ export class RenderEngine implements SceneToolHost {
     startServerMs: number,
     serverNow?: () => number,
     moverVision?: MoveVisionSample[] | null,
+    moverLight?: MoveLightSample[] | null,
   ): void {
     this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
     if (moverVision && moverVision.length > 0) {
-      const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
       this.visionSweeps.set(id, { samples: moverVision, elapsed: initialElapsed, durationMs });
       this.applyVisionSweep();
     }
+    if (moverLight && moverLight.length > 0) {
+      const lastTMs = moverLight[moverLight.length - 1].tMs;
+      this.lightSweeps.set(id, { samples: moverLight, elapsed: initialElapsed, durationMs: Math.max(durationMs, lastTMs) });
+      this.applyLightSweep();
+    }
+  }
+
+  /** Advance every in-flight carried-light sweep by `dtMs` (backend ticker, beside
+   * `tickVisionSweep`). Each sweep completes on its own `durationMs`; once ALL have completed
+   * the overlay clears and the parked committed lighting (`lastLightingInput`, which by then
+   * carries the light at its final position) applies through the normal fade.
+   * @param dtMs Milliseconds elapsed since the previous tick.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked from the startTicker callback
+   * this.tickLightSweep(16);
+   * ```
+   */
+  private tickLightSweep(dtMs: number): void {
+    if (this.lightSweeps.size === 0) return;
+    for (const [id, sweep] of this.lightSweeps) {
+      sweep.elapsed += dtMs;
+      if (sweep.elapsed >= sweep.durationMs) this.lightSweeps.delete(id);
+    }
+    if (this.lightSweeps.size === 0) {
+      this.lighting.setSweep(null);
+      this.lighting.setTarget(this.lastLightingInput);
+      return;
+    }
+    this.applyLightSweep();
+  }
+
+  /** The viewer's current line-of-sight polygons the light sweep intersects with: the union of
+   * every in-flight vision sweep's chosen sample while one plays (the fog being shown), else the
+   * last derived frame's `visible` set.
+   * @returns The polygons currently clear of fog.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.currentLosPolygons();
+   * ```
+   */
+  private currentLosPolygons(): Polygon[] {
+    if (this.visionSweeps.size === 0) return this.lastInput.visible;
+    const out: Polygon[] = [];
+    for (const sweep of this.visionSweeps.values()) out.push(...this.samplePolygons(this.chosenSample(sweep)));
+    return out;
+  }
+
+  /** Drive the lighting overlay from the active light sweep(s): with exactly one sweep and a
+   * next sample to fade toward, cross-fades the two samples' cell sets (`blendLightCells` at the
+   * `computeFogBlendFactor` factor — the same blend clock the fog sweep uses); otherwise unions
+   * every sweep's chosen sample (a hard snap). Cells come from `lightSampleCells` against the
+   * viewer's current line of sight and the active grid; with no darkness model
+   * (`lastLightingInput === null`) the sweep paints nothing.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.applyLightSweep();
+   * ```
+   */
+  private applyLightSweep(): void {
+    if (this.lightSweeps.size === 0) return;
+    const li = this.lastLightingInput;
+    if (!li) {
+      this.lighting.setSweep(null);
+      return;
+    }
+    const los = this.currentLosPolygons();
+    const bandCount = li.bands.length;
+    const cellsOf = (s: MoveLightSample): LitDrawCell[] => lightSampleCells(s, this.grid, los, bandCount);
+    if (this.lightSweeps.size === 1) {
+      const [sweep] = this.lightSweeps.values();
+      const cur = chooseVisionSample(sweep.samples, sweep.elapsed);
+      let next: MoveLightSample | null = null;
+      for (const s of sweep.samples) {
+        if (s.tMs > cur.tMs && (next === null || s.tMs < next.tMs)) next = s;
+      }
+      if (next) {
+        this.lighting.setSweep(blendLightCells(cellsOf(cur), cellsOf(next), computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs)));
+        return;
+      }
+    }
+    const cells: LitDrawCell[] = [];
+    for (const sweep of this.lightSweeps.values()) cells.push(...cellsOf(chooseVisionSample(sweep.samples, sweep.elapsed)));
+    this.lighting.setSweep(cells);
   }
 
   /** Advance every in-flight vision-sweep by `dtMs` (called from the backend ticker alongside

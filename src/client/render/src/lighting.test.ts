@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { Lighting, MockBackend } from "./index";
+import { Lighting, MockBackend, mergeSweepCells, bandAlpha } from "./index";
 
 const bands = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }];
 
@@ -114,4 +114,41 @@ test("corners carry through unchanged across a fade — cell geometry is not som
   l.setTarget({ cell: 100, bands, hints: [], cells: [{ i: 0, j: 0, band: 2, tint: 0, hint: -1, corners: hexCorners }] });
   l.tick(125); // mid-fade
   expect(backend.lighting!.cells[0].corners).toEqual(hexCorners);
+});
+
+test("bandAlpha maps band 0 to no darkening and the last band to the maximum", () => {
+  expect(bandAlpha(0, 3)).toBe(0);
+  expect(bandAlpha(2, 3)).toBeCloseTo(0.6);
+  expect(bandAlpha(1, 3)).toBeCloseTo(0.3);
+  expect(bandAlpha(0, 1)).toBe(0);
+});
+
+test("mergeSweepCells replaces a same-key base cell and appends new ones; null/empty is identity", () => {
+  const base = { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: false, corners: [] }] };
+  expect(mergeSweepCells(base, null)).toBe(base);
+  expect(mergeSweepCells(base, [])).toBe(base);
+  const lit = { i: 0, j: 0, alpha: 0, tint: 0xffcc66, tintAlpha: 0.25, desaturate: false, corners: [] };
+  const fresh = { i: 1, j: 0, alpha: 0.3, tint: 0xffcc66, tintAlpha: 0.25, desaturate: false, corners: [] };
+  const out = mergeSweepCells(base, [lit, fresh]);
+  expect(out.cells).toEqual([lit, fresh]);
+  expect(base.cells[0].alpha).toBe(0.6); // base untouched
+});
+
+test("setSweep paints the committed frame unioned with the sweep at once, and clearing it restores the frame", () => {
+  const backend = new MockBackend();
+  const painted: number[] = [];
+  const l = new Lighting(backend, (f) => painted.push(f.cells.length));
+  l.setTarget({ cell: 100, bands, hints: [], cells: [{ i: 0, j: 0, band: 2, tint: 0, hint: -1, corners: [] }] });
+  l.tick(1000);
+  expect(backend.lighting!.cells[0].alpha).toBeCloseTo(0.6);
+  // The sweep lifts the dark cell and adds a neighbour — no fade, immediate.
+  l.setSweep([
+    { i: 0, j: 0, alpha: 0, tint: 0xffcc66, tintAlpha: 0.25, desaturate: false, corners: [] },
+    { i: 1, j: 0, alpha: 0.3, tint: 0xffcc66, tintAlpha: 0.25, desaturate: false, corners: [] },
+  ]);
+  expect(backend.lighting!.cells.map((c) => [c.i, c.alpha])).toEqual([[0, 0], [1, 0.3]]);
+  expect(l.current()).toBe(backend.lighting);
+  l.setSweep(null);
+  expect(backend.lighting!.cells.map((c) => [c.i, c.alpha])).toEqual([[0, 0.6]]);
+  expect(painted).toEqual([1, 1, 2, 1]); // setTarget, settle tick, sweep on, sweep off
 });

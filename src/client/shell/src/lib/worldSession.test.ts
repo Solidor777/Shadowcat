@@ -661,9 +661,9 @@ test("the session subscribes to footprints itself and publishes each frame's res
 // Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not
 // exported from the ui-kit barrel — this package only needs the one method under test here).
 function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
-  calls: Array<{ id: string; moverVision: unknown }>;
+  calls: Array<{ id: string; moverVision: unknown; moverLight: unknown }>;
 } {
-  const calls: Array<{ id: string; moverVision: unknown }> = [];
+  const calls: Array<{ id: string; moverVision: unknown; moverLight: unknown }> = [];
   return {
     setActiveTool: () => {},
     snap: (p) => p,
@@ -676,7 +676,7 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
     clearMeasure: () => {},
     addPing: () => {},
     animateAlongPath: () => {},
-    animateSamples: (id, _s, _d, _st, _sn, moverVision) => { calls.push({ id, moverVision }); },
+    animateSamples: (id, _s, _d, _st, _sn, moverVision, moverLight) => { calls.push({ id, moverVision, moverLight }); },
     calls,
   };
 }
@@ -685,6 +685,7 @@ function moveStreamFrame(
   scene: string,
   moverVision: unknown = null,
   truncated: boolean | null = false,
+  moverLight: unknown = null,
 ): Record<string, unknown> {
   return {
     type: "move_stream",
@@ -697,6 +698,7 @@ function moveStreamFrame(
     stop: [100, 0],
     samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
     mover_vision: moverVision,
+    mover_light: moverLight,
     cost: 2,
     truncated,
   };
@@ -717,11 +719,13 @@ test("onMoveStream forwards to sceneInteraction (incl. moverVision) for the acti
   const host = fakeMoveHost();
   session.sceneInteraction.attach(host);
   const moverVision = [{ t_ms: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
-  push(moveStreamFrame(sceneId, moverVision));
+  const moverLight = [{ t_ms: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
+  push(moveStreamFrame(sceneId, moverVision, false, moverLight));
   await vi.waitFor(() => expect(host.calls).toHaveLength(1));
   expect(host.calls[0]).toEqual({
     id: "tok1",
     moverVision: [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+    moverLight: [{ tMs: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
   });
 });
 

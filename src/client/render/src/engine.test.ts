@@ -1282,3 +1282,133 @@ describe("perceived (creature-sense) channel", () => {
     expect(backend.tokens.get("t1")!.perceived).toBe(false);
   });
 });
+
+describe("carried-light sweep (moverLight)", () => {
+  const BANDS = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }];
+  const OPEN = [[[-1000, -1000], [1000, -1000], [1000, 1000], [-1000, 1000]]] as [number, number][][];
+  /** A masked frame whose LOS covers everything and whose lit set is `cells` (5-int tuples). */
+  const frame = (cells: number[]) => ({
+    mode: "masked",
+    polygons: [{ scene: "s1", points: [-1000, -1000, 1000, -1000, 1000, 1000, -1000, 1000] }],
+    bands: BANDS,
+    renderHints: [],
+    lit: [{ scene: "s1", cell: 100, cells }],
+  });
+  const torch = (tMs: number, x: number) => ({ tMs, pos: [x, 50] as [number, number], bright: 100, dim: 150, color: 0xffcc66, polygons: OPEN });
+
+  function setup() {
+    const store = new DocumentStore();
+    store.applyCommand(sceneCmd(1, "s1"));
+    const backend = new MockBackend();
+    let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+    const applied: { cells: number; sweeping: boolean }[] = [];
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+      onLightingApplied: (f, sweeping) => applied.push({ cells: f.cells.length, sweeping }),
+    });
+    engine.start();
+    // Pitch dark committed frame: LOS everywhere, nothing lit.
+    onUpdate({ payload: frame([]), computedAtSeq: 1 });
+    backend.runTicker(300); // settle the day/night fade
+    const lit = () => backend.lighting!.cells;
+    const has = (i: number, j: number) => lit().some((c) => c.i === i && c.j === j);
+    return { engine, store, backend, onUpdate, applied, lit, has };
+  }
+
+  test("an admitted timeline lights the cells around each sample as it plays, holding a mid-walk committed frame until the sweep ends", () => {
+    const { engine, backend, onUpdate, applied, lit, has } = setup();
+    expect(lit()).toEqual([]);
+    engine.animateSamples(
+      "tok1",
+      [{ tMs: 0, pos: [50, 50] }, { tMs: 500, pos: [350, 50] }],
+      1000,
+      0,
+      () => 0,
+      null,
+      [torch(0, 50), torch(500, 350)],
+    );
+    // Clock 0: the torch at (50,50) lights its own cell (tinted), not the far end of the corridor.
+    expect(has(0, 0)).toBe(true);
+    expect(lit().find((c) => c.i === 0 && c.j === 0)).toMatchObject({ tint: 0xffcc66, alpha: 0 });
+    expect(has(3, 0)).toBe(false);
+    expect(applied.at(-1)).toEqual({ cells: lit().length, sweeping: true });
+
+    // The post-commit rebroadcast arrives mid-walk with the light already at its final cell:
+    // parked, not painted — the far end must not light before the torch gets there.
+    onUpdate({ payload: frame([3, 0, 0, 0xffcc66, -1]), computedAtSeq: 2 });
+    expect(has(3, 0)).toBe(false);
+
+    // Clock 250: cross-fade between the two samples — both cells present, fading.
+    backend.runTicker(250);
+    const near = lit().find((c) => c.i === 0 && c.j === 0)!;
+    const far = lit().find((c) => c.i === 3 && c.j === 0)!;
+    expect(near.tintAlpha).toBeCloseTo(0.125);
+    expect(far.tintAlpha).toBeCloseTo(0.125);
+
+    // Clock 500: the second sample owns the overlay outright.
+    backend.runTicker(250);
+    expect(has(3, 0)).toBe(true);
+    expect(has(0, 0)).toBe(false);
+
+    // Sweep end (clock 1000): the parked committed frame applies through the normal fade.
+    backend.runTicker(500);
+    backend.runTicker(300);
+    expect(applied.at(-1)?.sweeping).toBe(false);
+    expect(lit().map((c) => [c.i, c.j, c.tint])).toEqual([[3, 0, 0xffcc66]]);
+  });
+
+  test("a null moverLight (nothing reached this viewer) leaves the lighting overlay untouched", () => {
+    const { engine, backend, lit, applied } = setup();
+    const before = backend.lighting;
+    const paints = applied.length;
+    engine.animateSamples("tok1", [{ tMs: 0, pos: [50, 50] }, { tMs: 500, pos: [350, 50] }], 1000, 0, () => 0, null, null);
+    backend.runTicker(1000);
+    expect(backend.lighting).toBe(before);
+    expect(lit()).toEqual([]);
+    expect(applied.length).toBe(paints);
+  });
+
+  test("concurrent light sweeps union their chosen samples", () => {
+    const { engine, has } = setup();
+    engine.animateSamples("a", [{ tMs: 0, pos: [50, 50] }], 1000, 0, () => 0, null, [torch(0, 50)]);
+    engine.animateSamples("b", [{ tMs: 0, pos: [650, 50] }], 1000, 0, () => 0, null, [torch(0, 650)]);
+    expect(has(0, 0)).toBe(true);
+    expect(has(6, 0)).toBe(true);
+    expect(has(3, 0)).toBe(false);
+  });
+
+  test("a light sweep intersects with the viewer's own line of sight", () => {
+    const { engine, store, onUpdate, backend, has } = setup();
+    // LOS narrows to x <= 100 before the walk (fog is watermarked on the store's applied seq,
+    // so the frame's seq must be reached first; lighting alone would apply eagerly).
+    store.applyCommand(tokenCmd(2, "tX", 0));
+    onUpdate({
+      payload: { ...frame([]), polygons: [{ scene: "s1", points: [-1000, -1000, 100, -1000, 100, 1000, -1000, 1000] }] },
+      computedAtSeq: 2,
+    });
+    backend.runTicker(300);
+    engine.animateSamples("tok1", [{ tMs: 0, pos: [150, 50] }], 1000, 0, () => 0, null, [torch(0, 150)]);
+    expect(has(0, 0)).toBe(true); // (50,50) is within 150 of the torch and inside LOS
+    expect(has(1, 0)).toBe(false); // the torch's own cell is outside this viewer's sight
+  });
+
+  test("the sweep outlives a clipped duration up to the last admitted light sample", () => {
+    const { engine, backend, has } = setup();
+    // An observer whose position prefix was clipped to t=0 (durationMs 0) but whose light
+    // timeline was admitted through t=500.
+    engine.animateSamples("tok1", [{ tMs: 0, pos: [50, 50] }], 0, 0, () => 0, null, [torch(0, 50), torch(500, 350)]);
+    backend.runTicker(499); // the far sample is fading in — the position tween ended at t=0
+    expect(has(3, 0)).toBe(true);
+    backend.runTicker(1); // elapsed reaches the last sample's tMs: the sweep completes
+    expect(has(3, 0)).toBe(false); // back to the (dark) committed frame
+  });
+
+  test("a client-local scene switch ends every light sweep", () => {
+    const { engine, has } = setup();
+    engine.animateSamples("tok1", [{ tMs: 0, pos: [50, 50] }], 1000, 0, () => 0, null, [torch(0, 50)]);
+    expect(has(0, 0)).toBe(true);
+    engine.reapplyViewedScene();
+    expect(has(0, 0)).toBe(false);
+  });
+});

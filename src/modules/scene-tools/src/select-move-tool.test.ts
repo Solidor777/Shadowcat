@@ -199,7 +199,7 @@ function harness(opts: {
     if (opts.moveRequestRejects) return Promise.reject(new Error("refused"));
     return Promise.resolve({
       requestId: "r1", tokenId: token, mover: "u1", scene, startServerMs: 0,
-      durationMs: 0, stop: goal, samples: [], moverVision: null, cost: 1, truncated: false,
+      durationMs: 0, stop: goal, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
     });
   };
 

@@ -36,9 +36,50 @@ export interface LightingFrame {
  * this layer is purely visual. */
 export const LIGHTING_FADE_MS = 250;
 /** Maximum darkening opacity applied at the darkest gradation band. */
-const MAX_DARK_ALPHA = 0.6;
+export const MAX_DARK_ALPHA = 0.6;
 /** Tint overlay opacity when a packed color is present (tint !== 0). */
-const TINT_ALPHA = 0.25;
+export const TINT_ALPHA = 0.25;
+
+/** The darkening alpha of gradation band `band` under a `bandCount`-band gradation:
+ * `(band / max(1, bandCount - 1)) * MAX_DARK_ALPHA`, so band 0 (brightest) darkens nothing and
+ * the last band darkens fully. THE one band→alpha rule — `resolve` and the light sweep's
+ * `lightSampleCells` both read it.
+ * @param band The gradation band index (0 = brightest).
+ * @param bandCount The gradation's band count.
+ * @returns The darkening fill opacity in `[0, MAX_DARK_ALPHA]`.
+ * @example
+ * ```ts
+ * import { bandAlpha } from "@shadowcat/render";
+ *
+ * bandAlpha(0, 3); // 0
+ * bandAlpha(2, 3); // 0.6
+ * ```
+ */
+export function bandAlpha(band: number, bandCount: number): number {
+  return (band / Math.max(1, bandCount - 1)) * MAX_DARK_ALPHA;
+}
+
+/** Union a light sweep's cells over a base frame: a sweep cell REPLACES the base cell with the
+ * same `"i,j"` key (the glow decides that cell's darkening and tint outright) and a sweep cell
+ * with no base twin is appended. Pure; `Lighting.apply` paints the result while a sweep is set.
+ * @param base The fade-interpolated committed frame.
+ * @param sweep The sweep's cells, or `null` when no light sweep is in flight.
+ * @returns The frame to paint.
+ * @example
+ * ```ts
+ * import { mergeSweepCells } from "@shadowcat/render";
+ *
+ * mergeSweepCells({ cell: 100, cells: [] }, null).cells.length; // 0
+ * ```
+ */
+export function mergeSweepCells(base: LightingFrame, sweep: LitDrawCell[] | null): LightingFrame {
+  if (!sweep || sweep.length === 0) return base;
+  const byKey = new Map(sweep.map((c) => [key(c), c]));
+  const cells: LitDrawCell[] = base.cells.map((c) => byKey.get(key(c)) ?? c);
+  const present = new Set(base.cells.map(key));
+  for (const c of sweep) if (!present.has(key(c))) cells.push(c);
+  return { cell: base.cell, cells };
+}
 
 /** Cell identity key for matching a cell across `prev`/`target` frames during a fade.
  * @param c A cell's grid coordinates.
@@ -102,10 +143,15 @@ export class Lighting {
   /** Cached result of the last apply(); avoids recomputing on every current() call and
    * eliminates the aliasing hazard of returning this.target by reference when settled. */
   private _current: LightingFrame = { cell: 0, cells: [] };
+  /** The in-flight light sweep's cells (`setSweep`), unioned over the fade-interpolated frame
+   * at every paint; `null` when no carried-light sweep is playing. */
+  private sweep: LitDrawCell[] | null = null;
 
   /**
    * Constructs the lighting layer bound to a single backend.
    * @param backend The display backend `apply()` paints resolved frames into.
+   * @param onApply Optional observer of every painted frame (the engine's host observability
+   * hook); receives exactly what `backend.setLighting` was handed.
    * @example
    * ```ts
    * import { Lighting, type DisplayBackend } from "@shadowcat/render";
@@ -114,7 +160,30 @@ export class Lighting {
    * const lighting = new Lighting(backend);
    * ```
    */
-  constructor(private readonly backend: DisplayBackend) {}
+  constructor(
+    private readonly backend: DisplayBackend,
+    private readonly onApply?: (frame: LightingFrame) => void,
+  ) {}
+
+  /**
+   * Set (or clear) the carried-light sweep overlay and repaint immediately — no fade: the
+   * sweep is already time-interpolated per tick by `RenderEngine`'s light sweep, and the
+   * committed day/night fade underneath keeps its own clock. `null` removes the overlay.
+   * @param cells The sweep's cells (`lightSampleCells`/`blendLightCells`), or `null`.
+   * @example
+   * ```ts
+   * import { Lighting, type DisplayBackend } from "@shadowcat/render";
+   *
+   * declare const backend: DisplayBackend;
+   * const lighting = new Lighting(backend);
+   * lighting.setSweep([{ i: 0, j: 0, alpha: 0, tint: 0xffcc66, tintAlpha: 0.25, desaturate: false, corners: [] }]);
+   * lighting.setSweep(null);
+   * ```
+   */
+  setSweep(cells: LitDrawCell[] | null): void {
+    this.sweep = cells;
+    this.apply();
+  }
 
   /**
    * Set (or clear) the lighting overlay's target and start a {@link LIGHTING_FADE_MS}-ms
@@ -177,18 +246,20 @@ export class Lighting {
    */
   current(): LightingFrame { return this._current; }
 
-  /** Recompute the interpolated frame and paint it via `backend.setLighting`. Called by both
-   * `setTarget` (new fade start) and `tick` (fade progress) — the sole path that reaches the
-   * backend, so `current()` and the painted frame can never disagree.
+  /** Recompute the interpolated frame, union the light sweep over it (`mergeSweepCells`) and
+   * paint it via `backend.setLighting`. Called by `setTarget` (new fade start), `tick` (fade
+   * progress) and `setSweep` — the sole path that reaches the backend, so `current()` and the
+   * painted frame can never disagree.
    * @example
    * ```
-   * // private method; not part of the public API — invoked internally by setTarget/tick
+   * // private method; not part of the public API — invoked internally by setTarget/tick/setSweep
    * this.apply();
    * ```
    */
   private apply(): void {
-    this._current = this.currentInterpolated();
+    this._current = mergeSweepCells(this.currentInterpolated(), this.sweep);
     this.backend.setLighting(this._current);
+    this.onApply?.(this._current);
   }
 
   /** Compute the frame for the fade's current `elapsed`/`prev`/`target` state. At `t>=1`
@@ -234,7 +305,7 @@ export class Lighting {
 }
 
 /** Resolve a parsed LightingInput into a LightingFrame with computed per-cell values.
- * alpha = (band / max(1, bandCount-1)) * MAX_DARK_ALPHA; band 0 (brightest) → 0 darkening.
+ * alpha = `bandAlpha(band, bandCount)`; band 0 (brightest) → 0 darkening.
  * tintAlpha = 0 when tint===0 (no color), else TINT_ALPHA.
  * desaturate = hint index is in-range and names "desaturate" — any OTHER hint string (e.g. a
  * custom vision mode's `renderHint: "outline"`) resolves `desaturate: false`, silently applying
@@ -250,10 +321,9 @@ export class Lighting {
  * ```
  */
 function resolve(input: LightingInput): LightingFrame {
-  const n = Math.max(1, input.bands.length - 1);
   const cells: LitDrawCell[] = input.cells.map((c) => ({
     i: c.i, j: c.j,
-    alpha: (c.band / n) * MAX_DARK_ALPHA,
+    alpha: bandAlpha(c.band, input.bands.length),
     tint: c.tint,
     tintAlpha: c.tint === 0 ? 0 : TINT_ALPHA,
     desaturate: c.hint >= 0 && input.hints[c.hint] === "desaturate",

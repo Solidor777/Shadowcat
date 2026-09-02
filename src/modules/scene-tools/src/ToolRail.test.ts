@@ -97,7 +97,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
         moves.push({ tokenId, path });
         return {
           requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0,
-          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false,
+          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
         };
       },
     }),
@@ -181,7 +181,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
         moves.push({ tokenId, path });
         return {
           requestId: "r1", tokenId, mover: "u1", scene: s, startServerMs: 0,
-          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false,
+          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
         };
       },
     }),

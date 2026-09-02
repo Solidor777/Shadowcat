@@ -212,6 +212,28 @@ export interface MoveVisionSample {
   polygons: [number, number][][];
 }
 
+/** A carried-light sample paired with a MoveSample by `tMs`: the mover's enabled emission
+ * raycast at that instant (`animateSamples`'s `moverLight` argument). Full for the mover and a
+ * plain GM; an observer receives only the samples whose glow reached their vision, `null` when
+ * none did. Drives the lighting sweep: the sample chosen by the same `chooseVisionSample` rule
+ * the fog sweep uses is rasterized onto the cells within `dim` of `pos` that lie inside its
+ * polygons AND the viewer's own line of sight, unioned over the held lighting frame. */
+export interface MoveLightSample {
+  /** Server-clock offset, in ms, this sample applies from. */
+  tMs: number;
+  /** The emitter's scene-coordinate `[x, y]` position at this sample. */
+  pos: [number, number];
+  /** Full-brightness reach from `pos`, scene units. */
+  bright: number;
+  /** Dim-light outer reach from `pos`, scene units. */
+  dim: number;
+  /** Packed `0xRRGGBB` light color. */
+  color: number;
+  /** The light's occluded illumination polygon(s), each a list of `[x,y]` scene-coord
+   * vertices — NOT clipped to the viewer's sight; the sweep intersects them itself. */
+  polygons: [number, number][][];
+}
+
 /** One visible cell's lighting: grid coords + gradation band index + packed tint + hint ref +
  * resolved corner geometry. `hint` is an index into `LightingInput.hints`; -1 = no hint. */
 export interface LitCell {
@@ -316,7 +338,9 @@ export interface SceneToolHost {
    * @param serverNow Optional server-clock accessor, used once at call time to compute catch-up
    * elapsed time (see above); when absent, elapsed starts at `0`.
    * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers);
-   * presence starts a fog vision-sweep alongside the position tween. */
+   * presence starts a fog vision-sweep alongside the position tween.
+   * @param moverLight Per-sample carried-light polygons (`null`/absent when the mover carries
+   * no enabled light or none of it reached this viewer); presence starts a lighting sweep. */
   animateSamples(
     id: string,
     samples: {
@@ -329,5 +353,6 @@ export interface SceneToolHost {
     startServerMs: number,
     serverNow?: () => number,
     moverVision?: MoveVisionSample[] | null,
+    moverLight?: MoveLightSample[] | null,
   ): void;
 }
