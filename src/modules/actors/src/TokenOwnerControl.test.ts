@@ -27,7 +27,7 @@ function actorOwnedBy(owner: string | null): WireDocument {
   const a = buildActorDoc(
     "w1",
     "Goblin",
-    { displayName: "Goblin", visual: { kind: "image", asset: "n1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null },
+    { displayName: "Goblin", visual: { kind: "image", asset: "n1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
     "act1",
   );
   a.owner = owner;

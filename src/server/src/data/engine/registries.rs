@@ -19,6 +19,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::MAX_CHANNEL_CHARS;
+
 /// A chat channel's display config (mirrors the client's `Channel`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -37,6 +39,52 @@ pub struct Channel {
 pub struct ChannelRegistryEngine {
     /// Channels keyed by channel id (message docs reference the key).
     pub channels: BTreeMap<String, Channel>,
+}
+
+impl ChannelRegistryEngine {
+    /// Default world seed: the single `general` channel. The engine
+    /// definition — the client renders whatever the registry holds and
+    /// declares no seed of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::ChannelRegistryEngine;
+    ///
+    /// assert_eq!(ChannelRegistryEngine::seed().channels["general"].name, "General");
+    /// ```
+    pub fn seed() -> Self {
+        let mut channels = BTreeMap::new();
+        channels.insert(
+            "general".to_string(),
+            Channel {
+                name: "General".to_string(),
+            },
+        );
+        Self { channels }
+    }
+
+    /// Ingress validation: the registry must hold at least one channel — an
+    /// empty registry wedges all chat, since message ingest validates
+    /// `MessageEngine.channel` against membership — every channel needs a
+    /// non-empty name, and a key longer than `MAX_CHANNEL_CHARS` could never
+    /// be posted to.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.channels.is_empty() {
+            return Err("channel-registry must declare at least one channel".to_string());
+        }
+        for (id, channel) in &self.channels {
+            if id.chars().count() > MAX_CHANNEL_CHARS {
+                return Err(format!(
+                    "channel id '{id}' exceeds {MAX_CHANNEL_CHARS} characters"
+                ));
+            }
+            if channel.name.trim().is_empty() {
+                return Err(format!("channel '{id}' has an empty name"));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// A faction's stance toward the party (mirrors the client's `FactionStance`).
@@ -77,6 +125,50 @@ pub struct FactionRegistryEngine {
     pub factions: BTreeMap<String, Faction>,
 }
 
+impl FactionRegistryEngine {
+    /// Default three-faction world seed (friendly / neutral / hostile). The
+    /// engine definition — the client's faction UI mirrors these ids and
+    /// colors rather than declaring its own seed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::FactionRegistryEngine;
+    ///
+    /// let s = FactionRegistryEngine::seed();
+    /// assert_eq!(s.factions.len(), 3);
+    /// assert_eq!(s.factions["friendly"].color, "#3fb950");
+    /// ```
+    pub fn seed() -> Self {
+        let mut factions = BTreeMap::new();
+        factions.insert(
+            "friendly".to_string(),
+            Faction {
+                name: "Friendly".to_string(),
+                color: "#3fb950".to_string(),
+                stance: FactionStance::Friendly,
+            },
+        );
+        factions.insert(
+            "neutral".to_string(),
+            Faction {
+                name: "Neutral".to_string(),
+                color: "#9e9e9e".to_string(),
+                stance: FactionStance::Neutral,
+            },
+        );
+        factions.insert(
+            "hostile".to_string(),
+            Faction {
+                name: "Hostile".to_string(),
+                color: "#f85149".to_string(),
+                stance: FactionStance::Hostile,
+            },
+        );
+        Self { factions }
+    }
+}
+
 /// A status condition's display (mirrors the client's `Condition`). `icon`
 /// is a short glyph (emoji) rendered as a token badge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -87,6 +179,58 @@ pub struct Condition {
     pub name: String,
     /// Short glyph (emoji) rendered as a token badge.
     pub icon: String,
+    /// Built-in token-art effects applied to tokens carrying this condition
+    /// (folded client-side into the token's render fx, in condition array
+    /// order). Presentational only — the server never reads it. Absent = no
+    /// fx.
+    #[serde(default)]
+    #[ts(optional)]
+    pub fx: Option<ConditionFx>,
+}
+
+impl Condition {
+    /// Ingress validation beyond serde shape: authored fx colors are css
+    /// `#rrggbb` strings.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(fx) = &self.fx {
+            if let Some(tint) = &fx.tint {
+                validate_fx_color(tint)?;
+            }
+            if let Some(highlight) = &fx.highlight {
+                validate_fx_color(highlight)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A condition's built-in token-art effects (css colors), folded by the
+/// client's `TokenView.toSpec` into the token's render fx.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct ConditionFx {
+    /// Channel-tint target color (css `#rrggbb`), or absent for none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tint: Option<String>,
+    /// `true` strips the token art to luminance.
+    #[serde(default)]
+    #[ts(optional)]
+    pub desaturate: Option<bool>,
+    /// Brighten-toward target color (css `#rrggbb`), or absent for none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub highlight: Option<String>,
+}
+
+/// Condition-fx color check: exactly `#` + 6 hex digits (a css `#rrggbb`
+/// string) — same shape rule as `token::validate_emission_color`.
+fn validate_fx_color(color: &str) -> Result<(), String> {
+    match color.strip_prefix('#') {
+        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(()),
+        _ => Err("fx color must be a css #rrggbb string".to_string()),
+    }
 }
 
 /// The world's condition registry: a singleton config document. Keyed by
@@ -98,6 +242,57 @@ pub struct Condition {
 pub struct ConditionRegistryEngine {
     /// Conditions keyed by condition id (`ActorEngine.conditions` holds keys).
     pub conditions: BTreeMap<String, Condition>,
+}
+
+impl ConditionRegistryEngine {
+    /// Ingress validation beyond serde shape: every entry's own `validate`
+    /// (fx css color shapes), keyed by condition id in the error message.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (id, condition) in &self.conditions {
+            condition
+                .validate()
+                .map_err(|m| format!("conditions.{id}: {m}"))?;
+        }
+        Ok(())
+    }
+
+    /// Default nine-condition emoji-glyph world seed. The engine definition —
+    /// the client's conditions UI renders whatever the registry holds.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::ConditionRegistryEngine;
+    ///
+    /// let s = ConditionRegistryEngine::seed();
+    /// assert_eq!(s.conditions.len(), 9);
+    /// assert_eq!(s.conditions["dead"].icon, "💀");
+    /// ```
+    pub fn seed() -> Self {
+        let entries: [(&str, &str, &str); 9] = [
+            ("dead", "Dead", "💀"),
+            ("unconscious", "Unconscious", "😵"),
+            ("prone", "Prone", "🛌"),
+            ("stunned", "Stunned", "💫"),
+            ("poisoned", "Poisoned", "🤢"),
+            ("blinded", "Blinded", "🙈"),
+            ("invisible", "Invisible", "👻"),
+            ("hasted", "Hasted", "⚡"),
+            ("slowed", "Slowed", "🐌"),
+        ];
+        let mut conditions = BTreeMap::new();
+        for (id, name, icon) in entries {
+            conditions.insert(
+                id.to_string(),
+                Condition {
+                    name: name.to_string(),
+                    icon: icon.to_string(),
+                    fx: None,
+                },
+            );
+        }
+        Self { conditions }
+    }
 }
 
 /// GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).

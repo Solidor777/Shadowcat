@@ -782,6 +782,34 @@ async fn seed_user(state: &AppState, username: &str) -> Uuid {
         .unwrap()
 }
 
+#[tokio::test]
+async fn create_world_seeds_every_config_singleton() {
+    use crate::data::repository::Repository;
+    let state = initialized_state().await;
+    seed_user(&state, "gm").await;
+    let gm = login_server(&state, "gm").await;
+    let world: serde_json::Value = gm
+        .post("/api/worlds")
+        .json(&serde_json::json!({ "name": "W" }))
+        .await
+        .json();
+    let world_id: Uuid = world["id"].as_str().unwrap().parse().unwrap();
+    // Every config singleton exists without any client dispatch.
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    let docs = state
+        .repo
+        .query_documents_by_types(world_id, &types)
+        .await
+        .unwrap();
+    assert_eq!(docs.len(), types.len(), "all ten config singletons exist");
+    for ty in types {
+        assert!(
+            docs.iter().any(|d| d.doc_type == ty),
+            "missing config singleton {ty}"
+        );
+    }
+}
+
 async fn seed_admin(state: &AppState, username: &str) -> Uuid {
     let hash = hash_password("pw").unwrap();
     state

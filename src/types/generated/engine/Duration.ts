@@ -12,8 +12,9 @@ export type Duration = {
  */
 amount: Formula, 
 /**
- * Remaining `unit`s until expiry; `None` until the client resolves `amount` for the
- * first time. Decremented by `EffectLifecycle.resolved.on_advance`.
+ * Remaining `unit`s until expiry. Server-written: `None` = not yet
+ * ticked (full duration); the first matching boundary evaluates `amount`
+ * and materializes the countdown.
  */
 remaining?: number | null, 
 /**

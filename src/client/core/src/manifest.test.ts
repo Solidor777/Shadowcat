@@ -166,3 +166,24 @@ test.each([
     parseManifest({ id: "a", version: "1.0.0", dependencies: {}, style }),
   ).toThrow();
 });
+
+test("a manifest with a systemDefaults object parses and retains it", () => {
+  const m = parseManifest({
+    id: "sys",
+    version: "1.0.0",
+    dependencies: {},
+    systemDefaults: { scene: { fog: false } },
+  });
+  expect(m.systemDefaults).toEqual({ scene: { fog: false } });
+});
+
+test("a non-object systemDefaults is rejected (shape check only; the server is the authority)", () => {
+  expect(() =>
+    parseManifest({
+      id: "sys",
+      version: "1.0.0",
+      dependencies: {},
+      systemDefaults: [1],
+    }),
+  ).toThrow();
+});

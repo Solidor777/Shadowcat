@@ -1,12 +1,12 @@
 import { test, expect, vi } from "vitest";
 import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
-import type { DisplayBackend } from "@shadowcat/render";
+import type { DisplayBackend, TokenNodeSpec } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS, silentLogger } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__, theme } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme, TokenSelection } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -55,6 +55,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     drawMeasure() {},
     clearMeasure() {},
     drawPings() {},
+    drawEmotes() {},
     setLighting() {},
     startTicker() {},
     resize() {},
@@ -282,6 +283,101 @@ test("exposes the viewed scene's committed token positions as data-token-positio
     ],
   } as never);
   await vi.waitFor(() => expect(host.dataset.tokenPositions).toBe("t-a:100,50;t-b:250,-125"));
+});
+
+test("exposes each viewed-scene token's resolved visual kind as data-token-visuals", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "generated", art: { kind: "image", asset: "p1" }, crop: "circle", border: { color: "#ff8800", width: 0.06 }, background: { color: "#102030" } }, actor_id: null, overrides: null, face: null },
+          "t-gen",
+        ),
+      },
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          "t-img",
+        ),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  // Id-sorted `id:kind` pairs, resolved through the same resolveTokenVisual the render layer
+  // draws from: a generated visual reports its own kind, not its art's.
+  expect(host.dataset.tokenVisuals).toBe("t-gen:generated;t-img:image");
+});
+
+test("re-projects tokens with the selection highlight fx when the token selection changes", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null } }, "sA") },
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+          "t1",
+        ),
+      },
+    ],
+  } as never);
+  /** The last `setToken` spec per token id, recorded verbatim (a MockBackend-shaped read of what
+   * the engine pushed). */
+  const specs = new Map<string, TokenNodeSpec>();
+  const backend = { ...fakeBackend(), setToken(id: string, spec: TokenNodeSpec): void { specs.set(id, spec); } };
+  const tokenSelection = new TokenSelection();
+  const { container } = render(Stage, {
+    props: { createBackend: async () => backend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      subscribeScene: () => ({ unsubscribe() {} }),
+      tokenSelection,
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(specs.get("t1")!.fx).toBeUndefined();
+
+  // A selection change carries no store commit; the Stage's watcher must re-project explicitly.
+  tokenSelection.set(["t1"]);
+  await vi.waitFor(() => expect(specs.get("t1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]));
+
+  tokenSelection.clear();
+  await vi.waitFor(() => expect(specs.get("t1")!.fx).toBeUndefined());
 });
 
 test("exposes the server's move-resolution outcome as data-last-move-outcome", async () => {

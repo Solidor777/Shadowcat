@@ -11,7 +11,6 @@ import {
   MiddlewareChain,
   reconcileTopology,
   buildSceneDoc,
-  systemDefaultsUpsertOps,
   resolveViewedScene,
   consoleLogger,
   resolveCaps,
@@ -152,6 +151,19 @@ export class WorldSession {
       y: number;
       /** The user who placed the ping. */
       user: string;
+    }) => void
+  >();
+  /** `onEmote` subscriber set. */
+  #emoteListeners = new Set<
+    (msg: {
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token the emote plays over. */
+      token: string;
+      /** The user who emoted. */
+      user: string;
+      /** The emote glyph(s). */
+      emote: string;
     }) => void
   >();
   /** Listeners for THIS client's own `moveRequest` outcomes —
@@ -510,6 +522,33 @@ export class WorldSession {
     return () => this.#pingListeners.delete(cb);
   }
 
+  /** Subscribe to relayed emotes (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with the scene, token, originating user, and glyph(s) of each emote.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function renderEmote(token: string, emote: string): void;
+   * const off = session.onEmote(({ token, emote }) => renderEmote(token, emote));
+   * off();
+   * ```
+   */
+  onEmote(
+    cb: (msg: {
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token the emote plays over. */
+      token: string;
+      /** The user who emoted. */
+      user: string;
+      /** The emote glyph(s). */
+      emote: string;
+    }) => void,
+  ): () => void {
+    this.#emoteListeners.add(cb);
+    return () => this.#emoteListeners.delete(cb);
+  }
+
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us).
@@ -527,6 +566,25 @@ export class WorldSession {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
     this.#ws?.send({ type: "scene_ping", scene: sceneId, x, y });
+  }
+
+  /** Broadcast a transient emote over `token` on the currently-viewed scene
+   * (`viewedSceneId`, same target `sendPing` uses). No-op when disconnected or no scene
+   * exists; the server relays it back to all members (incl. us) after re-authorizing
+   * effective ownership, so an over-reaching send drops silently.
+   * @param token The token document id to emote over.
+   * @param emote The emote glyph(s); the server bounds this to 1..=16 bytes.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const tokenId: string;
+   * session.sendEmote(tokenId, "😀");
+   * ```
+   */
+  sendEmote(token: string, emote: string): void {
+    const sceneId = this.viewedSceneId;
+    if (!sceneId) return;
+    this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
   }
 
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
@@ -850,6 +908,13 @@ export class WorldSession {
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#pingListeners) cb(msg);
         },
+        onEmote: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing filter above: an emote
+          // broadcasts room-wide and must render only for recipients currently viewing
+          // that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#emoteListeners) cb(msg);
+        },
       },
     });
     // Pre-seed the watermark BEFORE start()/open() sends the first Hello — a call after open()
@@ -891,13 +956,14 @@ export class WorldSession {
   /** Handle a `welcome` frame (first connect or a reconnect): sets `role`/`#worldGrants`/
    * `#requirements`, activates modules exactly once per session (see `#modulesAdded`/
    * `#activated`), loads external modules, fetches member usernames, reconciles contract
-   * topology, re-establishes scene subscriptions, (GM only) seeds the world's first scene, and
-   * (GM only) upserts the `system-defaults` singleton from `ModuleRegistry.systemModule()`'s
-   * declaration. The member fetch has its own inner try/catch: a failure there is logged as a
+   * topology, re-establishes scene subscriptions, and (GM only) seeds the world's first scene.
+   * Config singletons (`system-defaults` included) are server-seeded at world creation and
+   * world join — this handler writes none of them. The member fetch has its own inner
+   * try/catch: a failure there is logged as a
    * warning and does not block the remaining steps. Module activation's inner catch instead
    * reverts `#activated` (so the next Welcome retries it) and logs at the point of failure —
    * it does not rethrow, so every later step in this call (member fetch, `reconcileTopology`,
-   * scene resubscription, the GM first-scene seed, the system-defaults upsert) still runs even
+   * scene resubscription, the GM first-scene seed) still runs even
    * when activation fails; the whole method is also wrapped in one outer try/catch that logs
    * and swallows any other failure, so this promise never rejects.
    * @param w The Welcome frame.
@@ -991,14 +1057,6 @@ export class WorldSession {
       // multi-GM simultaneous-first-entry double-create is accepted.
       if (this.role === "gm" && this.world && this.#optimistic.query("scene").length === 0) {
         this.dispatchIntent([{ op: "create", doc: buildSceneDoc(this.world) }]);
-      }
-      // Keep the world's system-defaults singleton current with the active system module's
-      // declaration. GM-only (players never write it); a no-op when the module declares no
-      // defaults or the stored doc already matches.
-      const sys = this.#modules.systemModule();
-      if (this.role === "gm" && this.world && sys?.systemDefaults) {
-        const ops = systemDefaultsUpsertOps(this.#optimistic, this.world, sys.systemDefaults);
-        if (ops.length) this.dispatchIntent(ops);
       }
     } catch (e) {
       this.#logger.error("world session welcome handling failed", e);

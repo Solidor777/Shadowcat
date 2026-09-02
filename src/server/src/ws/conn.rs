@@ -288,6 +288,13 @@ async fn handle_socket(
         }
     };
 
+    // Lazy world-config reseed: backfills a pre-existing world and self-heals
+    // a deleted singleton on the next join; a failed pass (a lost seed race
+    // is swallowed inside) degrades to a log line — a join never fails here.
+    if let Err(e) = reseed_world_config(&room, repo.as_ref(), &state.config.modules_path()).await {
+        tracing::warn!(world = %world_id, error = %e, "world-config reseed failed; continuing join");
+    }
+
     room.stats.connections.fetch_add(1, Ordering::AcqRel);
     tracing::info!(world = %world_id, user = %user_id, "ws connected");
     let (rx, current_seq) = room.subscribe();
@@ -317,6 +324,9 @@ async fn handle_socket(
     // Ingress: parse client frames, forward intents to egress / publish.
     // Per-user ping budget (shared across this user's connections; survives reconnect).
     let ping_rate = state.ws.ping_rate.clone();
+    // Per-user emote budget (shared across this user's connections) — a SEPARATE bucket
+    // from `ping_rate`, so neither relay can starve the other.
+    let emote_rate = state.ws.emote_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
@@ -461,6 +471,31 @@ async fn handle_socket(
                                             x,
                                             y,
                                             user: user_id,
+                                        });
+                                    }
+                                }
+                                Ok(ClientMsg::Emote { scene, token, emote }) => {
+                                    // Out-of-band relay over a token, same shape as `ScenePing`
+                                    // (silent drop on any denial — no error frame to oracle
+                                    // against), but authorized on the TOKEN: it must be parented
+                                    // to `scene` AND effectively owned by the sender (the same
+                                    // `token_effective_owner` rule the presence gate and
+                                    // write-authz use — never a forked, looser test; a GM is
+                                    // exempt from the ownership half, not the scene-membership
+                                    // half). Guard order mirrors ping: the cheap rate check first
+                                    // (its own bucket, so emotes can't starve pings), then the
+                                    // authz lookup, then the payload bound — 1..=16 bytes covers
+                                    // 1–4 emoji graphemes and caps relay frame size.
+                                    if emote_rate.check(user_id, now_millis(), 30)
+                                        && token_emote_permitted(&room, scene, token, &ctx).await
+                                        && !emote.is_empty()
+                                        && emote.len() <= EMOTE_MAX_BYTES
+                                    {
+                                        room.broadcast_aux(ServerMsg::Emote {
+                                            scene,
+                                            token,
+                                            user: user_id,
+                                            emote,
                                         });
                                     }
                                 }
@@ -756,6 +791,32 @@ async fn scene_ping_permitted(
     access.has(crate::data::permission::cap::READ)
 }
 
+/// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
+/// site): 16 bytes covers 1–4 emoji graphemes (a 4-byte code point plus variation
+/// selector/ZWJ joiners) while capping the relayed frame size.
+const EMOTE_MAX_BYTES: usize = 16;
+
+/// Whether `ctx` may emote over `token` on `scene`: the token must be known to the room's
+/// scene ECS, parented to `scene`, and effectively owned by the sender (a GM is exempt from
+/// the ownership half, not the scene-membership half). Ownership routes through the SAME
+/// `token_effective_owner` rule `handle_pathfind`'s token gate and the write-authz path use —
+/// never a forked, looser test. Unlike `scene_ping_permitted` this reads the room's in-memory
+/// ECS (zero pool reads), and unlike ping a token-less member has NO standing here. Denial is
+/// a SILENT drop at the call site, so a non-owner never learns whether `token` exists.
+async fn token_emote_permitted(
+    room: &Room,
+    scene: Uuid,
+    token: Uuid,
+    ctx: &crate::data::membership::PermissionContext,
+) -> bool {
+    let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+    let s = room.scene().read().await;
+    match s.token_scene_and_effective_owner(token) {
+        Some((t_scene, owner)) => t_scene == scene && (is_gm || owner == Some(ctx.user_id)),
+        None => false,
+    }
+}
+
 /// The `ClientMsg::Pathfind` frame's payload, carried as one value from the ingress match arm
 /// into `handle_pathfind`.
 ///
@@ -842,6 +903,20 @@ async fn handle_pathfind(
             };
         }
     }
+    // The world's capability grants — an input to the movement-budget clamp's `cap::READ`
+    // resolution (`budget_gate_for_token`), fetched ahead of any scene read guard exactly as
+    // `Room::execute_move` fetches it (no await under a guard). Unconditional for the same
+    // reason there: whether a combat is running is only knowable under the guard. Fails closed
+    // like the executor — an unresolvable authority input refuses the preview generically.
+    let world_defaults = match repo.world_cap_defaults(room.world_id).await {
+        Ok(wd) => wd,
+        Err(_) => {
+            return ServerMsg::PathError {
+                request_id,
+                message: "unreachable".to_string(),
+            };
+        }
+    };
     // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
     // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
     // below never re-acquires the lock for it.
@@ -900,6 +975,33 @@ async fn handle_pathfind(
         }
         None => footprint_radius,
     };
+    // The movement-budget preview clamp, resolved through the SAME gate the executor uses
+    // (`budget_gate_for_token` + `resolve_budget`) for a named, authorized token — a
+    // hypothetical-footprint preview names no combatant identity and is never clamped.
+    // `NotYourTurn`/`Unresolvable` mirror the executor's refusals behind the one generic
+    // wording; `Resolved` yields a ceiling only for an enforced Hard caller, so GM/Warn/
+    // None/exempt previews pass no budget and are untouched. The decrement half of a
+    // resolution is ignored: a preview commits nothing.
+    let mut budget_cells: Option<f64> = None;
+    if let Some(t) = token {
+        if let Some(bg) = crate::ws::room::budget_gate_for_token(&s, scene, t, ctx, &world_defaults)
+        {
+            match crate::ws::room::resolve_budget(&bg, is_gm) {
+                crate::ws::room::BudgetResolution::NotYourTurn
+                | crate::ws::room::BudgetResolution::Unresolvable => {
+                    return ServerMsg::PathError {
+                        request_id,
+                        message: "unreachable".to_string(),
+                    };
+                }
+                crate::ws::room::BudgetResolution::Resolved {
+                    budget_cells: b, ..
+                } => {
+                    budget_cells = b;
+                }
+            }
+        }
+    }
     match s.pathfind(
         crate::scene::RouteRequester {
             user: ctx.user_id,
@@ -910,12 +1012,14 @@ async fn handle_pathfind(
         start,
         &waypoints,
         footprint_radius,
+        budget_cells,
     ) {
         Ok(outcome) => ServerMsg::PathResult {
             request_id,
             path: outcome.path,
             cost: outcome.cost,
             arrested: outcome.arrested,
+            truncated: outcome.truncated,
         },
         Err(e) => ServerMsg::PathError {
             request_id,
@@ -1880,6 +1984,41 @@ where
     .await
     .map_err(|_| ())?;
     Ok(to_seq)
+}
+
+/// Bring `room`'s world-config singleton set current under
+/// `WriteOrigin::ConfigSeed`: creates whatever `missing_config_ops` finds
+/// absent and refreshes a drifted `system-defaults` body from the enabled
+/// system package. Attributed to the world's first GM (`seed_author`); a
+/// world with no GM is a no-op Ok. A `Conflict` from a lost seed race (a
+/// concurrent join seeded first) is swallowed — the winner's docs are live
+/// and this pass has nothing left to do; any other error propagates for the
+/// caller to log (a join must never fail on a reseed).
+pub(crate) async fn reseed_world_config(
+    room: &Room,
+    repo: &SqliteRepository,
+    modules_dir: &std::path::Path,
+) -> Result<(), crate::data::DataError> {
+    let world_id = room.world_id;
+    let Some(ctx) = crate::data::world_seed::seed_author(repo, world_id).await else {
+        return Ok(());
+    };
+    let sd = crate::data::world_seed::enabled_system_defaults(repo, world_id, modules_dir).await;
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    let existing = repo.query_documents_by_types(world_id, &types).await?;
+    let ops =
+        crate::data::world_seed::missing_config_ops(&existing, world_id, sd.as_ref(), now_millis());
+    if ops.is_empty() {
+        return Ok(());
+    }
+    match room
+        .publish(repo, &ctx, ops, now_millis(), WriteOrigin::ConfigSeed)
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(crate::data::DataError::Conflict(_)) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

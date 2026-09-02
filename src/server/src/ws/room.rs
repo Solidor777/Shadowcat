@@ -81,19 +81,24 @@ pub(crate) struct MoveRequestInputs {
     pub request_id: Uuid,
 }
 
-/// The mover's turn-budget state in the token's scene's active combat, resolved by
-/// `Room::execute_move` off the scene read guard (`SceneEcs::active_combat_for_scene` +
-/// `SceneEcs::combatant_for_token`). Absent (`None` at the call site) means no gate applies at
-/// all — no active combat on the scene, or the token names no combatant in it.
-struct BudgetGate {
+/// The mover's turn-budget state in the token's scene's active combat, built by
+/// `budget_gate_for_token` under the caller's scene read guard. Absent (`None` at the call
+/// site) means no gate applies at all — no active combat on the scene, or the token names no
+/// combatant in it.
+pub(crate) struct BudgetGate {
     /// The combatant document to decrement on a successful move.
     combatant_id: Uuid,
     /// The `resource-registry` key `CombatEngine.movement.resource` names.
     resource: String,
-    /// The combatant's current entry for `resource`, or `None` when it carries no such entry —
-    /// `MoveReject::BudgetUnresolvable` (the combat names a resource the combatant never
-    /// tracks).
-    entry: Option<eng::CombatantResource>,
+    /// The registry's binding for `resource`, or `None` (no registry document,
+    /// or no such key) — unresolvable.
+    binding: Option<eng::ResourceBinding>,
+    /// The combatant's stored `current` for `resource`; `None` = untouched,
+    /// which reads as full (the evaluated `max` — the lazy-full rule).
+    stored: Option<f64>,
+    /// The combatant's formula-host document, cloned under the same guard
+    /// (`SceneEcs::combatant_formula_host`).
+    host: Option<crate::data::document::Document>,
     /// The scene's `grid.distance.per_cell`, or `None` when absent — `MoveReject::
     /// BudgetUnresolvable` under `Interpretation::PerCell` (there is no distance scale to
     /// convert the resource budget into cells).
@@ -148,22 +153,132 @@ struct BudgetGate {
     enforcement: eng::Enforcement,
 }
 
-/// `BudgetGate`, once validated: the resource entry (and, under `Interpretation::PerCell`, the
-/// per-cell distance) are guaranteed present — both refusal paths (`MoveReject::
-/// BudgetUnresolvable`) have already returned before this is constructed. `cost_to_resource`
+/// `BudgetGate`, once resolved: the evaluated resource numbers (and, under
+/// `Interpretation::PerCell`, the per-cell distance) are guaranteed present — every refusal
+/// path has already returned before this is constructed. `cost_to_resource`
 /// folds the interpretation into one multiplier so both the ceiling (`current /
 /// cost_to_resource`) and the post-move decrement (`MoveOutcome.cost * cost_to_resource`) share
 /// one conversion: the scene's `per_cell` distance under `PerCell`, or `1.0` under `Spaces`
 /// (`MoveOutcome.cost` is already in the same units as the budget).
-struct ResolvedBudget {
+pub(crate) struct ResolvedBudget {
     /// The combatant document to decrement on a successful move.
     combatant_id: Uuid,
     /// The `resource-registry` key to decrement.
     resource: String,
-    /// The combatant's current value for `resource`, before this move's decrement.
+    /// The combatant's current value for `resource` (stored, else the
+    /// evaluated full), before this move's decrement.
     current: f64,
+    /// The STORED value at gate time; `None` = the entry was absent, so the
+    /// decrement's OCC pre-image is Null and its write materializes the entry.
+    stored: Option<f64>,
     /// `MoveOutcome.cost` (cells) → resource units.
     cost_to_resource: f64,
+}
+
+/// Builds the movement-budget gate inputs for `token` on `token_scene`'s active combat, under
+/// the caller's scene read guard: the combat/combatant lookup, the registry binding for the
+/// combat's movement resource, the combatant's stored entry and formula-host document, the
+/// per-cell scale, and the caller's enforcement standing. `None` means no gate applies at all
+/// — no active combat, no movement resource named, or the token names no combatant — and the
+/// caller must treat that as "moves freely", never a refusal. Shared by `Room::execute_move`
+/// and the route-preview clamp so the two cannot resolve the same budget differently.
+pub(crate) fn budget_gate_for_token(
+    scene: &crate::scene::SceneEcs,
+    token_scene: Uuid,
+    token: Uuid,
+    ctx: &crate::data::membership::PermissionContext,
+    world_defaults: &crate::data::document::WorldCapDefaults,
+) -> Option<BudgetGate> {
+    let (combat_id, ce) = scene.active_combat_for_scene(token_scene)?;
+    let resource = ce.movement.resource.clone()?;
+    let (combatant_id, c, access) =
+        scene.combatant_for_token(combat_id, token, ctx, world_defaults)?;
+    let binding = scene
+        .resource_registry_engine()
+        .and_then(|r| r.resources.get(&resource).map(|res| res.binding.clone()));
+    Some(BudgetGate {
+        combatant_id,
+        binding,
+        stored: c.resources.get(&resource).map(|r| r.current),
+        host: scene.combatant_formula_host(&c.kind),
+        resource,
+        per_cell: scene.scene_per_cell(token_scene),
+        is_turn_owner: ce.turn == Some(combatant_id),
+        // See `BudgetGate::enforced`: whole-document `cap::READ` on the
+        // combatant, resolved by the shared authority rather than re-derived
+        // from any single permission field.
+        enforced: access.has(crate::data::permission::cap::READ),
+        interpretation: ce.movement.interpretation,
+        enforcement: ce.movement.enforcement,
+    })
+}
+
+/// The gate's decision for one `BudgetGate`.
+pub(crate) enum BudgetResolution {
+    /// Hard enforcement, an enforced non-GM caller, and the combatant does not
+    /// hold the turn — refuse (`MoveReject::NotYourTurn` names the reason).
+    NotYourTurn,
+    /// The budget cannot be resolved for an ENFORCED caller — no registry
+    /// binding for the resource, a `Mirror` binding (a spend cannot decrement
+    /// a derived value, and the server never writes the `system` band), a
+    /// formula-evaluation failure, or a missing `grid.distance` scale under
+    /// `Interpretation::PerCell` — refuse (`MoveReject::BudgetUnresolvable`
+    /// names the reason). An EXEMPT caller never reaches this variant.
+    Unresolvable,
+    /// The move proceeds: `budget_cells` truncates the walk when `Some`
+    /// (enforced Hard callers only), and `decrement` records the spend when
+    /// `Some` (any caller whose budget resolved — GM and Warn/None included).
+    Resolved {
+        /// Truncation ceiling in cells.
+        budget_cells: Option<f64>,
+        /// The post-move decrement, when the budget resolved.
+        decrement: Option<ResolvedBudget>,
+    },
+}
+
+/// Resolves one `BudgetGate` into the gate's decision, deriving the resource
+/// numbers through `combat::eval::resolved_resource` over the combatant's
+/// formula host — the SAME derivation the combat transitions use, so the gate
+/// and the clock cannot price a resource differently. An absent stored entry
+/// reads as full; the decrement then materializes it. Exemption (a GM, or
+/// `enforced: false` — see `BudgetGate::enforced`) skips every refusal and
+/// the truncation but still records the decrement when the budget resolves,
+/// and degrades an UNRESOLVABLE budget to "move freely, no decrement" — the
+/// same outcome as a token bound to no combatant at all.
+pub(crate) fn resolve_budget(bg: &BudgetGate, is_gm: bool) -> BudgetResolution {
+    let exempt = is_gm || !bg.enforced;
+    if !exempt && !bg.is_turn_owner && matches!(bg.enforcement, eng::Enforcement::Hard) {
+        return BudgetResolution::NotYourTurn;
+    }
+    let nums = bg.binding.as_ref().and_then(|b| match b {
+        eng::ResourceBinding::Mirror { .. } => None,
+        tracked @ eng::ResourceBinding::Tracked { .. } => {
+            crate::combat::eval::resolved_resource(tracked, bg.stored, bg.host.as_ref()).ok()
+        }
+    });
+    let cost_to_resource = match (&nums, bg.interpretation) {
+        (Some(_), eng::Interpretation::PerCell) => bg.per_cell,
+        (Some(_), eng::Interpretation::Spaces) => Some(1.0),
+        (None, _) => None,
+    };
+    match (nums, cost_to_resource) {
+        (Some(n), Some(ctr)) => BudgetResolution::Resolved {
+            budget_cells: (!exempt && matches!(bg.enforcement, eng::Enforcement::Hard))
+                .then(|| n.current / ctr),
+            decrement: Some(ResolvedBudget {
+                combatant_id: bg.combatant_id,
+                resource: bg.resource.clone(),
+                current: n.current,
+                stored: bg.stored,
+                cost_to_resource: ctr,
+            }),
+        },
+        _ if exempt => BudgetResolution::Resolved {
+            budget_cells: None,
+            decrement: None,
+        },
+        _ => BudgetResolution::Unresolvable,
+    }
 }
 
 /// Grouped trailing inputs to `wire_move_stream`, avoiding a >7-argument signature.
@@ -432,6 +547,21 @@ pub struct Room {
     resync_floor_enforced_flag: bool,
 }
 
+/// One firing report: the token that entered, the scene it happened in, the cells it
+/// entered (`MoveOutcome::entered_cells` for a move, the new footprint cells for a
+/// placement), and the arrest stop position when the walk was region-arrested.
+pub(crate) struct TriggerReport {
+    /// The scene the entry happened in (derived from the token, never the request).
+    pub scene: Uuid,
+    /// The entering token.
+    pub token: Uuid,
+    /// The entered cells: a move's deduped transition sequence, or a placement's
+    /// footprint cells at the new position.
+    pub entered: Vec<(i32, i32)>,
+    /// The arrest stop position, `Some` only when the walk was region-arrested.
+    pub arrest_stop: Option<(f64, f64)>,
+}
+
 impl Room {
     /// A room seeded at `seed_seq` with a hydrated scene read-model.
     ///
@@ -661,7 +791,39 @@ impl Room {
                 }
             }
         }
-        return self.commit_ops_locked(repo, ctx, ops, ts, origin).await;
+        // Placement/teleport trigger candidates: a token Create always candidates; a token
+        // Update only when its applied post-image position differs from the committed one —
+        // the SAME comparison the move gate above makes, evaluated through `token_move` so a
+        // wholesale `/engine` write is seen on its post-image. Non-GM position writes never
+        // reach here (refused above); GM teleports do. Effects fire AFTER the commit, as
+        // their own server-authored commit (`fire_placement_triggers`).
+        let mut placement_tokens: Vec<Uuid> = Vec::new();
+        {
+            let scene = self.scene.read().await;
+            for op in &ops {
+                match op {
+                    Operation::Create { doc }
+                        if doc.doc_type == "token" && doc.parent_id.is_some() =>
+                    {
+                        placement_tokens.push(doc.id);
+                    }
+                    Operation::Update { doc_id, changes } => {
+                        if let Some((_, a0, a1)) = scene.token_move(*doc_id, changes) {
+                            if a0 != a1 {
+                                placement_tokens.push(*doc_id);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let command = self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
+        if !placement_tokens.is_empty() {
+            self.fire_placement_triggers(repo, ctx, placement_tokens, ts)
+                .await;
+        }
+        Ok(command)
     }
 
     /// Gate-free authoritative write tail: apply_intent → ECS-hydrate → ring/seq →
@@ -901,26 +1063,7 @@ impl Room {
             // there is no active combat on the token's own scene, or the token is not fighting in
             // it. `MoveGateInputs.budget` and the turn/resource checks below are resolved from
             // this once the guard is dropped.
-            budget_gate = scene
-                .active_combat_for_scene(token_scene)
-                .and_then(|(combat_id, ce)| {
-                    let resource = ce.movement.resource.clone()?;
-                    let (combatant_id, c, access) =
-                        scene.combatant_for_token(combat_id, token, ctx, &world_defaults)?;
-                    Some(BudgetGate {
-                        combatant_id,
-                        entry: c.resources.get(&resource).copied(),
-                        resource,
-                        per_cell: scene.scene_per_cell(token_scene),
-                        is_turn_owner: ce.turn == Some(combatant_id),
-                        // See `BudgetGate::enforced`: whole-document `cap::READ` on the
-                        // combatant, resolved by the shared authority rather than re-derived
-                        // from any single permission field.
-                        enforced: access.has(crate::data::permission::cap::READ),
-                        interpretation: ce.movement.interpretation,
-                        enforcement: ce.movement.enforcement,
-                    })
-                });
+            budget_gate = budget_gate_for_token(&scene, token_scene, token, ctx, &world_defaults);
 
             let lenient = settings.partial_cell_leniency;
             is_revealed = matches!(restriction, MovementRestriction::Revealed);
@@ -944,69 +1087,30 @@ impl Room {
         let mut move_budget_cells: Option<f64> = None;
         let mut resolved_budget: Option<ResolvedBudget> = None;
         if let Some(bg) = &budget_gate {
-            // Exempt from every refusal and from truncation: a GM (matching `execute_move`'s own
-            // GM gameplay exemption), or a caller the gate is not `enforced` against because the
-            // combatant is unreadable to them (see `BudgetGate::enforced`). Both still take the
-            // decrement path below when the budget resolves.
-            let exempt = is_gm || !bg.enforced;
-            // Turn-owner enforcement is Hard-only: under Warn/None a non-turn-owner's move is
-            // never rejected on this basis.
-            if !exempt && !bg.is_turn_owner && matches!(bg.enforcement, eng::Enforcement::Hard) {
-                tracing::debug!(
-                    combatant = %bg.combatant_id, token = %token, user = %ctx.user_id,
-                    reject = ?move_exec::MoveReject::NotYourTurn,
-                    "move rejected: not the current turn owner under Hard enforcement"
-                );
-                return Err(DataError::Forbidden);
-            }
-            // The resource entry and, under PerCell, the per-cell distance scale are required
-            // regardless of enforcement mode — the decrement below needs them even when the
-            // gate itself never truncates (Warn/None). For an enforced non-GM caller, either
-            // being unresolvable refuses the move outright (`BudgetUnresolvable`). For an
-            // `exempt` caller, an unresolvable budget degrades to "move freely, no decrement"
-            // instead — the same outcome as a token that isn't bound to any combatant at all —
-            // rather than refusing the move, matching the exemption already applied to the
-            // truncation and turn-owner checks above.
-            let entry = match bg.entry {
-                Some(entry) => Some(entry),
-                None if exempt => None,
-                None => {
+            match resolve_budget(bg, is_gm) {
+                BudgetResolution::NotYourTurn => {
                     tracing::debug!(
-                        combatant = %bg.combatant_id, token = %token, resource = %bg.resource,
-                        reject = ?move_exec::MoveReject::BudgetUnresolvable,
-                        "move rejected: combatant carries no entry for the combat's movement resource"
+                        combatant = %bg.combatant_id, token = %token, user = %ctx.user_id,
+                        reject = ?move_exec::MoveReject::NotYourTurn,
+                        "move rejected: not the current turn owner under Hard enforcement"
                     );
                     return Err(DataError::Forbidden);
                 }
-            };
-            let cost_to_resource = match (entry, bg.interpretation) {
-                (Some(_), eng::Interpretation::PerCell) => match bg.per_cell {
-                    Some(pc) => Some(pc),
-                    None if exempt => None,
-                    None => {
-                        tracing::debug!(
-                            combatant = %bg.combatant_id, token = %token,
-                            reject = ?move_exec::MoveReject::BudgetUnresolvable,
-                            "move rejected: scene has no grid.distance to convert the per-cell budget"
-                        );
-                        return Err(DataError::Forbidden);
-                    }
-                },
-                (Some(_), eng::Interpretation::Spaces) => Some(1.0),
-                // An exempt caller whose resource entry was already unresolvable above: skip
-                // resolution entirely, same as a token not bound to any combatant.
-                (None, _) => None,
-            };
-            if let (Some(entry), Some(cost_to_resource)) = (entry, cost_to_resource) {
-                if !exempt && matches!(bg.enforcement, eng::Enforcement::Hard) {
-                    move_budget_cells = Some(entry.current / cost_to_resource);
+                BudgetResolution::Unresolvable => {
+                    tracing::debug!(
+                        combatant = %bg.combatant_id, token = %token, resource = %bg.resource,
+                        reject = ?move_exec::MoveReject::BudgetUnresolvable,
+                        "move rejected: the movement budget cannot be resolved"
+                    );
+                    return Err(DataError::Forbidden);
                 }
-                resolved_budget = Some(ResolvedBudget {
-                    combatant_id: bg.combatant_id,
-                    resource: bg.resource.clone(),
-                    current: entry.current,
-                    cost_to_resource,
-                });
+                BudgetResolution::Resolved {
+                    budget_cells,
+                    decrement,
+                } => {
+                    move_budget_cells = budget_cells;
+                    resolved_budget = decrement;
+                }
             }
         }
 
@@ -1177,7 +1281,7 @@ impl Room {
 
         // Position write commits ALONE under `WriteOrigin::Client`, UNCONDITIONALLY — never
         // bundled with the combat decrement below. `apply_intent`'s ownership/capability check
-        // (`origin != WriteOrigin::CombatTransition && !access.has(need)`) is skipped for every
+        // (`!origin.skips_capability_gates() && !access.has(need)`) is skipped for every
         // op in a batch whenever ANY op in it carries `CombatTransition`; bundling the two under
         // one origin let a `CombatTransition`-tagged decrement silently waive the ownership check
         // on the token-position write in the same batch, so any authenticated non-GM could move
@@ -1207,7 +1311,12 @@ impl Room {
                     changes: vec![FieldChange {
                         remove: false,
                         path: format!("/engine/resources/{}/current", rb.resource),
-                        old: serde_json::json!(rb.current),
+                        // `None` = the entry was absent at gate time: the OCC
+                        // pre-image is Null and this write materializes it.
+                        old: match rb.stored {
+                            Some(s) => serde_json::json!(s),
+                            None => serde_json::Value::Null,
+                        },
                         new: serde_json::json!(new_current),
                     }],
                 }];
@@ -1223,6 +1332,27 @@ impl Room {
                 }
             }
         }
+
+        // Region triggers, fired AFTER the position commit AND the combat decrement: a
+        // `ResourceDelta` trigger can write the very combatant/resource the decrement just
+        // wrote, so effects run last and read freshly committed state (the decrement's own
+        // pre-image was captured pre-commit and must not be raced by an effect write). A
+        // SEPARATE commit under `WriteOrigin::CombatTransition`, never batched with the
+        // client-origin position write — the same split discipline the position commit above
+        // states. The zero-progress early return above never reaches here, and it has no
+        // entered cells to report in any case.
+        self.fire_region_triggers(
+            repo,
+            ctx,
+            TriggerReport {
+                scene: token_scene,
+                token,
+                entered: outcome.entered_cells.clone(),
+                arrest_stop: outcome.arrested.then_some(outcome.stop),
+            },
+            ts,
+        )
+        .await;
 
         // Build the wire frame before registering it.
         let frame = Arc::new(wire_move_stream(
@@ -1273,6 +1403,426 @@ impl Room {
             duration_ms,
             frame,
         })
+    }
+
+    /// Fire the region triggers a token report sets off: every enabled trigger-bearing region
+    /// covering an `entered` cell fires its `Enter` effects, and when `arrest_stop` is `Some`
+    /// (the executor reported a region-arrest), regions covering the arrest cell fire their
+    /// `Arrest` effects. This ONE application path serves both fire sites — `execute_move`
+    /// (entered-cell sequence from `MoveOutcome`) and `fire_placement_triggers` (footprint
+    /// cells of the new position) — so the two cannot drift on what an effect means.
+    ///
+    /// Effects are server-authored and commit as ONE batch via `commit_ops_locked` under
+    /// `WriteOrigin::CombatTransition` — never batched with the client-origin write that
+    /// triggered them (the split discipline `execute_move`'s position commit states). A commit
+    /// failure is logged and swallowed rather than propagated: the triggering write already
+    /// stands, and failing the caller over a lost effect would desync it from what was
+    /// actually written (the movement decrement's own precedent).
+    ///
+    /// PRECONDITION: caller holds `publish_guard` (`commit_ops_locked` requires it).
+    ///
+    /// # Effect semantics
+    ///
+    /// - `ConditionAdd`/`ConditionRemove`: applied to the token's actor host — the embedded
+    ///   actor copy first, else the linked actor (`combat::eval::formula_host`'s
+    ///   precedence) — folded onto the host's current `conditions` array and written as ONE
+    ///   OCC `Operation::Update` (`combat::ops::set_engine` supplies the pre-image).
+    ///   Idempotent: adding a present condition or removing an absent one is a no-op.
+    /// - `ResourceDelta`: combat-scoped. The token's combatant in the scene's ACTIVE combat
+    ///   is resolved (`token_id` match first, else the resolved actor —
+    ///   `SceneEcs::combatant_for_token`'s precedence), each `amount` is evaluated via
+    ///   `combat::eval::eval_formula` against the combatant's formula host, and amounts
+    ///   naming the same resource are summed into ONE `ResourceOp::Delta` per key (net-delta
+    ///   per report, clamped once by `combat::transition::resource`). No active combat, no
+    ///   combatant, a `Mirror` binding, an unknown key, or an amount that fails to evaluate
+    ///   is a no-op surfaced in ONE deduplicated GM-only chat notice
+    ///   (`combat::transition::eval_notice`'s shape).
+    /// - `ChatNotice`: posted as a `MessageKind::System` message authored by the mover. The
+    ///   authored audience is FORCED to `GmOnly` when the region's `/engine` band is not
+    ///   visible to every world member — a wider notice would name or imply a region some
+    ///   recipients cannot see. `Owner` (effective owner + every GM) has no
+    ///   `chat::Audience` shape of its own, so it builds the `GmOnly` permission shape and
+    ///   grants the token's effective owner a read on top.
+    pub(crate) async fn fire_region_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        report: TriggerReport,
+        ts: i64,
+    ) {
+        let TriggerReport {
+            scene,
+            token,
+            entered,
+            arrest_stop,
+        } = report;
+        let entered: &[(i32, i32)] = &entered;
+        use crate::chat::{build_message_doc, Audience, MessageDraft, MessageKind, Segment};
+        use crate::combat::transition::{resource as resource_transition, ResourceOp};
+        use crate::combat::CombatError;
+        use crate::scene::regions;
+
+        // The entering token's document, loaded AFTER the triggering write committed, so the
+        // actor join and every condition pre-image read committed state.
+        let token_doc = match repo.get_document(token).await {
+            Ok(Some(doc)) => doc,
+            Ok(None) => {
+                tracing::debug!(%token, "region triggers: the entering token is gone; no effects fire");
+                return;
+            }
+            Err(err) => {
+                tracing::debug!(%token, ?err, "region triggers: the entering token could not be loaded; no effects fire");
+                return;
+            }
+        };
+
+        // The authoritative identity table (the server springs secret regions), the arrest
+        // cell, and the token's effective owner — one read guard, no lock across an await.
+        let (regions, arrest_cell, effective_owner) = {
+            let ecs = self.scene.read().await;
+            let regions = ecs.trigger_regions(scene).unwrap_or_default();
+            let arrest_cell = match arrest_stop {
+                Some(pos) => ecs
+                    .scene_grid_sizes()
+                    .get(&scene)
+                    .map(|&cell| ecs.resolve_grid_shape(scene, cell).cell_of(pos)),
+                None => None,
+            };
+            let owner = ecs.token_effective_owner(&token_doc);
+            (regions, arrest_cell, owner)
+        };
+        let fired = regions::fired_triggers(&regions, entered, arrest_cell);
+        if fired.is_empty() {
+            return;
+        }
+
+        let mut ops: Vec<Operation> = Vec::new();
+        let mut failures: Vec<String> = Vec::new();
+
+        // The token's actor join, resolved once: `TokenEngine.actor_id` else the embedded
+        // copy's id (`SceneEcs::combatant_for_token`'s rule). The CONDITIONS host uses the
+        // `formula_host` precedence instead (embedded copy first, else the linked actor) —
+        // the two answers differ only for a token carrying both, and each consumer's own
+        // precedent is kept.
+        let token_eng: Option<eng::TokenEngine> = token_doc
+            .engine
+            .clone()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let embedded_actor = token_doc
+            .embedded
+            .get("actor")
+            .and_then(|v| v.first())
+            .cloned();
+        let resolved_actor = token_eng
+            .as_ref()
+            .and_then(|t| t.actor_id)
+            .or_else(|| embedded_actor.as_ref().map(|a| a.id));
+
+        // --- Condition effects, folded onto the host's current array into ONE update ---
+        let needs_conditions = fired.iter().any(|(_, t)| {
+            matches!(
+                t.effect,
+                eng::TriggerEffect::ConditionAdd { .. }
+                    | eng::TriggerEffect::ConditionRemove { .. }
+            )
+        });
+        if needs_conditions {
+            let host: Option<(Document, &str)> = if embedded_actor.is_some() {
+                Some((token_doc.clone(), "/embedded/actor/0/engine/conditions"))
+            } else if let Some(actor_id) = resolved_actor {
+                match repo.get_document(actor_id).await {
+                    Ok(Some(actor)) => Some((actor, "/engine/conditions")),
+                    _ => {
+                        failures.push("condition host actor could not be loaded".to_string());
+                        None
+                    }
+                }
+            } else {
+                failures.push("the token has no actor host to carry a condition".to_string());
+                None
+            };
+            if let Some((host_doc, pointer)) = host {
+                let mut conditions: Vec<String> = serde_json::to_value(&host_doc)
+                    .ok()
+                    .and_then(|v| v.pointer(pointer).cloned())
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                let mut dirty = false;
+                for (_, trigger) in &fired {
+                    match &trigger.effect {
+                        eng::TriggerEffect::ConditionAdd { condition }
+                            if !conditions.contains(condition) =>
+                        {
+                            conditions.push(condition.clone());
+                            dirty = true;
+                        }
+                        eng::TriggerEffect::ConditionRemove { condition } => {
+                            let before = conditions.len();
+                            conditions.retain(|c| c != condition);
+                            dirty |= conditions.len() != before;
+                        }
+                        _ => {}
+                    }
+                }
+                if dirty {
+                    match crate::combat::ops::set_engine(
+                        &host_doc,
+                        pointer,
+                        serde_json::json!(conditions),
+                    ) {
+                        Ok(change) => ops.push(Operation::Update {
+                            doc_id: host_doc.id,
+                            changes: vec![change],
+                        }),
+                        Err(_) => {
+                            failures.push("condition write could not be built".to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Resource effects, net-summed per key against the token's combatant ---
+        let needs_resources = fired
+            .iter()
+            .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::ResourceDelta { .. }));
+        if needs_resources {
+            let active = { self.scene.read().await.active_combat_for_scene(scene) };
+            match active {
+                None => failures.push("no active combat on the scene".to_string()),
+                Some((combat_id, _)) => {
+                    match crate::combat::load_snapshot(repo, self.world_id, combat_id).await {
+                        Err(_) => {
+                            failures
+                                .push("the scene's active combat could not be loaded".to_string());
+                        }
+                        Ok(snap) => {
+                            let combatant = snap
+                                .combatants
+                                .iter()
+                                .find(|c| {
+                                    matches!(&c.engine.kind, eng::CombatantKind::Actor { token_id: Some(t), .. } if *t == token)
+                                })
+                                .or_else(|| {
+                                    snap.combatants.iter().find(|c| {
+                                        matches!(&c.engine.kind, eng::CombatantKind::Actor { actor_id: Some(a), .. } if Some(*a) == resolved_actor)
+                                    })
+                                });
+                            match combatant {
+                                None => failures.push(
+                                    "the token names no combatant in the active combat".to_string(),
+                                ),
+                                Some(combatant) => {
+                                    let host = crate::combat::eval::formula_host(
+                                        &snap.hosts,
+                                        &combatant.engine.kind,
+                                    );
+                                    let mut sums: std::collections::BTreeMap<String, f64> =
+                                        std::collections::BTreeMap::new();
+                                    for (_, trigger) in &fired {
+                                        if let eng::TriggerEffect::ResourceDelta {
+                                            resource,
+                                            amount,
+                                        } = &trigger.effect
+                                        {
+                                            match crate::combat::eval::eval_formula(amount, host) {
+                                                Ok(value) => {
+                                                    *sums.entry(resource.clone()).or_insert(0.0) +=
+                                                        value;
+                                                }
+                                                Err(err) => failures.push(format!(
+                                                    "resource '{resource}' amount failed to evaluate: {}",
+                                                    err.detail
+                                                )),
+                                            }
+                                        }
+                                    }
+                                    // Every key's FieldChange folds into ONE Update on the
+                                    // combatant: the store admits at most one Update per
+                                    // document per batch.
+                                    let mut changes = Vec::new();
+                                    for (key, sum) in sums {
+                                        match resource_transition(
+                                            &snap,
+                                            combatant.doc.id,
+                                            &key,
+                                            ResourceOp::Delta { amount: sum },
+                                        ) {
+                                            Ok(mut resource_ops) => {
+                                                if let Some(Operation::Update {
+                                                    changes: mut cs,
+                                                    ..
+                                                }) = resource_ops.pop()
+                                                {
+                                                    changes.append(&mut cs);
+                                                }
+                                            }
+                                            Err(CombatError::Forbidden) => failures.push(format!(
+                                                "resource '{key}' is mirror-bound; its value lives on the actor"
+                                            )),
+                                            Err(CombatError::NotFound) => failures.push(format!(
+                                                "resource '{key}' is not in the world resource registry"
+                                            )),
+                                            Err(_) => failures.push(format!(
+                                                "resource '{key}' adjustment failed"
+                                            )),
+                                        }
+                                    }
+                                    if !changes.is_empty() {
+                                        ops.push(Operation::Update {
+                                            doc_id: combatant.doc.id,
+                                            changes,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Chat notices, in fired order ---
+        for (region, trigger) in &fired {
+            if let eng::TriggerEffect::ChatNotice { text, audience } = &trigger.effect {
+                // Secrecy: a region whose `/engine` band is not visible to every world member
+                // forces GM-only whatever the authored audience says — a wider notice would
+                // name or imply a region some recipients cannot see.
+                let forced = !region.visible_to_all;
+                let wire_audience = if forced {
+                    Audience::GmOnly
+                } else {
+                    match audience {
+                        eng::NoticeAudience::Public => Audience::Public,
+                        eng::NoticeAudience::GmOnly | eng::NoticeAudience::Owner => {
+                            Audience::GmOnly
+                        }
+                    }
+                };
+                let mut doc = build_message_doc(
+                    self.world_id,
+                    ctx.user_id,
+                    MessageDraft {
+                        channel: "region".to_string(),
+                        actor_owner: None,
+                        audience: wire_audience,
+                        kind: MessageKind::System,
+                        content: vec![Segment::Text { text: text.clone() }],
+                        source: None,
+                    },
+                    ts,
+                );
+                // `Owner` = effective owner + every GM: the GM-only shape plus an explicit
+                // owner grant. Never a downgrade of the author (`build_message_doc`'s own
+                // users-last invariant), and never under a secrecy force — a secret region's
+                // notice reaches no non-GM through any door.
+                if !forced && matches!(audience, eng::NoticeAudience::Owner) {
+                    if let Some(owner) = effective_owner {
+                        if owner != ctx.user_id {
+                            doc.permissions
+                                .users
+                                .insert(owner, crate::data::document::DocRole::Observer);
+                        }
+                    }
+                }
+                ops.push(Operation::Create { doc });
+            }
+        }
+
+        // --- ONE deduplicated GM-only notice for every skipped effect (`eval_notice`'s shape) ---
+        if !failures.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            let lines: Vec<String> = failures
+                .into_iter()
+                .filter(|f| seen.insert(f.clone()))
+                .collect();
+            let doc = build_message_doc(
+                self.world_id,
+                ctx.user_id,
+                MessageDraft {
+                    channel: "region".to_string(),
+                    actor_owner: None,
+                    audience: Audience::GmOnly,
+                    kind: MessageKind::System,
+                    content: vec![Segment::Text {
+                        text: format!("Region trigger did not apply: {}", lines.join("; ")),
+                    }],
+                    source: None,
+                },
+                ts,
+            );
+            ops.push(Operation::Create { doc });
+        }
+
+        if ops.is_empty() {
+            return;
+        }
+        if let Err(err) = self
+            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+            .await
+        {
+            tracing::debug!(
+                %scene, %token, ?err,
+                "region-trigger commit failed after the triggering write already committed; \
+                 the write stands, the effects were not applied"
+            );
+        }
+    }
+
+    /// The placement/teleport fire site: token Creates and genuine position Updates in a
+    /// committed batch fire `Enter` effects on each token's NEW footprint
+    /// (`fire_region_triggers` applies them). Only token ops are candidates — a region-doc
+    /// edit never reaches here, so editing a region never re-fires its triggers.
+    ///
+    /// `tokens` are the candidates `publish` resolved PRE-commit through
+    /// `SceneEcs::token_move`: a Create always candidates; an Update only when its applied
+    /// post-image position differs from the committed one (the same comparison the move gate
+    /// makes, so a wholesale `/engine` write is evaluated on its post-image too). Footprint
+    /// cells derive through the SAME machinery the move gate uses
+    /// (`SceneEcs::resolve_token_footprint` + `GridShape::footprint_cells`), never a second
+    /// footprint formula; a token whose footprint refuses (degenerate size) fires nothing —
+    /// the gate's own fail-closed refusal.
+    ///
+    /// PRECONDITION: caller holds `publish_guard`.
+    pub(crate) async fn fire_placement_triggers(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        tokens: Vec<Uuid>,
+        ts: i64,
+    ) {
+        // One report per candidate token, resolved post-commit under one read guard.
+        let mut reports: Vec<TriggerReport> = Vec::new();
+        {
+            let ecs = self.scene.read().await;
+            let mut seen = std::collections::HashSet::new();
+            for token in tokens {
+                if !seen.insert(token) {
+                    continue;
+                }
+                let Some((scene, pos, _)) = ecs.token_move(token, &[]) else {
+                    continue;
+                };
+                let Some(&cell) = ecs.scene_grid_sizes().get(&scene) else {
+                    continue;
+                };
+                let Some(radius) = ecs.resolve_token_footprint(token, scene) else {
+                    continue;
+                };
+                let grid = ecs.resolve_grid_shape(scene, cell);
+                let cells =
+                    grid.footprint_cells(grid.cell_of(pos), pos, radius.max(0.0) * cell, cell);
+                reports.push(TriggerReport {
+                    scene,
+                    token,
+                    entered: cells,
+                    arrest_stop: None,
+                });
+            }
+        }
+        for report in reports {
+            self.fire_region_triggers(repo, ctx, report, ts).await;
+        }
     }
 
     /// Unexpired in-flight frames moved by `mover` in `scene` — the mover's vision timelines
@@ -1499,6 +2049,7 @@ impl RoomRegistry {
                     "vision-modes",
                     "actor",
                     "system-defaults",
+                    "resource-registry",
                     "combat",
                 ],
             )
@@ -1516,6 +2067,10 @@ impl RoomRegistry {
             .iter()
             .find(|d| d.doc_type == "system-defaults")
             .cloned();
+        let resource_registry = docs
+            .iter()
+            .find(|d| d.doc_type == "resource-registry")
+            .cloned();
         let actors: Vec<Document> = docs
             .iter()
             .filter(|d| d.doc_type == "actor")
@@ -1525,7 +2080,13 @@ impl RoomRegistry {
             .into_iter()
             .filter(|d| d.doc_type == "combat")
             .collect();
-        scene_ecs.set_world_config(world_settings, gradation, vision_modes, system_defaults);
+        scene_ecs.set_world_config(
+            world_settings,
+            gradation,
+            vision_modes,
+            system_defaults,
+            resource_registry,
+        );
         scene_ecs.set_actors(actors);
         scene_ecs.set_combats(combats);
         let room = self

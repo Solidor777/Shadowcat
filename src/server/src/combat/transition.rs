@@ -44,6 +44,7 @@ use crate::data::DataError;
 use crate::dice::{RawRoll, RollOutcome, RollSpec};
 
 use super::effects::{collect_all_effects, collect_effects, expire_by_policy, tick, EffectRef};
+use super::eval;
 use super::history;
 use super::ops::{set_engine, whole_engine_replace};
 use super::{CombatError, CombatSnapshot, Combatant};
@@ -87,6 +88,7 @@ impl RollPost {
         let (_, outcome, spec, raw) = crate::chat::rolls::execute_roll_with_seed(
             &total.to_string(),
             crate::dice::notation::ParseContext::default(),
+            None,
             0,
         )
         .expect("a bare integer constant always parses and evaluates deterministically");
@@ -148,45 +150,65 @@ fn phase_formula(recover: &Recovery, phase: Phase) -> &Formula {
     }
 }
 
+/// The chain-field name of `phase`, used in evaluation-failure details.
+fn phase_name(phase: Phase) -> &'static str {
+    match phase {
+        Phase::TurnStart => "turn_start",
+        Phase::TurnEnd => "turn_end",
+        Phase::RoundStart => "round_start",
+        Phase::RoundEnd => "round_end",
+    }
+}
+
 /// Appends the resource-recovery `FieldChange`s `c` earns at `phase` to
-/// `out`. Only a `Tracked`-bound resource recovers; a `Formula::Text` phase
-/// formula is never evaluated server-side (the server has no formula
-/// engine) and applies nothing — the resource's `current` is left exactly
-/// as stored. A resolved `Formula::Number` of `0`, or one that would leave
-/// `current` unchanged after clamping to `[0, max]`, emits no change either
-/// (there is nothing to write).
+/// `out`. Every `Tracked` REGISTRY resource applies: the phase amount and
+/// the binding's `max` are evaluated over the combatant's formula host
+/// (`eval::formula_host`), and the result clamps to `[0, max]`. An ABSENT
+/// stored entry reads as full (`eval::resolved_resource`'s lazy-full rule)
+/// and is materialized only when the clamped result differs from full —
+/// uniformly for every combatant kind (an `Event` has no host, so a text
+/// formula for it resolves through the no-host path). An evaluation failure
+/// records a detail line in `failures` — prefixed with the combatant's name
+/// or id, so one broken shared formula cannot dedup-collapse across distinct
+/// combatants — and applies nothing for that resource; a recovery
+/// that would leave `current` unchanged emits no change (there is nothing
+/// to write).
 fn recover(
     view: &CombatSnapshot,
     c: &Combatant,
     phase: Phase,
     out: &mut Vec<FieldChange>,
+    failures: &mut Vec<String>,
 ) -> Result<(), CombatError> {
     let Some(registry) = &view.registry else {
         return Ok(());
     };
-    for (key, res) in &c.engine.resources {
-        let Some(resource_def) = registry.resources.get(key) else {
+    let host = eval::formula_host(&view.hosts, &c.engine.kind);
+    let who = c.doc.name.clone().unwrap_or_else(|| c.doc.id.to_string());
+    for (key, res) in &registry.resources {
+        let ResourceBinding::Tracked { recover, .. } = &res.binding else {
             continue;
         };
-        let ResourceBinding::Tracked { recover, .. } = &resource_def.binding else {
-            continue;
+        let stored = c.engine.resources.get(key).map(|r| r.current);
+        let delta = match eval::eval_formula(phase_formula(recover, phase), host) {
+            Ok(v) => v,
+            Err(e) => {
+                failures.push(format!("{who}: {key} {}: {}", phase_name(phase), e.detail));
+                continue;
+            }
         };
-        let Formula::Number(n) = phase_formula(recover, phase) else {
-            continue;
-        };
-        if *n == 0.0 {
+        if delta == 0.0 {
             continue;
         }
-        // INVARIANT: `res.max` is non-negative — `CombatantEngine::validate`'s
-        // ingress gate rejects any Create/Update whose merged post-image has a
-        // resource `max < 0.0` before it ever reaches a transition, so this
-        // clamp's upper bound can never be below its lower bound.
-        debug_assert!(
-            res.max >= 0.0,
-            "CombatantEngine::validate guarantees a non-negative resource max"
-        );
-        let new = (res.current + n).clamp(0.0, res.max);
-        if new == res.current {
+        let nums = match eval::resolved_resource(&res.binding, stored, host) {
+            Ok(n) => n,
+            Err(e) => {
+                failures.push(format!("{who}: {key} max: {}", e.detail));
+                continue;
+            }
+        };
+        let new = (nums.current + delta).clamp(0.0, nums.max);
+        if stored.map_or(new == nums.max, |s| new == s) {
             continue;
         }
         out.push(set_engine(
@@ -224,6 +246,10 @@ struct Working {
     registry: Option<ResourceRegistryEngine>,
     /// Ops accumulated so far, in commit order.
     ops: Vec<Operation>,
+    /// Every formula-evaluation failure detail this transition recorded (a
+    /// skipped write each); drained into ONE GM-only chat notice by
+    /// `flush_eval_notices`.
+    eval_failures: Vec<String>,
     /// Total `settle_turn` loop iterations taken. Test-only instrumentation
     /// for asserting the step budget stays linear in `order`'s initial
     /// length (see `settle_turn`'s own doc comment) — never read outside a
@@ -249,6 +275,7 @@ impl Working {
             hosts: snap.hosts.clone(),
             registry: snap.registry.clone(),
             ops: Vec::new(),
+            eval_failures: Vec::new(),
             #[cfg(test)]
             settle_turn_steps: 0,
         }
@@ -426,6 +453,47 @@ impl Working {
         }
         self.ops.extend(merged);
     }
+
+    /// Drains `eval_failures` into ONE GM-only notice op (`eval_notice`), or
+    /// does nothing when no failure was recorded.
+    fn flush_eval_notices(&mut self, world: Uuid, author: Uuid, now: i64) {
+        let failures = std::mem::take(&mut self.eval_failures);
+        self.ops.extend(eval_notice(failures, world, author, now));
+    }
+}
+
+/// ONE GM-only chat notice carrying every DISTINCT failure detail in
+/// `failures` (order-preserving dedupe), or `None` when it is empty. The
+/// clock proceeds past a bad formula — the affected write is skipped — and
+/// this notice is how that skip surfaces instead of silently vanishing.
+fn eval_notice(failures: Vec<String>, world: Uuid, author: Uuid, now: i64) -> Option<Operation> {
+    if failures.is_empty() {
+        return None;
+    }
+    let mut seen = HashSet::new();
+    let lines: Vec<String> = failures
+        .into_iter()
+        .filter(|f| seen.insert(f.clone()))
+        .collect();
+    let doc = build_message_doc(
+        world,
+        author,
+        MessageDraft {
+            channel: "combat".to_string(),
+            actor_owner: None,
+            audience: Audience::GmOnly,
+            kind: MessageKind::System,
+            content: vec![Segment::Text {
+                text: format!(
+                    "Combat formula evaluation failed — affected values were left unchanged: {}",
+                    lines.join("; ")
+                ),
+            }],
+            source: None,
+        },
+        now,
+    );
+    Some(Operation::Create { doc })
 }
 
 /// Folds `incoming` into `existing` in place, in favor of `existing`
@@ -464,6 +532,7 @@ fn run_boundary(
     seen: &mut HashSet<(Uuid, String)>,
 ) -> Result<(), CombatError> {
     let mut changes = Vec::new();
+    let mut failures = Vec::new();
     {
         let view = w.view();
         let c = w
@@ -471,8 +540,9 @@ fn run_boundary(
             .iter()
             .find(|c| c.doc.id == id)
             .ok_or(CombatError::NotFound)?;
-        recover(&view, c, phase, &mut changes)?;
+        recover(&view, c, phase, &mut changes, &mut failures)?;
     }
+    w.eval_failures.append(&mut failures);
     w.commit_combatant(id, changes)?;
     let refs: Vec<EffectRef> = {
         let view = w.view();
@@ -487,7 +557,9 @@ fn run_boundary(
         .into_iter()
         .filter(|r| seen.insert((r.host, r.path.clone())))
         .collect();
-    let tick_ops = tick(&w.hosts, &refs, boundary, unit)?;
+    let defaults = w.engine.effect_lifecycle.clone();
+    let (tick_ops, mut tick_failures) = tick(&w.hosts, &refs, boundary, unit, &defaults)?;
+    w.eval_failures.append(&mut tick_failures);
     w.commit_host_ops(tick_ops)?;
     Ok(())
 }
@@ -513,7 +585,10 @@ fn run_turn_end(w: &mut Working, id: Uuid) -> Result<(), CombatError> {
                 .ok_or(CombatError::NotFound)?;
             collect_effects(&view, c)
         };
-        let expire_ops = expire_by_policy(&w.hosts, &refs, |r| r.on_turn_end)?;
+        let defaults = w.engine.effect_lifecycle.clone();
+        let (expire_ops, mut expire_failures) =
+            expire_by_policy(&w.hosts, &refs, |f| f.on_turn_end, &defaults)?;
+        w.eval_failures.append(&mut expire_failures);
         w.commit_host_ops(expire_ops)?;
     }
     Ok(())
@@ -868,6 +943,7 @@ pub fn start(
     }
     let active_change = set_engine(&w.combat, "/engine/active", json!(true))?;
     w.commit_combat(vec![active_change])?;
+    w.flush_eval_notices(world, author, now);
     w.coalesce_updates(0);
     Ok(w.ops)
 }
@@ -904,6 +980,7 @@ fn advance_impl(
     run_turn_end(&mut w, current_id)?;
     let next_idx = advance_from(&mut w, start_idx, false)?;
     settle_turn(&mut w, snap, next_idx, world, author, now)?;
+    w.flush_eval_notices(world, author, now);
     w.coalesce_updates(0);
     #[cfg(test)]
     let steps = w.settle_turn_steps;
@@ -1050,8 +1127,15 @@ pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatE
 /// Ends a combat outright: expires every `on_combat_end`-policy effect
 /// (when `effect_cleanup`), then deletes the combat document (whose cascade
 /// removes its combatants/history — this never emits a child `Delete`
-/// itself). Effect expiry ops always precede the `Delete`.
-pub fn end(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
+/// itself). Effect expiry ops always precede the `Delete`; an evaluation
+/// failure skips its one effect and surfaces as a GM-only notice in the same
+/// command (`world`/`author`/`now` exist for that notice).
+pub fn end(
+    snap: &CombatSnapshot,
+    world: Uuid,
+    author: Uuid,
+    now: i64,
+) -> Result<Vec<Operation>, CombatError> {
     let mut ops = Vec::new();
     if snap.engine.effect_cleanup {
         // `collect_all_effects` unions every combatant's refs; an unanchored
@@ -1066,7 +1150,14 @@ pub fn end(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
             .map(|(_, r)| r)
             .filter(|r| seen.insert((r.host, r.path.clone())))
             .collect();
-        ops.extend(expire_by_policy(&snap.hosts, &refs, |r| r.on_combat_end)?);
+        let (expire_ops, failures) = expire_by_policy(
+            &snap.hosts,
+            &refs,
+            |f| f.on_combat_end,
+            &snap.engine.effect_lifecycle,
+        )?;
+        ops.extend(expire_ops);
+        ops.extend(eval_notice(failures, world, author, now));
     }
     ops.push(Operation::Delete {
         doc: snap.combat.clone(),
@@ -1176,9 +1267,16 @@ pub fn roll(
     Ok(ops)
 }
 
-/// Adjusts one combatant's tracked resource: `Delta` adds a signed amount,
-/// `Set` overwrites outright; both clamp to `[0, max]`. `Forbidden` when the
-/// requested amount/value is non-finite (never silently truncated/ignored).
+/// Adjusts one combatant's `Tracked` resource: `Delta` adds a signed amount,
+/// `Set` overwrites outright; both clamp to `[0, max]` with `max` evaluated
+/// over the combatant's formula host. The resource is looked up in the
+/// registry (`NotFound` for an unknown key); an absent combatant entry reads
+/// as full and is materialized by this write. A `Mirror`-bound key is
+/// refused (`Forbidden`): its number lives on the actor and is changed by
+/// writing the actor document through the ordinary path, never through the
+/// clock. `Forbidden` when the requested amount/value is non-finite (never
+/// silently truncated/ignored); an evaluation failure refuses with the same
+/// uniform wording rather than guessing a ceiling.
 pub fn resource(
     snap: &CombatSnapshot,
     combatant_id: Uuid,
@@ -1190,25 +1288,30 @@ pub fn resource(
         .iter()
         .find(|c| c.doc.id == combatant_id)
         .ok_or(CombatError::NotFound)?;
-    let res = c.engine.resources.get(key).ok_or(CombatError::NotFound)?;
-    // INVARIANT: `res.max` is non-negative — see `recover`'s identical note;
-    // `CombatantEngine::validate` is the sole ingress gate for this field.
-    debug_assert!(
-        res.max >= 0.0,
-        "CombatantEngine::validate guarantees a non-negative resource max"
-    );
+    let def = snap
+        .registry
+        .as_ref()
+        .and_then(|r| r.resources.get(key))
+        .ok_or(CombatError::NotFound)?;
+    if matches!(def.binding, ResourceBinding::Mirror { .. }) {
+        return Err(CombatError::Forbidden);
+    }
+    let host = eval::formula_host(&snap.hosts, &c.engine.kind);
+    let stored = c.engine.resources.get(key).map(|r| r.current);
+    let nums = eval::resolved_resource(&def.binding, stored, host)
+        .map_err(|e| CombatError::Data(DataError::OpFailed(e.detail)))?;
     let new = match op {
         ResourceOp::Delta { amount } => {
             if !amount.is_finite() {
                 return Err(CombatError::Forbidden);
             }
-            (res.current + amount).clamp(0.0, res.max)
+            (nums.current + amount).clamp(0.0, nums.max)
         }
         ResourceOp::Set { value } => {
             if !value.is_finite() {
                 return Err(CombatError::Forbidden);
             }
-            value.clamp(0.0, res.max)
+            value.clamp(0.0, nums.max)
         }
     };
     let change = set_engine(

@@ -124,7 +124,7 @@ fn active_combat_and_combatant_lookups_follow_apply_op() {
         3,
         "combatant",
         json!({ "kind": { "type": "actor", "token_id": Uuid::from_u128(2), "actor_id": null },
-        "initiative": null, "tiebreak": 0.0, "resources": { "movement": { "current": 30.0, "max": 30.0 } } }),
+        "initiative": null, "tiebreak": 0.0, "resources": { "movement": { "current": 30.0 } } }),
     );
     combatant.permissions.default = crate::data::document::DocRole::Observer;
     ecs.apply_op(&Operation::Create { doc: combatant });

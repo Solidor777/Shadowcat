@@ -31,6 +31,10 @@ pub mod validation;
 /// Per-world export/import bundle row/manifest DTOs (see `crate::world_bundle`
 /// for the tar file-format I/O built from them).
 pub mod world_bundle;
+/// Server-side world-config seeding: the config-singleton ops-builder plus
+/// the enabled-system defaults/author derivations its callers commit under
+/// `WriteOrigin::ConfigSeed`.
+pub mod world_seed;
 
 pub use asset::Asset;
 

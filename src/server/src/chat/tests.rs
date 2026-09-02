@@ -245,7 +245,7 @@ fn html_segment_tagged_roundtrip() {
 #[test]
 fn message_system_omits_absent_edit_delete_markers() {
     let sys = MessageEngine {
-        channel: "all".into(),
+        channel: "general".into(),
         user_owner: Uuid::from_u128(1),
         actor_owner: None,
         kind: MessageKind::Normal,
@@ -274,7 +274,7 @@ fn build_message_doc_threads_kind() {
         Uuid::from_u128(10),
         Uuid::from_u128(20),
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Emote,
@@ -346,7 +346,7 @@ fn build_message_doc_is_server_owned_message() {
         world,
         user,
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -366,7 +366,7 @@ fn build_message_doc_is_server_owned_message() {
     // Body round-trips back to a MessageEngine with server-set user_owner.
     let sys: MessageEngine = serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
     assert_eq!(sys.user_owner, user);
-    assert_eq!(sys.channel, "all");
+    assert_eq!(sys.channel, "general");
     assert_eq!(sys.kind, MessageKind::Normal);
     assert_eq!(sys.audience, Audience::Public);
     assert_eq!(sys.content, vec![Segment::Text { text: "hi".into() }]);
@@ -378,7 +378,7 @@ fn ops_target_message_detects_message_create_and_update() {
         Uuid::from_u128(1),
         Uuid::from_u128(2),
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -396,7 +396,7 @@ fn ops_target_message_detects_message_create_and_update() {
         Uuid::from_u128(1),
         Uuid::from_u128(2),
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -418,7 +418,7 @@ fn ops_target_message_detects_message_in_mixed_batch() {
         Uuid::from_u128(1),
         Uuid::from_u128(2),
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -432,7 +432,7 @@ fn ops_target_message_detects_message_in_mixed_batch() {
         Uuid::from_u128(1),
         Uuid::from_u128(2),
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -469,7 +469,7 @@ fn build_message_doc_public_matches_c1_shape() {
         Uuid::from_u128(9),
         owner,
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -637,6 +637,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -664,7 +665,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hello".into(),
         None,
         Audience::Public,
@@ -692,7 +693,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 now: 100,
                 budget_per_min: 2,
             },
-            "all".into(),
+            "general".into(),
             "x".into(),
             None,
             Audience::Public,
@@ -713,7 +714,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
             now: 100,
             budget_per_min: 2,
         },
-        "all".into(),
+        "general".into(),
         "x".into(),
         None,
         Audience::Public,
@@ -737,7 +738,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 now: 100,
                 budget_per_min: 30,
             },
-            "all".into(),
+            "general".into(),
             "".into(),
             None,
             Audience::Public,
@@ -761,7 +762,7 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 now: 100,
                 budget_per_min: 30,
             },
-            "all".into(),
+            "general".into(),
             long,
             None,
             Audience::Public,
@@ -843,6 +844,7 @@ async fn a_roll_messages_spec_and_raw_are_gm_only_but_outcome_and_roll_id_are_no
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, DocWorldRole::Player)
         .await
         .unwrap();
@@ -868,7 +870,7 @@ async fn a_roll_messages_spec_and_raw_are_gm_only_but_outcome_and_roll_id_are_no
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/roll 1d6".into(),
         None,
         Audience::Public,
@@ -916,6 +918,7 @@ async fn send_message_stores_a_doc_link_segment() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -943,7 +946,7 @@ async fn send_message_stores_a_doc_link_segment() {
             now: 0,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         format!("see [[doc:{target_id}|My Doc]] please"),
         None,
         Audience::Public,
@@ -988,6 +991,7 @@ async fn send_message_stores_a_token_link_segment() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     let ctx = PermissionContext {
         user_id: gm,
         world_role: WorldRole::Gm,
@@ -1011,7 +1015,7 @@ async fn send_message_stores_a_token_link_segment() {
             now: 0,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         format!("[[token:{token_id}|Goblin]]"),
         None,
         Audience::Public,
@@ -1048,6 +1052,7 @@ async fn send_message_with_a_dangling_doc_link_target_still_stores_it_unvalidate
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     let ctx = PermissionContext {
         user_id: gm,
         world_role: WorldRole::Gm,
@@ -1071,7 +1076,7 @@ async fn send_message_with_a_dangling_doc_link_target_still_stores_it_unvalidate
             now: 0,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         format!("[[doc:{nonexistent}|Ghost Doc]]"),
         None,
         Audience::Public,
@@ -1108,6 +1113,7 @@ async fn send_message_rejects_a_malformed_doc_link_and_authors_no_message() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     let ctx = PermissionContext {
         user_id: gm,
         world_role: WorldRole::Gm,
@@ -1131,7 +1137,7 @@ async fn send_message_rejects_a_malformed_doc_link_and_authors_no_message() {
             now: 0,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "[[doc:not-a-uuid]]".into(),
         None,
         Audience::Public,
@@ -1171,6 +1177,7 @@ async fn handle_send_message_rejects_unknown_whisper_recipient() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1198,7 +1205,7 @@ async fn handle_send_message_rejects_unknown_whisper_recipient() {
             now: 100,
             budget_per_min: 30,
         },
-        "whispers".into(),
+        "general".into(),
         "psst".into(),
         None,
         Audience::Whisper {
@@ -1233,6 +1240,7 @@ async fn handle_send_message_accepts_a_whisper_to_a_real_member() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1261,7 +1269,7 @@ async fn handle_send_message_accepts_a_whisper_to_a_real_member() {
             now: 100,
             budget_per_min: 30,
         },
-        "whispers".into(),
+        "general".into(),
         "psst".into(),
         None,
         Audience::Whisper {
@@ -1290,6 +1298,7 @@ async fn handle_send_message_rejects_oversized_whisper_recipient_list() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1322,7 +1331,7 @@ async fn handle_send_message_rejects_oversized_whisper_recipient_list() {
             now: 100,
             budget_per_min: 30,
         },
-        "whispers".into(),
+        "general".into(),
         "psst".into(),
         None,
         Audience::Whisper { recipients },
@@ -1352,6 +1361,7 @@ async fn handle_send_message_accepts_whisper_at_exactly_the_recipient_cap() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1381,7 +1391,7 @@ async fn handle_send_message_accepts_whisper_at_exactly_the_recipient_cap() {
             now: 100,
             budget_per_min: 30,
         },
-        "whispers".into(),
+        "general".into(),
         "psst".into(),
         None,
         Audience::Whisper { recipients },
@@ -1418,6 +1428,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1447,7 +1458,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hello".into(),
         None,
         Audience::Public,
@@ -1476,7 +1487,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
             now: 101,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/me waves".into(),
         None,
         Audience::Public,
@@ -1505,7 +1516,7 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
             now: 102,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/w @alice hi".into(),
         None,
         Audience::Public,
@@ -1537,6 +1548,7 @@ async fn edit_replaces_source_and_delete_clears_it() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1562,7 +1574,7 @@ async fn edit_replaces_source_and_delete_clears_it() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hello".into(),
         None,
         Audience::Public,
@@ -1630,6 +1642,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, sender, WorldRole::Player)
         .await
         .unwrap();
@@ -1661,7 +1674,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/w @alice /me waves".into(),
         None,
         Audience::Public,
@@ -1731,7 +1744,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             now: 102,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/w @alice hi".into(),
         None,
         Audience::Public,
@@ -1795,7 +1808,7 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             now: 104,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hello".into(),
         None,
         Audience::Public,
@@ -1880,6 +1893,7 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -1905,7 +1919,7 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "attack! [[1d20]] done".into(),
         None,
         Audience::Public,
@@ -1962,7 +1976,7 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
             now: 102,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hello there".into(),
         None,
         Audience::Public,
@@ -2020,6 +2034,7 @@ async fn whisper_roll_via_frame_audience_is_edit_immutable() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, sender, WorldRole::Player)
         .await
         .unwrap();
@@ -2048,7 +2063,7 @@ async fn whisper_roll_via_frame_audience_is_edit_immutable() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/roll 2d6".into(),
         None,
         Audience::Whisper {
@@ -2095,7 +2110,7 @@ async fn whisper_roll_via_frame_audience_is_edit_immutable() {
 fn stored_message_without_a_source_key_deserializes() {
     // A stored `MessageEngine` JSON carrying no `source` key at all.
     let j = serde_json::json!({
-        "channel": "all",
+        "channel": "general",
         "user_owner": Uuid::from_u128(1),
         "kind": "normal",
         "audience": { "kind": "public" },
@@ -2140,7 +2155,7 @@ async fn posted_message_is_searchable_by_members() {
         w.id,
         player,
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Normal,
@@ -2245,6 +2260,7 @@ async fn send_message_allows_token_owner_via_its_own_override_to_speak_as_it() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2282,7 +2298,7 @@ async fn send_message_allows_token_owner_via_its_own_override_to_speak_as_it() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
@@ -2318,6 +2334,7 @@ async fn send_message_allows_the_linked_actors_owner_to_speak_as_its_token() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2361,7 +2378,7 @@ async fn send_message_allows_the_linked_actors_owner_to_speak_as_its_token() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
@@ -2401,6 +2418,7 @@ async fn send_message_rejects_a_non_owner_non_gm_speaking_as_a_token() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2441,7 +2459,7 @@ async fn send_message_rejects_a_non_owner_non_gm_speaking_as_a_token() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
@@ -2468,6 +2486,7 @@ async fn send_message_rejects_a_token_from_another_world_even_for_its_owner() {
         .await
         .unwrap();
     let world_a = repo.create_world_owned("A", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, world_a.id, &[]).await;
     let world_b = repo.create_world_owned("B", gm, 0).await.unwrap();
     repo.add_member(world_a.id, player, WorldRole::Player)
         .await
@@ -2512,7 +2531,7 @@ async fn send_message_rejects_a_token_from_another_world_even_for_its_owner() {
             now: 0,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hi".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
@@ -2540,6 +2559,7 @@ async fn send_message_allows_gm_to_speak_as_any_token_regardless_of_owner() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2577,7 +2597,7 @@ async fn send_message_allows_gm_to_speak_as_any_token_regardless_of_owner() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance { token_id }),
         Audience::Public,
@@ -2613,6 +2633,7 @@ async fn send_message_allows_player_attributing_own_actor() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2650,7 +2671,7 @@ async fn send_message_allows_player_attributing_own_actor() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
@@ -2687,6 +2708,7 @@ async fn send_message_rejects_player_attributing_another_users_actor() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2731,7 +2753,7 @@ async fn send_message_rejects_player_attributing_another_users_actor() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
@@ -2763,6 +2785,7 @@ async fn actor_from_another_world_is_not_speakable_even_for_its_owner() {
         .await
         .unwrap();
     let world_a = repo.create_world_owned("A", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, world_a.id, &[]).await;
     let world_b = repo.create_world_owned("B", gm, 0).await.unwrap();
     repo.add_member(world_a.id, player, WorldRole::Player)
         .await
@@ -2807,7 +2830,7 @@ async fn actor_from_another_world_is_not_speakable_even_for_its_owner() {
             now: 0,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "hi".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
@@ -2834,6 +2857,7 @@ async fn send_message_rejects_attributing_a_nonexistent_actor() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2860,7 +2884,7 @@ async fn send_message_rejects_attributing_a_nonexistent_actor() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::Actor {
             actor_id: Uuid::new_v4(),
@@ -2889,6 +2913,7 @@ async fn send_message_allows_gm_attributing_any_actor() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2926,7 +2951,7 @@ async fn send_message_allows_gm_attributing_any_actor() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id }),
         Audience::Public,
@@ -2954,6 +2979,7 @@ async fn send_message_rejects_attributing_a_nonexistent_token() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -2980,7 +3006,7 @@ async fn send_message_rejects_attributing_a_nonexistent_token() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::TokenInstance {
             token_id: Uuid::new_v4(),
@@ -3012,6 +3038,7 @@ async fn send_message_rejects_attribution_to_a_non_actor_doc() {
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -3052,7 +3079,7 @@ async fn send_message_rejects_attribution_to_a_non_actor_doc() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "grr".into(),
         Some(ActorOwnerRef::Actor { actor_id: doc_id }),
         Audience::Public,
@@ -3098,6 +3125,7 @@ async fn seed_gm_and_room() -> (
         .await
         .unwrap();
     let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
     repo.add_member(w.id, player, WorldRole::Player)
         .await
         .unwrap();
@@ -3128,7 +3156,7 @@ async fn handle_recalc_roll_rejects_a_non_gm_sender() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/roll 1d6".into(),
         None,
         Audience::Public,
@@ -3189,7 +3217,7 @@ async fn handle_recalc_roll_rejects_unknown_roll_id_and_missing_stored_state() {
             now: 100,
             budget_per_min: 30,
         },
-        "all".into(),
+        "general".into(),
         "/roll 1d6".into(),
         None,
         Audience::Public,
@@ -3266,7 +3294,7 @@ async fn handle_recalc_roll_refuses_a_roll_with_no_stored_spec_or_raw() {
         world,
         gm,
         MessageDraft {
-            channel: "all".into(),
+            channel: "general".into(),
             actor_owner: None,
             audience: Audience::Public,
             kind: MessageKind::Roll,
@@ -3333,7 +3361,7 @@ async fn handle_recalc_roll_succeeds_for_public_whisper_and_gmonly_audiences() {
                 now: 100,
                 budget_per_min: 30,
             },
-            "all".into(),
+            "general".into(),
             "/roll 1d6".into(),
             None,
             audience.clone(),
@@ -3392,7 +3420,7 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
             now: 100,
             budget_per_min: 30,
         },
-        "gmonly".into(),
+        "general".into(),
         "/roll 1d6".into(),
         None,
         Audience::GmOnly,
@@ -3512,4 +3540,231 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
             "previous_outcome must stay visible to a non-GM"
         );
     }
+}
+
+// --- Reference resolution at send ---
+
+/// The send-path harness: an in-memory repo, one world, one player member,
+/// the world's room, and a fresh rate limiter.
+async fn roll_send_harness() -> (
+    crate::data::sqlite::SqliteRepository,
+    std::sync::Arc<crate::ws::room::Room>,
+    PermissionContext,
+    PingRateLimiter,
+    Uuid,
+) {
+    use crate::auth::role::ServerRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = repo
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    repo.add_member(w.id, player, WorldRole::Player)
+        .await
+        .unwrap();
+    let ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    (repo, room, ctx, PingRateLimiter::new(), w.id)
+}
+
+/// Sends one message through the production ingest path.
+async fn send(
+    repo: &crate::data::sqlite::SqliteRepository,
+    room: &crate::ws::room::Room,
+    ctx: &PermissionContext,
+    rate: &PingRateLimiter,
+    content: &str,
+    actor_owner: Option<ActorOwnerRef>,
+) -> Command {
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room,
+            repo,
+            ctx,
+            rate,
+            preview: LinkPreviewDeps {
+                client: &link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "general".into(),
+        content.into(),
+        actor_owner,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    cmd
+}
+
+/// The channel-membership gate: a send naming a channel the world's
+/// channel-registry does not declare is refused with
+/// `SendMessageError::UnknownChannel` — player-presentable wording, since the
+/// sender supplied the string and the registry's keys are member-visible —
+/// and nothing is persisted.
+#[tokio::test]
+async fn handle_send_message_rejects_an_unregistered_channel_and_persists_nothing() {
+    let (repo, room, ctx, rate, world) = roll_send_harness().await;
+    let err = handle_send_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "no-such-channel".into(),
+        "hello".into(),
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, SendMessageError::UnknownChannel));
+    assert_eq!(err.to_string(), "That channel does not exist.");
+    assert!(
+        repo.events_since(world, 0).await.unwrap().is_empty(),
+        "a refused send authors no event"
+    );
+}
+
+/// The single `Create` op's document, and its decoded `MessageEngine`.
+fn created_message(cmd: &Command) -> serde_json::Value {
+    let doc = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.clone(),
+        other => panic!("expected one Create, got {other:?}"),
+    };
+    serde_json::to_value(
+        serde_json::from_value::<MessageEngine>(doc.engine.clone().unwrap())
+            .expect("engine decodes as MessageEngine"),
+    )
+    .unwrap()
+}
+
+/// Seeds a player-owned actor whose `system.stats.str` is 3, returning its id.
+async fn seed_str_actor(
+    repo: &crate::data::sqlite::SqliteRepository,
+    world_id: Uuid,
+    player: Uuid,
+) -> Uuid {
+    use crate::data::command::UnsequencedCommand;
+
+    let actor_id = Uuid::new_v4();
+    let mut actor = seed_actor_doc(actor_id, world_id, Some(player));
+    actor.system = serde_json::json!({ "stats": { "str": 3 } });
+    repo.apply_command(UnsequencedCommand {
+        world_id,
+        author: player,
+        ts: 0,
+        ops: vec![Operation::Create { doc: actor }],
+    })
+    .await
+    .unwrap();
+    actor_id
+}
+
+#[tokio::test]
+async fn a_slash_roll_resolves_references_against_the_speak_as_actor() {
+    let (repo, room, ctx, rate, world_id) = roll_send_harness().await;
+    let actor_id = seed_str_actor(&repo, world_id, ctx.user_id).await;
+
+    let cmd = send(
+        &repo,
+        &room,
+        &ctx,
+        &rate,
+        "/roll 1d20+stats.str",
+        Some(ActorOwnerRef::Actor { actor_id }),
+    )
+    .await;
+    let sys = created_message(&cmd);
+    let seg = &sys["content"][0];
+    assert_eq!(
+        seg["formula"], "1d20+stats.str",
+        "the stored formula keeps the author's template text"
+    );
+    assert_eq!(sys["kind"], "roll");
+    assert_eq!(
+        seg["outcome"]["labeled_consts"][0]["label"], "stats.str",
+        "the substituted reference surfaces as a labeled chip"
+    );
+    assert_eq!(seg["outcome"]["labeled_consts"][0]["value"], 3);
+}
+
+#[tokio::test]
+async fn a_slash_roll_with_references_and_no_binding_posts_a_notice_instead() {
+    let (repo, room, ctx, rate, _world_id) = roll_send_harness().await;
+
+    let cmd = send(&repo, &room, &ctx, &rate, "/roll 1d20+stats.str", None).await;
+    let sys = created_message(&cmd);
+    assert_eq!(sys["kind"], "system");
+    let text = sys["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("unknown reference 'stats.str'"),
+        "the notice names the unresolvable reference, got: {text}"
+    );
+}
+
+#[tokio::test]
+async fn an_inline_roll_resolves_references_against_the_speak_as_actor() {
+    let (repo, room, ctx, rate, world_id) = roll_send_harness().await;
+    let actor_id = seed_str_actor(&repo, world_id, ctx.user_id).await;
+
+    let cmd = send(
+        &repo,
+        &room,
+        &ctx,
+        &rate,
+        "dmg [[1d20+stats.str]]!",
+        Some(ActorOwnerRef::Actor { actor_id }),
+    )
+    .await;
+    let sys = created_message(&cmd);
+    let roll = &sys["content"][1];
+    assert_eq!(roll["kind"], "roll_embed");
+    assert_eq!(roll["formula"], "1d20+stats.str");
+}
+
+#[tokio::test]
+async fn a_roll_button_stores_its_template_unresolved() {
+    let (repo, room, ctx, rate, _world_id) = roll_send_harness().await;
+
+    // No actor binding: a button is per-clicker, so ingest validates the
+    // template structurally and stores it raw.
+    let cmd = send(
+        &repo,
+        &room,
+        &ctx,
+        &rate,
+        "[[roll:1d20+stats.str|Attack]]",
+        None,
+    )
+    .await;
+    let sys = created_message(&cmd);
+    let seg = &sys["content"][0];
+    assert_eq!(seg["kind"], "roll_button");
+    assert_eq!(seg["formula"], "1d20+stats.str");
+    assert_eq!(seg["label"], "Attack");
 }

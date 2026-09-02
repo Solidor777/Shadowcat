@@ -45,6 +45,15 @@ pub(crate) fn world_of(doc: &Document) -> Option<Uuid> {
     }
 }
 
+/// The actor copy a token document embeds under its `embedded["actor"]` list,
+/// if any — the ONE extraction shared by combat evaluation
+/// (`combat::eval::formula_host`/`effect_host_doc`) and chat's token-instance
+/// roll host (`chat::host`), so the token→copy step cannot fork between the
+/// combatant walk and the roll binding.
+pub(crate) fn embedded_actor_copy(token: &Document) -> Option<&Document> {
+    token.embedded.get("actor").and_then(|v| v.first())
+}
+
 /// Provenance link for the deferred pull/push merge.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]

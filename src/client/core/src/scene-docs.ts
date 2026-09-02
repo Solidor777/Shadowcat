@@ -6,9 +6,7 @@
 export type { WireDocument } from "./wire";
 import type { WireDocument } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { WireOperation, WireFieldChange } from "./wire";
 import type { FootprintExtent } from "./footprints";
-import { deepEqual } from "./merge";
 import type {
   MovementRestriction,
   MovementModel,
@@ -24,21 +22,35 @@ import type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  Pathfinding,
+  AnimationSettings,
   TokenEngine,
   TokenOverrides,
   TokenVisual,
   RenderVisual,
   AnimatedSource,
+  GeneratedCrop,
+  GeneratedBorder,
+  GeneratedBackground,
   VisionAssignment,
+  AuraEmission,
+  SoundEmission,
+  VfxEmission,
+  VfxAnchor,
   ActorEngine,
   LightEngine,
   Falloff,
   RegionShape,
   RegionEngine,
+  RegionTrigger,
+  TriggerEvent,
+  TriggerEffect,
+  NoticeAudience,
   Faction,
   FactionStance,
   FactionRegistryEngine,
   Condition,
+  ConditionFx,
   ConditionRegistryEngine,
   GradationBand,
   LightGradationEngine,
@@ -70,7 +82,6 @@ import type {
   Duration,
   DurationUnit,
   ExpiryPoint,
-  ResolvedLifecycle,
   EffectLifecycle,
   EffectLifecycleDefaults,
   EffectSnapshot,
@@ -103,21 +114,35 @@ export type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  Pathfinding,
+  AnimationSettings,
   TokenEngine,
   TokenOverrides,
   TokenVisual,
   RenderVisual,
   AnimatedSource,
+  GeneratedCrop,
+  GeneratedBorder,
+  GeneratedBackground,
   VisionAssignment,
+  AuraEmission,
+  SoundEmission,
+  VfxEmission,
+  VfxAnchor,
   ActorEngine,
   LightEngine,
   Falloff,
   RegionShape,
   RegionEngine,
+  RegionTrigger,
+  TriggerEvent,
+  TriggerEffect,
+  NoticeAudience,
   Faction,
   FactionStance,
   FactionRegistryEngine,
   Condition,
+  ConditionFx,
   ConditionRegistryEngine,
   GradationBand,
   LightGradationEngine,
@@ -149,7 +174,6 @@ export type {
   Duration,
   DurationUnit,
   ExpiryPoint,
-  ResolvedLifecycle,
   EffectLifecycle,
   EffectLifecycleDefaults,
   EffectSnapshot,
@@ -203,12 +227,19 @@ function deepFreeze<T>(obj: T): T {
  * bounds were rejected: edge-drag re-mesh churn, ill-defined for open scenes). */
 export const DEFAULT_SCENE_BOUNDS: SceneDimensions = deepFreeze({ width: 100, height: 100 });
 
-/** Built-in defaults — used when no world-settings doc exists or a field is absent.
- * Deep-frozen so shared refs in resolveSceneSettings output are immutable in dev;
- * enumerable values are unchanged. MUST equal the server's
- * `data::engine::scene::WorldSettingsEngine`'s `Default` impl — the client stays the authoritative
- * source; a server-side unit test cross-checks parity. */
-export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
+/** The engine-literal innermost fallbacks of the settings chain, in the RESOLVED (non-overlay)
+ * shape — a MIRROR of the server's definitions (the `WorldSceneDefaults`/`Pathfinding`/
+ * `AnimationSettings` `Default` impls), cross-checked field-by-field by a server-side unit
+ * test. Used when neither the world-settings overlay nor system-defaults supplies a leaf.
+ * Deep-frozen so shared refs in resolveSceneSettings output are immutable in dev. */
+export const DEFAULT_WORLD_SETTINGS: {
+  /** Resolved scene-defaults engine literals. */
+  scene: WorldSceneDefaults;
+  /** Resolved pathfinding engine literals. */
+  pathfinding: Pathfinding;
+  /** Resolved animation engine literals. */
+  animation: AnimationSettings;
+} = deepFreeze({
   scene: {
     losRestriction: true,
     fog: true,
@@ -222,8 +253,6 @@ export const DEFAULT_WORLD_SETTINGS: WorldSettingsEngine = deepFreeze({
   },
   pathfinding: { diagonalRule: "chebyshev" },
   animation: { speedCellsPerSec: 6, easing: "easeInOut" },
-  activeScene: null,
-  combat: null,
 });
 
 // --- Resolved settings ---
@@ -444,13 +473,13 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
 }
 
 /** A top-level (world-scoped, parentless) world-settings config document.
- * Seeds the FULL default object so that a world-settings doc is always complete;
- * single-field edits patch it in place via set_pointer.
- * Default param is a fresh deep clone — the returned doc's `.engine` must not alias
- * DEFAULT_WORLD_SETTINGS (value-independence-at-construction invariant).
+ * The engine body is an `Option`-lifted OVERLAY: the empty default authors no
+ * leaf, and every absent leaf falls through the resolution chain
+ * (system-defaults, then the engine literals `DEFAULT_WORLD_SETTINGS`
+ * mirrors). Single-field edits patch leaves in place via set_pointer.
  * @param worldId The owning world's id.
- * @param engine The full `WorldSettingsEngine`; defaults to a deep clone of
- * `DEFAULT_WORLD_SETTINGS` when omitted.
+ * @param engine The `WorldSettingsEngine` overlay; defaults to the empty
+ * overlay when omitted.
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "world-settings"`.
  * @example
@@ -463,7 +492,7 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
  */
 export function buildWorldSettingsDoc(
   worldId: string,
-  engine: WorldSettingsEngine = structuredClone(DEFAULT_WORLD_SETTINGS),
+  engine: WorldSettingsEngine = {},
   id?: string,
 ): WireDocument {
   return envelope(worldId, "world-settings", null, {}, id, engine, null);
@@ -512,13 +541,13 @@ export const SYSTEM_DEFAULTS_DOC_TYPE = "system-defaults";
 function layers(store: ReadableDocuments): {
   /** The `system-defaults` singleton's engine body, or `undefined` if absent. */
   system: SystemDefaultsEngine | undefined;
-  /** The `world-settings` singleton's engine body, or `undefined` if absent or structurally
-   * incomplete. */
+  /** The `world-settings` singleton's engine body, or `undefined` if absent. Both layers are
+   * `Option`-lifted overlays: a partial body contributes exactly its authored leaves. */
   world: WorldSettingsEngine | undefined;
 } {
   const world = store.query("world-settings")[0]?.engine as WorldSettingsEngine | undefined;
   const system = store.query(SYSTEM_DEFAULTS_DOC_TYPE)[0]?.engine as SystemDefaultsEngine | undefined;
-  return { system, world: world?.scene && world?.pathfinding && world?.animation ? world : undefined };
+  return { system, world };
 }
 
 /** Resolve the effective settings for a scene by merging four layers, per field:
@@ -547,25 +576,25 @@ export function resolveSceneSettings(scene: WireDocument | undefined, store: Rea
   // rather than defaulting to `{}`, which does not structurally satisfy the type.
   const v = eng?.vision;
   const l = eng?.lighting;
-  const movementModel = v?.movementModel ?? world?.scene.movementModel ?? system?.scene?.movementModel ?? DEFAULT_WORLD_SETTINGS.scene.movementModel;
+  const movementModel = v?.movementModel ?? world?.scene?.movementModel ?? system?.scene?.movementModel ?? DEFAULT_WORLD_SETTINGS.scene.movementModel;
   return {
-    losRestriction: v?.losRestriction ?? world?.scene.losRestriction ?? system?.scene?.losRestriction ?? DEFAULT_WORLD_SETTINGS.scene.losRestriction,
-    fog: v?.fog ?? world?.scene.fog ?? system?.scene?.fog ?? DEFAULT_WORLD_SETTINGS.scene.fog,
-    observerVision: v?.observerVision ?? world?.scene.observerVision ?? system?.scene?.observerVision ?? DEFAULT_WORLD_SETTINGS.scene.observerVision,
-    movementRestriction: v?.movementRestriction ?? world?.scene.movementRestriction ?? system?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction,
+    losRestriction: v?.losRestriction ?? world?.scene?.losRestriction ?? system?.scene?.losRestriction ?? DEFAULT_WORLD_SETTINGS.scene.losRestriction,
+    fog: v?.fog ?? world?.scene?.fog ?? system?.scene?.fog ?? DEFAULT_WORLD_SETTINGS.scene.fog,
+    observerVision: v?.observerVision ?? world?.scene?.observerVision ?? system?.scene?.observerVision ?? DEFAULT_WORLD_SETTINGS.scene.observerVision,
+    movementRestriction: v?.movementRestriction ?? world?.scene?.movementRestriction ?? system?.scene?.movementRestriction ?? DEFAULT_WORLD_SETTINGS.scene.movementRestriction,
     movementModel,
     // Derived default keyed off the RESOLVED movementModel — `??` only falls
     // through on null/undefined, never on `false`, so an explicit stored boolean (including
     // false) always overrides the derived default in either direction.
     snapToGrid: eng?.snapToGrid ?? (movementModel === "continuous" ? false : true),
-    lightingEnabled: l?.enabled ?? world?.scene.lightingEnabled ?? system?.scene?.lightingEnabled ?? DEFAULT_WORLD_SETTINGS.scene.lightingEnabled,
-    lightMode: l?.mode ?? world?.scene.lightMode ?? system?.scene?.lightMode ?? DEFAULT_WORLD_SETTINGS.scene.lightMode,
-    environment: l?.environment ?? world?.scene.environment ?? system?.scene?.environment ?? DEFAULT_WORLD_SETTINGS.scene.environment,
-    partialCellLeniency: world?.scene.partialCellLeniency ?? system?.scene?.partialCellLeniency ?? DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency,
-    diagonalRule: world?.pathfinding.diagonalRule ?? system?.pathfinding?.diagonalRule ?? DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule,
+    lightingEnabled: l?.enabled ?? world?.scene?.lightingEnabled ?? system?.scene?.lightingEnabled ?? DEFAULT_WORLD_SETTINGS.scene.lightingEnabled,
+    lightMode: l?.mode ?? world?.scene?.lightMode ?? system?.scene?.lightMode ?? DEFAULT_WORLD_SETTINGS.scene.lightMode,
+    environment: l?.environment ?? world?.scene?.environment ?? system?.scene?.environment ?? DEFAULT_WORLD_SETTINGS.scene.environment,
+    partialCellLeniency: world?.scene?.partialCellLeniency ?? system?.scene?.partialCellLeniency ?? DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency,
+    diagonalRule: world?.pathfinding?.diagonalRule ?? system?.pathfinding?.diagonalRule ?? DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule,
     animation: {
-      speedCellsPerSec: world?.animation.speedCellsPerSec ?? system?.animation?.speedCellsPerSec ?? DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec,
-      easing: world?.animation.easing ?? system?.animation?.easing ?? DEFAULT_WORLD_SETTINGS.animation.easing,
+      speedCellsPerSec: world?.animation?.speedCellsPerSec ?? system?.animation?.speedCellsPerSec ?? DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec,
+      easing: world?.animation?.easing ?? system?.animation?.easing ?? DEFAULT_WORLD_SETTINGS.animation.easing,
     },
     gridDistance: eng?.grid?.distance ?? { perCell: 5, unit: "ft" },
     bounds: resolveBounds(eng?.bounds),
@@ -606,8 +635,8 @@ export function resolveViewedScene(
 
 /** A top-level (world-scoped, parentless) actor document. `name` is the actor's real,
  * privacy-gateable identity (envelope field); `engine` carries every other engine-owned
- * field (`displayName`, visual, size, shape, faction, conditions, prototype, vision)
- * per `ActorEngine`.
+ * field (`displayName`, visual, size, shape, faction, conditions, prototype, vision,
+ * aura/sound/vfx emissions) per `ActorEngine`.
  * @param worldId The owning world's id.
  * @param name The actor's real name (envelope field; use `setNameHidden` to privacy-gate it).
  * @param engine The full `ActorEngine` body.
@@ -620,7 +649,7 @@ export function resolveViewedScene(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null,
+ *   prototype: false, vision: null, aura: null, sound: null, vfx: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * actor.doc_type; // "actor"
@@ -752,7 +781,7 @@ export function buildTokenFromActor(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null,
+ *   prototype: false, vision: null, aura: null, sound: null, vfx: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * setNameHidden(actor, true);
@@ -860,7 +889,8 @@ export function buildSceneEntityDoc(worldId: string, sceneId: string, docType: s
 
 // --- Light-gradation registry ---
 
-/** Built-in three-band gradation (bright → dim → dark).
+/** Built-in three-band gradation (bright → dim → dark) — a MIRROR of the server's
+ * `LightGradationEngine::seed` definition (the world singleton is server-seeded from it).
  * Stored unsorted; `resolveGradation` returns a sorted copy.
  * Deep-frozen so shared refs returned by resolveGradation cannot be mutated by consumers. */
 export const DEFAULT_GRADATION: LightGradationEngine = deepFreeze({
@@ -913,7 +943,8 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
 
 // --- Vision-modes registry ---
 
-/** Built-in two-mode seed: normal sight + darkvision.
+/** Built-in two-mode seed: normal sight + darkvision — a MIRROR of the server's
+ * `VisionModesEngine::seed` definition (the world singleton is server-seeded from it).
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
   normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, renderHint: null },
@@ -999,6 +1030,7 @@ export function buildLightDoc(worldId: string, sceneId: string, engine: LightEng
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true,
+ *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1027,7 +1059,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  *
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
- *   behavior: "impassable", cost: 1, enabled: true,
+ *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);
@@ -1122,6 +1154,11 @@ export function buildCombatantDoc(worldId: string, combatId: string, engine: Com
   } else if (opts.owner) {
     doc.permissions.users = { [opts.owner]: "owner" };
   }
+  // Stored resource numbers default to owner-or-GM disclosure — the same
+  // entry ingress stamps server-side when a Create carries none, mirrored
+  // here so the optimistic view matches what egress will show. A caller
+  // widening deliberately overwrites this entry after building.
+  doc.permissions.property_overrides["/engine/resources"] = "owner_or_gm";
   return doc;
 }
 
@@ -1144,34 +1181,6 @@ export function buildCombatantDoc(worldId: string, combatId: string, engine: Com
  */
 export function buildResourceRegistryDoc(worldId: string, resources: Record<string, Resource>, id?: string): WireDocument {
   return envelope(worldId, RESOURCE_REGISTRY_DOC_TYPE, null, {}, id, { resources } satisfies ResourceRegistryEngine, null);
-}
-
-/** Idempotent GM seed for the world's `resource-registry` singleton under a deterministic id;
- * a no-op when the registry already exists (including after a lost create race, which the
- * optimistic layer rolls back on its own). The engine ships no resources: `seed` is the active
- * system's definition set.
- * @param store Read access, to check whether the registry already exists.
- * @param worldId The owning world's id — the deterministic id's namespace input.
- * @param seed The resources to seed.
- * @param dispatchIntent The fire-and-forget intent dispatcher to send the Create through.
- * @example
- * ```ts
- * import { seedResourceRegistryIfAbsent, type ReadableDocuments, type WireOperation } from "@shadowcat/core";
- *
- * declare const store: ReadableDocuments;
- * declare const dispatchIntent: (ops: WireOperation[]) => void;
- * seedResourceRegistryIfAbsent(store, "world-1", {}, dispatchIntent);
- * ```
- */
-export function seedResourceRegistryIfAbsent(
-  store: ReadableDocuments,
-  worldId: string,
-  seed: Record<string, Resource>,
-  dispatchIntent: (ops: WireOperation[]) => void,
-): void {
-  const id = deterministicId(worldId, RESOURCE_REGISTRY_DOC_TYPE);
-  if (store.get(id) || store.query(RESOURCE_REGISTRY_DOC_TYPE).length > 0) return;
-  dispatchIntent([{ op: "create", doc: buildResourceRegistryDoc(worldId, seed, id) }]);
 }
 
 /** An effect document: engine band (activation, transfer, clock-bound duration) plus the
@@ -1219,8 +1228,10 @@ export function buildCombatHistoryDoc(worldId: string, combatId: string, id?: st
 // --- System-defaults document ---
 
 /**
- * Build a `system-defaults` document. GM-written from the active system module's
- * `Module.systemDefaults` declaration; never edited by hand.
+ * Build a `system-defaults` document, for test fixtures and previews. The
+ * LIVE singleton is server-written from the installed system package's
+ * manifest declaration (the world-config seed path); no client origin may
+ * author it.
  * @param worldId Owning world.
  * @param engine The overlay body (every leaf optional).
  * @param id Explicit id — pass `deterministicId(worldId, SYSTEM_DEFAULTS_DOC_TYPE)` for the
@@ -1235,41 +1246,6 @@ export function buildCombatHistoryDoc(worldId: string, combatId: string, id?: st
  */
 export function buildSystemDefaultsDoc(worldId: string, engine: SystemDefaultsEngine, id?: string): WireDocument {
   return envelope(worldId, SYSTEM_DEFAULTS_DOC_TYPE, null, {}, id, engine, null);
-}
-
-/**
- * The ops that bring the world's `system-defaults` singleton to `declared`: a `create` when
- * absent, else one field change per top-level section (`scene`/`pathfinding`/`animation`/
- * `combat`) whose stored value differs (whole-section replace, `null` for a section the
- * declaration omits), with the stored value as the OCC pre-image; `[]` when already equal.
- * Compares sections, not leaves, so a section-shaped change is one field change.
- * @param store Document read access.
- * @param worldId Owning world.
- * @param declared The active system module's declaration.
- * @returns Intent ops, possibly empty.
- * @example
- * ```ts
- * import { systemDefaultsUpsertOps, DocumentStore } from "@shadowcat/core";
- *
- * systemDefaultsUpsertOps(new DocumentStore(), "world-1", {}).length; // 1
- * ```
- */
-export function systemDefaultsUpsertOps(store: ReadableDocuments, worldId: string, declared: SystemDefaultsEngine): WireOperation[] {
-  const id = deterministicId(worldId, SYSTEM_DEFAULTS_DOC_TYPE);
-  const existing = store.get(id) ?? store.query(SYSTEM_DEFAULTS_DOC_TYPE)[0];
-  if (!existing) return [{ op: "create", doc: buildSystemDefaultsDoc(worldId, declared, id) }];
-  const stored = (existing.engine ?? {}) as Record<string, unknown>;
-  const changes: WireFieldChange[] = [];
-  for (const key of ["scene", "pathfinding", "animation", "combat"] as const) {
-    const want = (declared as Record<string, unknown>)[key] ?? null;
-    const have = stored[key] ?? null;
-    // Key-order-independent: the server's serde_json has no `preserve_order` feature, so a
-    // section read back from the store is always alphabetically-keyed regardless of the
-    // author's declared order — a string comparison would false-positive on every multi-field
-    // section.
-    if (!deepEqual(want, have)) changes.push({ path: `/engine/${key}`, old: have, new: want });
-  }
-  return changes.length ? [{ op: "update", doc_id: existing.id, changes }] : [];
 }
 
 // --- Per-setting provenance ---
@@ -1287,9 +1263,9 @@ export type SettingPath =
   | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl"}`;
 
 /** Engine-level fallback for `CombatDefaults` fields absent from every layer — mirrors the
- * server's `resolve_combat_rules` engine defaults. Not part of `DEFAULT_WORLD_SETTINGS` itself
- * (whose own `combat` field is `null`): `CombatDefaults` is a partial-override shape, not a
- * `WorldSettingsEngine` stored value. Internal — not exported from the package. */
+ * server's `resolve_combat_rules` engine defaults. Not part of `DEFAULT_WORLD_SETTINGS` (which
+ * carries only the scene/pathfinding/animation literals): `CombatDefaults` is a partial-override
+ * shape with its own resolver chain. Internal — not exported from the package. */
 const ENGINE_COMBAT_DEFAULTS: Required<CombatDefaults> = {
   movementResource: null,
   interpretation: "per_cell",
@@ -1302,10 +1278,9 @@ const ENGINE_COMBAT_DEFAULTS: Required<CombatDefaults> = {
 };
 
 /** The value/source `resolveSettingProvenance` would report with the scene and world layers
- * excluded entirely (system overlay, else the built-in engine default). Doubles as the
- * "reset to system default" write target and as the equality baseline that decides whether a
- * `"world"` pick is a genuine override or merely coincides with the layer beneath it — see
- * `resolvePick`'s equality-collapse step. */
+ * excluded entirely (system overlay, else the built-in engine default). The reset control's
+ * DISPLAY value: reset itself writes a leaf-clear (`null`), never this literal — resolution
+ * then falls through to exactly this value. */
 interface SystemOrEngine<T> {
   /** The resolved value. */
   value: T;
@@ -1314,14 +1289,12 @@ interface SystemOrEngine<T> {
 }
 
 /** Picks the first non-nullish value across scene → world → system → engine, tagging which
- * layer supplied it, then collapses a `"world"` pick down to the `systemOrEngine` layer when the
- * stored world value is deep-equal to it — a required wire field's world-settings leaf is never
- * absent once the doc exists, so presence alone cannot distinguish a genuine override from a
- * value that merely restates the default beneath it. Internal helper — not exported from the
- * package.
+ * layer supplied it. Provenance is STRUCTURAL: every layer is an `Option`-lifted overlay, so a
+ * present world leaf IS a world override — no equality test against the layer beneath it.
+ * Internal helper — not exported from the package.
  * @param sceneVal The scene-level override, or `null`/`undefined` if unset.
- * @param worldVal The world-settings value, or `null`/`undefined` if unset/absent.
- * @param systemVal The system-defaults value, or `null`/`undefined` if unset/absent.
+ * @param worldVal The world-settings overlay leaf, or `null`/`undefined` if unset/absent.
+ * @param systemVal The system-defaults overlay leaf, or `null`/`undefined` if unset/absent.
  * @param engineVal The built-in engine default (always present; the final fallback).
  * @returns The resolved value, the layer that supplied it, and the system-or-engine baseline.
  * @example
@@ -1347,10 +1320,7 @@ function resolvePick<T>(
       ? { value: systemVal, source: "system" }
       : { value: engineVal, source: "engine" };
   if (sceneVal !== null && sceneVal !== undefined) return { value: sceneVal, source: "scene", systemOrEngine };
-  if (worldVal !== null && worldVal !== undefined) {
-    if (deepEqual(worldVal, systemOrEngine.value)) return { value: systemOrEngine.value, source: systemOrEngine.source, systemOrEngine };
-    return { value: worldVal, source: "world", systemOrEngine };
-  }
+  if (worldVal !== null && worldVal !== undefined) return { value: worldVal, source: "world", systemOrEngine };
   return { value: systemOrEngine.value, source: systemOrEngine.source, systemOrEngine };
 }
 
@@ -1392,29 +1362,29 @@ export function resolveSettingProvenance(
 
   switch (path) {
     case "scene.losRestriction":
-      return resolvePick(v?.losRestriction, world?.scene.losRestriction, system?.scene?.losRestriction, DEFAULT_WORLD_SETTINGS.scene.losRestriction);
+      return resolvePick(v?.losRestriction, world?.scene?.losRestriction, system?.scene?.losRestriction, DEFAULT_WORLD_SETTINGS.scene.losRestriction);
     case "scene.fog":
-      return resolvePick(v?.fog, world?.scene.fog, system?.scene?.fog, DEFAULT_WORLD_SETTINGS.scene.fog);
+      return resolvePick(v?.fog, world?.scene?.fog, system?.scene?.fog, DEFAULT_WORLD_SETTINGS.scene.fog);
     case "scene.lightingEnabled":
-      return resolvePick(l?.enabled, world?.scene.lightingEnabled, system?.scene?.lightingEnabled, DEFAULT_WORLD_SETTINGS.scene.lightingEnabled);
+      return resolvePick(l?.enabled, world?.scene?.lightingEnabled, system?.scene?.lightingEnabled, DEFAULT_WORLD_SETTINGS.scene.lightingEnabled);
     case "scene.lightMode":
-      return resolvePick(l?.mode, world?.scene.lightMode, system?.scene?.lightMode, DEFAULT_WORLD_SETTINGS.scene.lightMode);
+      return resolvePick(l?.mode, world?.scene?.lightMode, system?.scene?.lightMode, DEFAULT_WORLD_SETTINGS.scene.lightMode);
     case "scene.environment":
-      return resolvePick(l?.environment, world?.scene.environment, system?.scene?.environment, DEFAULT_WORLD_SETTINGS.scene.environment);
+      return resolvePick(l?.environment, world?.scene?.environment, system?.scene?.environment, DEFAULT_WORLD_SETTINGS.scene.environment);
     case "scene.observerVision":
-      return resolvePick(v?.observerVision, world?.scene.observerVision, system?.scene?.observerVision, DEFAULT_WORLD_SETTINGS.scene.observerVision);
+      return resolvePick(v?.observerVision, world?.scene?.observerVision, system?.scene?.observerVision, DEFAULT_WORLD_SETTINGS.scene.observerVision);
     case "scene.movementRestriction":
-      return resolvePick(v?.movementRestriction, world?.scene.movementRestriction, system?.scene?.movementRestriction, DEFAULT_WORLD_SETTINGS.scene.movementRestriction);
+      return resolvePick(v?.movementRestriction, world?.scene?.movementRestriction, system?.scene?.movementRestriction, DEFAULT_WORLD_SETTINGS.scene.movementRestriction);
     case "scene.movementModel":
-      return resolvePick(v?.movementModel, world?.scene.movementModel, system?.scene?.movementModel, DEFAULT_WORLD_SETTINGS.scene.movementModel);
+      return resolvePick(v?.movementModel, world?.scene?.movementModel, system?.scene?.movementModel, DEFAULT_WORLD_SETTINGS.scene.movementModel);
     case "scene.partialCellLeniency":
-      return resolvePick(undefined, world?.scene.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
+      return resolvePick(undefined, world?.scene?.partialCellLeniency, system?.scene?.partialCellLeniency, DEFAULT_WORLD_SETTINGS.scene.partialCellLeniency);
     case "pathfinding.diagonalRule":
-      return resolvePick(undefined, world?.pathfinding.diagonalRule, system?.pathfinding?.diagonalRule, DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule);
+      return resolvePick(undefined, world?.pathfinding?.diagonalRule, system?.pathfinding?.diagonalRule, DEFAULT_WORLD_SETTINGS.pathfinding.diagonalRule);
     case "animation.speedCellsPerSec":
-      return resolvePick(undefined, world?.animation.speedCellsPerSec, system?.animation?.speedCellsPerSec, DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec);
+      return resolvePick(undefined, world?.animation?.speedCellsPerSec, system?.animation?.speedCellsPerSec, DEFAULT_WORLD_SETTINGS.animation.speedCellsPerSec);
     case "animation.easing":
-      return resolvePick(undefined, world?.animation.easing, system?.animation?.easing, DEFAULT_WORLD_SETTINGS.animation.easing);
+      return resolvePick(undefined, world?.animation?.easing, system?.animation?.easing, DEFAULT_WORLD_SETTINGS.animation.easing);
     case "combat.movementResource": {
       // `movementResource` is doubly-optional on the wire (`CombatDefaults.movement_resource`:
       // `Option<Option<String>>` server-side) — a present key with value `null` is an EXPLICIT

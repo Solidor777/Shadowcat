@@ -3,6 +3,7 @@
 // Zod before a module is admitted to the registry. The `requirements` are the
 // data the GM publishes to the server's per-world capability_requirements record.
 import { z } from "zod";
+import type { SystemDefaultsEngine } from "@shadowcat/types";
 import type { HookKind } from "./hooks";
 import type { Cardinality } from "./contributions";
 
@@ -142,6 +143,11 @@ export interface ModuleManifest {
    * (conventionally `"style.css"`), served from the module's static route and injected as a
    * `<link>` while the module is active. Absent means the module ships no styles. */
   style?: string;
+  /** A system package's declared world-setting defaults. Read AUTHORITATIVELY by the server's
+   * installed-module scanner (`modules::scan_installed_modules` validates it against
+   * `SystemDefaultsEngine` and the world-config seed path writes the `system-defaults` singleton
+   * from it); this schema shape-checks it as an object for authoring-time feedback only. */
+  systemDefaults?: SystemDefaultsEngine;
 }
 
 const HookKindSchema = z.enum(["info", "mutate", "cancel"]);
@@ -199,6 +205,9 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
         message: "style must be a relative .css path within the module folder",
       },
     )
+    .optional(),
+  systemDefaults: z
+    .custom<SystemDefaultsEngine>((v) => typeof v === "object" && v !== null && !Array.isArray(v))
     .optional(),
 });
 

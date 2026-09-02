@@ -1,10 +1,11 @@
-import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
+import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
 import type { LightingFrame } from "./lighting";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
 import type { PingRing } from "./ping-view";
+import type { EmoteGlyph } from "./emote-view";
 
 /** Initial renderer options for `createPixiBackend`. */
 export interface PixiBackendOptions {
@@ -24,8 +25,9 @@ interface TokenNode {
   /** Inner node that rotates with the token (`.angle = tokenSpec.rotation`); holds `visual` +
    * `border`. */
   visualContainer: Container;
-  /** The art sprite — a plain `Sprite` for an image visual, an `AnimatedSprite` while
-   * `tokenSpec.visual.kind === "animated"`. */
+  /** The art sprite — a plain `Sprite` for an image visual, an `AnimatedSprite` while the
+   * drawable payload is animated (an `"animated"` visual, or a `"generated"` visual whose `art`
+   * is animated). */
   visual: Sprite | AnimatedSprite;
   /** Faction-border outline, redrawn by `updateTokenBorder`; cleared (no stroke) when
    * `tokenSpec.borderColor` is `null`. */
@@ -35,6 +37,20 @@ interface TokenNode {
   /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
   badgeKey: string;
+  /** The aura disc, drawn by `updateTokenAura` as a `container` child ordered BELOW
+   * `visualContainer` (the art draws over it; badges stay on top), or `null` while the last-applied
+   * spec had no aura. */
+  aura: Graphics | null;
+  /** Identity key of the last-applied `tokenSpec.aura` (`updateTokenAura`'s memo, same discipline
+   * as `badgeKey`/`sourceKey`): an unchanged key short-circuits the redraw. */
+  auraKey: string;
+  /** The composed art-effects filter, assigned to `visualContainer.filters` by `updateTokenFx`
+   * (the fx rotate with the art; the badge chips on `container` stay clean), or `null` while the
+   * last-applied spec had no fx. */
+  fx: ColorMatrixFilter | null;
+  /** Identity key of the last-applied `tokenSpec.fx` (`updateTokenFx`'s memo, same discipline as
+   * `auraKey`): an unchanged key short-circuits the filter rebuild. */
+  fxKey: string;
   /** `visualSourceKey(tokenSpec.visual)` of the last-applied visual, or `null` before the first
    * `setToken` call — an unchanged key short-circuits `updateTokenVisual`'s reload. */
   sourceKey: string | null;
@@ -50,13 +66,27 @@ interface TokenNode {
      * `tickTokenAnimations`. */
     elapsedMs: number;
   } | null;
+  /** The generated-visual frame Graphics, present only while the last-applied visual was
+   * `kind:"generated"` (created by `ensureGeneratedFrame`, torn down by
+   * `updateTokenGeneratedFrame` on a swap away): the `background` fill under the art, the `mask`
+   * cropping it (assigned to `node.visual.mask`; a mask object must be in the display list but is
+   * not itself rendered), and the decorative `ring` above the art — distinct from `border`, the
+   * faction ring `updateTokenBorder` draws. */
+  generated: {
+    /** Background fill, the visualContainer's bottom-most child while present. */
+    background: Graphics;
+    /** Crop-shape mask applied to `node.visual` — geometry only, never rendered. */
+    mask: Graphics;
+    /** Decorative ring stroke around the crop shape, above the art. */
+    ring: Graphics;
+  } | null;
 }
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
  * @param v A token's resolved visual tokenSpec (image URL, or an animated source + fps/loop).
- * @returns A string key equal for equal specs; an `"image:"`- vs `"animated:"`-prefixed key never
- * collides across kinds.
+ * @returns A string key equal for equal specs; the kind prefix (`"image:"`/`"animated:"`/
+ * `"generated:"`) never collides across kinds.
  * @example
  * ```
  * // module-private helper; not exported from @shadowcat/render
@@ -64,7 +94,66 @@ interface TokenNode {
  * ```
  */
 function visualSourceKey(v: TokenNodeSpec["visual"]): string {
-  return v.kind === "image" ? `image:${v.url}` : `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
+  if (v.kind === "image") return `image:${v.url}`;
+  if (v.kind === "animated") return `animated:${JSON.stringify(v.source)}:${v.fps}:${v.loop}`;
+  // A generated visual's identity is its frame (crop/border/background) plus its art's own key
+  // (one recursion level — `art` is never itself `"generated"`).
+  return `generated:${visualSourceKey(v.art)}:${JSON.stringify({ crop: v.crop, border: v.border ?? null, background: v.background ?? null })}`;
+}
+
+/** The 5x4 identity color matrix (row-major: `[r,g,b,a,offset]` per row) — the composition
+ * start for `composeTokenFxMatrix`. */
+const IDENTITY_COLOR_MATRIX = [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0];
+
+/** Compose a `TokenFx` list into ONE 5x4 color matrix (row-major, `ColorMatrixFilter.matrix`'s
+ * layout): each entry's matrix is applied in array order (the first entry transforms the art
+ * first). `tint` scales each channel toward the entry color by `strength` (a `strength`-blend of
+ * the identity diagonal and the color's normalized channels); `desaturate` collapses every RGB
+ * output channel to the mean of the inputs — the same equal-thirds matrix
+ * `ColorMatrixFilter.desaturate` loads; `highlight` blends the art toward the entry color
+ * (`out = (1-strength)*in + strength*color`, a scale plus offset). Exported for tests — the
+ * composition is pure, while the `ColorMatrixFilter` it feeds is not (its constructor compiles
+ * shader programs, which needs a GL context).
+ * @param fx The resolved fx entries (colors packed `0xRRGGBB`, strengths in `[0,1]`).
+ * @returns The composed 20-element matrix; the identity for an empty list.
+ * @example
+ * ```ts
+ * import { composeTokenFxMatrix } from "@shadowcat/render";
+ *
+ * composeTokenFxMatrix([{ kind: "desaturate" }]); // equal-thirds luminance rows
+ * ```
+ */
+export function composeTokenFxMatrix(fx: TokenFx[]): number[] {
+  // Per-entry 5x4 matrix, in the `ColorMatrixFilter.matrix` row-major layout.
+  const entryMatrix = (f: TokenFx): number[] => {
+    if (f.kind === "desaturate") {
+      const t = 1 / 3;
+      return [t, t, t, 0, 0, t, t, t, 0, 0, t, t, t, 0, 0, 0, 0, 0, 1, 0];
+    }
+    const r = ((f.color >> 16) & 0xff) / 255;
+    const g = ((f.color >> 8) & 0xff) / 255;
+    const b = (f.color & 0xff) / 255;
+    const s = f.strength;
+    if (f.kind === "tint") {
+      return [1 - s + s * r, 0, 0, 0, 0, 0, 1 - s + s * g, 0, 0, 0, 0, 0, 1 - s + s * b, 0, 0, 0, 0, 0, 1, 0];
+    }
+    return [1 - s, 0, 0, 0, s * r, 0, 1 - s, 0, 0, s * g, 0, 0, 1 - s, 0, s * b, 0, 0, 0, 1, 0];
+  };
+  // Row-major 4x5 multiply: `out` = `a` applied AFTER `b` (b's output feeds a's input).
+  const multiply = (a: number[], b: number[]): number[] => {
+    const out = new Array<number>(20).fill(0);
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 5; col++) {
+        let sum = col === 4 ? a[row * 5 + 4] : 0;
+        for (let k = 0; k < 4; k++) sum += a[row * 5 + k] * b[k * 5 + col];
+        out[row * 5 + col] = sum;
+      }
+    }
+    return out;
+  };
+  let matrix = [...IDENTITY_COLOR_MATRIX];
+  for (const f of fx) matrix = multiply(entryMatrix(f), matrix);
+  return matrix;
 }
 
 /** The real DisplayBackend over pixi.js v8. The only GL-touching module (kept out
@@ -111,6 +200,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
+  /** The emote-glyph overlay's parent; its `Text` children are rebuilt wholesale by
+   * `drawEmotes` (the glyph set changes every frame while an emote lives). */
+  private readonly emoteLayer = new Container();
   /** Per-cell darkening + tint quads for the lighting layer. Parented under the
    * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
   private readonly lightingGraphics = new Graphics();
@@ -209,6 +301,7 @@ export class PixiBackend implements DisplayBackend {
         this.measureText.visible = false;
         c.addChild(this.measureText);
         c.addChild(this.pingGraphics);
+        c.addChild(this.emoteLayer);
       }
     }
     // Re-parent in z-order (addChild appends; order array is authoritative).
@@ -441,7 +534,8 @@ export class PixiBackend implements DisplayBackend {
   }
 
   /** `DisplayBackend.setToken`: upsert a token render node — create one (`createTokenNode`) if
-   * `id` is new, then update its transform, visual (image or animated), border, and badges in
+   * `id` is new, then update its transform, visual (image, animated, or generated), border, and
+   * badges in
    * place. `visualContainer.angle` rotates the art + border only; `container`'s own position is
    * the token center and its badge children never rotate (see `TokenNode`'s field doc).
    * @param id The token document id.
@@ -464,8 +558,11 @@ export class PixiBackend implements DisplayBackend {
     node.container.position.set(tokenSpec.x, tokenSpec.y);
     node.visualContainer.angle = tokenSpec.rotation; // degrees; rotates art + border, not badges
     this.updateTokenVisual(id, node, tokenSpec);
+    this.updateTokenGeneratedFrame(node, tokenSpec);
     this.updateTokenBorder(node, tokenSpec);
     this.updateTokenBadges(node, tokenSpec);
+    this.updateTokenAura(node, tokenSpec);
+    this.updateTokenFx(node, tokenSpec);
   }
 
   /** Construct a new `TokenNode`: an outer non-rotating `container` (positioned at the token
@@ -490,7 +587,7 @@ export class PixiBackend implements DisplayBackend {
     visualContainer.addChild(visual, border);
     container.addChild(visualContainer);
     this.layers.get("tokens")?.addChild(container);
-    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null };
+    const node: TokenNode = { container, visualContainer, visual, border, badges: [], badgeKey: "", sourceKey: null, anim: null, generated: null, aura: null, auraKey: "", fx: null, fxKey: "" };
     this.tokens.set(id, node);
     return node;
   }
@@ -528,33 +625,105 @@ export class PixiBackend implements DisplayBackend {
     node.visual.height = tokenSpec.h;
     if (node.sourceKey === key) return; // unchanged visual: a tweening token's transform-only re-push
     node.sourceKey = key;
-    if (tokenSpec.visual.kind === "image") {
+    // A generated visual's drawable payload is its `art`; the frame around it is
+    // `updateTokenGeneratedFrame`'s concern, drawn unconditionally per setToken.
+    const art = tokenSpec.visual.kind === "generated" ? tokenSpec.visual.art : tokenSpec.visual;
+    if (art.kind === "image") {
       if (node.visual instanceof AnimatedSprite) this.replaceVisualChild(node, new Sprite());
       node.anim = null;
       const sprite = node.visual;
-      const url = tokenSpec.visual.url;
+      const url = art.url;
       void Assets.load(url).then((texture) => {
         if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
       });
     } else {
-      // Hoist the narrowed "animated" variant into its own binding: `tokenSpec.visual` re-read inside
-      // an async closure loses the enclosing if/else narrowing (a fresh property read on a union),
-      // so a plain `tokenSpec.visual.fps` there does not typecheck without this.
-      const visual = tokenSpec.visual;
       if (!(node.visual instanceof AnimatedSprite)) this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
       const sprite = node.visual as AnimatedSprite;
       sprite.autoUpdate = false; // driven by tickTokenAnimations, not Pixi's shared ticker
-      node.anim = { fps: visual.fps, loop: visual.loop, frameCount: 1, elapsedMs: 0 };
-      const source = visual.source;
+      node.anim = { fps: art.fps, loop: art.loop, frameCount: 1, elapsedMs: 0 };
+      const source = art.source;
       void this.loadAnimatedTextures(source).then((textures) => {
         if (this.tokens.get(id) !== node || node.visual !== sprite || node.sourceKey !== key || textures.length === 0) return;
         sprite.textures = textures;
         sprite.gotoAndStop(0);
-        node.anim = { fps: visual.fps, loop: visual.loop, frameCount: textures.length, elapsedMs: 0 };
+        node.anim = { fps: art.fps, loop: art.loop, frameCount: textures.length, elapsedMs: 0 };
       });
     }
     node.visual.width = tokenSpec.w;
     node.visual.height = tokenSpec.h;
+  }
+
+  /** Create a node's generated-visual frame (`TokenNode.generated`) on first use: the
+   * `background` Graphics inserted UNDER the art sprite, the `mask` right above it (a mask object
+   * must sit in the display list but is never itself rendered — it only defines the crop), and
+   * the decorative `ring` above that, keeping the faction `border` Graphics topmost. A no-op
+   * return of the existing frame on repeat calls.
+   * @param node The token render node whose frame to ensure.
+   * @returns The node's (newly created or existing) generated-visual frame.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * this.ensureGeneratedFrame(node);
+   * ```
+   */
+  private ensureGeneratedFrame(node: TokenNode): NonNullable<TokenNode["generated"]> {
+    if (node.generated) return node.generated;
+    const background = new Graphics();
+    const mask = new Graphics();
+    const ring = new Graphics();
+    const vc = node.visualContainer;
+    vc.addChildAt(background, 0);
+    vc.addChildAt(mask, vc.getChildIndex(node.visual) + 1);
+    vc.addChildAt(ring, vc.getChildIndex(mask) + 1);
+    node.generated = { background, mask, ring };
+    return node.generated;
+  }
+
+  /** Draw (or tear down) a node's generated-visual frame on every `setToken` — unconditional,
+   * like `updateTokenBorder`, so a size-only re-push (unchanged `sourceKey`) still re-derives the
+   * frame geometry from the current extent. For `visual.kind === "generated"`: the `background`
+   * fills the crop shape with `background.color` (cleared when no background is authored), the
+   * `mask` carries the crop shape (`circle` = the inscribed ellipse of the token extent,
+   * `square` = the extent rect) and is assigned to `node.visual.mask`, and the `ring` strokes the
+   * crop shape with `border.width` — a fraction of the token's SMALLER extent, scaled to px here
+   * so the ring keeps its authored proportion at any token size (cleared when no border is
+   * authored). For any other visual kind: an existing frame drops `node.visual.mask` and is
+   * destroyed. The frame lives inside `visualContainer`, so it rotates with the art exactly as
+   * the plain sprite does.
+   * @param node The token render node whose frame to redraw.
+   * @param tokenSpec The resolved token tokenSpec; only `.visual`/`.w`/`.h` are read here.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenGeneratedFrame(node, tokenSpec);
+   * ```
+   */
+  private updateTokenGeneratedFrame(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const visual = tokenSpec.visual;
+    if (visual.kind !== "generated") {
+      if (node.generated) {
+        node.visual.mask = null;
+        node.generated.background.destroy();
+        node.generated.mask.destroy();
+        node.generated.ring.destroy();
+        node.generated = null;
+      }
+      return;
+    }
+    const frame = this.ensureGeneratedFrame(node);
+    const hw = tokenSpec.w / 2;
+    const hh = tokenSpec.h / 2;
+    const shape = (g: Graphics): Graphics => (visual.crop === "circle" ? g.ellipse(0, 0, hw, hh) : g.rect(-hw, -hh, tokenSpec.w, tokenSpec.h));
+    frame.background.clear();
+    if (visual.background) shape(frame.background).fill(visual.background.color);
+    frame.mask.clear();
+    shape(frame.mask).fill(0xffffff);
+    node.visual.mask = frame.mask;
+    frame.ring.clear();
+    if (visual.border) shape(frame.ring).stroke({ width: visual.border.width * Math.min(tokenSpec.w, tokenSpec.h), color: visual.border.color });
   }
 
   /** Swap `node.visual` for `next`: re-anchors `next` to `(0.5,0.5)`, removes and destroys the old
@@ -675,9 +844,77 @@ export class PixiBackend implements DisplayBackend {
     });
   }
 
+  /** Redraw (or remove) `node`'s aura disc: a filled ellipse of `tokenSpec.aura.radius` scene
+   * units centered on the token's origin, filled with `aura.color` at `aura.opacity`. The disc
+   * Graphics is a direct child of the non-rotating outer `container` inserted at index 0 — BELOW
+   * `visualContainer`, so the art draws over the aura and the badge chips (appended later, on top)
+   * stay clean; radial by definition, so rotation would be invisible anyway. Guarded by an
+   * `auraKey` memo (same discipline as `badgeKey`/`sourceKey`): an unchanged key returns
+   * immediately; an absent aura destroys the Graphics and drops the reference.
+   * @param node The token render node whose aura to redraw.
+   * @param tokenSpec The resolved token tokenSpec; only `.aura` is read here (color pre-packed,
+   * radius pre-converted to scene units by `TokenView.toSpec`).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenAura(node, tokenSpec);
+   * ```
+   */
+  private updateTokenAura(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const aura = tokenSpec.aura;
+    const key = aura ? `${aura.color}:${aura.opacity}:${aura.radius}` : "";
+    if (node.auraKey === key) return;
+    node.auraKey = key;
+    if (!aura) {
+      node.aura?.destroy();
+      node.aura = null;
+      return;
+    }
+    if (!node.aura) {
+      node.aura = new Graphics();
+      node.container.addChildAt(node.aura, 0); // below visualContainer: art draws over the aura
+    }
+    node.aura.clear().ellipse(0, 0, aura.radius, aura.radius).fill({ color: aura.color, alpha: aura.opacity });
+  }
+
+  /** Rebuild (or remove) `node`'s art-effects filter: `tokenSpec.fx` composed into ONE
+   * `ColorMatrixFilter` (`composeTokenFxMatrix` — tint/desaturate/highlight fold into a single
+   * 5x4 matrix) assigned to `visualContainer.filters`, so the fx rotate with the art and the
+   * badge chips (siblings on the outer `container`) stay clean. Guarded by an `fxKey` memo (same
+   * discipline as `auraKey`): an unchanged key returns immediately without rebuilding the filter;
+   * an empty/absent fx list destroys the filter, clears the slot, and drops the reference.
+   * @param node The token render node whose fx to apply.
+   * @param tokenSpec The resolved token tokenSpec; only `.fx` is read here (colors pre-packed,
+   * strengths pre-clamped by `TokenView.toSpec`).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * declare const node: TokenNode;
+   * declare const tokenSpec: TokenNodeSpec;
+   * this.updateTokenFx(node, tokenSpec);
+   * ```
+   */
+  private updateTokenFx(node: TokenNode, tokenSpec: TokenNodeSpec): void {
+    const fx = tokenSpec.fx ?? [];
+    const key = JSON.stringify(fx);
+    if (node.fxKey === key) return;
+    node.fxKey = key;
+    if (fx.length === 0) {
+      node.fx?.destroy();
+      node.fx = null;
+      node.visualContainer.filters = [];
+      return;
+    }
+    if (!node.fx) node.fx = new ColorMatrixFilter();
+    node.fx.matrix = composeTokenFxMatrix(fx) as ColorMatrixFilter["matrix"];
+    node.visualContainer.filters = [node.fx];
+  }
+
   /** `DisplayBackend.removeToken`: destroy a token's render node (container + all children,
-   * including `visualContainer`/`visual`/`border`/badges) and drop it from `this.tokens`. A no-op
-   * for an unknown `id`.
+   * including `visualContainer`/`visual`/`border`/badges/aura, plus the `visualContainer`-attached
+   * fx filter) and drop it from `this.tokens`. A no-op for an unknown `id`.
    * @param id The token document id to remove.
    * @example
    * ```ts
@@ -690,6 +927,9 @@ export class PixiBackend implements DisplayBackend {
   removeToken(id: string): void {
     const node = this.tokens.get(id);
     if (!node) return;
+    // The fx filter is not a display-list child (it lives on `visualContainer.filters`), so the
+    // container destroy below would not release it — destroy it explicitly first.
+    node.fx?.destroy();
     node.container.destroy({ children: true });
     this.tokens.delete(id);
   }
@@ -849,6 +1089,29 @@ export class PixiBackend implements DisplayBackend {
     this.pingGraphics.clear();
     for (const r of rings) {
       this.pingGraphics.circle(r.x, r.y, r.radius).stroke({ width: 3, color: 0xffd400, alpha: r.alpha });
+    }
+  }
+
+  /** `DisplayBackend.drawEmotes`: redraw the emote-glyph overlay — destroys the previous
+   * frame's `Text` children, then adds one centered glyph per emote (fontSize 48,
+   * `sans-serif`, at the glyph's own `alpha`).
+   * @param glyphs The current emote glyphs to draw (anchor, glyph(s), alpha), in draw order.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * ```
+   */
+  drawEmotes(glyphs: EmoteGlyph[]): void {
+    for (const child of this.emoteLayer.removeChildren()) child.destroy();
+    for (const g of glyphs) {
+      const t = new Text({ text: g.emote, style: { fontSize: 48, fontFamily: "sans-serif" } });
+      t.anchor.set(0.5);
+      t.position.set(g.x, g.y);
+      t.alpha = g.alpha;
+      this.emoteLayer.addChild(t);
     }
   }
 

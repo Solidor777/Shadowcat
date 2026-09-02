@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { SpeakAs, SpeakAsToken } from "@shadowcat/ui-kit";
 import {
   DocumentStore,
   buildActorDoc,
@@ -60,6 +61,9 @@ function actorEngine(over: Partial<ActorEngine> = {}): ActorEngine {
     conditions: [],
     prototype: false,
     vision: null,
+    aura: null,
+    sound: null,
+    vfx: null,
     ...over,
   };
 }
@@ -844,6 +848,48 @@ describe("MessageCard — roll button", () => {
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({ channel: "ooc", content: "/roll 1d20+5" });
+  });
+
+  it("binds the clicker's sticky speak-as actor so a statted template resolves as them", async () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "roll_button", formula: "1d20+stats.str", label: "Attack" }],
+    }));
+    const send = vi.fn();
+    const speakAs = new SpeakAs();
+    speakAs.actorId = "actor-1";
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+    });
+    await fireEvent.click(screen.getByText("Attack"));
+    expect(send).toHaveBeenCalledWith({
+      channel: "general",
+      content: "/roll 1d20+stats.str",
+      actorOwner: { kind: "actor", actor_id: "actor-1" },
+    });
+  });
+
+  it("a pending one-shot speak-as token takes precedence over the sticky selection", async () => {
+    const doc = msgDoc("m1", baseSystem({
+      content: [{ kind: "roll_button", formula: "1d20+stats.str", label: "Attack" }],
+    }));
+    const send = vi.fn();
+    const speakAs = new SpeakAs();
+    speakAs.actorId = "actor-1";
+    const speakAsToken = new SpeakAsToken();
+    speakAsToken.select("tok-1");
+    render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+    });
+    await fireEvent.click(screen.getByText("Attack"));
+    expect(send).toHaveBeenCalledWith({
+      channel: "general",
+      content: "/roll 1d20+stats.str",
+      actorOwner: { kind: "token_instance", token_id: "tok-1" },
+    });
+    // The one-shot was consumed by the click (the composer's next-send contract).
+    expect(speakAsToken.tokenId).toBeNull();
   });
 
   it("falls back to the formula as the label when label is absent", () => {

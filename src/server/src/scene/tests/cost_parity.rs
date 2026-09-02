@@ -35,6 +35,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                 (50.0, 50.0),
                 &[(450.0, 350.0)],
                 0.4,
+                None,
             )
             .expect("routable");
         let out = crate::scene::move_exec::execute_move(
@@ -94,6 +95,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
             (50.0, 50.0),
             &[(650.0, 250.0)],
             0.4,
+            None,
         )
         .expect("routable");
     let out = crate::scene::move_exec::execute_move(

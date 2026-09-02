@@ -36,6 +36,11 @@ struct ModuleManifestMirror {
     /// Built entry file name relative to the install folder; default `index.js`.
     #[serde(default = "default_entry")]
     entry: String,
+    /// A system package's declared world-setting defaults, validated against
+    /// `SystemDefaultsEngine` after parse (invalid ⇒ warn + treated as
+    /// absent; the module itself still loads — fail-open discovery).
+    #[serde(default, rename = "systemDefaults")]
+    system_defaults: Option<serde_json::Value>,
 }
 
 /// The `engines` object of a community `module.json`.
@@ -55,6 +60,13 @@ struct ModuleEngines {
 fn default_entry() -> String {
     "index.js".into()
 }
+
+/// The game-system contract id (mirrors the client's `SYSTEM_CONTRACT`): a
+/// manifest whose `provides` names it declares the module to be a game
+/// system. `set_world_enabled_modules` admits at most one enabled provider
+/// per world, so the server's system-defaults derivation and the client's
+/// singleton winner cannot diverge on which system is active.
+pub const SYSTEM_CONTRACT: &str = "shadowcat.system";
 
 /// One validly-discovered installed module: typed fields the server needs
 /// (id, requirements, engine-compat range) plus the raw manifest JSON — served
@@ -76,6 +88,13 @@ pub struct InstalledModule {
     pub manifest_json: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.
     pub entry_url: String,
+    /// The manifest's `systemDefaults` declaration, present iff it
+    /// deserialized into `SystemDefaultsEngine` AND passed its `validate`
+    /// (otherwise warned and treated as absent at scan).
+    pub system_defaults: Option<crate::data::engine::SystemDefaultsEngine>,
+    /// Whether the manifest's `provides` names `SYSTEM_CONTRACT` — i.e. this
+    /// module declares itself a game system.
+    pub provides_system: bool,
 }
 
 /// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
@@ -154,12 +173,39 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
         // believe they deployed is otherwise invisible at runtime.
         tracing::debug!(id = %folder_id, version = %mirror.version, "module loaded");
         let entry_url = format!("/modules/{folder_id}/{}", mirror.entry);
+        // Validate a declared `systemDefaults` against the engine struct;
+        // failure drops the declaration, never the module (fail-open
+        // discovery, same posture as a malformed sibling manifest).
+        let system_defaults = mirror.system_defaults.and_then(|raw_sd| {
+            match serde_json::from_value::<crate::data::engine::SystemDefaultsEngine>(raw_sd) {
+                Ok(sd) => match sd.validate() {
+                    Ok(()) => Some(sd),
+                    Err(e) => {
+                        tracing::warn!(dir = %dir.display(), error = %e, "module.json systemDefaults failed validation; ignored");
+                        None
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(dir = %dir.display(), error = %e, "module.json systemDefaults is not a valid SystemDefaultsEngine; ignored");
+                    None
+                }
+            }
+        });
+        let provides_system = raw
+            .get("provides")
+            .and_then(|p| p.as_array())
+            .is_some_and(|arr| {
+                arr.iter()
+                    .any(|e| e.get("contract").and_then(|c| c.as_str()) == Some(SYSTEM_CONTRACT))
+            });
         out.push(InstalledModule {
             id: folder_id,
             requirements: mirror.requirements,
             engines_shadowcat: mirror.engines.shadowcat,
             manifest_json: raw,
             entry_url,
+            system_defaults,
+            provides_system,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -240,6 +286,8 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
 ///     engines_shadowcat: None, // no declared range
 ///     manifest_json: serde_json::json!({}),
 ///     entry_url: "/modules/example-mod/index.js".into(),
+///     system_defaults: None,
+///     provides_system: false,
 /// };
 /// assert!(!engine_compat_ok(&m)); // fails closed without engines.shadowcat
 /// assert!(engine_compat_ok(&InstalledModule { engines_shadowcat: Some("*".into()), ..m }));

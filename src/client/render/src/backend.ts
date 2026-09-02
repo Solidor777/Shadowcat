@@ -1,6 +1,7 @@
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
+import type { EmoteGlyph } from "./emote-view";
 
 /** The background-layer sprite spec — the statement of record for this shape; every
  * implementation/recording site (`PixiBackend`, `MockBackend`) references this type rather
@@ -84,6 +85,9 @@ export interface DisplayBackend {
   /** Redraw the transient ping rings (expanding/fading outline circles).
    * @param rings The ping rings to draw — see `PingRing`. */
   drawPings(rings: PingRing[]): void;
+  /** Redraw the transient emote glyphs (rising/fading emoji over tokens).
+   * @param glyphs The emote glyphs to draw — see `EmoteGlyph`. */
+  drawEmotes(glyphs: EmoteGlyph[]): void;
   /** Paint the lighting overlay (the `lighting` layer): per-cell darkening + tint + desaturate hint.
    * @param frame The resolved lighting overlay to paint. */
   setLighting(frame: LightingFrame): void;

@@ -4,7 +4,6 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
-    buildChannelRegistryDoc,
     type ChannelRegistryEngine,
     type WireAudience,
     type WireDocument,
@@ -125,26 +124,8 @@
     return channelEntries.find(([id]) => id === channelId)?.[1].name ?? channelId;
   }
 
-  // GM registry seed (FactionsPanel idiom): reactive subscribe() inside the
-  // $effect so a panel mounted before resync populates the store still seeds
-  // exactly once, whether the store was empty at mount or fills in later.
-  // `seeded` is set true in BOTH branches below — the early-return branch
-  // (registry already exists, no dispatch) and the seed branch (before
-  // dispatchIntent runs there) — so the seed is once-only per mount even if
-  // the dispatch itself fails; a failed seed is not retried within this
-  // mount (only on a fresh mount, when `seeded` re-initializes to false).
-  let seeded = false;
-  $effect(() => {
-    if (ctx.role !== "gm" || seeded) return;
-    subscribe();
-    if (ctx.documents.query("channel-registry").length > 0) {
-      seeded = true;
-      return;
-    }
-    seeded = true;
-    ctx.dispatchIntent([{ op: "create", doc: buildChannelRegistryDoc(ctx.world, { general: { name: "General" } }) }]);
-  });
-
+  // The channel registry is server-seeded (world creation / world join) with
+  // its `general` default; this panel only reads and edits it.
   let editing = $state(false);
   let newChannelName = $state("");
   /**
@@ -201,6 +182,14 @@
     const sys = registry.engine as ChannelRegistryEngine;
     const cur = sys.channels[id];
     if (!cur) return;
+    // The registry must never be emptied: message ingest validates channel
+    // membership, so an empty registry wedges all chat (the server's own
+    // `ChannelRegistryEngine::validate` would refuse the write anyway — this
+    // client error is the kinder one).
+    if (Object.keys(sys.channels).length <= 1) {
+      ctx.notify(t("chat.channels.lastChannel"), "warning");
+      return;
+    }
     if (view.kind === "channel" && view.id === id) view = { kind: "all" };
     // Whole-field replace (FactionsPanel idiom, see FactionsPanel's
     // own `remove`): `set_pointer` cannot delete an object key (it only ever
@@ -476,7 +465,8 @@
   <div class="composer-slot">
     {#if composerComp}
       {@const Composer = composerComp}
-      <Composer {...postTarget(view)} placeholderName={channelDisplayName(postTarget(view).channel)} />
+      {@const target = postTarget(view, channelEntries.map(([id]) => id).sort())}
+      <Composer {...target} placeholderName={channelDisplayName(target.channel)} />
     {/if}
   </div>
 </section>

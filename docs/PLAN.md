@@ -27,15 +27,9 @@ further at design time. Numbering continues from Phase 1.
 - **M14c — server authority + combat client seams**, six sub-projects in build order (design:
   [`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md) §1):
   - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-2 — combat resolution server-side**: `Mirror` implemented, `Tracked` seeded to `max`,
-    text recoveries evaluated, `Duration.remaining`/lifecycle flags server-derived, egress rule for
-    resolved scalars, `Hard` route-preview clamp inside `Pathfind`.
-  - **M14c-3 — world-config authority**: `create_world` seeds every config singleton;
-    `system-defaults` read server-side from the installed system package; engine defaults are
-    the definition (client constants mirror them); client seed/upsert helpers deleted.
-  - **M14c-4 — dice references + chat channel**: reference production in the notation grammar;
-    roll frames carry an actor binding; `resolveNotationTemplate` preview-only;
-    `MessageEngine.channel` validated at ingest.
+  - **M14c-2 — combat resolution server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
+  - **M14c-3 — world-config authority** — DONE (see [`HISTORY.md`](HISTORY.md)).
+  - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
     conflict set returned for human review; `Document.base` under engine-tree validation.
   - **M14c-6 — combat client seams**: `AppContext.combat`, `CoreHooks` first entries +
@@ -70,21 +64,11 @@ with live preview and contrast warnings, module styling modes, external-module s
 - Depends on: M14 for anything keyed to the turn owner.
 - Excludes: Web-Worker optimistic vision (stays server-authoritative by design).
 
-### M18 · Token enrichment
-- Aura / light / sound / VFX emitters as token components (sound and VFX emit into the Phase-3
-  audio/VFX seams; the component model lands here).
-- **Trigger regions** — mechanical/trigger effects on the M10g region primitive: damage, condition
-  application, scripted triggers on enter/arrest.
-- Token art tooling.
-- **Generated token visuals** (deferred from M10i): a parametric compositor that frames existing
-  actor art into a token — decorative border + shape-crop mask + background, distinct from the
-  dynamic faction ring; a new additive `{kind:"generated"}` on the M10h `RenderVisual` union.
-- **Per-token built-in fx** (deferred from M10j): condition-driven tint / desaturate / highlight +
-  selection/faction/target highlight via a per-token Pixi `.filters` attach point on the M10h token
-  `Container`; the custom shader-filter seam stays Phase 3 VFX.
-- **Emote / reaction overlays** (deferred from M10j): transient overlay above the token via a new
-  ping-style `emote` aux frame + fading child.
-- Depends on: M14 (condition/damage triggers on the combat clock), M17 (light emitters).
+### M18 · Token enrichment ✅
+Complete: generated token visuals, trigger regions, the aura/sound/VFX emitter component model,
+per-token built-in fx (condition-driven + selection highlight), emote overlays, and token art
+tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX PLAYBACK remains
+Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
 ### M19 · Tables, notes + chat media
 - Rollable tables on the dice engine + document model (weighted rows, nested draws, results to

@@ -693,8 +693,10 @@ are observations awaiting triage, not committed work.
   M15a branch point), so `pnpm build:all` — and the CI docs job — cannot pass on
   either branch until those tagged unions carry a documented discriminant or an
   exemption. M15a produced `dist-docs` locally with warnings non-fatal only to run
-  the local-only `check-skill-api-refs` gate. Status: Needs Review (M14 owns the
-  types).
+  the local-only `check-skill-api-refs` gate. Status: **Resolved.** The M14c-2
+  combat-shapes regeneration carried the discriminants' doc comments through:
+  verified `pnpm docs:api:ts` green on post-M14c-2 main (2026-08-31, the
+  M14c-4 baseline) with `treatWarningsAsErrors` intact — no exemption needed.
 
 
 - Title: Skill symbol citations reference unbuilt combat-resolution symbols. Summary: the

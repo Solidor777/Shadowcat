@@ -105,6 +105,7 @@ fn route(rule: DiagonalRule, field: &RegionField) -> PathOutcome {
                 cell: FIXTURE_GRID_SIZE,
                 rule,
             },
+            budget_cells: None,
         },
     )
     .expect("forced diagonal staircase is reachable under every rule")
@@ -293,6 +294,58 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
         (out.cost - 2.0).abs() < 1e-9,
         "baseline cost for 2 entered cells"
     );
+}
+
+// -------------------------------------------------------------------------------------------
+// Fixture 2c: budget-clamp parity — the clamped preview's last point equals the executor's
+// stop for the same route and budget, on a straight and a diagonal course. Both sides price
+// through `GridShape::neighbors_with_cost`; the executor receives the UNCLAMPED route (what a
+// client without a preview would submit) and must stop exactly where the clamped preview ends.
+// -------------------------------------------------------------------------------------------
+
+#[test]
+fn budget_clamped_preview_last_point_equals_executor_stop() {
+    for goal in [(450.0, 50.0), (350.0, 350.0)] {
+        let (ecs, scene, token) = clear_scene();
+        let req = || crate::scene::RouteRequester {
+            user: Uuid::from_u128(7),
+            is_gm: true,
+            explored: None,
+        };
+        let full = ecs
+            .pathfind(req(), scene, (0.0, 0.0), &[goal], 0.1, None)
+            .expect("unclamped route");
+        assert!(!full.truncated);
+        let clamped = ecs
+            .pathfind(req(), scene, (0.0, 0.0), &[goal], 0.1, Some(2.0))
+            .expect("clamped route");
+        assert!(clamped.truncated, "budget 2 cuts a 3+-step route");
+        let out = execute_move(
+            &ecs,
+            MoveGateInputs {
+                scene,
+                restriction: MovementRestriction::Unrestricted,
+                visible: &BTreeSet::new(),
+                cell: FIXTURE_GRID_SIZE,
+                budget: Some(2.0),
+            },
+            token,
+            &full.path,
+            false,
+            0.4,
+        )
+        .expect("executor run over the unclamped route");
+        assert!(out.truncated, "the executor stops on the same budget");
+        assert_eq!(
+            out.stop,
+            *clamped.path.last().unwrap(),
+            "preview clamp point equals executor stop for goal {goal:?}"
+        );
+        assert!(
+            (out.cost - clamped.cost).abs() < 1e-9,
+            "clamped preview cost equals executor spend for goal {goal:?}"
+        );
+    }
 }
 
 // -------------------------------------------------------------------------------------------

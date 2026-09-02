@@ -142,6 +142,11 @@ by every transition.
 
 ### 4.3 Server semantics
 
+*Amended (M14c-2):* `resolved`/`remaining: None` skip semantics are retired — the server
+evaluates lifecycle formulas per boundary and materializes untouched countdowns from `amount`;
+see the [M14c-2 spec](2026-08-30-m14c-2-combat-resolution-server-side-design.md) C2/C3/C5.
+Original text:
+
 - **Boundary tick** (the anchor's boundary matching `expires`; `Rounds` = round wraps, `Turns` =
   the anchor's own turn boundaries): if `resolved.on_advance`, `remaining -= 1`; at `0`,
   `active = false`. The client derives `combat:effect-tick` / `combat:effect-expired` from the
@@ -177,7 +182,7 @@ only; the message never distinguishes "hidden" from "absent" or "not yours".
 | `CombatEnd { combat_id }` | GM | §4.3 `on_combat_end`; then `Delete` of the combat (cascade: combatants, history). |
 | `CombatAdvance { combat_id }` | GM; the current combatant's owner under `OwnerMayEnd` | §5.1 |
 | `CombatRewind { combat_id }` | GM | §6.2 |
-| `CombatRoll { combat_id, channel, rolls: [{ combatant_id, notation }] }` | GM; owner for own combatant | each through `chat::rolls::execute_roll` (the sole untrusted-notation path; its caps and entropy apply unchanged) with the dice context resolved for `channel`; write `initiative`; rebuild `order`; one chat-message `Create` per roll on `channel` in the same command carrying a `RollEmbed` (hidden combatant ⇒ GM-only audience). |
+| `CombatRoll { combat_id, channel, rolls: [{ combatant_id, notation }] }` | GM; owner for own combatant | each through `chat::rolls::execute_roll` (the sole untrusted-notation path; its caps and entropy apply unchanged) with the dice context resolved for `channel`; write `initiative`; rebuild `order`; one chat-message `Create` per roll on `channel` in the same command carrying a `RollEmbed` (hidden combatant ⇒ GM-only audience). *Amended (M14c-4):* `notation` is a RAW template — each entry's references resolve server-side at execution against that entry's combatant's formula host (its token-embedded actor copy, else its linked actor); `channel` is validated against the channel registry at ingest. |
 | `CombatResource { combat_id, combatant_id, resource, op: Delta(f64) \| Set(f64) }` | GM; owner | clamp to `[0, max]`; non-finite refused. |
 | `CombatSort { combat_id }` | GM | `order` ← `initiative desc, tiebreak desc, existing index`. |
 
@@ -203,7 +208,9 @@ With future history records and `forward_restore` on, §6.2 fast-forward applies
 
 Loop guard: at most `order.len()` iterations; an all-event/all-hidden order terminates with `turn`
 on the last visited entry and the round advanced. A `Formula::Number` recovery is applied and
-clamped to `max`; a `Formula::Text` recovery applies nothing (client half, M14c). A combatant
+clamped to `max`; a `Formula::Text` recovery applies nothing (client half, M14c) — *Amended
+(M14c-2): text recoveries are evaluated server-side over the combatant's formula host; see the
+[M14c-2 spec](2026-08-30-m14c-2-combat-resolution-server-side-design.md) §2.* A combatant
 whose token/actor is gone stays an unresolved row and never panics a step.
 
 ### 5.2 One-active-per-scene batch (closes the `TODO.md` entry)
@@ -297,6 +304,12 @@ the critical section. The token's combatant is found by `token_id`, else by the 
 actor id.
 
 ### 7.3 Decision
+
+*Amended (M14c-2):* the gate resolves the budget by evaluating the registry binding over the
+combatant's formula host (absent entries read as full; Mirror/eval-error unresolvable), and the
+same resolution clamps `Hard` route previews; see the
+[M14c-2 spec](2026-08-30-m14c-2-combat-resolution-server-side-design.md) C7 and §4. Original
+text:
 
 Non-GM, active combat with `movement.resource = Some(r)`, token is a combatant:
 

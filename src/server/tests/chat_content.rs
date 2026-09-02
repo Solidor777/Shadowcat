@@ -70,6 +70,44 @@ impl Fixture {
             .await
             .unwrap();
         let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        // The send path refuses an unregistered channel; worlds built
+        // directly here never pass through create/join seeding, so the
+        // channel-registry singleton is seeded explicitly.
+        let gm_ctx = PermissionContext {
+            user_id: gm,
+            world_role: WorldRole::Gm,
+        };
+        let channel_registry = Document {
+            id: Uuid::new_v4(),
+            scope: Scope::World { world_id: w.id },
+            doc_type: shadowcat::data::engine::CHANNEL_REGISTRY_DOC_TYPE.to_string(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner: Some(gm),
+            permissions: PermissionSet::default(),
+            embedded: BTreeMap::new(),
+            parent_id: None,
+            engine: Some(
+                serde_json::to_value(shadowcat::data::engine::ChannelRegistryEngine::seed())
+                    .unwrap(),
+            ),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        };
+        repo.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create {
+                doc: channel_registry,
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         repo.add_member(w.id, alice_id, WorldRole::Player)
             .await
             .unwrap();
@@ -183,7 +221,7 @@ impl Fixture {
                 now: 1,
                 budget_per_min: 60,
             },
-            "all".into(),
+            "general".into(),
             content.into(),
             None,
             Audience::Public,
@@ -224,7 +262,7 @@ async fn owner_can_edit_and_content_resanitizes() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "first".into(),
         None,
         Audience::Public,
@@ -275,7 +313,7 @@ async fn non_owner_non_gm_cannot_edit() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Public,
@@ -327,7 +365,7 @@ async fn cannot_edit_already_deleted_message() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "secret".into(),
         None,
         Audience::Public,
@@ -387,7 +425,7 @@ async fn gm_can_edit_players_message() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Public,
@@ -441,7 +479,7 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
             now: 1,
             budget_per_min: 60,
         },
-        "whispers".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Whisper {
@@ -498,7 +536,7 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
             now: 1,
             budget_per_min: 60,
         },
-        "gm".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::GmOnly,
@@ -549,7 +587,7 @@ async fn edit_cannot_retarget_audience() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Public,
@@ -627,15 +665,14 @@ async fn whisper_command_targets_named_user() {
 #[tokio::test]
 async fn unknown_whisper_target_rejects_whole_send() {
     let f = Fixture::new().await;
+    let before = f.repo.events_since(f.room.world_id, 0).await.unwrap();
     let r = f.send("/w @nobody hi").await;
     assert!(matches!(r, Err(SendMessageError::UnknownRecipient)));
-    // Nothing persisted — the seq was never consumed.
-    assert!(f
-        .repo
-        .events_since(f.room.world_id, 0)
-        .await
-        .unwrap()
-        .is_empty());
+    // Nothing new persisted — the seq was never consumed.
+    assert_eq!(
+        f.repo.events_since(f.room.world_id, 0).await.unwrap().len(),
+        before.len()
+    );
 }
 
 #[tokio::test]
@@ -686,6 +723,7 @@ async fn content_whisper_over_cap_rejects_before_username_resolution() {
     use shadowcat::chat::MAX_WHISPER_RECIPIENTS;
 
     let f = Fixture::new().await;
+    let before = f.repo.events_since(f.room.world_id, 0).await.unwrap();
     let names: String = (0..(MAX_WHISPER_RECIPIENTS + 1))
         .map(|i| format!("@no-such-user-{i}"))
         .collect::<Vec<_>>()
@@ -693,12 +731,9 @@ async fn content_whisper_over_cap_rejects_before_username_resolution() {
     let content = format!("/w {names} hi");
     let r = f.send(&content).await;
     assert!(matches!(r, Err(SendMessageError::TooLong)), "got {r:?}");
-    assert!(
-        f.repo
-            .events_since(f.room.world_id, 0)
-            .await
-            .unwrap()
-            .is_empty(),
+    assert_eq!(
+        f.repo.events_since(f.room.world_id, 0).await.unwrap().len(),
+        before.len(),
         "an over-cap whisper must persist nothing"
     );
 }
@@ -709,14 +744,12 @@ async fn content_whisper_over_cap_rejects_before_username_resolution() {
 #[tokio::test]
 async fn whisper_with_no_body_text_is_rejected_as_empty() {
     let f = Fixture::new().await;
+    let before = f.repo.events_since(f.room.world_id, 0).await.unwrap();
     let r = f.send("/w @bob").await;
     assert!(matches!(r, Err(SendMessageError::Empty)), "got {r:?}");
-    assert!(
-        f.repo
-            .events_since(f.room.world_id, 0)
-            .await
-            .unwrap()
-            .is_empty(),
+    assert_eq!(
+        f.repo.events_since(f.room.world_id, 0).await.unwrap().len(),
+        before.len(),
         "an empty-body whisper must persist nothing"
     );
 }
@@ -764,7 +797,7 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "secret".into(),
         None,
         Audience::Public,
@@ -804,7 +837,7 @@ async fn non_owner_non_gm_cannot_delete() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Public,
@@ -841,7 +874,7 @@ async fn repeated_delete_of_same_message_is_rate_limited() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "secret".into(),
         None,
         Audience::Public,
@@ -883,7 +916,7 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
             now: 1,
             budget_per_min: 60,
         },
-        "all".into(),
+        "general".into(),
         "secret".into(),
         None,
         Audience::Public,
@@ -895,9 +928,17 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
     let cmd = handle_delete_message(&f.room, &f.repo, &f.alice, &f.rate, id, 2, 60)
         .await
         .unwrap();
-    assert_eq!(cmd.seq, 2, "delete consumes the next sequence number");
+    assert_eq!(
+        cmd.seq,
+        sent.seq + 1,
+        "delete consumes the next sequence number"
+    );
     let events = f.repo.events_since(f.room.world_id, 0).await.unwrap();
-    assert_eq!(events.len(), 2, "both the create and the delete are logged");
+    assert_eq!(
+        events.len() as i64,
+        cmd.seq,
+        "both the create and the delete are logged, with no sequence gap"
+    );
 }
 
 /// A GM moderating chat must be able to delete ANY message regardless of its
@@ -922,7 +963,7 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
             now: 1,
             budget_per_min: 60,
         },
-        "whispers".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Whisper {
@@ -964,7 +1005,7 @@ async fn gm_can_delete_gm_only_message_not_individually_listed() {
             now: 1,
             budget_per_min: 60,
         },
-        "gm".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::GmOnly,
@@ -1014,7 +1055,7 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
             now: 1,
             budget_per_min: 60,
         },
-        "whispers".into(),
+        "general".into(),
         "hi".into(),
         None,
         Audience::Whisper {
@@ -1085,7 +1126,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
             now: 1,
             budget_per_min: 60,
         },
-        "whispers".into(),
+        "general".into(),
         "griffonroost".into(),
         None,
         Audience::Whisper {

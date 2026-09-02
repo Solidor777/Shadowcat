@@ -247,7 +247,10 @@
   });
 
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
-   * channel — never re-executes the carrying message's own roll.
+   * channel — never re-executes the carrying message's own roll. A statted button is per-clicker: the send carries
+   * the clicker's own actor binding (the pending one-shot `speakAsToken` first, else the sticky session
+   * `speakAs`), so the server resolves a statted template's references against the clicker's own
+   * actor, never the button author's stats.
    * @param s The clicked `roll_button` segment.
    * @example
    * ```
@@ -256,7 +259,23 @@
    */
   function sendRollButton(s: RollButtonSegment): void {
     if (!sys) return;
-    ctx.chat.send({ channel: sys.channel, content: `/roll ${s.formula}` });
+    const pendingToken = ctx.speakAsToken.consume();
+    const actorOwner: WireActorOwnerRef | undefined = pendingToken
+      ? { kind: "token_instance", token_id: pendingToken }
+      : ctx.speakAs.actorId
+        ? { kind: "actor", actor_id: ctx.speakAs.actorId }
+        : undefined;
+    // The same precedence the composer applies (pending one-shot beats the sticky selection);
+    // a server refusal (e.g. an unresolvable reference) is player-presentable, so surface it.
+    void Promise.resolve(
+      ctx.chat.send(
+        actorOwner
+          ? { channel: sys.channel, content: `/roll ${s.formula}`, actorOwner }
+          : { channel: sys.channel, content: `/roll ${s.formula}` },
+      ),
+    ).catch((e: unknown) => {
+      ctx.notify(e instanceof Error ? e.message : String(e), "error");
+    });
   }
 
   // Advisory only — the server independently re-authorizes every edit/delete against its own

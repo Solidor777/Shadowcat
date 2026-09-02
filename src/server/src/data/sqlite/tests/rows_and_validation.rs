@@ -1591,6 +1591,62 @@ async fn update_post_image_with_invalid_engine_is_rejected() {
 }
 
 #[tokio::test]
+async fn update_leaving_an_empty_channel_registry_is_rejected() {
+    use crate::data::command::FieldChange;
+    use crate::data::document::{DocRole, PermissionSet, Scope};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let mut perms = PermissionSet::default();
+    perms.users.insert(gm, DocRole::Owner);
+    let seeded = serde_json::to_value(crate::data::engine::ChannelRegistryEngine::seed()).unwrap();
+    let mut d = tests_engine_doc(perms, "channel-registry", seeded.clone());
+    d.scope = Scope::World { world_id: w.id };
+    let doc_id = d.id;
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: d }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // A field write that empties /engine/channels leaves a post-image
+    // `ChannelRegistryEngine::validate` refuses (an empty registry wedges all
+    // chat), so the Update is BadEngine, not silently stored.
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/channels".into(),
+                    old: seeded["channels"].clone(),
+                    new: serde_json::json!({}),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::BadEngine(_)));
+}
+
+#[tokio::test]
 async fn create_with_trailing_slash_property_override_key_is_rejected() {
     use crate::data::document::{DocRole, PermissionSet, Scope, Visibility};
     use crate::data::membership::PermissionContext;

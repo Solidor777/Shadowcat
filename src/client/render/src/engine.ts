@@ -16,6 +16,7 @@ import { TemplateView } from "./template-view";
 import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
 import { PingView } from "./ping-view";
+import { EmoteView } from "./emote-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
@@ -93,6 +94,11 @@ export interface RenderEngineOpts {
    * footprint geometry: `TokenView` reads the extent from here. Absent ⇒ `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`. */
   footprints?: () => FootprintLookup;
+  /** The currently-selected token ids (Stage → `ctx.tokenSelection.ids`): a selected token's
+   * spec gains the selection highlight fx. Absent ⇒ an empty selection (no highlights). A
+   * selection change carries no store commit, so the host must call
+   * {@link RenderEngine.reapplyTokenSelection} to re-project. */
+  selectedTokens?: () => ReadonlySet<string>;
 }
 
 /** Theme-driven colors applied to the stage canvas at runtime by
@@ -142,6 +148,10 @@ export class RenderEngine implements SceneToolHost {
   private readonly pings = new PingView();
   /** Whether ping rings were drawn last frame, so the ticker stops redrawing once idle. */
   private pingsActive = false;
+  /** Transient emote-glyph state, ticked each frame; drives `DisplayBackend.drawEmotes`. */
+  private readonly emotes = new EmoteView();
+  /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
+  private emotesActive = false;
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
    * Reassignable at runtime via {@link RenderEngine.setThemeColors} (a theme swap). */
   private gridColor: number;
@@ -243,7 +253,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, opts.selectedTokens);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
@@ -302,6 +312,12 @@ export class RenderEngine implements SceneToolHost {
       if (rings.length > 0 || this.pingsActive) {
         this.opts.backend.drawPings(rings);
         this.pingsActive = rings.length > 0;
+      }
+      const glyphs = this.emotes.tick(dt);
+      // Redraw only while glyphs live (plus one final clear when they expire).
+      if (glyphs.length > 0 || this.emotesActive) {
+        this.opts.backend.drawEmotes(glyphs);
+        this.emotesActive = glyphs.length > 0;
       }
     });
     this.subscribeVision();
@@ -530,6 +546,22 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   reapplyFootprints(): void {
+    this.tokens.reconcile();
+  }
+
+  /** Re-project every token after a token-selection change. Selection is client-local UI state
+   * (no document write), so the store subscription that drives reconciles never fires for it —
+   * without this, the selection highlight fx would lag behind the click until the next unrelated
+   * store commit. Tokens only — no other view reads the selection.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyTokenSelection();
+   * ```
+   */
+  reapplyTokenSelection(): void {
     this.tokens.reconcile();
   }
 
@@ -935,6 +967,32 @@ export class RenderEngine implements SceneToolHost {
       this.gridColor = colors.gridColor;
       this.redrawGrid();
     }
+  }
+
+  /** `SceneToolHost.addEmote`: spawn a transient emote glyph above `tokenId`'s current
+   * resolved position (a received or locally-originated emote). The anchor is read AT SPAWN
+   * from `TokenView.specOf` — the emote marks WHERE it was fired and never tracks a moving
+   * token — and an unknown/unrenderable token id is DROPPED: the relay is room-wide, so a
+   * recipient who cannot resolve the token renders no overlay. The rise is the active grid's
+   * per-cell world distance (`Grid.worldUnitsPerCell`), the view's ONE cell-size source.
+   * Forwards to `EmoteView.add`; glyph rise/fade is driven by the ticker installed in
+   * `start()`.
+   * @param tokenId The token document id the emote plays over.
+   * @param emote The emote glyph(s).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   *
+   * engine.addEmote("token-1", "😀");
+   * ```
+   */
+  addEmote(tokenId: string, emote: string): void {
+    const spec = this.tokens.specOf(tokenId);
+    if (!spec) return;
+    // Top-center of the token's bounding box (spec x/y is the CENTER — see TokenNodeSpec).
+    this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell());
   }
 
   /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.

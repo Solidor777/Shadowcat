@@ -69,6 +69,52 @@ fn actor_minimal_body_is_valid() {
 }
 
 #[test]
+fn actor_with_emissions_is_valid() {
+    let v = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true },
+        "sound": { "asset": "a1", "radius": 5.0, "volume": 0.8, "loop": true, "enabled": true },
+        "vfx": { "asset": "a2", "anchor": "above", "loop": false, "enabled": true }
+    });
+    assert!(validate_engine("actor", Some(&v)).is_ok());
+}
+
+#[test]
+fn actor_with_malformed_emission_is_rejected() {
+    let base = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true
+    });
+    let mut bad_color = base.clone();
+    bad_color["aura"] =
+        json!({ "color": "orange", "opacity": 0.4, "radius": 2.0, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_color)).is_err());
+    let mut bad_radius = base.clone();
+    bad_radius["sound"] =
+        json!({ "asset": "a1", "radius": -1.0, "volume": 0.8, "loop": true, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_radius)).is_err());
+    let mut bad_asset = base.clone();
+    bad_asset["vfx"] = json!({ "asset": "", "anchor": "token", "loop": true, "enabled": true });
+    assert!(validate_engine("actor", Some(&bad_asset)).is_err());
+}
+
+#[test]
+fn token_with_malformed_override_emission_is_rejected() {
+    let mut v = json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 });
+    v["overrides"] = json!({
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 1.0e12, "enabled": true }
+    });
+    assert!(validate_engine("token", Some(&v)).is_err());
+    v["overrides"] = json!({
+        "aura": { "color": "#ffcc66", "opacity": 0.4, "radius": 2.0, "enabled": true }
+    });
+    assert!(validate_engine("token", Some(&v)).is_ok());
+}
+
+#[test]
 fn message_minimal_body_is_valid() {
     let v = json!({
         "channel": "ic", "user_owner": "00000000-0000-0000-0000-000000000000",
@@ -81,6 +127,27 @@ fn message_minimal_body_is_valid() {
 fn world_settings_minimal_body_is_valid() {
     let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
     assert!(validate_engine("world-settings", Some(&v)).is_ok());
+}
+
+#[test]
+fn world_settings_partial_overlay_body_is_valid() {
+    // The world layer is an optional overlay: a single authored leaf is a
+    // complete, valid body — absent leaves fall through the resolution chain.
+    let v = json!({ "scene": { "fog": false } });
+    assert!(validate_engine("world-settings", Some(&v)).is_ok());
+    // The old full-required shape remains valid (full ⊃ optional).
+    let full = json!({
+        "scene": {
+            "losRestriction": true, "fog": true, "lightingEnabled": true,
+            "lightMode": "environmentLight",
+            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+            "observerVision": false, "movementRestriction": "visible",
+            "movementModel": "grid-stepped", "partialCellLeniency": true
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" }
+    });
+    assert!(validate_engine("world-settings", Some(&full)).is_ok());
 }
 
 #[test]
@@ -107,7 +174,30 @@ fn dice_settings_minimal_body_is_valid() {
 
 #[test]
 fn channel_registry_minimal_body_is_valid() {
-    assert!(validate_engine("channel-registry", Some(&json!({ "channels": {} }))).is_ok());
+    // The smallest body `ChannelRegistryEngine::validate` admits: one channel.
+    let v = json!({ "channels": { "general": { "name": "General" } } });
+    assert!(validate_engine("channel-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn channel_registry_rejects_an_empty_channels_map_but_the_seed_validates() {
+    // An empty registry wedges all chat (message ingest validates
+    // `MessageEngine.channel` against membership), so it is refused.
+    assert!(validate_engine("channel-registry", Some(&json!({ "channels": {} }))).is_err());
+    assert!(crate::data::engine::ChannelRegistryEngine::seed()
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn channel_registry_rejects_an_empty_name_and_an_overlong_key() {
+    let empty_name = json!({ "channels": { "general": { "name": "  " } } });
+    assert!(validate_engine("channel-registry", Some(&empty_name)).is_err());
+    // A key one past the cap could never be posted to (the ingest cap would
+    // refuse the channel string first), so it is rejected here.
+    let long_key: String = "x".repeat(crate::data::engine::MAX_CHANNEL_CHARS + 1);
+    let overlong = json!({ "channels": { long_key: { "name": "X" } } });
+    assert!(validate_engine("channel-registry", Some(&overlong)).is_err());
 }
 
 #[test]
@@ -492,6 +582,71 @@ fn animated_source_sheet_round_trips() {
     assert!(matches!(src, AnimatedSource::Sheet { .. }));
 }
 
+#[test]
+fn render_visual_generated_round_trips() {
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": "a.png" },
+        "crop": "circle",
+        "border": { "color": "#ff8800", "width": 0.06 },
+        "background": { "color": "#102030" }
+    });
+    let v: RenderVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(
+        v,
+        RenderVisual::Generated {
+            crop: GeneratedCrop::Circle,
+            ..
+        }
+    ));
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+}
+
+#[test]
+fn render_visual_generated_omitted_border_and_background_serialize_as_null() {
+    // `Option` fields re-serialize as explicit `null` (the client's `T | null`
+    // contract), never as an omitted key.
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "animated", "source": { "type": "frames", "frames": ["a"] }, "fps": 4.0, "loop": true },
+        "crop": "square"
+    });
+    let v: RenderVisual = serde_json::from_value(src).unwrap();
+    let stored = serde_json::to_value(&v).unwrap();
+    assert_eq!(stored["border"], serde_json::Value::Null);
+    assert_eq!(stored["background"], serde_json::Value::Null);
+    let back: RenderVisual = serde_json::from_value(stored).unwrap();
+    assert_eq!(v, back);
+}
+
+#[test]
+fn token_visual_generated_round_trips() {
+    // An actor's whole visual can be a generated composition (the same payload
+    // shape `RenderVisual::Generated` carries per-face).
+    let src = json!({
+        "kind": "generated",
+        "art": { "kind": "image", "asset": "a.png" },
+        "crop": "circle",
+        "border": null,
+        "background": { "color": "#102030" }
+    });
+    let v: TokenVisual = serde_json::from_value(src.clone()).unwrap();
+    assert!(matches!(v, TokenVisual::Generated { .. }));
+    assert_eq!(serde_json::to_value(&v).unwrap(), src);
+}
+
+#[test]
+fn generated_crop_literal_set_deserializes() {
+    for (literal, expected) in [
+        ("circle", GeneratedCrop::Circle),
+        ("square", GeneratedCrop::Square),
+    ] {
+        let v: GeneratedCrop = serde_json::from_value(json!(literal)).unwrap();
+        assert_eq!(v, expected);
+    }
+    assert!(serde_json::from_value::<GeneratedCrop>(json!("hex")).is_err());
+}
+
 // --- literal-set assertions (client writers emit these strings today) ---
 
 #[test]
@@ -541,27 +696,41 @@ fn region_behavior_literal_set_deserializes() {
     }
 }
 
-/// Drift guard: `WorldSettingsEngine::default()` must serialize to the
-/// SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
+/// Drift guard: the engine-literal fallbacks (`WorldSceneDefaults::default`,
+/// `Pathfinding::default`, `AnimationSettings::default`) must serialize to
+/// the SAME values as the client's `DEFAULT_WORLD_SETTINGS`, field-by-field.
+/// `WorldSettingsEngine::default()` itself is the EMPTY overlay (what the
+/// world-config seed authors) — every member serializes as null.
 #[test]
-fn world_settings_default_matches_client_default() {
-    let v = serde_json::to_value(WorldSettingsEngine::default()).unwrap();
+fn engine_literal_defaults_match_client_default() {
     assert_eq!(
-        v,
+        serde_json::to_value(WorldSceneDefaults::default()).unwrap(),
         json!({
-            "scene": {
-                "losRestriction": true,
-                "fog": true,
-                "lightingEnabled": true,
-                "lightMode": "environmentLight",
-                "environment": { "color": "#0a0e1a", "intensity": 0.0 },
-                "observerVision": false,
-                "movementRestriction": "visible",
-                "movementModel": "grid-stepped",
-                "partialCellLeniency": true,
-            },
-            "pathfinding": { "diagonalRule": "chebyshev" },
-            "animation": { "speedCellsPerSec": 6.0, "easing": "easeInOut" },
+            "losRestriction": true,
+            "fog": true,
+            "lightingEnabled": true,
+            "lightMode": "environmentLight",
+            "environment": { "color": "#0a0e1a", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "movementModel": "grid-stepped",
+            "partialCellLeniency": true,
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(Pathfinding::default()).unwrap(),
+        json!({ "diagonalRule": "chebyshev" })
+    );
+    assert_eq!(
+        serde_json::to_value(AnimationSettings::default()).unwrap(),
+        json!({ "speedCellsPerSec": 6.0, "easing": "easeInOut" })
+    );
+    assert_eq!(
+        serde_json::to_value(WorldSettingsEngine::default()).unwrap(),
+        json!({
+            "scene": null,
+            "pathfinding": null,
+            "animation": null,
             "activeScene": null,
             "combat": null,
         })
@@ -689,8 +858,7 @@ fn effect_minimal_body_is_valid() {
 fn effect_with_formula_duration_and_lifecycle_is_valid() {
     let v = json!({ "active": true, "transfer": false,
         "duration": { "amount": "rounds + 1", "remaining": 3, "unit": "rounds", "anchor": null, "expires": "turn_end" },
-        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "1 - persistent",
-                       "resolved": { "on_combat_end": true, "on_turn_end": false, "on_advance": true } } });
+        "lifecycle": { "on_combat_end": 1, "on_turn_end": null, "on_advance": "1 - persistent" } });
     assert!(validate_engine("effect", Some(&v)).is_ok());
 }
 
@@ -922,10 +1090,287 @@ fn system_defaults_wrong_type_is_rejected() {
     .is_err());
 }
 
+// --- world-config seed bodies (the engine definition; client constants mirror these) ---
+
+#[test]
+fn faction_registry_seed_content() {
+    let s = FactionRegistryEngine::seed();
+    assert_eq!(s.factions.len(), 3);
+    let f = &s.factions["friendly"];
+    assert_eq!(
+        (f.name.as_str(), f.color.as_str(), f.stance),
+        ("Friendly", "#3fb950", FactionStance::Friendly)
+    );
+    let n = &s.factions["neutral"];
+    assert_eq!(
+        (n.name.as_str(), n.color.as_str(), n.stance),
+        ("Neutral", "#9e9e9e", FactionStance::Neutral)
+    );
+    let h = &s.factions["hostile"];
+    assert_eq!(
+        (h.name.as_str(), h.color.as_str(), h.stance),
+        ("Hostile", "#f85149", FactionStance::Hostile)
+    );
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("faction-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn condition_registry_seed_content() {
+    let s = ConditionRegistryEngine::seed();
+    let expect: &[(&str, &str, &str)] = &[
+        ("dead", "Dead", "💀"),
+        ("unconscious", "Unconscious", "😵"),
+        ("prone", "Prone", "🛌"),
+        ("stunned", "Stunned", "💫"),
+        ("poisoned", "Poisoned", "🤢"),
+        ("blinded", "Blinded", "🙈"),
+        ("invisible", "Invisible", "👻"),
+        ("hasted", "Hasted", "⚡"),
+        ("slowed", "Slowed", "🐌"),
+    ];
+    assert_eq!(s.conditions.len(), expect.len());
+    for (id, name, icon) in expect {
+        let c = &s.conditions[*id];
+        assert_eq!((c.name.as_str(), c.icon.as_str()), (*name, *icon));
+    }
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn condition_registry_fx_round_trips() {
+    let v = json!({ "conditions": { "poisoned": {
+        "name": "Poisoned", "icon": "🤢",
+        "fx": { "tint": "#66ff66", "desaturate": true, "highlight": "#ffffff" }
+    } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_ok());
+    let typed: ConditionRegistryEngine = serde_json::from_value(v).unwrap();
+    let fx = typed.conditions["poisoned"].fx.as_ref().unwrap();
+    assert_eq!(fx.tint.as_deref(), Some("#66ff66"));
+    assert_eq!(fx.desaturate, Some(true));
+    assert_eq!(fx.highlight.as_deref(), Some("#ffffff"));
+}
+
+#[test]
+fn condition_without_fx_deserializes_with_none() {
+    // Registry entries authored before the fx field existed carry no `fx` key
+    // at all; serde's default must absorb that.
+    let typed: ConditionRegistryEngine = serde_json::from_value(
+        json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀" } } }),
+    )
+    .unwrap();
+    assert_eq!(typed.conditions["dead"].fx, None);
+}
+
+#[test]
+fn condition_fx_unknown_field_is_rejected() {
+    let v = json!({ "conditions": { "dead": {
+        "name": "Dead", "icon": "💀", "fx": { "bogus": 1 }
+    } } });
+    assert!(validate_engine("condition-registry", Some(&v)).is_err());
+}
+
+#[test]
+fn condition_fx_malformed_color_is_rejected() {
+    for fx in [
+        json!({ "tint": "green" }),
+        json!({ "tint": "#fff" }),
+        json!({ "highlight": "#ff8800ff" }),
+    ] {
+        let v = json!({ "conditions": { "dead": { "name": "Dead", "icon": "💀", "fx": fx } } });
+        assert!(validate_engine("condition-registry", Some(&v)).is_err());
+    }
+}
+
+#[test]
+fn channel_registry_seed_content() {
+    let s = ChannelRegistryEngine::seed();
+    assert_eq!(s.channels.len(), 1);
+    assert_eq!(s.channels["general"].name, "General");
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("channel-registry", Some(&v)).is_ok());
+}
+
+#[test]
+fn light_gradation_seed_content() {
+    let s = LightGradationEngine::seed();
+    let bands: Vec<(&str, f64)> = s
+        .bands
+        .iter()
+        .map(|b| (b.name.as_str(), b.min_illumination))
+        .collect();
+    assert_eq!(bands, vec![("bright", 0.67), ("dim", 0.34), ("dark", 0.0)]);
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("light-gradation", Some(&v)).is_ok());
+}
+
+#[test]
+fn vision_modes_seed_content() {
+    let s = VisionModesEngine::seed();
+    assert_eq!(s.modes.len(), 2);
+    let n = &s.modes["normal"];
+    assert_eq!(
+        (
+            n.id.as_str(),
+            n.name.as_str(),
+            n.illumination_floor.as_str(),
+            n.default_range,
+            n.render_hint.as_deref()
+        ),
+        ("normal", "Normal", "dim", 0.0, None)
+    );
+    let d = &s.modes["darkvision"];
+    assert_eq!(
+        (
+            d.id.as_str(),
+            d.name.as_str(),
+            d.illumination_floor.as_str(),
+            d.default_range,
+            d.render_hint.as_deref()
+        ),
+        ("darkvision", "Darkvision", "dark", 12.0, Some("desaturate"))
+    );
+    let v = serde_json::to_value(&s).unwrap();
+    assert!(validate_engine("vision-modes", Some(&v)).is_ok());
+}
+
+#[test]
+fn empty_default_config_bodies_are_valid() {
+    let chat = serde_json::to_value(ChatSettingsEngine::default()).unwrap();
+    assert!(validate_engine("chat-settings", Some(&chat)).is_ok());
+    let dice_default = DiceSettingsEngine::default();
+    assert_eq!(
+        (
+            dice_default.mode,
+            dice_default.direction,
+            dice_default.channel_overrides.len()
+        ),
+        (DiceModeSetting::Total, DiceDirectionSetting::HighWins, 0)
+    );
+    let dice = serde_json::to_value(&dice_default).unwrap();
+    assert!(validate_engine("dice-settings", Some(&dice)).is_ok());
+    let resources = serde_json::to_value(ResourceRegistryEngine::default()).unwrap();
+    assert!(validate_engine("resource-registry", Some(&resources)).is_ok());
+    let sd = serde_json::to_value(SystemDefaultsEngine::default()).unwrap();
+    assert!(validate_engine("system-defaults", Some(&sd)).is_ok());
+}
+
 #[test]
 fn asset_folder_is_engine_type_with_sort_only() {
     assert!(is_engine_doc_type("asset_folder"));
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3 }))).is_ok());
     assert!(validate_engine("asset_folder", Some(&json!({ "sort": 3, "name": "x" }))).is_err());
     assert!(validate_engine("asset_folder", None).is_err());
+}
+
+#[test]
+fn region_without_triggers_loads_and_normalizes_with_an_empty_list() {
+    // A document written before triggers existed carries no `triggers` key: serde's default
+    // admits it, and normalization re-serializes the key back as an explicit empty list.
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(n.get("triggers"), Some(&json!([])));
+}
+
+#[test]
+fn region_trigger_payload_round_trips_all_effect_kinds() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } },
+            { "on": "arrest", "effect": { "type": "condition_remove", "condition": "prone" } },
+            { "on": "enter", "effect": { "type": "resource_delta", "resource": "hp", "amount": -3.0 } },
+            { "on": "enter", "effect": { "type": "resource_delta", "resource": "hp", "amount": "con + 1" } },
+            { "on": "arrest", "effect": { "type": "chat_notice", "text": "It snaps shut.", "audience": "owner" } }
+        ]
+    });
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(
+        n, v,
+        "a valid trigger payload must round-trip byte-identically"
+    );
+}
+
+#[test]
+fn region_trigger_validation_rejects_malformed_payloads() {
+    let base = |effect: serde_json::Value| {
+        json!({
+            "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+            "behavior": "terrain", "cost": 1.0, "enabled": true,
+            "triggers": [ { "on": "enter", "effect": effect } ]
+        })
+    };
+    // An empty condition/resource id.
+    assert!(validate_engine(
+        "region",
+        Some(&base(json!({ "type": "condition_add", "condition": "" })))
+    )
+    .is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "resource_delta", "resource": "", "amount": 1.0 })
+        ))
+    )
+    .is_err());
+    // An over-cap id (`MAX_TRIGGER_ID_CHARS`).
+    let long_id = "x".repeat(MAX_TRIGGER_ID_CHARS + 1);
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "condition_add", "condition": long_id })
+        ))
+    )
+    .is_err());
+    // An amount that is not formula source.
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "resource_delta", "resource": "hp", "amount": "1 +" })
+        ))
+    )
+    .is_err());
+    // An over-cap notice text (`chat::MAX_MESSAGE_CHARS`).
+    let long_text = "x".repeat(crate::chat::MAX_MESSAGE_CHARS + 1);
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "chat_notice", "text": long_text, "audience": "public" })
+        ))
+    )
+    .is_err());
+    // An unknown effect type, event, audience, or trigger field — serde closes these.
+    assert!(validate_engine("region", Some(&base(json!({ "type": "explode" })))).is_err());
+    assert!(validate_engine("region", Some(&json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [ { "on": "leave", "effect": { "type": "condition_add", "condition": "x" } } ]
+    }))).is_err());
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "chat_notice", "text": "t", "audience": "everyone" })
+        ))
+    )
+    .is_err());
+    assert!(validate_engine("region", Some(&json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [ { "on": "enter", "effect": { "type": "condition_add", "condition": "x" }, "extra": 1 } ]
+    }))).is_err());
+    // The same payloads at exactly the cap are admitted.
+    let cap_id = "x".repeat(MAX_TRIGGER_ID_CHARS);
+    assert!(validate_engine(
+        "region",
+        Some(&base(
+            json!({ "type": "condition_add", "condition": cap_id })
+        ))
+    )
+    .is_ok());
 }

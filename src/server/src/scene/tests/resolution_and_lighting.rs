@@ -11,33 +11,30 @@ fn diagonal_rule_defaults_to_chebyshev_without_world_settings() {
 }
 
 #[test]
-fn diagonal_rule_falls_back_when_structural_keys_absent() {
-    // A world-settings doc with `pathfinding.diagonalRule:"alternating"` but missing `scene`
-    // or `animation` must resolve to `Chebyshev` — the structural guard (same as resolve_scene)
-    // must reject a partial doc rather than partially resolving.
+fn partial_world_doc_authored_rule_applies_and_absent_leaf_falls_back() {
+    // Overlay semantics: a partial world-settings body contributes exactly its
+    // authored leaves — there is no structural completeness requirement.
     use serde_json::json;
     let mut ecs = SceneEcs::new();
 
-    // Missing `scene` key entirely.
+    // Authored pathfinding leaf, no scene/animation keys: the leaf applies.
     ecs.set_world_settings_for_test(json!({
-        "pathfinding": { "diagonalRule": "alternating" },
-        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
-    }));
-    assert_eq!(
-        ecs.resolved_diagonal_rule(),
-        crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "missing scene key must fall back to Chebyshev"
-    );
-
-    // Missing `animation` key entirely.
-    ecs.set_world_settings_for_test(json!({
-        "scene": { "movementRestriction": "visible" },
         "pathfinding": { "diagonalRule": "alternating" }
     }));
     assert_eq!(
         ecs.resolved_diagonal_rule(),
+        crate::scene::pathfinding::DiagonalRule::Alternating,
+        "a partial doc's authored leaf applies"
+    );
+
+    // No pathfinding leaf at all: the engine literal.
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "movementRestriction": "visible" }
+    }));
+    assert_eq!(
+        ecs.resolved_diagonal_rule(),
         crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "missing animation key must fall back to Chebyshev"
+        "an unauthored leaf falls back to the engine literal"
     );
 }
 
@@ -60,7 +57,7 @@ fn diagonal_rule_reads_world_settings_and_unknown_falls_back() {
     assert_eq!(
         ecs.resolved_diagonal_rule(),
         crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        "unknown rule fails to chebyshev (mirrors client default)"
+        "unknown rule fails to chebyshev (the engine literal the client mirrors)"
     );
 }
 
@@ -1248,6 +1245,68 @@ fn region_field_ignores_disabled_regions() {
         .region_field(scene_id, None)
         .expect("scene exists")
         .is_impassable((0, 0)));
+}
+
+#[test]
+fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization() {
+    // Anti-drift: `SceneEcs::trigger_regions`'s identity rows and the composed
+    // `region_field` must cover the same cells for the same region, because one
+    // rasterizer feeds both. A divergence would let a move spring a region's
+    // movement behavior without firing its triggers (or the reverse).
+    let scene_id = Uuid::from_u128(10);
+    let region = |id: u128, x0: f64, behavior: &str, enabled: bool, triggers: serde_json::Value| {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(id),
+            "region",
+        );
+        d.parent_id = Some(scene_id);
+        d.engine = Some(serde_json::json!({
+            "shape": { "kind": "rect", "points": [x0, 0.0, x0 + 100.0, 100.0] },
+            "behavior": behavior,
+            "cost": 1.0,
+            "enabled": enabled,
+            "triggers": triggers,
+        }));
+        d
+    };
+    let enter_notice = serde_json::json!([
+        { "on": "enter", "effect": { "type": "chat_notice", "text": "hi", "audience": "gm_only" } }
+    ]);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            region(20, 0.0, "terrain", true, enter_notice.clone()),
+            region(21, 200.0, "arrest", true, enter_notice.clone()),
+            region(22, 400.0, "impassable", true, serde_json::json!([])),
+            region(23, 600.0, "terrain", false, enter_notice),
+        ],
+        0,
+    );
+
+    let field = ecs.region_field(scene_id, None).expect("scene exists");
+    let field_cells: std::collections::BTreeSet<_> = field.iter_cells().map(|(c, _)| c).collect();
+    let rows = ecs.trigger_regions(scene_id).expect("scene exists");
+    assert_eq!(
+        rows.len(),
+        2,
+        "only enabled, trigger-bearing regions get identity rows"
+    );
+    for row in &rows {
+        assert!(!row.cells.is_empty());
+        for cell in &row.cells {
+            assert!(
+                field_cells.contains(cell),
+                "identity row for region {} covers {cell:?} but the composed field does not",
+                row.region_id,
+            );
+        }
+    }
+    // The trigger-less region is in the field without an identity row; the
+    // disabled region is in neither.
+    assert!(field_cells.contains(&(4, 0)));
+    assert!(!field_cells.contains(&(6, 0)));
+    assert!(!rows.iter().any(|r| r.cells.contains(&(4, 0))));
 }
 
 #[test]

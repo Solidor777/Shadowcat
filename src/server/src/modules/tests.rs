@@ -76,6 +76,61 @@ fn an_invalid_manifest_is_skipped_without_hiding_valid_siblings() {
 }
 
 #[test]
+fn manifest_system_defaults_are_extracted_and_validated() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "sys",
+        r#"{"id":"sys","version":"1.0.0","engines":{"shadowcat":"*"},"provides":[{"contract":"shadowcat.system","cardinality":"singleton"}],"systemDefaults":{"scene":{"fog":false}}}"#,
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(found.len(), 1);
+    assert!(found[0].provides_system);
+    let sd = found[0]
+        .system_defaults
+        .as_ref()
+        .expect("valid declaration extracted");
+    assert_eq!(sd.scene.as_ref().unwrap().fog, Some(false));
+}
+
+#[test]
+fn manifest_invalid_system_defaults_are_dropped_but_the_module_still_loads() {
+    let dir = tempfile::tempdir().unwrap();
+    // Unknown field: fails SystemDefaultsEngine deserialization.
+    write_module(
+        dir.path(),
+        "bad-shape",
+        r#"{"id":"bad-shape","version":"1.0.0","systemDefaults":{"bogus":1}}"#,
+    );
+    // Well-shaped but semantically invalid: fails validate() (speed must be > 0).
+    write_module(
+        dir.path(),
+        "bad-value",
+        r#"{"id":"bad-value","version":"1.0.0","systemDefaults":{"animation":{"speedCellsPerSec":-1.0}}}"#,
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(
+        found.len(),
+        2,
+        "fail-open discovery: the modules still load"
+    );
+    assert!(found.iter().all(|m| m.system_defaults.is_none()));
+}
+
+#[test]
+fn a_module_without_the_system_contract_does_not_provide_system() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "plain",
+        r#"{"id":"plain","version":"1.0.0","provides":[{"contract":"x:y","cardinality":"multi"}]}"#,
+    );
+    let found = scan_installed_modules(dir.path());
+    assert!(!found[0].provides_system);
+    assert!(found[0].system_defaults.is_none());
+}
+
+#[test]
 fn a_folder_with_no_module_json_is_ignored() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("not-a-module")).unwrap();

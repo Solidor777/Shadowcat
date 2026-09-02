@@ -7,16 +7,15 @@ import {
 import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import {
-  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, seedResourceRegistryIfAbsent,
+  buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
   type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
 } from "./scene-docs";
 import {
-  buildSystemDefaultsDoc, systemDefaultsUpsertOps, resolveSettingProvenance, SYSTEM_DEFAULTS_DOC_TYPE,
+  buildSystemDefaultsDoc, resolveSettingProvenance,
   type SystemDefaultsEngine,
 } from "./scene-docs";
 import { DocumentStore } from "./store";
-import type { WireOperation } from "./wire";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
 
@@ -82,16 +81,18 @@ describe("resolveSceneSettings", () => {
     expect(r.gridDistance).toEqual({ perCell: 1.5, unit: "m" });
   });
 
-  it("builds a world-settings doc with world scope and null parent", () => {
+  it("builds a world-settings doc with world scope, null parent, and the empty overlay", () => {
     const ws = buildWorldSettingsDoc("w1");
     expect(ws.doc_type).toBe("world-settings");
     expect(ws.parent_id).toBeNull();
-    expect((ws.engine as { scene: unknown }).scene).toBeTruthy();
+    // The default engine body authors NO leaf: every setting falls through
+    // the chain until a GM writes an override.
+    expect(ws.engine).toEqual({});
   });
 
   it("fail-closed: partial world-settings wire doc (missing scene/pathfinding/animation) falls back to built-in defaults and does not throw", () => {
-    // Simulates a future partial wire payload where a set_pointer removed `scene`,
-    // leaving a non-null but structurally incomplete world-settings engine object.
+    // The overlay's ordinary shape: an engine object authoring no leaf
+    // resolves every setting through the chain, never throwing.
     const scene = buildSceneDoc("w1", {}, "scene-partial");
     const partialWs: WireDocument = {
       ...buildWorldSettingsDoc("w1", DEFAULT_WORLD_SETTINGS, "ws-partial"),
@@ -183,6 +184,9 @@ const actorEngine: ActorEngine = {
   conditions: [],
   prototype: true,
   vision: null,
+  aura: null,
+  sound: null,
+  vfx: null,
 };
 
 test("buildSceneDoc makes a top-level world scene with a default square grid", () => {
@@ -217,8 +221,7 @@ test("buildSceneDoc persists an explicit snapToGrid:false (not omitted as falsy)
   expect((doc.engine as SceneEngine).snapToGrid).toBe(false);
 });
 
-it("DEFAULT_WORLD_SETTINGS carries an unset combat chain and buildSceneDoc mirrors it", () => {
-  expect(DEFAULT_WORLD_SETTINGS.combat).toBeNull();
+it("buildSceneDoc's combat chain is unset by default and persists an authored override", () => {
   const scene = buildSceneDoc("world-1");
   expect((scene.engine as SceneEngine).combat).toBeNull();
   const ship = buildSceneDoc("world-1", { combat: { movementResource: "ship", enforcement: "hard" } });
@@ -400,6 +403,10 @@ describe("buildRegionDoc", () => {
       behavior: "terrain",
       cost: 2,
       enabled: true,
+      triggers: [
+        { on: "enter", effect: { type: "condition_add", condition: "prone" } },
+        { on: "arrest", effect: { type: "resource_delta", resource: "hp", amount: -3 } },
+      ],
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -415,6 +422,7 @@ describe("buildRegionDoc", () => {
       behavior: "arrest",
       cost: 1,
       enabled: true,
+      triggers: [],
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");
@@ -539,14 +547,18 @@ describe("combat document builders", () => {
     expect(visible.owner).toBe("user-1");
     expect(visible.permissions.default).toBe("observer");
     expect(visible.permissions.users).toEqual({ "user-1": "owner" });
+    // Stored resource numbers default to owner-or-GM disclosure; a GM widens
+    // deliberately by overwriting the entry after building.
+    expect(visible.permissions.property_overrides["/engine/resources"]).toBe("owner_or_gm");
     const hidden = buildCombatantDoc("world-1", "combat-1", eng, { owner: "user-1", hidden: true });
+    expect(hidden.permissions.property_overrides["/engine/resources"]).toBe("owner_or_gm");
     expect(hidden.permissions.default).toBe("none");
     // While hidden the owner is not listed either: hidden means unreadable to every non-GM.
     expect(hidden.permissions.users).toEqual({});
     expect(hidden.owner).toBe("user-1");
   });
 
-  it("buildResourceRegistryDoc and the seed helper are idempotent and deterministic", () => {
+  it("buildResourceRegistryDoc is deterministic over an explicit id", () => {
     const seed: Record<string, Resource> = {
       movement: { name: "Movement", order: 0, binding: { kind: "tracked", max: "speed",
         recover: { turn_start: "speed", turn_end: 0, round_start: 0, round_end: 0 } } },
@@ -556,15 +568,6 @@ describe("combat document builders", () => {
     expect(doc.doc_type).toBe(RESOURCE_REGISTRY_DOC_TYPE);
     expect(doc.id).toBe(id);
     expect((doc.engine as ResourceRegistryEngine).resources.movement.binding.kind).toBe("tracked");
-
-    const store = new DocumentStore();
-    const dispatched: WireOperation[][] = [];
-    seedResourceRegistryIfAbsent(store, "world-1", seed, (ops) => dispatched.push(ops));
-    expect(dispatched).toHaveLength(1);
-    expect(dispatched[0][0]).toMatchObject({ op: "create", doc: { id, doc_type: RESOURCE_REGISTRY_DOC_TYPE } });
-    store.applyCommand({ seq: 1, world_id: "world-1", author: "u", ts: 0, ops: dispatched[0] });
-    seedResourceRegistryIfAbsent(store, "world-1", seed, (ops) => dispatched.push(ops));
-    expect(dispatched).toHaveLength(1);
   });
 
   it("buildEffectDoc carries the engine band and the system body", () => {
@@ -586,49 +589,6 @@ describe("combat document builders", () => {
 });
 
 describe("system defaults", () => {
-  it("upsert creates the singleton at the deterministic id when absent", () => {
-    const ops = systemDefaultsUpsertOps(storeWith(), "w1", { scene: { fog: false } });
-    expect(ops).toHaveLength(1);
-    expect(ops[0]).toMatchObject({
-      op: "create",
-      doc: { id: deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE), doc_type: SYSTEM_DEFAULTS_DOC_TYPE, engine: { scene: { fog: false } } },
-    });
-  });
-
-  it("upsert writes one field change per differing section with the stored value as pre-image", () => {
-    const existing = buildSystemDefaultsDoc(
-      "w1",
-      { scene: { fog: false, losRestriction: true }, pathfinding: { diagonalRule: "euclidean" } },
-      deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE),
-    );
-    const ops = systemDefaultsUpsertOps(storeWith(existing), "w1", { scene: { fog: true, losRestriction: true } });
-    expect(ops).toEqual([{
-      op: "update",
-      doc_id: existing.id,
-      changes: [
-        { path: "/engine/scene", old: { fog: false, losRestriction: true }, new: { fog: true, losRestriction: true } },
-        { path: "/engine/pathfinding", old: { diagonalRule: "euclidean" }, new: null },
-      ],
-    }]);
-  });
-
-  it("upsert is a no-op when the stored doc equals the declaration", () => {
-    const existing = buildSystemDefaultsDoc("w1", { combat: { enforcement: "hard" } }, deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE));
-    expect(systemDefaultsUpsertOps(storeWith(existing), "w1", { combat: { enforcement: "hard" } })).toEqual([]);
-  });
-
-  it("upsert is a no-op when a stored section round-tripped through key-order normalization (server BTreeMap) still matches the declaration", () => {
-    // The author's declared order is non-alphabetical; the stored doc simulates what the
-    // server's serde_json (no `preserve_order`) actually returns: alphabetically-keyed.
-    const declared: SystemDefaultsEngine = { combat: { enforcement: "hard", movementResource: "gold" } };
-    const existing = buildSystemDefaultsDoc(
-      "w1",
-      { combat: { movementResource: "gold", enforcement: "hard" } },
-      deterministicId("w1", SYSTEM_DEFAULTS_DOC_TYPE),
-    );
-    expect(systemDefaultsUpsertOps(storeWith(existing), "w1", declared)).toEqual([]);
-  });
-
   it("resolveSceneSettings folds engine < system < world < scene per field", () => {
     const sd = buildSystemDefaultsDoc("w1", { scene: { fog: false, observerVision: true }, animation: { speedCellsPerSec: 3 } });
     const ws = buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: true } }, "ws1");
@@ -672,27 +632,20 @@ describe("system defaults", () => {
     });
   });
 
-  it("resolveSettingProvenance reports the system/engine source, not \"world\", when a stored world value merely COINCIDES with the layer beneath it", () => {
-    // A world-settings doc is required-field-complete on the wire — every WorldSceneDefaults
-    // leaf is always present once the doc exists, even when nobody has genuinely overridden it.
-    // resolvePick's presence-only check would report "world" here unconditionally; the
-    // equality collapse must instead report the deeper layer that actually matches.
+  it("resolveSettingProvenance is STRUCTURAL: a present world leaf is a world override even when its value equals the layer beneath; an absent leaf reports the deeper layer", () => {
+    // The world layer is an overlay: presence IS the override signal, so a
+    // stored leaf reports "world" even when its value coincides with the
+    // system layer — no equality guessing.
     const sdDoc = buildSystemDefaultsDoc("w1", { scene: { fog: false } });
-    // Explicitly stores fog: false — coincidentally the same value the system doc supplies.
-    const wsMatchesSystem = buildWorldSettingsDoc(
-      "w1",
-      { ...structuredClone(DEFAULT_WORLD_SETTINGS), scene: { ...DEFAULT_WORLD_SETTINGS.scene, fog: false } },
-      "ws1",
-    );
+    const wsAuthoredFog = buildWorldSettingsDoc("w1", { scene: { fog: false } }, "ws1");
     const scene = buildSceneDoc("w1", {}, "s1");
-    const store = storeWith(sdDoc, wsMatchesSystem, scene);
+    const store = storeWith(sdDoc, wsAuthoredFog, scene);
     expect(resolveSettingProvenance(store, undefined, "scene.fog")).toEqual({
-      value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+      value: false, source: "world", systemOrEngine: { value: false, source: "system" },
     });
-    // No system doc: world's stored fog (the default's own true) coincides with the built-in
-    // engine default instead.
-    const wsMatchesEngine = buildWorldSettingsDoc("w1", undefined, "ws2");
-    const storeNoSystem = storeWith(wsMatchesEngine, scene);
+    // An empty world doc authors nothing: the leaf reports the engine layer.
+    const wsEmpty = buildWorldSettingsDoc("w1", undefined, "ws2");
+    const storeNoSystem = storeWith(wsEmpty, scene);
     expect(resolveSettingProvenance(storeNoSystem, undefined, "scene.fog")).toEqual({
       value: DEFAULT_WORLD_SETTINGS.scene.fog, source: "engine",
       systemOrEngine: { value: DEFAULT_WORLD_SETTINGS.scene.fog, source: "engine" },
