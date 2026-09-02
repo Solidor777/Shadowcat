@@ -17,8 +17,8 @@
 //! seeding, or chat settings;
 //! those are transport policy that belongs here, not in `dice/`.
 //!
-//! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
-//! `handle_send_message`'s roll stage — the sole ingest path
+//! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body_capped` are called
+//! from `handle_send_message`'s roll stage — the sole ingest path
 //! that may execute untrusted dice notation.
 
 #![deny(missing_docs)]
@@ -56,8 +56,8 @@ pub(crate) const MAX_EXPERTISE: u32 = 100;
 /// construction -- they saturate at `i64::MAX`/`MIN` on overflow instead of
 /// panicking or wrapping (see `eval::sum`'s `*_saturating` helpers).
 pub(crate) const MAX_DIE_SIDES: i64 = 10_000;
-/// Cap on non-text chunks (`Inline`/`Button`/`DocLink`) `scan_body` may extract from one
-/// message body.
+/// Cap on non-text chunks (`Inline`/`Button`/`DocLink`/`Image`) `scan_body_capped` may extract
+/// from one message body.
 pub(crate) const MAX_INLINE_ROLLS: usize = 8;
 
 /// One scanned chunk of a message body: literal text between spans, an
@@ -317,6 +317,10 @@ pub enum RollError {
     /// `super::MAX_IMAGE_ALT_CHARS` -- refused rather than silently
     /// truncated.
     AltTooLong,
+    /// A `DrawRule::Formula` table's notation resolved to `Mode::SuccessCount`
+    /// -- a table needs a single Total value to range-match against, not a
+    /// success count.
+    TableNeedsTotal,
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -372,6 +376,12 @@ impl std::fmt::Display for RollError {
             }
             RollError::AltTooLong => {
                 write!(f, "that image's alt text is too long")
+            }
+            RollError::TableNeedsTotal => {
+                write!(
+                    f,
+                    "a table's formula must resolve to a single total, not a success count"
+                )
             }
         }
     }
@@ -494,6 +504,34 @@ pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), R
         .map_err(RollError::Reference)?;
     let spec = notation::parse(&notation, ctx).map_err(RollError::Parse)?;
     validate_pre_roll(&spec)
+}
+
+/// Ambient parse context for a table's `DrawRule::Formula` notation: always
+/// Total mode (a table matches one total against a row's range, never a
+/// success count) and `HighWins` (a table has no notion of a "low wins"
+/// convention of its own -- the direction only matters for `t<N>`'s
+/// comparator resolution, which a table's notation never uses).
+pub(crate) const TABLE_PARSE_CONTEXT: ParseContext = ParseContext {
+    mode: notation::ModeKind::Total,
+    direction: crate::dice::spec::Direction::HighWins,
+};
+
+/// Validates a `DrawRule::Formula` table's notation at ingress: reference-
+/// free (any `[[...]]`-style template reference is refused via
+/// `NoHostResolver`, since a table's notation is authored once and drawn by
+/// many different actors with no single host to resolve against), parses
+/// under `TABLE_PARSE_CONTEXT`, passes the same `validate_pre_roll` cap walk
+/// every other roll does, and refuses `Mode::SuccessCount` (`TableNeedsTotal`)
+/// -- a table needs a single total to range-match, not a pass/fail count.
+pub(crate) fn validate_table_formula(notation_str: &str) -> Result<(), RollError> {
+    let resolved = crate::formula::resolve_notation_template(notation_str, &NoHostResolver)
+        .map_err(RollError::Reference)?;
+    let spec = notation::parse(&resolved, TABLE_PARSE_CONTEXT).map_err(RollError::Parse)?;
+    validate_pre_roll(&spec)?;
+    if matches!(spec.mode, Mode::SuccessCount(_)) {
+        return Err(RollError::TableNeedsTotal);
+    }
+    Ok(())
 }
 
 /// Test seam: identical to `execute_roll` but takes an explicit seed instead

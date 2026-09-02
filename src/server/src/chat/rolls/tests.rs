@@ -472,10 +472,11 @@ fn roll_error_display_has_no_debug_artifacts() {
         RollError::UnknownAsset,
         RollError::ImagesDisabled,
         RollError::AltTooLong,
+        RollError::TableNeedsTotal,
     ];
     assert_eq!(
         variants.len(),
-        14,
+        15,
         "update this test if a RollError variant is added or removed"
     );
     for v in variants {

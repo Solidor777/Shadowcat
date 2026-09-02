@@ -14,6 +14,7 @@ pub mod geometry;
 pub mod registries;
 pub mod scene;
 pub mod system_defaults;
+pub mod table;
 pub mod token;
 
 pub use combat::{
@@ -42,6 +43,7 @@ pub use scene::{
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
 };
+pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
     Size, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
@@ -121,6 +123,7 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
             | "system-defaults"
             | "combat-history"
             | "asset_folder"
+            | "table"
     )
 }
 
@@ -321,6 +324,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
             Ok(serde_json::to_value(typed)?)
         }
         "asset_folder" => round_trip::<asset_folder::AssetFolderEngine>(v, "asset_folder"),
+        "table" => {
+            let typed: TableEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("table: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("table: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
     }
 }
