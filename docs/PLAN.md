@@ -32,13 +32,7 @@ further at design time. Numbering continues from Phase 1.
   - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
     conflict set returned for human review; `Document.base` under engine-tree validation.
-  - **M14c-6 — combat client seams**: `AppContext.combat` (a framework-neutral
-    `CombatController` in `@shadowcat/core`, also the `shadowcat.service:combat` service),
-    the first nine `CoreHooks` entries derived from applied command deltas, server-resolved
-    resource numbers over a `"combat"` derived channel, a correlated `combat_result` reply, and
-    the `Warn` overage label over `PathResult.budget_cells`. Design:
-    [`superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md`](superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md);
-    plan: [`superpowers/plans/2026-09-02-m14c-6-combat-client-seams.md`](superpowers/plans/2026-09-02-m14c-6-combat-client-seams.md).
+  - **M14c-6 — combat client seams** — DONE (see [`HISTORY.md`](HISTORY.md)).
 - **M14d — tracker module + settings editors**: the default tracker UI
   (`@shadowcat/module-combat-tracker`), the world/scene combat settings editors inside
   `@shadowcat/module-game-settings` (the combat chain editor over `resolve_combat_rules`'s

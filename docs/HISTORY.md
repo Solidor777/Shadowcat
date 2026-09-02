@@ -1931,6 +1931,59 @@ re-anchored, one e2e caught at review). Two review fold-ins: `js_number` normali
 the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/authoring docs;
 GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
 
+#### M14c-6 — Combat client seams ✅
+**COMPLETE.** Branch `m14c-6-combat-seams`, executed mainline from
+[`superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md`](superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md)
+and its plan. Sixth of six.
+
+Server: `ServerMsg::CombatResult { request_id, seq }` answers an accepted `combat_*` intent
+(originator-only; a rejection still yields only `CombatError`); a shared `ws::room::resource_cells`
+helper backs both the `Hard`-enforcement truncation ceiling and the new `PathResult.budget_cells`
+disclosure (present under any enforcement level whenever the mover's budget resolves — `None` for
+a hidden combatant, a non-combatant token, or an unresolvable binding). The `"combat"` derived
+scene channel (`CombatsPayload`/`CombatView`/`CombatantView`/`ResolvedResourceView`) mirrors
+`resolved_footprints`'s two-gate egress: whole-document `cap::READ` plus the `/engine/resources`
+property-tier visibility, with every resource number resolved per recipient through the shared
+formula host — a GM, an owner, and an outside observer of the same combat can see different
+numbers from the same combat state. `combat_start` re-derives `movement`/`turn_control`/
+`effect_cleanup`/`rewind_restore`/`forward_restore`/`effect_lifecycle` from the resolved defaults
+chain (scene > world > system `CombatDefaults`) every time it runs — these fields are a snapshot
+of that chain at start, not authored state carried over from `Create`; an override belongs on the
+scene's `engine.combat`.
+
+Client (`@shadowcat/core`): `WsClient.combat()`'s pre-M14c-6 correlation was an author-echo FIFO —
+a self-authored `event` with no `combat_result` resolved the oldest pending entry regardless of
+which intent it actually answered, a defect present since M14b. Fixed in this range: an entry now
+resolves only once both its `combat_result` has arrived and `nextExpected` has advanced past its
+seq, correlated by `request_id`. `CombatController` (`CombatApi`, `COMBAT_SERVICE`) composes reads
+over the optimistic document view with the `"combat"` channel, the eight `combat_*` clock intents,
+and document helpers (create/add/remove/hide/reorder/setInitiative) built on `dispatchIntent`;
+`ENGINE_COMBAT_DEFAULTS`/`newCombatEngine` are pinned against a single JSON fixture both a Rust
+test and a Vitest test read. The first nine `CoreHooks` entries (`combat:start`/`end`/
+`round-start`/`round-end`/`turn-start`/`turn-end`/`rewind`/`effect-tick`/`effect-expired`) derive
+purely from an applied command's document delta (`deriveCombatHookEvents`), emitted in seq order
+by `CombatHookEmitter`; `WorldSession` captures pre-images only for commands `commandTouchesCombat`
+admits, so an ordinary token drag pays nothing.
+
+Shell/ui-kit: `WorldSession.combat`/`COMBAT_SERVICE` wired at construction (before any world is
+entered — `CombatControllerDeps.world`/`role` are live getters, not construction-time snapshots,
+because of that ordering); `AppContext.combat` exposed to every module and Svelte surface;
+`setAppContextForTest` defaults it to a real `CombatController` over the fixture's `documents`.
+scene-tools' `requestRoute` labels a `Warn`-enforcement overage ("35 ft · 10 ft over budget",
+`ROUTE_WARN_COLOR` stroke) or a `Hard`-enforcement stop ("stops at budget", polyline unchanged —
+the server already truncated it) beside the plain budget label; the pre-existing `arrested` `⚠`
+suffix composes with either. A core e2e spec drives two real `WsClient` connections against the
+real `test_server` binary through one GM/player scenario, confirming `combat_result` correlation,
+identical `combat:*` derivation across both clients' own filtered document streams, per-recipient
+channel visibility (a hidden combatant reaches the GM's store only), and the player's own
+`budget_cells` preview under `Warn`.
+
+Decisions of note: the controller lives in `@shadowcat/core` (framework-neutral), not ui-kit;
+resolved numbers come from the server-derived channel only, never re-evaluated client-side; hook
+derivation reads the authoritative `DocumentStore` pre/post image, never the optimistic view (a
+predicted event a rejection would have to un-emit); an unresolvable `turn` still emits its hook
+rather than being suppressed.
+
 
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
