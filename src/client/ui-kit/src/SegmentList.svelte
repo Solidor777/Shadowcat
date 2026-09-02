@@ -174,7 +174,7 @@
     `ctx.assets.url(asset_id, ...)` — never a raw external URL (see the `html`
     branch's INVARIANT comment above). -->
     <a class="image-segment-link" href={ctx.assets.url(s.asset_id)} target="_blank" rel="noopener noreferrer">
-      <img class="image-segment" src={ctx.assets.url(s.asset_id, "preview")} alt={s.alt} loading="lazy" />
+      <img class="image-segment" data-testid="image-segment" src={ctx.assets.url(s.asset_id, "preview")} alt={s.alt} loading="lazy" />
     </a>
   {/if}
 {/each}

@@ -75,9 +75,8 @@ Phase 3 by design (the component model landed here; the emit seams are Phase-3 a
   (decision log §11; YouTube thumbnail + external link is already delivered by the Bucket C
   oEmbed work and is recorded there as evidence, not rebuilt). Three sub-projects in build order,
   each a branch off `main` merged before the next:
-  - **M19a — Chat media ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s M19a entry.
-    The Playwright `chat-media.spec.ts` browser e2e spec is still owed (deferred to the phase-2
-    campaign's dispatcher-serialized e2e slot — see that entry's deviation note).
+  - **M19a — Chat media ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s M19a entry,
+    including the Playwright `chat-media.spec.ts` browser e2e spec.
   - **M19b — Rollable tables** (plan:
     [`superpowers/plans/2026-09-02-m19b-rollable-tables.md`](superpowers/plans/2026-09-02-m19b-rollable-tables.md)):
     `table` engine documents (`Weighted` rows or a reference-free `Formula` with ranges; rows

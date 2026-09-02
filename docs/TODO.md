@@ -75,13 +75,3 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 
 ## Actionable now — next file-size split candidate
 - TODO: `src/server/src/data/sqlite.rs` production code is ~3,900 lines after its test module moved out — the largest remaining production file and the next to cross the 5,000-line soft limit at its growth rate. Split `SqliteRepository` by concern (documents/commands, membership/invites, search, world export/import) into `data/sqlite/<concern>.rs` `impl` blocks before it reaches the limit; the gate (`pnpm lint:file-size`) fails the build at that point and no allowlist entry is to be added.
-
-## Actionable now — M19a browser e2e for chat images is still owed
-- TODO: M19a (chat media) shipped WS-level e2e coverage only
-  (`src/client/core/src/e2e/chat-image.e2e.test.ts`), not the Playwright browser spec
-  (`chat-media.spec.ts`) the phase-2 campaign's e2e slot is dispatcher-serialized for. Needs: a
-  browser-level walk of the composer's image-insert button (`Composer.svelte`'s
-  `data-testid="image-insert"`) through `pickAsset` to a rendered `SegmentList` `image` segment,
-  plus the settings-panel toggle's visible effect on the composer button's gating. Write it in the
-  next dispatcher-serialized Playwright e2e slot; the WS-level suite already pins the underlying
-  wire/server behavior, so this item is purely the browser-rendering/interaction layer.

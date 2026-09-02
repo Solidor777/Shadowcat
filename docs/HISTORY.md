@@ -2138,19 +2138,18 @@ added a fresh `SegmentList.test.ts` covering every segment kind including the ne
 `SegmentList`'s `messageId` prop from the plan's literal signature was dropped — nothing in the
 extracted renderer logic reads it. The client-side asset-picker label always falls back to the
 picked id's first 8 characters (no asset-name-listing surface exists on `AppContext`, contra the
-plan's "name from `ctx.assets`' listing if available"). Task 10 delivers only the
-`chat-image.e2e.test.ts` WS-level suite; the Playwright `chat-media.spec.ts` browser spec is
-deferred to the phase-2 campaign's dispatcher-serialized e2e slot (a stray `shadowcat.exe` from a
-concurrent worktree was found holding the shared e2e port during this campaign, so browser e2e
-runs are coordinator-scheduled one at a time).
+plan's "name from `ctx.assets`' listing if available"). Task 10 delivers the
+`chat-image.e2e.test.ts` WS-level suite and the Playwright `chat-media.spec.ts` browser spec
+(composer image button gated on the chat-settings toggle, single-select pick overlay confirm, a
+sent image rendering as an `<img>` in the card).
 Coverage: 292 server `chat::` unit/integration tests (server-side pipeline, sanitizer,
 link-preview/inline-image enrichment, post-publish resolution), 45 `chat-docs.test.ts` cases, a
 new `SegmentList.test.ts` (23 tests) + the untouched `MessageCard`/`RollTooltip` suites (82 + moved
 tests, all green through the delegation), `Composer.test.ts` + `chat-settings.test.ts` additions
-for the insert-image button and toggle, and the `chat-image.e2e.test.ts` Node↔Rust suite (image
+for the insert-image button and toggle, the `chat-image.e2e.test.ts` Node↔Rust suite (image
 segment delivery to every recipient; an unknown-asset span refused as a whisper-to-sender System
-notice, never a hard `ChatError`). Full repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`,
-typecheck, lint) green at every commit.
+notice, never a hard `ChatError`), and the `chat-media.spec.ts` browser Playwright spec. Full
+repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint) green at every commit.
 
 ## Documentation campaign — completed sweeps
 
