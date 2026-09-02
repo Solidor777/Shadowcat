@@ -269,16 +269,24 @@ pub(crate) struct HiddenPointers {
 }
 
 impl HiddenPointers {
-    /// Whether `path` overlaps (equal, ancestor or descendant — the egress
-    /// family's subtree predicate) a pointer hidden on either side. A
-    /// descendant path names hidden data directly; an ancestor path — a
-    /// wholesale array or a whole embedded child — CARRIES the hidden subtree
-    /// in its value.
-    fn overlaps_either(&self, path: &str) -> bool {
-        self.template
-            .iter()
-            .chain(self.child.iter())
-            .any(|h| paths_overlap(path, h))
+    /// Whether a PARENT diff at `path` is excluded from the merge: it
+    /// overlaps (equal, ancestor or descendant — the egress family's subtree
+    /// predicate) a pointer hidden on the template side. The requester cannot
+    /// see the template's value there, so neither a set nor a delete of it
+    /// may move into the instance; the diff is dropped like a placement
+    /// exclusion — never merged, never a conflict. A descendant path names
+    /// hidden data directly; an ancestor path — a wholesale array — CARRIES
+    /// the hidden subtree in its value.
+    fn excludes_parent(&self, path: &str) -> bool {
+        self.template.iter().any(|h| paths_overlap(path, h))
+    }
+
+    /// Whether a conflict at `path` is WITHHELD from the returned set: it
+    /// overlaps a pointer hidden on the child side, so its `child` value (or,
+    /// for an ancestor path, the subtree it carries) is something the
+    /// requester may not see.
+    fn withholds(&self, path: &str) -> bool {
+        self.child.iter().any(|h| paths_overlap(path, h))
     }
 }
 
@@ -291,11 +299,15 @@ impl HiddenPointers {
 /// object the parent edits inside) conflicts at the parent change's path —
 /// the safe direction.
 ///
-/// A conflict whose path overlaps a pointer in `hidden` (either side) is
-/// WITHHELD: removed from the returned set while the child-wins default it
-/// would have reported stays in the merged tree. Withholding is the
-/// resolution — the caller can neither report nor resolve away from the
-/// child side a conflict it never receives.
+/// `hidden` applies one rule per side. A parent diff overlapping a
+/// template-hidden pointer is EXCLUDED exactly like a placement exclusion
+/// (`HiddenPointers::excludes_parent`): hidden template data never moves into
+/// the instance, in either direction, so no conflict can arise there either.
+/// A conflict overlapping a child-hidden pointer is WITHHELD
+/// (`HiddenPointers::withholds`): removed from the returned set while the
+/// child-wins default it would have reported stays in the merged tree.
+/// Withholding is the resolution — the caller can neither report nor resolve
+/// away from the child side a conflict it never receives.
 pub(crate) fn merge3_tree(
     base: &Value,
     parent_now: &Value,
@@ -305,7 +317,9 @@ pub(crate) fn merge3_tree(
 ) -> (Value, Vec<MergeConflict>) {
     let parent_diff: Vec<Diff> = structural_diff(base, parent_now)
         .into_iter()
-        .filter(|d| !is_placement_excluded(d.path(), exclusions))
+        .filter(|d| {
+            !is_placement_excluded(d.path(), exclusions) && !hidden.excludes_parent(d.path())
+        })
         .collect();
     let child_diff = structural_diff(base, child_now);
     let mut merged = child_now.clone();
@@ -325,7 +339,7 @@ pub(crate) fn merge3_tree(
                 continue;
             }
         }
-        if hidden.overlaps_either(p.path()) {
+        if hidden.withholds(p.path()) {
             continue;
         }
         // Owned clones of `parent`/`child`: a conflict never aliases the live

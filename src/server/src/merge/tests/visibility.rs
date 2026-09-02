@@ -348,3 +348,56 @@ fn an_unanswerable_oracle_fails_the_merge_closed() {
         Some(MergeError::VisibilityUnknown)
     );
 }
+
+#[test]
+fn template_hidden_path_never_moves_into_the_child_in_either_direction() {
+    // The template changed `/system/secret` (hidden from the requester) and
+    // `/system/hp` (visible); the child is unchanged on both. Only `hp`
+    // moves — a set on the hidden path is excluded, never merged, never a
+    // conflict.
+    let mut template = doc("t1");
+    template.system = json!({ "hp": 2, "secret": "S2" });
+    let mut child = doc("c1");
+    child.source = Some(source_from("t1"));
+    child.system = json!({ "hp": 1, "secret": "S1" });
+    child.base = Some(json!({
+        "name": null, "engine": null,
+        "system": { "hp": 1, "secret": "S1" }, "embedded": {},
+    }));
+    let vis = Hide::default().on_template("t1", "/system/secret");
+    let plan = compute_pull(&child, &template, &vis).expect("merges");
+    assert!(plan.conflicts.is_empty());
+    assert_eq!(plan.merged_bands.system, json!({ "hp": 2, "secret": "S1" }));
+
+    // The delete direction: the requester's view of the template LACKS the
+    // key (a `Within` redaction strips it), so a naive parent diff would read
+    // "template deleted `secret`" and remove the child's copy.
+    template.system = json!({ "hp": 2 });
+    let plan = compute_pull(&child, &template, &vis).expect("merges");
+    assert!(plan.conflicts.is_empty());
+    assert_eq!(
+        plan.merged_bands.system,
+        json!({ "hp": 2, "secret": "S1" }),
+        "a redaction-induced delete never reaches the child"
+    );
+}
+
+#[test]
+fn revert_keeps_the_child_value_on_a_template_hidden_path() {
+    let mut template = doc("t1");
+    template.system = json!({ "hp": 2, "secret": "S2" });
+    let mut child = doc("c1");
+    child.source = Some(source_from("t1"));
+    child.system = json!({ "hp": 9, "secret": "S3", "extra": true });
+    let vis = Hide::default().on_template("t1", "/system/secret");
+    let op = crate::merge::compute_revert(&child, &template, &vis).expect("reverts");
+    let crate::data::command::Operation::Update { changes, .. } = op else {
+        panic!("revert emits an update");
+    };
+    let system = &changes
+        .iter()
+        .find(|c| c.path == "/system")
+        .expect("system reset")
+        .new;
+    assert_eq!(system, &json!({ "hp": 2, "secret": "S3" }));
+}

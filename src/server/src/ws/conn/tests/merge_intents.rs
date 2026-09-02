@@ -1765,3 +1765,303 @@ async fn pull_withholds_a_hidden_template_side_conflict_behind_a_template_reorde
         "the instance keeps its own value on the template-hidden path"
     );
 }
+
+/// The hidden-field fixture for the parent-side rule: a GM-owned template
+/// carrying a `gm_only` `/system/gm_secret` and an `owner_or_gm`
+/// `/system/owner_note` (both hidden from the player, who is neither the
+/// template's owner nor a GM) plus a visible `/system/hp`; a player-owned
+/// instance stamped from it with no overrides of its own. Returns
+/// (template_id, child_id).
+async fn template_hidden_pair(h: &Harness, template_id: Uuid, child_id: Uuid) -> (Uuid, Uuid) {
+    let mut template = template_doc(
+        h.world_id,
+        template_id,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "gm_secret": "S1", "owner_note": "N1" }),
+    );
+    template
+        .permissions
+        .property_overrides
+        .insert("/system/gm_secret".into(), Visibility::GmOnly);
+    template
+        .permissions
+        .property_overrides
+        .insert("/system/owner_note".into(), Visibility::OwnerOrGm);
+    h.create(template).await;
+    let mut child = instance_doc(
+        h.world_id,
+        child_id,
+        template_id,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "gm_secret": "S1", "owner_note": "N1" }),
+    );
+    child
+        .permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    child
+        .permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default()
+        .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    h.create(child).await;
+    (template_id, child_id)
+}
+
+/// The requester's stored-`base` parity check: the snapshot the merge wrote
+/// equals `snapshot_base` of the template AS THAT REQUESTER SEES IT
+/// (`filter_properties` under their resolved access) — the same comparison
+/// the client's sync badge makes against its redacted store view.
+async fn assert_base_is_the_visible_snapshot(
+    h: &Harness,
+    ctx: &PermissionContext,
+    template: Uuid,
+    child: Uuid,
+) {
+    let t = h.get(template).await;
+    let owner = h.repo.effective_owner_of(&t).await.unwrap();
+    let access = crate::data::permission::resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        &t,
+        &h.world_defaults.grants_for(&t.doc_type),
+        owner,
+    );
+    let visible = crate::data::permission::filter_properties(&t, &access).unwrap();
+    let expected = serde_json::to_value(crate::merge::snapshot_base(&visible)).unwrap();
+    let stored = h
+        .get(child)
+        .await
+        .base
+        .expect("a merge write refreshes base");
+    assert!(
+        crate::merge::tree::structural_diff(&stored, &expected).is_empty(),
+        "stored base {stored} is the requester-visible template snapshot {expected}"
+    );
+}
+
+/// The parent side of a pull is the template as the REQUESTER sees it: the
+/// template's hidden edits (`gm_only`, `owner_or_gm`) never move into the
+/// instance, never appear in the reply, and the refreshed `/base` is the
+/// visible template's snapshot — so the client's sync badge, which diffs
+/// `base` against its redacted store view, reads up-to-date.
+#[tokio::test]
+async fn pull_never_moves_template_hidden_values_and_snapshots_the_visible_template() {
+    let h = merge_harness().await;
+    let (template, child) =
+        template_hidden_pair(&h, Uuid::from_u128(0xE701), Uuid::from_u128(0xE702)).await;
+    h.set_system(
+        template,
+        json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
+    )
+    .await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2") && !wire.contains("N2"),
+        "the hidden template values never appear in the frame: {wire}"
+    );
+    assert!(matches!(pull_status(reply), MergePullStatus::Applied));
+    let stored = h.get(child).await;
+    assert_eq!(
+        stored.system,
+        json!({ "hp": 11, "gm_secret": "S1", "owner_note": "N1" }),
+        "only the visible edit moved; the instance's own hidden-path values stay"
+    );
+    let base = serde_json::to_string(stored.base.as_ref().unwrap()).unwrap();
+    assert!(
+        !base.contains("S2") && !base.contains("N2") && !base.contains("gm_secret"),
+        "the snapshot carries nothing the requester cannot see: {base}"
+    );
+    assert_base_is_the_visible_snapshot(&h, &h.player, template, child).await;
+
+    // A GM's pull of the same pair is unchanged: the GM sees everything.
+    let (template2, child2) =
+        template_hidden_pair(&h, Uuid::from_u128(0xE703), Uuid::from_u128(0xE704)).await;
+    h.set_system(
+        template2,
+        json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
+    )
+    .await;
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(2),
+            child_id: child2,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    assert!(matches!(pull_status(reply), MergePullStatus::Applied));
+    assert_eq!(
+        h.get(child2).await.system,
+        json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" })
+    );
+    assert_base_is_the_visible_snapshot(&h, &h.gm, template2, child2).await;
+}
+
+/// Revert resets only what the requester can see of the template: the
+/// instance's values on template-hidden paths survive the reset, and the
+/// refreshed `/base` is the visible snapshot.
+#[tokio::test]
+async fn revert_keeps_the_instances_values_on_template_hidden_paths() {
+    let h = merge_harness().await;
+    let (template, child) =
+        template_hidden_pair(&h, Uuid::from_u128(0xE711), Uuid::from_u128(0xE712)).await;
+    h.set_system(
+        template,
+        json!({ "hp": 11, "gm_secret": "S2", "owner_note": "N2" }),
+    )
+    .await;
+    h.set_system(
+        child,
+        json!({ "hp": 5, "gm_secret": "S3", "owner_note": "N3", "extra": true }),
+    )
+    .await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergeRevert {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(!wire.contains("S2") && !wire.contains("N2"), "{wire}");
+    assert!(matches!(
+        reply,
+        ServerMsg::MergeResult {
+            outcome: MergeOutcome::Revert { .. },
+            ..
+        }
+    ));
+    assert_eq!(
+        h.get(child).await.system,
+        json!({ "hp": 11, "gm_secret": "S3", "owner_note": "N3" }),
+        "visible paths reset to the template; hidden-path values are the instance's own"
+    );
+    assert_base_is_the_visible_snapshot(&h, &h.player, template, child).await;
+}
+
+/// Push, parent-side rule: the pusher owns the template but a `gm_only`
+/// field on it is still hidden from them; the instance (owned by someone
+/// else) hides an `owner_or_gm` field from the pusher. Neither hidden value
+/// moves or appears on the wire, and the instance's `/base` snapshots the
+/// PUSHER-visible template.
+#[tokio::test]
+async fn push_never_moves_template_hidden_values_into_an_instance_the_pusher_cannot_fully_see() {
+    let h = merge_harness().await;
+    let (template, instance) = (Uuid::from_u128(0xE721), Uuid::from_u128(0xE722));
+    let mut tmpl = template_doc(
+        h.world_id,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "gm_secret": "S1", "mine": "M1" }),
+    );
+    tmpl.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    tmpl.permissions
+        .property_overrides
+        .insert("/system/gm_secret".into(), Visibility::GmOnly);
+    tmpl.permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default()
+        .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    h.create(tmpl).await;
+    let mut inst = instance_doc(
+        h.world_id,
+        instance,
+        template,
+        h.bystander.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10, "gm_secret": "S1", "mine": "M1" }),
+    );
+    inst.permissions
+        .property_overrides
+        .insert("/system/mine".into(), Visibility::OwnerOrGm);
+    let caps = inst
+        .permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default();
+    caps.insert(crate::data::permission::cap::WRITE_FIELDS.to_string());
+    caps.insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    h.create(inst).await;
+    // The GM edits the template's hidden field; the pusher's own visible
+    // edits are `hp` and `mine`; the instance's owner diverged on `mine`.
+    h.set_system(
+        template,
+        json!({ "hp": 11, "gm_secret": "S2", "mine": "M2" }),
+    )
+    .await;
+    h.set_system(
+        instance,
+        json!({ "hp": 10, "gm_secret": "S1", "mine": "M3" }),
+    )
+    .await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePush {
+            request_id: Uuid::from_u128(1),
+            template_id: template,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2") && !wire.contains("M2") && !wire.contains("M3"),
+        "no hidden value on either side appears in the frame: {wire}"
+    );
+    let ServerMsg::MergeResult {
+        outcome: MergeOutcome::Push { instances, .. },
+        ..
+    } = reply
+    else {
+        panic!("expected a MergeResult::Push");
+    };
+    assert_eq!(instances.len(), 1);
+    assert!(matches!(instances[0].status, PushInstanceStatus::Applied));
+    assert_eq!(
+        h.get(instance).await.system,
+        json!({ "hp": 11, "gm_secret": "S1", "mine": "M3" }),
+        "hp moved; the template-hidden gm_secret did not; the child-hidden conflict stayed child-wins"
+    );
+    assert_base_is_the_visible_snapshot(&h, &h.player, template, instance).await;
+}

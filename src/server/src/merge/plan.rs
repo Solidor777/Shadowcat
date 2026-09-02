@@ -275,6 +275,7 @@ pub(crate) fn revert_bands(
     child: &Document,
     template: &Document,
     exclusions: &[String],
+    hidden_template: Vec<String>,
 ) -> BandTriple {
     let self_base = bands_tree(
         child.name.as_deref(),
@@ -286,28 +287,37 @@ pub(crate) fn revert_bands(
         template.engine.as_ref(),
         Some(&template.system),
     );
-    let (merged, _) = merge3_tree(
-        &self_base,
-        &template_now,
-        &self_base,
-        exclusions,
-        &HiddenPointers::default(),
-    );
+    let hidden = HiddenPointers {
+        template: hidden_template,
+        child: Vec::new(),
+    };
+    let (merged, _) = merge3_tree(&self_base, &template_now, &self_base, exclusions, &hidden);
     split_bands_tree(&merged)
 }
 
 /// Revert: discard the child's local diffs on the mergeable bands — every
 /// path becomes the template's current value, embedded content resets per
-/// `revert_embedded` — except placement paths (kept), then refresh `base`.
+/// `revert_embedded` — except placement paths (kept) and paths hidden from
+/// the requester on the template side (kept: the requester cannot see the
+/// template's value there, so the child's own stays), then refresh `base`.
 /// No conflicts are possible (revert never asks the user to choose; it
-/// always takes the template). Twin of the client `computeRevert`.
-pub fn compute_revert(child: &Document, template: &Document) -> Operation {
-    let bands = revert_bands(child, template, &placement_exclusions(&child.doc_type));
+/// always takes the template).
+pub fn compute_revert(
+    child: &Document,
+    template: &Document,
+    vis: &dyn MergeVisibility,
+) -> Result<Operation, MergeError> {
+    let bands = revert_bands(
+        child,
+        template,
+        &placement_exclusions(&child.doc_type),
+        vis.hidden(Side::Template, template)?,
+    );
     let merged_bands = MergeBands {
         name: bands.name,
         engine: bands.engine,
         system: bands.system,
-        embedded: revert_embedded(&template.embedded, &child.embedded),
+        embedded: revert_embedded(&template.embedded, &child.embedded, vis)?,
     };
-    plan_to_update(child, template, &merged_bands)
+    Ok(plan_to_update(child, template, &merged_bands))
 }

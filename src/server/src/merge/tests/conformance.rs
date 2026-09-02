@@ -269,7 +269,10 @@ fn run_case(case: &Value) -> Value {
 
     let kind = case.get("kind").and_then(Value::as_str).unwrap_or("pull");
     let actual = match kind {
-        "revert" => json!({ "update": compute_revert(&child, &parent) }),
+        "revert" => json!({
+            "update": compute_revert(&child, &parent, &AllVisible)
+                .unwrap_or_else(|e| panic!("case '{name}': a corpus revert never fails: {e}"))
+        }),
         "resolve" => {
             let plan = compute_pull(&child, &parent, &AllVisible)
                 .unwrap_or_else(|e| panic!("case '{name}': a corpus base never fails closed: {e}"));

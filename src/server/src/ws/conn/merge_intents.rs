@@ -135,16 +135,33 @@ fn engine_error(child_id: Uuid, e: MergeError) -> MergeErrorKind {
     }
 }
 
+/// The template AS THE REQUESTER SEES IT — `filter_properties` under the
+/// requester's access, the same view egress delivers — which is the parent
+/// side of every merge this requester runs (pull, revert, push) and the value
+/// the `/base` refresh snapshots. Fails closed (`Internal`) when the view cannot
+/// be computed. Together with the `RequesterView` oracle (which additionally
+/// EXCLUDES the template-hidden paths from the parent diff, so a redaction-
+/// induced delete or null never reads as a template change) this is what makes
+/// a merge never move data the requester cannot see: not into the instance,
+/// not into its snapshot, not onto the wire.
+fn visible_template(template: &Document, access: &Access) -> Result<Document, MergeErrorKind> {
+    filter_properties(template, access).map_err(|e| {
+        tracing::warn!(doc_id = %template.id, error = %e, "merge: template view unresolvable; failing closed");
+        MergeErrorKind::Internal
+    })
+}
+
 /// `compute_pull` under THIS requester's view: the merged bands and the
-/// conflict set as the requester may observe them. The `RequesterView` oracle
+/// conflict set as the requester may observe them, `template` being the
+/// requester-visible template (`visible_template`). The `RequesterView` oracle
 /// hands the engine the same per-document hidden set egress strips by, and the
-/// engine applies it by document identity at every embedded depth — a conflict
-/// overlapping a pointer the requester cannot see in either document is
-/// withheld from the set and left at its child-wins default. The one
-/// construction both `pull` (and its fresh-outcome recompute) and `push`'s
-/// per-instance planning use, so the report path and the resolutions path can
-/// never disagree on what the current conflict set is. A GM sees everything,
-/// so a GM's set is unchanged.
+/// engine applies it by document identity at every embedded depth — a
+/// template-hidden path is excluded from the parent diff, a conflict on a
+/// child-hidden path is withheld from the set and left at its child-wins
+/// default. The one construction both `pull` (and its fresh-outcome recompute)
+/// and `push`'s per-instance planning use, so the report path and the
+/// resolutions path can never disagree on what the current conflict set is. A
+/// GM sees everything, so a GM's merge is unchanged.
 fn visible_pull_plan(
     child: &Document,
     child_access: &Access,
@@ -256,9 +273,12 @@ pub async fn handle_merge_intent(
 /// reported `NotFound`, the same existence-hiding the child's own world check
 /// applies.
 struct PullDocs {
-    /// The instance being merged into / reset.
+    /// The instance being merged into / reset (unredacted: the requester is
+    /// its owner or a GM, and the instance's own hidden fields must survive the
+    /// whole-band write).
     child: Document,
-    /// The instance's template.
+    /// The instance's template AS THE REQUESTER SEES IT (`visible_template`) —
+    /// the parent side of the merge and the `/base` snapshot source.
     template: Document,
     /// The requester's resolved access on the child (the per-path derivation's input).
     child_access: Access,
@@ -319,6 +339,7 @@ async fn load_pull_docs(
     if !template_access.has(cap::READ) {
         return Err(MergeErrorKind::Forbidden);
     }
+    let template = visible_template(&template, &template_access)?;
     Ok(PullDocs {
         child,
         template,
@@ -473,7 +494,14 @@ async fn revert(
         Ok(d) => d,
         Err(reason) => return merge_error(request_id, reason),
     };
-    let update = compute_revert(&docs.child, &docs.template);
+    let vis = RequesterView {
+        template: &docs.template_access,
+        child: &docs.child_access,
+    };
+    let update = match compute_revert(&docs.child, &docs.template, &vis) {
+        Ok(u) => u,
+        Err(e) => return merge_error(request_id, engine_error(child_id, e)),
+    };
     if !update_authorized(&update, &docs.child_access, &inputs) {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
@@ -674,6 +702,12 @@ async fn push(
     {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
+    // From here on the template is the PUSHER's view of it: the parent side of
+    // every instance's merge and every instance's `/base` refresh.
+    let template = match visible_template(&template, &template_access) {
+        Ok(t) => t,
+        Err(reason) => return merge_error(request_id, reason),
+    };
     let instances = match plan_push(room, repo, ctx, &inputs, &template, &template_access).await {
         Ok(s) => s,
         Err(reason) => return merge_error(request_id, reason),

@@ -130,7 +130,7 @@ fn compute_revert_keeps_token_placement_and_refreshes_base() {
         json!({ "name": null, "engine": { "x": 99, "hp": 5 }, "system": { "s": 1 }, "embedded": {} }),
     );
 
-    let op = compute_revert(&child, &template);
+    let op = compute_revert(&child, &template, &AllVisible).expect("reverts");
     let Operation::Update { changes, .. } = op else {
         panic!("compute_revert emits an update");
     };

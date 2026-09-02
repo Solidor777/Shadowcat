@@ -228,7 +228,8 @@ pub(crate) fn restamp_subtree(doc: &Document) -> Document {
 pub(crate) fn revert_embedded(
     parent_embedded: &BTreeMap<String, Vec<Document>>,
     child_embedded: &BTreeMap<String, Vec<Document>>,
-) -> BTreeMap<String, Vec<Document>> {
+    vis: &dyn MergeVisibility,
+) -> Result<BTreeMap<String, Vec<Document>>, MergeError> {
     let mut merged = BTreeMap::new();
     let colls: BTreeSet<&String> = parent_embedded
         .keys()
@@ -246,7 +247,7 @@ pub(crate) fn revert_embedded(
                 .as_ref()
                 .and_then(|s| template_by_id.get(&s.id).copied());
             if let Some(t) = t {
-                out.push(revert_child(cd, t));
+                out.push(revert_child(cd, t, vis)?);
             }
             // else: no correlation → child-added → dropped.
         }
@@ -260,7 +261,7 @@ pub(crate) fn revert_embedded(
         }
         merged.insert(coll.clone(), out);
     }
-    merged
+    Ok(merged)
 }
 
 /// Reset one matched embedded child: its own bands to the template
@@ -268,8 +269,17 @@ pub(crate) fn revert_embedded(
 /// the same way. The returned envelope is a full clone of `child`
 /// (`permissions`/`scope`/`source`/`owner` preserved — the same crossing
 /// point `apply_merged_bands` marks). Twin of the client `revertChild`.
-pub(crate) fn revert_child(child: &Document, template: &Document) -> Document {
-    let bands = revert_bands(child, template, &placement_exclusions(&child.doc_type));
+pub(crate) fn revert_child(
+    child: &Document,
+    template: &Document,
+    vis: &dyn MergeVisibility,
+) -> Result<Document, MergeError> {
+    let bands = revert_bands(
+        child,
+        template,
+        &placement_exclusions(&child.doc_type),
+        vis.hidden(Side::Template, template)?,
+    );
     let mut out = child.clone();
     out.name = bands.name;
     out.engine = if bands.engine.is_null() {
@@ -278,6 +288,6 @@ pub(crate) fn revert_child(child: &Document, template: &Document) -> Document {
         Some(bands.engine)
     };
     out.system = bands.system;
-    out.embedded = revert_embedded(&template.embedded, &child.embedded);
-    out
+    out.embedded = revert_embedded(&template.embedded, &child.embedded, vis)?;
+    Ok(out)
 }
