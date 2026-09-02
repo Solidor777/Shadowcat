@@ -141,6 +141,14 @@ export type {
   NewEvent,
   WorldRole,
 } from "./combat";
+export {
+  COMBAT_HOOK_VERSION,
+  defineCombatHooks,
+  deriveCombatHookEvents,
+  commandTouchesCombat,
+  CombatHookEmitter,
+} from "./combat-hooks";
+export type { CombatHookEvent } from "./combat-hooks";
 export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
 export type { SheetRef, SheetTarget } from "./sheets";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, DocLinkTargetSchema, ChatSegmentSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";

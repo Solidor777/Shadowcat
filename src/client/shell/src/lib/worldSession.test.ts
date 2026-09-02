@@ -9,6 +9,9 @@ import {
   DEFAULT_WORLD_SETTINGS,
   SYSTEM_CONTRACT,
   SYSTEM_DEFAULTS_DOC_TYPE,
+  buildCombatDoc,
+  newCombatEngine,
+  COMBAT_SERVICE,
   type Connect,
   type WireDocument,
   type Module,
@@ -656,6 +659,144 @@ test("the session subscribes to footprints itself and publishes each frame's res
   // Leaving drops the extents with the connection they came from.
   session.leave();
   expect(session.footprints.token("tok1")).toBeNull();
+});
+
+test("defineCombatHooks ran: a module's combat:start listener fires on a start command", async () => {
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const startEvents: unknown[] = [];
+  const combatModule: Module = {
+    manifest: { id: "combat-listener", version: "0.1.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.hooks.on("combat:start", (payload) => startEvents.push(payload));
+    },
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub, combatModule],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  push({
+    type: "event",
+    intent_id: null,
+    command: {
+      seq: 1,
+      world_id: "w1",
+      author: "gm",
+      ts: 0,
+      ops: [
+        {
+          op: "create",
+          doc: buildCombatDoc("w1", { ...newCombatEngine("scene-1"), active: true, round: 1, order: ["a"] }),
+        },
+      ],
+    },
+  });
+
+  await vi.waitFor(() => expect(startEvents).toHaveLength(1));
+});
+
+test("no combat hook emission on seedDocuments, applyIntent, or reject", async () => {
+  const connect: Connect = (handlers) => {
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const events: unknown[] = [];
+  const combatModule: Module = {
+    manifest: { id: "combat-listener", version: "0.1.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.hooks.on("combat:start", (p) => events.push(p));
+    },
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub, combatModule],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // seedDocuments bypasses onCommand entirely (a snapshot LOAD, not an applied command).
+  session.store.seedDocuments([
+    buildCombatDoc("w1", { ...newCombatEngine("scene-1"), active: true, round: 1, order: ["a"] }),
+  ]);
+  // An optimistic predicted create, never applied through onCommand.
+  session.dispatchIntent([
+    { op: "create", doc: buildCombatDoc("w1", { ...newCombatEngine("scene-2"), active: true, round: 1, order: [] }) },
+  ]);
+
+  await new Promise((r) => setTimeout(r, 0));
+  expect(events).toHaveLength(0);
+  session.leave();
+});
+
+test("COMBAT_SERVICE is services.get-able from a module's ModuleContext", async () => {
+  const connect: Connect = (handlers) => {
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  let resolved: unknown;
+  const combatModule: Module = {
+    manifest: { id: "combat-consumer", version: "0.1.0", dependencies: {} },
+    register: (ctx) => {
+      resolved = ctx.services.get(COMBAT_SERVICE);
+    },
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub, combatModule],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(resolved).toBe(session.combat);
+});
+
+test("the combat subscription is established after Welcome and reflects a delivered frame; leave() resets it", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(session.combat.resolved.combats).toEqual([]);
+
+  const req = await vi.waitFor(() => {
+    const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "combat");
+    expect(m).toBeDefined();
+    return m!;
+  });
+  push({
+    type: "scene_derived",
+    request_id: req.request_id,
+    channel: "combat",
+    computed_at_seq: 0,
+    payload: {
+      combats: [
+        { id: "combat-1", scene_id: "scene-1", combatants: [{ id: "cc-1", resources: null, movement_cells: null }] },
+      ],
+    },
+  });
+  await vi.waitFor(() => expect(session.combat.resolved.combats).toHaveLength(1));
+
+  session.leave();
+  expect(session.combat.resolved.combats).toEqual([]);
 });
 
 // Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not

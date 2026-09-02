@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
@@ -29,10 +29,23 @@ import { SpeakAsToken } from "../speakAsToken.svelte";
  * render(MyPanel, { context: setAppContextForTest({ role: "gm" }) });
  */
 export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknown, unknown> {
+  const documents = over.documents ?? over.store ?? new DocumentStore();
   const ctx: AppContext = {
     contributions: over.contributions ?? new ContributionRegistry(),
     store: over.store ?? new DocumentStore(),
-    documents: over.documents ?? over.store ?? new DocumentStore(),
+    documents,
+    combat:
+      over.combat ??
+      new CombatController({
+        documents,
+        dispatchIntent: over.dispatchIntent ?? (() => {}),
+        sendCombat: () => Promise.reject(new Error("not connected")),
+        selfId: over.selfId ?? "u-self",
+        role: () => ((over.role ?? "gm") === "gm" ? "gm" : "player"),
+        canEdit: over.canEdit ?? (() => true),
+        world: () => over.world ?? "w1",
+        logger: silentLogger,
+      }),
     assets: over.assets ?? new AssetResolver(),
     world: over.world ?? "w1",
     role: over.role ?? "gm",
