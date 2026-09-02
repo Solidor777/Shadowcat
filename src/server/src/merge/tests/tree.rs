@@ -4,9 +4,10 @@
 
 use serde_json::json;
 
+use crate::data::permission::paths_overlap;
 use crate::merge::tree::{
-    deep_equal, delete_pointer, escape_token, get_pointer, paths_overlap, set_pointer,
-    structural_diff, take_template, tokenize, PointerError,
+    deep_equal, delete_pointer, escape_token, get_pointer, set_pointer, structural_diff,
+    take_template, tokenize, PointerError,
 };
 use crate::merge::{MergeConflict, ParentKind};
 
@@ -107,6 +108,10 @@ fn get_pointer_reads_nested_values_and_misses_cleanly() {
     assert_eq!(get_pointer(&root, "/a/nope/x"), None);
 }
 
+/// The overlap predicate the merge reads is `permission::paths_overlap` —
+/// the egress family's subtree rule — not a merge-local copy; this pins the
+/// semantics the merge's conflict detection and hidden-pointer filtering
+/// depend on.
 #[test]
 fn paths_overlap_covers_equal_and_ancestor_pairs_only() {
     assert!(paths_overlap("/a", "/a"));

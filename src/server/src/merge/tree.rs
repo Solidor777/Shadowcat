@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
+use crate::data::permission::paths_overlap;
 use crate::merge::bands::is_placement_excluded;
 use crate::merge::{MergeConflict, ParentKind};
 
@@ -267,12 +268,6 @@ pub(crate) fn set_pointer(
         _ => return Err(PointerError::NotAContainer),
     }
     Ok(())
-}
-
-/// JSON-pointer subtree overlap (either contains the other, or equal). Twin
-/// of the client `pathsOverlap`.
-pub(crate) fn paths_overlap(a: &str, b: &str) -> bool {
-    a == b || a.starts_with(&format!("{b}/")) || b.starts_with(&format!("{a}/"))
 }
 
 /// Whether two diffs produce the same outcome (`Set` with `deep_equal`
