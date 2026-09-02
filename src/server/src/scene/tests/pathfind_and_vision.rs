@@ -1222,21 +1222,9 @@ fn pathfind_revealed_unions_explored_memory() {
     // movementRestriction "revealed": an explored corridor covering start..goal makes an otherwise-unlit
     // goal routable.
     let (ecs, user, scene) = scene_revealed_player_token();
-    let cell = *ecs
-        .scene_grid_sizes()
-        .get(&scene)
-        .expect("the fixture's scene declares a grid size");
     let mut explored = crate::scene::explored::ExploredSet::new();
     // Mark cells (0,0)..(3,0) as explored (a straight corridor).
-    let grid = crate::scene::grid_shape::SquareGrid {
-        cell,
-        rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
-    };
-    explored.mark_polygons(
-        &[vec![0.0, 0.0, 4.0 * cell, 0.0, 4.0 * cell, cell, 0.0, cell]],
-        &grid,
-        cell,
-    );
+    explored.mark_cells((0..4).map(|i| (i, 0)));
     let r = ecs.pathfind(
         RouteRequester {
             user,
@@ -1386,7 +1374,7 @@ fn wall_less_scene_gives_full_intrascene_vision_not_a_degenerate_box() {
     );
     let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
-    let polys = ecs.player_vision_polygons(user);
+    let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
     let (_, poly) = polys
         .iter()
         .find(|(sid, _)| *sid == scene_id)
@@ -1431,7 +1419,7 @@ fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
         docs.push(tok);
     }
     let ecs = SceneEcs::from_documents(docs, 0);
-    let polys = ecs.player_vision_polygons(user);
+    let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
     assert_eq!(
         polys.len(),
         2,
@@ -1494,7 +1482,7 @@ fn wall_less_scene_vision_does_not_leak_beyond_its_own_bounds() {
     );
     let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
-    let polys = ecs.player_vision_polygons(user);
+    let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
     let (_, poly) = polys.iter().find(|(sid, _)| *sid == scene_id).unwrap();
 
     let beyond_bounds = (1000.0, 1000.0);
@@ -1504,10 +1492,11 @@ fn wall_less_scene_vision_does_not_leak_beyond_its_own_bounds() {
     );
 }
 
-/// `player_vision_polygons` and `player_vision_inputs` (via its `polygons_at` per-sample
-/// path) must not fork: same wall set (empty), same scene-bounds-aware bound.
+/// `player_vision_polygons` and the mover's per-sample path (`player_vision_polygons_at`,
+/// i.e. `SightSources::los_at`) must not fork: same wall set (empty), same scene-bounds-aware
+/// bound.
 #[test]
-fn player_vision_polygons_and_player_vision_inputs_agree_on_wall_less_bound() {
+fn player_vision_polygons_and_player_vision_polygons_at_agree_on_wall_less_bound() {
     let user = Uuid::from_u128(7);
     let scene_id = Uuid::from_u128(10);
     let token_id = Uuid::from_u128(11);
@@ -1527,7 +1516,7 @@ fn player_vision_polygons_and_player_vision_inputs_agree_on_wall_less_bound() {
     let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
     let poly_from_polygons = ecs
-        .player_vision_polygons(user)
+        .player_vision_polygons(user, WorldRole::Player, &no_world_grants())
         .into_iter()
         .find(|(sid, _)| *sid == scene_id)
         .map(|(_, p)| p);
@@ -1538,7 +1527,7 @@ fn player_vision_polygons_and_player_vision_inputs_agree_on_wall_less_bound() {
 
     assert_eq!(
         poly_from_polygons, poly_from_inputs,
-        "player_vision_polygons and player_vision_inputs must compute the identical bound for the same wall-less scene"
+        "player_vision_polygons and player_vision_polygons_at must compute the identical bound for the same wall-less scene"
     );
 }
 
@@ -1654,7 +1643,7 @@ fn visible_cells_wall_less_scene_covers_full_bounds_not_a_degenerate_box() {
 fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
 
-    let polys = ecs.player_vision_polygons(user);
+    let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
     let (_, poly) = polys
         .iter()
         .find(|(sid, _)| *sid == scene_id)

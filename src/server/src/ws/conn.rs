@@ -1058,12 +1058,14 @@ async fn handle_move_request(
 }
 
 /// Inject the player's scene-tagged `explored` cell sets into a `vision` **masked** payload, and —
-/// when `accumulate` — mark the currently-visible cells into the player's stored explored and
-/// persist on growth. No-op for a GM (`mode:"all"`) or any payload without masked polygons. Runs
-/// after the ECS read lock is dropped (it does async DB I/O); `grid` carries each scene's cell size,
-/// captured under that lock. Explored is emitted only for scenes the player currently has vision in
-/// (the payload's polygons) — a token-less player gets no explored. `accumulate` is FALSE for a GM
-/// see-as-player view: it is a read-only observer that emits the target's stored explored
+/// when `accumulate` — mark the currently-VISIBLE cells (the payload's `lit` set: line of sight
+/// ∩ illumination, the cells the recipient can actually see, never a line-of-sight polygon on
+/// its own) into the player's stored explored and persist on growth. No-op for a GM
+/// (`mode:"all"`) or any payload without a masked `lit` set. Runs after the ECS read lock is
+/// dropped (it does async DB I/O); `grid` carries each scene's cell size, captured under that
+/// lock. Explored is emitted only for scenes the player currently has a vision source in (the
+/// payload's `lit` groups) — a token-less player gets no explored. `accumulate` is FALSE for a
+/// GM see-as-player view: it is a read-only observer that emits the target's stored explored
 /// but must NOT grow the target's memory from the GM's session.
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
@@ -1080,31 +1082,37 @@ async fn enrich_vision_explored(
     if payload.get("mode").and_then(|m| m.as_str()) != Some("masked") {
         return;
     }
-    // Group the recipient's visibility polygons by scene (scene-local coords).
-    let polys = payload
-        .get("polygons")
-        .and_then(|p| p.as_array())
+    // The recipient's visible cells by scene, read back from the payload's own `lit` groups
+    // (`compute_derived`'s 5-int packing: `[i, j, band, tint, hint]` per cell).
+    let lit = payload
+        .get("lit")
+        .and_then(|l| l.as_array())
         .cloned()
         .unwrap_or_default();
-    let mut by_scene: std::collections::HashMap<Uuid, Vec<Vec<f64>>> =
+    let mut by_scene: std::collections::HashMap<Uuid, Vec<(i32, i32)>> =
         std::collections::HashMap::new();
-    for poly in &polys {
-        let Some(scene) = poly
+    for group in &lit {
+        let Some(scene) = group
             .get("scene")
             .and_then(|s| s.as_str())
             .and_then(|s| Uuid::parse_str(s).ok())
         else {
             continue;
         };
-        let points: Vec<f64> = poly
-            .get("points")
-            .and_then(|p| p.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
+        let cells: Vec<i64> = group
+            .get("cells")
+            .and_then(|c| c.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
             .unwrap_or_default();
-        by_scene.entry(scene).or_default().push(points);
+        let entry = by_scene.entry(scene).or_default();
+        for c in cells.as_chunks::<5>().0 {
+            if let (Ok(i), Ok(j)) = (i32::try_from(c[0]), i32::try_from(c[1])) {
+                entry.push((i, j));
+            }
+        }
     }
     let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
-    for (scene, scene_polys) in by_scene {
+    for (scene, visible) in by_scene {
         // Index this scene's explored fog through its own resolved grid shape (hex axial on a hex
         // scene, byte-identical square math otherwise) so the accumulated cells compose with the
         // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from either map has no
@@ -1115,7 +1123,7 @@ async fn enrich_vision_explored(
             continue;
         };
         // `+ Send + Sync` so the borrow may live across the `get_explored` await below (the egress
-        // task future must be `Send`); coerces to `&dyn GridShape` at the `mark_polygons` call.
+        // task future must be `Send`).
         let Some(shape) = grid_shapes
             .get(&scene)
             .map(|b| b.as_ref() as &(dyn crate::scene::grid_shape::GridShape + Send + Sync))
@@ -1126,7 +1134,7 @@ async fn enrich_vision_explored(
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
-        if accumulate && set.mark_polygons(&scene_polys, shape, cell) > 0 {
+        if accumulate && set.mark_cells(visible) > 0 {
             let _ = repo
                 .set_explored(world, scene, user, &set.to_bytes(shape.kind()))
                 .await;
@@ -1137,79 +1145,58 @@ async fn enrich_vision_explored(
     payload["explored"] = serde_json::json!(explored_out);
 }
 
-/// Return the recipient's authoritative vision polygons that cover `scene`.
-///
-/// Always reads from the authoritative ECS `player_vision_polygons` — a rendering cache
-/// is NOT a secrecy gate: if the observer's vision shrank within the ~150 ms debounce
-/// window a stale, wider polygon would admit a now-hidden sample. One ECS read per
-/// MoveStream per observer is acceptable for a security gate.
-///
-/// Returns empty on any failure or when the recipient controls no token in `scene`
-/// (fail-closed: caller suppresses the frame).
-///
-/// INVARIANT (no-lock-across-await): the ECS read guard is held only for the synchronous
-/// `player_vision_polygons` call and is dropped before this `async fn` returns, so no
-/// lock survives to the `sink.send` await in the egress loop.
-async fn observer_vision_polys_for_scene(
-    user_id: Uuid,
-    scene: Uuid,
-    room: &crate::ws::room::Room,
-) -> Vec<Vec<crate::scene::vision::P>> {
-    // Authoritative ECS read. Drop the lock before returning so no lock crosses
-    // the downstream `sink.send` await.
-    let polys_all = {
-        let ecs = room.scene().read().await;
-        ecs.player_vision_polygons(user_id)
-    };
-    polys_all
-        .into_iter()
-        .filter(|(s, _)| *s == scene)
-        .map(|(_, poly)| poly)
-        .collect()
-}
-
 /// Per-recipient `MoveStream` clip — the egress secrecy boundary.
 ///
-/// Returns `Some(clipped)` when the recipient may see ≥1 position sample, `None` to
-/// suppress the frame entirely.
+/// Returns `Some(clipped)` when the recipient may see ≥1 position sample OR receives ≥1
+/// carried-light sample, `None` to suppress the frame entirely.
 ///
 /// Discrimination:
 /// - **Mover** (`ctx.user_id == frame.mover`): full frame forwarded unchanged (all
-///   samples + `mover_vision` + `cost`).
-/// - **GM** (world role) with NO applicable see-as: all samples and the true `cost`
-///   forwarded (trusted, full information), `mover_vision` nulled, full `stop` and
-///   `duration_ms` preserved.
+///   samples + `mover_vision` + `mover_light` + `cost`).
+/// - **GM** (world role) with NO applicable see-as: all samples, the full light timeline and
+///   the true `cost` forwarded (trusted, full information), `mover_vision` nulled, full `stop`
+///   and `duration_ms` preserved.
 /// - **GM with an active see-as-player preview** (`see_as = Some(target)`) whose target has
 ///   a vision source in the move's scene: the GM's OWN view is narrowed to exactly what the
 ///   previewed target would see, via the SAME clip path a real observer gets (keyed on the
-///   target's vision, not the GM's). A see-as whose target has no source in the move's scene
+///   target's sight, not the GM's). A see-as whose target has no source in the move's scene
 ///   does not apply → full GM stream. This branch can only ever NARROW the GM's own view.
-/// - **Observer**: only samples whose `pos` lies within the recipient's authoritative
-///   vision polygons are forwarded; `mover_vision` AND `cost` nulled; fully-occluded →
-///   `None`. `stop` and `duration_ms` are clipped to the LAST VISIBLE sample — the true
-///   final position and full travel distance are not disclosed.
+/// - **Observer**: only samples the recipient SEES are forwarded — inside a source's line of
+///   sight AND lit for that source at that instant (`InstantSight::sees`, the lit mask's own
+///   predicate); `mover_light` reduced to the samples whose glow reaches their line of sight;
+///   `mover_vision` AND `cost` nulled. A frame with no visible position sample but an admitted
+///   glow is a GLOW-ONLY frame (`samples` empty, `mover_light` present): the recipient sees the
+///   light approach without ever seeing its bearer. Neither → `None`. `stop` and `duration_ms`
+///   are clipped to the LAST sample the recipient receives — the last visible position sample,
+///   or for a glow-only frame the last admitted light sample (whose `pos` the sample already
+///   discloses) — so the true final position and full travel distance are not disclosed.
 ///
 /// INVARIANT (mover_vision-isolation): `mover_vision` reaches only the mover's socket.
 /// INVARIANT (no-cost-leak): the true `cost` reaches only the mover and GM sockets; a
 ///   clipped observer receives `None` (mirrors mover_vision-isolation) so hidden
 ///   (`gm_only`) region terrain cannot be inferred by diffing visible distance vs. cost.
-/// INVARIANT (fail-closed): no derivable vision → empty clip → suppress.
-/// INVARIANT (no-stale-cache): observer vision is always read from the authoritative ECS,
-///   never from a rendering-cache fingerprint (a stale wider polygon would admit a
-///   now-hidden sample).
-/// INVARIANT (no-lock-across-await): the ECS read lock (if taken) is dropped inside
-///   `observer_vision_polys_for_scene` before this function returns.
-/// INVARIANT (timeline-clip): each sample is judged against the clip target's vision AT THAT
-///   SAMPLE'S INSTANT — the target's own in-flight `mover_vision` sweep (`Room::mover_streams`,
-///   `ws::move_clip`) while one is active, the committed-position vision otherwise. The timeline
-///   is the target's OWN vision (already sent to them), so this never admits a sample their fog
-///   will not show. A target whose move starts AFTER this frame was clipped is served by the
-///   egress re-emit (`egress_loop`'s own-move arm), not by this function.
+/// INVARIANT (fail-closed): no derivable sight → empty clip → suppress.
+/// INVARIANT (no-stale-cache): the recipient's sight is always read from the authoritative
+///   ECS (`SceneEcs::recipient_sight`), never from a rendering-cache fingerprint (a stale wider
+///   polygon or lit set would admit a now-hidden sample). One ECS read per MoveStream per
+///   recipient is acceptable for a security gate.
+/// INVARIANT (no-lock-across-await): the ECS read guard is held only for the synchronous
+///   `recipient_sight` call and is dropped before any await.
+/// INVARIANT (instant-clip): each sample is judged against the clip target's sight AT THAT
+///   SAMPLE'S INSTANT (`ws::move_clip::ClipInputs::at`) — the target's own in-flight tokens at
+///   their timeline viewpoints (`Room::scene_streams`), and every in-flight torch composed into
+///   the field at its timeline position (its committed emission is excluded from the field
+///   first, since a committed position is the move's END). The viewpoints are the target's OWN
+///   sweep (already sent to them), so this never admits a sample their fog will not show. A
+///   target whose move starts AFTER this frame was clipped, or a torch that enters the scene
+///   after it, is served by the egress re-emit (`egress_loop`'s `MoveStream` arm), not by this
+///   function.
 async fn clip_move_stream(
     msg: &ServerMsg,
     ctx: &PermissionContext,
     see_as: Option<PermissionContext>,
     room: &crate::ws::room::Room,
+    world_defaults: &WorldCapDefaults,
 ) -> Option<ServerMsg> {
     let ServerMsg::MoveStream {
         request_id,
@@ -1255,7 +1242,7 @@ async fn clip_move_stream(
         truncated: *truncated,
     };
 
-    // Choose whose authoritative vision this recipient's samples are clipped against — or
+    // Choose whose authoritative sight this recipient's samples are clipped against — or
     // return the full GM stream when no clip applies.
     //
     // INVARIANT (see-as-narrowing-only): the see-as branch is reached ONLY for a GM
@@ -1267,72 +1254,80 @@ async fn clip_move_stream(
     //   the caller read from this connection's own `scene_subs` (populated only by the
     //   `SceneSubscribe` handler, which gates `as_user` to a GM and resolves the target role
     //   via `member_role`). It is never client-trusted geometry.
-    // INVARIANT (see-as-scene-exact): the target's vision is computed for the move's EXACT
-    //   `scene` via `observer_vision_polys_for_scene` (committed position) and
-    //   `Room::mover_streams` (in-flight timelines), both filtered/queried by that scene id. A
-    //   see-as whose target has NO vision source in the move's scene (e.g. their token is in a
-    //   different scene) yields zero committed polygons AND no in-flight timeline → the see-as
-    //   does not apply → the GM keeps the full stream. A target WITH a source in the scene but no
-    //   visible sample is suppressed, exactly like a real observer.
-    // Whose vision this recipient is clipped against: their own, or (a GM see-as) the target's.
-    let target_user = if ctx.world_role == crate::data::document::WorldRole::Gm {
+    // INVARIANT (see-as-scene-exact): the target's sight is computed for the move's EXACT
+    //   `scene` via `recipient_sight` (committed sources) and `Room::scene_streams` (in-flight
+    //   timelines), both keyed by that scene id. A see-as whose target has NO vision source in
+    //   the move's scene (e.g. their token is in a different scene) → the see-as does not apply
+    //   → the GM keeps the full stream. A target WITH a source in
+    //   the scene but no visible sample is suppressed, exactly like a real observer.
+    let target = if ctx.world_role == crate::data::document::WorldRole::Gm {
         match see_as {
-            Some(target) => target.user_id,
+            Some(target) => target,
             None => return Some(full_gm_stream()),
         }
     } else {
-        ctx.user_id
+        *ctx
     };
     let now = crate::ws::time::now_millis();
-    // Committed-position vision (the at-rest gate) and the target's in-flight sweep timelines.
-    // Both reads drop their locks before this function's caller awaits `sink.send`.
-    let static_polys = observer_vision_polys_for_scene(target_user, *scene, room).await;
-    let timeline_frames = room.mover_streams(target_user, *scene, now).await;
-    // A registered stream carries a usable timeline only when its own frame has
-    // `mover_vision: Some(_)` — a GM mover's own executed move always registers with
-    // `mover_vision: None` (`Room::execute_move`), so `timeline_frames` can be non-empty while
-    // containing nothing this clip can use. The applicability check below MUST test this
-    // filtered set, not the raw registered-stream count.
-    let timelines: Vec<crate::ws::move_clip::TimelineStream<'_>> = timeline_frames
+    // Every in-flight move in the scene (the frame being clipped is registered before it is
+    // broadcast, so it is normally among them; a frame absent from the registry — expired, or a
+    // zero-progress move — is appended below so its own torch still lights its bearer).
+    let registered = room.scene_streams(*scene, now).await;
+    let mut in_flight: Vec<crate::ws::move_clip::InFlight<'_>> = registered
         .iter()
-        .filter_map(|f| match f.as_ref() {
-            ServerMsg::MoveStream {
-                start_server_ms,
-                mover_vision: Some(v),
-                ..
-            } => Some(crate::ws::move_clip::TimelineStream {
-                start_server_ms: *start_server_ms,
-                vision: v,
-            }),
-            _ => None,
-        })
+        .filter(|(token, _)| token != token_id)
+        .filter_map(|(token, frame)| in_flight_of(*token, frame))
         .collect();
-    if ctx.world_role == crate::data::document::WorldRole::Gm
-        && static_polys.is_empty()
-        && timelines.is_empty()
-    {
+    in_flight.extend(in_flight_of(*token_id, msg));
+    // Every in-flight mover's carried emission leaves the committed field (its committed
+    // position is its move's end); `ClipInputs::at` composes each back in per instant.
+    let exclude: Vec<Uuid> = in_flight.iter().map(|m| m.token).collect();
+    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`.
+    let sight = {
+        let ecs = room.scene().read().await;
+        ecs.recipient_sight(
+            target.user_id,
+            target.world_role,
+            world_defaults,
+            *scene,
+            &exclude,
+        )
+    };
+    if ctx.world_role == crate::data::document::WorldRole::Gm && !sight.has_sources() {
         // See-as target has no vision source in this scene → not applicable → full GM stream.
+        // An in-flight move of theirs changes nothing here: `ClipInputs::at` substitutes a
+        // viewpoint only for a token that IS one of their sources, so a source-less target
+        // (a GM walking an NPC, say) still sees nothing through the clip.
         return Some(full_gm_stream());
     }
-    let visible =
-        crate::ws::move_clip::clip_samples(samples, *start_server_ms, &static_polys, &timelines);
-    if visible.is_empty() {
-        return None; // SUPPRESS: fully occluded or no vision available (fail-closed)
-    }
-    // Clip stop and duration_ms to the last VISIBLE sample so the observer learns
-    // neither the true final position (which may be behind a wall) nor the full
-    // travel distance. The authoritative position Event (from commit_ops_locked)
-    // delivers the real stop coordinate later, gated by the client's fog layer.
-    // INVARIANT: `visible` is non-empty here (the is_empty guard above returns None).
-    // The unwrap_or fallbacks below are unreachable; the assert makes the secrecy
-    // invariant machine-checked so a future refactor of the guard cannot silently
-    // fall back to the full unclipped stop/duration.
-    debug_assert!(
-        !visible.is_empty(),
-        "clip invariant: visible must be non-empty (else the move is suppressed)"
+    let inputs = crate::ws::move_clip::ClipInputs {
+        sight: &sight,
+        in_flight: &in_flight,
+        target: target.user_id,
+    };
+    let visible = crate::ws::move_clip::clip_samples(samples, *start_server_ms, &inputs);
+    // Per-sample admission through the SAME per-instant sight the position clip read: a
+    // sample stays only where its dim-reach disc touches that line of sight; none admitted ⇒
+    // `None`, never an empty timeline.
+    let admitted_light = crate::ws::move_clip::admit_light_samples(
+        mover_light.as_deref(),
+        *start_server_ms,
+        &inputs,
     );
-    let clipped_stop = visible.last().map(|s| s.pos).unwrap_or(*stop);
-    let clipped_duration_ms = visible.last().map(|s| s.t_ms).unwrap_or(*duration_ms);
+    // Clip stop and duration_ms to the last sample the recipient receives so the observer
+    // learns neither the true final position (which may be behind a wall) nor the full travel
+    // distance. The authoritative position Event (from commit_ops_locked) delivers the real stop
+    // coordinate later, gated by the client's fog and darkness layers.
+    // INVARIANT: at least one of `visible`/`admitted_light` is non-empty past this point (else
+    // the frame is suppressed) — the wire invariant `ServerMsg::MoveStream.samples` states.
+    let (clipped_stop, clipped_duration_ms) = match (visible.last(), admitted_light.as_deref()) {
+        (Some(s), _) => (s.pos, s.t_ms),
+        (None, Some(light)) => match light.last() {
+            Some(l) => (l.pos, l.t_ms),
+            None => return None,
+        },
+        (None, None) => return None, // SUPPRESS: nothing seen and no glow reaches (fail-closed)
+    };
     Some(ServerMsg::MoveStream {
         request_id: *request_id,
         token_id: *token_id,
@@ -1343,15 +1338,7 @@ async fn clip_move_stream(
         stop: clipped_stop,
         samples: visible,
         mover_vision: None, // INVARIANT: mover_vision strictly mover-only
-        // Per-sample admission through the SAME per-instant vision the position clip read
-        // (`vision_at_instant`): a sample stays only where its dim-reach disc touches that
-        // vision; none admitted ⇒ `None`, never an empty timeline.
-        mover_light: crate::ws::move_clip::admit_light_samples(
-            mover_light.as_deref(),
-            *start_server_ms,
-            &static_polys,
-            &timelines,
-        ),
+        mover_light: admitted_light,
         // INVARIANT (no-cost-leak): the authoritative `cost` may include secret (`gm_only`)
         // region terrain the observer's clipped `samples` never reveal; disclosing it would
         // let an observer detect/estimate hidden terrain by comparing the visible portion of
@@ -1369,6 +1356,27 @@ async fn clip_move_stream(
         // step is invisible to geometry, so this flag is the ONLY channel carrying it.
         truncated: None,
     })
+}
+
+/// The clip's view of one in-flight `MoveStream` frame (`ws::move_clip::InFlight`); `None`
+/// for any other frame kind.
+fn in_flight_of(token: Uuid, frame: &ServerMsg) -> Option<crate::ws::move_clip::InFlight<'_>> {
+    match frame {
+        ServerMsg::MoveStream {
+            mover,
+            start_server_ms,
+            samples,
+            mover_light,
+            ..
+        } => Some(crate::ws::move_clip::InFlight {
+            start_server_ms: *start_server_ms,
+            mover: *mover,
+            token,
+            positions: samples,
+            light: mover_light.as_deref(),
+        }),
+        _ => None,
+    }
 }
 
 /// Union `world_reqs` (GM-authored, unchanged) with the `requirements`
@@ -1761,37 +1769,45 @@ async fn egress_loop<S>(
                                 } else {
                                     None
                                 };
-                                let mut failed = match clip_move_stream(inner.as_ref(), &ctx, see_as, &room).await {
+                                let mut failed = match clip_move_stream(inner.as_ref(), &ctx, see_as, &room, &world_defaults).await {
                                     Some(out) => sink.send(text(&out)).await.is_err(),
                                     None => false, // suppressed: do not send
                                 };
-                                // Own-move re-emit: the clip target's vision timeline just changed, so every
-                                // OTHER in-flight stream in this scene is re-clipped against it and re-sent
-                                // under its original token_id (the client overwrites playback keyed by
-                                // token_id in place). Serves the ordering where the recipient's move starts
-                                // AFTER the other stream was clipped — the clip itself cannot widen a frame
-                                // already sent. Delivered only to this connection; other recipients'
-                                // timelines are unchanged. Requires `mover_vision: Some(_)` on the
-                                // triggering frame: a zero-progress move (never registered in `moving`, so
-                                // never a source of concurrent re-clips) and a GM mover's own move
-                                // (`mover_vision: None`, so it's always filtered out of a target's usable
-                                // timeline regardless) cannot have produced a timeline anything could
-                                // meaningfully re-clip against — skipping them avoids driving the re-emit
-                                // loop at request rate off a move that could never populate one.
+                                // Re-emit: the clip target's sight just changed, so every OTHER in-flight
+                                // stream in this scene is re-clipped against it and re-sent under its
+                                // original token_id (the client overwrites playback keyed by token_id in
+                                // place). Serves the ordering where the change lands AFTER the other stream
+                                // was clipped — the clip itself cannot widen a frame already sent.
+                                // Delivered only to this connection; other recipients' timelines are
+                                // unchanged. Two triggers, both read off the triggering frame:
+                                //   - OWN MOVE: the target's own `mover_vision: Some(_)` — their viewpoint
+                                //     timeline came into existence. A zero-progress move (never registered
+                                //     in `moving`, so never a source of concurrent re-clips) and a GM mover's
+                                //     own move (`mover_vision: None`) cannot have produced one — skipping
+                                //     them avoids driving the re-emit loop at request rate off a move that
+                                //     could never populate a timeline.
+                                //   - TORCH: any mover's `mover_light: Some(_)` — a carried light entered
+                                //     the field, and a bystander's in-flight walk through its glow is
+                                //     visible per instant only once re-clipped with that light composed in.
+                                // Neither applies to a plain GM (no see-as): a GM's stream is never clipped,
+                                // so a re-emit would only repeat full frames.
                                 if !failed {
                                     if let ServerMsg::MoveStream {
                                         mover,
                                         scene,
-                                        mover_vision: Some(_),
+                                        mover_vision,
+                                        mover_light,
                                         ..
                                     } = inner.as_ref()
                                     {
                                         let clip_target = see_as.map(|t| t.user_id).unwrap_or(ctx.user_id);
-                                        if *mover == clip_target {
+                                        let clipped_recipient = ctx.world_role != crate::data::document::WorldRole::Gm || see_as.is_some();
+                                        let own_move = mover_vision.is_some() && *mover == clip_target;
+                                        if clipped_recipient && (own_move || mover_light.is_some()) {
                                             let now = crate::ws::time::now_millis();
                                             for other in room.concurrent_streams(*scene, clip_target, now).await {
                                                 if let Some(out) =
-                                                    clip_move_stream(other.as_ref(), &ctx, see_as, &room).await
+                                                    clip_move_stream(other.as_ref(), &ctx, see_as, &room, &world_defaults).await
                                                 {
                                                     if sink.send(text(&out)).await.is_err() {
                                                         failed = true;

@@ -248,6 +248,8 @@ fn move_stream_round_trips_and_is_tagged() {
         pos: [0.0, 0.0],
         bright: 200.0,
         dim: 600.0,
+        intensity: 0.8,
+        falloff: crate::data::engine::FalloffCurve::Quadratic,
         color: 0xFFD9A0,
         polygons: vec![vec![[-600.0, -600.0], [600.0, -600.0], [600.0, 600.0]]],
     }]);

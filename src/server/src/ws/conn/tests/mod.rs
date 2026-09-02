@@ -580,10 +580,10 @@ async fn enrich_accumulates_persists_and_emits_explored() {
     let grid = std::collections::HashMap::from([(scene, 100.0)]);
     let grid_shapes = square_grid_shapes(&grid);
 
-    // A masked payload with a visibility polygon covering a 3×3 cell block in `scene`.
+    // A masked payload whose lit set is a 3×3 cell block in `scene` (5-int cells).
     let mut payload = json!({
         "mode": "masked",
-        "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1, 0, 1, 0, 0, -1, 0, 2, 0, 0, -1, 1, 0, 0, 0, -1, 1, 1, 0, 0, -1, 1, 2, 0, 0, -1, 2, 0, 0, 0, -1, 2, 1, 0, 0, -1, 2, 2, 0, 0, -1] }]
     });
     enrich_vision_explored(&mut payload, &grid, &grid_shapes, &repo, world, user, true).await;
 
@@ -604,7 +604,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
     // A revisit of the same area re-emits the same explored without growing the stored set.
     let mut again = json!({
         "mode": "masked",
-        "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1, 0, 1, 0, 0, -1, 0, 2, 0, 0, -1, 1, 0, 0, 0, -1, 1, 1, 0, 0, -1, 1, 2, 0, 0, -1, 2, 0, 0, 0, -1, 2, 1, 0, 0, -1, 2, 2, 0, 0, -1] }]
     });
     enrich_vision_explored(&mut again, &grid, &grid_shapes, &repo, world, user, true).await;
     assert_eq!(
@@ -640,7 +640,7 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
 
     let mut payload = json!({
         "mode": "masked",
-        "polygons": [{ "scene": ghost, "points": [0.0, 0.0, 200.0, 0.0, 200.0, 200.0] }]
+        "lit": [{ "scene": ghost, "cell": 100.0, "cells": [0, 0, 0, 0, -1] }]
     });
     enrich_vision_explored(
         &mut payload,
@@ -673,14 +673,7 @@ async fn enrich_see_as_player_is_read_only() {
 
     // Seed the target with one explored cell (as if they'd been there).
     let mut seed = crate::scene::explored::ExploredSet::new();
-    seed.mark_polygons(
-        &[vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]],
-        &crate::scene::grid_shape::SquareGrid {
-            cell: 100.0,
-            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        },
-        100.0,
-    );
+    seed.mark_cells([(0, 0)]);
     repo.set_explored(
         world,
         scene,
@@ -690,11 +683,11 @@ async fn enrich_see_as_player_is_read_only() {
     .await
     .unwrap();
 
-    // The GM views as the target over a polygon covering a 3×3 block (would mark 9 cells if it
-    // accumulated). Read-only: emits the stored 1 cell, persists nothing new.
+    // The GM views as the target over a lit 3×3 block (would mark 9 cells if it accumulated).
+    // Read-only: emits the stored 1 cell, persists nothing new.
     let mut payload = json!({
         "mode": "masked",
-        "polygons": [{ "scene": scene, "points": [0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0] }]
+        "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1, 0, 1, 0, 0, -1, 0, 2, 0, 0, -1, 1, 0, 0, 0, -1, 1, 1, 0, 0, -1, 1, 2, 0, 0, -1, 2, 0, 0, 0, -1, 2, 1, 0, 0, -1, 2, 2, 0, 0, -1] }]
     });
     enrich_vision_explored(
         &mut payload,
@@ -2280,7 +2273,7 @@ async fn enrich_token_less_player_emits_no_explored() {
     let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
     let grid = std::collections::HashMap::new();
     let grid_shapes = square_grid_shapes(&grid);
-    let mut payload = json!({ "mode": "masked", "polygons": [] });
+    let mut payload = json!({ "mode": "masked", "polygons": [], "lit": [] });
     enrich_vision_explored(
         &mut payload,
         &grid,
@@ -2305,6 +2298,61 @@ async fn setup_clip_room(
     obs_token_pos: Option<(f64, f64)>,
     wall_system: Option<serde_json::Value>,
     wall_gm_only: bool,
+) -> (
+    Arc<crate::ws::room::Room>,
+    PermissionContext,
+    PermissionContext,
+    Uuid,
+    Arc<SqliteRepository>,
+) {
+    setup_clip_room_lit(obs_token_pos, wall_system, wall_gm_only, false, None).await
+}
+
+/// `setup_clip_room` with the scene's lighting left at the engine default — ON with a zero
+/// environment intensity, i.e. pitch dark. A normal-vision observer there sees a sample only
+/// where a light (a carried torch) reaches it; the clip tests that exercise lighting build on
+/// this, the line-of-sight-only tests on the lit fixture.
+pub(super) async fn setup_dark_clip_room(
+    obs_token_pos: Option<(f64, f64)>,
+    wall_system: Option<serde_json::Value>,
+) -> (
+    Arc<crate::ws::room::Room>,
+    PermissionContext,
+    PermissionContext,
+    Uuid,
+    Arc<SqliteRepository>,
+) {
+    setup_clip_room_lit(obs_token_pos, wall_system, false, true, None).await
+}
+
+/// `setup_dark_clip_room` whose observer token LINKS an actor carrying `vision` (an
+/// `ActorEngine.vision` assignment list) — the darkvision observer of the secrecy tests.
+pub(super) async fn setup_dark_clip_room_with_vision(
+    obs_token_pos: (f64, f64),
+    wall_system: Option<serde_json::Value>,
+    vision: serde_json::Value,
+) -> (
+    Arc<crate::ws::room::Room>,
+    PermissionContext,
+    PermissionContext,
+    Uuid,
+    Arc<SqliteRepository>,
+) {
+    setup_clip_room_lit(Some(obs_token_pos), wall_system, false, true, Some(vision)).await
+}
+
+/// The clip fixture: a GM-owned world, an observer player (optionally with a token at
+/// `obs_token_pos`), one 100-unit square scene, and an optional sight wall. `dark` keeps the
+/// scene at the engine's lighting default (on, pitch dark); otherwise lighting is switched OFF
+/// on the scene so every line-of-sight cell is visible and the clip reduces to geometry.
+/// `vision`, when present, is published as an actor the observer's token links, so the
+/// observer sees through that actor's vision modes rather than the raw-token normal vision.
+async fn setup_clip_room_lit(
+    obs_token_pos: Option<(f64, f64)>,
+    wall_system: Option<serde_json::Value>,
+    wall_gm_only: bool,
+    dark: bool,
+    vision: Option<serde_json::Value>,
 ) -> (
     Arc<crate::ws::room::Room>,
     PermissionContext,
@@ -2352,6 +2400,12 @@ async fn setup_clip_room(
     let mut scene = wdoc(world.id, scene_id, "scene");
     scene.owner = Some(gm);
     scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+    if !dark {
+        scene.engine = Some(json!({
+            "grid": { "kind": "square", "size": 100 }, "background": null,
+            "lighting": { "enabled": false }
+        }));
+    }
     room.publish(
         repo.as_ref(),
         &gm_ctx,
@@ -2363,12 +2417,34 @@ async fn setup_clip_room(
     .unwrap();
 
     if let Some(pos) = obs_token_pos {
+        let mut engine = token_engine(pos.0, pos.1);
+        if let Some(vision) = vision {
+            let actor_id = Uuid::from_u128(0xE004);
+            let mut actor = wdoc(world.id, actor_id, "actor");
+            actor.owner = Some(obs);
+            actor.permissions.users.insert(obs, DocRole::Owner);
+            actor.engine = Some(json!({
+                "displayName": "Watcher", "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
+                "prototype": true, "vision": vision,
+            }));
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![Operation::Create { doc: actor }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+            engine["actor_id"] = json!(actor_id.to_string());
+        }
         let token_id = Uuid::from_u128(0xE002);
         let mut tok = wdoc(world.id, token_id, "token");
         tok.parent_id = Some(scene_id);
         tok.owner = Some(obs);
         tok.permissions.users.insert(obs, DocRole::Owner);
-        tok.engine = Some(token_engine(pos.0, pos.1));
+        tok.engine = Some(engine);
         room.publish(
             repo.as_ref(),
             &gm_ctx,
@@ -2503,14 +2579,20 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
                 pos: [50.0, 50.0],
             },
             PosSample {
+                t_ms: 500.0,
+                pos: [200.0, 50.0],
+            },
+            PosSample {
                 t_ms: 2_000.0,
-                pos: [60.0, 50.0],
+                pos: [250.0, 50.0],
             },
         ],
         mover_light: None,
+        // Present because the own-move re-emit keys on it; the clip reads viewpoints from the
+        // position samples above, never these polygons.
         mover_vision: Some(vec![VisionSample {
             t_ms: 0.0,
-            polygons: band(0.0, 300.0),
+            polygons: Vec::new(),
         }]),
         cost: Some(0.1),
         truncated: Some(false),
@@ -2594,8 +2676,8 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
         json!(a_req),
         "A re-emitted under its original request_id"
     );
-    // A's sample at t=1000 (abs now+1000) is inside R's sweep band → admitted; t=0 (abs now)
-    // precedes R's sweep start → committed vision (walled) → dropped.
+    // A's sample at t=1000 (abs now+1000) is seen from R's viewpoint (200,50) at that instant
+    // → admitted; t=0 (abs now) precedes R's walk → committed viewpoint (walled) → dropped.
     assert_eq!(second["samples"].as_array().unwrap().len(), 1);
     assert_eq!(second["samples"][0]["t_ms"], json!(1000.0));
     assert!(
@@ -2662,7 +2744,7 @@ async fn clip_mover_receives_full_frame() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &ctx, None, &room).await;
+    let result = clip_move_stream(&frame, &ctx, None, &room, &WorldCapDefaults::default()).await;
 
     assert!(result.is_some(), "mover must receive a frame");
     match result.unwrap() {
@@ -2718,7 +2800,8 @@ async fn clip_observer_no_token_suppressed() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
+    let result =
+        clip_move_stream(&frame, &obs_ctx, None, &room, &WorldCapDefaults::default()).await;
 
     assert!(
         result.is_none(),
@@ -2771,7 +2854,8 @@ async fn clip_observer_sees_near_side_prefix() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
+    let result =
+        clip_move_stream(&frame, &obs_ctx, None, &room, &WorldCapDefaults::default()).await;
 
     assert!(
         result.is_some(),
@@ -2867,7 +2951,8 @@ async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
+    let result =
+        clip_move_stream(&frame, &obs_ctx, None, &room, &WorldCapDefaults::default()).await;
 
     assert!(
         result.is_some(),
@@ -2956,7 +3041,8 @@ async fn clip_gm_only_wall_suppresses_observer() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &obs_ctx, None, &room).await;
+    let result =
+        clip_move_stream(&frame, &obs_ctx, None, &room, &WorldCapDefaults::default()).await;
 
     // Must be None (fully suppressed), NOT Some(MoveStream { samples: [], .. }).
     // The secrecy invariant: zero frames sent, never an empty-samples frame.
@@ -3030,7 +3116,7 @@ async fn clip_gm_receives_all_samples_mover_vision_nulled() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &gm_ctx, None, &room).await;
+    let result = clip_move_stream(&frame, &gm_ctx, None, &room, &WorldCapDefaults::default()).await;
 
     assert!(result.is_some(), "GM must receive a frame");
     match result.unwrap() {
@@ -3109,7 +3195,14 @@ async fn clip_gm_see_as_clips_to_target_vision() {
     };
 
     // GM previewing as `target`.
-    let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
+    let result = clip_move_stream(
+        &frame,
+        &gm_ctx,
+        Some(target_ctx),
+        &room,
+        &WorldCapDefaults::default(),
+    )
+    .await;
 
     assert!(
         result.is_some(),
@@ -3206,7 +3299,14 @@ async fn clip_gm_see_as_different_scene_not_clipped() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
+    let result = clip_move_stream(
+        &frame,
+        &gm_ctx,
+        Some(target_ctx),
+        &room,
+        &WorldCapDefaults::default(),
+    )
+    .await;
 
     assert!(
         result.is_some(),
@@ -3270,7 +3370,14 @@ async fn clip_gm_see_as_fully_occluded_suppressed() {
         truncated: Some(false),
     };
 
-    let result = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room).await;
+    let result = clip_move_stream(
+        &frame,
+        &gm_ctx,
+        Some(target_ctx),
+        &room,
+        &WorldCapDefaults::default(),
+    )
+    .await;
 
     assert!(
         result.is_none(),
@@ -3278,17 +3385,28 @@ async fn clip_gm_see_as_fully_occluded_suppressed() {
     );
 }
 
-/// Register an in-flight stream for `mover` in `scene` whose vision timeline is `vision`.
-/// `start_ms` is the stream's `start_server_ms`; it stays unexpired for an hour.
+/// Register an in-flight stream for `mover` in `scene` whose position timeline is
+/// `positions` — the viewpoints the egress clip re-raycasts the mover's own token from per
+/// instant (`ClipInputs::at`). `mover_vision` is present (one entry per position, as
+/// `Room::execute_move` shapes it) because its presence is what the own-move re-emit keys on;
+/// its polygons are never read by the clip. `start_ms` is the stream's `start_server_ms`; it
+/// stays unexpired for an hour.
 async fn register_timeline(
     room: &crate::ws::room::Room,
     token: Uuid,
     mover: Uuid,
     scene: Uuid,
     start_ms: i64,
-    vision: Vec<crate::ws::protocol::VisionSample>,
+    positions: Vec<crate::ws::protocol::PosSample>,
 ) {
     use crate::ws::room::ActiveStream;
+    let vision = positions
+        .iter()
+        .map(|p| crate::ws::protocol::VisionSample {
+            t_ms: p.t_ms,
+            polygons: Vec::new(),
+        })
+        .collect();
     let frame = ServerMsg::MoveStream {
         request_id: Uuid::from_u128(0x7777),
         token_id: token,
@@ -3297,10 +3415,7 @@ async fn register_timeline(
         start_server_ms: start_ms as f64,
         duration_ms: 3_600_000.0,
         stop: [0.0, 0.0],
-        samples: vec![crate::ws::protocol::PosSample {
-            t_ms: 0.0,
-            pos: [0.0, 0.0],
-        }],
+        samples: positions,
         mover_light: None,
         mover_vision: Some(vision),
         cost: Some(0.0),
@@ -3318,18 +3433,14 @@ async fn register_timeline(
     .await;
 }
 
-/// A big square covering x∈[x0,x1], y∈[0,100].
-fn band(x0: f64, x1: f64) -> Vec<Vec<[f64; 2]>> {
-    vec![vec![[x0, 0.0], [x1, 0.0], [x1, 100.0], [x0, 100.0]]]
-}
-
 /// Observer at (50,50) behind a wall at x=100 — committed vision never sees x>100. The
-/// observer's OWN in-flight sweep (started before A) sees x∈[100,300] from its second sample
-/// (t=200 after its start). A's samples at (150,50)/(250,50) at A-times 0/200 fall at absolute
-/// instants where the sweep shows sample 0 (band 0..100 → occluded) then sample 1 (band → visible).
+/// observer's OWN in-flight walk (started before A) carries its token past the wall to
+/// (200,50) at its second sample (t=200 after its start). A's samples at (150,50)/(250,50) at
+/// A-times 0/200 fall at absolute instants where the observer's viewpoint is still (50,50)
+/// (occluded) then (200,50) (visible).
 #[tokio::test]
 async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
-    use crate::ws::protocol::{PosSample, VisionSample};
+    use crate::ws::protocol::PosSample;
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
     let (room, _, obs_ctx, scene_id, _) =
@@ -3342,13 +3453,13 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
         scene_id,
         now,
         vec![
-            VisionSample {
+            PosSample {
                 t_ms: 0.0,
-                polygons: band(0.0, 100.0),
+                pos: [50.0, 50.0],
             },
-            VisionSample {
+            PosSample {
                 t_ms: 200.0,
-                polygons: band(100.0, 300.0),
+                pos: [200.0, 50.0],
             },
         ],
     )
@@ -3376,7 +3487,7 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
         cost: Some(2.0),
         truncated: Some(false),
     };
-    let out = clip_move_stream(&frame, &obs_ctx, None, &room)
+    let out = clip_move_stream(&frame, &obs_ctx, None, &room, &WorldCapDefaults::default())
         .await
         .expect("one sample visible");
     let ServerMsg::MoveStream {
@@ -3413,7 +3524,7 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
 /// this clip.
 #[tokio::test]
 async fn clip_ignores_a_timeline_that_starts_after_the_move() {
-    use crate::ws::protocol::{PosSample, VisionSample};
+    use crate::ws::protocol::PosSample;
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
     let (room, _, obs_ctx, scene_id, _) =
@@ -3425,9 +3536,9 @@ async fn clip_ignores_a_timeline_that_starts_after_the_move() {
         obs_ctx.user_id,
         scene_id,
         now + 10_000,
-        vec![VisionSample {
+        vec![PosSample {
             t_ms: 0.0,
-            polygons: band(100.0, 300.0),
+            pos: [200.0, 50.0],
         }],
     )
     .await;
@@ -3454,15 +3565,17 @@ async fn clip_ignores_a_timeline_that_starts_after_the_move() {
         cost: Some(2.0),
         truncated: Some(false),
     };
-    assert!(clip_move_stream(&frame, &obs_ctx, None, &room)
-        .await
-        .is_none());
+    assert!(
+        clip_move_stream(&frame, &obs_ctx, None, &room, &WorldCapDefaults::default())
+            .await
+            .is_none()
+    );
 }
 
 /// GM see-as: the target's timeline, not the GM's own, drives the clip.
 #[tokio::test]
 async fn clip_gm_see_as_uses_the_targets_timeline() {
-    use crate::ws::protocol::{PosSample, VisionSample};
+    use crate::ws::protocol::PosSample;
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
     let (room, gm_ctx, obs_ctx, scene_id, _) =
@@ -3474,9 +3587,9 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
         obs_ctx.user_id,
         scene_id,
         now,
-        vec![VisionSample {
+        vec![PosSample {
             t_ms: 0.0,
-            polygons: band(100.0, 300.0),
+            pos: [200.0, 50.0],
         }],
     )
     .await;
@@ -3503,9 +3616,15 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
         cost: Some(2.0),
         truncated: Some(false),
     };
-    let out = clip_move_stream(&frame, &gm_ctx, Some(obs_ctx), &room)
-        .await
-        .expect("target sees both");
+    let out = clip_move_stream(
+        &frame,
+        &gm_ctx,
+        Some(obs_ctx),
+        &room,
+        &WorldCapDefaults::default(),
+    )
+    .await
+    .expect("target sees both");
     let ServerMsg::MoveStream { samples, cost, .. } = out else {
         panic!()
     };
@@ -3591,9 +3710,15 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
         cost: Some(2.0),
         truncated: Some(false),
     };
-    let out = clip_move_stream(&frame, &gm_ctx, Some(target_ctx), &room)
-        .await
-        .expect("no applicable timeline → full GM stream, not suppression");
+    let out = clip_move_stream(
+        &frame,
+        &gm_ctx,
+        Some(target_ctx),
+        &room,
+        &WorldCapDefaults::default(),
+    )
+    .await
+    .expect("no applicable timeline → full GM stream, not suppression");
     let ServerMsg::MoveStream { samples, cost, .. } = out else {
         panic!()
     };

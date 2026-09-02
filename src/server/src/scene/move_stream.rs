@@ -10,10 +10,10 @@
 //!
 //! Coupling: `MAX_VISION_SAMPLES` is the shared cap for position, vision and
 //! carried-light samples; vision samples are computed by `Room::execute_move` via
-//! `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at`, light samples
-//! via `SceneEcs::mover_light_inputs` + `MoverLightInputs::sample_at`, both over the
-//! SAME position sample list. The cap prevents a pathologically long path from
-//! flooding the broadcast.
+//! `SceneEcs::sight_sources` + `SightSources::los_at`, light samples via
+//! `SceneEcs::mover_light_inputs` + `MoverLightInputs::sample_at`, both over the SAME
+//! position sample list. The cap prevents a pathologically long path from flooding the
+//! broadcast.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
@@ -33,8 +33,8 @@ pub(crate) const SAMPLES_PER_CELL: f64 = 3.0;
 
 /// A time-tagged vision sample for the mover's fog-sweep trajectory. `t_ms` matches
 /// the corresponding `PosSamplePt.t_ms`; `polygons` are the visible regions computed
-/// via `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at` at the sample's
-/// viewpoint, scene-local.
+/// via `SceneEcs::sight_sources` + `SightSources::los_at` at the sample's viewpoint,
+/// scene-local.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VisionSamplePt {
     /// Elapsed time in milliseconds from the move's `start_server_ms`.
@@ -61,6 +61,10 @@ pub(crate) struct LightSamplePt {
     pub bright: f64,
     /// Dim-light outer reach, scene units.
     pub dim: f64,
+    /// Peak illumination level within `bright`, `[0, 1]`.
+    pub intensity: f64,
+    /// Taper curve across `(bright, dim]`.
+    pub falloff: crate::scene::lighting::Falloff,
     /// Packed `0xRRGGBB` light color.
     pub color: u32,
     /// Illumination polygon(s) at this instant, scene coords.

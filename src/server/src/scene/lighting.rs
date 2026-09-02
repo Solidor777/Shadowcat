@@ -305,6 +305,33 @@ pub fn cell_illumination(
     env_polys: &[Vec<P>],
     world_units_per_cell: f64,
 ) -> CellLight {
+    cell_illumination_from(
+        center,
+        env_intensity,
+        env_color,
+        lights
+            .iter()
+            .enumerate()
+            .map(|(k, l)| (l, lit_polys.get(k).map_or(&[][..], Vec::as_slice))),
+        env_polys,
+        world_units_per_cell,
+    )
+}
+
+/// `cell_illumination` over an arbitrary `(light, occluder polygon)` source sequence — THE
+/// composition body; `cell_illumination` is its index-aligned-slices spelling. Exists so a
+/// caller can append sources the scene's committed field does not hold (an in-flight carried
+/// light at its instant position, read by `SceneEcs::recipient_sight`) without restating the
+/// additive-with-saturation rule a second time. An empty occluder polygon means "no occluder
+/// computed" and never occludes (the same reading `cell_illumination` gives an absent entry).
+pub fn cell_illumination_from<'a>(
+    center: P,
+    env_intensity: f64,
+    env_color: u32,
+    sources: impl IntoIterator<Item = (&'a Light, &'a [P])>,
+    env_polys: &[Vec<P>],
+    world_units_per_cell: f64,
+) -> CellLight {
     debug_assert!(
         world_units_per_cell > 0.0,
         "INVARIANT: world_units_per_cell must be positive; light radii are authored in cells"
@@ -318,12 +345,10 @@ pub fn cell_illumination(
         total += level;
         add_tint(&mut tint_sum, env_color, level);
     }
-    for (k, light) in lights.iter().enumerate() {
+    for (light, poly) in sources {
         // Occlusion: a non-empty polygon that excludes the cell center kills this light's reach here.
-        if let Some(poly) = lit_polys.get(k) {
-            if !poly.is_empty() && !point_in_poly(poly, center) {
-                continue;
-            }
+        if !poly.is_empty() && !point_in_poly(poly, center) {
+            continue;
         }
         let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
         let dist_cells = if world_units_per_cell > 0.0 {

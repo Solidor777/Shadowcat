@@ -736,10 +736,13 @@ fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new()
     // The exploitable observable: the injected actor's owner must NOT gain the token
     // as a vision source for a token the write path considers unowned.
     assert!(
-        ecs.player_vision_polygons(q).is_empty(),
+        ecs.player_vision_polygons(q, WorldRole::Player, &no_world_grants())
+            .is_empty(),
         "a removed actor link must not hand the token's vision to the injected `new` owner"
     );
-    assert!(ecs.player_vision_polygons(p).is_empty());
+    assert!(ecs
+        .player_vision_polygons(p, WorldRole::Player, &no_world_grants())
+        .is_empty());
 }
 
 /// Control for `ecs_and_db_agree_when_a_remove_change_unlinks_a_token`: with
@@ -786,8 +789,14 @@ fn ecs_and_db_agree_when_a_set_change_relinks_a_token() {
         Some(q),
         "a plain set DOES re-link, and both paths see it"
     );
-    assert_eq!(ecs.player_vision_polygons(q).len(), 1);
-    assert!(ecs.player_vision_polygons(p).is_empty());
+    assert_eq!(
+        ecs.player_vision_polygons(q, WorldRole::Player, &no_world_grants())
+            .len(),
+        1
+    );
+    assert!(ecs
+        .player_vision_polygons(p, WorldRole::Player, &no_world_grants())
+        .is_empty());
 }
 
 /// The same divergence on the `self.actors` index (`apply_op`'s second
@@ -825,7 +834,9 @@ fn ecs_actor_index_honors_a_remove_change_on_owner() {
     let e = ecs.index[&token.id];
     let ecs_doc = ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone();
     assert_eq!(ecs.token_effective_owner(&ecs_doc), None);
-    assert!(ecs.player_vision_polygons(q).is_empty());
+    assert!(ecs
+        .player_vision_polygons(q, WorldRole::Player, &no_world_grants())
+        .is_empty());
 }
 
 /// Collects the `Level` of every event emitted on the current thread, so a test can
@@ -1120,15 +1131,20 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
 
     // The vision channel agrees: the inheriting player gets exactly the one
     // token they effectively own, and the override holder gets exactly theirs.
-    let polys = ecs.player_vision_polygons(player);
+    let polys = ecs.player_vision_polygons(player, WorldRole::Player, &no_world_grants());
     assert_eq!(
         polys.len(),
         1,
         "only the inherited token is a vision source for its inheriting owner"
     );
-    assert_eq!(ecs.player_vision_polygons(other).len(), 1);
+    assert_eq!(
+        ecs.player_vision_polygons(other, WorldRole::Player, &no_world_grants())
+            .len(),
+        1
+    );
     assert!(
-        ecs.player_vision_polygons(Uuid::from_u128(99)).is_empty(),
+        ecs.player_vision_polygons(Uuid::from_u128(99), WorldRole::Player, &no_world_grants())
+            .is_empty(),
         "a stranger owns nothing"
     );
 
@@ -1141,8 +1157,14 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
         Some(other),
         "ownership follows the actor live — nothing is stamped on the token"
     );
-    assert!(ecs.player_vision_polygons(player).is_empty());
-    assert_eq!(ecs.player_vision_polygons(other).len(), 2);
+    assert!(ecs
+        .player_vision_polygons(player, WorldRole::Player, &no_world_grants())
+        .is_empty());
+    assert_eq!(
+        ecs.player_vision_polygons(other, WorldRole::Player, &no_world_grants())
+            .len(),
+        2
+    );
 }
 
 #[test]

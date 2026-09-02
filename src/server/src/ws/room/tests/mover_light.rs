@@ -112,6 +112,11 @@ async fn carried_torch_is_sampled_at_every_position_instant() {
         assert_eq!(l.pos, s.pos, "the glow travels with the token");
         assert_eq!((l.bright, l.dim), (200.0, 400.0));
         assert_eq!(l.color, 0xFFCC66);
+        assert_eq!(
+            (l.intensity, l.falloff),
+            (1.0, crate::data::engine::FalloffCurve::Linear),
+            "the sample is self-describing: an unauthored curve is the linear read default"
+        );
         assert!(
             l.polygons.iter().any(|p| p.len() >= 3),
             "each sample carries a raycast illumination polygon"

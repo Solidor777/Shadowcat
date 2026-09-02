@@ -284,7 +284,10 @@ duration_ms: number,
 stop: [number, number], 
 /**
  * Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
- * INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+ * INVARIANT: at least one of `samples`/`mover_light` is non-empty — the frame as
+ * broadcast always carries samples (the first at t_ms == 0.0, the starting
+ * cell-center); a per-recipient clip may empty them and keep only the admitted light
+ * (the glow-only frame), or suppress the frame outright when both would be empty.
  */
 samples: Array<PosSample>, 
 /**

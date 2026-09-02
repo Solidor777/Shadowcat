@@ -343,6 +343,8 @@ fn wire_move_stream(
                 pos: [ls.pos.0, ls.pos.1],
                 bright: ls.bright,
                 dim: ls.dim,
+                intensity: ls.intensity,
+                falloff: crate::scene::emitters::wire_falloff(ls.falloff),
                 color: ls.color,
                 polygons: ls
                     .polygons
@@ -824,7 +826,7 @@ impl Room {
                     }
                 };
                 // Invariant: `visible` may be corner-sampled (lenient) while `explored` is
-                // center-sampled by construction (`ExploredSet::mark_polygons`). The asymmetry only ever ENLARGES
+                // center-sampled by construction (`ExploredSet::mark_cells` holds the lit mask's own cells). The asymmetry only ever ENLARGES
                 // `visible ∪ explored`, so it is fail-safe — it never over-permits beyond cells
                 // the player currently sees or has genuinely explored.
                 if !move_cells
@@ -1226,20 +1228,25 @@ impl Room {
 
             // GM mover → None (no fog to sweep), regardless of restriction mode. Non-GM movers
             // get a per-sample vision polygon at each hypothetical position along the
-            // trajectory, including in Unrestricted-mode scenes. The SAME full sight_walls set
-            // is used as for static vision. Hoisting:
-            // player_vision_inputs collects walls + static-token polygons ONCE per move; each
-            // sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
+            // trajectory, including in Unrestricted-mode scenes. Hoisting: `sight_sources`
+            // resolves the mover's sources and their committed polygons ONCE per move (the
+            // SAME sources + `source_los_poly` the committed `vision` polygons and the egress
+            // clip read); each sample re-raycasts only the moving token (`SightSources::los_at`).
             mover_vision = if is_gm {
                 None
             } else {
-                let vision_inputs = scene.player_vision_inputs(ctx.user_id, token_scene, token);
+                let sight =
+                    scene.sight_sources(ctx.user_id, ctx.world_role, &world_defaults, token_scene);
                 Some(
                     samples
                         .iter()
                         .map(|s| crate::scene::move_stream::VisionSamplePt {
                             t_ms: s.t_ms,
-                            polygons: vision_inputs.polygons_at(s.pos),
+                            polygons: sight
+                                .los_at(&[(token, s.pos)])
+                                .into_iter()
+                                .map(|(_, p)| p.into_owned())
+                                .collect(),
                         })
                         .collect(),
                 )
@@ -1432,15 +1439,12 @@ impl Room {
         })
     }
 
-    /// Unexpired in-flight frames moved by `mover` in `scene` — the mover's vision timelines
-    /// the egress clip evaluates a concurrent move against. Mutates `moving`: opportunistically
-    /// prunes entries expired as of `now` before reading (see the pruning comment in the body).
-    pub(crate) async fn mover_streams(
-        &self,
-        mover: Uuid,
-        scene: Uuid,
-        now: i64,
-    ) -> Vec<Arc<ServerMsg>> {
+    /// Every unexpired in-flight frame in `scene`, keyed by its moving token — the timelines
+    /// (the movers' viewpoints and carried lights per instant) the egress clip composes a
+    /// recipient's sight from (`ws::move_clip::ClipInputs`). Mutates `moving`:
+    /// opportunistically prunes entries expired as of `now` before reading (see the pruning
+    /// comment in the body).
+    pub(crate) async fn scene_streams(&self, scene: Uuid, now: i64) -> Vec<(Uuid, Arc<ServerMsg>)> {
         let mut moving = self.moving.lock().await;
         // Opportunistic prune alongside the read: reclaims an expired entry as soon as any
         // further move triggers a read here, rather than waiting for that entry's OWN next
@@ -1450,9 +1454,9 @@ impl Room {
         // not because callers here need a snapshot).
         moving.retain(|_, st| now < st.end_ms);
         moving
-            .values()
-            .filter(|st| st.mover == mover && st.scene == scene)
-            .map(|st| st.frame.clone())
+            .iter()
+            .filter(|(_, st)| st.scene == scene)
+            .map(|(token, st)| (*token, st.frame.clone()))
             .collect()
     }
 

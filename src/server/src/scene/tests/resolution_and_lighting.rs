@@ -2283,6 +2283,7 @@ fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites(
 
     // (c) A world-level capability grant of `cap::READ` — invisible to a hand-rolled role read —
     // admits the token at both sites.
+    let base_tok_polys = base_tok.clone();
     let ecs = build(base_tok);
     let mut defaults = no_world_grants();
     defaults
@@ -2304,5 +2305,74 @@ fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites(
     assert!(
         lit_has_cell(&ecs, &defaults),
         "a world-level READ grant must admit the stranger's egress lit mask"
+    );
+
+    // (d) `player_vision_polygons` (the fog's LOS half) reads the same admission through
+    // `sight_sources`: no polygon without the grant, one with it.
+    let ecs = build(base_tok_polys);
+    assert!(
+        ecs.player_vision_polygons(stranger, WorldRole::Player, &no_world_grants())
+            .is_empty(),
+        "default: None must not admit the stranger's fog polygons"
+    );
+    assert_eq!(
+        ecs.player_vision_polygons(stranger, WorldRole::Player, &defaults)
+            .len(),
+        1,
+        "a world-level READ grant must admit the stranger's fog polygons"
+    );
+}
+
+/// `wire_falloff` is the exact inverse of `field_falloff` over every authored curve, and an
+/// unauthored curve reads as linear — the in-flight carried-light sample tapers by the rule
+/// the authored emission would.
+#[test]
+fn wire_falloff_round_trips_field_falloff() {
+    use crate::data::engine::FalloffCurve;
+    use crate::scene::emitters::{field_falloff, wire_falloff};
+    use crate::scene::lighting::Falloff;
+    for curve in [
+        FalloffCurve::Linear,
+        FalloffCurve::Quadratic,
+        FalloffCurve::None,
+    ] {
+        assert_eq!(wire_falloff(field_falloff(Some(curve))), curve);
+    }
+    assert_eq!(field_falloff(None), Falloff::Linear);
+    for falloff in [Falloff::Linear, Falloff::Quadratic, Falloff::None] {
+        assert_eq!(field_falloff(Some(wire_falloff(falloff))), falloff);
+    }
+}
+
+/// Anti-fork: the egress clip's per-instant predicate (`RecipientSight` → `InstantSight::sees`)
+/// agrees cell for cell with `player_lit_mask` on a dark scene lit by one placed light —
+/// both are `point_qualifies` behind one LOS polygon, so a cell the mask lights is one the clip
+/// admits a sample in, and a cell the mask leaves dark is one the clip drops.
+#[test]
+fn recipient_sight_agrees_with_player_lit_mask_cell_for_cell() {
+    let (ecs, user, scene) = scene_with_lit_player_token();
+    let mask = mask_cells(&ecs, user, scene);
+    let sight = ecs.recipient_sight(user, WorldRole::Player, &no_world_grants(), scene, &[]);
+    let instant = sight.at(&[]);
+    let (mut lit, mut dark) = (0, 0);
+    for i in -4..=12 {
+        for j in -4..=12 {
+            let center = (f64::from(i) * 100.0 + 50.0, f64::from(j) * 100.0 + 50.0);
+            let sees = instant.sees(center, &[]);
+            assert_eq!(
+                sees,
+                mask.contains(&(i, j)),
+                "cell ({i},{j}): clip predicate and lit mask disagree"
+            );
+            if sees {
+                lit += 1;
+            } else {
+                dark += 1;
+            }
+        }
+    }
+    assert!(
+        lit > 0 && dark > 0,
+        "non-vacuous: the light reaches some cells, not all"
     );
 }

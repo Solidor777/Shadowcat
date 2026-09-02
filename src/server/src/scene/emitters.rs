@@ -48,7 +48,7 @@ pub(crate) fn light_polygon(pos: vision::P, walls: &[vision::Seg], reach: f64) -
 }
 
 /// Per-move-constant inputs for a mover's carried-light timeline, hoisted once by
-/// `SceneEcs::mover_light_inputs` (the `player_vision_inputs` shape): the emission resolved
+/// `SceneEcs::mover_light_inputs` (the `SightSources` shape): the emission resolved
 /// at the mover's elevation, the `blocksLight` walls filtered to that elevation, and the
 /// scene's per-cell world distance. `sample_at` then costs one raycast per sample.
 pub(crate) struct MoverLightInputs {
@@ -79,6 +79,8 @@ impl MoverLightInputs {
             pos,
             bright: scene_units(light.bright_radius),
             dim: scene_units(light.dim_radius),
+            intensity: light.intensity,
+            falloff: light.falloff,
             color: light.color,
             polygons: vec![light_polygon(
                 pos,
@@ -86,6 +88,28 @@ impl MoverLightInputs {
                 light_reach(&light, self.world_units_per_cell),
             )],
         }
+    }
+}
+
+/// The illumination field's `Falloff` for an authored curve; an unauthored curve (`None`) is
+/// linear, the read-side default. THE one engine→field falloff mapping — `emission_to_light`
+/// and `RecipientSight::sample_light` both read it, so an authored light and an in-flight carried-light
+/// sample cannot taper by different rules.
+pub(crate) fn field_falloff(curve: Option<eng::FalloffCurve>) -> Falloff {
+    match curve {
+        Some(eng::FalloffCurve::Quadratic) => Falloff::Quadratic,
+        Some(eng::FalloffCurve::None) => Falloff::None,
+        _ => Falloff::Linear,
+    }
+}
+
+/// The wire spelling of a field `Falloff` — the exact inverse of `field_falloff`, pinned by
+/// `wire_falloff_round_trips_field_falloff`.
+pub(crate) fn wire_falloff(falloff: Falloff) -> eng::FalloffCurve {
+    match falloff {
+        Falloff::Linear => eng::FalloffCurve::Linear,
+        Falloff::Quadratic => eng::FalloffCurve::Quadratic,
+        Falloff::None => eng::FalloffCurve::None,
     }
 }
 
@@ -99,11 +123,7 @@ fn emission_to_light(pos: (f64, f64), elevation: f64, em: &eng::LightEmission) -
     if !em.enabled {
         return None;
     }
-    let falloff = match em.falloff.as_ref().map(|f| f.curve) {
-        Some(eng::FalloffCurve::Quadratic) => Falloff::Quadratic,
-        Some(eng::FalloffCurve::None) => Falloff::None,
-        _ => Falloff::Linear,
-    };
+    let falloff = field_falloff(em.falloff.as_ref().map(|f| f.curve));
     Some(Light {
         pos,
         elevation,
@@ -200,6 +220,18 @@ impl SceneEcs {
     /// the lit mask, the movement gate and environment composition with no second code path,
     /// and a token's move is visible to the snapshot (its `lights` entry's position changes).
     pub(crate) fn scene_lights(&self, scene: Uuid) -> Vec<Light> {
+        self.scene_lights_excluding(scene, &[])
+    }
+
+    /// `scene_lights` with the carried emissions of `exclude_emitters` (token ids) left out —
+    /// `SceneEcs::lighting_inputs_excluding`'s read for the egress clip, which composes an
+    /// in-flight mover's torch back in at its instant position from the move's own timeline.
+    /// A standalone `light` document is never excluded; the filter names TOKENS only.
+    pub(crate) fn scene_lights_excluding(
+        &self,
+        scene: Uuid,
+        exclude_emitters: &[Uuid],
+    ) -> Vec<Light> {
         let mut out = Vec::new();
         for e in self.world.query::<&SceneEntity>().iter() {
             if e.doc.parent_id != Some(scene) {
@@ -220,6 +252,9 @@ impl SceneEcs {
                     }
                 }
                 "token" => {
+                    if exclude_emitters.contains(&e.doc.id) {
+                        continue;
+                    }
                     let Some(t) = self.engine_as_cached::<eng::TokenEngine>(e.doc.id, &e.doc)
                     else {
                         continue;
