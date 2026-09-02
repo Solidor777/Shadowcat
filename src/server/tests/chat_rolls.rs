@@ -374,15 +374,19 @@ async fn edit_into_roll_is_rejected() {
     );
 }
 
-/// An edit's `[[...]]` content stays LITERAL text — `scan_body` never
-/// runs on an edit, so an inline-roll-shaped edit body sanitizes as ordinary
-/// text, never producing a `RollEmbed`.
+/// An edit whose content carries an inline `[[Ndm]]` roll span is refused
+/// outright (`RollImmutable`) — `chat::body::compose_message` under
+/// `ScanMode::NoExecute` returns `ComposeError::Inline` for any `Inline`
+/// chunk, which `handle_edit_message` maps to `RollImmutable`. The
+/// protected invariant is "an edit can never mint a new rolled outcome," not
+/// "an edit treats `[[…]]` as inert text" — an inline span is refused, never
+/// silently degraded to literal text.
 #[tokio::test]
-async fn edit_content_with_inline_span_stays_literal_text() {
+async fn edit_content_with_inline_span_is_refused_as_roll_immutable() {
     let f = Fixture::new().await;
     let sent = f.send("hello").await.unwrap();
     let id = f.stored_message_doc(&sent).await.id;
-    let edited = handle_edit_message(
+    let r = handle_edit_message(
         MessageRequestCtx {
             room: &f.room,
             repo: &f.repo,
@@ -399,18 +403,8 @@ async fn edit_content_with_inline_span_stays_literal_text() {
         id,
         "[[1d6]]".into(),
     )
-    .await
-    .map(|(cmd, _pending)| cmd)
-    .unwrap();
-    let sys = f.stored_message_system(&edited).await;
-    assert_eq!(sys.kind, MessageKind::Normal);
-    assert_eq!(
-        sys.content,
-        vec![Segment::Text {
-            text: "[[1d6]]".into()
-        }],
-        "an edit must never execute an inline roll span"
-    );
+    .await;
+    assert!(matches!(r, Err(SendMessageError::RollImmutable)), "{r:?}");
 }
 
 /// (g) A stored `MessageEngine` JSON with no roll segments still
