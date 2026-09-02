@@ -479,6 +479,12 @@
           <option value="false">{ctx.t("gameSettings.disabled")}</option>
         </select>
       </label>
+
+      <label>
+        {ctx.t("gameSettings.chat.images")}
+        <input type="checkbox" aria-label="gameSettings.chat.images" checked={chatsys.images ?? false}
+          onchange={(e) => set(chatDoc.id, "/engine/images", chatsys.images ?? null, (e.currentTarget as HTMLInputElement).checked)} />
+      </label>
     </fieldset>
   {/if}
 

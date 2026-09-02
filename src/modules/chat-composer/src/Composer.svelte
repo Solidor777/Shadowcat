@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { actorDisplayName, resolveTokenActor, MAX_MESSAGE_CHARS, type WireActorOwnerRef, type WireAudience, type WireDocument, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
+  import { actorDisplayName, resolveTokenActor, MAX_MESSAGE_CHARS, CHAT_SETTINGS_DOC_TYPE, type WireActorOwnerRef, type WireAudience, type WireDocument, type WireSearchHit, type SubscriptionHandle, type ChatSettingsEngine } from "@shadowcat/core";
 
   let {
     channel,
@@ -130,6 +130,46 @@
     docPickerOpen = false;
     docQuery = "";
     docHits = [];
+    const caret = start + span.length;
+    queueMicrotask(() => {
+      autoGrow();
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    });
+  }
+
+  // Whether the world's chat-settings singleton has images enabled — read the
+  // same way `hyperlinks`/`markdown`/etc. resolve server-side (absent = off,
+  // `ChatContentPolicy::images`'s `unwrap_or(false)`), reactive to the same
+  // store subscriber bridge every other reactive read in this component uses,
+  // so a GM toggling the setting live shows/hides the button without a reload.
+  const imagesEnabled = $derived.by((): boolean => {
+    subscribe();
+    const doc = ctx.documents.query(CHAT_SETTINGS_DOC_TYPE)[0];
+    return ((doc?.engine as ChatSettingsEngine | undefined)?.images ?? false) === true;
+  });
+
+  /** Inserts a `[[asset:<id>|<label>]]` span at the textarea's cursor position, mirroring
+   * `insertDocLink`'s span-insertion mechanics and `[`/`]`/`|` stripping exactly (an asset's
+   * name is free text subject to the identical `scan_body` grammar hazard). No name lookup
+   * surface exists on `AppContext` for a picked asset id, so the label is always the id's
+   * first 8 characters — cosmetic display text only; `[[asset:...]]`'s authority is the id.
+   * A cancelled pick (`null`) is a no-op.
+   * @example
+   * ```
+   * // internal; wired to the "Insert image" button's click handler
+   * void insertImage();
+   * ```
+   */
+  async function insertImage(): Promise<void> {
+    const id = await ctx.pickAsset({ kind: "image" });
+    if (!id) return;
+    const label = id.slice(0, 8);
+    const span = `[[asset:${id}|${label}]]`;
+    const el = textarea;
+    const start = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? value.length;
+    value = value.slice(0, start) + span + value.slice(end);
     const caret = start + span.length;
     queueMicrotask(() => {
       autoGrow();
@@ -272,6 +312,9 @@
     rows="1"
   ></textarea>
   <button type="button" data-testid="doc-link-trigger" title={t("chat.composer.insertDocLink")} onclick={() => (docPickerOpen = !docPickerOpen)}>@doc</button>
+  {#if imagesEnabled}
+    <button type="button" data-testid="image-insert" title={t("chat.composer.insertImage")} onclick={() => void insertImage()}>🖼</button>
+  {/if}
   <button type="button" onclick={send} disabled={!canSend}>{t("chat.composer.send")}</button>
 </div>
 {#if docPickerOpen}

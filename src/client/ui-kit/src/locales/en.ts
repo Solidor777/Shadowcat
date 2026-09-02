@@ -322,6 +322,8 @@ export const en: Messages = {
   "gameSettings.chat.linkPreviews": "Link previews",
   "gameSettings.chat.linkPreviewsDefault":
     "Default (on when hyperlinks enabled)",
+  "gameSettings.chat.images":
+    "Images: asset links and server-fetched copies of linked images; never hotlinked",
   "chat.tab": "Chat",
   "chat.channels": "Channels",
   "chat.all": "All",
@@ -341,6 +343,7 @@ export const en: Messages = {
   "chat.composer.count": "{used} / {max}",
   "chat.composer.sendFailed": "Message could not be sent.",
   "chat.composer.insertDocLink": "Insert a document link",
+  "chat.composer.insertImage": "Insert an image",
   "chat.composer.docSearchPlaceholder": "Search documents…",
   "chat.composer.speakingAsToken": "Speaking as: {name}",
   "chat.edited": "(edited)",
