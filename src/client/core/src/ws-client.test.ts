@@ -897,6 +897,10 @@ describe("WsClient", () => {
         stop: [100, 0],
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
         mover_vision: null,
+        mover_light: [
+          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+        ],
         cost: 2,
         truncated: true,
       }),
@@ -907,6 +911,11 @@ describe("WsClient", () => {
     expect(result.tokenId).toBe("tok1");
     // The mapper must copy the flag across; an omitted key here is invisible at parse time.
     expect(result.truncated).toBe(true);
+    // The mapper must copy the light timeline field for field, camelCased.
+    expect(result.moverLight).toEqual([
+      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+    ]);
     expect(result.startServerMs).toBe(1000);
     expect(result.durationMs).toBe(500);
     expect(result.stop).toEqual([100, 0]);
@@ -949,6 +958,8 @@ describe("WsClient", () => {
         stop: [200, 0],
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 300, pos: [200, 0] }],
         mover_vision: null,
+        // No light reached this observer: the server sends null, never an empty list.
+        mover_light: null,
         // A clipped observer's cost is server-nulled (secrecy: mirrors moverVision).
         cost: null,
         // Nulled on the same grounds — the flag would reveal whether anything stopped the
@@ -964,6 +975,7 @@ describe("WsClient", () => {
     expect(streams[0].truncated).toBeNull();
     expect(streams[0].mover).toBe("user2");
     expect(streams[0].moverVision).toBeNull();
+    expect(streams[0].moverLight).toBeNull();
     expect(streams[0].cost).toBeNull();
 
     unsub();

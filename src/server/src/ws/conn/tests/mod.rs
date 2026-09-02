@@ -11,6 +11,8 @@ use crate::ws::test_support::{token_engine, ws_engine};
 
 /// `handle_combat_intent` dispatch/authz/dice-context/one-command-commit tests.
 mod combat_intents;
+/// `MoveStream.mover_light` per-recipient admission + the own-move re-emit.
+mod mover_light;
 
 /// A `Sink<Message>` whose readiness is gated by a semaphore credit; accepted frames are
 /// forwarded to an unbounded channel the test drains. Each send consumes one credit (the
@@ -2438,6 +2440,7 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
                 pos: [250.0, 50.0],
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -2504,6 +2507,7 @@ async fn egress_reemits_concurrent_streams_when_the_recipients_own_move_starts()
                 pos: [60.0, 50.0],
             },
         ],
+        mover_light: None,
         mover_vision: Some(vec![VisionSample {
             t_ms: 0.0,
             polygons: band(0.0, 300.0),
@@ -2652,6 +2656,7 @@ async fn clip_mover_receives_full_frame() {
         duration_ms: 400.0,
         stop: [150.0, 50.0],
         samples: samples.clone(),
+        mover_light: None,
         mover_vision: mv.clone(),
         cost: Some(2.0),
         truncated: Some(false),
@@ -2707,6 +2712,7 @@ async fn clip_observer_no_token_suppressed() {
                 pos: [250.0, 50.0],
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -2759,6 +2765,7 @@ async fn clip_observer_sees_near_side_prefix() {
                 pos: [250.0, 50.0], // further behind wall — occluded
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -2854,6 +2861,7 @@ async fn clip_observer_sees_near_side_prefix_any_angle_diagonal_path() {
                 pos: [310.0, 10.0], // further behind wall, diagonal — occluded
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(3.0),
         truncated: Some(false),
@@ -2942,6 +2950,7 @@ async fn clip_gm_only_wall_suppresses_observer() {
                 pos: [250.0, 50.0], // further behind — also occluded
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3015,6 +3024,7 @@ async fn clip_gm_receives_all_samples_mover_vision_nulled() {
         duration_ms: true_duration_ms,
         stop: true_stop,
         samples: samples.clone(),
+        mover_light: None,
         mover_vision: mv,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3092,6 +3102,7 @@ async fn clip_gm_see_as_clips_to_target_vision() {
                 pos: [250.0, 50.0], // further behind — occluded from the target
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3189,6 +3200,7 @@ async fn clip_gm_see_as_different_scene_not_clipped() {
         duration_ms: 600.0,
         stop: [250.0, 50.0],
         samples: samples.clone(),
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3252,6 +3264,7 @@ async fn clip_gm_see_as_fully_occluded_suppressed() {
                 pos: [250.0, 50.0], // further behind
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3288,6 +3301,7 @@ async fn register_timeline(
             t_ms: 0.0,
             pos: [0.0, 0.0],
         }],
+        mover_light: None,
         mover_vision: Some(vision),
         cost: Some(0.0),
         truncated: Some(false),
@@ -3357,6 +3371,7 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
                 pos: [250.0, 50.0],
             }, // abs now+300 → sweep sample 1 → visible
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3434,6 +3449,7 @@ async fn clip_ignores_a_timeline_that_starts_after_the_move() {
                 pos: [250.0, 50.0],
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3482,6 +3498,7 @@ async fn clip_gm_see_as_uses_the_targets_timeline() {
                 pos: [250.0, 50.0],
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),
@@ -3534,6 +3551,7 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
             t_ms: 0.0,
             pos: [10.0, 10.0],
         }],
+        mover_light: None,
         mover_vision: None,
         cost: Some(0.0),
         truncated: Some(false),
@@ -3568,6 +3586,7 @@ async fn clip_gm_see_as_target_registered_gm_move_with_no_vision_falls_back_to_f
                 pos: [250.0, 50.0],
             },
         ],
+        mover_light: None,
         mover_vision: None,
         cost: Some(2.0),
         truncated: Some(false),

@@ -1221,6 +1221,7 @@ async fn clip_move_stream(
         stop,
         samples,
         mover_vision: _, // forwarded only to the mover via msg.clone(); observers get None
+        mover_light,
         cost,
         truncated,
     } = msg
@@ -1248,6 +1249,8 @@ async fn clip_move_stream(
         stop: *stop,
         samples: samples.clone(),
         mover_vision: None,
+        // Full information, like `cost`: a GM has nothing to hide the glow from.
+        mover_light: mover_light.clone(),
         cost: *cost,
         truncated: *truncated,
     };
@@ -1340,6 +1343,15 @@ async fn clip_move_stream(
         stop: clipped_stop,
         samples: visible,
         mover_vision: None, // INVARIANT: mover_vision strictly mover-only
+        // Per-sample admission through the SAME per-instant vision the position clip read
+        // (`vision_at_instant`): a sample stays only where its dim-reach disc touches that
+        // vision; none admitted ⇒ `None`, never an empty timeline.
+        mover_light: crate::ws::move_clip::admit_light_samples(
+            mover_light.as_deref(),
+            *start_server_ms,
+            &static_polys,
+            &timelines,
+        ),
         // INVARIANT (no-cost-leak): the authoritative `cost` may include secret (`gm_only`)
         // region terrain the observer's clipped `samples` never reveal; disclosing it would
         // let an observer detect/estimate hidden terrain by comparing the visible portion of

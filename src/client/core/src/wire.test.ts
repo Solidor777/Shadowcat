@@ -297,6 +297,9 @@ describe("parseServerMsg", () => {
       mover_vision: [
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
+      mover_light: [
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      ],
       cost: 3.5,
       truncated: true,
     };
@@ -312,6 +315,10 @@ describe("parseServerMsg", () => {
       expect(m.truncated).toBe(true);
       const vision = m.mover_vision;
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
+      // Same rule for the carried-light timeline: every field is asserted by value.
+      expect(m.mover_light).toEqual([
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      ]);
     }
   });
 
@@ -327,6 +334,8 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      // Nothing of the light reached this recipient: the server nulls the whole timeline.
+      mover_light: null,
       cost: 1.0,
       truncated: false,
     };
@@ -335,6 +344,7 @@ describe("parseServerMsg", () => {
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.mover_vision).toBeNull();
+      expect(m.mover_light).toBeNull();
     }
   });
 
@@ -350,6 +360,7 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      mover_light: null,
       // A clipped observer never learns the authoritative cost — it may reflect
       // secret-region terrain their clipped samples don't reveal.
       cost: null,
@@ -482,6 +493,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       stop: [0, 0],
       samples: [{ t_ms: 0, pos: [0, 0] }],
       mover_vision: null,
+      mover_light: null,
       cost: null,
       truncated: null,
     },

@@ -291,6 +291,9 @@ struct WireMoveInputs<'a> {
     samples: &'a [crate::scene::move_stream::PosSamplePt],
     /// Per-sample vision polygons for the mover; `None` for GM movers or a zero-progress move.
     mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
+    /// Per-sample carried-light polygons; `None` for a lightless mover, an all-bright scene,
+    /// or a zero-progress move.
+    mover_light: Option<Vec<crate::scene::move_stream::LightSamplePt>>,
     /// Total terrain-weighted movement cost accumulated over the executed move.
     cost: f64,
     /// `true` when the move stopped before the requested goal.
@@ -308,7 +311,7 @@ fn wire_move_stream(
     inputs: WireMoveInputs<'_>,
 ) -> ServerMsg {
     use crate::scene::move_stream::MAX_VISION_POLYGON_VERTS;
-    use crate::ws::protocol::VisionSample;
+    use crate::ws::protocol::{LightSample, VisionSample};
 
     // Map internal VisionSamplePt → wire VisionSample, capping polygon vertex count.
     // Fail-closed: truncation under-reveals (the mover sees less of the fog sweep) but
@@ -318,6 +321,30 @@ fn wire_move_stream(
             .map(|vs| VisionSample {
                 t_ms: vs.t_ms,
                 polygons: vs
+                    .polygons
+                    .into_iter()
+                    .map(|poly| {
+                        poly.into_iter()
+                            .take(MAX_VISION_POLYGON_VERTS)
+                            .map(|(x, y)| [x, y])
+                            .collect()
+                    })
+                    .collect(),
+            })
+            .collect()
+    });
+
+    // Same vertex cap for the carried-light polygons: a truncated light polygon lights less,
+    // never more, and the per-recipient admission reads the disc, not the polygon.
+    let mover_light = inputs.mover_light.map(|mls| {
+        mls.into_iter()
+            .map(|ls| LightSample {
+                t_ms: ls.t_ms,
+                pos: [ls.pos.0, ls.pos.1],
+                bright: ls.bright,
+                dim: ls.dim,
+                color: ls.color,
+                polygons: ls
                     .polygons
                     .into_iter()
                     .map(|poly| {
@@ -348,6 +375,7 @@ fn wire_move_stream(
             })
             .collect(),
         mover_vision,
+        mover_light,
         // Broadcast in-process carries the full authoritative cost; `clip_move_stream`
         // nulls it per recipient at egress for a clipped observer (secrecy: see
         // `ServerMsg::MoveStream.cost` doc).
@@ -1147,6 +1175,7 @@ impl Room {
         let duration_ms;
         let samples;
         let mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>;
+        let mover_light: Option<Vec<crate::scene::move_stream::LightSamplePt>>;
         {
             let scene = self.scene.read().await;
             outcome = move_exec::execute_move(
@@ -1215,6 +1244,19 @@ impl Room {
                         .collect(),
                 )
             };
+            // Carried light: computed only when the mover carries an enabled emission in an
+            // environment-lit scene ("cost only on request") — one raycast per sample against
+            // the light walls at the token's elevation, hoisted once per move. Not gated on
+            // the mover's role: a GM walking a torch-bearer lights the corridor for the
+            // players watching it exactly as a player's own move does.
+            mover_light = scene
+                .mover_light_inputs(token_scene, token, cell)
+                .map(|li| {
+                    samples
+                        .iter()
+                        .map(|s| li.sample_at(s.t_ms, s.pos))
+                        .collect()
+                });
         } // scene read lock dropped — commit_ops_locked awaits safely under publish_guard
 
         // Zero-progress move (stop == start): return immediately without writing.
@@ -1236,6 +1278,7 @@ impl Room {
                     duration_ms: 0.0,
                     samples: &zero_samples,
                     mover_vision: None,
+                    mover_light: None,
                     cost: 0.0,
                     // Not hardcoded false: this branch is reached only when the very first
                     // step was blocked, so the outcome is truncated. Reading it keeps the wire
@@ -1349,6 +1392,7 @@ impl Room {
                 duration_ms,
                 samples: &samples,
                 mover_vision,
+                mover_light,
                 cost: outcome.cost,
                 truncated: outcome.truncated,
             },

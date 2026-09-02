@@ -3533,3 +3533,6 @@ async fn resync_floors_are_independent_per_user() {
 }
 
 mod movement_budget;
+
+/// `MoveStream.mover_light` computation: presence, sampling, suppression.
+mod mover_light;

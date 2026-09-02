@@ -243,6 +243,14 @@ fn move_stream_round_trips_and_is_tagged() {
         t_ms: 0.0,
         polygons: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]],
     }]);
+    let in_light = Some(vec![LightSample {
+        t_ms: 0.0,
+        pos: [0.0, 0.0],
+        bright: 200.0,
+        dim: 600.0,
+        color: 0xFFD9A0,
+        polygons: vec![vec![[-600.0, -600.0], [600.0, -600.0], [600.0, 600.0]]],
+    }]);
     let msg = ServerMsg::MoveStream {
         request_id: Uuid::from_u128(1),
         token_id: Uuid::from_u128(2),
@@ -253,6 +261,7 @@ fn move_stream_round_trips_and_is_tagged() {
         stop: [100.0, 200.0],
         samples: in_samples.clone(),
         mover_vision: in_vision.clone(),
+        mover_light: in_light.clone(),
         cost: Some(3.5),
         truncated: Some(true),
     };
@@ -272,6 +281,7 @@ fn move_stream_round_trips_and_is_tagged() {
             stop,
             samples,
             mover_vision,
+            mover_light,
             cost,
             truncated,
         } => {
@@ -284,6 +294,10 @@ fn move_stream_round_trips_and_is_tagged() {
             assert_eq!(stop, [100.0, 200.0]);
             assert_eq!(samples, in_samples);
             assert_eq!(mover_vision, in_vision);
+            assert_eq!(
+                mover_light, in_light,
+                "an admitted carried-light timeline survives the round-trip field for field"
+            );
             assert_eq!(cost, Some(3.5), "mover/GM path: cost is disclosed");
             assert_eq!(
                 truncated,
@@ -308,6 +322,7 @@ fn move_stream_round_trips_and_is_tagged() {
         stop: [100.0, 200.0],
         samples: in_samples2,
         mover_vision: None,
+        mover_light: None,
         cost: None,
         truncated: None,
     };
@@ -316,6 +331,7 @@ fn move_stream_round_trips_and_is_tagged() {
     match back2 {
         ServerMsg::MoveStream {
             mover_vision,
+            mover_light,
             cost,
             truncated,
             ..
@@ -323,6 +339,10 @@ fn move_stream_round_trips_and_is_tagged() {
             assert_eq!(
                 mover_vision, None,
                 "observer path: mover_vision must round-trip as None"
+            );
+            assert_eq!(
+                mover_light, None,
+                "a recipient no light sample reaches gets no timeline at all, never an empty one"
             );
             assert_eq!(
                 cost, None,

@@ -13,10 +13,81 @@
 
 use uuid::Uuid;
 
-use super::{elevation, engine_as, parse_hex_color, SceneEcs, SceneEntity};
+use super::{elevation, engine_as, parse_hex_color, vision, SceneEcs, SceneEntity};
 use crate::data::document::Document;
 use crate::data::engine as eng;
 use crate::scene::lighting::{Falloff, Light};
+use crate::scene::move_stream::LightSamplePt;
+
+/// A light's occlusion reach in WORLD units: the larger of its finite, positive radii
+/// (authored in cells) scaled by `world_units_per_cell` — the authored-distance scale, never
+/// the indexing scale. Over-inclusion here is inert: `light_illumination` returns 0 beyond
+/// `dim_radius` before any cell inside the polygon can light. A non-finite or non-positive
+/// radius contributes nothing rather than a fallback distance.
+pub(crate) fn light_reach(light: &Light, world_units_per_cell: f64) -> f64 {
+    let wu = if world_units_per_cell.is_finite() && world_units_per_cell > 0.0 {
+        world_units_per_cell
+    } else {
+        0.0
+    };
+    [light.bright_radius, light.dim_radius]
+        .into_iter()
+        .filter(|r| r.is_finite() && *r > 0.0)
+        .fold(0.0_f64, f64::max)
+        * wu
+}
+
+/// THE light occlusion raycast: the `blocksLight`-occluded illumination polygon of a source at
+/// `pos` against `walls` (already filtered to the source's elevation band), bounded by
+/// `vision::bound_for_reach` grown to `reach` world units. The committed field
+/// (`SceneEcs::lighting_inputs_from`) and the carried-light move timeline
+/// (`MoverLightInputs::sample_at`) both call this — never a second raycast rule.
+pub(crate) fn light_polygon(pos: vision::P, walls: &[vision::Seg], reach: f64) -> Vec<vision::P> {
+    let b = vision::bound_for_reach(pos, walls, super::VISION_BOUND_MARGIN, reach);
+    vision::visibility_polygon(pos, walls, b)
+}
+
+/// Per-move-constant inputs for a mover's carried-light timeline, hoisted once by
+/// `SceneEcs::mover_light_inputs` (the `player_vision_inputs` shape): the emission resolved
+/// at the mover's elevation, the `blocksLight` walls filtered to that elevation, and the
+/// scene's per-cell world distance. `sample_at` then costs one raycast per sample.
+pub(crate) struct MoverLightInputs {
+    /// The mover's resolved emission as a `Light`; `pos` is overwritten per sample.
+    light: Light,
+    /// `blocksLight` walls occluding a source at the mover's elevation.
+    walls: Vec<vision::Seg>,
+    /// `GridShape::world_units_per_cell` for the scene — converts the authored cell radii.
+    world_units_per_cell: f64,
+}
+
+impl MoverLightInputs {
+    /// The carried light raycast at `pos` (the emitter position at elapsed `t_ms`), through
+    /// the committed field's own `light_polygon`; `bright`/`dim` are the authored radii in
+    /// scene units (a non-finite or negative radius reads as 0 reach).
+    pub(crate) fn sample_at(&self, t_ms: f64, pos: (f64, f64)) -> LightSamplePt {
+        let mut light = self.light.clone();
+        light.pos = pos;
+        let scene_units = |r: f64| {
+            if r.is_finite() && r > 0.0 {
+                r * self.world_units_per_cell
+            } else {
+                0.0
+            }
+        };
+        LightSamplePt {
+            t_ms,
+            pos,
+            bright: scene_units(light.bright_radius),
+            dim: scene_units(light.dim_radius),
+            color: light.color,
+            polygons: vec![light_polygon(
+                pos,
+                &self.walls,
+                light_reach(&light, self.world_units_per_cell),
+            )],
+        }
+    }
+}
 
 /// Convert an engine-band emission payload at world position `pos` into the lighting field's
 /// `Light`. `None` when the emission is disabled (the suppress path for a carried emission, the
@@ -82,6 +153,42 @@ impl SceneEcs {
                 .and_then(engine_as::<eng::ActorEngine>)
                 .and_then(|a| a.light),
         }
+    }
+
+    /// The mover's carried-light timeline inputs for one move, or `None` when there is
+    /// nothing to sample — the scene is all-bright (`ResolvedScene::all_bright`: lighting
+    /// off or `GlobalIllumination`, where no light field exists), `token` is not a token
+    /// entity, or its resolved emission (`token_light_emission`) is absent or disabled. This
+    /// `None` is what makes the timeline "cost only on request": a lightless move performs no
+    /// light raycast at all. `cell` is the scene's indexing cell size (`scene_grid_sizes`).
+    pub(crate) fn mover_light_inputs(
+        &self,
+        scene: Uuid,
+        token: Uuid,
+        cell: f64,
+    ) -> Option<MoverLightInputs> {
+        if self.resolve_scene(scene).all_bright() {
+            return None;
+        }
+        let &e = self.index.get(&token)?;
+        let (emission, elev) = {
+            let tok = self.world.get::<&SceneEntity>(e).ok()?;
+            if tok.doc.doc_type != "token" || tok.doc.parent_id != Some(scene) {
+                return None;
+            }
+            let t = self.engine_as_cached::<eng::TokenEngine>(token, &tok.doc)?;
+            (
+                self.token_light_emission(&tok.doc)?,
+                elevation::elevation_or_ground(t.elevation),
+            )
+        };
+        // The position is per sample; the template light carries every other field.
+        let light = emission_to_light((0.0, 0.0), elev, &emission)?;
+        Some(MoverLightInputs {
+            light,
+            walls: elevation::walls_at_elevation(&self.light_wall_entries(scene), elev),
+            world_units_per_cell: self.resolve_grid_shape(scene, cell).world_units_per_cell(),
+        })
     }
 
     /// The scene's full emitter set as `lighting::Light`s: standalone `light` documents parented

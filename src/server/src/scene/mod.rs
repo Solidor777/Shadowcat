@@ -150,6 +150,17 @@ pub struct ResolvedScene {
     pub grid_kind: GridKind,
 }
 
+impl ResolvedScene {
+    /// Whether every LOS cell is fully bright and the per-light raycasts are skipped:
+    /// lighting off, or `GlobalIllumination`. THE one predicate behind `LightingInputs::
+    /// all_bright`, the visibility-cache snapshot and the carried-light move timeline
+    /// (`SceneEcs::mover_light_inputs`), so the three cannot disagree about which scenes
+    /// have a light field at all.
+    pub(crate) fn all_bright(&self) -> bool {
+        !self.lighting_enabled || matches!(self.light_mode, LightMode::GlobalIllumination)
+    }
+}
+
 /// A resolved vision mode (subset of the client `VisionMode`). `default_range` is in cells.
 /// `render_hint` mirrors the client's `SEED_VISION_MODES` (e.g. `"desaturate"` for
 /// darkvision); absent in seed → `None`, absent in an authored doc entry → `None`.
@@ -2480,8 +2491,7 @@ impl SceneEcs {
         settings: &ResolvedScene,
         cell: f64,
     ) -> LightingInputs {
-        let all_bright = !settings.lighting_enabled
-            || matches!(settings.light_mode, LightMode::GlobalIllumination);
+        let all_bright = settings.all_bright();
         let lights = if all_bright {
             Vec::new()
         } else {
@@ -2530,24 +2540,16 @@ impl SceneEcs {
         cell: f64,
         world_units_per_cell: f64,
     ) -> LightingInputs {
-        let wu = if world_units_per_cell.is_finite() && world_units_per_cell > 0.0 {
-            world_units_per_cell
-        } else {
-            0.0
-        };
         // Each light raycasts against the light walls whose elevation band covers the LIGHT's
-        // own elevation (`wall_occludes`): a lamp above a wall's band shines over it.
+        // own elevation (`wall_occludes`): a lamp above a wall's band shines over it. The
+        // raycast itself is `emitters::light_polygon` — the same function the carried-light
+        // move timeline samples through, so a moving torch's per-sample glow and its committed
+        // field cannot disagree.
         let lit_polys: Vec<Vec<vision::P>> = lights
             .iter()
             .map(|l| {
                 let lw = elevation::walls_at_elevation(light_walls, l.elevation);
-                let reach = [l.bright_radius, l.dim_radius]
-                    .into_iter()
-                    .filter(|r| r.is_finite() && *r > 0.0)
-                    .fold(0.0_f64, f64::max)
-                    * wu;
-                let b = vision::bound_for_reach(l.pos, &lw, VISION_BOUND_MARGIN, reach);
-                vision::visibility_polygon(l.pos, &lw, b)
+                emitters::light_polygon(l.pos, &lw, emitters::light_reach(l, world_units_per_cell))
             })
             .collect();
         // Boundary-projected environment occlusion. Empty under all_bright (env is not
@@ -2883,8 +2885,7 @@ impl SceneEcs {
         // a stable order is what makes the reuse test in Step 6 meaningful).
         sources.sort_by_key(|s| s.id);
 
-        let all_bright = !settings.lighting_enabled
-            || matches!(settings.light_mode, LightMode::GlobalIllumination);
+        let all_bright = settings.all_bright();
         let lights = if all_bright {
             Vec::new()
         } else {

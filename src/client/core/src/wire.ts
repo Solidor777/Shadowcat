@@ -556,6 +556,28 @@ export type WireMoveStreamVisionSample = {
   polygons: [number, number][][];
 };
 
+/** A single carried-light sample in a `move_stream` timeline, paired with a position sample
+ * by `t_ms`: the mover's enabled emission raycast at that instant's position. `pos` is the
+ * emitter position and `bright`/`dim` its reaches, all in scene units; `color` is the packed
+ * `0xRRGGBB` tint; `polygons` the `blocksLight`-occluded illumination polygon(s), NOT clipped
+ * to the recipient's line of sight (the client intersects them with its own fog). Mirrors
+ * `crate::ws::protocol::LightSample`. */
+export type WireMoveStreamLightSample = {
+  /** Elapsed time in milliseconds — matches the corresponding position sample's `t_ms`. */
+  t_ms: number;
+  /** The emitter's scene-coordinate position (x, y) at this instant. */
+  pos: [number, number];
+  /** Full-brightness reach from `pos`, scene units. */
+  bright: number;
+  /** Dim-light outer reach from `pos`, scene units — the server's admission disc radius. */
+  dim: number;
+  /** Packed `0xRRGGBB` light color. */
+  color: number;
+  /** The light's illumination polygon(s) at this instant, each an ordered list of [x, y]
+   * scene-coord vertices. */
+  polygons: [number, number][][];
+};
+
 /** The `welcome` server frame, sent right after a successful join. Carries the world's default
  * capability grants, the connecting user's world role, and the declarative capability
  * requirements so the client can replicate access resolution for advisory UI gating (the server
@@ -818,6 +840,11 @@ export type ServerMsg =
        * server-clipped position samples and render against their existing authoritative fog;
        * the client computes no vision. Sending mover vision to observers would leak geometry. */
       mover_vision: WireMoveStreamVisionSample[] | null;
+      /** Per-sample carried-light timeline: the mover's enabled emission raycast at each
+       * sample position, computed only in an environment-lit scene. Full for the mover and a
+       * plain GM; every other recipient keeps only the samples whose dim-reach disc intersects
+       * their own vision at that instant, and receives `null` when no sample does. */
+      mover_light: WireMoveStreamLightSample[] | null;
       /** Total terrain-weighted movement cost accumulated over the executed move.
        * Informational — no per-turn budget cap consumes it in v1. Present for the mover and
        * a GM (trusted, full information); `null` for a clipped observer, mirroring
@@ -984,6 +1011,19 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
       .array(
         z.object({
           t_ms: z.number(),
+          polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
+        }),
+      )
+      .nullable(),
+    // Declared for the same reason as `truncated` below: an omitted key is stripped at parse.
+    mover_light: z
+      .array(
+        z.object({
+          t_ms: z.number(),
+          pos: z.tuple([z.number(), z.number()]),
+          bright: z.number(),
+          dim: z.number(),
+          color: z.number(),
           polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
         }),
       )
