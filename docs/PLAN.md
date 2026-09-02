@@ -77,8 +77,9 @@ Phase 3 by design (the component model landed here; the emit seams are Phase-3 a
   each a branch off `main` merged before the next:
   - **M19a — Chat media ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s M19a entry,
     including the Playwright `chat-media.spec.ts` browser e2e spec.
-  - **M19b — Rollable tables** (plan:
-    [`superpowers/plans/2026-09-02-m19b-rollable-tables.md`](superpowers/plans/2026-09-02-m19b-rollable-tables.md)):
+  - **M19b — Rollable tables ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s
+    M19b entry, plan:
+    [`superpowers/plans/2026-09-02-m19b-rollable-tables.md`](superpowers/plans/2026-09-02-m19b-rollable-tables.md).
     `table` engine documents (`Weighted` rows or a reference-free `Formula` with ranges; rows
     yield text / doc links / images / nested draws), a `DrawTable` frame executed server-side
     (READ on every table in the chain, fixed Total context, depth/breadth/total caps, cycle

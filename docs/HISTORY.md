@@ -2151,6 +2151,45 @@ segment delivery to every recipient; an unknown-asset span refused as a whisper-
 notice, never a hard `ChatError`), and the `chat-media.spec.ts` browser Playwright spec. Full
 repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint) green at every commit.
 
+### M19b · Rollable tables ✅
+Branch `m19`, executed from the approved plan
+`docs/superpowers/plans/2026-09-02-m19b-rollable-tables.md` (design:
+`docs/superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`), as 8 sequential
+tasks. Delivered: the `table` engine doc type (`TableEngine{draw, rows, description}`,
+`DrawRule::Weighted | Formula{notation}`, `TableRow{weight, range, label, results}`,
+`TableEntry::{Text, Doc, Image, Draw}`, `TableEngine::validate` — row/weight/length caps, a
+`Weighted` table's row-weight sum bounded by `chat::rolls::MAX_DIE_SIDES`, a `Formula` table's
+row ranges non-overlapping and notation-validated via the new
+`chat::rolls::validate_table_formula`/`TABLE_PARSE_CONTEXT`); the `Segment::TableDraw`/
+`TableDrawSegment`/`DrawnRow` chat-segment family, GM-only `spec`/`raw` redaction recursing
+through every nested draw (`chat::roll_property_overrides`, renamed from
+`roll_embed_property_overrides` to cover both segment kinds); the `tables` server module
+(`tables::handle_draw_table` reusing chat's own channel/audience/actor-attribution chokepoints,
+`tables::draw::draw_table`'s cycle-safe DFS resolution with a push-map-pop discipline that
+survives an error mid-recursion, depth/budget caps, weighted/ranged row selection) publishing
+exactly one `MessageKind::Roll` message per request via the existing `build_message_doc`/
+`Room::publish` chokepoint; the `draw_table` `ClientMsg` wire frame and its
+`ServerMsg::ChatError` correlated-rejection path (same asymmetric confirm-by-broadcast-echo
+protocol as `SendMessage`/`RecalcRoll`); the client mirrors (`table-docs.ts`'s ts-rs re-exports +
+`buildTableDoc`, `chat-docs.ts`'s `TableDrawSegment`/`DrawnRow` as their own named types unioned
+in via a separate lazy Zod schema rather than inside the discriminated union, which cannot host a
+recursive lazy member) and `WsClient.drawTable`/`ChatApi.drawTable`; `SegmentList`'s recursive
+`table_draw` render branch (a self-import replacing the deprecated `<svelte:self>`) plus a Draw
+button on a `doc_link` segment resolving to a table.
+Deviation from plan: `DrawTableError` gained a `TooLong` variant not in the plan's enumerated
+list, needed because the reused `chat::validate_audience` can legitimately return
+`SendMessageError::TooLong` for an oversized whisper-recipient list — mapping it silently to
+`Forbidden` would have been a worse choice than a small, clearly-documented additional variant.
+Coverage: unit tests across `data::engine::table` (validation, including a mutation-style
+positive+negative control pinning the weighted-sum/`MAX_DIE_SIDES` boundary), `chat::mod`
+(GM-only redaction at every draw depth, `filter_properties` integration), `tables`/`tables::draw`
+(cycle/depth/budget refusals, row selection, permission denial), `ws::protocol` (frame
+parse/default), client `table-docs`/`chat-docs`/`ws-client`/`SegmentList` suites, and a
+`table-draw.e2e.test.ts` Node↔Rust suite (nested-draw redaction over a real wire round-trip,
+a hidden table's generic refusal, a self-referencing cycle refusal, a `Formula` table's outcome
+landing in its matched row's range) — all green. Full repo gates (`cargo test`/`clippy`/`fmt`,
+`pnpm -r test`, typecheck, lint, `lint:comments`) green at every commit.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

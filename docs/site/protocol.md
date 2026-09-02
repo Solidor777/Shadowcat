@@ -106,6 +106,7 @@ Every `ClientMsg` variant:
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+| `draw_table` | Draw one or more rows from a rollable `table` document, posted as one `MessageKind::Roll` message — see [Rollable tables](#rollable-tables) |
 
 Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
 attributes.str` — never a client-substituted string. The server rewrites each
@@ -125,6 +126,26 @@ before the resulting `image` segment is appended to the stored message — the
 client never fetches an external image URL itself. A YouTube/Vimeo link
 similarly becomes an oEmbed card (thumbnail + link, structured fields only,
 never the provider's own embed HTML) rather than a raw hotlink.
+
+## Rollable tables
+
+A `table` document (`TableEngine`: `draw` rule, `rows`, plain-text
+`description`) is drawn from with `draw_table` (`table_id`, `channel`,
+`count`, optional actor attribution/audience). `DrawRule::Weighted` rolls a
+`1d<sum-of-weights>` and matches the row whose cumulative weight reaches the
+total; `DrawRule::Formula` rolls its own notation and matches the row whose
+inclusive range contains the total (no match leaves the draw's `row` `null`).
+A matched row's `results` resolve into `content` (`text`/`doc`/`image`
+entries, same segment shapes chat itself uses) and `nested` — one
+`table_draw` segment per `TableEntry::Draw` entry, recursing up to a fixed
+depth and per-request draw budget with cycle detection (a table naming
+itself, directly or through a chain of nested draws, is refused). Every
+resolved draw becomes one `table_draw` chat segment, redacted exactly like a
+`roll_embed`: `spec`/`raw` are GM-only at every depth, never sent to a
+player. `draw_table` follows the same channel/audience/actor-attribution
+validation as `send_message`, and the same asymmetric confirm-by-broadcast
+protocol — a refusal (unknown table, no READ, cycle, too many/deep draws) is
+a correlated `chat_error`, never a hard `reject`.
 
 ## Scene channels
 
