@@ -240,6 +240,13 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
     // The SAME continuous terrain scene the non-exempt parity test uses: with only weighted
     // terrain present, the exempt mover does NOT dispatch the weighted grid sub-path — its
     // route is the straight polyanya chord, priced (and executed) unweighted.
+    //
+    // The goal sits OFF its cell center on purpose: the pure-polyanya route ends at the literal
+    // goal, whereas the weighted grid sub-path snaps every waypoint to its containing cell's
+    // center (`pathfinding::find`'s per-waypoint contract) and `los_smooth` can only straighten
+    // between those snapped vertices. A goal on a cell center would let both sub-paths collapse
+    // to the same `[start, goal]` chord at the same cost, and the dispatch fork under test would
+    // be indistinguishable from an always-weighted one.
     let mut ecs = SceneEcs::new();
     ecs.set_world_settings_for_test(ws_body(&[("/scene/movementModel", json!("continuous"))]));
     let scene_id = Uuid::from_u128(1);
@@ -271,7 +278,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             },
             scene_id,
             (50.0, 50.0),
-            &[(650.0, 250.0)],
+            &[(640.0, 260.0)],
             crate::scene::RouteMover {
                 footprint_radius: 0.4,
                 budget_cells: None,
@@ -284,7 +291,12 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
         2,
         "terrain alone never bends an exempt mover's route: the straight chord survives"
     );
-    let expected = (600.0f64.hypot(200.0)) / 100.0;
+    let goal = route.path[1];
+    assert!(
+        (goal.0 - 640.0).abs() < 1e-9 && (goal.1 - 260.0).abs() < 1e-9,
+        "the pure any-angle route ends at the literal off-center goal; the weighted sub-path would have snapped it to the cell center (650, 250), got {goal:?}"
+    );
+    let expected = (590.0f64.hypot(210.0)) / 100.0;
     assert!(
         (route.cost - expected).abs() < 1e-9,
         "exempt preview is the raw Euclidean span, got {}",
@@ -459,7 +471,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
     );
     assert!(
         route.path.len() < grounded.path.len(),
-        "the chord rule ignores terrain for the exempt mover, so its route keeps fewer grid          steps than the ground mover's: {} vs {} vertices",
+        "the chord rule ignores terrain for the exempt mover, so its route keeps fewer grid steps than the ground mover's: {} vs {} vertices",
         route.path.len(),
         grounded.path.len()
     );

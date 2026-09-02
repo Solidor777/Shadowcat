@@ -605,9 +605,11 @@ pub fn find(
 
     // Budget truncation, applied AFTER the arrest cut (running second over the survivor means
     // the nearer cut wins): replay the per-step cost across `cells` through the SAME
-    // `neighbors_with_cost` + `terrain_multiplier` pricing the accumulation and the arrest
-    // replay use, and cut at the last cell whose cumulative cost fits. A cut strictly before
-    // the arrest cell means the preview no longer reaches the arrest, so `arrested` clears.
+    // `neighbors_with_cost` + `terrain_cost(regions, cell, traits)` pricing the accumulation
+    // and the arrest replay use (an `ignore_terrain` mover replays at the unweighted step cost
+    // exactly as `astar_leg` admitted it), and cut at the last cell whose cumulative cost fits.
+    // A cut strictly before the arrest cell means the preview no longer reaches the arrest, so
+    // `arrested` clears.
     let mut truncated = false;
     if let Some(budget) = grid.inputs.budget_cells {
         let mut cum = 0.0;
