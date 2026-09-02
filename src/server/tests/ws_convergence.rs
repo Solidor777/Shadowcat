@@ -871,3 +871,99 @@ async fn scene_ping_relays_out_of_band_to_world_members_with_sender_stamped() {
     // above committed at seq 2).
     assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
 }
+
+#[tokio::test]
+async fn emote_relays_out_of_band_with_sender_stamped_and_drops_unauthorized() {
+    let h = spawn().await;
+    let cookie_b = h.add_member("b", WorldRole::Player).await;
+    let b_id = h
+        .repo
+        .member_id_by_username(h.world, "b")
+        .await
+        .unwrap()
+        .unwrap();
+    let mut a = h.connect().await; // owner/GM
+    let mut b = h.connect_with(&cookie_b).await;
+    // Both must be joined (welcome received → subscribed) before the lossy broadcast.
+    recv_until(&mut a, "welcome").await;
+    recv_until(&mut b, "welcome").await;
+
+    // The GM creates the scene plus two tokens: one b effectively owns, one owned by
+    // no one (a GM-only token). The emote relay authorizes on the TOKEN — effective
+    // ownership plus membership in the named scene — so both fixtures are needed.
+    let scene_id = Uuid::from_u128(9002);
+    let b_token = Uuid::from_u128(9003);
+    let gm_token = Uuid::from_u128(9004);
+    let scene_doc = serde_json::json!({
+        "id": scene_id,
+        "scope": { "kind": "world", "world_id": h.world },
+        "doc_type": "scene",
+        "schema_version": 1,
+        "engine": { "grid": { "kind": "square", "size": 100.0 }, "background": null },
+        "system": {},
+        "created_at": 0,
+        "updated_at": 0,
+    });
+    let token_doc = |id: Uuid, owner: serde_json::Value| {
+        serde_json::json!({
+            "id": id,
+            "scope": { "kind": "world", "world_id": h.world },
+            "doc_type": "token",
+            "schema_version": 1,
+            "owner": owner,
+            "parent_id": scene_id,
+            "engine": { "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 },
+            "system": {},
+            "created_at": 0,
+            "updated_at": 0,
+        })
+    };
+    a.send(intent_msg(
+        1,
+        serde_json::json!([
+            { "op": "create", "doc": scene_doc },
+            { "op": "create", "doc": token_doc(b_token, serde_json::to_value(b_id).unwrap()) },
+            { "op": "create", "doc": token_doc(gm_token, serde_json::Value::Null) },
+        ]),
+    ))
+    .await
+    .unwrap();
+    recv_until(&mut a, "event").await;
+    recv_until(&mut b, "event").await;
+
+    // Drops, in send order (the broadcast channel preserves order, so any of these
+    // reaching `a` would arrive BEFORE the final legitimate emote):
+    // 1. a token b does not effectively own;
+    // 2. a scene id the token is not parented to;
+    // 3. an empty payload;
+    // 4. an over-long payload (17 bytes > the 16-byte cap).
+    for frame in [
+        serde_json::json!({ "type": "emote", "scene": scene_id, "token": gm_token, "emote": "😀" }),
+        serde_json::json!({ "type": "emote", "scene": Uuid::from_u128(9999), "token": b_token, "emote": "😀" }),
+        serde_json::json!({ "type": "emote", "scene": scene_id, "token": b_token, "emote": "" }),
+        serde_json::json!({ "type": "emote", "scene": scene_id, "token": b_token, "emote": "aaaaaaaaaaaaaaaaa" }),
+    ] {
+        b.send(Message::Text(frame.to_string())).await.unwrap();
+    }
+    b.send(Message::Text(
+        serde_json::json!({ "type": "emote", "scene": scene_id, "token": b_token, "emote": "😀" })
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // The FIRST emote `a` receives is the legitimate one, proving every drop above held.
+    let e = recv_until(&mut a, "emote").await;
+    assert_eq!(e["scene"], serde_json::to_value(scene_id).unwrap());
+    assert_eq!(e["token"], serde_json::to_value(b_token).unwrap());
+    assert_eq!(e["user"], serde_json::to_value(b_id).unwrap());
+    assert_eq!(e["emote"], "😀");
+
+    // The sender receives their own echo.
+    let echo = recv_until(&mut b, "emote").await;
+    assert_eq!(echo["token"], serde_json::to_value(b_token).unwrap());
+
+    // Out-of-band: no emote created an authoritative event (seq 1 is the join-time
+    // config seed; the scene+token intent committed at seq 2).
+    assert_eq!(h.authoritative_seqs().await, vec![1, 2]);
+}

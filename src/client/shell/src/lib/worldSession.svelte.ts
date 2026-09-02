@@ -149,6 +149,19 @@ export class WorldSession {
       user: string;
     }) => void
   >();
+  /** `onEmote` subscriber set. */
+  #emoteListeners = new Set<
+    (msg: {
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token the emote plays over. */
+      token: string;
+      /** The user who emoted. */
+      user: string;
+      /** The emote glyph(s). */
+      emote: string;
+    }) => void
+  >();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
@@ -500,6 +513,33 @@ export class WorldSession {
     return () => this.#pingListeners.delete(cb);
   }
 
+  /** Subscribe to relayed emotes (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with the scene, token, originating user, and glyph(s) of each emote.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function renderEmote(token: string, emote: string): void;
+   * const off = session.onEmote(({ token, emote }) => renderEmote(token, emote));
+   * off();
+   * ```
+   */
+  onEmote(
+    cb: (msg: {
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token the emote plays over. */
+      token: string;
+      /** The user who emoted. */
+      user: string;
+      /** The emote glyph(s). */
+      emote: string;
+    }) => void,
+  ): () => void {
+    this.#emoteListeners.add(cb);
+    return () => this.#emoteListeners.delete(cb);
+  }
+
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us).
@@ -517,6 +557,25 @@ export class WorldSession {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
     this.#ws?.send({ type: "scene_ping", scene: sceneId, x, y });
+  }
+
+  /** Broadcast a transient emote over `token` on the currently-viewed scene
+   * (`viewedSceneId`, same target `sendPing` uses). No-op when disconnected or no scene
+   * exists; the server relays it back to all members (incl. us) after re-authorizing
+   * effective ownership, so an over-reaching send drops silently.
+   * @param token The token document id to emote over.
+   * @param emote The emote glyph(s); the server bounds this to 1..=16 bytes.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const tokenId: string;
+   * session.sendEmote(tokenId, "😀");
+   * ```
+   */
+  sendEmote(token: string, emote: string): void {
+    const sceneId = this.viewedSceneId;
+    if (!sceneId) return;
+    this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
   }
 
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
@@ -839,6 +898,13 @@ export class WorldSession {
           // scene filter above.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#pingListeners) cb(msg);
+        },
+        onEmote: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing filter above: an emote
+          // broadcasts room-wide and must render only for recipients currently viewing
+          // that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#emoteListeners) cb(msg);
         },
       },
     });

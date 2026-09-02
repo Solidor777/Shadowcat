@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/svelte";
+import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
 import { test, expect, vi, beforeEach } from "vitest";
 import { DocumentStore, AssetResolver } from "@shadowcat/core";
 import { SceneInteractionBridge } from "@shadowcat/ui-kit";
@@ -38,4 +38,17 @@ test("lists image assets and selecting one sets the controller's selectedAsset",
   await fireEvent.click(tiles[0]);
   expect(controller.selectedAsset).toBe("img-1");
   expect(tiles[0].getAttribute("aria-pressed")).toBe("true");
+});
+
+test("the browse affordance opens pick mode and applies the choice", async () => {
+  vi.spyOn(api, "listAssets").mockResolvedValue([] as never);
+  const pickAsset = vi.fn().mockResolvedValue("picked-1");
+  const controller = makeController();
+  render(AssetPicker, {
+    props: { controller },
+    context: setAppContextForTest({ role: "gm", world: "w1", pickAsset: pickAsset as never }),
+  });
+  await fireEvent.click(screen.getByTestId("picker-browse"));
+  expect(pickAsset).toHaveBeenCalledWith({ kind: "image" });
+  await waitFor(() => expect(controller.selectedAsset).toBe("picked-1"));
 });

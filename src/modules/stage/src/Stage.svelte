@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -31,7 +31,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -108,6 +108,7 @@
     let offAsset: (() => void) | null = null;
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
+    let offEmote: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
@@ -127,6 +128,7 @@
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
+        selectedTokens: () => ctx.tokenSelection.ids,
         onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
       });
       const e = engine;
@@ -145,6 +147,9 @@
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
+      // Token selection is client-local UI state (no document write either) — same explicit
+      // re-projection so the selection highlight fx tracks the click.
+      let lastSelectionKey = [...ctx.tokenSelection.ids].sort().join(" ");
       const vsSub = createSubscriber((update) => documents.subscribe(update));
       offViewed = $effect.root(() => {
         $effect(() => {
@@ -158,6 +163,12 @@
           if (fp !== lastFootprints) {
             lastFootprints = fp;
             e.reapplyFootprints();
+          }
+          // Iterating the SvelteSet tracks it; a membership change re-projects the tokens.
+          const selKey = [...ctx.tokenSelection.ids].sort().join(" ");
+          if (selKey !== lastSelectionKey) {
+            lastSelectionKey = selKey;
+            e.reapplyTokenSelection();
           }
         });
       });
@@ -225,7 +236,18 @@
           })
           .sort()
           .join(";");
-        host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
+        // Read-only observability signal: each viewed-scene token's RESOLVED visual kind
+        // (`resolveTokenVisual` — the same read the render layer draws from) as `id:kind`,
+        // id-sorted like data-token-positions; `none` when the visual fails closed (the token
+        // then also doesn't draw). Lets an assertion confirm an authored visual shape reaches
+        // the render boundary without inspecting WebGL pixels directly.
+        host.dataset.tokenVisuals = sceneTokens
+          .map((t) => `${t.id}:${resolveTokenVisual(t, documents)?.kind ?? "none"}`)
+          .sort()
+          .join(";");
+        host.dataset.shapeCount = String(
+          documents.query("drawing").length + documents.query("template").length,
+        );
         host.dataset.wallCount = String(documents.query("wall").length);
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
@@ -246,6 +268,11 @@
       offPing = onPing((m) => {
         e.addPing(m.x, m.y);
         host.dataset.lastPing = `${m.x},${m.y}`;
+      });
+      // Relayed emotes (incl. our own echo) spawn a transient glyph over the token.
+      offEmote = onEmote((m) => {
+        e.addEmote(m.token, m.emote);
+        host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
@@ -278,6 +305,7 @@
       detachScene?.();
       offGrid?.();
       offPing?.();
+      offEmote?.();
       offMoveOutcome?.();
       offAsset?.();
       offViewed?.();

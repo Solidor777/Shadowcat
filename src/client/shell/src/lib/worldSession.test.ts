@@ -304,6 +304,32 @@ test("sendPing transmits a scene_ping for the active scene; onPing fires on an i
   expect(got[0].user).toBe("u9");
 });
 
+test("sendEmote transmits an emote for the viewed scene; onEmote fires on an inbound emote", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame); // GM → auto-creates a scene (the emote's scene)
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+
+  session.sendEmote("tok1", "😀");
+  const emote = sent.find((m) => m.type === "emote");
+  expect(emote).toBeTruthy();
+  expect(emote!.token).toBe("tok1");
+  expect(emote!.emote).toBe("😀");
+  expect(typeof emote!.scene).toBe("string");
+
+  const got: Array<{ token: string; user: string }> = [];
+  session.onEmote((m) => got.push(m));
+  const sceneId = (
+    (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id
+  ) as string;
+  push({ type: "emote", scene: sceneId, token: "tok1", user: "u9", emote: "🔥" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].user).toBe("u9");
+});
+
 test("does not auto-create a scene for a non-GM actor", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
@@ -485,7 +511,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 });
 
 function actorWith(perms: Partial<WireDocument["permissions"]>): WireDocument {
-  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "act1");
+  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "act1");
   d.permissions = { ...d.permissions, ...perms };
   return d;
 }
@@ -675,6 +701,7 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
     drawMeasure: () => {},
     clearMeasure: () => {},
     addPing: () => {},
+    addEmote: () => {},
     animateAlongPath: () => {},
     animateSamples: (id, _s, _d, _st, _sn, moverVision) => { calls.push({ id, moverVision }); },
     calls,
@@ -990,6 +1017,30 @@ test("onScenePing cross-scene guard: a GM roaming scene B sees own pings for B, 
   expect(got).toHaveLength(0);
 
   push({ type: "scene_ping", scene: "sceneB", x: 3, y: 4, user: "u1" }); // the GM's own viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].scene).toBe("sceneB");
+});
+
+test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, drops an emote for A", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB"); // roaming B while players stay on A
+
+  const got: Array<{ scene: string }> = [];
+  session.onEmote((m) => got.push(m));
+
+  push({ type: "emote", scene: sceneA, token: "tok1", user: "u9", emote: "😀" }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "emote", scene: "sceneB", token: "tok1", user: "u1", emote: "😀" }); // the GM's own viewed scene — accepted
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0].scene).toBe("sceneB");
 });
@@ -1371,6 +1422,9 @@ test("enter() fetches the snapshot before opening the WS connection, and the ret
       conditions: [],
       prototype: false,
       vision: null,
+      aura: null,
+      sound: null,
+      vfx: null,
     },
     "snap-actor",
   );

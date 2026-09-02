@@ -60,11 +60,11 @@ test("place a token via the tool rail, then drag it", async ({
   // The Assets panel starts launcher-closed; open it from the topbar launcher
   // before uploading.
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
 
   // Upload an image asset (the token art).
   await page
-    .getByTestId("asset-upload")
+    .getByTestId("asset-upload-input")
     .setInputFiles({ name: "tok.png", mimeType: "image/png", buffer: PNG_1X1 });
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
 
@@ -114,34 +114,19 @@ test("author an animated (frame-list) actor token; it places without error", asy
   // The Assets panel starts launcher-closed; open it from the topbar launcher
   // before uploading.
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
 
   // Upload two frames for the animated actor.
   await page
-    .getByTestId("asset-upload")
+    .getByTestId("asset-upload-input")
     .setInputFiles({ name: "f1.png", mimeType: "image/png", buffer: PNG_1X1 });
   await page
-    .getByTestId("asset-upload")
+    .getByTestId("asset-upload-input")
     .setInputFiles({ name: "f2.png", mimeType: "image/png", buffer: PNG_1X1 });
   await expect(page.getByTestId("asset-tile")).toHaveCount(2);
 
-  // ActorsPanel's asset picker list is fetched once at mount and has no live-refresh
-  // hook for newly-created assets (only replace/delete broadcast an AssetChanged);
-  // leave and re-enter the same world so the panel remounts and its picker sees the
-  // frames just uploaded — an already-exercised, unmodified product path (test 1
-  // above already proves leave/re-enter works). "Leave world" lives in the Settings
-  // panel, launcher-closed independently of Assets; open it too.
-  await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-settings:panel").click();
-  await page.getByRole("button", { name: /leave world/i }).click();
-  await page.getByRole("button", { name: /Animated Actor World/ }).click();
-  await expect(host).toHaveAttribute("data-render-ready", "true", {
-    timeout: 30_000,
-  });
-
-  // The Actors panel also starts launcher-closed; open it (the panel layout
-  // persisted across leave/re-enter, so Assets is already docked from the open
-  // above).
+  // The Actors panel starts launcher-closed; open it. Frame picking goes
+  // through the shared pick modal, which queries live — no remount dance.
   await page.getByTestId("launcher-trigger").click();
   await page.getByTestId("launcher-item-actors:panel").click();
 
@@ -151,8 +136,16 @@ test("author an animated (frame-list) actor token; it places without error", asy
   const actorsPanel = page.locator(".actors");
   await actorsPanel.getByPlaceholder("Name", { exact: true }).fill("Wisp");
   await actorsPanel.getByLabel("Visual").selectOption("animated");
-  await actorsPanel.getByRole("button", { name: "f1.png" }).click();
-  await actorsPanel.getByRole("button", { name: "f2.png" }).click();
+  // Ordered multi-pick through the modal: both frames, in upload order.
+  await actorsPanel.getByTestId("visual-pick-frames").click();
+  const pickDialog = page.getByTestId("asset-pick-dialog");
+  await expect(pickDialog).toBeVisible();
+  const pickTiles = pickDialog.getByTestId("asset-tile");
+  await expect(pickTiles).toHaveCount(2);
+  await pickTiles.nth(0).click();
+  await pickTiles.nth(1).click();
+  await pickDialog.getByTestId("pick-confirm").click();
+  await expect(pickDialog).not.toBeVisible();
   await actorsPanel.getByLabel("Frames per second").fill("10");
   await actorsPanel.getByRole("button", { name: "Create actor" }).click();
 
@@ -353,9 +346,9 @@ test("pick a scene background via the scene browser; it reaches the stage", asyn
 
   // Upload the background image asset.
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
   await page
-    .getByTestId("asset-upload")
+    .getByTestId("asset-upload-input")
     .setInputFiles({ name: "bg.png", mimeType: "image/png", buffer: PNG_1X1 });
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
 
@@ -389,4 +382,60 @@ test("pick a scene background via the scene browser; it reaches the stage", asyn
   await expect(host).not.toHaveAttribute("data-background", "", {
     timeout: 15_000,
   });
+});
+
+// The layout grid is `100vh` tall and its middle row is shared by the tool rail and the
+// panel host. A grid row is at least as tall as its tallest item's minimum contribution, so a
+// rail whose content outgrows the row would — without the growth cap on the `.toolrail`
+// cell — push the row, the grid, the panel host and the canvas past the viewport; the
+// document then scrolls, and every raw page coordinate measured before that scroll lands off
+// the canvas. Asserted with the rail genuinely overflowing its cell (the GM rail plus the
+// place tool's picker), otherwise the no-overflow claim is vacuous.
+test("a tool rail taller than the viewport scrolls inside its cell; the grid and canvas never grow past 100vh", async ({
+  page,
+  account,
+}) => {
+  const viewport = { width: 1280, height: 720 };
+  await page.setViewportSize(viewport);
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill("Tall Rail World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
+  // The place tool adds its asset picker to the rail, on top of the GM's full tool set.
+  await page.getByTestId("tool-place").click();
+  const rail = page.locator(".toolrail");
+  await expect(rail.locator(".asset-picker")).toBeVisible();
+
+  // Positive control: the rail's content really is taller than its cell.
+  await expect
+    .poll(() => rail.evaluate((el) => el.scrollHeight - el.clientHeight))
+    .toBeGreaterThan(0);
+
+  const overflow = () =>
+    page.evaluate(() => {
+      const layout = document.querySelector(".layout")!;
+      return {
+        document: document.documentElement.scrollHeight - innerHeight,
+        grid: layout.scrollHeight - layout.clientHeight,
+        gridHeight: Math.round(layout.getBoundingClientRect().height),
+      };
+    });
+  expect(await overflow()).toEqual({ document: 0, grid: 0, gridHeight: viewport.height });
+
+  const canvas = page.getByTestId("stage-canvas");
+  const before = (await canvas.boundingBox())!;
+  expect(before.y + before.height).toBeLessThanOrEqual(viewport.height);
+
+  // Reaching a control at the bottom of the rail scrolls the rail cell, never the document,
+  // so a canvas rect measured beforehand stays valid for a raw-coordinate gesture.
+  await rail.getByTestId("emote-send").scrollIntoViewIfNeeded();
+  await expect
+    .poll(() => rail.evaluate((el) => el.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await canvas.boundingBox()).toEqual(before);
+  expect(await overflow()).toEqual({ document: 0, grid: 0, gridHeight: viewport.height });
 });
