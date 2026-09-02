@@ -1066,6 +1066,82 @@ export const EFFECT_DOC_TYPE = "effect";
 /** Engine-defined doc_type of a combat's turn-history log, always a child of a combat. */
 export const COMBAT_HISTORY_DOC_TYPE = "combat-history";
 
+/** The shape of `ENGINE_COMBAT_DEFAULTS`: every `CombatDefaults` field fully resolved (never
+ * `undefined`), and non-nullable everywhere `CombatDefaults` itself is nullable only to express
+ * "unset — inherit" at an OVERRIDE layer — the engine-fallback layer never inherits from
+ * anywhere, so only `movementResource` (a genuine "no resource" value, not an absence) keeps its
+ * `| null`. */
+export interface ResolvedCombatDefaults {
+  /** `null` = no movement resource tracked. */
+  movementResource: string | null;
+  /** Budget → cells conversion. */
+  interpretation: Interpretation;
+  /** Gate policy. */
+  enforcement: Enforcement;
+  /** Who may end a turn. */
+  turnControl: TurnControl;
+  /** Whether an effect's lifecycle flags actually expire it. */
+  effectCleanup: boolean;
+  /** Default lifecycle formulas new effects inherit when authored ones are absent. */
+  effectLifecycle: EffectLifecycleDefaults;
+  /** Whether ending/rewinding restores documents from a captured snapshot. */
+  rewindRestore: boolean;
+  /** Whether redo-ing past the cursor restores documents from history. */
+  forwardRestore: boolean;
+}
+
+/** The engine-fallback `CombatDefaults` — `resolve_combat_rules(None, None, None)`'s resolved
+ * chain, in the client's camelCase spelling: no movement resource, `per_cell` interpretation,
+ * `none` enforcement, `owner_may_end` turn control, effect cleanup on, no lifecycle overrides,
+ * rewind/forward restore at their engine defaults. Pinned cross-language by the JSON fixture
+ * `__fixtures__/engine-combat-defaults.json`, which a Rust test
+ * (`data::engine::combat::tests::engine_combat_defaults_matches_the_shared_fixture`) asserts
+ * byte-equals the same resolved chain serialized server-side; `scene-docs.test.ts` asserts this
+ * constant deep-equals the fixture. Either side drifting fails one of the two tests. */
+export const ENGINE_COMBAT_DEFAULTS: ResolvedCombatDefaults = {
+  movementResource: null,
+  interpretation: "per_cell",
+  enforcement: "none",
+  turnControl: "owner_may_end",
+  effectCleanup: true,
+  effectLifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
+  rewindRestore: true,
+  forwardRestore: false,
+};
+
+/** A fresh combat's engine body at `ENGINE_COMBAT_DEFAULTS`, bound to `sceneId`: `active: false`,
+ * `round: 0`, `turn: null`, `order: []` — the placeholder clock state `combat::transition::start`
+ * overwrites on the combat's first `combat_start`.
+ * @param sceneId The scene this combat is bound to.
+ * @returns A `CombatEngine` ready for `buildCombatDoc`.
+ * @example
+ * ```ts
+ * import { newCombatEngine, buildCombatDoc } from "@shadowcat/core";
+ *
+ * buildCombatDoc("world-1", newCombatEngine("scene-1")).doc_type; // "combat"
+ * ```
+ */
+export function newCombatEngine(sceneId: string): CombatEngine {
+  const d = ENGINE_COMBAT_DEFAULTS;
+  return {
+    scene_id: sceneId,
+    active: false,
+    round: 0,
+    turn: null,
+    order: [],
+    turn_control: d.turnControl,
+    movement: {
+      resource: d.movementResource,
+      interpretation: d.interpretation,
+      enforcement: d.enforcement,
+    },
+    effect_cleanup: d.effectCleanup,
+    rewind_restore: d.rewindRestore,
+    forward_restore: d.forwardRestore,
+    effect_lifecycle: d.effectLifecycle,
+  };
+}
+
 /** A top-level (world-scoped, parentless) combat document bound to `engine.scene_id`.
  * @param worldId The owning world's id.
  * @param engine The full `CombatEngine` body.
@@ -1236,21 +1312,6 @@ export type SettingPath =
   | "pathfinding.diagonalRule"
   | `animation.${"speedCellsPerSec" | "easing"}`
   | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl"}`;
-
-/** Engine-level fallback for `CombatDefaults` fields absent from every layer — mirrors the
- * server's `resolve_combat_rules` engine defaults. Not part of `DEFAULT_WORLD_SETTINGS` (which
- * carries only the scene/pathfinding/animation literals): `CombatDefaults` is a partial-override
- * shape with its own resolver chain. Internal — not exported from the package. */
-const ENGINE_COMBAT_DEFAULTS: Required<CombatDefaults> = {
-  movementResource: null,
-  interpretation: "per_cell",
-  enforcement: "none",
-  turnControl: "owner_may_end",
-  effectCleanup: true,
-  effectLifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
-  rewindRestore: true,
-  forwardRestore: false,
-};
 
 /** The value/source `resolveSettingProvenance` would report with the scene and world layers
  * excluded entirely (system overlay, else the built-in engine default). The reset control's
