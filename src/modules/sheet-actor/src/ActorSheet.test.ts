@@ -209,3 +209,52 @@ describe("ActorSheet vision assignments", () => {
     ]);
   });
 });
+
+describe("ActorSheet movement tags", () => {
+  const goblin = (movement?: string[]) => ({
+    name: "Goblin", displayName: "Creature", faction: null, shape: "square",
+    size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" },
+    ...(movement !== undefined ? { movement } : {}),
+  });
+
+  it("a tag toggle writes /engine/movement with the raw stored list as old", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith(goblin(["flying"]));
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByTestId("movement-toggle-incorporeal"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/movement", old: ["flying"], new: ["flying", "incorporeal"] }] }],
+    ]);
+  });
+
+  it("untoggling the last tag writes [] (a required non-null array — never null)", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith(goblin(["flying"]));
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByTestId("movement-toggle-flying"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/movement", old: ["flying"], new: [] }] }],
+    ]);
+  });
+
+  it("a genuinely absent movement key reads as empty and writes with old: null", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith(goblin());
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    expect(getByTestId("movement-toggle-flying").getAttribute("aria-pressed")).toBe("false");
+    await fireEvent.click(getByTestId("movement-toggle-flying"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/movement", old: null, new: ["flying"] }] }],
+    ]);
+  });
+
+  it("disables the tag controls for a non-editor (canEdit false)", () => {
+    const documents = storeWith(goblin(["flying"]));
+    const context = setAppContextForTest({ documents, canEdit: () => false, role: "player" });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    expect((getByTestId("movement-toggle-flying") as HTMLButtonElement).disabled).toBe(true);
+  });
+});

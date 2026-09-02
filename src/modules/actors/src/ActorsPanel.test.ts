@@ -120,7 +120,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] },
       "act1",
     );
     const store = storeWith(actor);
@@ -154,7 +154,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] },
       "act1",
     );
     const store = storeWith(actor);
@@ -188,7 +188,7 @@ describe("ActorsPanel — shape + size", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 2, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] },
       "act1",
     );
     const store = storeWith(actor);
@@ -276,6 +276,7 @@ describe("ActorsPanel — vision-assignment authoring", () => {
         prototype: false,
         vision: [{ mode: "darkvision", range: null }],
         light: null,
+        movement: [],
       },
       "act1",
     );
@@ -312,6 +313,7 @@ describe("ActorsPanel — vision-assignment authoring", () => {
         prototype: false,
         vision: stored,
         light: null,
+        movement: [],
       },
       "act1",
     );
@@ -346,6 +348,7 @@ describe("ActorsPanel — vision-assignment authoring", () => {
         prototype: false,
         vision: stored,
         light: null,
+        movement: [],
       },
       "act1",
     );
@@ -499,7 +502,7 @@ describe("ActorsPanel — per-token face swap", () => {
     return buildActorDoc(
       "w1",
       "Goblin",
-      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      { displayName: "Goblin", visual: { kind: "faces", faces: { normal: { kind: "image", asset: "n1" }, bloodied: { kind: "image", asset: "b1" } }, default: "normal", faceMap: null }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] },
       "act1",
     );
   }
@@ -552,7 +555,7 @@ describe("ActorsPanel — live search + open sheet", () => {
     return buildActorDoc(
       "w1",
       name,
-      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      { displayName: name, visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] },
       id,
     );
   }
@@ -656,7 +659,7 @@ describe("ActorsPanel — carried light", () => {
     buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] },
       "act1",
     );
 
@@ -691,7 +694,7 @@ describe("ActorsPanel — carried light", () => {
     const actor = buildActorDoc(
       "w1",
       "Troll",
-      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: torch },
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: torch, movement: [] },
       "act1",
     );
     render(ActorsPanel, {
@@ -745,5 +748,98 @@ describe("ActorsPanel — carried light", () => {
     expect((op.doc.engine as { light: unknown }).light).toEqual({
       color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 9, falloff: null, enabled: true,
     });
+  });
+});
+
+
+describe("ActorsPanel — movement tags", () => {
+  const flyingActor = () =>
+    buildActorDoc(
+      "w1",
+      "Troll",
+      { displayName: "Troll", visual: { kind: "image", asset: "a1" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: ["flying"] },
+      "act1",
+    );
+
+  it("per-row toggle commits the whole /engine/movement array with the raw stored list as old", async () => {
+    const dispatchIntent = vi.fn();
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(flyingActor()), dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.click(within(listItem).getByTestId("movement-toggle-incorporeal"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      {
+        op: "update",
+        doc_id: "act1",
+        changes: [{ path: "/engine/movement", old: ["flying"], new: ["flying", "incorporeal"] }],
+      },
+    ]);
+  });
+
+  it("untoggling the last tag writes [] (a required non-null array — never null)", async () => {
+    const dispatchIntent = vi.fn();
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(flyingActor()), dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.click(within(listItem).getByTestId("movement-toggle-flying"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/movement", old: ["flying"], new: [] }] },
+    ]);
+  });
+
+  it("a free-form tag added in the row editor appends to the whole-array write", async () => {
+    const dispatchIntent = vi.fn();
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(flyingActor()), dispatchIntent }),
+    });
+
+    const listItem = screen.getByRole("listitem");
+    await fireEvent.input(within(listItem).getByTestId("movement-input"), { target: { value: "burrowing" } });
+    await fireEvent.click(within(listItem).getByTestId("movement-add"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "act1", changes: [{ path: "/engine/movement", old: ["flying"], new: ["flying", "burrowing"] }] },
+    ]);
+  });
+
+  it("create carries the tags chosen in the form's editor", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Wraith" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    // No actor rows exist here, so the form's editor is the only movement-toggle in the DOM.
+    await fireEvent.click(screen.getByTestId("movement-toggle-incorporeal"));
+    await fireEvent.click(screen.getByText("actors.create"));
+
+    const ops = dispatchIntent.mock.calls[0][0];
+    expect(ops[0].doc.engine).toMatchObject({ movement: ["incorporeal"] });
+  });
+
+  it("create defaults movement to [] when no tags were chosen", async () => {
+    const dispatchIntent = vi.fn();
+    const { listAssets } = await import("@shadowcat/core");
+    vi.mocked(listAssets).mockResolvedValue([
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png" } as never,
+    ]);
+    render(ActorsPanel, {
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent, assets: { url: (id: string) => `/assets/${id}`, reconcile: () => {} } as never }),
+    });
+    await vi.waitFor(() => expect(screen.queryAllByRole("button", { name: "hero.png" }).length).toBeGreaterThan(0));
+    await fireEvent.input(screen.getByPlaceholderText("actors.name"), { target: { value: "Human" } });
+    await fireEvent.click(screen.getByRole("button", { name: "hero.png" }));
+    await fireEvent.click(screen.getByText("actors.create"));
+    // `movement` is a required non-null array on the generated `ActorEngine` — an untouched
+    // form creates an explicit empty list (never null, never a genuinely-absent key).
+    expect(dispatchIntent.mock.calls[0][0][0].doc.engine.movement).toEqual([]);
   });
 });

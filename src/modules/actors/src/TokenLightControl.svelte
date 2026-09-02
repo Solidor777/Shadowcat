@@ -67,7 +67,7 @@
     const tok = token;
     if (!tok || !editable) return;
     const cur = engine?.overrides ?? null;
-    const base: TokenOverrides = cur ?? { name: null, visual: null, size: null, shape: null, vision: null, light: null };
+    const base: TokenOverrides = cur ?? { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null };
     ctx.dispatchIntent([
       { op: "update", doc_id: tok.id, changes: [{ path: "/engine/overrides", old: cur, new: { ...base, light: next } }] },
     ]);

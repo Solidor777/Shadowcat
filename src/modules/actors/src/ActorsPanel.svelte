@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, LightEmissionEditor, VisionAssignmentsEditor } from "@shadowcat/ui-kit";
+  import { getAppContext, LightEmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
   import { buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
@@ -8,6 +8,7 @@
   import TokenRotationControl from "./TokenRotationControl.svelte";
   import TokenLightControl from "./TokenLightControl.svelte";
   import TokenVisionControl from "./TokenVisionControl.svelte";
+  import TokenMovementControl from "./TokenMovementControl.svelte";
   import TokenElevationControl from "./TokenElevationControl.svelte";
 
   const ctx = getAppContext();
@@ -93,6 +94,9 @@
   /** The create form's pending carried light (`null` = the new actor emits nothing). Read via
    * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
   let pendingLight = $state<LightEmission | null>(null);
+  /** The create form's pending movement-type tags (empty = the new actor has none). Read via
+   * `$state.snapshot` at create time, same anti-Proxy rule as `pendingVisual`. */
+  let pendingMovement = $state<string[]>([]);
 
   // The visual-kind editor is a child component; it reports its current built visual (or null
   // when incomplete) via `onBuild`, and the host consumes it at create time + resets it after.
@@ -113,7 +117,8 @@
    * face-swap palette (`FaceSwapPalette`), the ownership override control
    * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), the carried-light
    * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
-   * and the elevation control (`TokenElevationControl`). */
+   * the movement-tag override control (`TokenMovementControl`), and the elevation control
+   * (`TokenElevationControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
@@ -208,6 +213,38 @@
     ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: visionOf(a), new: next.length > 0 ? next : null }] }]);
   }
 
+  /** The actor row's raw stored movement-type tags (`engine.movement`), or `null` when the key
+   * is genuinely absent. This RAW read is the OCC pre-image for `commitMovement`'s update —
+   * never a resolved/defaulted value.
+   * @param a The actor document to read.
+   * @returns The raw stored tag list, or `null` when absent.
+   * @example
+   * ```
+   * // private helper; read by the per-row movement editor
+   * declare const a: WireDocument;
+   * movementOf(a); // a.engine.movement ?? null
+   * ```
+   */
+  const movementOf = (a: WireDocument): string[] | null =>
+    (a.engine as ActorEngine | undefined)?.movement ?? null;
+
+  /** Dispatch a whole-payload `/engine/movement` update on actor `a` (the tag list is one
+   * nested value, so one write carries every tag's change). `old` is the raw stored list;
+   * unlike `vision` there is no null normalization — `ActorEngine.movement` is a required
+   * non-null array, so an empty list commits as `[]`.
+   * @param a The actor document.
+   * @param next The new tag list.
+   * @example
+   * ```
+   * // private helper; wired to the per-row movement editor's onCommit
+   * declare const a: WireDocument;
+   * commitMovement(a, ["flying"]);
+   * ```
+   */
+  function commitMovement(a: WireDocument, next: string[]): void {
+    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/movement", old: movementOf(a), new: next }] }]);
+  }
+
   // Rows come from two sources — a store-resolved document and a search hit
   // (`WireSearchHit.document`, a full `WireDocument` clone) — and `permissions` is non-optional on
   // both. Structural guarantee at each end: server-side, ingress
@@ -270,6 +307,7 @@
       prototype: instanceOnDrop,
       vision: pendingVision.length > 0 ? $state.snapshot(pendingVision) : null,
       light: pendingLight ? $state.snapshot(pendingLight) : null,
+      movement: $state.snapshot(pendingMovement),
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);
@@ -283,6 +321,7 @@
     sizeH = 1;
     pendingVision = [];
     pendingLight = null;
+    pendingMovement = [];
     visualEditor?.reset();
   }
 </script>
@@ -295,6 +334,7 @@
   <FaceSwapPalette tokenId={selectedTokenId} />
   <TokenLightControl tokenId={selectedTokenId} />
   <TokenVisionControl tokenId={selectedTokenId} />
+  <TokenMovementControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
     type="search"
@@ -366,6 +406,12 @@
             <span>{t("actors.visionModes")}</span>
             <VisionAssignmentsEditor value={visionOf(a) ?? []} modes={visionModes} onCommit={(next) => commitVision(a, next)} />
           </div>
+          <!-- Per-row movement-tag editor; commits whole-payload /engine/movement updates with
+               the raw stored list as the OCC pre-image. -->
+          <div class="movement-edit" aria-label={t("actors.movementTags")}>
+            <span>{t("actors.movementTags")}</span>
+            <MovementTagsEditor value={movementOf(a) ?? []} onCommit={(next) => commitMovement(a, next)} />
+          </div>
           <!-- Per-row carried-light toggle + editor; commits whole-payload /engine/light updates. -->
           <label>
             <input
@@ -415,6 +461,10 @@
     <div class="vision-edit">
       <span>{t("actors.visionModes")}</span>
       <VisionAssignmentsEditor value={pendingVision} modes={visionModes} onCommit={(next) => (pendingVision = next)} />
+    </div>
+    <div class="movement-edit">
+      <span>{t("actors.movementTags")}</span>
+      <MovementTagsEditor value={pendingMovement} onCommit={(next) => (pendingMovement = next)} />
     </div>
     {#if ctx.role === "gm"}
       <label>
@@ -497,6 +547,11 @@
     gap: var(--space-1);
   }
   .vision-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .movement-edit {
     display: flex;
     flex-direction: column;
     gap: 2px;

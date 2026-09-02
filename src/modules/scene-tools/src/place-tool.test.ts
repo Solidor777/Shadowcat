@@ -99,6 +99,7 @@ const actorEngine = (prototype: boolean) => ({
   prototype,
   vision: null,
   light: null,
+  movement: [],
 });
 
 function docsWithSceneAndActor(id: string, prototype: boolean): DocumentStore {

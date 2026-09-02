@@ -485,7 +485,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 });
 
 function actorWith(perms: Partial<WireDocument["permissions"]>): WireDocument {
-  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null }, "act1");
+  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [] }, "act1");
   d.permissions = { ...d.permissions, ...perms };
   return d;
 }
@@ -1372,6 +1372,7 @@ test("enter() fetches the snapshot before opening the WS connection, and the ret
       prototype: false,
       vision: null,
       light: null,
+      movement: [],
     },
     "snap-actor",
   );

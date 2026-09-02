@@ -18,7 +18,7 @@ const torch: LightEmission = { color: "#ffcc66", intensity: 1, brightRadius: 2, 
 
 const actorEngine = {
   displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 },
-  shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, light: torch,
+  shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, light: torch, movement: [],
 };
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -80,7 +80,7 @@ describe("TokenLightControl", () => {
           {
             path: "/engine/overrides",
             old: null, // the RAW stored overrides object (absent on a fresh linked token)
-            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...torch, enabled: false } },
+            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...torch, enabled: false }, movement: null },
           },
         ],
       },
@@ -90,7 +90,7 @@ describe("TokenLightControl", () => {
   it("custom mode opens the field editor, which commits whole-payload override writes with the raw stored old", async () => {
     const dispatchIntent = vi.fn();
     const prior: LightEmission = { ...DEFAULT_LIGHT_EMISSION, enabled: true };
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: prior });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: prior, movement: null });
     render(TokenLightControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -104,8 +104,8 @@ describe("TokenLightControl", () => {
         changes: [
           {
             path: "/engine/overrides",
-            old: { name: null, visual: null, size: null, shape: null, vision: null, light: prior },
-            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...prior, dimRadius: 9 } },
+            old: { name: null, visual: null, size: null, shape: null, vision: null, light: prior, movement: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: null, light: { ...prior, dimRadius: 9 }, movement: null },
           },
         ],
       },
@@ -115,7 +115,7 @@ describe("TokenLightControl", () => {
   it("switching back to inherit clears the override (light: null)", async () => {
     const dispatchIntent = vi.fn();
     const suppressed: LightEmission = { ...torch, enabled: false };
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: suppressed });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: suppressed, movement: null });
     render(TokenLightControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
