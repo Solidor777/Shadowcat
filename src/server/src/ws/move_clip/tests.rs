@@ -66,6 +66,12 @@ const STRANGER: Uuid = Uuid::from_u128(0xC5);
 /// The scene ECS for a lit or dark walled scene. `vision` (an actor's `vision` assignment
 /// list, or `None` for a raw normal-vision token) is what makes the darkvision case buildable.
 fn fixture(lit: bool, vision: Option<serde_json::Value>) -> SceneEcs {
+    fixture_at(lit, vision, (50.0, 50.0))
+}
+
+/// `fixture` with the target's token committed at `at` — the END of a move whose timeline a
+/// test registers, since `Room::execute_move` commits before it broadcasts.
+fn fixture_at(lit: bool, vision: Option<serde_json::Value>, at: (f64, f64)) -> SceneEcs {
     let mut scene = world_scoped_doc(WORLD, SCENE, "scene");
     let mut engine = json!({ "grid": { "kind": "square", "size": 100 }, "background": null });
     if lit {
@@ -75,7 +81,7 @@ fn fixture(lit: bool, vision: Option<serde_json::Value>) -> SceneEcs {
     let mut tok = world_scoped_doc(WORLD, TARGET_TOKEN, "token");
     tok.parent_id = Some(SCENE);
     tok.owner = Some(TARGET);
-    let mut tok_engine = crate::ws::test_support::token_engine(50.0, 50.0);
+    let mut tok_engine = crate::ws::test_support::token_engine(at.0, at.1);
     let actor_id = Uuid::from_u128(0xC6);
     if vision.is_some() {
         tok_engine["actor_id"] = json!(actor_id.to_string());
@@ -198,6 +204,68 @@ fn clip_samples_reads_the_targets_own_in_flight_viewpoint_per_instant() {
         target: TARGET,
     };
     assert!(clip_samples(&samples, 1000.0, &inputs).is_empty());
+}
+
+#[test]
+fn clip_samples_judges_pre_start_instants_from_the_targets_own_start_sample_never_its_committed_end(
+) {
+    // The target's token is COMMITTED at (250,50) — the END of its own move, which
+    // `Room::execute_move` commits before broadcasting — while its registered timeline starts
+    // at 1100 from (50,50). A's sample at t_abs=1000 (before the target's move starts) at
+    // (150,60) is visible from the END but behind the wall from the START: the target is
+    // still standing at the START then, so the sample is withheld. At t_abs=1200 the chosen
+    // sample is the END and the same point is admitted.
+    let ecs = fixture_at(true, None, (250.0, 50.0));
+    let sight = sight(&ecs, &[]);
+    let own = vec![pos(0.0, 50.0, 50.0), pos(100.0, 250.0, 50.0)];
+    let in_flight = [InFlight {
+        start_server_ms: 1100.0,
+        mover: TARGET,
+        token: TARGET_TOKEN,
+        positions: &own,
+        light: None,
+    }];
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &in_flight,
+        target: TARGET,
+    };
+    let samples = vec![pos(0.0, 150.0, 60.0), pos(200.0, 150.0, 60.0)];
+    assert_eq!(
+        clip_samples(&samples, 1000.0, &inputs),
+        vec![pos(200.0, 150.0, 60.0)],
+        "the pre-start sample is judged from the START, not the committed END"
+    );
+}
+
+#[test]
+fn a_torch_whose_move_has_not_started_lights_from_its_first_sample() {
+    // A registered torch bearer whose move starts at 1100 is excluded from the committed field
+    // (its committed position is its move's END) and composed back from its timeline: before
+    // its move starts it stands — and shines — at its FIRST sample, so a bystander's sample at
+    // t_abs=1000 next to that position is lit and admitted.
+    let ecs = fixture(false, None);
+    let torch_token = Uuid::from_u128(0xC9);
+    let dark = sight(&ecs, &[torch_token]);
+    let torch_positions = vec![pos(0.0, 50.0, 60.0), pos(500.0, 350.0, 60.0)];
+    let torch = vec![
+        light(0, 0.0, [50.0, 60.0], 150.0),
+        light(1, 500.0, [350.0, 60.0], 150.0),
+    ];
+    let in_flight = [InFlight {
+        start_server_ms: 1100.0,
+        mover: STRANGER,
+        token: torch_token,
+        positions: &torch_positions,
+        light: Some(&torch),
+    }];
+    let inputs = ClipInputs {
+        sight: &dark,
+        in_flight: &in_flight,
+        target: TARGET,
+    };
+    let bystander = vec![pos(0.0, 60.0, 50.0)];
+    assert_eq!(clip_samples(&bystander, 1000.0, &inputs), bystander);
 }
 
 #[test]
@@ -510,13 +578,13 @@ fn glow_reaches_fails_closed_on_a_degenerate_reach_and_keeps_the_disc_verdict_pa
 
 #[test]
 fn admit_light_samples_reads_the_same_instant_sight_as_clip_samples() {
-    // The target's own sweep past the wall starts at 1100. A glow at (150,50) with a tiny
-    // reach is dropped at t_abs=1000 (committed viewpoint behind the wall) and admitted at
-    // t_abs=1200 (viewpoint (250,50) past it) — exactly the instants `clip_samples` admits a
-    // position there, because both read `ClipInputs::at`.
+    // The target's own sweep past the wall starts at 1100 from (50,50). A glow at (150,50)
+    // with a tiny reach is dropped at t_abs=1000 (the START viewpoint, behind the wall) and
+    // admitted at t_abs=1200 (viewpoint (250,50) past it) — exactly the instants
+    // `clip_samples` admits a position there, because both read `ClipInputs::at`.
     let ecs = fixture(true, None);
     let sight = sight(&ecs, &[]);
-    let own = vec![pos(0.0, 250.0, 50.0)];
+    let own = vec![pos(0.0, 50.0, 50.0), pos(100.0, 250.0, 50.0)];
     let in_flight = [InFlight {
         start_server_ms: 1100.0,
         mover: TARGET,

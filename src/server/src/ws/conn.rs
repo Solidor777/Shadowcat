@@ -1188,9 +1188,11 @@ async fn enrich_vision_explored(
 ///   the field at its timeline position (its committed emission is excluded from the field
 ///   first, since a committed position is the move's END). The viewpoints are the target's OWN
 ///   sweep (already sent to them), so this never admits a sample their fog will not show. A
-///   target whose move starts AFTER this frame was clipped, or a torch that enters the scene
-///   after it, is served by the egress re-emit (`egress_loop`'s `MoveStream` arm), not by this
-///   function.
+///   registered move contributes at every instant, started or not: before it starts its
+///   FIRST sample is the token's (and its torch's) true position, never the committed END.
+///   A target whose move is registered AFTER this frame was clipped, or a torch that enters
+///   the scene after it, is served by the egress re-emit (`egress_loop`'s `MoveStream` arm),
+///   not by this function.
 async fn clip_move_stream(
     msg: &ServerMsg,
     ctx: &PermissionContext,

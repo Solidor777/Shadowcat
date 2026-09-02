@@ -65,12 +65,9 @@ pub(crate) struct InFlight<'a> {
 }
 
 impl InFlight<'_> {
-    /// Whether this move has started by absolute instant `t_abs_ms`.
-    fn started_by(&self, t_abs_ms: f64) -> bool {
-        self.start_server_ms <= t_abs_ms
-    }
-
-    /// Elapsed milliseconds into this move at absolute instant `t_abs_ms`.
+    /// Elapsed milliseconds into this move at absolute instant `t_abs_ms` — negative before
+    /// the move starts, where `chosen_vision_sample` yields the FIRST sample: the position the
+    /// token is still standing at (its committed position is already the move's END).
     fn elapsed_at(&self, t_abs_ms: f64) -> f64 {
         t_abs_ms - self.start_server_ms
     }
@@ -90,13 +87,20 @@ pub(crate) struct ClipInputs<'a> {
 }
 
 impl ClipInputs<'_> {
-    /// The sight at absolute instant `t_abs_ms`: the target's own started moves substitute
-    /// their chosen position sample as the moving token's viewpoint; every started move with a
-    /// carried light contributes its chosen light sample to the field.
+    /// The sight at absolute instant `t_abs_ms`: the target's own moves substitute their
+    /// chosen position sample as the moving token's viewpoint; every move with a carried
+    /// light contributes its chosen light sample to the field. EVERY registered move
+    /// contributes, started or not — a move's committed position is its END
+    /// (`Room::execute_move` commits before it broadcasts), so for an instant BEFORE a move
+    /// starts the only true position is its FIRST sample, which `chosen_vision_sample`
+    /// yields for a negative elapsed time. Gating on "started" would judge the target's
+    /// pre-start instants from its END viewpoint (over-admission on re-emit) and drop a
+    /// not-yet-started torch from the field its committed emission was excluded from
+    /// (under-reveal).
     pub(crate) fn at(&self, t_abs_ms: f64) -> (InstantSight<'_>, Vec<InstantLight>) {
         let mut moved: Vec<(Uuid, P)> = Vec::new();
         let mut lights: Vec<InstantLight> = Vec::new();
-        for m in self.in_flight.iter().filter(|m| m.started_by(t_abs_ms)) {
+        for m in self.in_flight {
             let elapsed = m.elapsed_at(t_abs_ms);
             if m.mover == self.target {
                 if let Some(s) = chosen_vision_sample(m.positions, elapsed) {

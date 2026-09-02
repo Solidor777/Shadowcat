@@ -3518,17 +3518,19 @@ async fn clip_observer_mid_move_admits_samples_its_own_sweep_will_reveal() {
     );
 }
 
-/// Same geometry, but the observer's sweep starts AFTER every sample of the move: the
-/// timeline never applies and committed vision (blocked by the wall) suppresses the frame —
-/// closing this ordering needs the observer's own move to re-emit the concurrent stream, not
-/// this clip.
+/// Same geometry, but the observer's own move starts AFTER every sample of the frame. The
+/// observer's token is COMMITTED at the move's END (250,50) — `Room::execute_move` commits
+/// before it broadcasts — while the observer is still standing at its START (50,50), behind
+/// the wall: every sample of the frame is judged from that START and the frame is suppressed.
+/// Judging them from the committed END would admit both. Revealing them once the observer's
+/// move starts is the re-emit's job, not this clip's.
 #[tokio::test]
-async fn clip_ignores_a_timeline_that_starts_after_the_move() {
+async fn clip_judges_a_frame_before_the_targets_own_move_from_its_start_never_its_committed_end() {
     use crate::ws::protocol::PosSample;
     let wall_sys =
         json!({ "seg": { "x1": 100, "y1": -500, "x2": 100, "y2": 500 }, "blocksSight": true });
     let (room, _, obs_ctx, scene_id, _) =
-        setup_clip_room(Some((50.0, 50.0)), Some(wall_sys), false).await;
+        setup_clip_room(Some((250.0, 50.0)), Some(wall_sys), false).await;
     let now = crate::ws::time::now_millis();
     register_timeline(
         &room,
@@ -3536,10 +3538,16 @@ async fn clip_ignores_a_timeline_that_starts_after_the_move() {
         obs_ctx.user_id,
         scene_id,
         now + 10_000,
-        vec![PosSample {
-            t_ms: 0.0,
-            pos: [200.0, 50.0],
-        }],
+        vec![
+            PosSample {
+                t_ms: 0.0,
+                pos: [50.0, 50.0],
+            },
+            PosSample {
+                t_ms: 100.0,
+                pos: [250.0, 50.0],
+            },
+        ],
     )
     .await;
     let frame = ServerMsg::MoveStream {
