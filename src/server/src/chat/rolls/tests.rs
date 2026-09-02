@@ -2,6 +2,12 @@ use super::*;
 use crate::dice::notation::ModeKind;
 use crate::dice::spec::Direction;
 
+/// Test-only convenience: `scan_body_capped` at the production cap, mirroring
+/// the sole production call site (`body::compose_message`).
+fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
+    scan_body_capped(body, MAX_INLINE_ROLLS)
+}
+
 fn total_ctx() -> ParseContext {
     ParseContext {
         mode: ModeKind::Total,

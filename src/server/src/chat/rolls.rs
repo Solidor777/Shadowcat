@@ -104,8 +104,14 @@ pub(crate) enum BodyChunk<'a> {
 /// opened but never closed by a balanced `]]` (`RollError::Unterminated`);
 /// more than `MAX_INLINE_ROLLS` non-text chunks (`RollError::TooManyInline`);
 /// a `doc:`/`token:`-prefixed span with an unparseable id or a missing/empty
-/// `|<label>` suffix (`RollError::MalformedDocLink`).
-pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
+/// `|<label>` suffix (`RollError::MalformedDocLink`). Parameterized on the
+/// non-text-chunk cap so a caller other than the ordinary ingest path
+/// (`body::compose_message`, which always passes `MAX_INLINE_ROLLS`) could
+/// apply a different bound.
+pub(crate) fn scan_body_capped(
+    body: &str,
+    max_spans: usize,
+) -> Result<Vec<BodyChunk<'_>>, RollError> {
     let mut chunks = Vec::new();
     let mut non_text = 0usize;
     let mut text_start = 0usize;
@@ -155,7 +161,7 @@ pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
 
         let content = &body[content_start..content_end];
         non_text += 1;
-        if non_text > MAX_INLINE_ROLLS {
+        if non_text > max_spans {
             return Err(RollError::TooManyInline(non_text));
         }
         match parse_doc_link(content) {

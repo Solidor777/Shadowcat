@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod body;
 mod commands;
 mod host;
 mod link_preview;
@@ -316,7 +317,7 @@ pub enum Segment {
     /// display label at authoring time (`label` is never re-resolved at render — only the
     /// fail-closed existence/visibility gate below re-checks `target`). Distinct from the
     /// actor-name header link, which is driven by `actor_owner` attribution, not body content.
-    /// Produced by `chat::rolls::scan_body`'s `doc:`/`token:` prefix branch — reuses the SAME
+    /// Produced by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix branch — reuses the SAME
     /// balanced `[[...]]` span mechanism as `RollEmbed`/`RollButton`, not a new one. No
     /// existence/visibility check runs against `target` at ingest: the CLIENT fails closed at
     /// render by checking `ctx.documents` presence for the target id (already redacted
@@ -334,7 +335,7 @@ pub enum Segment {
 /// What a `Segment::DocLink` points at — mirrors the client's `SheetRef` shape (the
 /// established "one anonymous cross-file-shared shape gets one name" precedent), given a
 /// server-side equivalent since `SheetRef` itself is client-only TS. Carried inside
-/// `Segment::DocLink`; parsed in full by `chat::rolls::scan_body`'s `doc:`/`token:` prefix
+/// `Segment::DocLink`; parsed in full by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix
 /// branch — `handle_send_message`'s ingest arm does no further parsing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -1033,101 +1034,25 @@ pub async fn handle_send_message(
             }
         }
     } else {
-        // Normal/Emote: scan for inline rolls/buttons. The all-Text case is
-        // the byte-identical fast path over the whole body (unchanged from
-        // before this checkpoint); a mixed body sanitizes each Text chunk
-        // independently and interleaves roll segments in scan order.
-        let chunks = match rolls::scan_body(&parsed.body) {
-            Ok(c) => c,
-            Err(e) => {
-                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
-                return room
-                    .publish(
-                        repo,
-                        ctx,
-                        vec![Operation::Create { doc: notice }],
-                        now,
-                        WriteOrigin::Client,
-                    )
-                    .await
-                    .map(|cmd| (cmd, Vec::new()))
-                    .map_err(SendMessageError::Data);
-            }
+        // Normal/Emote: delegate to the shared chunk->segment composer. A
+        // roll/scan failure authors a whispered System notice instead of the
+        // intended message (see the enclosing match's `kind == Roll` arm for
+        // the identical pattern); `ComposeError::Inline` cannot occur here
+        // (`ScanMode::Execute`).
+        let compose_deps = body::ComposeDeps {
+            repo,
+            world_id: room.world_id,
+            channel: &channel,
+            actor_owner: actor_owner.as_ref(),
+            policy: &policy,
         };
-        if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
-            sanitize(&parsed.body, &policy)
-        } else {
-            // Ambient dice context is resolved at most once, lazily, only when
-            // a roll/button chunk actually appears in this body. The roll's
-            // host (the send's actor binding) resolves just as lazily.
-            let mut dice_ctx: Option<crate::dice::ParseContext> = None;
-            let mut roll_host: Option<Option<Document>> = None;
-            let mut segments = Vec::with_capacity(chunks.len());
-            let mut roll_err = None;
-            for chunk in chunks {
-                match chunk {
-                    rolls::BodyChunk::Text(t) => segments.extend(sanitize(t, &policy)),
-                    rolls::BodyChunk::Inline(formula) => {
-                        if dice_ctx.is_none() {
-                            dice_ctx =
-                                Some(resolve_dice_context(repo, room.world_id, &channel).await);
-                        }
-                        if roll_host.is_none() {
-                            roll_host = Some(match &actor_owner {
-                                Some(owner_ref) => host::host_for_actor_owner(repo, owner_ref)
-                                    .await
-                                    .map_err(SendMessageError::Data)?,
-                                None => None,
-                            });
-                        }
-                        let host_ref = roll_host.as_ref().expect("roll host computed").as_ref();
-                        match rolls::execute_roll(formula, dice_ctx.unwrap(), host_ref) {
-                            Ok((formula, outcome, spec, raw)) => {
-                                segments.push(Segment::RollEmbed {
-                                    formula,
-                                    outcome,
-                                    roll_id: Uuid::new_v4(),
-                                    spec: Some(Box::new(spec)),
-                                    raw: Some(Box::new(raw)),
-                                    recalc_history: None,
-                                })
-                            }
-                            Err(e) => {
-                                roll_err = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    rolls::BodyChunk::Button { formula, label } => {
-                        if dice_ctx.is_none() {
-                            dice_ctx =
-                                Some(resolve_dice_context(repo, room.world_id, &channel).await);
-                        }
-                        // Stored/validated formula is trimmed — the `roll:`/`|`
-                        // split leaves incidental whitespace (e.g.
-                        // "[[roll: 1d20|Attack]]") that must not survive into
-                        // the button's stored formula or the click-to-send text.
-                        let formula = formula.trim();
-                        match rolls::validate_formula(formula, dice_ctx.unwrap()) {
-                            Ok(()) => segments.push(Segment::RollButton {
-                                formula: formula.to_string(),
-                                label: label.map(|s| s.to_string()),
-                            }),
-                            Err(e) => {
-                                roll_err = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    rolls::BodyChunk::DocLink { target, label } => {
-                        segments.push(Segment::DocLink {
-                            target,
-                            label: label.to_string(),
-                        });
-                    }
-                }
+        match body::compose_message(&parsed.body, compose_deps, body::ScanMode::Execute).await {
+            Ok(segments) => segments,
+            Err(body::ComposeError::Data(e)) => return Err(SendMessageError::Data(e)),
+            Err(body::ComposeError::Inline) => {
+                unreachable!("ComposeError::Inline cannot occur under ScanMode::Execute")
             }
-            if let Some(e) = roll_err {
+            Err(body::ComposeError::Roll(e)) => {
                 let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
                 return room
                     .publish(
@@ -1141,7 +1066,6 @@ pub async fn handle_send_message(
                     .map(|cmd| (cmd, Vec::new()))
                     .map_err(SendMessageError::Data);
             }
-            segments
         }
     };
     let mut pending: Vec<PendingEnrichment> = Vec::new();
