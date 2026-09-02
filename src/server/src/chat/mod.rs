@@ -788,6 +788,99 @@ impl std::fmt::Display for RecalcRollError {
     }
 }
 
+/// Re-validates an EFFECTIVE `Audience` (whisper cap + membership) — the
+/// single chokepoint covering BOTH the `SendMessage` frame's own `audience`
+/// field and a content-level `/w` command, so neither front-door can bypass
+/// `MAX_WHISPER_RECIPIENTS` or the fail-closed unknown-recipient rejection.
+/// `_sender` is unused today (kept on the signature for parity with the
+/// call site's other request-scoped parameters); a `Public`/`GmOnly`
+/// audience is a no-op.
+pub(crate) async fn validate_audience(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    _sender: Uuid,
+    audience: &Audience,
+) -> Result<(), SendMessageError> {
+    if let Audience::Whisper { recipients } = audience {
+        if recipients.len() > MAX_WHISPER_RECIPIENTS {
+            return Err(SendMessageError::TooLong);
+        }
+        for &r in recipients {
+            let is_member = repo
+                .member_role(world_id, r)
+                .await
+                .map_err(SendMessageError::Data)?
+                .is_some();
+            if !is_member {
+                return Err(SendMessageError::UnknownRecipient);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The world-pinned `Actor`/`TokenInstance` attribution gate: `actor_owner`
+/// is client-supplied and otherwise stored verbatim — without this check any
+/// world member could attribute a message to ANY actor doc, spoofing its
+/// display name to every recipient who can read the message. A GM may
+/// attribute as any actor/token doc IN THIS WORLD; a Player only as one they
+/// own (a token's ownership resolves through `Repository::effective_owner_of`).
+/// A cross-world ref is refused, same as any other invalid ref — an actor
+/// doc's ownership grant does not cross world scope.
+pub(crate) async fn validate_actor_owner(
+    repo: &dyn Repository,
+    room: &Room,
+    ctx: &PermissionContext,
+    owner: &ActorOwnerRef,
+) -> Result<(), SendMessageError> {
+    match owner {
+        ActorOwnerRef::Actor { actor_id } => {
+            let actor_doc = repo
+                .get_document(*actor_id)
+                .await
+                .map_err(SendMessageError::Data)?;
+            let is_gm = ctx.world_role == WorldRole::Gm;
+            let allowed = match &actor_doc {
+                Some(d)
+                    if d.doc_type == "actor"
+                        && crate::data::document::world_of(d) == Some(room.world_id) =>
+                {
+                    is_gm || d.owner == Some(ctx.user_id)
+                }
+                _ => false,
+            };
+            if !allowed {
+                return Err(SendMessageError::ActorNotSpeakable);
+            }
+        }
+        ActorOwnerRef::TokenInstance { token_id } => {
+            let token_doc = repo
+                .get_document(*token_id)
+                .await
+                .map_err(SendMessageError::Data)?;
+            let is_gm = ctx.world_role == WorldRole::Gm;
+            let allowed = match &token_doc {
+                Some(d)
+                    if d.doc_type == crate::data::permission::TOKEN_DOC_TYPE
+                        && crate::data::document::world_of(d) == Some(room.world_id) =>
+                {
+                    is_gm
+                        || repo
+                            .effective_owner_of(d)
+                            .await
+                            .map_err(SendMessageError::Data)?
+                            == Some(ctx.user_id)
+                }
+                _ => false,
+            };
+            if !allowed {
+                return Err(SendMessageError::ActorNotSpeakable);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Shared request-scoped dependencies for `handle_send_message`/
 /// `handle_edit_message`: what the two entry points hold in common, grouped
 /// the same way `LinkPreviewDeps` groups its own bundle of borrowed deps.
@@ -853,71 +946,15 @@ pub async fn handle_send_message(
     {
         return Err(SendMessageError::UnknownChannel);
     }
-    // Attribution ownership gate: `actor_owner` is client-supplied
-    // and otherwise stored verbatim — without this check any world member
-    // could attribute a message to ANY actor doc, spoofing its display name
-    // to every recipient who can read the message. Fail-closed, whole-send:
-    // an invalid ref rejects BEFORE any content parsing/sanitization/roll
-    // execution runs, exactly like the whisper-recipient validation below.
-    // `handle_edit_message` copies `actor_owner` verbatim from the STORED
-    // doc, never from the edit request, so this ingest-time gate is the
-    // ONLY place attribution is ever chosen — no separate edit-time check
-    // is needed.
+    // Attribution ownership gate: see `validate_actor_owner`'s doc comment.
+    // Fail-closed, whole-send: an invalid ref rejects BEFORE any content
+    // parsing/sanitization/roll execution runs, exactly like the
+    // whisper-recipient validation below. `handle_edit_message` copies
+    // `actor_owner` verbatim from the STORED doc, never from the edit
+    // request, so this ingest-time gate is the ONLY place attribution is
+    // ever chosen — no separate edit-time check is needed.
     if let Some(owner_ref) = &actor_owner {
-        match owner_ref {
-            ActorOwnerRef::Actor { actor_id } => {
-                let actor_doc = repo
-                    .get_document(*actor_id)
-                    .await
-                    .map_err(SendMessageError::Data)?;
-                let is_gm = ctx.world_role == WorldRole::Gm;
-                let allowed = match &actor_doc {
-                    // GM may attribute as any actor doc IN THIS WORLD; a
-                    // Player only as one they own. A cross-world actor ref is
-                    // refused at ingest, same as any other invalid ref — an
-                    // actor doc's ownership grant does not cross world scope.
-                    Some(d)
-                        if d.doc_type == "actor"
-                            && crate::data::document::world_of(d) == Some(room.world_id) =>
-                    {
-                        is_gm || d.owner == Some(ctx.user_id)
-                    }
-                    _ => false,
-                };
-                if !allowed {
-                    return Err(SendMessageError::ActorNotSpeakable);
-                }
-            }
-            ActorOwnerRef::TokenInstance { token_id } => {
-                let token_doc = repo
-                    .get_document(*token_id)
-                    .await
-                    .map_err(SendMessageError::Data)?;
-                let is_gm = ctx.world_role == WorldRole::Gm;
-                let allowed = match &token_doc {
-                    // Same world-pinning + GM-bypass shape as the `Actor` arm above.
-                    // Ownership itself resolves through `effective_owner_of` — the
-                    // repo-level chokepoint wrapping `permission::effective_owner` (a
-                    // token's own `owner` override wins, else it inherits its linked
-                    // actor's owner) — never reimplemented here.
-                    Some(d)
-                        if d.doc_type == crate::data::permission::TOKEN_DOC_TYPE
-                            && crate::data::document::world_of(d) == Some(room.world_id) =>
-                    {
-                        is_gm
-                            || repo
-                                .effective_owner_of(d)
-                                .await
-                                .map_err(SendMessageError::Data)?
-                                == Some(ctx.user_id)
-                    }
-                    _ => false,
-                };
-                if !allowed {
-                    return Err(SendMessageError::ActorNotSpeakable);
-                }
-            }
-        }
+        validate_actor_owner(repo, room, ctx, owner_ref).await?;
     }
     // Parse leading command (server-authoritative kind; /w whisper targets).
     let parsed = parse_command(&content);
@@ -952,28 +989,12 @@ pub async fn handle_send_message(
     } else {
         audience
     };
-    // Re-validate the EFFECTIVE audience (whisper cap + membership) — the
-    // single chokepoint covering BOTH the frame's `audience` field and a
-    // content-level `/w` command, so neither front-door can bypass the cap
-    // or the fail-closed unknown-recipient rejection. The cap is ALSO checked
-    // above (pre-resolution) for the content-`/w` path specifically; this
-    // second check is what actually guards the frame's `audience` argument
-    // (which never runs the pre-check above) and stays authoritative for both.
-    if let Audience::Whisper { recipients } = &audience {
-        if recipients.len() > MAX_WHISPER_RECIPIENTS {
-            return Err(SendMessageError::TooLong);
-        }
-        for &r in recipients {
-            let is_member = repo
-                .member_role(room.world_id, r)
-                .await
-                .map_err(SendMessageError::Data)?
-                .is_some();
-            if !is_member {
-                return Err(SendMessageError::UnknownRecipient);
-            }
-        }
-    }
+    // Re-validate the EFFECTIVE audience (whisper cap + membership) — see
+    // `validate_audience`'s doc comment. The cap is ALSO checked above
+    // (pre-resolution) for the content-`/w` path specifically; this second
+    // check is what actually guards the frame's `audience` argument (which
+    // never runs the pre-check above) and stays authoritative for both.
+    validate_audience(repo, room.world_id, ctx.user_id, &audience).await?;
     // A command that leaves no message body (e.g. `/w @alice` with no
     // trailing text) must be rejected the same way empty raw content is —
     // the top-level `content.trim().is_empty()` check above only guards the

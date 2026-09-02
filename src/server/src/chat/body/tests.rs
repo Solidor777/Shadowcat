@@ -2,7 +2,6 @@ use super::*;
 use crate::auth::role::ServerRole;
 use crate::chat::rolls::RollError;
 use crate::chat::DocLinkTarget;
-use crate::data::document::WorldRole;
 use crate::data::sqlite::SqliteRepository;
 
 async fn seed_world() -> (SqliteRepository, uuid::Uuid) {
