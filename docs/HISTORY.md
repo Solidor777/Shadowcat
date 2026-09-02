@@ -1931,6 +1931,85 @@ re-anchored, one e2e caught at review). Two review fold-ins: `js_number` normali
 the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/authoring docs;
 GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
 
+### M16 · Layout + theming completion ✅
+Branch `m16-layout-theming`, executed mainline (Kimi) from the approved design
+`docs/superpowers/specs/2026-08-31-m16-layout-theming-completion-design.md`; plans
+`docs/superpowers/plans/2026-08-31-m16a-theme-engine.md`,
+`...-m16b-layout-completion.md`, `...-m16c-user-themes-styling-modes.md`. M16 is
+complete in three sub-milestones.
+M16a (theme engine): the ui-kit theme data module (`THEME_TOKEN_NAMES`, 46 tokens;
+`BUILTIN_THEMES` slate-dark/slate-light/contrast-dark; `resolveTheme` + custom-theme
+sanitizers) and the `ThemeController` singleton (`theme`, `activeTheme`) writing every
+token and the color scheme as inline styles on each registered document's root — pop-out
+windows via `registerDocument`, so every open window follows a swap. Persistence rides
+`UiState.global.theme` through the sessionState leaf-key patch pipeline plus a
+localStorage mirror (`THEME_MIRROR_STORAGE_KEY`) the `main` entry applies pre-login, so
+neither the login screen nor the first paint flashes the default. Stage canvas runtime
+recolor (`RenderEngine.setThemeColors` over a named `ThemeColors`), all dockview chrome
+skinned onto theme tokens (with the library's own theme class bridged off), the settings
+theme picker, a token-mismatch sweep, an executable WCAG contrast audit of the built-ins,
+and a stylesheet↔theme-data parity test. e2e: theme switch applies immediately, persists,
+survives reload.
+M16b (layout completion): the layout tree carries `popouts: PopoutWindowLayout[]` (one
+record per window — engine-minted key, tab-ordered panels, screen-absolute rect, dormant
+marker) with the `withPopouts` codec migration (a legacy `poppedOut` id array becomes one
+single-panel window per id, key derived deterministically); ops `popOut` (carries
+key/rect), `updatePopoutGeometry`, `popOutInto`. `apply()` reconciles already-floating
+panels onto the tree rect instead of resetting them; floating windows move with Arrow
+keys (Shift for the coarse step) and resize with Ctrl+Arrows; resize hit targets meet the
+24/44px a11y floor. Popout geometry is captured from the live window, never the event
+payload — vendored dockview-core 7.0.2 populates screenY from screenX (logged in
+`OPEN_BUGS.md`). The restore flow: dormant records survive rehydrate, the
+`panels.popoutRestoredFloating` notice carries a Reopen action (info notifications with
+an action never auto-dismiss), `flushPendingNotice` withholds action notices until
+`restorablePopouts()` is non-empty (PanelHost re-flushes on `visibleRegs`), and
+`restorePopouts()` reopens each window in one user gesture. Found in flight: a
+stale-tree `apply()` from a resizeZone op yanked panels out of in-flight popups —
+`#pendingPopouts` guards both placement loops in `DockviewEngine.apply`;
+`placeFromPersistedLocation`'s popped-out branch restores the dormant record so
+trickle-prune cannot destroy the arrangement server-side. e2e: panels-floating.spec
+(keyboard resize persistence; the popout/restore round trip).
+M16c (user themes + styling modes): the settings `ThemeEditor.svelte` — name, base
+theme, every curated color token via color inputs, per-token reset, advisory WCAG
+contrast warnings (`contrastWarnings`/`CONTRAST_PAIRINGS`/`wcagContrast`) — with live
+whole-app preview through `previewCustom(draft, owner)`, presentational only and never
+serialized. Module styling modes: `Contribution.styling` host/isolated; isolated content
+is wrapped by `Surface.svelte` and slot-classed by `PanelHost.svelte` with
+`THEME_ISOLATION_CLASS`, whose rule (`themeIsolationCss`, generated from the default
+theme's data, installed per themed document under `THEME_ISOLATION_SHEET_ID`)
+re-declares every token at its engine default for that subtree only. External modules
+ship a stylesheet via the manifest `style` field (schema-validated relative `.css`,
+traversal rejected), installed as one link per enabled module by the world session with
+disable/leave cleanup; the initiative-tracker example declares it and the
+creating-a-module guide documents it. e2e: the custom-theme lifecycle — author, live
+preview, persist, reload, delete with fallback to the default. Found in flight: a
+component destroyed in the same flush that mutated controller state reads its `$state`
+fields stale (minimally reproduced under Svelte 5.56.3) — the editor's teardown clear is
+microtask-deferred and owner-scoped (`clearPreview(owner)`), and the preview entry is
+`$state.raw` because the deep proxy breaks owner identity; the e2e settings re-open is
+toggle-aware because the persisted panel layout may restore the panel open; typedoc
+cannot attach nested `@param`s to an inline object literal nor `{@link}` a private.
+Coverage: repo unit suites green (core 564, ui-kit 183, settings 42, panels 270, shell
+127, render 192, scripts 427), full gate battery including strict typedoc
+(`pnpm build:all`), and the full e2e suite 23/23 quiet. The close-out whole-branch
+adversarial review found one Important issue — spec §F's drag-into-existing-popout
+producer had never been wired (a will-drop on an open popout's group was silently
+converted to a pseudo-edge dock; shipped now as `#handlePopoutWillDrop`, classifying via
+`#popoutWindowKeys` ahead of `#toDropSite` with flat placement semantics and imperative
+moving-locked joins) — and nine Minor items, all fixed in the same campaign: the
+isolation sheet now re-declares `color-scheme`; `saveCustom` ignores a sanitizer-rejected
+entry; the manifest `style` refine rejects backslash separators; module stylesheets
+install only for modules that actually activated; the codec's referential guard rejects a
+panel id in two live locations (dormant records are tombstones, not locations);
+`#popOutPanel`'s success continuation skips a mid-flight-closed panel instead of ghosting
+it; `describeOp`'s fallthrough comment is current (and `popOutInto` stays unnarrated by
+design); PanelMenu documents the floating-window keyboard shortcuts; and the theme e2e
+gains an isolation-under-non-default-theme case plus a multi-panel restore case. Skills
+updated in the plugin checkout (panels rewritten to the
+popouts-record model, client-shell theming bullet; plugin v1.4.1); the pre-existing
+skill-citation drift naming unbuilt M14c/M17/M18 symbols (59 at the skills-corpus HEAD
+baseline, zero added by M16) is logged in `POST_WORK_FINDINGS.md`.
+
 ### M15b · Asset browser + generic document Move ✅
 Branch `m15b-asset-browser`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15b-asset-browser-design.md` and plan

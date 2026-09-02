@@ -85,6 +85,10 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+  /** External-module entry importer. Defaults to a runtime dynamic `import()`;
+   * a seam for unit tests (jsdom cannot import a served module URL), not a
+   * production configuration point. */
+  importModule?: (url: string) => Promise<unknown>;
 }
 
 /** One enabled external module resolved against the installed catalog, as built by
@@ -386,6 +390,11 @@ export class WorldSession {
    * may legitimately differ (see `#buildEntries`'s own doc), so unloading by the wrong one either
    * throws (module not found) or silently no-ops. */
   #externalModuleIds = new Map<string, string>();
+  /** The `<link>` element carrying each loaded external module's declared
+   * stylesheet (`ModuleManifest.style`), keyed by manifest id. Removed on
+   * unload (reconcile) and in bulk on `leave()` — a link left behind would
+   * keep a previous world's module styles applied app-wide. */
+  #moduleStyleLinks = new Map<string, HTMLLinkElement>();
 
   /** Construct a session bound to one connection factory + default module set; call
    * `enter(worldId)` to open the world connection.
@@ -1083,7 +1092,7 @@ export class WorldSession {
       if (resolved.length === 0) return;
       const result = await loadModules({
         entries: resolved.map(({ manifest, entry }) => ({ manifest, entry })),
-        importFn: (url) => import(/* @vite-ignore */ url),
+        importFn: this.opts.importModule ?? ((url) => import(/* @vite-ignore */ url)),
         registry: this.#modules,
         shadowcatVersion: serverVersion,
       });
@@ -1092,6 +1101,17 @@ export class WorldSession {
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
+      // Styles follow activation, never precede it, and only a module that
+      // actually activated gets a link: a per-module activation failure logs
+      // and skips without rejecting (see `ModuleRegistry.activate`), so
+      // `result.loaded` can name a module that never activated.
+      WorldSession.#applyModuleStyles(
+        this.#moduleStyleLinks,
+        resolved,
+        result.loaded.filter((id) =>
+          this.#modules.list().some((m) => m.id === id && m.active),
+        ),
+      );
     } catch (e) {
       this.#logger.warn("external module discovery failed", e);
     }
@@ -1171,6 +1191,63 @@ export class WorldSession {
     }
   }
 
+  /** Injects the declared stylesheet (`ModuleManifest.style`) of every newly
+   * loaded module as a `<link>` into the document head, resolved against the
+   * module's own entry URL (so the href stays inside the module's served
+   * folder). Follows `#recordLoaded`'s manifest-id↔folder-id mapping; per-
+   * module contained like the loader itself — a module whose link cannot be
+   * created never affects the others.
+   * @param into The link map to record into (mutated in place), manifest id →
+   * link element.
+   * @param resolved The same triples passed to `loadModules`.
+   * @param loaded The manifest ids `loadModules` reports as successfully
+   * loaded.
+   * @example
+   * ```
+   * declare const into: Map<string, HTMLLinkElement>;
+   * declare const resolved: ResolvedModuleEntry[];
+   * declare const loaded: string[];
+   * // called from #loadExternalModules and reconcileInstalledModules; not part of the public API
+   * WorldSession.#applyModuleStyles(into, resolved, loaded);
+   * ```
+   */
+  static #applyModuleStyles(
+    into: Map<string, HTMLLinkElement>,
+    resolved: ResolvedModuleEntry[],
+    loaded: string[],
+  ): void {
+    if (typeof document === "undefined") return;
+    const byManifestId = new Map(resolved.map((r) => [r.manifest.id, r]));
+    for (const manifestId of loaded) {
+      const style = byManifestId.get(manifestId)?.manifest.style;
+      const entry = byManifestId.get(manifestId)?.entry;
+      if (!style || !entry || into.has(manifestId)) continue;
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      // The manifest schema already rejects absolute/traversal paths; the
+      // entry URL's own directory is the module's served root.
+      link.href = new URL(style, new URL(entry, document.baseURI)).pathname;
+      link.dataset.shadowcatModuleStyle = manifestId;
+      document.head.appendChild(link);
+      into.set(manifestId, link);
+    }
+  }
+
+  /** Removes one module's injected stylesheet link, if any.
+   * @param manifestId The unloaded module's manifest id.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked from
+   * // reconcileInstalledModules' unload loop and leave()
+   * declare const session: WorldSession;
+   * session.leave();
+   * ```
+   */
+  #removeModuleStyle(manifestId: string): void {
+    this.#moduleStyleLinks.get(manifestId)?.remove();
+    this.#moduleStyleLinks.delete(manifestId);
+  }
+
   /** Re-fetches this world's enabled external-module set and reconciles the running session
    * against it: unloads (cascade) any currently-loaded external module no longer enabled, and
    * loads + activates any newly-enabled one. First-party modules (`opts.modules`) are never
@@ -1198,6 +1275,7 @@ export class WorldSession {
         try {
           await this.#modules.unload(manifestId, { cascade: true });
           this.#externalModuleIds.delete(folderId);
+          this.#removeModuleStyle(manifestId);
         } catch (e) {
           this.#logger.warn(`external module ${manifestId} failed to unload during reconcile`, e);
         }
@@ -1208,7 +1286,7 @@ export class WorldSession {
       if (resolved.length === 0) return;
       const result = await loadModules({
         entries: resolved.map(({ manifest, entry }) => ({ manifest, entry })),
-        importFn: (url) => import(/* @vite-ignore */ url),
+        importFn: this.opts.importModule ?? ((url) => import(/* @vite-ignore */ url)),
         registry: this.#modules,
         shadowcatVersion: this.#serverVersion,
       });
@@ -1217,6 +1295,17 @@ export class WorldSession {
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
+      // Styles follow activation, never precede it, and only a module that
+      // actually activated gets a link: a per-module activation failure logs
+      // and skips without rejecting (see `ModuleRegistry.activate`), so
+      // `result.loaded` can name a module that never activated.
+      WorldSession.#applyModuleStyles(
+        this.#moduleStyleLinks,
+        resolved,
+        result.loaded.filter((id) =>
+          this.#modules.list().some((m) => m.id === id && m.active),
+        ),
+      );
     } catch (e) {
       this.#logger.warn("external module reconcile failed", e);
     }
@@ -1237,6 +1326,9 @@ export class WorldSession {
     this.#footprintsSub?.unsubscribe();
     this.#footprintsSub = null;
     this.#footprints = EMPTY_FOOTPRINTS;
+    for (const manifestId of [...this.#moduleStyleLinks.keys()]) {
+      this.#removeModuleStyle(manifestId);
+    }
     this.#ws?.stop();
     this.#ws = null;
     this.state = "closed";

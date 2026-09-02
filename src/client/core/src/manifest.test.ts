@@ -141,6 +141,32 @@ test("an empty engines.shadowcat string is rejected", () => {
   ).toThrow();
 });
 
+test("a manifest with a valid style path parses", () => {
+  const m = parseManifest({ id: "a", version: "1.0.0", dependencies: {}, style: "style.css" });
+  expect(m.style).toBe("style.css");
+});
+
+test("a manifest without a style field parses with it absent", () => {
+  const m = parseManifest({ id: "a", version: "1.0.0", dependencies: {} });
+  expect(m.style).toBeUndefined();
+});
+
+test.each([
+  ["/abs/style.css", "absolute"],
+  ["../escape.css", "traversing"],
+  ["style.css/..", "trailing-traversal"],
+  // WHATWG URL resolution treats `\` as a path separator for special
+  // schemes, so a backslash path is traversal even with clean `/`-segments.
+  ["..\\..\\escape.css", "backslash-traversal"],
+  ["sub\\style.css", "backslash-separator"],
+  ["style.js", "non-css"],
+  ["", "empty"],
+])("a manifest with a %s style path (%s) is rejected", (style) => {
+  expect(() =>
+    parseManifest({ id: "a", version: "1.0.0", dependencies: {}, style }),
+  ).toThrow();
+});
+
 test("a manifest with a systemDefaults object parses and retains it", () => {
   const m = parseManifest({
     id: "sys",

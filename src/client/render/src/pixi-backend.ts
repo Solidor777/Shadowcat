@@ -351,6 +351,22 @@ export class PixiBackend implements DisplayBackend {
     });
   }
 
+  /** `DisplayBackend.setClearColor`: updates the Pixi renderer's background clear
+   * color; the renderer applies it on the next frame, with no redraw orchestration
+   * needed here.
+   * @param color The new clear color, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setClearColor(0x1e1e2e);
+   * ```
+   */
+  setClearColor(color: number): void {
+    this.app.renderer.background.color = color;
+  }
+
   /** `DisplayBackend.drawGrid`: replace the grid-layer line set. Clears the grid Graphics first
    * (so a shrinking line set doesn't leave stale strokes), then strokes each segment at 1px width,
    * 50% alpha. An empty `lines` array leaves the grid blank (e.g. a 0×0 viewport) rather than

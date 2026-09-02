@@ -158,6 +158,48 @@ describe("placeNewRegistrations with a persistedSource", () => {
     expect(l1).toBe(l0);
   });
 
+  it("places a persisted popped-out id as floating AND restores the window's dormant arrangement record", () => {
+    // chat + assets shared one saved window; only chat registers here. The
+    // record carries the FULL saved panel set so the restore gesture can
+    // re-open the window as saved.
+    let source = defaultLayout([
+      { id: "chat", placement: { kind: "docked", zone: "right" } },
+      { id: "assets", placement: { kind: "docked", zone: "right" } },
+    ]);
+    source = applyOp(source, { op: "popOut", id: "chat", key: "w1", rect: { left: 40, top: 50, width: 600, height: 500 } });
+    source = applyOp(source, { op: "popOutInto", id: "assets", key: "w1" });
+
+    const l1 = placeNewRegistrations(
+      defaultLayout([]),
+      [{ id: "chat", placement: { kind: "docked", zone: "right" } }],
+      source,
+    );
+    expect(locate(l1, "chat").where).toBe("floating");
+    expect(l1.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat", "assets"], rect: { left: 40, top: 50, width: 600, height: 500 }, dormant: true },
+    ]);
+  });
+
+  it("leaves a same-keyed LIVE window record untouched when a late panel of that window registers", () => {
+    let source = defaultLayout([
+      { id: "chat", placement: { kind: "docked", zone: "right" } },
+      { id: "assets", placement: { kind: "docked", zone: "right" } },
+    ]);
+    source = applyOp(source, { op: "popOut", id: "chat", key: "w1", rect: { left: 40, top: 50, width: 600, height: 500 } });
+    source = applyOp(source, { op: "popOutInto", id: "assets", key: "w1" });
+
+    // The live tree: chat already re-opened w1 this session (live record,
+    // fresher rect). The late registration of assets must float assets
+    // WITHOUT reverting w1's record to the stale saved one.
+    let l = defaultLayout([{ id: "chat", placement: { kind: "docked", zone: "right" } }]);
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: { left: 1, top: 1, width: 300, height: 200 } });
+    const l1 = placeNewRegistrations(l, [{ id: "assets", placement: { kind: "docked", zone: "right" } }], source);
+    expect(locate(l1, "assets").where).toBe("floating");
+    expect(l1.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat"], rect: { left: 1, top: 1, width: 300, height: 200 } },
+    ]);
+  });
+
   it("restores the persisted activeView when the layout started with none", () => {
     let source = defaultLayout([{ id: "assets", placement: { kind: "docked", zone: "right" } }]);
     source = applyOp(source, { op: "dock", id: "chat", zone: "right", group: "new" });
@@ -545,6 +587,10 @@ describe("every op is total (no throw on any prior location)", () => {
     { op: "resizeGroup", zone: "right", group: 5, size: 0.5 },
     { op: "resizeFloating", id: "ghost", rect: { x: 0, y: 0, w: 1, h: 1 } },
     { op: "compactView", id: "ghost" },
+    { op: "popOut", id: "ghost", key: "w", rect: null },
+    { op: "popOutInto", id: "ghost", key: "w" },
+    { op: "updatePopoutGeometry", key: "w", rect: { left: 0, top: 0, width: 1, height: 1 } },
+    { op: "popIn", id: "ghost" },
   ];
 
   it("applies every op against a fresh empty layout without throwing", () => {
@@ -642,23 +688,58 @@ describe("popOut / popIn", () => {
     return applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
   }
 
-  it("popOut detaches from its zone and records the id in poppedOut", () => {
-    const l = applyOp(docked(), { op: "popOut", id: "chat" });
-    expect(l.expanded.poppedOut).toEqual(["chat"]);
+  it("popOut detaches from its zone and records a single-panel window under the op's key", () => {
+    const l = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect: null });
+    expect(l.expanded.popouts).toEqual([{ key: "w1", panels: ["chat"], rect: null }]);
     expect(l.expanded.zones.right.groups).toEqual([]);
     expect(locate(l, "chat")).toEqual({ where: "popped-out" });
   });
 
+  it("popOut carries the window's screen rect when the engine observed one", () => {
+    const rect = { left: 100, top: 200, width: 800, height: 600 };
+    const l = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect });
+    expect(l.expanded.popouts[0].rect).toEqual(rect);
+  });
+
   it("popOut on an already-popped-out id is a same-reference no-op", () => {
-    const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
-    const l2 = applyOp(l1, { op: "popOut", id: "chat" });
+    const l1 = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect: null });
+    const l2 = applyOp(l1, { op: "popOut", id: "chat", key: "w1", rect: null });
     expect(l2).toBe(l1);
   });
 
-  it("popIn removes the id from poppedOut and docks it right", () => {
-    const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
+  it("popOut under an existing key replaces that entry — the restore gesture reviving a retained dormant record", () => {
+    let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+    l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+    l = {
+      ...l,
+      expanded: {
+        ...l.expanded,
+        popouts: [{ key: "w1", panels: ["chat", "assets"], rect: { left: 1, top: 2, width: 3, height: 4 }, dormant: true }],
+      },
+    };
+    const out = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    // The stale record's panel list is redefined to the panel actually popped
+    // out; the other recorded panels are placed by their own ops. Dormant clears.
+    expect(out.expanded.popouts).toEqual([{ key: "w1", panels: ["chat"], rect: null }]);
+    expect(locate(out, "chat")).toEqual({ where: "popped-out" });
+    expect(locate(out, "assets")).toEqual({ where: "closed" });
+  });
+
+  it("popIn removes the id from its window and docks it right; a window with surviving panels is kept", () => {
+    let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+    l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "assets", zone: "right", group: "new" });
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    l = applyOp(l, { op: "popOutInto", id: "assets", key: "w1" });
+    const l2 = applyOp(l, { op: "popIn", id: "chat" });
+    expect(l2.expanded.popouts).toEqual([{ key: "w1", panels: ["assets"], rect: null }]);
+    expect(l2.expanded.zones.right.groups[0].tabs).toEqual(["chat"]);
+  });
+
+  it("popIn of a window's last panel drops the emptied window entry", () => {
+    const l1 = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect: null });
     const l2 = applyOp(l1, { op: "popIn", id: "chat" });
-    expect(l2.expanded.poppedOut).toEqual([]);
+    expect(l2.expanded.popouts).toEqual([]);
     expect(l2.expanded.zones.right.groups[0].tabs).toEqual(["chat"]);
   });
 
@@ -667,21 +748,41 @@ describe("popOut / popIn", () => {
     expect(applyOp(l, { op: "popIn", id: "chat" })).toBe(l);
   });
 
-  it("float on a popped-out id detaches it from poppedOut", () => {
-    const l1 = applyOp(docked(), { op: "popOut", id: "chat" });
+  it("float on a popped-out id detaches it from its window", () => {
+    const l1 = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect: null });
     const l2 = applyOp(l1, { op: "float", id: "chat", rect: { x: 1, y: 2, w: 3, h: 4 } });
-    expect(l2.expanded.poppedOut).toEqual([]);
+    expect(l2.expanded.popouts).toEqual([]);
     expect(l2.expanded.floating.map((f) => f.id)).toEqual(["chat"]);
   });
 
-  it("prune drops an unknown popped-out id", () => {
-    const l = applyOp(docked(), { op: "popOut", id: "chat" });
+  it("a dormant window entry is an arrangement record only — its panels do not locate as popped-out", () => {
+    const base = docked();
+    const l: PanelLayoutV1 = {
+      ...base,
+      expanded: { ...base.expanded, popouts: [{ key: "w", panels: ["chat"], rect: null, dormant: true }] },
+    };
+    // chat is docked; the dormant entry listing it changes nothing.
+    expect(locate(l, "chat")).toEqual({ where: "docked", zone: "right", group: 0, tabIndex: 0 });
+  });
+
+  it("prune drops an unknown id from a window's panels, keeping the window for its surviving members", () => {
+    let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+    l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "assets", zone: "right", group: "new" });
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    l = applyOp(l, { op: "popOutInto", id: "assets", key: "w1" });
+    const pruned = prune(l, new Set(["chat"]));
+    expect(pruned.expanded.popouts).toEqual([{ key: "w1", panels: ["chat"], rect: null }]);
+  });
+
+  it("prune drops an unknown popped-out id, dropping the emptied window entry", () => {
+    const l = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect: null });
     const pruned = prune(l, new Set());
-    expect(pruned.expanded.poppedOut).toEqual([]);
+    expect(pruned.expanded.popouts).toEqual([]);
   });
 
   it("prune with all ids known is a same-reference no-op", () => {
-    const l = applyOp(docked(), { op: "popOut", id: "chat" });
+    const l = applyOp(docked(), { op: "popOut", id: "chat", key: "w1", rect: null });
     expect(prune(l, new Set(["chat"]))).toBe(l);
   });
 
@@ -689,16 +790,107 @@ describe("popOut / popIn", () => {
     let source = defaultLayout([{ id: "chat" }, { id: "assets" }]);
     source = applyOp(source, { op: "dock", id: "chat", zone: "right", group: "new" });
     source = applyOp(source, { op: "dock", id: "assets", zone: "right", group: "new" });
-    source = applyOp(source, { op: "popOut", id: "chat" });
-    source = applyOp(source, { op: "popOut", id: "assets" });
+    source = applyOp(source, { op: "popOut", id: "chat", key: "w1", rect: null });
+    source = applyOp(source, { op: "popOut", id: "assets", key: "w2", rect: null });
 
     const rehydrated = placeNewRegistrations(defaultLayout([]), [{ id: "chat" }, { id: "assets" }], source);
-    expect(rehydrated.expanded.poppedOut).toEqual([]);
+    // Each restored window's arrangement record is retained as dormant — see
+    // `placeFromPersistedLocation`'s popped-out branch.
+    expect(rehydrated.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat"], rect: null, dormant: true },
+      { key: "w2", panels: ["assets"], rect: null, dormant: true },
+    ]);
     const rects = rehydrated.expanded.floating;
     expect(rects).toHaveLength(2);
     const [a, b] = rects;
     expect(a.rect).not.toEqual(b.rect);
     expect(b.rect.x).toBeGreaterThan(a.rect.x);
     expect(b.rect.y).toBeGreaterThan(a.rect.y);
+  });
+});
+
+describe("op: popOutInto", () => {
+  function twoDocked(): PanelLayoutV1 {
+    let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
+    l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+    l = applyOp(l, { op: "dock", id: "assets", zone: "right", group: "new" });
+    return l;
+  }
+
+  it("moves a docked panel into an existing window's panels (appended in tab order)", () => {
+    let l = twoDocked();
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    l = applyOp(l, { op: "popOutInto", id: "assets", key: "w1" });
+    expect(l.expanded.popouts).toEqual([{ key: "w1", panels: ["chat", "assets"], rect: null }]);
+    expect(l.expanded.zones.right.groups).toEqual([]);
+    expect(locate(l, "assets")).toEqual({ where: "popped-out" });
+  });
+
+  it("is a same-reference no-op when the panel is already in that window", () => {
+    let l = twoDocked();
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    expect(applyOp(l, { op: "popOutInto", id: "chat", key: "w1" })).toBe(l);
+  });
+
+  it("is a same-reference no-op for an unknown window key", () => {
+    const l = twoDocked();
+    expect(applyOp(l, { op: "popOutInto", id: "chat", key: "nope" })).toBe(l);
+  });
+
+  it("is a same-reference no-op on a dormant entry (a retained record has no live window to join)", () => {
+    const base = twoDocked();
+    const l: PanelLayoutV1 = {
+      ...base,
+      expanded: { ...base.expanded, popouts: [{ key: "w1", panels: ["chat"], rect: null, dormant: true }] },
+    };
+    expect(applyOp(l, { op: "popOutInto", id: "assets", key: "w1" })).toBe(l);
+  });
+
+  it("moving a panel out of its current window shrinks the source entry", () => {
+    let l = twoDocked();
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    l = applyOp(l, { op: "popOutInto", id: "assets", key: "w1" });
+    l = applyOp(l, { op: "popOut", id: "actors", key: "w2", rect: null });
+    l = applyOp(l, { op: "popOutInto", id: "assets", key: "w2" });
+    expect(l.expanded.popouts).toEqual([
+      { key: "w1", panels: ["chat"], rect: null },
+      { key: "w2", panels: ["actors", "assets"], rect: null },
+    ]);
+  });
+
+  it("moving a window's last panel out drops the emptied source entry", () => {
+    let l = twoDocked();
+    l = applyOp(l, { op: "popOut", id: "chat", key: "w1", rect: null });
+    l = applyOp(l, { op: "popOut", id: "assets", key: "w2", rect: null });
+    l = applyOp(l, { op: "popOutInto", id: "chat", key: "w2" });
+    expect(l.expanded.popouts).toEqual([{ key: "w2", panels: ["assets", "chat"], rect: null }]);
+  });
+});
+
+describe("op: updatePopoutGeometry", () => {
+  const RECT = { left: 10, top: 20, width: 300, height: 400 };
+
+  it("records a window's observed screen rect", () => {
+    let l = applyOp(defaultLayout([{ id: "chat" }]), { op: "popOut", id: "chat", key: "w1", rect: null });
+    l = applyOp(l, { op: "updatePopoutGeometry", key: "w1", rect: RECT });
+    expect(l.expanded.popouts[0].rect).toEqual(RECT);
+  });
+
+  it("is a same-reference no-op when the stored rect deep-equals the new one", () => {
+    const l = applyOp(defaultLayout([{ id: "chat" }]), { op: "popOut", id: "chat", key: "w1", rect: RECT });
+    expect(applyOp(l, { op: "updatePopoutGeometry", key: "w1", rect: { ...RECT } })).toBe(l);
+  });
+
+  it("is a same-reference no-op for an unknown window key", () => {
+    const l = applyOp(defaultLayout([{ id: "chat" }]), { op: "popOut", id: "chat", key: "w1", rect: null });
+    expect(applyOp(l, { op: "updatePopoutGeometry", key: "nope", rect: RECT })).toBe(l);
+  });
+
+  it("null-to-null is a same-reference no-op; rect-to-null clears the record", () => {
+    let l = applyOp(defaultLayout([{ id: "chat" }]), { op: "popOut", id: "chat", key: "w1", rect: null });
+    expect(applyOp(l, { op: "updatePopoutGeometry", key: "w1", rect: null })).toBe(l);
+    l = applyOp(l, { op: "updatePopoutGeometry", key: "w1", rect: RECT });
+    const l2 = applyOp(l, { op: "updatePopoutGeometry", key: "w1", rect: null });
+    expect(l2.expanded.popouts[0].rect).toBeNull();
   });
 });

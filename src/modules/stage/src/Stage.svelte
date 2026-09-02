@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
   import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
@@ -35,8 +35,9 @@
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
-  /** Live engine handle for the GM vision control (set after async init). */
-  let engineRef: RenderEngine | null = null;
+  /** Live engine handle for the GM vision control and the theme-swap recolor
+   * (set after async init; `$state` so the recolor effect below observes it). */
+  let engineRef = $state<RenderEngine | null>(null);
   /** GM vision mode: "all" (no fog), "fog" (client-only full-fog preview), or "as:<userId>"
    * (see-as-player: re-subscribe vision as that user — server-gated to GMs). */
   let gmView = $state("all");
@@ -315,6 +316,22 @@
     };
   });
 
+  /** Theme-swap recolor: `activeTheme()` is the ui-kit theme controller's
+   * `createSubscriber`-backed reactive read, so this effect re-runs on any theme
+   * change and pushes the re-read canvas colors into the live engine via
+   * `RenderEngine.setThemeColors`. The construction-time reads (the backend
+   * factory's `--surface-base`, the `gridColor` opt) remain the initial values;
+   * this effect only handles post-construction swaps. */
+  $effect(() => {
+    activeTheme();
+    const e = engineRef;
+    if (!e) return;
+    e.setThemeColors({
+      background: readColor("--surface-base", 0x101014),
+      gridColor: readColor("--grid-line", 0x363645),
+    });
+  });
+
   /** Pointer/wheel gestures → the engine's tool-aware dispatcher (active tool first,
    * camera pan as the no-tool fallback). Unified pointer events (#10); listeners are
    * bound to `signal` so teardown removes them all in one `abort()`.
@@ -384,14 +401,14 @@
   }
   .gm-view {
     position: absolute;
-    top: var(--space-2, 0.5rem);
-    right: var(--space-2, 0.5rem);
-    padding: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+    top: var(--space-2);
+    right: var(--space-2);
+    padding: var(--space-1) var(--space-2);
     font-size: 0.8125rem;
-    color: var(--text-on-surface, #e8e8f0);
-    background: var(--surface-raised, #1c1c24);
-    border: 1px solid var(--border-subtle, #363645);
-    border-radius: var(--radius-sm, 0.25rem);
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
     cursor: pointer;
     min-height: 2.25rem; /* touch target (#10) */
   }

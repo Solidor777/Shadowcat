@@ -101,6 +101,16 @@ export interface RenderEngineOpts {
   selectedTokens?: () => ReadonlySet<string>;
 }
 
+/** Theme-driven colors applied to the stage canvas at runtime by
+ * {@link RenderEngine.setThemeColors}. Either field may be omitted to leave
+ * that channel untouched. */
+export interface ThemeColors {
+  /** The renderer clear color, packed `0xRRGGBB`. */
+  background?: number;
+  /** The grid line color, packed `0xRRGGBB`. */
+  gridColor?: number;
+}
+
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
  * the store-driven reconciler. Framework- and Pixi-free (the backend is injected). */
 export class RenderEngine implements SceneToolHost {
@@ -142,8 +152,9 @@ export class RenderEngine implements SceneToolHost {
   private readonly emotes = new EmoteView();
   /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
   private emotesActive = false;
-  /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate. */
-  private readonly gridColor: number;
+  /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
+   * Reassignable at runtime via {@link RenderEngine.setThemeColors} (a theme swap). */
+  private gridColor: number;
   /** Current CSS-pixel viewport size, set by {@link setViewport}; feeds the visible-scene-rect
    * computation in {@link redrawGrid}. */
   private viewport = { width: 0, height: 0 };
@@ -933,6 +944,29 @@ export class RenderEngine implements SceneToolHost {
    */
   addPing(x: number, y: number): void {
     this.pings.add(x, y);
+  }
+
+  /** Apply theme-driven colors at runtime: routes `background` to the backend's
+   * clear color and stores `gridColor`, forcing an immediate grid redraw so the
+   * new line color shows without waiting for a camera/viewport change (the grid
+   * only re-draws on those triggers — see `redrawGrid`). Either field may
+   * be omitted to leave that channel untouched; the engine is never recreated.
+   * @param colors The colors to apply; either field may be omitted to leave that
+   * channel untouched.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.setThemeColors({ background: 0x1e1e2e, gridColor: 0x3a3a4a });
+   * ```
+   */
+  setThemeColors(colors: ThemeColors): void {
+    if (colors.background !== undefined) this.opts.backend.setClearColor(colors.background);
+    if (colors.gridColor !== undefined) {
+      this.gridColor = colors.gridColor;
+      this.redrawGrid();
+    }
   }
 
   /** `SceneToolHost.addEmote`: spawn a transient emote glyph above `tokenId`'s current

@@ -53,11 +53,11 @@
   .modal-scrim {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--scrim);
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
+    z-index: var(--z-popover);
   }
   .modal {
     width: min(56rem, 94vw);
