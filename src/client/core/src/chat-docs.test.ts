@@ -481,6 +481,58 @@ describe("image segments", () => {
   });
 });
 
+function tableDraw(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+  return {
+    kind: "table_draw",
+    table_id: "t1",
+    table_name: "Loot",
+    roll_id: "r1",
+    formula: "1d6",
+    outcome: rollOutcome(),
+    row: { index: 0, label: "a sword", content: [], nested: [] },
+    ...overrides,
+  };
+}
+
+describe("table_draw segments", () => {
+  test("parses a table_draw segment with two nesting levels", () => {
+    const inner = tableDraw({ table_id: "t2", roll_id: "r2" });
+    const outer = tableDraw({
+      row: { index: 0, label: "spawns", content: [], nested: [inner] },
+    });
+    const eng = parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [outer] }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toHaveLength(1);
+    const seg = eng!.content[0] as { row?: { nested: unknown[] } };
+    expect(seg.row?.nested).toHaveLength(1);
+  });
+
+  test("refuses the whole message when a nested table_draw segment is malformed", () => {
+    const malformedInner = { kind: "table_draw", table_id: "t2" }; // missing required fields
+    const outer = tableDraw({
+      row: { index: 0, label: "spawns", content: [], nested: [malformedInner] },
+    });
+    expect(parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [outer] }))).toBeNull();
+  });
+
+  test("isKnownSegment recognizes table_draw", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      kind: "roll",
+      content: [tableDraw(), { kind: "preview_card", url: "https://example.com/b" }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content.filter(isKnownSegment)).toHaveLength(1);
+  });
+
+  test("a Formula draw with no matching row parses row as absent/null", () => {
+    const seg = tableDraw({ row: null });
+    const eng = parseMessageEngine(msgDoc({ ...base, kind: "roll", content: [seg] }));
+    expect(eng).not.toBeNull();
+    expect((eng!.content[0] as { row: unknown }).row).toBeFalsy();
+  });
+});
+
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {
   const d = buildChannelRegistryDoc("w1", { general: { name: "General" } });
   expect(d.doc_type).toBe("channel-registry");

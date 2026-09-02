@@ -1182,6 +1182,78 @@ describe("WsClient", () => {
     expect(frame.request_id.length).toBeGreaterThan(0);
   });
 
+  it("drawTable sends a draw_table frame defaulting count/audience/actorOwner", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client.drawTable({ tableId: "t1", channel: "general" }).catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "draw_table")!);
+    expect(frame).toMatchObject({
+      type: "draw_table",
+      table_id: "t1",
+      channel: "general",
+      count: 1,
+      actor_owner: null,
+      audience: { kind: "public" },
+    });
+    expect(typeof frame.request_id).toBe("string");
+  });
+
+  it("drawTable forwards an explicit count/actorOwner/audience", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+
+    void client
+      .drawTable({
+        tableId: "t1",
+        channel: "general",
+        count: 3,
+        actorOwner: { kind: "actor", actor_id: "a1" },
+        audience: { kind: "gm_only" },
+      })
+      .catch(() => {});
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "draw_table")!);
+    expect(frame).toMatchObject({
+      count: 3,
+      actor_owner: { kind: "actor", actor_id: "a1" },
+      audience: { kind: "gm_only" },
+    });
+  });
+
+  it("a rejected draw_table rejects the correlated promise with the server reason", async () => {
+    const sent: string[] = [];
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: (d) => sent.push(d), close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.drawTable({ tableId: "t1", channel: "general" });
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "draw_table")!);
+    onMessage(
+      JSON.stringify({
+        type: "chat_error",
+        request_id: req.request_id,
+        message: "That table could not be found.",
+      }),
+    );
+    await expect(p).rejects.toThrow(/could not be found/i);
+  });
+
   it("a rejected chat op rejects the correlated promise with the server reason", async () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};
