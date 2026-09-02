@@ -53,3 +53,22 @@ test("renders overlay-surface contributions outside the layout grid", async () =
   expect(probe).toBeTruthy();
   expect(probe?.closest(".layout")).toBeNull();
 });
+
+// The middle grid row is `1fr` of a `100vh` grid, and a row is at least as tall as its
+// tallest item's minimum contribution — so EVERY item in that row must carry the growth
+// cap (`min-height: 0` plus a non-visible `overflow-y`), or that one item's content grows
+// the row, the grid and every sibling past the viewport. Enumerated so a region added to
+// the row without the cap fails here rather than in a real layout.
+test("every region sharing the 1fr row carries the growth cap", () => {
+  const { container } = render(Layout, { context: setAppContextForTest() });
+  for (const selector of [".main", ".toolrail"]) {
+    const el = container.querySelector(selector);
+    expect(el, selector).toBeTruthy();
+    const cs = getComputedStyle(el!);
+    expect(cs.minHeight, `${selector} min-height`).toBe("0px");
+    // jsdom's cascade keeps a declared `overflow` shorthand as-is rather than expanding it
+    // into the longhands, so a region declaring the shorthand reads through that fallback.
+    const overflowY = cs.overflowY === "visible" ? cs.overflow : cs.overflowY;
+    expect(["hidden", "auto", "scroll", "clip"], `${selector} overflow-y`).toContain(overflowY);
+  }
+});

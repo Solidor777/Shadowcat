@@ -465,6 +465,8 @@
   .emote-palette input {
     min-width: 0;
     width: 8rem;
+    max-width: 100%; /* the vertical rail is narrower than 8rem; fit it rather than overflow */
+    box-sizing: border-box;
   }
 
   /* Compact bottom strip: lay tools out horizontally with overflow scroll
