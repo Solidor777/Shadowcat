@@ -1,7 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
-import { DocumentStore, type WireDocument, type WireOperation } from "@shadowcat/core";
+import {
+  DocumentStore,
+  type WireDocument,
+  type WireOperation,
+  type RollOutcome,
+  type TableDrawSegment,
+} from "@shadowcat/core";
 import SegmentList from "./SegmentList.svelte";
 
 afterEach(() => cleanup());
@@ -268,5 +274,120 @@ describe("SegmentList — image", () => {
     expect(a?.getAttribute("href")).not.toMatch(/variant=/);
     expect(a?.getAttribute("target")).toBe("_blank");
     expect(a?.getAttribute("rel")).toBe("noopener noreferrer");
+  });
+});
+
+function rollOutcome(): RollOutcome {
+  return {
+    total: 4, records: [],
+    successes: null, pass: null, margin: null, tier_label: null, tier_value: null,
+    crit_successes: 0, crit_fails: 0, positive_counter: 0, negative_counter: 0,
+    symbol_counts: {}, labeled_consts: [],
+  };
+}
+
+function tableDraw(overrides: Partial<TableDrawSegment> = {}): TableDrawSegment {
+  return {
+    kind: "table_draw",
+    table_id: "t1",
+    table_name: "Loot",
+    roll_id: "r1",
+    formula: "1d6",
+    outcome: rollOutcome(),
+    row: { index: 0, label: "a sword", content: [{ kind: "text", text: "shiny" }], nested: [] },
+    ...overrides,
+  };
+}
+
+const tableDoc: WireDocument = {
+  id: "t1",
+  scope: { kind: "world", world_id: "w1" },
+  doc_type: "table",
+  schema_version: 1,
+  name: "Loot",
+  source: null,
+  owner: null,
+  permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+  embedded: {},
+  parent_id: null,
+  engine: { draw: { kind: "weighted" }, rows: [], description: "" },
+  system: {},
+  created_at: 0,
+  updated_at: 0,
+};
+
+describe("SegmentList — table_draw", () => {
+  it("renders a nested draw indented under its parent", () => {
+    const nested = tableDraw({
+      table_id: "t2",
+      roll_id: "r2",
+      row: { index: 0, label: "a gem", content: [], nested: [] },
+    });
+    const outer = tableDraw({
+      row: { index: 0, label: "spawns", content: [], nested: [nested] },
+    });
+    const { container } = render(SegmentList, {
+      props: { segments: [outer], channel: "general" },
+      context: setAppContextForTest({}),
+    });
+    expect(container.querySelector(".table-draw-nested .table-draw")).not.toBeNull();
+    expect(container.textContent).toContain("a gem");
+  });
+
+  it("renders row.content through this same component", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [tableDraw()], channel: "general" },
+      context: setAppContextForTest({}),
+    });
+    expect(container.querySelector(".seg-text")?.textContent).toBe("shiny");
+  });
+
+  it("shows a no-matching-row message when row is absent", () => {
+    const { container } = render(SegmentList, {
+      props: { segments: [tableDraw({ row: null })], channel: "general" },
+      context: setAppContextForTest({}),
+    });
+    expect(container.querySelector(".table-draw-no-row")).not.toBeNull();
+  });
+
+  it("shows a Draw button on a doc_link only when the target resolves to a table in the store", () => {
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "t1" }, label: "Loot Table" }],
+        channel: "general",
+      },
+      context: setAppContextForTest({ documents: storeWith(tableDoc) }),
+    });
+    expect(container.querySelector('[data-testid="table-draw-button"]')).not.toBeNull();
+  });
+
+  it("shows no Draw button on a doc_link when the target is not a table", () => {
+    const actorDoc: WireDocument = { ...tableDoc, id: "a1", doc_type: "actor", engine: {} };
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "a1" }, label: "Goblin" }],
+        channel: "general",
+      },
+      context: setAppContextForTest({ documents: storeWith(actorDoc) }),
+    });
+    expect(container.querySelector('[data-testid="table-draw-button"]')).toBeNull();
+  });
+
+  it("clicking the Draw button calls ctx.chat.drawTable with the message's channel", async () => {
+    const drawTable = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "doc_link", target: { kind: "doc", doc_id: "t1" }, label: "Loot Table" }],
+        channel: "ic",
+      },
+      context: setAppContextForTest({
+        documents: storeWith(tableDoc),
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable },
+      }),
+    });
+    const btn = container.querySelector('[data-testid="table-draw-button"]') as HTMLButtonElement;
+    btn.click();
+    await Promise.resolve();
+    expect(drawTable).toHaveBeenCalledWith({ tableId: "t1", channel: "ic" });
   });
 });

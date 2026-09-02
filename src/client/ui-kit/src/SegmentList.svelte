@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getAppContext } from "./appContext";
+  import SegmentList from "./SegmentList.svelte";
   import type { ChatSegment, UnknownSegment, DocLinkTarget, WireActorOwnerRef } from "@shadowcat/core";
   import { isKnownSegment } from "@shadowcat/core";
   import RollTooltip from "./RollTooltip.svelte";
@@ -33,7 +34,9 @@
    * docLinkOpenRef(target);
    * ```
    */
-  function docLinkOpenRef(target: DocLinkTarget): { docId: string; embeddedPath?: string } | { tokenId: string } | null {
+  function docLinkOpenRef(
+    target: DocLinkTarget,
+  ): { /** The resolved top-level document's id. */ docId: string; /** A one-level embedded-child pointer, if any. */ embeddedPath?: string } | { /** The resolved placed token's document id. */ tokenId: string } | null {
     if (target.kind === "doc") {
       return ctx.documents.get(target.doc_id)
         ? { docId: target.doc_id, embeddedPath: target.embedded_path ?? undefined }
@@ -81,6 +84,38 @@
     } catch {
       return undefined;
     }
+  }
+
+  /** Whether a `doc_link` segment's target names a `table` document present in the
+   * per-recipient optimistic store — gates the Draw affordance the same fail-closed
+   * presence check `docLinkOpenRef` uses (a table this recipient cannot READ is
+   * absent from the store, so no Draw button ever appears for it).
+   * @param target The `doc_link` segment's target.
+   * @returns `true` iff `target` is a `doc` reference whose document is present and
+   * has `doc_type === "table"`.
+   * @example
+   * ```
+   * declare const target: DocLinkTarget;
+   * docLinkIsTable(target);
+   * ```
+   */
+  function docLinkIsTable(target: DocLinkTarget): boolean {
+    return target.kind === "doc" && ctx.documents.get(target.doc_id)?.doc_type === "table";
+  }
+
+  /** Draw button click on a table doc_link: posts a fresh, public draw on the
+   * carrying message's channel. A rejection (no READ, cycle, etc.) is
+   * player-presentable; surfaced the same way `sendRollButton` surfaces one.
+   * @param tableId The referenced table document's id.
+   * @example
+   * ```
+   * drawFromTable("t1");
+   * ```
+   */
+  function drawFromTable(tableId: string): void {
+    void ctx.chat.drawTable({ tableId, channel }).catch((e: unknown) => {
+      ctx.notify(e instanceof Error ? e.message : String(e), "error");
+    });
   }
 
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
@@ -168,6 +203,12 @@
     {:else}
       <span class="seg-text">{s.label}</span>
     {/if}
+    {#if docLinkIsTable(s.target)}
+      {@const tableId = s.target.kind === "doc" ? s.target.doc_id : ""}
+      <button type="button" class="table-draw-button" data-testid="table-draw-button" onclick={() => drawFromTable(tableId)}>
+        {t("chat.table.draw")}
+      </button>
+    {/if}
   {:else if s.kind === "image"}
     <!-- Server-resolved asset: the `[[asset:...]]` span an author placed, or a
     Markdown/HTML image URL the server fetched and asset-ified. `src` is ALWAYS
@@ -176,6 +217,32 @@
     <a class="image-segment-link" href={ctx.assets.url(s.asset_id)} target="_blank" rel="noopener noreferrer">
       <img class="image-segment" data-testid="image-segment" src={ctx.assets.url(s.asset_id, "preview")} alt={s.alt} loading="lazy" />
     </a>
+  {:else if s.kind === "table_draw"}
+    <!-- One executed table draw. `spec`/`raw` are GM-only server-side (see
+    `roll_property_overrides`) — this component never reads them, same as
+    `roll_embed`'s own GM-only fields staying opaque to RollTooltip beyond
+    the recalc menu. Recursive: `row.content` renders through this SAME
+    component (`<svelte:self>`), and each `row.nested` entry is itself a
+    full `table_draw` segment, wrapped as a one-element segment list so the
+    identical recursive branch renders it, indented. -->
+    <div class="table-draw">
+      <div class="table-draw-header">
+        <RollTooltip outcome={s.outcome} recalcHistory={null} />
+      </div>
+      {#if s.row}
+        <div class="table-draw-row-label">{s.row.label}</div>
+        <SegmentList segments={s.row.content} {channel} />
+        {#if s.row.nested.length > 0}
+          <div class="table-draw-nested">
+            {#each s.row.nested as nested, j (j)}
+              <SegmentList segments={[nested]} {channel} />
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <div class="table-draw-no-row">{t("chat.table.noRow")}</div>
+      {/if}
+    </div>
   {/if}
 {/each}
 
@@ -282,5 +349,33 @@
     max-width: 100%;
     display: block;
     border-radius: var(--radius-1, 4px);
+  }
+  .table-draw-button {
+    background: none;
+    border: 1px solid var(--border-color, #444);
+    border-radius: var(--radius-1, 4px);
+    padding: 0 var(--space-1);
+    min-height: 44px;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+  }
+  .table-draw {
+    display: block;
+    padding: var(--space-1);
+    border: 1px solid var(--border-color, #444);
+    border-radius: var(--radius-1, 4px);
+  }
+  .table-draw-row-label {
+    font-weight: 600;
+  }
+  .table-draw-no-row {
+    font-style: italic;
+    opacity: 0.7;
+  }
+  .table-draw-nested {
+    margin-top: var(--space-1);
+    padding-left: var(--space-2, 1rem);
+    border-left: 2px solid var(--border-color, #444);
   }
 </style>

@@ -586,7 +586,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
       }),
     });
     await fireEvent.click(screen.getByText("chat.roll.reroll"));
@@ -601,7 +601,7 @@ describe("MessageCard — GM recalc menu", () => {
       context: setAppContextForTest({
         documents: storeWith(doc),
         role: "gm",
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
       }),
     });
     await fireEvent.click(screen.getByText("chat.roll.remove"));
@@ -617,7 +617,7 @@ describe("MessageCard — GM recalc menu", () => {
         documents: storeWith(doc),
         role: "gm",
         t: fakeT,
-        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc },
+        chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc, drawTable: () => Promise.resolve() },
       }),
     });
     const input = screen.getByLabelText("Replacement face value for die 1") as HTMLInputElement;
@@ -700,7 +700,7 @@ describe("MessageCard — roll button", () => {
     const send = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({ channel: "ooc", content: "/roll 1d20+5" });
@@ -715,7 +715,7 @@ describe("MessageCard — roll button", () => {
     speakAs.actorId = "actor-1";
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -736,7 +736,7 @@ describe("MessageCard — roll button", () => {
     speakAsToken.select("tok-1");
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT, speakAs, speakAsToken, chat: { send, edit: () => Promise.resolve(), delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("Attack"));
     expect(send).toHaveBeenCalledWith({
@@ -856,7 +856,7 @@ describe("MessageCard — edit", () => {
     const edit = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.edit"));
     const textarea = screen.getByLabelText("chat.edit") as HTMLTextAreaElement;
@@ -871,7 +871,7 @@ describe("MessageCard — edit", () => {
     const edit = vi.fn();
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit, delete: () => Promise.resolve(), recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.edit"));
     await fireEvent.click(screen.getByText("chat.cancel"));
@@ -891,7 +891,7 @@ describe("MessageCard — delete", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
     expect(window.confirm).toHaveBeenCalledWith("chat.deleteConfirm");
@@ -904,7 +904,7 @@ describe("MessageCard — delete", () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     render(MessageCard, {
       props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve() } }),
+      context: setAppContextForTest({ documents: storeWith(doc), selfId: "u1", role: "player", chat: { send: () => Promise.resolve(), edit: () => Promise.resolve(), delete: del, recalc: () => Promise.resolve(), drawTable: () => Promise.resolve() } }),
     });
     await fireEvent.click(screen.getByText("chat.delete"));
     expect(del).not.toHaveBeenCalled();

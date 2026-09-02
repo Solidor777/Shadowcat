@@ -7,8 +7,8 @@ surface. Card chrome (header, roll block, GM recalc menu, edit/delete
 affordances) lives here; segment-body rendering — including the client's
 **sole `{@html}` boundary** for chat content — is delegated to ui-kit's
 `SegmentList`, which every segment kind (text, html, roll embeds, roll
-buttons, link previews, oembed cards, doc links, images) renders through.
-Replaceable by a game-system module via the same contract.
+buttons, link previews, oembed cards, doc links, images, table draws)
+renders through. Replaceable by a game-system module via the same contract.
 
 ## Contributions
 
@@ -32,7 +32,12 @@ live in `@shadowcat/ui-kit` — see that package's own docs.
   ui-kit's `SegmentList`; rolls are immutable server artifacts — the card
   renders them, never recomputes them. An `image` segment renders via
   `ctx.assets.url(asset_id, "preview")`, the server's own asset endpoint —
-  never a raw external URL.
+  never a raw external URL. A `table_draw` segment renders recursively
+  (`row.content` and each `row.nested` entry render through `SegmentList`
+  itself); `spec`/`raw` are GM-only server-side and never read by the card. A
+  `doc_link` whose target resolves (in the recipient's optimistic store) to a
+  `table` document also renders a Draw button, calling `ctx.chat.drawTable`
+  on the message's own channel.
 
 ## Pointers
 

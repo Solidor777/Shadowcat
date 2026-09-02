@@ -28,6 +28,7 @@ import {
   type WireCapabilityRequirement,
   type ChatSendOptions,
   type WireRecalcOp,
+  type DrawTableOptions,
   type SceneFrame,
   type SceneSubscription,
   type PathResult,
@@ -759,6 +760,20 @@ export class WorldSession {
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.recalcRoll(messageId, rollId, ops);
+  }
+
+  /** Draw one or more rows from a `table` document, posted as one chat message.
+   * @param opts Draw options.
+   * @returns Same silence-based resolution as `sendChatMessage`.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * await session.drawTable({ tableId: "t1", channel: "general" });
+   * ```
+   */
+  drawTable(opts: DrawTableOptions): Promise<void> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.drawTable(opts);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the
