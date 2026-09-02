@@ -19,6 +19,14 @@ export const COMBAT_SERVICE = "shadowcat.service:combat";
 /** A world role, as resolved by `WorldSession.role` -- `null` before `Welcome` arrives. */
 export type WorldRole = "gm" | "player";
 
+/** Options for `CombatApi.createCombat`. */
+export interface CreateCombatOptions {
+  /** Display name; `null`/omitted leaves the combat unnamed. */
+  name?: string | null;
+  /** Explicit document id, or omitted to generate one. */
+  id?: string;
+}
+
 /** A new combatant to add via `CombatApi.addCombatants`. At least one of `tokenId`/`actorId`
  * must resolve to a document, or the call throws `CombatClientError` (`code: "no-host"`). */
 export interface NewCombatant {
@@ -85,6 +93,12 @@ export class CombatClientError extends Error {
   /**
    * @param code Which rule was violated.
    * @param message Human-readable detail.
+   * @example
+   * ```ts
+   * import { CombatClientError } from "@shadowcat/core";
+   *
+   * throw new CombatClientError("no-host", "a combatant needs a token or an actor");
+   * ```
    */
   constructor(code: CombatClientError["code"], message: string) {
     super(message);
@@ -103,7 +117,15 @@ export interface CombatControllerDeps {
   dispatchIntent: (ops: WireOperation[]) => void;
   /** Sends one of the eight `combat_*` frames and resolves once its event has applied, or
    * rejects with the server's player-presentable refusal reason. */
-  sendCombat: (msg: Extract<ClientMsg, { type: `combat_${string}` }>) => Promise<void>;
+  sendCombat: (
+    msg: Extract<
+      ClientMsg,
+      {
+        /** Combat frame discriminant literal (matches every `combat_*` tag). */
+        type: `combat_${string}`;
+      }
+    >,
+  ) => Promise<void>;
   /** This connection's own user id. */
   selfId: string;
   /** The live world role -- a getter because `Welcome` sets it after construction. */
@@ -112,8 +134,10 @@ export interface CombatControllerDeps {
    * (e.g. `WorldSession.canEdit`). */
   canEdit: (doc: WireDocument, path: string) => boolean;
   /** The world this controller operates in -- `createCombat`/`addCombatants` etc. stamp it on
-   * new documents. */
-  world: string;
+   * new documents. A getter (not a plain field) because the host constructs this controller
+   * before a world is entered (`WorldSession`'s own `world` is `null` until `enter(worldId)`
+   * resolves it) -- mirrors `role`'s same construction-before-connection shape. */
+  world: () => string;
   /** Structured logger. */
   logger: Logger;
 }
@@ -196,7 +220,7 @@ export interface CombatApi {
    * @param sceneId The scene to bind the combat to.
    * @param opts Optional display name and explicit id.
    * @returns The new combat document's id. */
-  createCombat(sceneId: string, opts?: { name?: string | null; id?: string }): string;
+  createCombat(sceneId: string, opts?: CreateCombatOptions): string;
   /** Dispatches a `Delete` of an inactive combat -- an active one must go through `end()`.
    * @param combatId The combat to delete. */
   deleteCombat(combatId: string): void;
@@ -259,13 +283,29 @@ export class CombatController implements CombatApi {
   /**
    * @param deps The controller's dependencies (document view, intent dispatch, combat send,
    * identity, capability check).
+   * @example
+   * ```ts
+   * import { CombatController, type CombatControllerDeps } from "@shadowcat/core";
+   *
+   * declare const deps: CombatControllerDeps;
+   * const combat = new CombatController(deps);
+   * ```
    */
   constructor(private readonly deps: CombatControllerDeps) {}
 
   /** Replaces the latest `"combat"` frame and notifies subscribers. Called by the host on
    * every `"combat"` derived-channel frame (never part of `CombatApi` -- a method on the
    * concrete class only).
-   * @param view The newly-parsed `"combat"` frame. */
+   * @param view The newly-parsed `"combat"` frame.
+   * @example
+   * ```ts
+   * import { CombatController, EMPTY_COMBATS, type CombatControllerDeps } from "@shadowcat/core";
+   *
+   * declare const deps: CombatControllerDeps;
+   * const combat = new CombatController(deps);
+   * combat.setResolved(EMPTY_COMBATS);
+   * ```
+   */
   setResolved(view: CombatsView): void {
     this.#resolved = view;
     for (const l of this.#listeners) l();
@@ -405,9 +445,9 @@ export class CombatController implements CombatApi {
     });
   }
 
-  createCombat(sceneId: string, opts: { name?: string | null; id?: string } = {}): string {
+  createCombat(sceneId: string, opts: CreateCombatOptions = {}): string {
     const engine = newCombatEngine(sceneId);
-    const doc = buildCombatDoc(this.deps.world, engine, opts.id);
+    const doc = buildCombatDoc(this.deps.world(), engine, opts.id);
     doc.name = opts.name ?? null;
     this.deps.dispatchIntent([{ op: "create", doc }]);
     return doc.id;
@@ -428,7 +468,14 @@ export class CombatController implements CombatApi {
     for (const entry of entries) {
       const token = entry.tokenId ? this.deps.documents.get(entry.tokenId) : undefined;
       const explicitActor = entry.actorId ? this.deps.documents.get(entry.actorId) : undefined;
-      const tokenActorId = (token?.engine as { actor_id?: string | null } | undefined)?.actor_id;
+      const tokenActorId = (
+        token?.engine as
+          | {
+              /** The linked actor's id, when the token carries a link. */
+              actor_id?: string | null;
+            }
+          | undefined
+      )?.actor_id;
       const actorId = entry.actorId ?? tokenActorId ?? null;
       if (!entry.tokenId && !actorId) {
         throw new CombatClientError("no-host", "a combatant needs a token or an actor");
@@ -438,7 +485,7 @@ export class CombatController implements CombatApi {
       const owner = host ? effectiveOwner(host, this.deps.documents) : null;
       const kind: CombatantKind = { type: "actor", token_id: entry.tokenId ?? null, actor_id: actorId };
       const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, resources: {} };
-      const doc = buildCombatantDoc(this.deps.world, combatId, cengine, {
+      const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
         owner,
         hidden: entry.hidden,
         system: entry.system,
@@ -462,7 +509,7 @@ export class CombatController implements CombatApi {
     const oldOrder = engine?.order ?? [];
     const kind: CombatantKind = { type: "event", lifespan: ev.lifespan, message: ev.message };
     const cengine: CombatantEngine = { kind, initiative: null, tiebreak: 0, resources: {} };
-    const doc = buildCombatantDoc(this.deps.world, combatId, cengine, {
+    const doc = buildCombatantDoc(this.deps.world(), combatId, cengine, {
       hidden: ev.hidden,
       system: ev.system,
       name: ev.name,

@@ -115,7 +115,7 @@ function makeDeps(store: DocumentStore, overrides: Partial<CombatControllerDeps>
     selfId: "player-1",
     role: () => "player",
     canEdit: () => true,
-    world: WORLD,
+    world: () => WORLD,
     logger: silentLogger,
     ...overrides,
   };
