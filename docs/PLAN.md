@@ -66,18 +66,13 @@ further at design time. Numbering continues from Phase 1.
   (how a module opts into or out of the host theme).
 - Excludes: pop-out windows (shipped, M12e).
 
-### M17 · Vision, lighting + movement completion
-- **M17a (photometric field + carried emitters + light/wall authoring) is DONE** — delivery
-  notes in [`HISTORY.md`](HISTORY.md).
-- **M17b (vision-mode descriptor v2, tremorsense + the perceived channel, elevation) is DONE** —
-  delivery notes in [`HISTORY.md`](HISTORY.md).
-- **M17c (movement-type tags + terrain exemptions) is DONE** — delivery notes in
-  [`HISTORY.md`](HISTORY.md). Remaining: M17d (moving light mid-walk).
-- **Moving light source mid-walk** (residual of the move-stream live clip): a third-party mover
-  carrying a light that opens a sightline reveals per sample of that move, not at its stop — the
-  observer's vision recomputed per light-carrying sample; cost only on request.
-- Depends on: M14 for anything keyed to the turn owner.
-- Excludes: Web-Worker optimistic vision (stays server-authoritative by design).
+### M17 · Vision, lighting + movement completion ✅
+Complete: M17a (photometric field, carried emitters, light/wall authoring), M17b (vision-mode
+descriptor v2, tremorsense + the perceived channel, elevation), M17c (movement-type tags +
+terrain exemptions) and M17d (moving light source mid-walk: the carried-light timeline on
+`MoveStream`, per-recipient reach admission, the client lighting sweep) — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M17 entries. Web-Worker optimistic vision stays excluded (vision is
+server-authoritative by design).
 
 ### M18 · Token enrichment
 - Aura / light / sound / VFX emitters as token components (sound and VFX emit into the Phase-3

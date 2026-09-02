@@ -33,9 +33,7 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
 
 1. **Real-time per-recipient move-streaming** — DONE (2026-08-27, spec
    `docs/superpowers/specs/2026-08-27-move-stream-live-clip-design.md`): observer's own-move
-   timeline clip + re-emit. Residual, parked: third-party moving light source opening a sightline
-   mid-walk still reveals at that mover's stop — needs the observer's vision recomputed per sample
-   of the light-carrying move; cost only on request.
+   timeline clip + re-emit; the moving-light residual is delivered by M17d (`HISTORY.md`).
 
 ## Actionable now — Kimi Code parity is written but never installed
 - TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo

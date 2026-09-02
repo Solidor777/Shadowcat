@@ -2097,6 +2097,72 @@ corrected while extending the bullet. Gate note: `pnpm run test:scripts` and the
 timed out on vitest worker start-up while a sibling worktree's cargo build was running; each
 failing file passed in isolation once the machine quieted, with no assertion failure at any point.
 
+### M17d · Moving light source mid-walk ✅ — M17 closes
+Branch `m17`, executed from the same design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D6) and plan
+[`superpowers/plans/2026-08-31-m17d-moving-light-midwalk.md`](superpowers/plans/2026-08-31-m17d-moving-light-midwalk.md).
+With it M17 (a–d) is complete. Delivered, wire: `ServerMsg::MoveStream.mover_light:
+Option<Vec<LightSample>>` where `LightSample {t_ms, pos, bright, dim, color, polygons}` pairs a
+position sample with the mover's carried emission raycast at that instant (`pos`/`bright`/`dim`
+in scene units — the disc the egress admission reads; ts-rs export, Zod + `MoveLightSample` +
+mapper on the client, pinned field-for-field on the present and null paths). Server, "cost only
+on request": `SceneEcs::mover_light_inputs(scene, token, cell)` hoists one `MoverLightInputs`
+per move (the resolved `token_light_emission` as a `Light` template, the `blocksLight` walls
+filtered at the token's elevation, `world_units_per_cell`) and `MoverLightInputs::sample_at`
+raycasts each position sample through `emitters::light_polygon` — THE light raycast, which
+`lighting_inputs_from` now also calls, so the committed field and the timeline cannot diverge
+— capped at `MAX_VISION_POLYGON_VERTS`. `ResolvedScene::all_bright` is the one lighting-off
+predicate (`lighting_inputs`, the visibility-cache snapshot and this seam), and an all-bright
+scene, a lightless or suppressed emission, or a zero-progress move yields `None` with zero
+raycasts. The timeline is NOT gated on the mover's role (a GM walking a torch-bearing NPC lights
+the corridor for the players watching it — the spec's D6 puts no role gate on the light, only
+on `mover_vision`). Egress: `ws::move_clip::admit_light_samples` keeps, per recipient, only the
+samples whose `(pos, dim)` disc intersects the recipient's vision at that sample's instant
+(`disc_intersects_polys`: `point_in_poly` ∨ an edge within `dim` by `point_segment_distance`,
+non-finite ⇒ nothing), resolved through `vision_at_instant` — the SAME helper `clip_samples` now
+reads (`timeline_polys_at` over the recipient's in-flight timelines, else the committed polygons);
+`chosen_vision_sample` is generic over the `Timed` trait so both sample kinds select by the one
+fixture-pinned rule. Mover and plain GM receive the full timeline, see-as keys admission on the
+target's vision, a timeline no sample of which reaches the recipient is `None`, and the own-move
+re-emit (`concurrent_streams`) re-admits through the identical path (pinned by
+`egress_reemit_re_admits_the_concurrent_streams_light_timeline`). Frame delivery is still decided
+by the position clip alone — the zero-frames rule and the non-empty `samples` invariant are
+untouched; the residual is the glow-only observer (no visible position sample ⇒ no frame), who
+reconciles at the stop + the next `vision` rebroadcast, and the invariant-11 disclosure is the
+admitted polygons outside the recipient's sight, bounded by the emission's own reach. Client:
+`RenderEngine.animateSamples(..., moverLight)` starts a `lightSweeps` entry beside
+`visionSweeps`; the pure `light-sweep` module (`lightSampleCells`: cells within `dim` of the
+chosen sample, inside its polygons and the viewer's own line of sight, brightest band within
+`bright`, band 1 beyond, tinted by the light's color through the shared `bandAlpha`/`TINT_ALPHA`;
+`blendLightCells`: the consecutive-sample cross-fade at the `computeFogBlendFactor` clock, a
+one-sided cell fading toward `MAX_DARK_ALPHA` and dropped at zero weight; fail-closed on a
+degenerate sample or more than `MAX_LIGHT_SWEEP_CELLS` candidates) feeds `Lighting.setSweep`,
+unioned over the fade-interpolated committed frame by `mergeSweepCells`. A committed lighting
+frame arriving mid-sweep is parked (`retargetLighting`/`lastLightingInput`) and applied through
+the normal fade once the last sweep ends — the post-commit rebroadcast already carries the light
+at its final cell. A sweep's duration extends to its last admitted sample; a client-local scene
+switch ends every sweep; `chooseVisionSample` is generic so the light timeline reuses the shared
+`chosen-vision-sample.json` fixture. `Stage` exposes read-only `data-light-sweep` /
+`data-lit-cells` / `data-lit-bbox` through `RenderEngineOpts.onLightingApplied`. Tests: protocol
+round-trip; `ws::room::tests::mover_light` (lightless, carried torch sampled at every instant with
+scene-unit reaches, GM mover, suppressed emission, all-bright); `ws::move_clip::tests` (fixture
+parity on light samples, disc intersection incl. fail-closed, admission none-in/none-out,
+sample-level filtering, same-instant parity with `clip_samples`); `ws::conn::tests::mover_light`
+(observer admission past its clipped position prefix, out-of-reach drop, neither-token-nor-glow ⇒
+no frame, mover + plain GM full timeline, see-as by the target's vision, the target's own
+in-flight timeline, the re-emit); client `light-sweep`, `lighting` (`bandAlpha`, `mergeSweepCells`,
+`setSweep`), `fog-blend` fixture parity, engine sweep suite (mid-walk lighting with the parked
+frame and revert, null timeline untouched, concurrent union, LOS intersection, extended duration,
+scene switch), bridge/session forwarding; shell e2e `light-midwalk.spec.ts` (corridor lit
+mid-walk before the commit; walled-in observer never sees a sweep). Found in flight: the sweep
+blend's one-sided fade lerped toward alpha 0 (brightest) and kept zero-weight cells — inverted
+against the overlay's "absent = fully dark" convention; fixed before commit. Skill updates:
+`shadowcat-codebase-scene-rendering` (M17a–d seams), `-realtime-sync` (`moverLight` on the
+egress transform and client chain) and `-actors-tokens` (carried light, elevation, v2 vision
+descriptor authoring). Gate note: the shell Playwright suite was NOT run in this session (the
+dispatcher serializes it across worktrees); every other gate ran.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

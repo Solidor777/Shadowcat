@@ -77,7 +77,7 @@ Every `ServerMsg` variant:
 | `path_error` | Pathfind request failed |
 | `move_error` | Move request failed |
 | `chat_error` | Chat send/edit/delete failed |
-| `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
+| `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, per-recipient-admitted carried-light timeline, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
