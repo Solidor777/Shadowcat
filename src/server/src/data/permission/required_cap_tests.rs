@@ -26,8 +26,8 @@ fn name_requires_write_fields_but_is_a_leaf() {
 
 #[test]
 fn base_is_server_owned_and_maps_to_no_capability() {
-    // `/base` left the client-writable set: the server derives it at Create and
-    // refreshes it via merge writes, so — like `/source` — no capability reaches it.
+    // `/base` is server-owned: derived at Create, refreshed by merge writes — so,
+    // like `/source`, no capability reaches it.
     assert_eq!(required_cap_for_path("/base"), None);
     assert_eq!(required_cap_for_path("/base/system/hp"), None);
     assert_eq!(required_cap_for_path("/base/embedded/actor/0/name"), None);

@@ -2,6 +2,6 @@
 
 /**
  * How `take_template` resolves a conflict: `"set"` writes the parent value,
- * `"delete"` removes the key. Mirrors the client `Conflict.parentKind`.
+ * `"delete"` removes the key.
  */
 export type ParentKind = "set" | "delete";

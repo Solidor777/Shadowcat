@@ -1,7 +1,6 @@
 //! Merge band types and snapshot builders: the `MergeBase` stored on a
 //! stamped document, the `MergeBands` a merge produces, the synthetic
-//! name/engine/system tree adapters, and the placement exclusion set. Twin
-//! of the band half of the client merge engine.
+//! name/engine/system tree adapters, and the placement exclusion set.
 
 use std::collections::BTreeMap;
 
@@ -37,8 +36,8 @@ pub struct MergeBands {
 /// still parses on READ; at ingest `validate_engine_tree` REJECTS a record
 /// with an absent key rather than letting the defaults coalesce it (a
 /// coalesced record reads as unchanged against a `null` band — the
-/// data-losing direction for a template-deleted child). Mirrors the client
-/// `EmbeddedBaseChild`.
+/// data-losing direction for a template-deleted child). The ts-rs export
+/// is the client's `EmbeddedBaseChild`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
@@ -66,10 +65,10 @@ pub struct EmbeddedBaseChild {
 /// The merge snapshot stored at `Document.base`: top-level bands plus
 /// recursive embedded content keyed for provenance correlation. Every field
 /// defaults so a historical record still parses on READ (a missing band
-/// reads as `null`/empty, exactly what the client engine's `?? null`
-/// coalescing produces); the write path never admits such a record —
-/// `validate_engine_tree` requires every key present at ingest. Mirrors the
-/// client `MergeBase`.
+/// reads as `null`/empty, exactly the coalescing the client's `snapshotBase`
+/// produces when it stamps); the write path never admits such a record —
+/// `validate_engine_tree` requires every key present at ingest. The ts-rs
+/// export is the client's `MergeBase`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct MergeBase {
@@ -92,7 +91,10 @@ pub struct MergeBase {
 
 /// Per-`doc_type` instance-local paths that never merge. Currently only
 /// `token`'s placement fields are excluded; every other doc type gets an
-/// empty set. Twin of the client `placementExclusions`.
+/// empty set. INVARIANT: equals the client's `placementExclusions` set — the
+/// client's `syncState` badge excludes the same paths from its comparison,
+/// so a path excluded on one side and not the other would either flag a
+/// token's own position as a template change or let a merge clobber it.
 pub fn placement_exclusions(doc_type: &str) -> Vec<String> {
     if doc_type == "token" {
         vec![
@@ -106,7 +108,8 @@ pub fn placement_exclusions(doc_type: &str) -> Vec<String> {
 }
 
 /// Whether `path` is inside the placement exclusion set (equal or a
-/// descendant). Twin of the client `isPlacementExcluded`.
+/// descendant). The same rule as the client's `isPlacementExcluded`, which
+/// `syncState` reads (see `placement_exclusions`).
 pub fn is_placement_excluded(path: &str, exclusions: &[String]) -> bool {
     exclusions
         .iter()
@@ -115,7 +118,7 @@ pub fn is_placement_excluded(path: &str, exclusions: &[String]) -> bool {
 
 /// The three synthetic-tree bands as one object, so `merge3_tree` addresses
 /// `/name`, `/engine/*`, `/system/*` at exactly the document's real pointers.
-/// Absent bands coalesce to `null` (the client `bandsTree`'s `?? null`).
+/// Absent bands coalesce to `null`.
 pub(crate) fn bands_tree(
     name: Option<&str>,
     engine: Option<&Value>,
@@ -129,8 +132,7 @@ pub(crate) fn bands_tree(
 }
 
 /// `MergeBase`-shaped bands of an embedded base child (for the recursive
-/// 3-way base): the same bands minus `source_id`. Twin of the client
-/// `baseFromChild`.
+/// 3-way base): the same bands minus `source_id`.
 pub(crate) fn base_from_child(b: &EmbeddedBaseChild) -> MergeBase {
     MergeBase {
         name: b.name.clone(),
@@ -143,8 +145,8 @@ pub(crate) fn base_from_child(b: &EmbeddedBaseChild) -> MergeBase {
 /// Recursively reduce a document's `embedded` collections to
 /// `EmbeddedBaseChild` records. The correlation key is the child's
 /// `source.id` (== its template child's id); a non-provenance child falls
-/// back to its own id (still a stable per-child key). Twin of the recursion
-/// the client `snapshotEmbedded`/`bandsMergeBase` share.
+/// back to its own id (still a stable per-child key). The same reduction
+/// the client's `snapshotBase` performs (see `snapshot_base`).
 fn embedded_base_children(
     embedded: &BTreeMap<String, Vec<Document>>,
 ) -> BTreeMap<String, Vec<EmbeddedBaseChild>> {
@@ -171,9 +173,8 @@ fn embedded_base_children(
 }
 
 /// Bands of a live document as a `MergeBase` (no `source_id` at the top).
-/// Twin of the client `bandsMergeBase`. The client keeps a separate
-/// deep-cloning `snapshotBase` for values that outlive the call; owned Rust
-/// values make that distinction a no-op, so `snapshot_base` delegates here.
+/// `snapshot_base` delegates here: owned values need no separate
+/// deep-cloning variant for a snapshot that outlives the call.
 pub(crate) fn bands_merge_base(d: &Document) -> MergeBase {
     MergeBase {
         name: d.name.clone(),
@@ -186,7 +187,11 @@ pub(crate) fn bands_merge_base(d: &Document) -> MergeBase {
 /// The value stored at `Document.base` — works for both a stamped instance
 /// (children keyed by their `source.id`) and a template (children key on
 /// `source.id` falling back to their own id, the same correlation key its
-/// instances point to). Twin of the client `snapshotBase`.
+/// instances point to). INVARIANT: agrees with the client's `snapshotBase` —
+/// the client's `syncState` compares a stored base against
+/// `snapshotBase(template)` of its redacted store view, and the `/base` this
+/// engine writes is `snapshot_base` of the requester-visible template, so
+/// the two reductions must not diverge or the sync badge sticks.
 pub fn snapshot_base(doc: &Document) -> MergeBase {
     bands_merge_base(doc)
 }

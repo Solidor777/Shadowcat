@@ -2,7 +2,6 @@
 //! instance and template children by `source.id` (never by index) against
 //! the `base` snapshot's membership records; `revert_embedded` resets
 //! collections against the CURRENT template with no snapshot consulted.
-//! Twin of the embedded half of the client merge engine.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -18,7 +17,6 @@ use crate::merge::visibility::{MergeVisibility, Side};
 use crate::merge::{MergeConflict, MergeError, ParentKind};
 
 /// Whether an instance child's bands are unchanged versus its base record.
-/// Twin of the client `childUnchangedVsBase`.
 fn child_unchanged_vs_base(child: &Document, b: &EmbeddedBaseChild) -> bool {
     let before = serde_json::to_value(base_from_child(b)).expect("MergeBase serializes to JSON");
     let after =
@@ -27,11 +25,10 @@ fn child_unchanged_vs_base(child: &Document, b: &EmbeddedBaseChild) -> bool {
 }
 
 /// Write merged bands into a fresh clone of `child`'s envelope (its
-/// `permissions`/`scope`/`source`/`owner` etc. are preserved — the client
-/// marks this as a full-clone crossing point so the result never aliases the
-/// live instance). A `null` engine band normalizes to an absent engine band;
-/// both serialize identically on the envelope. Twin of the client
-/// `applyMergedBands`.
+/// `permissions`/`scope`/`source`/`owner` etc. are preserved — a full clone,
+/// so the result never aliases the live instance). A `null` engine band
+/// normalizes to an absent engine band; both serialize identically on the
+/// envelope.
 fn apply_merged_bands(child: &Document, bands: &MergeBands) -> Document {
     let mut out = child.clone();
     out.name = bands.name.clone();
@@ -48,8 +45,7 @@ fn apply_merged_bands(child: &Document, bands: &MergeBands) -> Document {
 /// Rewrite each conflict's `path` to be relative to the top-level document,
 /// prefixing it with the embedded child's collection + index
 /// (`/embedded/<coll>/<idx>`). `idx` is the child's index within the OUTPUT
-/// array being built, not its position in the instance's collection. Twin of
-/// the client `prefixConflicts`.
+/// array being built, not its position in the instance's collection.
 fn prefix_conflicts(conflicts: Vec<MergeConflict>, coll: &str, idx: usize) -> Vec<MergeConflict> {
     let prefix = format!("/embedded/{coll}/{idx}");
     conflicts
@@ -190,10 +186,10 @@ pub(crate) fn merge3_embedded(
 /// Deep-clone `doc` into a new subtree: fresh `id`, `source` pointing at the
 /// template (`doc.id`), recursively for every embedded child. Used to stamp
 /// a template-added embedded child into an instance. A restamped subtree has
-/// no prior sync snapshot of its own, so `base` is cleared — the client
-/// clears the same field, and a top-level stamped document's snapshot is set
-/// explicitly after the whole tree is assembled. Twin of the client
-/// `restampSubtree`.
+/// no prior sync snapshot of its own, so `base` is cleared (the client's
+/// `restampSubtree` clears it the same way when stamping); a top-level
+/// stamped document's snapshot is derived at Create (`derive_create_base`),
+/// never carried by a subtree.
 pub(crate) fn restamp_subtree(doc: &Document) -> Document {
     let mut out = doc.clone();
     out.id = Uuid::new_v4();
@@ -223,8 +219,7 @@ pub(crate) fn restamp_subtree(doc: &Document) -> Document {
 /// template child's id — no stored `base` is consulted (there is nothing to
 /// preserve), so a correlated child is recurse-reset (`revert_child`), an
 /// uncorrelated child is DROPPED, and a template child with no correlating
-/// instance child is freshly stamped in. Twin of the client
-/// `revertEmbedded`.
+/// instance child is freshly stamped in.
 pub(crate) fn revert_embedded(
     parent_embedded: &BTreeMap<String, Vec<Document>>,
     child_embedded: &BTreeMap<String, Vec<Document>>,
@@ -267,8 +262,8 @@ pub(crate) fn revert_embedded(
 /// Reset one matched embedded child: its own bands to the template
 /// counterpart (placement kept), recursing into its own embedded collections
 /// the same way. The returned envelope is a full clone of `child`
-/// (`permissions`/`scope`/`source`/`owner` preserved — the same crossing
-/// point `apply_merged_bands` marks). Twin of the client `revertChild`.
+/// (`permissions`/`scope`/`source`/`owner` preserved, like
+/// `apply_merged_bands`).
 pub(crate) fn revert_child(
     child: &Document,
     template: &Document,

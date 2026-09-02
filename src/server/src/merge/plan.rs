@@ -1,9 +1,7 @@
 //! The merge entry points: `merge3` over the mergeable bands (the
 //! `name`+`engine`+`system` synthetic tree, plus `embedded`), the
 //! pull/revert computations, and the emission of merged bands as one
-//! whole-band `Operation::Update`. Twin of `merge3` in the client merge
-//! engine and of the client templates module's `computePull`/
-//! `computeRevert`/`planToUpdate`/`applyResolutions`/`revertBands`.
+//! whole-band `Operation::Update`.
 
 use std::collections::BTreeSet;
 
@@ -21,7 +19,7 @@ use crate::merge::ParentKind;
 use crate::merge::{MergeConflict, MergeError};
 
 /// Result of a 3-way merge: the child-wins-default merged bands plus the
-/// conflicts to resolve. Mirrors the client `MergePlan`.
+/// conflicts to resolve.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergePlan {
     /// The merged bands (child-wins default for unresolved conflicts).
@@ -31,8 +29,8 @@ pub struct MergePlan {
 }
 
 /// The `name`/`engine`/`system` triple `revert_bands` resets and
-/// `compute_revert` emits — the client `Bands` type, with absent bands
-/// already coalesced to `null` values.
+/// `compute_revert` emits, with absent bands already coalesced to `null`
+/// values.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct BandTriple {
     /// The merged `name` band.
@@ -142,8 +140,7 @@ pub fn compute_pull(
     )
 }
 
-/// Append a `FieldChange` iff `before` and `after` structurally differ. Twin
-/// of the client `pushIfChanged`.
+/// Append a `FieldChange` iff `before` and `after` structurally differ.
 fn push_if_changed(changes: &mut Vec<FieldChange>, path: &str, before: Value, after: Value) {
     if !deep_equal(&before, &after) {
         changes.push(FieldChange {
@@ -157,8 +154,7 @@ fn push_if_changed(changes: &mut Vec<FieldChange>, path: &str, before: Value, af
 
 /// True when a collection value represents "no items": `null` or an empty
 /// array. Used to skip a vacuous embedded-collection change even when
-/// `before` and `after` differ in absence-vs-empty-array shape. Twin of the
-/// client `isEmptyCollection`.
+/// `before` and `after` differ in absence-vs-empty-array shape.
 fn is_empty_collection(v: &Value) -> bool {
     v.is_null() || v.as_array().is_some_and(Vec::is_empty)
 }
@@ -179,7 +175,7 @@ fn is_empty_collection(v: &Value) -> bool {
 /// `null` as its pre-image, NOT `[]`: the write path reads a missing JSON
 /// pointer as `Value::Null`, so emitting `[]` would produce an `old` that
 /// never matches the stored state and a spurious OCC rejection on an
-/// otherwise honest pre-image. Twin of the client `planToUpdate`.
+/// otherwise honest pre-image.
 pub fn plan_to_update(
     child: &Document,
     template: &Document,
@@ -328,7 +324,7 @@ pub fn apply_resolutions(
 /// base (so the child diff is always empty and every parent diff
 /// auto-applies with zero conflicts) — the "always take template" trick.
 /// This handles only `name`/`engine`/`system`; embedded reset is the
-/// SEPARATE `revert_embedded` algorithm. Twin of the client `revertBands`.
+/// SEPARATE `revert_embedded` algorithm.
 pub(crate) fn revert_bands(
     child: &Document,
     template: &Document,

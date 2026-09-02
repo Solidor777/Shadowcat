@@ -1,8 +1,8 @@
 //! Single-tree 3-way merge primitives: structural diffing, RFC-6901 pointer
-//! helpers, and `merge3_tree` — the twin of the client engine's `merge.ts`
-//! tree half. Every value is plain JSON: objects recurse key-by-key, arrays
-//! are opaque leaves, scalars are leaves. Sorted-key traversal keeps the
-//! output order-independent (the conformance corpus pins the order).
+//! helpers, and `merge3_tree`. Every value is plain JSON: objects recurse
+//! key-by-key, arrays are opaque leaves, scalars are leaves. Sorted-key
+//! traversal keeps the output order-independent (the conformance corpus pins
+//! the order).
 
 use std::collections::BTreeSet;
 
@@ -13,7 +13,6 @@ use crate::merge::bands::is_placement_excluded;
 use crate::merge::{MergeConflict, ParentKind};
 
 /// One structural change between two JSON trees at an RFC-6901 pointer.
-/// Mirrors the client `Diff` union.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Diff {
     /// A value was written or overwritten at `path`.
@@ -40,9 +39,9 @@ impl Diff {
 }
 
 /// Deep structural equality: objects key-order-independent, arrays
-/// positional, numbers compared as `f64` (the client engine's `===` has one
-/// number type, so `1` and `1.0` are the same value), other scalars strict.
-/// Twin of the client `deepEqual`.
+/// positional, numbers compared as `f64` (JSON has one number type, so `1`
+/// and `1.0` are the same value — a JavaScript client cannot preserve the
+/// distinction through a round trip), other scalars strict.
 pub(crate) fn deep_equal(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Array(xa), Value::Array(xb)) => {
@@ -59,14 +58,13 @@ pub(crate) fn deep_equal(a: &Value, b: &Value) -> bool {
     }
 }
 
-/// RFC-6901 token escaping (`~` → `~0`, `/` → `~1`). Twin of the client
-/// `escapeToken`.
+/// RFC-6901 token escaping (`~` → `~0`, `/` → `~1`).
 pub(crate) fn escape_token(k: &str) -> String {
     k.replace('~', "~0").replace('/', "~1")
 }
 
 /// Split an RFC-6901 pointer into unescaped tokens (drops the leading empty
-/// segment). Twin of the client `tokenize`.
+/// segment).
 pub(crate) fn tokenize(pointer: &str) -> Vec<String> {
     pointer
         .split('/')
@@ -75,8 +73,9 @@ pub(crate) fn tokenize(pointer: &str) -> Vec<String> {
         .collect()
 }
 
-/// Structural diff of `now` against `base` as one JSON tree. Twin of the
-/// client `structuralDiff` (which defaults its `prefix` to the root).
+/// Structural diff of `now` against `base` as one JSON tree, from the root.
+/// The same leaf rules as the client's `structuralDiff`, which the client's
+/// `syncState` badge reads against the stored base this engine writes.
 pub(crate) fn structural_diff(base: &Value, now: &Value) -> Vec<Diff> {
     structural_diff_at(base, now, "")
 }
@@ -272,7 +271,7 @@ pub(crate) fn set_pointer(
 
 /// Whether two diffs produce the same outcome (`Set` with `deep_equal`
 /// values, or both `Delete`). Used by `merge3_tree` to decide a same-value
-/// overlap is not a real conflict. Twin of the client `sameResult`.
+/// overlap is not a real conflict.
 fn same_result(a: &Diff, b: &Diff) -> bool {
     match (a, b) {
         (Diff::Delete { .. }, Diff::Delete { .. }) => true,
@@ -283,9 +282,9 @@ fn same_result(a: &Diff, b: &Diff) -> bool {
 
 /// Apply one `Diff` into `root`: `Set` clones the diff's value before
 /// splicing it in (the value is owned by the diff list `structural_diff`
-/// produced from the source tree — cloning is the crossing point the client
-/// marks with `structuredClone`), `Delete` removes the key/element via
-/// `delete_pointer`. Twin of the client `applyDiff`.
+/// produced from the source tree; the clone keeps the merged tree
+/// independent of it), `Delete` removes the key/element via
+/// `delete_pointer`.
 fn apply_diff(root: &mut Value, d: &Diff) -> Result<(), PointerError> {
     match d {
         Diff::Set { path, value } => set_pointer(root, path, value.clone()),

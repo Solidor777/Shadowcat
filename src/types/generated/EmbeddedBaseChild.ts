@@ -9,8 +9,8 @@
  * still parses on READ; at ingest `validate_engine_tree` REJECTS a record
  * with an absent key rather than letting the defaults coalesce it (a
  * coalesced record reads as unchanged against a `null` band — the
- * data-losing direction for a template-deleted child). Mirrors the client
- * `EmbeddedBaseChild`.
+ * data-losing direction for a template-deleted child). The ts-rs export
+ * is the client's `EmbeddedBaseChild`.
  */
 export type EmbeddedBaseChild = { 
 /**

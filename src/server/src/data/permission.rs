@@ -262,9 +262,9 @@ pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
 
 /// The CLIENT-writable content bands: exactly the set `required_cap_for_path`
 /// maps to `cap::WRITE_FIELDS`. A strict subset of `REDACTABLE_BANDS` — `base`
-/// left the client-writable set when the server took ownership of it (derived
-/// at Create by `merge::bands::derive_create_base`; refreshed whole-band by
-/// server merge writes under `WriteOrigin::TemplateMerge`), so `/base` maps to
+/// is server-owned (derived at Create by `merge::bands::derive_create_base`;
+/// refreshed whole-band by server merge writes under
+/// `WriteOrigin::TemplateMerge`) and therefore absent here: `/base` maps to
 /// no capability, the same posture as `/source`. The two lists are stated
 /// separately so that asymmetry is a deliberate, visible decision rather than
 /// a shared constant both sides read for different meanings.

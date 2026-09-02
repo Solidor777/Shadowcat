@@ -5,10 +5,10 @@ import type { EmbeddedBaseChild } from "./EmbeddedBaseChild";
  * The merge snapshot stored at `Document.base`: top-level bands plus
  * recursive embedded content keyed for provenance correlation. Every field
  * defaults so a historical record still parses on READ (a missing band
- * reads as `null`/empty, exactly what the client engine's `?? null`
- * coalescing produces); the write path never admits such a record —
- * `validate_engine_tree` requires every key present at ingest. Mirrors the
- * client `MergeBase`.
+ * reads as `null`/empty, exactly the coalescing the client's `snapshotBase`
+ * produces when it stamps); the write path never admits such a record —
+ * `validate_engine_tree` requires every key present at ingest. The ts-rs
+ * export is the client's `MergeBase`.
  */
 export type MergeBase = { 
 /**

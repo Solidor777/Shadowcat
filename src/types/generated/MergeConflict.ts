@@ -5,9 +5,9 @@ import type { ParentKind } from "./ParentKind";
  * A field changed on both the template (parent) and instance (child) sides
  * since the last sync. `base`/`parent`/`child` are ABSENT (not `null`) when
  * that side has no value at `path` — the parent's side deleted it, the
- * child's side deleted it, or neither side's snapshot contained it — matching
- * the client engine's `undefined` semantics under JSON serialization.
- * Mirrors the client `Conflict` type.
+ * child's side deleted it, or neither side's snapshot contained it — so the
+ * client's Zod mirror (`WireMergeConflict`) reads a missing side as an
+ * absent key, distinct from an explicit `null` value.
  */
 export type MergeConflict = { 
 /**
