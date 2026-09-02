@@ -1294,7 +1294,7 @@ describe("carried-light sweep (moverLight)", () => {
     renderHints: [],
     lit: [{ scene: "s1", cell: 100, cells }],
   });
-  const torch = (tMs: number, x: number) => ({ tMs, pos: [x, 50] as [number, number], bright: 100, dim: 150, color: 0xffcc66, polygons: OPEN });
+  const torch = (tMs: number, x: number) => ({ tMs, pos: [x, 50] as [number, number], bright: 100, dim: 150, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: OPEN });
 
   function setup() {
     const store = new DocumentStore();
@@ -1410,5 +1410,72 @@ describe("carried-light sweep (moverLight)", () => {
     expect(has(0, 0)).toBe(true);
     engine.reapplyViewedScene();
     expect(has(0, 0)).toBe(false);
+  });
+
+  test("a glow-only frame (no position samples) plays the light sweep alone and tweens no token", () => {
+    const { engine, store, backend, onUpdate, applied, has } = setup();
+    // A token document this viewer holds at x=0; the glow-only frame names it but carries no
+    // position for it, so the rendered token must stay where the document says.
+    store.applyCommand(tokenCmd(2, "tok1", 0));
+    onUpdate({ payload: frame([]), computedAtSeq: 2 });
+    backend.runTicker(300);
+    expect(backend.tokens.get("tok1")?.x).toBe(0);
+    engine.animateSamples("tok1", [], 500, 0, () => 0, null, [torch(0, 50), torch(500, 350)]);
+    expect(has(0, 0)).toBe(true);
+    expect(applied.at(-1)?.sweeping).toBe(true);
+    backend.runTicker(250);
+    expect(has(3, 0)).toBe(true); // the far sample fading in
+    expect(backend.tokens.get("tok1")?.x).toBe(0); // no tween: the token never moved on screen
+    backend.runTicker(250);
+    backend.runTicker(300);
+    expect(applied.at(-1)?.sweeping).toBe(false);
+    expect(backend.tokens.get("tok1")?.x).toBe(0);
+  });
+
+  test("the darkness overlay covers the committed line of sight and lifts under a GM's no-fog frame", () => {
+    const { backend, onUpdate } = setup();
+    // `frame([])`: line of sight everywhere, nothing lit — every in-sight cell is darkness.
+    expect(backend.lighting!.darkness).toEqual([{ points: [-1000, -1000, 1000, -1000, 1000, 1000, -1000, 1000] }]);
+    expect(backend.lighting!.cells).toEqual([]);
+    onUpdate({ payload: { mode: "all" }, computedAtSeq: 2 });
+    backend.runTicker(300);
+    expect(backend.lighting!.darkness).toEqual([]);
+  });
+
+  test("the viewer's own vision sweep keeps the pre-move lit cells beside the post-move ones and darkens the sweeping sight", () => {
+    const { engine, store, backend, onUpdate, has } = setup();
+    // Committed before the move: the cell at the START is lit.
+    store.applyCommand(tokenCmd(2, "tok1", 0));
+    onUpdate({ payload: frame([0, 0, 0, 0, -1]), computedAtSeq: 2 });
+    backend.runTicker(300);
+    expect(has(0, 0)).toBe(true);
+    const near = [[[0, 0], [200, 0], [200, 200], [0, 200]]] as [number, number][][];
+    const far = [[[200, 0], [500, 0], [500, 200], [200, 200]]] as [number, number][][];
+    engine.animateSamples(
+      "tok1",
+      [{ tMs: 0, pos: [50, 50] }, { tMs: 500, pos: [350, 50] }],
+      1000,
+      0,
+      () => 0,
+      [{ tMs: 0, polygons: near }, { tMs: 500, polygons: far }],
+      null,
+    );
+    // Mid cross-fade both sweep endpoints darken, so a cell fading in never flashes lit.
+    backend.runTicker(250);
+    expect(backend.lighting!.darkness).toEqual([{ points: near[0].flat() }, { points: far[0].flat() }]);
+    // The post-move frame lands mid-sweep, lit from the STOP: unioned with the START's cells.
+    store.applyCommand(tokenCmd(3, "tX", 900));
+    onUpdate({ payload: frame([3, 0, 0, 0, -1]), computedAtSeq: 3 });
+    backend.runTicker(300);
+    expect(has(0, 0)).toBe(true);
+    expect(has(3, 0)).toBe(true);
+    // Past the last sample: the chosen sample's polygon alone is the darkness.
+    expect(backend.lighting!.darkness).toEqual([{ points: far[0].flat() }]);
+    // Sweep end: the newest committed frame alone, and darkness back on the committed sight.
+    backend.runTicker(450);
+    backend.runTicker(300);
+    expect(has(0, 0)).toBe(false);
+    expect(has(3, 0)).toBe(true);
+    expect(backend.lighting!.darkness).toEqual([{ points: [-1000, -1000, 1000, -1000, 1000, 1000, -1000, 1000] }]);
   });
 });

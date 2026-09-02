@@ -3,7 +3,7 @@
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
-import type { RejectReason } from "@shadowcat/types";
+import type { FalloffCurve, RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
@@ -75,6 +75,11 @@ export interface MoveLightSample {
   dim: number;
   /** Packed `0xRRGGBB` light color. */
   color: number;
+  /** The emission's intensity in `[0, 1]`; with `falloff`, what makes the sample
+   * self-describing for the server's per-recipient clip. */
+  intensity: number;
+  /** The emission's falloff curve across the dim band (`FalloffCurve`). */
+  falloff: FalloffCurve;
   /** The light's illumination polygon(s) at this sample, as rings of `[x, y]` scene coords. */
   polygons: [number, number][][];
 }
@@ -100,7 +105,10 @@ export interface MoveStream {
   /** Final `[x, y]` scene-coordinate position of the move. */
   stop: [number, number];
   /** Time-tagged position samples driving playback (full trajectory for the mover; clipped
-   * to the recipient's own vision for an observer). */
+   * to the recipient's own vision for an observer). EMPTY for a glow-only frame — a recipient
+   * the mover's carried light reached but the token never did, who gets `moverLight` alone
+   * with `stop`/`durationMs` at the last admitted light sample; at least one of `samples`/
+   * `moverLight` is non-empty in every delivered frame. */
   samples: MoveSample[];
   /** Time-tagged vision-polygon samples for the mover; always `null` for an observer. */
   moverVision: MoveVisionSample[] | null;
@@ -933,6 +941,8 @@ export class WsClient {
                 bright: l.bright,
                 dim: l.dim,
                 color: l.color,
+                intensity: l.intensity,
+                falloff: l.falloff,
                 polygons: l.polygons as [number, number][][],
               }))
             : null,

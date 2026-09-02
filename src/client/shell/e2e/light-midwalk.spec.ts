@@ -4,11 +4,13 @@ import type { Page, Locator } from "@playwright/test";
 // Moving-light e2e: a GM walks a torch-bearing token (a carried `LightEmission` authored
 // through the actors panel) past an observing player's token in a pitch-dark scene. The
 // observer's lighting overlay must change WHILE the walk plays — driven by the per-recipient
-// `mover_light` timeline and the client's lighting sweep — not only once the token stops; and
-// an observer walled off from the whole walk (no line of sight, no glow reaching in) must never
-// see a sweep at all. Authoring goes through the real UI; observation goes through the stage's
-// read-only debug attributes (`data-light-sweep`, `data-lit-bbox`, `data-lit-cells`), never
-// WebGL pixels.
+// `mover_light` timeline and the client's lighting sweep — not only once the token stops; an
+// observer walled off from the whole walk (no line of sight, no glow reaching in) must never
+// see a sweep at all; and an observer whose sight a wall blocks but whose side the glow still
+// spills onto (a sight-only wall) gets the GLOW-ONLY frame — no position sample, the admitted
+// light timeline — and sweeps all the same. Authoring goes through the real UI; observation
+// goes through the stage's read-only debug attributes (`data-light-sweep`, `data-lit-bbox`,
+// `data-lit-cells`), never WebGL pixels.
 
 // A 1×1 PNG used as token art (same fixture the stage/senses suites use).
 const PNG_1X1 = Buffer.from(
@@ -39,6 +41,12 @@ const SWEEP_START_MIN_COL = 4;
 /** Westmost committed lit column once the torch rests at (650, 350): `x ≥ 650 - 464 = 186` →
  * column 2. */
 const GOAL_MIN_COL = 2;
+
+/** The sight-only wall of the third test: a vertical segment between the observer and the whole
+ * walk, spanning far past both in y so no ray from the observer to any point of the walk clears
+ * an end. Its `blocksLight` flag is switched off through the wall editor, so the torch's
+ * illumination polygon crosses it while the observer's line of sight stops at it. */
+const SIGHT_WALL = { x: 600, y0: 60, y1: 760 };
 
 // The walled-off observer of the second test sits inside a closed box; the walk runs outside.
 const BOX = { x0: 60, y0: 160, x1: 360, y1: 460 };
@@ -333,6 +341,85 @@ test("an observer walled off from the walk never sees a light sweep", async ({
     const log = await lightLog(player);
     expect(log.some((v) => v.startsWith("1|")), `no sweep may reach the boxed observer: ${log.join(" ; ")}`).toBe(false);
     await expect(stageHost(player)).toHaveAttribute("data-lit-cells", "0");
+  } finally {
+    await close();
+  }
+});
+
+test("a sight-only wall hides the bearer but its glow still sweeps the observer's side", async ({
+  page,
+  browser,
+  account,
+}) => {
+  test.setTimeout(180_000);
+  const gm = page;
+  const { player, close } = await setupTorchScene(
+    gm,
+    browser,
+    account,
+    `Glow-Only Torch World ${Date.now().toString(36)}`,
+    OBSERVER,
+    START,
+  );
+  try {
+    // A wall between the observer and the corridor. As authored it blocks sight, move AND
+    // light, so the observer's view is a dark strip west of x=600 with nothing lit in it.
+    await gm.getByTestId("tool-wall").click();
+    await dragScene(gm, { x: SIGHT_WALL.x, y: SIGHT_WALL.y0 }, { x: SIGHT_WALL.x, y: SIGHT_WALL.y1 });
+    await expect(stageHost(gm)).toHaveAttribute("data-wall-count", "1", { timeout: 15_000 });
+    await expect(stageHost(player)).toHaveAttribute("data-wall-count", "1", { timeout: 15_000 });
+    await expect(stageHost(player)).toHaveAttribute("data-lit-cells", "0", { timeout: 20_000 });
+
+    // Pick the wall with the select tool (a GM's empty-space click picks a wall segment into the
+    // rail editor) and switch its light occlusion off: the torch's glow now crosses the wall
+    // while the observer's line of sight still ends at it.
+    await gm.getByTestId("tool-select").click();
+    const origin = await canvasOrigin(gm);
+    await gm.mouse.click(origin.x + SIGHT_WALL.x, origin.y + (SIGHT_WALL.y0 + SIGHT_WALL.y1) / 2);
+    await expect(gm.getByTestId("wall-editor")).toBeVisible();
+    await expect(gm.getByTestId("wall-blocks-light")).toBeChecked();
+    await gm.getByTestId("wall-blocks-light").uncheck();
+    await expect(gm.getByTestId("wall-blocks-light")).not.toBeChecked();
+
+    // The resting torch's committed reach now lights the observer's side of the wall (column 5,
+    // the same westmost column as the open corridor) even though the bearer itself is out of
+    // sight — the lit mask is line of sight ∩ illumination, and the glow needs no sight line.
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "the resting torch must light the observer's side of the sight-only wall",
+        timeout: 20_000,
+      })
+      .toBe(START_MIN_COL);
+    await expect(stageHost(player)).toHaveAttribute("data-light-sweep", "0");
+
+    await watchLighting(player);
+    await walkBearer(gm, START, GOAL);
+
+    // Every position sample of the walk lies east of the wall, outside the observer's sight, so
+    // the only frame this observer can receive is the glow-only one — and the sweep it drives
+    // must have painted columns west of the resting set before the walk committed.
+    await expect
+      .poll(async () => (await stageHost(player).getAttribute("data-light-sweep")) ?? "", {
+        message: "the observer's glow-only sweep must end once the walk completes",
+        timeout: 20_000,
+      })
+      .toBe("0");
+    await expect
+      .poll(async () => minCol((await stageHost(player).getAttribute("data-lit-bbox")) ?? ""), {
+        message: "the committed lighting after the walk lights the observer's side up to the goal",
+        timeout: 20_000,
+      })
+      .toBe(GOAL_MIN_COL);
+    const log = await lightLog(player);
+    const midWalk = log.filter((v) => v.startsWith("1|"));
+    expect(midWalk.length, `the observer must have painted a glow-only sweep: ${log.join(" ; ")}`).toBeGreaterThan(0);
+    expect(
+      midWalk.some((v) => {
+        const c = minCol(v.slice(2));
+        return c !== null && c < SWEEP_START_MIN_COL;
+      }),
+      `a sweep frame must light columns west of the resting set: ${midWalk.join(" ; ")}`,
+    ).toBe(true);
   } finally {
     await close();
   }

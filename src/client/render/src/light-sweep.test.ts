@@ -10,7 +10,7 @@ const OPEN: [number, number][][] = [[[-1000, -1000], [1000, -1000], [1000, 1000]
 const LOS_ALL: Polygon[] = [{ points: [-1000, -1000, 1000, -1000, 1000, 1000, -1000, 1000] }];
 
 function torch(over: Partial<MoveLightSample> = {}): MoveLightSample {
-  return { tMs: 0, pos: [50, 50], bright: 100, dim: 250, color: 0xffcc66, polygons: OPEN, ...over };
+  return { tMs: 0, pos: [50, 50], bright: 100, dim: 250, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: OPEN, ...over };
 }
 
 describe("lightSampleCells", () => {

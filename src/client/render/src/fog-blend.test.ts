@@ -74,6 +74,8 @@ test("chooseVisionSample selects a light timeline by the same shared-fixture rul
     bright: 1,
     dim: 2,
     color: 0xffcc66,
+    intensity: 1,
+    falloff: "linear",
     polygons: [[[i, 0], [i, 1], [i + 1, 1]]],
   }));
   for (const { elapsed, expectIndex } of raw.probes) {

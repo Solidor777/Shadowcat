@@ -1,6 +1,6 @@
 import { Application, BlurFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
-import type { LightingFrame } from "./lighting";
+import { MAX_DARK_ALPHA, type LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
@@ -112,6 +112,12 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
+  /** The darkness sheet: `LightingFrame.darkness` filled at `MAX_DARK_ALPHA`, inverse-masked
+   * by `litHoles` so every lit cell shows through. Parented under the `lighting` container
+   * beneath `lightingGraphics`. */
+  private readonly darknessGraphics = new Graphics();
+  /** Inverse-mask shape cut from `darknessGraphics`: the union of every lit cell's polygon. */
+  private readonly litHoles = new Graphics();
   /** Per-cell darkening + tint quads for the lighting layer. Parented under the
    * `lighting` container, which carries a BlurFilter to soften band/edge boundaries. */
   private readonly lightingGraphics = new Graphics();
@@ -200,6 +206,8 @@ export class PixiBackend implements DisplayBackend {
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
       if (id === "lighting") {
+        c.addChild(this.darknessGraphics);
+        c.addChild(this.litHoles);
         c.addChild(this.lightingGraphics);
         // BlurFilter softens cell-boundary stepping artifacts between gradation bands.
         // TODO: replace with radial gradient fills when PixiJS gradient API stabilises.
@@ -857,27 +865,41 @@ export class PixiBackend implements DisplayBackend {
     }
   }
 
-  /** `DisplayBackend.setLighting`: repaint the lighting overlay — clears `lightingGraphics`, then
-   * for each cell draws up to three stacked fills over that cell's polygon (`c.corners`, already
-   * resolved via the active grid — a square rect on a square grid, a hexagon on a hex grid; this
-   * method paints whatever shape it is handed and performs no grid-kind math of its own): a black
-   * darkening fill (`c.alpha`, skipped when `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped
-   * when `0`), and — when `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha)
-   * approximating desaturation for a darkvision-only cell. An empty `frame.cells` clears the
-   * overlay entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
-   * geometry, nothing to fill).
+  /** `DisplayBackend.setLighting`: repaint the lighting overlay. First the darkness sheet:
+   * every `frame.darkness` polygon (the viewer's line of sight) filled black at
+   * `MAX_DARK_ALPHA` — the darkest gradation band — inverse-masked by the union of the lit
+   * cells' polygons (`litHoles`, the same sheet-and-holes technique `paintFogSheets` uses), so
+   * an in-sight cell no entry lights is as dark as the darkest band and a lit cell shows only
+   * its own fills. Then, clearing `lightingGraphics`, for each cell up to three stacked fills
+   * over that cell's polygon (`c.corners`, already resolved via the active grid — a square rect
+   * on a square grid, a hexagon on a hex grid; this method paints whatever shape it is handed
+   * and performs no grid-kind math of its own): a black darkening fill (`c.alpha`, skipped when
+   * `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped when `0`), and — when
+   * `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha) approximating
+   * desaturation for a darkvision-only cell. Empty `darkness` and `cells` clear the overlay
+   * entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
+   * geometry, nothing to fill), as is a darkness polygon with fewer than 3 vertices.
    * @param frame The resolved per-cell lighting to paint.
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
    *
    * declare const backend: PixiBackend;
-   * backend.setLighting({ cell: 70, cells: [] });
+   * backend.setLighting({ cell: 70, cells: [], darkness: [] });
    * ```
    */
   setLighting(frame: LightingFrame): void {
+    this.darknessGraphics.clear();
+    this.litHoles.clear();
     this.lightingGraphics.clear();
-    // empty cells = no lighting overlay (all-clear)
+    for (const region of frame.darkness) {
+      if (region.points.length >= 6) this.darknessGraphics.poly(region.points).fill({ color: 0x000000, alpha: MAX_DARK_ALPHA });
+    }
+    for (const c of frame.cells) {
+      if (c.corners.length >= 3) this.litHoles.poly(c.corners.flatMap((p) => [p.x, p.y])).fill({ color: 0xffffff });
+    }
+    this.darknessGraphics.setMask({ mask: this.litHoles, inverse: true });
+    // empty cells = no per-cell overlay
     for (const c of frame.cells) {
       if (c.corners.length < 3) continue; // degenerate geometry — nothing to fill
       const poly = c.corners.flatMap((p) => [p.x, p.y]);

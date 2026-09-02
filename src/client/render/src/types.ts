@@ -229,6 +229,11 @@ export interface MoveLightSample {
   dim: number;
   /** Packed `0xRRGGBB` light color. */
   color: number;
+  /** The emission's intensity in `[0, 1]` — the sample is self-describing, so the server's
+   * per-recipient clip composes it into the illumination field without a document read. */
+  intensity: number;
+  /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
+  falloff: "linear" | "quadratic" | "none";
   /** The light's occluded illumination polygon(s), each a list of `[x,y]` scene-coord
    * vertices — NOT clipped to the viewer's sight; the sweep intersects them itself. */
   polygons: [number, number][][];

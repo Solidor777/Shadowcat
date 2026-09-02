@@ -573,6 +573,12 @@ export type WireMoveStreamLightSample = {
   dim: number;
   /** Packed `0xRRGGBB` light color. */
   color: number;
+  /** The emission's intensity in `[0, 1]`. With `falloff`, what makes the sample
+   * self-describing: the server's per-recipient clip composes an in-flight light into the
+   * illumination field from the frame alone. */
+  intensity: number;
+  /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
+  falloff: "linear" | "quadratic" | "none";
   /** The light's illumination polygon(s) at this instant, each an ordered list of [x, y]
    * scene-coord vertices. */
   polygons: [number, number][][];
@@ -1001,6 +1007,8 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     start_server_ms: z.number(),
     duration_ms: z.number(),
     stop: z.tuple([z.number(), z.number()]),
+    // Empty for a GLOW-ONLY frame: a recipient reached by the mover's carried light but never
+    // by the token itself gets the admitted `mover_light` timeline and no position sample.
     samples: z.array(
       z.object({
         t_ms: z.number(),
@@ -1024,6 +1032,8 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
           bright: z.number(),
           dim: z.number(),
           color: z.number(),
+          intensity: z.number(),
+          falloff: z.enum(["linear", "quadratic", "none"]),
           polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
         }),
       )

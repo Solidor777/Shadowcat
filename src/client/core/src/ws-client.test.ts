@@ -898,8 +898,8 @@ describe("WsClient", () => {
         samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
         mover_vision: null,
         mover_light: [
-          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
-          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+          { t_ms: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
         ],
         cost: 2,
         truncated: true,
@@ -913,8 +913,8 @@ describe("WsClient", () => {
     expect(result.truncated).toBe(true);
     // The mapper must copy the light timeline field for field, camelCased.
     expect(result.moverLight).toEqual([
-      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
-      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+      { tMs: 0, pos: [0, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-500, -600], [700, -600], [700, 600]]] },
     ]);
     expect(result.startServerMs).toBe(1000);
     expect(result.durationMs).toBe(500);
@@ -927,6 +927,46 @@ describe("WsClient", () => {
     expect(streams[0].tokenId).toBe("tok1");
     expect(streams[0].mover).toBe("user1");
 
+    unsub();
+  });
+
+  it("move_stream maps a glow-only frame: empty samples, light photometry copied field for field", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+    const streams: MoveStream[] = [];
+    const unsub = client.onMoveStream((s) => streams.push(s));
+    onMessage(
+      JSON.stringify({
+        type: "move_stream",
+        request_id: "req-glow",
+        token_id: "tok1",
+        mover: "user2",
+        scene: "s1",
+        start_server_ms: 1000,
+        duration_ms: 500,
+        stop: [100, 0],
+        samples: [],
+        mover_vision: null,
+        mover_light: [
+          { t_ms: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 0.5, falloff: "none", polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+        ],
+        cost: null,
+        truncated: null,
+      }),
+    );
+    expect(streams).toHaveLength(1);
+    expect(streams[0].samples).toEqual([]);
+    expect(streams[0].moverLight).toEqual([
+      { tMs: 500, pos: [100, 0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 0.5, falloff: "none", polygons: [[[-500, -600], [700, -600], [700, 600]]] },
+    ]);
     unsub();
   });
 

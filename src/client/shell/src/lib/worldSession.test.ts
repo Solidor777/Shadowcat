@@ -719,13 +719,13 @@ test("onMoveStream forwards to sceneInteraction (incl. moverVision) for the acti
   const host = fakeMoveHost();
   session.sceneInteraction.attach(host);
   const moverVision = [{ t_ms: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
-  const moverLight = [{ t_ms: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
+  const moverLight = [{ t_ms: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
   push(moveStreamFrame(sceneId, moverVision, false, moverLight));
   await vi.waitFor(() => expect(host.calls).toHaveLength(1));
   expect(host.calls[0]).toEqual({
     id: "tok1",
     moverVision: [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
-    moverLight: [{ tMs: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+    moverLight: [{ tMs: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
   });
 });
 

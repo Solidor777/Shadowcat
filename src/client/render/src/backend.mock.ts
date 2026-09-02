@@ -378,7 +378,7 @@ export class MockBackend implements DisplayBackend {
    * import { MockBackend } from "@shadowcat/render";
    *
    * const backend = new MockBackend();
-   * backend.setLighting({ cell: 70, cells: [] });
+   * backend.setLighting({ cell: 70, cells: [], darkness: [] });
    * ```
    */
   setLighting(frame: LightingFrame): void {

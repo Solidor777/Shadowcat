@@ -54,6 +54,7 @@ export type {
   PathResult,
   MoveSample,
   MoveVisionSample,
+  MoveLightSample,
   MoveStream,
   SubscriptionHandle,
   SceneFrame,

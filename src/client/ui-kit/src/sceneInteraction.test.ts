@@ -123,7 +123,7 @@ test("setSnapEnabled forwards to the host (no-op when detached)", () => {
 test("animateSamples forwards moverLight to the host", () => {
   const bridge = new SceneInteractionBridge();
   const samples = [{ tMs: 0, pos: [0, 0] as [number, number] }];
-  const moverLight = [{ tMs: 0, pos: [0, 0] as [number, number], bright: 100, dim: 200, color: 0xffcc66, polygons: [[[0, 0], [20, 0], [20, 20]] as [number, number][]] }];
+  const moverLight = [{ tMs: 0, pos: [0, 0] as [number, number], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]] as [number, number][]] }];
   let got: unknown;
   bridge.attach(fakeSceneHost({ animateSamples: (_id, _s, _d, _st, _sn, _mv, ml) => { got = ml; } }));
   bridge.animateSamples("t1", samples, 1000, 0, () => 0, null, moverLight);

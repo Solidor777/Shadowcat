@@ -79,7 +79,7 @@ function pointInRings(x: number, y: number, rings: [number, number][][]): boolea
  * const grid = new Grid({ kind: "square", size: 100 });
  * // not exported from @shadowcat/render; internal to RenderEngine's light sweep
  * lightSampleCells(
- *   { tMs: 0, pos: [50, 50], bright: 100, dim: 250, color: 0xffcc66, polygons: [[[-500, -500], [500, -500], [500, 500], [-500, 500]]] },
+ *   { tMs: 0, pos: [50, 50], bright: 100, dim: 250, color: 0xffcc66, intensity: 1, falloff: "linear", polygons: [[[-500, -500], [500, -500], [500, 500], [-500, 500]]] },
  *   grid,
  *   [{ points: [-500, -500, 500, -500, 500, 500, -500, 500] }],
  *   3,
