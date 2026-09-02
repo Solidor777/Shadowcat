@@ -34,3 +34,5 @@ export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
 export type { ChatApi, TemplatesApi } from "./appContext";
 export { default as TemplateControls } from "./TemplateControls.svelte";
 export { default as SheetHost } from "./SheetHost.svelte";
+export { default as RollTooltip } from "./RollTooltip.svelte";
+export { default as SegmentList } from "./SegmentList.svelte";

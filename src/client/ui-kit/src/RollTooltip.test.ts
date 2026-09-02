@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
-import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { setAppContextForTest } from "./__fixtures__/appContextTest";
 import type { RollOutcome } from "@shadowcat/core";
 import RollTooltip from "./RollTooltip.svelte";
 

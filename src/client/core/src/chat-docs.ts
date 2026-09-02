@@ -349,7 +349,7 @@ export const docLinkTargetSchemaImpl = z.discriminatedUnion("kind", [
 /** Validator for a `DocLinkTarget`. */
 export const DocLinkTargetSchema: z.ZodType<DocLinkTarget> = docLinkTargetSchemaImpl;
 
-/** One piece of a message's sanitized content model — one of the seven known segment
+/** One piece of a message's sanitized content model — one of the eight known segment
  * kinds. Mirrors `chat::Segment`. `html.sanitized_html` is innerHTML-safe ONLY because
  * the server's `chat::sanitize` (ammonia) produced it — no client code may construct one.
  * `roll_embed.outcome` is a completed, immutable roll's full deterministic result;
@@ -457,6 +457,18 @@ export type ChatSegment =
       target: DocLinkTarget;
       /** Display text captured at authoring time. */
       label: string;
+    }
+  | {
+      /** An image: a `[[asset:<uuid>|alt]]` span the author placed, or a
+       * Markdown/HTML image URL the server fetched and asset-ified. The
+       * client never receives a raw external URL for this segment kind —
+       * it renders via `ctx.assets.url(asset_id, ...)`, the server's own
+       * asset endpoint, exactly like `link_preview.image_asset_id`. */
+      kind: "image";
+      /** The asset id to render, resolved server-side. */
+      asset_id: string;
+      /** Alt text, plain data (never markup) — may be empty. */
+      alt: string;
     };
 
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
@@ -491,6 +503,7 @@ export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
     thumbnail_asset_id: z.string().nullish(),
   }),
   z.object({ kind: z.literal("doc_link"), target: DocLinkTargetSchema, label: z.string() }),
+  z.object({ kind: z.literal("image"), asset_id: z.string(), alt: z.string() }),
 ]);
 /** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
  * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
@@ -499,7 +512,7 @@ export const ChatSegmentSchema: z.ZodType<ChatSegment, z.ZodTypeDef, unknown> = 
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server-added kind)
  * parses as opaque and renders as nothing — the message still shows.
  * INVARIANT: refuses every KNOWN kind — without this, a malformed
- * text/html/roll_embed/roll_button/link_preview/oembed/doc_link segment (missing/wrong-typed
+ * text/html/roll_embed/roll_button/link_preview/oembed/doc_link/image segment (missing/wrong-typed
  * payload) would be rescued by this fallback and then misclassified as
  * trustworthy by isKnownSegment, breaking fail-closed. */
 const UnknownSegmentSchema = z
@@ -513,7 +526,8 @@ const UnknownSegmentSchema = z
       s.kind !== "roll_button" &&
       s.kind !== "link_preview" &&
       s.kind !== "oembed" &&
-      s.kind !== "doc_link",
+      s.kind !== "doc_link" &&
+      s.kind !== "image",
   );
 /** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
@@ -524,7 +538,7 @@ const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSche
  * every known `kind` string, so a malformed known-kind segment fails the
  * whole message rather than being misclassified as trustworthy here.
  * @param s The parsed segment (known or opaque forward-compat).
- * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`.
+ * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`/`image`.
  * @example
  * ```ts
  * import { isKnownSegment } from "@shadowcat/core";
@@ -540,7 +554,8 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
     s.kind === "roll_button" ||
     s.kind === "link_preview" ||
     s.kind === "oembed" ||
-    s.kind === "doc_link"
+    s.kind === "doc_link" ||
+    s.kind === "image"
   );
 }
 

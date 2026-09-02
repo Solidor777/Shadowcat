@@ -436,6 +436,51 @@ describe("doc_link segments", () => {
   });
 });
 
+describe("image segments", () => {
+  test("parses an image segment", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "image", asset_id: "a1", alt: "a map" }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([{ kind: "image", asset_id: "a1", alt: "a map" }]);
+  });
+  test("parses an image segment with empty alt", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "image", asset_id: "a1", alt: "" }],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toEqual([{ kind: "image", asset_id: "a1", alt: "" }]);
+  });
+  test("fail-closed: image missing asset_id fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "image", alt: "a map" }],
+    }))).toBeNull();
+  });
+  test("fail-closed: image missing alt fails the whole message parse", () => {
+    expect(parseMessageEngine(msgDoc({
+      ...base,
+      content: [{ kind: "image", asset_id: "a1" }],
+    }))).toBeNull();
+  });
+  test("isKnownSegment recognizes image", () => {
+    const eng = parseMessageEngine(msgDoc({
+      ...base,
+      content: [
+        { kind: "image", asset_id: "a1", alt: "a map" },
+        { kind: "preview_card", url: "https://example.com/b" },
+      ],
+    }));
+    expect(eng).not.toBeNull();
+    expect(eng!.content).toHaveLength(2);
+    expect(eng!.content.filter(isKnownSegment)).toEqual([
+      { kind: "image", asset_id: "a1", alt: "a map" },
+    ]);
+  });
+});
+
 test("buildChannelRegistryDoc builds a world-scoped parentless singleton map doc", () => {
   const d = buildChannelRegistryDoc("w1", { general: { name: "General" } });
   expect(d.doc_type).toBe("channel-registry");
