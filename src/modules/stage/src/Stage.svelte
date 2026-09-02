@@ -245,6 +245,9 @@
           .map((t) => `${t.id}:${resolveTokenVisual(t, documents)?.kind ?? "none"}`)
           .sort()
           .join(";");
+        host.dataset.shapeCount = String(
+          documents.query("drawing").length + documents.query("template").length,
+        );
         host.dataset.wallCount = String(documents.query("wall").length);
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
