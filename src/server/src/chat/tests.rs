@@ -1622,6 +1622,463 @@ async fn edit_replaces_source_and_delete_clears_it() {
 }
 
 #[tokio::test]
+async fn editing_into_a_doc_link_span_stores_the_doc_link_segment() {
+    use crate::auth::role::ServerRole;
+    use crate::data::document::WorldRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    let rate = PingRateLimiter::new();
+
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "general".into(),
+        "hello".into(),
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    let message_id = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.id,
+        other => panic!("expected Create, got {other:?}"),
+    };
+
+    let id = "00000000-0000-0000-0000-000000000001";
+    handle_edit_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 101,
+            budget_per_min: 30,
+        },
+        message_id,
+        format!("[[doc:{id}|My Doc]]"),
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    assert!(sys
+        .content
+        .iter()
+        .any(|s| matches!(s, Segment::DocLink { label, .. } if label == "My Doc")));
+}
+
+#[tokio::test]
+async fn editing_into_an_asset_span_stores_the_image_segment_when_images_are_enabled() {
+    use crate::auth::role::ServerRole;
+    use crate::data::asset::{Asset, AssetMeta};
+    use crate::data::document::WorldRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    // Enable images via the world's chat-settings doc.
+    let settings_gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let settings_doc = Document {
+        id: Uuid::new_v4(),
+        scope: Scope::World { world_id: w.id },
+        doc_type: CHAT_SETTINGS_DOC_TYPE.to_string(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: Some(gm),
+        permissions: crate::data::document::PermissionSet::default(),
+        embedded: std::collections::BTreeMap::new(),
+        parent_id: None,
+        engine: Some(
+            serde_json::to_value(ChatContentPolicy {
+                images: Some(true),
+                ..Default::default()
+            })
+            .unwrap(),
+        ),
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    };
+    repo.apply_intent(
+        &settings_gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: settings_doc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let asset_id = Uuid::new_v4();
+    let asset = Asset {
+        id: asset_id,
+        world_id: w.id,
+        storage_key: format!("{}/{asset_id}", w.id),
+        original_name: "map.png".to_string(),
+        content_type: "image/png".to_string(),
+        byte_size: 10,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: Vec::new(),
+        derived_tags: Vec::new(),
+        meta: AssetMeta::unprocessed("image/png", 10),
+    };
+    repo.insert_asset(&asset).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    let rate = PingRateLimiter::new();
+
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "general".into(),
+        "hello".into(),
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    let message_id = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.id,
+        other => panic!("expected Create, got {other:?}"),
+    };
+
+    handle_edit_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 101,
+            budget_per_min: 30,
+        },
+        message_id,
+        format!("[[asset:{asset_id}|a map]]"),
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    assert!(sys.content.iter().any(
+        |s| matches!(s, Segment::Image { asset_id: id, alt } if *id == asset_id && alt == "a map")
+    ));
+}
+
+#[tokio::test]
+async fn editing_into_a_roll_button_span_validates_without_rolling() {
+    use crate::auth::role::ServerRole;
+    use crate::data::document::WorldRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    let rate = PingRateLimiter::new();
+
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "general".into(),
+        "hello".into(),
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    let message_id = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.id,
+        other => panic!("expected Create, got {other:?}"),
+    };
+
+    handle_edit_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 101,
+            budget_per_min: 30,
+        },
+        message_id,
+        "[[roll:1d20|Attack]]".into(),
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    assert!(sys.content.iter().any(|s| matches!(
+        s,
+        Segment::RollButton { formula, label }
+        if formula == "1d20" && label.as_deref() == Some("Attack")
+    )));
+}
+
+#[tokio::test]
+async fn editing_into_an_inline_formula_span_is_roll_immutable_not_executed() {
+    use crate::auth::role::ServerRole;
+    use crate::data::document::WorldRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    let rate = PingRateLimiter::new();
+
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "general".into(),
+        "hello".into(),
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    let message_id = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.id,
+        other => panic!("expected Create, got {other:?}"),
+    };
+
+    // An inline `[[formula]]` span inside otherwise-Normal edit content is
+    // refused, not silently executed -- a roll's outcome is immutable once
+    // sent, and edit-time scanning must never re-open that door via a span
+    // mid-text rather than a leading `/roll`.
+    let err = handle_edit_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 101,
+            budget_per_min: 30,
+        },
+        message_id,
+        "attack! [[1d20]] done".into(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, SendMessageError::RollImmutable));
+
+    // Stored content is untouched by the rejected edit.
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    assert!(!sys
+        .content
+        .iter()
+        .any(|s| matches!(s, Segment::RollEmbed { .. })));
+}
+
+#[tokio::test]
+async fn whisper_edit_body_is_scanned_for_doc_link_spans_like_a_send() {
+    use crate::auth::role::ServerRole;
+    use crate::data::document::WorldRole;
+    use crate::data::sqlite::SqliteRepository;
+    use crate::ws::room::RoomRegistry;
+
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let alice = repo
+        .create_user("alice", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    repo.add_member(w.id, alice, WorldRole::Player)
+        .await
+        .unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    let rate = PingRateLimiter::new();
+
+    let (cmd, _pending) = handle_send_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+        },
+        "general".into(),
+        "/w @alice hello".into(),
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+    let message_id = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.id,
+        other => panic!("expected Create, got {other:?}"),
+    };
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.clone().unwrap()).unwrap();
+    assert!(matches!(sys.audience, Audience::Whisper { .. }));
+
+    // A stored whisper's edit skips `parse_command` (see `handle_edit_message`'s
+    // doc) but its body IS still scanned for `[[...]]` spans -- a whisper
+    // author can embed a `[[doc:...]]` link mid-text exactly like a public
+    // message's author can.
+    let id = "00000000-0000-0000-0000-000000000002";
+    handle_edit_message(
+        MessageRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            preview: LinkPreviewDeps {
+                client: &super::link_preview::build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+            now: 101,
+            budget_per_min: 30,
+        },
+        message_id,
+        format!("see [[doc:{id}|the sheet]]"),
+    )
+    .await
+    .unwrap();
+
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    assert!(sys
+        .content
+        .iter()
+        .any(|s| matches!(s, Segment::DocLink { label, .. } if label == "the sheet")));
+}
+
+#[tokio::test]
 async fn whisper_edit_prefill_resubmit_is_idempotent() {
     use crate::auth::role::ServerRole;
     use crate::data::document::WorldRole;
