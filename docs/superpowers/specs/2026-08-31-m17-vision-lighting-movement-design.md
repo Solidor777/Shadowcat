@@ -353,3 +353,70 @@ begins.
   not exercised.
 - **Mechanical effects of light level** (dim-light disadvantage etc.) — system-owned rules, as
   before.
+
+## 15. Decision log (post-close)
+
+Decisions taken after M17 closed, each resolving a finding the close-out had logged for review.
+They amend §6.2/§8 above where they conflict; the code is the truth.
+
+- **Visibility is `LOS ∩ lit` — server-authoritative, at every site, not a rendering
+  choice.** The vision model (§6.1: a terrain sense's reach is `LOS ∩ illumination ≥ floor`,
+  range-limited; darkvision's floor is "dark") already stated it; the close-out found the
+  egress clip gating on LOS alone and the client drawing an in-sight unlit cell clear. Ruling:
+  ONE predicate — `InstantSight::sees` is `player_lit_mask`'s per-source conjunction (LOS
+  polygon contains the point AND `point_qualifies` at its cell center) — read by the mask, the
+  move-stream position clip and the explored writer (`ExploredSet::mark_cells` over the `lit`
+  set). A normal-vision observer is not streamed a token walking through dark cells in plain
+  line of sight; darkvision within range and the GM are. Rationale: the alternative (LOS-only
+  visibility with lighting as a client tint) forks the decision — the mask says "not visible",
+  the stream says "here it is" — which is the defect class §12 exists to prevent, and it
+  contradicts the server-authoritative directive (the server decides what is seen; the client
+  renders). Consequence for the client: the `vision` payload's `polygons` remain the LOS alone
+  (the fog's holes), so the client renders "in sight but unlit" itself — `Lighting.setDarkness`
+  → `LightingFrame.darkness` → a `MAX_DARK_ALPHA` sheet inverse-masked by the lit cells — the
+  darkest gradation band, never brighter than a dim cell. A token document standing in such a
+  cell is still delivered (document READ, not vision, governs the document stream) and drawn
+  under that darkness: send-then-hide, the accepted posture under the UX-outranks-secrecy
+  invariant; its MOVE is what the server withholds.
+- **One LOS read.** `SceneEcs::sight_sources`/`SightSources::los_at` replace the per-move
+  `VisionMoveInputs` and the egress-side polygon rebuild: the fog's `player_vision_polygons`,
+  the mover's streamed `mover_vision` timeline and the clip's `RecipientSight` all take their
+  polygons from `gather_vision_sources_in_scene` + `source_los_poly`. Observer-tier admission
+  and `losRestriction` therefore apply identically to the fog, the sweep and the clip.
+- **In-flight torches are composed per instant, never read from the committed field.** An
+  in-flight mover's committed position is the move's END, so its emission is excluded from the
+  field the clip reads (`recipient_sight`'s `exclude_emitters`, `scene_lights_excluding`) and
+  composed back from the registered frames' `mover_light` at each instant
+  (`RecipientSight::sample_light`, `LightingInputs::cell_light`). This is why `LightSample`
+  gained `intensity` and `falloff`: the frame must describe its own light (the clip runs from
+  the frame, without a document read), with `emitters::field_falloff`/`wire_falloff` the one
+  curve mapping. The own-move re-emit also fires when a torch-carrying move starts — a glow
+  changes what every bystander sees.
+- **Glow-only frames: ONE frame type.** A recipient the glow reaches but the token never does
+  gets `samples: []` with the admitted `mover_light` and `stop`/`duration_ms` at the last
+  admitted light sample; the wire invariant becomes "at least one of `samples`/`mover_light` is
+  non-empty". A second frame type was rejected: it would fork the client's playback keying and
+  the re-emit path for no information the empty-samples shape does not already carry. The
+  client starts the light sweep alone (no token tween — there is no position to play).
+- **Light admission is "lights a cell the recipient sees", not "disc touches sight".**
+  `glow_reaches` requires a cell center within `dim`, inside the sample's own occluded
+  polygon and in the target's line of sight — the cells `lightSampleCells` paints — so a
+  `blocksLight`-occluded glow whose disc merely crosses a sight wall is not admitted (the
+  disc rule would have sent a glow-only frame that paints nothing and discloses a light
+  moving behind the wall). The disc test stays as the pre-filter and, past
+  `MAX_GLOW_ADMISSION_CELLS`, the verdict: a scene-wide glow keeps the coarse admission rather
+  than being dropped — fail-open on reach, because a huge light reaching a recipient's sight is
+  not a secret the fine test protects.
+- **Client lighting during the mover's own vision sweep: union, then newest.** The
+  post-move `vision` frame lights the cells seen from the STOP; the sweeping fog runs from the
+  START. `applyCommittedLighting` paints `unionLightingInputs(lightingBeforeSweep, newest)`
+  while a vision sweep plays and the newest frame alone when it ends. A per-sample lit set for
+  the mover was rejected as a wire addition the light sweep does not need: the union is a
+  cosmetic approximation with the committed frame the truth at rest, the same posture as the
+  sweep's band approximation. Ordering assumption: the derived `vision` frame follows the
+  `MoveStream` (`egress_loop` recomputes derived channels after the move commit's debounce), so
+  the snapshot taken when the sweep starts is the pre-move lighting.
+- **Dark-band alpha.** `MAX_DARK_ALPHA` (0.6) leaves an in-sight unlit cell 40% visible,
+  consistent with the explored-fog sheet (0.5) under the same invariant; a token drawn under it
+  is dimmed, not hidden. Hiding it fully would require the client to model visibility per
+  token — a second visibility rule — which this ruling refuses.

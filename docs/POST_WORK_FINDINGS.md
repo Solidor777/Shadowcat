@@ -3,27 +3,6 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
-- Title: unlit line-of-sight cells render clear for a normal-vision viewer. Summary: fog holes
-  are the LOS polygons alone and the lighting overlay only darkens cells present in the `lit`
-  set (`PixiBackend.setLighting` paints nothing for an absent cell), so a cell inside a viewer's
-  line of sight whose illumination is below the "dim" floor is drawn with NO darkening at all —
-  brighter than an adjacent dim-band cell that gets its 0.3 fill — and a token standing in it is
-  streamed and rendered. Surfaced while building the M17d lighting sweep (whose cells ADD to the
-  overlay; nothing in the client models "in sight but dark"). Pre-existing since the lit mask
-  became cosmetic (`player_lit_mask` emits only visible cells). Status: Needs Review (a
-  design question — whether an in-LOS unlit cell should carry the last band's darkening, or the
-  fog should re-admit illumination; either is a rendering-model change).
-
-- Title: a glow-only move-stream observer reconciles at the stop. Summary: `clip_move_stream`
-  decides frame delivery on the POSITION clip alone; a recipient none of whose position samples
-  is visible receives no `move_stream` frame even when `admit_light_samples` would have admitted
-  the carried-light timeline to them (the torch's glow reaches the observer's sight but the
-  bearer never does). They see the light only at the stop, via the post-commit `vision`
-  rebroadcast. Documented residual of M17d (the zero-frames rule and the non-empty `samples`
-  invariant are kept deliberately). Status: Needs Review (would need a position-less frame
-  shape — `samples` empty with `mover_light` present — and a client path that runs a light sweep
-  without a token tween).
-
 - Title: vitest worker start-up timeouts under sibling-worktree cargo load. Summary: on
   the M17c gate run, `pnpm run test:scripts` failed 4 then 2 tests across two runs (each a
   20s/5s per-test timeout, the failing test moving between runs, incl. the skill-corpus

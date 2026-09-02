@@ -2103,10 +2103,11 @@ Branch `m17`, executed from the same design
 (D6) and plan
 [`superpowers/plans/2026-08-31-m17d-moving-light-midwalk.md`](superpowers/plans/2026-08-31-m17d-moving-light-midwalk.md).
 With it M17 (a–d) is complete. Delivered, wire: `ServerMsg::MoveStream.mover_light:
-Option<Vec<LightSample>>` where `LightSample {t_ms, pos, bright, dim, color, polygons}` pairs a
-position sample with the mover's carried emission raycast at that instant (`pos`/`bright`/`dim`
-in scene units — the disc the egress admission reads; ts-rs export, Zod + `MoveLightSample` +
-mapper on the client, pinned field-for-field on the present and null paths). Server, "cost only
+Option<Vec<LightSample>>` where `LightSample {t_ms, pos, bright, dim, color, intensity, falloff,
+polygons}` pairs a position sample with the mover's carried emission raycast at that instant
+(`pos`/`bright`/`dim` in scene units; `intensity`/`falloff` make the sample self-describing for
+the egress clip; ts-rs export, Zod + `MoveLightSample` + mapper on the client, pinned
+field-for-field on the present and null paths). Server, "cost only
 on request": `SceneEcs::mover_light_inputs(scene, token, cell)` hoists one `MoverLightInputs`
 per move (the resolved `token_light_emission` as a `Light` template, the `blocksLight` walls
 filtered at the token's elevation, `world_units_per_cell`) and `MoverLightInputs::sample_at`
@@ -2118,19 +2119,37 @@ scene, a lightless or suppressed emission, or a zero-progress move yields `None`
 raycasts. The timeline is NOT gated on the mover's role (a GM walking a torch-bearing NPC lights
 the corridor for the players watching it — the spec's D6 puts no role gate on the light, only
 on `mover_vision`). Egress: `ws::move_clip::admit_light_samples` keeps, per recipient, only the
-samples whose `(pos, dim)` disc intersects the recipient's vision at that sample's instant
-(`disc_intersects_polys`: `point_in_poly` ∨ an edge within `dim` by `point_segment_distance`,
-non-finite ⇒ nothing), resolved through `vision_at_instant` — the SAME helper `clip_samples` now
-reads (`timeline_polys_at` over the recipient's in-flight timelines, else the committed polygons);
-`chosen_vision_sample` is generic over the `Timed` trait so both sample kinds select by the one
-fixture-pinned rule. Mover and plain GM receive the full timeline, see-as keys admission on the
-target's vision, a timeline no sample of which reaches the recipient is `None`, and the own-move
-re-emit (`concurrent_streams`) re-admits through the identical path (pinned by
-`egress_reemit_re_admits_the_concurrent_streams_light_timeline`). Frame delivery is still decided
-by the position clip alone — the zero-frames rule and the non-empty `samples` invariant are
-untouched; the residual is the glow-only observer (no visible position sample ⇒ no frame), who
-reconciles at the stop + the next `vision` rebroadcast, and the invariant-11 disclosure is the
-admitted polygons outside the recipient's sight, bounded by the emission's own reach. Client:
+samples whose glow lights a cell in the recipient's sight at that sample's instant
+(`glow_reaches`: a cell center within `dim`, inside the sample's own occluded polygon and in the
+target's line of sight — the cells the client's sweep paints; `disc_intersects_polys` is the
+pre-filter and, past `MAX_GLOW_ADMISSION_CELLS`, the verdict; non-finite ⇒ nothing), resolved
+through `ClipInputs::at` — the SAME instant sight `clip_samples` reads; `chosen_vision_sample`
+is generic over the `Timed` trait so every sample kind selects by the one fixture-pinned rule.
+Mover and plain GM receive the full timeline, see-as keys admission on the target's sight, a
+timeline no sample of which reaches the recipient is `None`, and the own-move re-emit
+(`concurrent_streams`, also triggered by a torch-carrying move starting) re-admits through the
+identical path (pinned by `egress_reemit_re_admits_the_concurrent_streams_light_timeline`).
+Frame delivery is decided by BOTH clips: a recipient the glow alone reaches gets a glow-only
+frame (`samples` empty, `mover_light` the admitted timeline, `stop`/`duration_ms` at the last
+admitted light sample — `glow_only_recipient_gets_a_frame_with_no_position_samples`,
+`egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches`), a recipient reached by
+neither gets no frame, and the wire invariant is "at least one of `samples`/`mover_light` is
+non-empty". The invariant-11 disclosure is the admitted polygons outside the recipient's sight,
+bounded by the emission's own reach. **Visibility is `LOS ∩ lit`, server-authoritative, at
+every site** (the close-out's second finding): `SceneEcs::sight_sources`/`SightSources::los_at`
+are the ONE line-of-sight read (`player_vision_polygons`, the mover's streamed timeline and the
+egress clip), `SceneEcs::recipient_sight` → `InstantSight::sees` is the clip's per-instant
+predicate — some source's LOS polygon contains the point AND `point_qualifies` at its cell
+center, the lit mask's own conjunction, pinned cell-for-cell by
+`recipient_sight_agrees_with_player_lit_mask_cell_for_cell` — with in-flight movers' carried
+emissions excluded from the committed field (`recipient_sight`'s `exclude_emitters`,
+`scene_lights_excluding`) and composed back per instant from the registered frames'
+`mover_light` (`RecipientSight::sample_light`, `LightingInputs::cell_light` over
+`lighting::cell_illumination_from`); a token walking unlit through plain line of sight streams
+to a darkvision observer within range and a GM but not to a normal-vision observer
+(`an_unlit_token_in_line_of_sight_streams_only_to_darkvision_and_the_gm`); explored memory
+accumulates the `lit` cells (`ExploredSet::mark_cells`, replacing polygon rasterization), never
+a line-of-sight polygon on its own. Client:
 `RenderEngine.animateSamples(..., moverLight)` starts a `lightSweeps` entry beside
 `visionSweeps`; the pure `light-sweep` module (`lightSampleCells`: cells within `dim` of the
 chosen sample, inside its polygons and the viewer's own line of sight, brightest band within
@@ -2140,22 +2159,41 @@ one-sided cell fading toward `MAX_DARK_ALPHA` and dropped at zero weight; fail-c
 degenerate sample or more than `MAX_LIGHT_SWEEP_CELLS` candidates) feeds `Lighting.setSweep`,
 unioned over the fade-interpolated committed frame by `mergeSweepCells`. A committed lighting
 frame arriving mid-sweep is parked (`retargetLighting`/`lastLightingInput`) and applied through
-the normal fade once the last sweep ends — the post-commit rebroadcast already carries the light
-at its final cell. A sweep's duration extends to its last admitted sample; a client-local scene
+`applyCommittedLighting` once the last sweep ends — the post-commit rebroadcast already carries
+the light at its final cell; while the viewer's own vision sweep plays, `applyCommittedLighting`
+paints the `unionLightingInputs` of the lighting held at sweep start (`lightingBeforeSweep`, lit
+from the START) and the newest frame (lit from the STOP). A glow-only frame starts the light
+sweep alone (no position samples reach `TokenAnimator`). **The client renders "in sight but
+unlit"**: `Lighting.setDarkness` carries the viewer's current line of sight (the committed
+`visible` set, or the vision sweep's chosen/blend polygons) as `LightingFrame.darkness`, which
+`PixiBackend.setLighting` paints as a sheet at `MAX_DARK_ALPHA` inverse-masked by the lit cells'
+polygons (`litHoles`) beneath the per-cell fills — an in-sight unlit cell is as dark as the
+darkest band, never brighter than a dim cell; withheld when no lighting model applies (a GM's
+`mode:"all"`). A sweep's duration extends to its last admitted sample; a client-local scene
 switch ends every sweep; `chooseVisionSample` is generic so the light timeline reuses the shared
 `chosen-vision-sample.json` fixture. `Stage` exposes read-only `data-light-sweep` /
 `data-lit-cells` / `data-lit-bbox` through `RenderEngineOpts.onLightingApplied`. Tests: protocol
 round-trip; `ws::room::tests::mover_light` (lightless, carried torch sampled at every instant with
-scene-unit reaches, GM mover, suppressed emission, all-bright); `ws::move_clip::tests` (fixture
-parity on light samples, disc intersection incl. fail-closed, admission none-in/none-out,
-sample-level filtering, same-instant parity with `clip_samples`); `ws::conn::tests::mover_light`
-(observer admission past its clipped position prefix, out-of-reach drop, neither-token-nor-glow ⇒
-no frame, mover + plain GM full timeline, see-as by the target's vision, the target's own
-in-flight timeline, the re-emit); client `light-sweep`, `lighting` (`bandAlpha`, `mergeSweepCells`,
-`setSweep`), `fog-blend` fixture parity, engine sweep suite (mid-walk lighting with the parked
-frame and revert, null timeline untouched, concurrent union, LOS intersection, extended duration,
-scene switch), bridge/session forwarding; shell e2e `light-midwalk.spec.ts` (corridor lit
-mid-walk before the commit; walled-in observer never sees a sweep). Found in flight: the sweep
+scene-unit reaches + photometry, GM mover, suppressed emission, all-bright); `ws::move_clip::tests`
+(fixture parity on light samples, LOS clip, own in-flight viewpoint per instant, illumination
+required for normal vision, darkvision in range, another mover's torch lighting a bystander per
+instant, disc intersection incl. fail-closed, admission none-in/none-out, sample-level filtering,
+an occluded glow dropped, the cap fallback, same-instant parity with `clip_samples`);
+`ws::conn::tests::mover_light` (observer admission past its clipped position prefix, out-of-reach
+drop, neither-token-nor-glow ⇒ no frame, the glow-only frame, unlit-token secrecy across normal /
+darkvision / GM, mover + plain GM full timeline, see-as by the target's sight, the target's own
+in-flight timeline, the re-emit and the glow-only re-emit); `scene::tests`
+(`recipient_sight_agrees_with_player_lit_mask_cell_for_cell`, fog polygons sharing the
+observer-tier admission, `wire_falloff_round_trips_field_falloff`); client `wire`/`ws-client`
+(glow-only parse + map, photometry by value, unknown falloff rejected), `light-sweep`, `lighting`
+(`bandAlpha`, `mergeSweepCells`, `unionLightingInputs`, `setSweep`, `setDarkness` with and
+without a model), `pixi-backend` (darkness sheet + lit holes), `fog-blend` fixture parity, engine
+sweep suite (mid-walk lighting with the parked frame and revert, null timeline untouched,
+concurrent union, LOS intersection, extended duration, scene switch, glow-only sweep with no
+token tween, darkness over the committed sight and lifted for a GM, the vision-sweep union),
+bridge/session forwarding; shell e2e `light-midwalk.spec.ts` (corridor lit mid-walk before the
+commit; walled-in observer never sees a sweep; a sight-only wall hides the bearer but its glow
+still sweeps). Found in flight: the sweep
 blend's one-sided fade lerped toward alpha 0 (brightest) and kept zero-weight cells — inverted
 against the overlay's "absent = fully dark" convention; fixed before commit. Skill updates:
 `shadowcat-codebase-scene-rendering` (M17a–d seams), `-realtime-sync` (`moverLight` on the
