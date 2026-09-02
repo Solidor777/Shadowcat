@@ -949,7 +949,7 @@ export class WorldSession {
     // Same lifecycle as `#footprintsSub`: server-resolved per-recipient combat numbers, never
     // client-derived.
     this.#combatSub = this.subscribeScene("combat", (f) => {
-      this.#combat.setResolved(parseCombats(f.payload));
+      this.#combat.setResolved(parseCombats(f.payload, this.#logger));
     });
     await this.#ws.start();
     this.state = "open";

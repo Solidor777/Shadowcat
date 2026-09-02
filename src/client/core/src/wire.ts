@@ -30,6 +30,7 @@
 // one this pattern replaces everywhere else — missing-required-field
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
+import type { Logger } from "./logger";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -1482,11 +1483,14 @@ export const CombatsPayloadSchema = combatsPayloadSchemaImpl;
 /**
  * Parse a `"combat"` derived-channel payload into a `CombatsView`.
  *
- * A payload that does not validate yields {@link EMPTY_COMBATS} rather than a partial read,
- * mirroring `parseFootprints`: a half-parsed combat set would mix authoritative numbers with
- * silently-dropped ones, and a caller cannot tell those apart. The failure is logged so a schema
- * drift is visible in development rather than silently swallowed.
+ * A payload that does not validate yields {@link EMPTY_COMBATS} rather than a partial read — the
+ * same fail-closed shape as `parseFootprints`: a half-parsed combat set would mix authoritative
+ * numbers with silently-dropped ones, and a caller cannot tell those apart. Unlike
+ * `parseFootprints`, which stays silent, the failure is reported through the caller's `logger`
+ * when one is given, so a schema drift on this channel reaches the project logger (never a bare
+ * console) and stays visible in development.
  * @param payload The raw `SceneDerived` payload for the `"combat"` channel.
+ * @param logger Where a malformed payload is reported; absent ⇒ the failure is silent.
  * @returns A `CombatsView` over the payload, or {@link EMPTY_COMBATS} when it does not validate.
  * @example
  * ```ts
@@ -1497,10 +1501,10 @@ export const CombatsPayloadSchema = combatsPayloadSchemaImpl;
  * combats.combats.length; // number
  * ```
  */
-export function parseCombats(payload: unknown): CombatsView {
+export function parseCombats(payload: unknown, logger?: Logger): CombatsView {
   const parsed = combatsPayloadSchemaImpl.safeParse(payload);
   if (!parsed.success) {
-    console.warn("parseCombats: malformed combat channel payload:", parsed.error.message);
+    logger?.warn("parseCombats: malformed combat channel payload", parsed.error.message);
     return EMPTY_COMBATS;
   }
   return {

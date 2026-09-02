@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from "vitest";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import { z } from "zod";
 import type * as Ts from "@shadowcat/types";
 import {
@@ -765,6 +765,23 @@ describe("parseCombats", () => {
     expect(parseCombats({ combats: "not-an-array" })).toEqual(EMPTY_COMBATS);
     expect(parseCombats(null)).toEqual(EMPTY_COMBATS);
     expect(parseCombats(undefined)).toEqual(EMPTY_COMBATS);
+  });
+
+  it("reports a malformed payload through the given logger, never the console", () => {
+    const warn = vi.fn();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(parseCombats({ combats: "not-an-array" }, logger)).toEqual(EMPTY_COMBATS);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe("parseCombats: malformed combat channel payload");
+      expect(typeof warn.mock.calls[0][1]).toBe("string");
+      expect(consoleWarn).not.toHaveBeenCalled();
+      expect(parseCombats({ combats: [] }, logger).combats).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleWarn.mockRestore();
+    }
   });
 
   it("CombatsPayloadSchema round-trips the same shape parseCombats accepts", () => {
