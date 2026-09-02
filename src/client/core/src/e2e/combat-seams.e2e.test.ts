@@ -1,10 +1,12 @@
 // Node<->Rust end-to-end: the combat client seams driven against the real Rust
 // test_server. Exercises the full stack in one scenario: a GM authors a scene/resource
 // registry/combat/combatants through raw intents, starts and advances the clock through the
-// correlated combat_result/combat_error reply, and both a GM and a player connection derive
-// identical combat:* hook events from their own per-recipient document stream while the
-// player's "combat" channel frame and pathfind reply reflect the server's visibility and
-// movement-budget rules.
+// correlated combat_result/combat_error reply, and a GM and a player connection each derive
+// combat:* hook events from their own per-recipient document stream -- the GM's from the
+// server-recorded combat-history walk (every turn the advance crossed, the auto-resolved
+// infinite-lifespan event included), the player's from the combat document's endpoints alone --
+// while the player's "combat" channel frame and pathfind reply reflect the server's visibility
+// and movement-budget rules.
 import { afterAll, beforeAll, expect, test } from "vitest";
 import WebSocket from "ws";
 import { WsClient, type WireWelcome } from "../ws-client";
@@ -208,16 +210,46 @@ test("combat seams: correlation, identical hook derivation, per-recipient channe
   await waitFor(() => (gmH.store.get(combatId)?.engine as CombatEngine).active === true);
   await waitFor(() => (playerH.store.get(combatId)?.engine as CombatEngine).active === true);
 
+  // The advance walks onto the `lifespan: null` event (auto-resolved, nothing on its document
+  // changes), wraps the round, and lands back on the player's combatant: the combat document's
+  // `turn` reads the SAME id as before the advance, and only the round proves the lap.
   await gmClient.combat({ type: "combat_advance", request_id: "cccccccc-cccc-cccc-cccc-cccccccccccc", combat_id: combatId });
-  await waitFor(() => (gmH.store.get(combatId)?.engine as CombatEngine).round === 2);
-  await waitFor(() => (playerH.store.get(combatId)?.engine as CombatEngine).round === 2);
+  const landed = (h: { store: DocumentStore }) => {
+    const engine = h.store.get(combatId)?.engine as CombatEngine;
+    return engine.round === 2 && engine.turn === playerCombatantId;
+  };
+  await waitFor(() => landed(gmH));
+  await waitFor(() => landed(playerH));
+  expect((gmH.store.get(combatId)?.engine as CombatEngine).turn).toBe(playerCombatantId);
 
-  // (b): both clients derived identical combat:* events for the visible transition (start
-  // through the first advance) — the hidden combatant never enters `order`/`turn`, so nothing
-  // in the derivation depends on a document only the GM's store holds.
-  expect(playerH.events).toEqual(gmH.events);
-  expect(gmH.events.map((e) => e.name)).toContain("combat:start");
-  expect(gmH.events.map((e) => e.name)).toContain("combat:turn-start");
+  // (b): the GM's events follow the combat-history records the two commands wrote (the event's
+  // own turn-start/turn-end pair across the first advance included, though nothing on that
+  // combatant's document changed); the player never receives the GM-only history document, so
+  // their list is the endpoint subset -- the same clock, fewer boundaries evidenced. The hidden
+  // combatant never enters `order`/`turn`, so neither list names it.
+  const gmExpected: CombatHookEvent[] = [
+    { name: "combat:start", payload: { combatId, sceneId, round: 1, resumed: false } },
+    { name: "combat:round-start", payload: { combatId, round: 1 } },
+    { name: "combat:turn-start", payload: { combatId, round: 1, combatantId: playerCombatantId, kind: "actor" } },
+    { name: "combat:turn-end", payload: { combatId, round: 1, combatantId: playerCombatantId, kind: "actor" } },
+    { name: "combat:turn-start", payload: { combatId, round: 1, combatantId: gmCombatantId, kind: "event" } },
+    { name: "combat:turn-end", payload: { combatId, round: 1, combatantId: gmCombatantId, kind: "event" } },
+    { name: "combat:round-end", payload: { combatId, round: 1 } },
+    { name: "combat:round-start", payload: { combatId, round: 2 } },
+    { name: "combat:turn-start", payload: { combatId, round: 2, combatantId: playerCombatantId, kind: "actor" } },
+  ];
+  expect(gmH.events).toEqual(gmExpected);
+  const playerExpected: CombatHookEvent[] = [
+    { name: "combat:start", payload: { combatId, sceneId, round: 1, resumed: false } },
+    { name: "combat:round-start", payload: { combatId, round: 1 } },
+    { name: "combat:turn-start", payload: { combatId, round: 1, combatantId: playerCombatantId, kind: "actor" } },
+    { name: "combat:turn-end", payload: { combatId, round: 1, combatantId: playerCombatantId, kind: "actor" } },
+    { name: "combat:round-end", payload: { combatId, round: 1 } },
+    { name: "combat:round-start", payload: { combatId, round: 2 } },
+    { name: "combat:turn-start", payload: { combatId, round: 2, combatantId: playerCombatantId, kind: "actor" } },
+  ];
+  expect(playerH.events).toEqual(playerExpected);
+  expect(playerH.events.some((e) => "combatantId" in e.payload && e.payload.combatantId === hiddenCombatantId)).toBe(false);
 
   // (c): the player's channel frame carries their own combatant's numbers and `null` for the
   // GM's (default-visibility, not owner-or-GM) combatant.

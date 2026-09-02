@@ -1,13 +1,15 @@
 // The combat clock's hook surface: pure derivation of typed events from an applied command's
-// delta over the combat/combatant documents it touched, plus the emitter that chains them onto
-// a HookBus in seq order. No formula evaluation and no server round-trip here -- every event is
-// read straight off the same optimistic/authoritative documents WorldSession already applies.
+// delta over the combat document it touched and the turn records its `combat-history` write
+// appended, plus the emitter that chains them onto a HookBus in seq order. No formula
+// evaluation, no server round-trip and no re-derivation of the server's turn walk here -- every
+// event is read off the same authoritative documents WorldSession already applies.
 import type { HookBus, CoreHooks } from "./hooks";
 import type { Logger } from "./logger";
 import type { ReadableDocuments } from "./store";
 import { getPointer } from "./store";
 import type { WireDocument, WireCommand, WireOperation } from "./wire";
-import type { CombatEngine, CombatantEngine } from "./scene-docs";
+import type { CombatEngine, CombatantEngine, CombatHistoryEngine, TurnRecord } from "./scene-docs";
+import { COMBAT_HISTORY_DOC_TYPE } from "./scene-docs";
 
 /** Payload common to every `combat:*` hook: which combat the event concerns. */
 interface CombatEventBase {
@@ -255,21 +257,33 @@ function collectCombatTouches(
   return touches;
 }
 
-/** One intermediate event combatant's turn, derived from a `combatant` op inside the same
- * command as its parent combat's transition. */
-interface IntermediateEvent {
-  /** The intermediate event combatant's document id. */
-  id: string;
-  /** The combatant's pre-image (its state before the command applied). */
-  doc: WireDocument;
+/** One combat's `combat-history` document as touched by one command: the engine body before
+ * the command (`undefined` when the command created the document) and after it. A recipient
+ * only ever sees this for a history op its own filtered stream delivered — the document is
+ * GM-only egress, so a player's derivation never holds one. */
+interface HistoryTouch {
+  /** The history engine before the command; `undefined` when the command created it, and
+   * possibly holding no record at `cursor` (a client-created empty log). */
+  b: CombatHistoryEngine | undefined;
+  /** The history engine after the command. */
+  a: CombatHistoryEngine;
 }
 
-/** Collects a combat's `event`-kind combatants a `settle_turn` walk auto-resolved this command, keyed by pre-image.
+/** One turn boundary the clock crossed within a command: the round entered and the combatant
+ * whose turn began — the `round`/`turn` half of a `TurnRecord`. */
+interface TurnStep {
+  /** The round the turn falls in. */
+  round: number;
+  /** The combatant document id whose turn began. */
+  turn: string;
+}
+
+/** Finds `combatId`'s `combat-history` op in `cmd`, when this recipient received one.
  * @param cmd The applied command whose ops to scan.
- * @param combatId The combat these combatants must be parented to.
- * @param before Looks up a document's pre-image by id.
+ * @param combatId The combat the history document must be parented to.
+ * @param before Looks up a document's pre-image by id (`undefined` for a `create`).
  * @param after The post-command document view (a `DocumentStore`-shaped reader).
- * @returns One entry per exhausted or lifespan-decremented `event` combatant, in op order.
+ * @returns The history engine pair, or `undefined` when the command carried no visible history op.
  * @example
  * ```ts
  * import { DocumentStore } from "@shadowcat/core";
@@ -278,42 +292,93 @@ interface IntermediateEvent {
  * const store = new DocumentStore();
  * declare const cmd: WireCommand;
  * declare const combatId: string;
- * const intermediates = gatherIntermediateEvents(cmd, combatId, (id) => store.get(id), store);
- * intermediates[0]?.doc.engine; // the event combatant's pre-image engine
+ * collectHistoryTouch(cmd, combatId, (id) => store.get(id), store)?.a.cursor; // number | undefined
  * ```
  */
-function gatherIntermediateEvents(
+function collectHistoryTouch(
   cmd: WireCommand,
   combatId: string,
   before: (id: string) => WireDocument | undefined,
   after: ReadableDocuments,
-): IntermediateEvent[] {
-  const out: IntermediateEvent[] = [];
+): HistoryTouch | undefined {
   for (const op of cmd.ops) {
-    if (op.op === "update") {
-      const b = before(op.doc_id);
-      if (!b || b.doc_type !== "combatant" || b.parent_id !== combatId) continue;
-      const bEngine = b.engine as CombatantEngine;
-      if (bEngine.kind.type !== "event") continue;
-      const beforeLifespan = bEngine.kind.lifespan;
-      const aDoc = after.get(op.doc_id);
-      const aEngine = aDoc?.engine as CombatantEngine | undefined;
-      const afterLifespan = aEngine?.kind.type === "event" ? aEngine.kind.lifespan : undefined;
-      if (afterLifespan != null && beforeLifespan != null && afterLifespan < beforeLifespan) {
-        out.push({ id: op.doc_id, doc: b });
+    if (op.op === "create") {
+      if (op.doc.doc_type === COMBAT_HISTORY_DOC_TYPE && op.doc.parent_id === combatId) {
+        return { b: undefined, a: op.doc.engine as CombatHistoryEngine };
       }
-    } else if (op.op === "delete") {
-      const doc = op.doc;
-      if (doc.doc_type !== "combatant" || doc.parent_id !== combatId) continue;
-      const engine = doc.engine as CombatantEngine;
-      if (engine.kind.type !== "event") continue;
-      out.push({ id: doc.id, doc });
+    } else if (op.op === "update") {
+      const b = before(op.doc_id);
+      if (b?.doc_type !== COMBAT_HISTORY_DOC_TYPE || b.parent_id !== combatId) continue;
+      const a = after.get(op.doc_id);
+      if (!a) continue;
+      return { b: b.engine as CombatHistoryEngine, a: a.engine as CombatHistoryEngine };
     }
   }
-  return out;
+  return undefined;
 }
 
-/** Derives one combat's `combat:*` hook events from its before/after engine pair.
+/** The turn records a command's history write placed between the pre-command current record
+ * and the new cursor — every boundary the server's walk crossed, auto-resolved entries
+ * included. The server appends past the current record after truncating any redo tail and may
+ * evict the oldest records, so the pre-command current record is located by its `(round, turn)`
+ * identity scanning DOWN from its old index (eviction only ever shifts it left, and no record
+ * the same command appends can share its identity — the clock always moves off the current
+ * turn); a fast-forward, which moves `cursor` over records already present, crosses exactly
+ * those.
+ * @param h The history engine pair for one combat.
+ * @returns The crossed records, oldest first; `null` when the pre-command current record cannot
+ * be located in the post-image (the caller falls back to the combat document's own endpoints).
+ * @example
+ * ```ts
+ * import type { CombatHistoryEngine } from "@shadowcat/core";
+ *
+ * declare const b: CombatHistoryEngine;
+ * declare const a: CombatHistoryEngine;
+ * crossedRecords({ b, a })?.map((r) => r.turn); // the combatant ids entered, in walk order
+ * ```
+ */
+function crossedRecords(h: HistoryTouch): TurnRecord[] | null {
+  const upTo = h.a.records.slice(0, h.a.cursor + 1);
+  const oldCurrent = h.b?.records[h.b.cursor];
+  if (!h.b || !oldCurrent) return upTo;
+  for (let i = Math.min(h.b.cursor, upTo.length - 1); i >= 0; i--) {
+    const r = upTo[i];
+    if (r.round === oldCurrent.round && r.turn === oldCurrent.turn) return upTo.slice(i + 1);
+  }
+  return null;
+}
+
+/** The ordered turn boundaries one command crossed for one combat: the server-recorded walk
+ * when the recipient received the combat's `combat-history` write (GM), else the one boundary
+ * the combat document's own `turn`/`round` endpoints evidence — a moved `turn`, or the same
+ * `turn` in a later `round` (a full lap of a one-entry or all-auto-resolving order), each of
+ * which is a turn boundary by the clock's own definition rather than a re-derivation of the
+ * server's auto-resolve walk. A recipient without the history write therefore observes the
+ * endpoints only; intermediate auto-resolved turns are visible to whoever the record reaches.
+ * @param touch The combat's before/after engine pair.
+ * @param history The combat's history pair, when the command carried a visible one.
+ * @returns The boundaries in the order the clock crossed them; empty when the turn did not move.
+ * @example
+ * ```ts
+ * import type { CombatEngine } from "@shadowcat/core";
+ *
+ * declare const touch: { id: string; b: CombatEngine | undefined; a: CombatEngine | undefined };
+ * turnWalk(touch, undefined).map((s) => s.turn); // e.g. ["combatant-b"]
+ * ```
+ */
+function turnWalk(touch: CombatTouch, history: HistoryTouch | undefined): TurnStep[] {
+  const { b, a } = touch;
+  if (!a || a.turn == null) return [];
+  if (history) {
+    const crossed = crossedRecords(history);
+    if (crossed && crossed.length > 0) return crossed.map((r) => ({ round: r.round, turn: r.turn }));
+  }
+  const moved = !b || a.turn !== b.turn || a.round !== b.round;
+  return moved ? [{ round: a.round, turn: a.turn }] : [];
+}
+
+/** Derives one combat's `combat:*` hook events from its before/after engine pair and, when the
+ * command carried it, the combat's history write.
  * @param touch The combat's before/after engine pair.
  * @param cmd The applied command touch's ops came from.
  * @param before Looks up a document's pre-image by id.
@@ -362,44 +427,30 @@ function processCombat(
     });
   }
 
-  if (b?.turn != null && a?.turn !== b.turn) {
-    const doc = after.get(b.turn) ?? before(b.turn);
-    events.push({
-      name: "combat:turn-end",
-      payload: { combatId: id, round: b.round, combatantId: b.turn, kind: combatantKindOf(doc) },
-    });
-  }
-
-  if (a) {
-    for (let r = b?.round ?? 0; r < a.round; r++) {
+  // `kind` resolves against the post-image first, then the pre-image: an exhausted `Event`
+  // deleted by the same command is only findable in the delete op's pre-image.
+  const turnEvent = (name: "combat:turn-start" | "combat:turn-end", round: number, turn: string): CombatHookEvent => ({
+    name,
+    payload: { combatId: id, round, combatantId: turn, kind: combatantKindOf(after.get(turn) ?? before(turn)) },
+  });
+  const rounds = (from: number, to: number): void => {
+    for (let r = from; r < to; r++) {
       if (r > 0) events.push({ name: "combat:round-end", payload: { combatId: id, round: r } });
       events.push({ name: "combat:round-start", payload: { combatId: id, round: r + 1 } });
     }
-  }
+  };
 
-  if (a && b) {
-    const intermediates = gatherIntermediateEvents(cmd, id, before, after)
-      .filter((e) => e.id !== a.turn && e.id !== b.turn)
-      .sort((x, y) => b.order.indexOf(x.id) - b.order.indexOf(y.id));
-    for (const ev of intermediates) {
-      events.push({
-        name: "combat:turn-start",
-        payload: { combatId: id, round: a.round, combatantId: ev.id, kind: "event" },
-      });
-      events.push({
-        name: "combat:turn-end",
-        payload: { combatId: id, round: a.round, combatantId: ev.id, kind: "event" },
-      });
-    }
+  let prev: { round: number; turn: string | null } = { round: b?.round ?? 0, turn: b?.turn ?? null };
+  for (const step of turnWalk(touch, collectHistoryTouch(cmd, id, before, after))) {
+    if (prev.turn != null) events.push(turnEvent("combat:turn-end", prev.round, prev.turn));
+    rounds(prev.round, step.round);
+    events.push(turnEvent("combat:turn-start", step.round, step.turn));
+    prev = step;
   }
-
-  if (a?.turn != null && a.turn !== b?.turn) {
-    const doc = after.get(a.turn);
-    events.push({
-      name: "combat:turn-start",
-      payload: { combatId: id, round: a.round, combatantId: a.turn, kind: combatantKindOf(doc) },
-    });
-  }
+  // The clock stopped holding a turn (the combat was deleted, or `turn` was cleared): the turn
+  // it last held ended without a successor.
+  if (a?.turn == null && prev.turn != null) events.push(turnEvent("combat:turn-end", prev.round, prev.turn));
+  if (a) rounds(prev.round, a.round);
 
   if (b?.active && a && !a.active) {
     events.push({ name: "combat:end", payload: { combatId: id, sceneId: b.scene_id, round: b.round, reason: "paused" } });
@@ -470,11 +521,15 @@ function deriveEffectEvents(
 }
 
 /** Pure derivation of every `combat:*` event one applied command produced, in the documented
- * order: per touched combat, rewind XOR (start, turn-end, round-end/round-start pairs,
- * intermediate event turns, turn-start, end); then effect events attributed to the one combat
- * the command touched (the active one if several, else the first encountered). A command that
- * touches no `combat` document (create/update/delete) produces no events at all, including no
- * effect events, even if it also happens to touch an embedded effect field.
+ * order: per touched combat, rewind XOR (start; then, per turn boundary the command crossed,
+ * turn-end of the turn being left, the round-end/round-start pairs up to the boundary's round,
+ * turn-start; a trailing turn-end when the clock stopped holding a turn; end); then effect
+ * events attributed to the one combat the command touched (the active one if several, else
+ * the first encountered). The boundaries crossed are the `combat-history` records the command
+ * appended when the recipient received that write, else the combat document's own endpoints
+ * (`turnWalk`). A command that touches no `combat` document (create/update/delete) produces no
+ * events at all, including no effect events, even if it also happens to touch an embedded
+ * effect field.
  * @param before Resolves a document id to its pre-command state (the `WorldSession` pre-image
  * map built only for commands `commandTouchesCombat` admits).
  * @param cmd The just-applied, sequenced command.

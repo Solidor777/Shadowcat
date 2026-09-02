@@ -64,7 +64,7 @@ No change to any combat transition, gate, or document shape.
 | S3 | **A combat intent gets a correlated success reply: `ServerMsg::CombatResult { request_id, seq }`**, addressed to the originator only, sent after `Room::commit_combat` returns. `WsClient.combat()` resolves by `request_id` once the `event` carrying `seq` has been applied (`nextExpected > seq`); the author-FIFO path and `WsClientOptions.selfUserId` are deleted. |
 | S4 | **Nine first-party hooks, all `kind: "info"`, version `1.0.0`**, declared by the host at session construction (`defineCombatHooks(hooks)`): `combat:start`, `combat:end`, `combat:round-start`, `combat:round-end`, `combat:turn-start`, `combat:turn-end`, `combat:rewind`, `combat:effect-tick`, `combat:effect-expired`. Payloads carry ids and scalars only (§5.1). |
 | S5 | **Emission derives from the authoritative `DocumentStore`, never the optimistic view**, from pre-images captured in `WorldSession`'s `onCommand` before `store.applyCommand`. Exactly once per applied command; nothing from `seedDocuments`, from an optimistic prediction, from a `reject`, or from a resync-suppressed duplicate. Emission is sequential (a promise queue), so listeners observe commands in seq order. |
-| S6 | **Intermediate auto-resolved turns surface only where the delta evidences them**: an `Event` combatant whose `lifespan` decreased or which was deleted in the same command took a turn (`turn-start`+`turn-end`, `kind: "event"`, in `order` position). A hidden combatant's auto-resolve under `OwnerMayEnd` leaves no delta a client can attribute (its recoveries are indistinguishable from a round boundary's), so it produces no turn hooks for any recipient, GM included. |
+| S6 | **Turn boundaries derive from the server-recorded `combat-history` records the command appended, never from a client-side re-derivation of the server's walk.** `transition::enter_turn` already records every boundary `settle_turn` crosses (an `Event` of any lifespan, a hidden combatant's auto-resolve under `OwnerMayEnd`), folded into the one history write the same command carries; `deriveCombatHookEvents` walks the records placed after the pre-command current record (`crossedRecords`) and emits `turn-end`/round pairs/`turn-start` per boundary. The history document stays GM-only egress (M14b B8), so a player's derivation holds no records and falls back to the combat document's own endpoints (`turnWalk`): a moved `turn`, or the same `turn` in a later `round` (a lap), each a boundary by the clock's own definition. A GM therefore observes every crossed turn — a `lifespan: null` event's, a hidden combatant's (with `kind` resolved from the GM's own store) — and a player the endpoints only; no recipient infers a turn from a `lifespan` decrement or a combatant delete. |
 | S7 | **Effect hooks require a combat-document op in the same command** (`Update` or `Delete` of a `combat`): that is the evidence the effect change is a clock transition. A GM's manual `active: false` outside a transition is an edit, not an expiry. |
 | S8 | **An unresolvable `turn` (a hidden combatant holding the clock under `GmOnly`) still emits `turn-start`/`turn-end` with `combatantId` set and `kind: null`** — the id is already on the wire in `combat.turn`; a null `kind` is exactly "you cannot resolve this row". |
 | S9 | **`Warn` is a client rendering over a server number: `PathResult.budget_cells: Option<f64>`**, the requester's remaining movement budget in cells for the named token, derived from `resolve_budget`'s own `decrement` half through a shared `budget_cells(current, cost_to_resource)` helper the `Hard` clamp ALSO uses; present iff the caller can READ the combatant (`BudgetGate::enforced`), regardless of enforcement mode. The client renders an overage label under `warn`, a truncation marker under `hard`, nothing under `none`. `AppContext.combat.remainingMovement(tokenId)` (M14 §6) is dropped — the preview reads `budget_cells`, the tracker reads the channel's `movement_cells`. |
@@ -315,19 +315,27 @@ export class CombatHookEmitter { constructor(hooks: HookBus, logger: Logger); em
      STOP for this combat (no round/turn/effect events).
    - **Start**: (`b` absent or `!b.active`) and `a?.active` ⇒ `combat:start { resumed: b?.turn != null }`
      with `sceneId = a.scene_id`, `round = a.round`.
-   - **turn-end**: `b?.turn` non-null and `a?.turn !== b.turn` ⇒ `combat:turn-end` for `b.turn`
-     (`round = b.round`, `kind` from `after.get(b.turn)` or `before(b.turn)` — a deleted event —
-     else `null`).
-   - **Rounds**: for `r` from `b?.round ?? 0` to `a.round - 1`: `combat:round-end { round: r }`
-     when `r > 0`, then `combat:round-start { round: r + 1 }`. (Only when `a` present.)
-   - **Intermediate event turns** (S6): every `combatant` op in the command whose doc
-     (`before` for `update`/`delete`) has `parent_id === combatId` and `kind.type === "event"`,
-     and either was deleted or whose `engine.kind.lifespan` decreased ⇒ `turn-start` +
-     `turn-end` (`kind: "event"`, `round = a.round`), ordered by the combatant's index in
-     `b.order`. Skip the one that equals `a.turn` (it gets the real turn-start below) and the one
-     that equals `b.turn` (its turn-end already fired).
-   - **turn-start**: `a?.turn` non-null and `a.turn !== b?.turn` ⇒ `combat:turn-start` for
-     `a.turn` (`round = a.round`, `kind` from `after.get(a.turn)` else `null`).
+   - **The turn walk** (S6): the ordered boundaries the command crossed, `turnWalk`. When the
+     command carries a visible `combat-history` op for this combat (`collectHistoryTouch`: a
+     `create` parented to it, or an `update` whose pre-image is its history), the walk is the
+     records between the pre-command current record and the new cursor (`crossedRecords`: the
+     pre-command current record is located by `(round, turn)` identity scanning down from its
+     old index, since eviction only shifts it left and no record the same command appends can
+     share its identity; a fast-forward, which moves `cursor` over existing records, crosses
+     exactly those; an unlocatable record falls back to the endpoints). Otherwise — every
+     player, and any GM command that moved the clock without a history write — the walk is the
+     one boundary the combat document evidences: `a.turn` non-null and (`b` absent, or
+     `a.turn !== b.turn`, or `a.round !== b.round`).
+   - **Per boundary `{round, turn}`**, with `prev` starting at `{b.round, b.turn}` (or `{0,
+     null}`): `combat:turn-end` for `prev.turn` when non-null (`round = prev.round`); then for
+     `r` from `prev.round` to `round - 1`, `combat:round-end { round: r }` when `r > 0` and
+     `combat:round-start { round: r + 1 }`; then `combat:turn-start` for `turn` (`round`);
+     `prev` becomes the boundary. `kind` for either event resolves from `after.get(turn)` else
+     `before(turn)` (an exhausted `Event` deleted in the same command), else `null` (a hidden
+     combatant the recipient's store never held).
+   - **Trailing**: when `a?.turn` is null and `prev.turn` is not (a deleted combat, or a cleared
+     `turn`), `combat:turn-end` for `prev.turn`; then, when `a` is present, the round pairs from
+     `prev.round` to `a.round`.
    - **End**: (`b?.active` and `a` present and `!a.active`) ⇒ `combat:end { reason: "paused" }`;
      `b?.active` and `a` absent (deleted) ⇒ `combat:end { reason: "ended" }`. `sceneId`/`round`
      from `b`.
@@ -340,14 +348,17 @@ export class CombatHookEmitter { constructor(hooks: HookBus, logger: Logger); em
    - `…/engine/active` with `old === true` and `new === false` ⇒ `combat:effect-expired`.
    `effectId` = the embedded child's `id` at the prefix in `after.get(hostId)` (else `before`),
    `null` when the host is not resolvable. `round` = the attributed combat's `a?.round ?? b.round`.
-4. Ordering guarantees (documented on the function): per command — rewind XOR (start →
-   turn-end → round-end/round-start pairs → intermediate event turns → turn-start → end) → effect
-   events; across commands — seq order (the emitter's queue).
+4. Ordering guarantees (documented on the function): per command — rewind XOR (start → per
+   crossed boundary [turn-end of the turn being left → round-end/round-start pairs → turn-start]
+   → trailing turn-end/rounds → end) → effect events; across commands — seq order (the emitter's
+   queue).
 
 **Per-recipient safety**: a non-GM's store never holds a hidden combatant or the history doc,
 so their payloads never name one except through `combat.turn` (S8) — the same disclosure the
 document stream already makes. Every client, GM or not, derives from ITS OWN filtered stream, so
-two GMs see identical events and a player sees the subset its documents admit (M14 D5).
+two GMs see identical events and a player sees the subset its documents admit (M14 D5): the
+history records reach the GM alone, so a GM's list carries every crossed boundary and a
+player's the endpoints — a subsequence, never a different clock.
 
 **Emission** (`CombatHookEmitter.emit`): chains `hooks.emitInfo(name, payload)` calls onto an
 internal promise queue (`this.#tail = this.#tail.then(...)`), awaiting each before the next, so
@@ -494,7 +505,7 @@ reply carries `budget_cells` under `warn` for their own token.
 | Hook set | The eight named in M14 §6 plus `combat:rewind` (S4) | Folding a rewind into `turn-start`/`round-start` would tell listeners the clock advanced when it moved backwards. |
 | Hook payload shape | ids + scalars (`kind`, `round`, `resumed`, `reason`, `remaining`) | Whole documents in payloads would let a listener hold a stale copy and would tie the hook contract to the document shape. |
 | Derivation source | Authoritative `DocumentStore` pre/post (S5) | The optimistic view emits predicted events that a rejection would have to un-emit — hooks are informational and cannot be retracted. |
-| Hidden auto-resolves | Not surfaced (S6) | A server-emitted per-command turn log would be a second truth channel beside the document deltas M14 D5 chose, and a GM-only one would make GM and player event streams structurally different rather than filtered. |
+| Intermediate turns (auto-resolved events of any lifespan, hidden auto-resolves, a same-actor lap) | Derived from the `combat-history` records the command appended; players fall back to the combat document's endpoints (S6) | (a) Inferring a turn from a `lifespan` decrement or a combatant delete: a second copy of `settle_turn`'s decision on the client (never-fork), blind to a `lifespan: null` event and to a lap the coalesced `/engine/turn` write folds to a same-value change. (b) A per-recipient-redacted history: the record captures every combatant's full bands, so a player-readable copy needs a new array-element redaction pass keyed on another document's permissions — new secrecy machinery M14b B8 chose GM-only egress to avoid. The player subset is a subsequence of the GM's list, not a different clock. |
 | Effect events outside a transition | Not emitted (S7) | Treating every `active: false` as an expiry mislabels a GM's manual toggle. |
 | Unresolvable `turn` | `kind: null` (S8) | Suppressing the turn hook hides that the clock moved, which `combat.turn` already discloses. |
 | `Warn` number source | `PathResult.budget_cells` through the executor's own resolution (S9) | Client-side `current / perCell` from the channel: two arithmetic sites for one number (the clamp already has it) and a second interpretation switch. |

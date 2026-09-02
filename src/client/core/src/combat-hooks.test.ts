@@ -3,8 +3,8 @@ import { DocumentStore } from "./store";
 import { HookBus } from "./hooks";
 import { silentLogger } from "./logger";
 import type { WireDocument, WireCommand, WireOperation, WireFieldChange } from "./wire";
-import { buildCombatDoc, buildCombatantDoc, envelope } from "./scene-docs";
-import type { CombatEngine, CombatantEngine } from "./scene-docs";
+import { buildCombatDoc, buildCombatantDoc, buildCombatHistoryDoc, envelope } from "./scene-docs";
+import type { CombatEngine, CombatantEngine, CombatHistoryEngine, TurnRecord } from "./scene-docs";
 import {
   deriveCombatHookEvents,
   defineCombatHooks,
@@ -78,6 +78,29 @@ function transition(
   return { before: (id) => preimages.get(id), cmd, after: store };
 }
 
+/** A turn record naming only the clock half (`round`/`turn`); the captured bands are inert
+ * for the derivation, which never reads them. */
+function record(round: number, turn: string): TurnRecord {
+  return { round, turn, combatants: [], effects: [] };
+}
+
+/** A `combat-history` document for `combatId` holding `records` with `cursor` at the newest. */
+function historyDoc(records: TurnRecord[], combatId = "combat-1", id = "hist-1"): WireDocument {
+  const doc = buildCombatHistoryDoc(WORLD, combatId, id);
+  doc.engine = { records, cursor: Math.max(records.length - 1, 0) } satisfies CombatHistoryEngine;
+  return doc;
+}
+
+/** The whole-`/engine` replace `history::append_record` emits for a later record, pre-imaged
+ * against the stored history engine. */
+function updateHistory(doc: WireDocument, records: TurnRecord[], cursor = records.length - 1): WireOperation {
+  return {
+    op: "update",
+    doc_id: doc.id,
+    changes: [{ path: "/engine", old: doc.engine, new: { records, cursor } satisfies CombatHistoryEngine }],
+  };
+}
+
 function updateEngine(doc: WireDocument, patch: Partial<Record<string, unknown>>): WireOperation {
   const changes: WireFieldChange[] = Object.entries(patch).map(([key, value]) => ({
     path: `/engine/${key}`,
@@ -135,7 +158,31 @@ describe("deriveCombatHookEvents", () => {
     ]);
   });
 
-  it("event intermediate: A->C with event E's lifespan decreasing 2->1", () => {
+  it("event intermediate (GM view): A->C over E's recorded turn, E's lifespan decreasing 2->1", () => {
+    const c = combat({ active: true, round: 1, turn: "A", order: ["A", "E", "B", "C"] });
+    const a = actorCombatant("A");
+    const e = eventCombatant("E", 2);
+    const b = actorCombatant("B");
+    const cc = actorCombatant("C");
+    const h = historyDoc([record(1, "A")]);
+    const { before, cmd, after } = transition([c, a, e, b, cc, h], [
+      updateEngine(c, { turn: "C" }),
+      {
+        op: "update",
+        doc_id: "E",
+        changes: [{ path: "/engine/kind/lifespan", old: 2, new: 1 }],
+      },
+      updateHistory(h, [record(1, "A"), record(1, "E"), record(1, "C")]),
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "C", kind: "actor" } },
+    ]);
+  });
+
+  it("event intermediate (player view): the same command without the history write yields the endpoints only, never a delta-inferred turn", () => {
     const c = combat({ active: true, round: 1, turn: "A", order: ["A", "E", "B", "C"] });
     const a = actorCombatant("A");
     const e = eventCombatant("E", 2);
@@ -151,26 +198,148 @@ describe("deriveCombatHookEvents", () => {
     ]);
     expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
       { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
-      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
-      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
       { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "C", kind: "actor" } },
     ]);
   });
 
-  it("event removal: E deleted mid-turn, kind resolved from the delete pre-image", () => {
+  it("an infinite-lifespan event's recorded turn surfaces with no combatant delta at all", () => {
     const c = combat({ active: true, round: 1, turn: "A", order: ["A", "E", "C"] });
     const a = actorCombatant("A");
-    const e = eventCombatant("E", 1);
+    const e = eventCombatant("E", null);
     const cc = actorCombatant("C");
-    const { before, cmd, after } = transition([c, a, e, cc], [
+    const h = historyDoc([record(1, "A")]);
+    const { before, cmd, after } = transition([c, a, e, cc, h], [
       updateEngine(c, { turn: "C" }),
-      { op: "delete", doc: e },
+      updateHistory(h, [record(1, "A"), record(1, "E"), record(1, "C")]),
     ]);
     expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
       { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
       { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
       { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
       { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "C", kind: "actor" } },
+    ]);
+  });
+
+  it("a full lap back onto the same actor (order [A, E(null)]) yields A's turn-end and a fresh turn-start across the round", () => {
+    const c = combat({ active: true, round: 1, turn: "A", order: ["A", "E"] });
+    const a = actorCombatant("A");
+    const e = eventCombatant("E", null);
+    const h = historyDoc([record(1, "A")]);
+    const { before, cmd, after } = transition([c, a, e, h], [
+      // The coalesced combat write the server emits: `turn` folded to a same-value change.
+      { op: "update", doc_id: c.id, changes: [{ path: "/engine/round", old: 1, new: 2 }, { path: "/engine/turn", old: "A", new: "A" }] },
+      updateHistory(h, [record(1, "A"), record(1, "E"), record(2, "A")]),
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:round-end", payload: { combatId: "combat-1", round: 1 } },
+      { name: "combat:round-start", payload: { combatId: "combat-1", round: 2 } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 2, combatantId: "A", kind: "actor" } },
+    ]);
+  });
+
+  it("a full lap seen without the history write still ends and restarts the same actor's turn (the round moved)", () => {
+    const c = combat({ active: true, round: 1, turn: "A", order: ["A", "E"] });
+    const a = actorCombatant("A");
+    const e = eventCombatant("E", null);
+    const { before, cmd, after } = transition([c, a, e], [
+      { op: "update", doc_id: c.id, changes: [{ path: "/engine/round", old: 1, new: 2 }, { path: "/engine/turn", old: "A", new: "A" }] },
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+      { name: "combat:round-end", payload: { combatId: "combat-1", round: 1 } },
+      { name: "combat:round-start", payload: { combatId: "combat-1", round: 2 } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 2, combatantId: "A", kind: "actor" } },
+    ]);
+  });
+
+  it("event removal (GM view): E deleted mid-turn, kind resolved from the delete pre-image", () => {
+    const c = combat({ active: true, round: 1, turn: "A", order: ["A", "E", "C"] });
+    const a = actorCombatant("A");
+    const e = eventCombatant("E", 1);
+    const cc = actorCombatant("C");
+    const h = historyDoc([record(1, "A")]);
+    const { before, cmd, after } = transition([c, a, e, cc, h], [
+      updateEngine(c, { turn: "C", order: ["A", "C"] }),
+      { op: "delete", doc: e },
+      updateHistory(h, [record(1, "A"), record(1, "E"), record(1, "C")]),
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "C", kind: "actor" } },
+    ]);
+  });
+
+  it("a hidden combatant's recorded turn reaches the GM with kind null when its document is absent", () => {
+    const c = combat({ active: true, round: 1, turn: "A", order: ["A", "ghost", "C"] });
+    const a = actorCombatant("A");
+    const cc = actorCombatant("C");
+    const h = historyDoc([record(1, "A")]);
+    const { before, cmd, after } = transition([c, a, cc, h], [
+      updateEngine(c, { turn: "C" }),
+      updateHistory(h, [record(1, "A"), record(1, "ghost"), record(1, "C")]),
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "ghost", kind: null } },
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "ghost", kind: null } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "C", kind: "actor" } },
+    ]);
+  });
+
+  it("the first start's history create carries the walk: no duplicate turn-start for the landing turn", () => {
+    const c = combat({ active: false, round: 0, turn: null, order: ["E", "A"] });
+    const e = eventCombatant("E", null);
+    const a = actorCombatant("A");
+    const { before, cmd, after } = transition([c, e, a], [
+      updateEngine(c, { active: true, round: 1, turn: "A" }),
+      { op: "create", doc: historyDoc([record(1, "E"), record(1, "A")]) },
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:start", payload: { combatId: "combat-1", sceneId: "scene-1", round: 1, resumed: false } },
+      { name: "combat:round-start", payload: { combatId: "combat-1", round: 1 } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "E", kind: "event" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+    ]);
+  });
+
+  it("a fast-forward moves the cursor over an existing record and crosses exactly that turn", () => {
+    const c = combat({ active: true, round: 1, turn: "A", order: ["A", "B"], forward_restore: true });
+    const a = actorCombatant("A");
+    const b = actorCombatant("B");
+    const h = historyDoc([record(1, "A"), record(1, "B")]);
+    h.engine = { records: [record(1, "A"), record(1, "B")], cursor: 0 } satisfies CombatHistoryEngine;
+    const { before, cmd, after } = transition([c, a, b, h], [
+      updateEngine(c, { turn: "B" }),
+      updateHistory(h, [record(1, "A"), record(1, "B")], 1),
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 1, combatantId: "A", kind: "actor" } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 1, combatantId: "B", kind: "actor" } },
+    ]);
+  });
+
+  it("an evicted-oldest history still locates the pre-command current record by identity", () => {
+    const c = combat({ active: true, round: 3, turn: "B", order: ["A", "B"] });
+    const a = actorCombatant("A");
+    const b = actorCombatant("B");
+    const stored = [record(2, "A"), record(2, "B"), record(3, "A"), record(3, "B")];
+    const h = historyDoc(stored);
+    const { before, cmd, after } = transition([c, a, b, h], [
+      updateEngine(c, { turn: "A", round: 4 }),
+      // The oldest record evicted, the new boundary pushed: the old current (3, B) shifts left.
+      updateHistory(h, [record(2, "B"), record(3, "A"), record(3, "B"), record(4, "A")]),
+    ]);
+    expect(deriveCombatHookEvents(before, cmd, after)).toEqual<CombatHookEvent[]>([
+      { name: "combat:turn-end", payload: { combatId: "combat-1", round: 3, combatantId: "B", kind: "actor" } },
+      { name: "combat:round-end", payload: { combatId: "combat-1", round: 3 } },
+      { name: "combat:round-start", payload: { combatId: "combat-1", round: 4 } },
+      { name: "combat:turn-start", payload: { combatId: "combat-1", round: 4, combatantId: "A", kind: "actor" } },
     ]);
   });
 
