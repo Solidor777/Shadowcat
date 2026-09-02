@@ -7,6 +7,7 @@ mod conformance;
 mod embedded;
 mod plan;
 mod tree;
+mod visibility;
 
 use std::collections::BTreeMap;
 

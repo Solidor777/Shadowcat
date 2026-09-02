@@ -45,6 +45,8 @@ pub(crate) mod embedded;
 pub mod plan;
 /// Single-tree diff/merge primitives and JSON-pointer helpers.
 pub(crate) mod tree;
+/// The per-document visibility oracle the merge consults by identity.
+pub mod visibility;
 
 #[cfg(test)]
 mod tests;
@@ -60,11 +62,11 @@ pub use bands::{
 pub use plan::{
     apply_resolutions, compute_pull, compute_revert, merge3, plan_to_update, MergePlan,
 };
+pub use visibility::{AllVisible, MergeVisibility, RequesterView, Side};
 
-/// A merge computation that refused to run. Small by design: the merge
-/// engine's only failure mode today is a corrupt stored snapshot; wire-level
-/// errors (missing documents, authorization, stale resolutions) live in the
-/// protocol layer, not here.
+/// A merge computation that refused to run. Wire-level errors (missing
+/// documents, authorization, stale resolutions) live in the protocol layer,
+/// not here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeError {
     /// The child's stored `base` snapshot is present but does not parse as a
@@ -74,6 +76,10 @@ pub enum MergeError {
     /// closed and nothing is written. Carries no user data: the offending
     /// document is identified by the caller's context.
     CorruptBase,
+    /// The `MergeVisibility` oracle could not answer what the requester may
+    /// see of a document (an override pointer the redaction classifier cannot
+    /// place). The merge discloses nothing and writes nothing.
+    VisibilityUnknown,
 }
 
 impl std::fmt::Display for MergeError {
@@ -81,6 +87,9 @@ impl std::fmt::Display for MergeError {
         match self {
             MergeError::CorruptBase => {
                 f.write_str("the stored merge base does not parse as a MergeBase snapshot")
+            }
+            MergeError::VisibilityUnknown => {
+                f.write_str("the requester's view of a merged document could not be resolved")
             }
         }
     }

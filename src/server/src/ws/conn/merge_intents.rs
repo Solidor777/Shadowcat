@@ -25,14 +25,14 @@ use crate::data::command::{Operation, WriteOrigin};
 use crate::data::document::{world_of, CapabilityRequirement, Document, WorldCapDefaults};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
-    cap, collect_overrides, declared_caps_for_path, filter_properties, paths_overlap,
-    required_cap_for_path, resolve_access_world, Access,
+    cap, declared_caps_for_path, filter_properties, required_cap_for_path, resolve_access_world,
+    Access,
 };
 use crate::data::repository::Repository;
 use crate::data::DataError;
 use crate::merge::{
     apply_resolutions, compute_pull, compute_revert, plan_to_update, MergeBands, MergeConflict,
-    MergePlan,
+    MergeError, MergePlan, RequesterView,
 };
 use crate::ws::protocol::{
     ClientMsg, MergeErrorKind, MergeOutcome, MergePullStatus, MergeRevertStatus,
@@ -122,67 +122,40 @@ fn on_merge_surface(path: &str) -> bool {
         .any(|band| path == *band || path.starts_with(&format!("{band}/")))
 }
 
-/// The absolute override pointers of `doc` that `access` may NOT see, walked by
-/// the ONE egress traversal (`permission::collect_overrides` — the same walk
-/// broadcast redaction and commit-time snapshot construction use, positional
-/// embedded addressing included) and filtered by the same tier predicate
-/// (`Access::can_see`). Fails closed to `Internal`: an unclassifiable override
-/// pointer means the visibility question cannot be answered, so nothing about
-/// the document's conflicts may be disclosed.
-fn hidden_overrides(doc: &Document, access: &Access) -> Result<Vec<String>, MergeErrorKind> {
-    let mut overrides = Vec::new();
-    collect_overrides(doc, "", &mut overrides).map_err(|e| {
-        tracing::warn!(doc_id = %doc.id, error = %e, "merge: override walk failed; failing closed");
-        MergeErrorKind::Internal
-    })?;
-    Ok(overrides
-        .into_iter()
-        .filter(|(_, v)| !access.can_see(*v))
-        .map(|(p, _)| p)
-        .collect())
+/// Map a merge-engine refusal to the wire vocabulary: a corrupt snapshot is
+/// its own kind; an unanswerable visibility question fails closed to
+/// `Internal` (nothing about the documents' conflicts may be disclosed).
+fn engine_error(child_id: Uuid, e: MergeError) -> MergeErrorKind {
+    match e {
+        MergeError::CorruptBase => MergeErrorKind::CorruptBase,
+        MergeError::VisibilityUnknown => {
+            tracing::warn!(doc_id = %child_id, error = %e, "merge: visibility unresolvable; failing closed");
+            MergeErrorKind::Internal
+        }
+    }
 }
 
-/// Filter `plan`'s conflict set down to the conflicts THIS requester may see:
-/// a conflict whose payload could carry a value hidden from the requester in
-/// EITHER document — its path overlapping a hidden override subtree in either
-/// direction (`paths_overlap`, the egress family's subtree predicate: a
-/// descendant path names hidden data directly, an ancestor path — a wholesale
-/// array or embedded-child conflict — CARRIES the hidden subtree in its
-/// `parent`/`child` values) — is removed from the replied set. Removal IS the
-/// resolution: the child-wins default already sits in `merged_bands`, and the
-/// filtered set is what `check_resolutions` and `apply_resolutions` see, so a
-/// hidden conflict can neither be reported nor resolved away from the child
-/// side. The merge COMPUTATION and the committed write stay over unredacted
-/// data (the write side is authoritative); only the egress conflict set is
-/// filtered. A GM sees everything, so a GM's set is unchanged.
-fn filter_conflicts(
-    plan: &mut MergePlan,
-    child: &Document,
-    child_access: &Access,
-    template: &Document,
-    template_access: &Access,
-) -> Result<(), MergeErrorKind> {
-    let mut hidden = hidden_overrides(child, child_access)?;
-    hidden.extend(hidden_overrides(template, template_access)?);
-    plan.conflicts
-        .retain(|c| !hidden.iter().any(|ov| paths_overlap(&c.path, ov)));
-    Ok(())
-}
-
-/// `compute_pull` plus `filter_conflicts`: the merged bands and the conflict
-/// set as THIS requester may observe them. The one construction both `pull`
-/// (and its fresh-outcome recompute) and `push`'s per-instance planning use, so
-/// the report path and the resolutions path can never disagree on what the
-/// current conflict set is.
+/// `compute_pull` under THIS requester's view: the merged bands and the
+/// conflict set as the requester may observe them. The `RequesterView` oracle
+/// hands the engine the same per-document hidden set egress strips by, and the
+/// engine applies it by document identity at every embedded depth — a conflict
+/// overlapping a pointer the requester cannot see in either document is
+/// withheld from the set and left at its child-wins default. The one
+/// construction both `pull` (and its fresh-outcome recompute) and `push`'s
+/// per-instance planning use, so the report path and the resolutions path can
+/// never disagree on what the current conflict set is. A GM sees everything,
+/// so a GM's set is unchanged.
 fn visible_pull_plan(
     child: &Document,
     child_access: &Access,
     template: &Document,
     template_access: &Access,
 ) -> Result<MergePlan, MergeErrorKind> {
-    let mut plan = compute_pull(child, template).map_err(|_| MergeErrorKind::CorruptBase)?;
-    filter_conflicts(&mut plan, child, child_access, template, template_access)?;
-    Ok(plan)
+    let vis = RequesterView {
+        template: template_access,
+        child: child_access,
+    };
+    compute_pull(child, template, &vis).map_err(|e| engine_error(child.id, e))
 }
 
 /// The two ways a submitted resolutions set can fail against a recomputed plan;

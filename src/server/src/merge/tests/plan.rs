@@ -9,8 +9,8 @@ use serde_json::json;
 
 use crate::data::command::{FieldChange, Operation};
 use crate::merge::{
-    apply_resolutions, compute_pull, compute_revert, plan_to_update, snapshot_base, MergeConflict,
-    MergeError, ParentKind,
+    apply_resolutions, compute_pull, compute_revert, plan_to_update, snapshot_base, AllVisible,
+    MergeConflict, MergeError, ParentKind,
 };
 
 use super::{doc, source_from, test_id};
@@ -31,7 +31,7 @@ fn compute_pull_fails_closed_on_a_corrupt_base() {
         child.base = Some(corrupt);
         let template = doc("t1");
         assert_eq!(
-            compute_pull(&child, &template),
+            compute_pull(&child, &template, &AllVisible),
             Err(MergeError::CorruptBase)
         );
     }
@@ -51,7 +51,8 @@ fn compute_pull_falls_back_to_self_snapshot_on_an_absent_base() {
     template.name = Some("T".to_string());
     template.system = json!({ "hp": 2 });
 
-    let plan = compute_pull(&child, &template).expect("an absent base is not corruption");
+    let plan =
+        compute_pull(&child, &template, &AllVisible).expect("an absent base is not corruption");
     assert!(plan.conflicts.is_empty());
     assert_eq!(plan.merged_bands.name.as_deref(), Some("T"));
     assert_eq!(plan.merged_bands.system, json!({ "hp": 2 }));
@@ -65,7 +66,8 @@ fn plan_to_update_targets_the_child_and_always_refreshes_base() {
     child.source = Some(source_from("t1"));
     child.name = Some("T".to_string());
 
-    let plan = compute_pull(&child, &template).expect("no base is stored on this child");
+    let plan =
+        compute_pull(&child, &template, &AllVisible).expect("no base is stored on this child");
     let op = plan_to_update(&child, &template, &plan.merged_bands);
     let Operation::Update { doc_id, changes } = op else {
         panic!("plan_to_update emits an update");

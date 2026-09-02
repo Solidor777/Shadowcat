@@ -254,20 +254,54 @@ fn apply_diff(root: &mut Value, d: &Diff) {
     }
 }
 
+/// The requester-hidden pointers of the two documents ONE `merge3_tree` call
+/// merges, each relative to that document's own root — the per-level answer
+/// of the `MergeVisibility` oracle, already resolved by identity for the
+/// exact template/instance pair being merged, so no index translation is
+/// ever needed to compare them against this level's diff and conflict
+/// paths.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct HiddenPointers {
+    /// Hidden on the template (parent) side.
+    pub(crate) template: Vec<String>,
+    /// Hidden on the instance (child) side.
+    pub(crate) child: Vec<String>,
+}
+
+impl HiddenPointers {
+    /// Whether `path` overlaps (equal, ancestor or descendant — the egress
+    /// family's subtree predicate) a pointer hidden on either side. A
+    /// descendant path names hidden data directly; an ancestor path — a
+    /// wholesale array or a whole embedded child — CARRIES the hidden subtree
+    /// in its value.
+    fn overlaps_either(&self, path: &str) -> bool {
+        self.template
+            .iter()
+            .chain(self.child.iter())
+            .any(|h| paths_overlap(path, h))
+    }
+}
+
 /// 3-way merge of one JSON tree (used for the `name`+`engine`+`system`
 /// synthetic band tree). The merged tree starts from `child_now` and applies
 /// parent-only changes; a path changed on both sides with a differing result
 /// is a conflict, left at the child value ("keep mine" default). Paths in
 /// `exclusions` are dropped from the parent side (never merge, never
-/// conflict). Twin of the client `merge3Tree`, including its
-/// ancestor/descendant overlap rule: an overlap at different depths (e.g. the
-/// child deletes an object the parent edits inside) conflicts at the parent
-/// change's path — the safe direction.
+/// conflict). An overlap at different depths (e.g. the child deletes an
+/// object the parent edits inside) conflicts at the parent change's path —
+/// the safe direction.
+///
+/// A conflict whose path overlaps a pointer in `hidden` (either side) is
+/// WITHHELD: removed from the returned set while the child-wins default it
+/// would have reported stays in the merged tree. Withholding is the
+/// resolution — the caller can neither report nor resolve away from the
+/// child side a conflict it never receives.
 pub(crate) fn merge3_tree(
     base: &Value,
     parent_now: &Value,
     child_now: &Value,
     exclusions: &[String],
+    hidden: &HiddenPointers,
 ) -> (Value, Vec<MergeConflict>) {
     let parent_diff: Vec<Diff> = structural_diff(base, parent_now)
         .into_iter()
@@ -291,9 +325,11 @@ pub(crate) fn merge3_tree(
                 continue;
             }
         }
-        // The client clones `parent`/`child` out of the live source trees so a
-        // conflict can never alias them; owned values make the same guarantee
-        // here.
+        if hidden.overlaps_either(p.path()) {
+            continue;
+        }
+        // Owned clones of `parent`/`child`: a conflict never aliases the live
+        // source trees.
         conflicts.push(MergeConflict {
             path: p.path().to_string(),
             base: get_pointer(base, p.path()).cloned(),

@@ -873,20 +873,7 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
             Ok((k, children))
         })
         .collect::<Result<_, _>>()?;
-    let mut hidden: Vec<String> = doc
-        .permissions
-        .property_overrides
-        .iter()
-        .filter(|(_, v)| !access.can_see(**v))
-        .map(|(p, _)| p.clone())
-        .collect();
-    // `base` is a historical snapshot of this doc's own (possibly hidden) bands — it is
-    // hardcoded `OwnerOrGm` visibility, unconditional and non-overridable, independent
-    // of `property_overrides`. Only the document's owner or a GM ever needs it to compute a
-    // pull/push/revert; no other recipient should receive the raw snapshot.
-    if !access.can_see(Visibility::OwnerOrGm) {
-        hidden.push("/base".to_string());
-    }
+    let hidden = hidden_own_pointers(doc, access)?;
     let mut whole = serde_json::to_value(&out).expect("document serializes");
     for pointer in hidden {
         match redaction_target(&pointer) {
@@ -904,39 +891,70 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
     })
 }
 
+/// Every `(pointer, tier)` pair of `doc`'s OWN redaction policy at THIS level, pointers
+/// relative to `doc`'s own root: its `property_overrides`, each classified via
+/// `redaction_target` (fail closed on an unclassifiable pointer), plus the hardcoded `/base`
+/// entry. No embedded recursion — this is the one per-document statement of "what this
+/// document hides", which `collect_overrides` walks positionally through embedded descendants
+/// and `filter_properties`/`hidden_own_pointers` read at a single level.
+///
+/// `base` is a historical snapshot of this doc's own (possibly hidden) bands — it is hardcoded
+/// `OwnerOrGm` visibility, unconditional and non-overridable, independent of
+/// `property_overrides`. Only the document's owner or a GM ever needs it to compute a
+/// pull/push/revert; no other recipient should receive the raw snapshot. The synthetic `/base`
+/// entry is never classified (it is hardcoded, not user-supplied).
+///
+/// Classifies every REAL override pointer via `redaction_target` eagerly (not only the hidden
+/// ones): safe because every document reaching this function has already passed
+/// `validation::validate_property_overrides` at its OWN write time (both `apply_command` and
+/// `apply_intent` call it on the full post-image, recursing into every embedded descendant,
+/// before any document reaches storage) — an unclassifiable REAL override pointer cannot exist
+/// in persisted data. Still returns `Result` to fail closed on pre-validation legacy/hand-seeded
+/// data.
+fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionError> {
+    let mut out = Vec::with_capacity(doc.permissions.property_overrides.len() + 1);
+    for (p, v) in &doc.permissions.property_overrides {
+        if redaction_target(p).is_none() {
+            return Err(RedactionError { pointer: p.clone() });
+        }
+        out.push((p.clone(), *v));
+    }
+    out.push(("/base".to_string(), Visibility::OwnerOrGm));
+    Ok(out)
+}
+
+/// The pointers of `doc`'s OWN properties (this level only, relative to `doc`'s root) that
+/// `access` may NOT see — `own_overrides` filtered through `Access::can_see`. The per-document
+/// visibility primitive `filter_properties` strips by and the merge engine's per-document
+/// visibility oracle (`merge::visibility::RequesterView`) consults by document IDENTITY at every
+/// embedded depth, so egress and the merge answer "what does this recipient not see here" from
+/// one function rather than two same-shaped copies.
+pub(crate) fn hidden_own_pointers(
+    doc: &Document,
+    access: &Access,
+) -> Result<Vec<String>, RedactionError> {
+    Ok(hidden_from_overrides(&own_overrides(doc)?, access))
+}
+
 /// Collect every `(absolute_pointer, tier)` pair in `doc`'s own `property_overrides`, plus the
-/// hardcoded `/base` `OwnerOrGm` entry (see `filter_properties`'s doc comment), recursing into
+/// hardcoded `/base` `OwnerOrGm` entry (`own_overrides` at each level), recursing into
 /// embedded descendants (parent-absolute addressing: a child at `embedded[key][i]` contributes
 /// `/embedded/<key>/<i>{pointer}` — the SAME positional addressing `filter_properties`'s own
 /// recursion uses). Access-independent: every override regardless of tier, so ONE traversal
 /// feeds BOTH the live redaction path (`collect_hidden`, via `hidden_from_overrides`) and
 /// commit-time snapshot construction (`OpSnapshot::overrides_at_commit`) — they cannot diverge
-/// on how an embedded index is addressed because they share this one walk.
-///
-/// Classifies every REAL override pointer via `redaction_target` at traversal time (not lazily,
-/// unlike a per-recipient filter would): safe because every document reaching this function has
-/// already passed `validation::validate_property_overrides` at its OWN write time (both
-/// `apply_command` and `apply_intent` call it on the full post-image, recursing into every
-/// embedded descendant, before any document reaches storage) — an unclassifiable REAL override
-/// pointer cannot exist in persisted data. Still returns `Result` to fail closed on
-/// pre-validation legacy/hand-seeded data. The synthetic `/base` entry is never classified (it
-/// is hardcoded, not user-supplied — mirrors the un-classified unconditional `/base` push this
-/// function replaces).
+/// on how an embedded index is addressed because they share this one walk. Positional
+/// addressing is the LIVE document's index space: a consumer whose paths live in another
+/// index space (the merge's OUTPUT-indexed conflict paths) must not compare against it — it
+/// reads `hidden_own_pointers` per correlated document instead.
 pub(crate) fn collect_overrides(
     doc: &Document,
     prefix: &str,
     out: &mut Vec<(String, Visibility)>,
 ) -> Result<(), RedactionError> {
-    for (p, v) in &doc.permissions.property_overrides {
-        if redaction_target(p).is_none() {
-            return Err(RedactionError { pointer: p.clone() });
-        }
-        out.push((format!("{prefix}{p}"), *v));
+    for (p, v) in own_overrides(doc)? {
+        out.push((format!("{prefix}{p}"), v));
     }
-    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` — see that
-    // function's comment. Fires at every embedded depth too (each recursive call gets its own
-    // `prefix`), covering an embedded child's own `base` the same way.
-    out.push((format!("{prefix}/base"), Visibility::OwnerOrGm));
     for (key, children) in &doc.embedded {
         for (idx, child) in children.iter().enumerate() {
             collect_overrides(child, &format!("{prefix}/embedded/{key}/{idx}"), out)?;

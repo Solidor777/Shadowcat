@@ -13,7 +13,8 @@ use crate::data::command::{FieldChange, Operation};
 use crate::data::document::Document;
 use crate::merge::bands::{bands_tree, placement_exclusions, snapshot_base, MergeBands, MergeBase};
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
-use crate::merge::tree::{deep_equal, merge3_tree, take_template};
+use crate::merge::tree::{deep_equal, merge3_tree, take_template, HiddenPointers};
+use crate::merge::visibility::{MergeVisibility, Side};
 use crate::merge::{MergeConflict, MergeError};
 
 /// Result of a 3-way merge: the child-wins-default merged bands plus the
@@ -54,14 +55,23 @@ pub(crate) fn split_bands_tree(tree: &Value) -> BandTriple {
 /// synthetic tree, plus `embedded`). `exclusions` apply to the top-level
 /// document; embedded children use their own doc_type exclusions (inside
 /// `merge3_embedded`). Conflicts default to the child ("keep mine") in the
-/// merged bands. Twin of the client `merge3`, including its recursion into
-/// correlated embedded children via `merge3_embedded`.
+/// merged bands. Recurses into correlated embedded children via
+/// `merge3_embedded`.
+///
+/// `vis` is asked about `parent_now` and `child_now` THEMSELVES — the two
+/// documents this call merges — so the hidden pointers it returns are in
+/// this level's own coordinate space, whatever depth the call sits at.
 pub fn merge3(
     base: &MergeBase,
     parent_now: &Document,
     child_now: &Document,
     exclusions: &[String],
-) -> MergePlan {
+    vis: &dyn MergeVisibility,
+) -> Result<MergePlan, MergeError> {
+    let hidden = HiddenPointers {
+        template: vis.hidden(Side::Template, parent_now)?,
+        child: vis.hidden(Side::Child, child_now)?,
+    };
     let (tree, tree_conflicts) = merge3_tree(
         &bands_tree(base.name.as_deref(), Some(&base.engine), Some(&base.system)),
         &bands_tree(
@@ -75,11 +85,16 @@ pub fn merge3(
             Some(&child_now.system),
         ),
         exclusions,
+        &hidden,
     );
     let bands = split_bands_tree(&tree);
-    let (embedded, embedded_conflicts) =
-        merge3_embedded(&base.embedded, &parent_now.embedded, &child_now.embedded);
-    MergePlan {
+    let (embedded, embedded_conflicts) = merge3_embedded(
+        &base.embedded,
+        &parent_now.embedded,
+        &child_now.embedded,
+        vis,
+    )?;
+    Ok(MergePlan {
         merged_bands: MergeBands {
             name: bands.name,
             engine: bands.engine,
@@ -90,7 +105,7 @@ pub fn merge3(
             .into_iter()
             .chain(embedded_conflicts)
             .collect(),
-    }
+    })
 }
 
 /// 3-way pull: merge the template's current state into the child, preserving
@@ -102,24 +117,25 @@ pub fn merge3(
 /// A stored snapshot that is PRESENT but fails to parse as `MergeBase` is
 /// corruption, not absence: returning a clean template-wins merge here would
 /// silently destroy child-local edits, so the pull fails closed with
-/// `MergeError::CorruptBase` and nothing is written. Deliberate semantic
-/// delta from the client engine: the client crashes loudly on a grossly
-/// malformed base (its merge reads the stored value without validation);
-/// this twin returns a typed error instead — both are loud, and neither
-/// loses data. Twin of the client `computePull`.
-pub fn compute_pull(child: &Document, template: &Document) -> Result<MergePlan, MergeError> {
+/// `MergeError::CorruptBase` and nothing is written.
+pub fn compute_pull(
+    child: &Document,
+    template: &Document,
+    vis: &dyn MergeVisibility,
+) -> Result<MergePlan, MergeError> {
     let base = match &child.base {
         Some(v) => {
             serde_json::from_value::<MergeBase>(v.clone()).map_err(|_| MergeError::CorruptBase)?
         }
         None => snapshot_base(child),
     };
-    Ok(merge3(
+    merge3(
         &base,
         template,
         child,
         &placement_exclusions(&child.doc_type),
-    ))
+        vis,
+    )
 }
 
 /// Append a `FieldChange` iff `before` and `after` structurally differ. Twin
@@ -270,7 +286,13 @@ pub(crate) fn revert_bands(
         template.engine.as_ref(),
         Some(&template.system),
     );
-    let (merged, _) = merge3_tree(&self_base, &template_now, &self_base, exclusions);
+    let (merged, _) = merge3_tree(
+        &self_base,
+        &template_now,
+        &self_base,
+        exclusions,
+        &HiddenPointers::default(),
+    );
     split_bands_tree(&merged)
 }
 

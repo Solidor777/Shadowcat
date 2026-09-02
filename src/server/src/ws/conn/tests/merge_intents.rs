@@ -80,6 +80,53 @@ impl Harness {
             .await
             .unwrap();
     }
+
+    /// Whole-collection `/embedded/items` rewrite of `id` as the GM.
+    async fn set_items(&self, id: Uuid, items: Vec<Document>) {
+        let cur = self.get(id).await;
+        let old = cur
+            .embedded
+            .get("items")
+            .map_or(serde_json::Value::Null, |kids| {
+                serde_json::to_value(kids).unwrap()
+            });
+        self.room
+            .publish(
+                self.repo.as_ref(),
+                &self.gm,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        path: "/embedded/items".into(),
+                        old,
+                        new: serde_json::to_value(&items).unwrap(),
+                        remove: false,
+                    }],
+                }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+    }
+}
+
+/// An embedded `actor` child `id` with `system`, optionally stamped from
+/// template child `from`.
+fn embedded_child(
+    world: Uuid,
+    id: Uuid,
+    from: Option<Uuid>,
+    system: serde_json::Value,
+) -> Document {
+    let mut d = crate::data::document::tests::world_scoped_doc(world, id, "actor");
+    d.source = from.map(|id| Source {
+        id,
+        pack: None,
+        version: 1,
+    });
+    d.system = system;
+    d
 }
 
 /// Build the base harness: world + GM + player + bystander + room.
@@ -1491,5 +1538,230 @@ async fn commit_error_maps_write_failures_to_the_merge_error_vocabulary() {
     assert!(
         matches!(error_reason(reply), MergeErrorKind::Internal),
         "any other failure collapses to Internal"
+    );
+}
+
+/// Hidden-conflict filtering addresses embedded children by IDENTITY, not by
+/// index: the instance's first child is template-deleted and unchanged (so
+/// the merge drops it, shifting every later child's OUTPUT index down by
+/// one), and the second child's `gm_only` `/system/secret` conflicts. The
+/// conflict is withheld from a non-GM owner and auto-resolves child-wins,
+/// even though the child's live index and its conflict-path index disagree.
+#[tokio::test]
+async fn pull_withholds_a_hidden_embedded_conflict_behind_a_dropped_sibling() {
+    let h = merge_harness().await;
+    let (template, child) = (Uuid::from_u128(0xE601), Uuid::from_u128(0xE602));
+    let (t_a, t_b) = (Uuid::from_u128(0xE603), Uuid::from_u128(0xE604));
+    let (i_a, i_b) = (Uuid::from_u128(0xE605), Uuid::from_u128(0xE606));
+
+    let mut tmpl = template_doc(
+        h.world_id,
+        template,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({}),
+    );
+    tmpl.embedded.insert(
+        "items".into(),
+        vec![
+            embedded_child(h.world_id, t_a, None, json!({ "hp": 1 })),
+            embedded_child(h.world_id, t_b, None, json!({ "hp": 1, "secret": "S1" })),
+        ],
+    );
+    h.create(tmpl).await;
+    let mut inst = instance_doc(
+        h.world_id,
+        child,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({}),
+    );
+    inst.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    inst.permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default()
+        .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    let mut i_b_doc = embedded_child(
+        h.world_id,
+        i_b,
+        Some(t_b),
+        json!({ "hp": 1, "secret": "S1" }),
+    );
+    i_b_doc
+        .permissions
+        .property_overrides
+        .insert("/system/secret".into(), Visibility::GmOnly);
+    inst.embedded.insert(
+        "items".into(),
+        vec![
+            embedded_child(h.world_id, i_a, Some(t_a), json!({ "hp": 1 })),
+            i_b_doc,
+        ],
+    );
+    h.create(inst).await;
+
+    // The template deletes T_a and edits T_b's secret; the instance edits
+    // I_b's secret. I_a is unchanged, so the merge drops it.
+    h.set_items(
+        template,
+        vec![embedded_child(
+            h.world_id,
+            t_b,
+            None,
+            json!({ "hp": 1, "secret": "S2" }),
+        )],
+    )
+    .await;
+    let live = h.get(child).await;
+    let mut edited = live.embedded["items"].clone();
+    edited[1].system = json!({ "hp": 1, "secret": "S3" });
+    h.set_items(child, edited).await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2") && !wire.contains("S3"),
+        "the hidden values never appear in the frame: {wire}"
+    );
+    assert!(
+        matches!(pull_status(reply), MergePullStatus::Applied),
+        "the withheld conflict leaves the visible set empty, so the pull applies"
+    );
+    let items = &h.get(child).await.embedded["items"];
+    assert_eq!(
+        items.len(),
+        1,
+        "the unchanged template-deleted child was dropped"
+    );
+    assert_eq!(items[0].id, i_b);
+    assert_eq!(
+        items[0].system,
+        json!({ "hp": 1, "secret": "S3" }),
+        "the hidden conflict auto-resolved child-wins"
+    );
+}
+
+/// Same identity rule on the TEMPLATE side: the template reorders its
+/// children so the child whose `/system/secret` is `gm_only` on the template
+/// sits at a template index different from its correlated instance child's
+/// output index. The hidden template value never reaches the instance or the
+/// wire.
+#[tokio::test]
+async fn pull_withholds_a_hidden_template_side_conflict_behind_a_template_reorder() {
+    let h = merge_harness().await;
+    let (template, child) = (Uuid::from_u128(0xE611), Uuid::from_u128(0xE612));
+    let (t_a, t_b) = (Uuid::from_u128(0xE613), Uuid::from_u128(0xE614));
+    let (i_a, i_b) = (Uuid::from_u128(0xE615), Uuid::from_u128(0xE616));
+
+    let mut t_a_doc = embedded_child(h.world_id, t_a, None, json!({ "hp": 1, "secret": "S1" }));
+    t_a_doc
+        .permissions
+        .property_overrides
+        .insert("/system/secret".into(), Visibility::GmOnly);
+    let mut tmpl = template_doc(
+        h.world_id,
+        template,
+        h.gm.user_id,
+        DocRole::Observer,
+        json!({}),
+    );
+    tmpl.embedded.insert(
+        "items".into(),
+        vec![
+            t_a_doc.clone(),
+            embedded_child(h.world_id, t_b, None, json!({ "hp": 1 })),
+        ],
+    );
+    h.create(tmpl).await;
+    let mut inst = instance_doc(
+        h.world_id,
+        child,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({}),
+    );
+    inst.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    inst.permissions
+        .capabilities
+        .by_user
+        .entry(h.player.user_id)
+        .or_default()
+        .insert(crate::data::permission::cap::MANAGE_EMBEDDED.to_string());
+    inst.embedded.insert(
+        "items".into(),
+        vec![
+            embedded_child(
+                h.world_id,
+                i_a,
+                Some(t_a),
+                json!({ "hp": 1, "secret": "S1" }),
+            ),
+            embedded_child(h.world_id, i_b, Some(t_b), json!({ "hp": 1 })),
+        ],
+    );
+    h.create(inst).await;
+
+    // Reorder the template to [T_b, T_a] and edit T_a's secret; the instance
+    // edits I_a's secret too, so the pair conflicts on a template-hidden path.
+    t_a_doc.system = json!({ "hp": 1, "secret": "S2" });
+    h.set_items(
+        template,
+        vec![
+            embedded_child(h.world_id, t_b, None, json!({ "hp": 1 })),
+            t_a_doc,
+        ],
+    )
+    .await;
+    let live = h.get(child).await;
+    let mut edited = live.embedded["items"].clone();
+    edited[0].system = json!({ "hp": 1, "secret": "S3" });
+    h.set_items(child, edited).await;
+
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::MergePull {
+            request_id: Uuid::from_u128(1),
+            child_id: child,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let wire = serde_json::to_string(&reply).unwrap();
+    assert!(
+        !wire.contains("S2"),
+        "the template's hidden value never appears in the frame: {wire}"
+    );
+    assert!(matches!(pull_status(reply), MergePullStatus::Applied));
+    let items = &h.get(child).await.embedded["items"];
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, i_a, "instance order is preserved");
+    assert_eq!(
+        items[0].system,
+        json!({ "hp": 1, "secret": "S3" }),
+        "the instance keeps its own value on the template-hidden path"
     );
 }

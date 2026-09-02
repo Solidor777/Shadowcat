@@ -14,7 +14,8 @@ use crate::merge::bands::{
 };
 use crate::merge::plan::{merge3, revert_bands};
 use crate::merge::tree::structural_diff;
-use crate::merge::{MergeConflict, ParentKind};
+use crate::merge::visibility::{MergeVisibility, Side};
+use crate::merge::{MergeConflict, MergeError, ParentKind};
 
 /// Whether an instance child's bands are unchanged versus its base record.
 /// Twin of the client `childUnchangedVsBase`.
@@ -60,20 +61,33 @@ fn prefix_conflicts(conflicts: Vec<MergeConflict>, coll: &str, idx: usize) -> Ve
         .collect()
 }
 
+/// `merge3_embedded`'s output: the merged collections (each child a full
+/// document, envelope preserved) plus the conflicts found inside them,
+/// already prefixed to top-level pointers.
+pub(crate) type MergedEmbedded = (BTreeMap<String, Vec<Document>>, Vec<MergeConflict>);
+
 /// 3-way merge of the embedded collections, correlating instance↔template
 /// children by `source.id`↔`id`, using `base.embedded[coll][*].source_id` as
-/// the membership record. Twin of the client `merge3Embedded`: pass 1 walks
-/// the instance children in order (instance-added kept, correlated children
-/// recursed or fail-safe kept, template-deleted children dropped when
-/// unchanged and conflicted when changed); pass 2 restamps template-added
-/// children in. Collection order is sorted, instance order is preserved
-/// within a collection (a template-side reorder does not reorder the
-/// instance's children), and template additions append after them.
+/// the membership record. Pass 1 walks the instance children in order
+/// (instance-added kept, correlated children recursed or fail-safe kept,
+/// template-deleted children dropped when unchanged and conflicted when
+/// changed); pass 2 restamps template-added children in. Collection order is
+/// sorted, instance order is preserved within a collection (a template-side
+/// reorder does not reorder the instance's children), and template additions
+/// append after them.
+///
+/// Visibility is resolved per correlated pair by IDENTITY: the recursive
+/// `merge3` asks `vis` about the exact `(t, cd)` documents it merges, and a
+/// template-deleted conflict (which carries the whole child) asks about `cd`
+/// alone — so the conflict's OUTPUT index (`prefix_conflicts`, which counts
+/// only the children kept so far) and the live documents' own child indices
+/// never have to agree.
 pub(crate) fn merge3_embedded(
     base: &BTreeMap<String, Vec<EmbeddedBaseChild>>,
     parent_embedded: &BTreeMap<String, Vec<Document>>,
     child_embedded: &BTreeMap<String, Vec<Document>>,
-) -> (BTreeMap<String, Vec<Document>>, Vec<MergeConflict>) {
+    vis: &dyn MergeVisibility,
+) -> Result<MergedEmbedded, MergeError> {
     let mut merged = BTreeMap::new();
     let mut conflicts = Vec::new();
     let colls: BTreeSet<&String> = base
@@ -115,7 +129,8 @@ pub(crate) fn merge3_embedded(
                         t,
                         cd,
                         &placement_exclusions(&cd.doc_type),
-                    );
+                        vis,
+                    )?;
                     out.push(apply_merged_bands(cd, &plan.merged_bands));
                     conflicts.extend(prefix_conflicts(plan.conflicts, coll, idx));
                 } else {
@@ -136,6 +151,12 @@ pub(crate) fn merge3_embedded(
                 let idx = out.len();
                 // Kept pending resolution.
                 out.push(cd.clone());
+                // The conflict carries the WHOLE child (`child: cd.system`),
+                // so any hidden pointer on `cd` withholds it: the child stays,
+                // unreported, which is the child-wins default anyway.
+                if !vis.hidden(Side::Child, cd)?.is_empty() {
+                    continue;
+                }
                 conflicts.push(MergeConflict {
                     path: format!("/embedded/{coll}/{idx}"),
                     base: Some(b.system.clone()),
@@ -163,7 +184,7 @@ pub(crate) fn merge3_embedded(
 
         merged.insert(coll.clone(), out);
     }
-    (merged, conflicts)
+    Ok((merged, conflicts))
 }
 
 /// Deep-clone `doc` into a new subtree: fresh `id`, `source` pointing at the
