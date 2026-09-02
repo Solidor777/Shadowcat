@@ -39,6 +39,22 @@ function polyDraws(backend: PixiBackend, field: "lightingGraphics" | "darknessGr
 }
 
 describe("PixiBackend.setLighting", () => {
+  test("with no lit cell the darkness sheet paints whole and UNMASKED; with one it is inverse-masked by the holes", () => {
+    const backend = headlessBackend();
+    const priv = backend as unknown as { darknessGraphics: Container; litHoles: Container };
+    const dark = { points: [0, 0, 300, 0, 300, 300, 0, 300] };
+    backend.setLighting({ cell: 100, cells: [], darkness: [dark] });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([dark.points]);
+    // Pixi reports a cleared mask as `undefined` (no mask effect attached), never a Graphics.
+    expect(priv.darknessGraphics.mask ?? null).toBeNull();
+    const corners = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }];
+    backend.setLighting({ cell: 100, cells: [{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners }], darkness: [dark] });
+    expect(priv.darknessGraphics.mask).toBe(priv.litHoles);
+    // A degenerate cell cuts no hole, so it counts as "nothing lit" too.
+    backend.setLighting({ cell: 100, cells: [{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: corners.slice(0, 2) }], darkness: [dark] });
+    expect(priv.darknessGraphics.mask ?? null).toBeNull();
+  });
+
   test("draws each cell's own poly geometry from LitDrawCell.corners, not an index*cellSize rect", () => {
     const backend = headlessBackend();
     // i=5, j=3 at cell=70 would rect-anchor at (350,210) under an index*cellSize scheme; these

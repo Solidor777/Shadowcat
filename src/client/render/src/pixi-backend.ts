@@ -870,7 +870,9 @@ export class PixiBackend implements DisplayBackend {
    * `MAX_DARK_ALPHA` — the darkest gradation band — inverse-masked by the union of the lit
    * cells' polygons (`litHoles`, the same sheet-and-holes technique `paintFogSheets` uses), so
    * an in-sight cell no entry lights is as dark as the darkest band and a lit cell shows only
-   * its own fills. Then, clearing `lightingGraphics`, for each cell up to three stacked fills
+   * its own fills. With NO lit cell (a fully dark room) the sheet paints whole with its mask
+   * cleared — never through an inverse mask over an empty `Graphics`, whose rendering this
+   * code makes no assumption about. Then, clearing `lightingGraphics`, for each cell up to three stacked fills
    * over that cell's polygon (`c.corners`, already resolved via the active grid — a square rect
    * on a square grid, a hexagon on a hex grid; this method paints whatever shape it is handed
    * and performs no grid-kind math of its own): a black darkening fill (`c.alpha`, skipped when
@@ -895,10 +897,14 @@ export class PixiBackend implements DisplayBackend {
     for (const region of frame.darkness) {
       if (region.points.length >= 6) this.darknessGraphics.poly(region.points).fill({ color: 0x000000, alpha: MAX_DARK_ALPHA });
     }
+    let anyHole = false;
     for (const c of frame.cells) {
-      if (c.corners.length >= 3) this.litHoles.poly(c.corners.flatMap((p) => [p.x, p.y])).fill({ color: 0xffffff });
+      if (c.corners.length < 3) continue;
+      this.litHoles.poly(c.corners.flatMap((p) => [p.x, p.y])).fill({ color: 0xffffff });
+      anyHole = true;
     }
-    this.darknessGraphics.setMask({ mask: this.litHoles, inverse: true });
+    if (anyHole) this.darknessGraphics.setMask({ mask: this.litHoles, inverse: true });
+    else this.darknessGraphics.mask = null; // nothing lit: the whole sheet shows, unmasked
     // empty cells = no per-cell overlay
     for (const c of frame.cells) {
       if (c.corners.length < 3) continue; // degenerate geometry — nothing to fill
