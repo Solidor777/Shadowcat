@@ -13,8 +13,11 @@ use crate::data::command::{FieldChange, Operation};
 use crate::data::document::Document;
 use crate::merge::bands::{bands_tree, placement_exclusions, snapshot_base, MergeBands, MergeBase};
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
-use crate::merge::tree::{deep_equal, merge3_tree, take_template, HiddenPointers, PointerError};
+use crate::merge::tree::{
+    deep_equal, merge3_tree, take_template, tokenize, HiddenPointers, PointerError,
+};
 use crate::merge::visibility::{MergeVisibility, Side};
+use crate::merge::ParentKind;
 use crate::merge::{MergeConflict, MergeError};
 
 /// Result of a 3-way merge: the child-wins-default merged bands plus the
@@ -235,9 +238,43 @@ pub fn plan_to_update(
     }
 }
 
+/// One RFC-6901 token as an ordering key: an array position compares
+/// numerically, an object key lexically. Derived `Ord` places every `Index`
+/// before every `Key`, which is irrelevant for the ordering's purpose (two
+/// tokens at the same depth of one container are always the same variant).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum PointerToken {
+    /// A canonical array index.
+    Index(usize),
+    /// An object key.
+    Key(String),
+}
+
+/// The ordering key of a resolution path: its tokens, array indices
+/// numeric. Under `Vec`'s lexicographic `Ord` a path sorts after its own
+/// prefix and `/items/10` after `/items/2`, so DESCENDING order applies the
+/// deepest and highest-indexed deletes first.
+fn pointer_key(path: &str) -> Vec<PointerToken> {
+    tokenize(path)
+        .into_iter()
+        .map(|t| match t.parse::<usize>() {
+            Ok(i) if i.to_string() == t => PointerToken::Index(i),
+            _ => PointerToken::Key(t),
+        })
+        .collect()
+}
+
 /// Apply the user's per-field conflict choices: for each conflict whose path
 /// is in `theirs`, take the template value/deletion; the rest keep the child
 /// ("mine") value already in `merged_bands`. Pure (clones its input).
+///
+/// Application order is load-bearing: an array-element delete splices the
+/// array and shifts every later index, and conflict paths are addressed in
+/// the merged OUTPUT's index space as it was BEFORE any resolution applied.
+/// So every `Set` applies first (a set never shifts anything), then every
+/// `Delete` in descending `pointer_key` order — highest index first within
+/// a collection, and a deeper path before the ancestor that contains it —
+/// so no delete ever renumbers a path still waiting to apply.
 ///
 /// `Err` means a chosen resolution cannot be applied to the CURRENT merged
 /// shape (`take_template`'s refusal — the ancestor/descendant conflict shape
@@ -255,10 +292,21 @@ pub fn apply_resolutions(
         "system": merged_bands.system,
         "embedded": merged_bands.embedded,
     });
-    for c in conflicts {
-        if theirs.contains(&c.path) {
-            take_template(&mut root, c)?;
-        }
+    let chosen: Vec<&MergeConflict> = conflicts
+        .iter()
+        .filter(|c| theirs.contains(&c.path))
+        .collect();
+    for c in chosen.iter().filter(|c| c.parent_kind == ParentKind::Set) {
+        take_template(&mut root, c)?;
+    }
+    let mut deletes: Vec<&MergeConflict> = chosen
+        .iter()
+        .copied()
+        .filter(|c| c.parent_kind == ParentKind::Delete)
+        .collect();
+    deletes.sort_by_cached_key(|c| std::cmp::Reverse(pointer_key(&c.path)));
+    for c in deletes {
+        take_template(&mut root, c)?;
     }
     let bands = split_bands_tree(&root);
     let embedded = serde_json::from_value(root.get("embedded").cloned().unwrap_or(Value::Null))

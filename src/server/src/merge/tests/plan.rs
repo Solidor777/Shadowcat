@@ -172,3 +172,94 @@ fn apply_resolutions_reports_an_unresolvable_take_template() {
         Err(crate::merge::PointerError::NotAContainer)
     );
 }
+
+#[test]
+fn apply_resolutions_applies_sets_first_and_deletes_highest_index_first() {
+    // Two template-deleted children (output indices 0 and 2) taken as
+    // "theirs" plus a set inside the child at output index 3: applied in
+    // report order, the first splice would shift indices 2 and 3 and the
+    // later resolutions would land on the wrong children.
+    let item = |n: &str, hp: i64| {
+        let mut d = doc(n);
+        d.system = json!({ "hp": hp });
+        d
+    };
+    let mut embedded = std::collections::BTreeMap::new();
+    embedded.insert(
+        "items".to_string(),
+        vec![item("i0", 0), item("i1", 1), item("i2", 2), item("i3", 3)],
+    );
+    let bands = crate::merge::MergeBands {
+        name: None,
+        engine: json!(null),
+        system: json!({}),
+        embedded,
+    };
+    let delete = |idx: usize| MergeConflict {
+        path: format!("/embedded/items/{idx}"),
+        base: Some(json!({ "hp": idx })),
+        parent: None,
+        child: Some(json!({ "hp": idx })),
+        parent_kind: ParentKind::Delete,
+    };
+    let conflicts = vec![
+        delete(0),
+        delete(2),
+        MergeConflict {
+            path: "/embedded/items/3/system/hp".to_string(),
+            base: Some(json!(3)),
+            parent: Some(json!(9)),
+            child: Some(json!(3)),
+            parent_kind: ParentKind::Set,
+        },
+    ];
+    let theirs: BTreeSet<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+    let resolved = apply_resolutions(&bands, &conflicts, &theirs).expect("applies");
+    let items = &resolved.embedded["items"];
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].id, test_id("i1"));
+    assert_eq!(items[1].id, test_id("i3"));
+    assert_eq!(items[1].system, json!({ "hp": 9 }));
+}
+
+#[test]
+fn apply_resolutions_deletes_a_nested_child_before_its_container() {
+    // A delete inside a child that is itself deleted: deepest first, so the
+    // nested delete never lands in the sibling that would take the
+    // container's index after the container is spliced out.
+    let mut inner = std::collections::BTreeMap::new();
+    inner.insert("sub".to_string(), vec![doc("s0"), doc("s1")]);
+    let mut i0 = doc("i0");
+    i0.embedded = inner.clone();
+    let mut i1 = doc("i1");
+    i1.embedded = inner;
+    let mut embedded = std::collections::BTreeMap::new();
+    embedded.insert("items".to_string(), vec![i0, i1]);
+    let bands = crate::merge::MergeBands {
+        name: None,
+        engine: json!(null),
+        system: json!({}),
+        embedded,
+    };
+    let delete = |path: &str| MergeConflict {
+        path: path.to_string(),
+        base: Some(json!({})),
+        parent: None,
+        child: Some(json!({})),
+        parent_kind: ParentKind::Delete,
+    };
+    let conflicts = vec![
+        delete("/embedded/items/0"),
+        delete("/embedded/items/0/embedded/sub/1"),
+    ];
+    let theirs: BTreeSet<String> = conflicts.iter().map(|c| c.path.clone()).collect();
+    let resolved = apply_resolutions(&bands, &conflicts, &theirs).expect("applies");
+    let items = &resolved.embedded["items"];
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, test_id("i1"));
+    assert_eq!(
+        items[0].embedded["sub"].len(),
+        2,
+        "the surviving sibling is untouched"
+    );
+}
