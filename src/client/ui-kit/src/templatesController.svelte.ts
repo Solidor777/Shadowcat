@@ -9,9 +9,17 @@ import {
   type WireDocument, type StampOpts, type SyncState, type Logger,
   type DocumentStore, type ReadableDocuments, type NotificationLevel,
   type ClientMsg, type WireMergeOutcome, type WireMergeConflict, type WirePushInstanceOutcome,
-  type WireMergeErrorKind,
+  type WireMergeErrorKind, type WsTimeoutOptions,
 } from "@shadowcat/core";
 import type { ConflictGroup } from "./mergeConflict";
+
+/** Wait for a merge reply before the request is abandoned: the whole budget of a pull/revert
+ * (one instance) and the per-request share of a push. */
+export const MERGE_TIMEOUT_BASE_MS = 10_000;
+/** Additional wait per instance a push may commit. The server commits push instances one by
+ * one under the room's publish guard and replies only after the last, so a push over many
+ * instances legitimately outlasts a single-instance merge. */
+export const MERGE_TIMEOUT_PER_INSTANCE_MS = 1_000;
 
 /** The fresh outcome a resolutions rejection carries (`stale_resolutions`/`unknown_resolution`/
  * `unresolvable` — the merge as recomputed from live documents at rejection time), or `null` for
@@ -31,6 +39,21 @@ function freshOutcome(reason: WireMergeErrorKind): WireMergeOutcome | null {
   if ("stale_resolutions" in reason) return reason.stale_resolutions;
   if ("unknown_resolution" in reason) return reason.unknown_resolution;
   return reason.unresolvable;
+}
+
+/** Whether one push instance outcome carries a conflict set (as opposed to `applied`/`excluded`).
+ * Not exported (folded into the controller's public surface).
+ * @param inst - The per-instance outcome to classify.
+ * @returns `true` iff the instance is conflicted.
+ * @example
+ * ```
+ * // internal helper; not part of the public API
+ * declare const inst: WirePushInstanceOutcome;
+ * hasConflicts(inst);
+ * ```
+ */
+function hasConflicts(inst: WirePushInstanceOutcome): boolean {
+  return inst.status !== "applied" && inst.status !== "excluded";
 }
 
 /** A merge intent frame, already carrying its own `request_id`. */
@@ -57,8 +80,9 @@ export interface TemplatesControllerDeps {
   /** Optimistic document view `#get`/`#templateOf`/`canPull`/`canPush` resolve ids against. */
   documents: ReadableDocuments;
   /** Sends a merge intent and resolves with the server's computed outcome (or rejects with a
-   * `MergeIntentError`/`Error`). */
-  sendMergeIntent: (msg: MergeIntentMsg) => Promise<WireMergeOutcome>;
+   * `MergeIntentError`/`Error`). `opts.timeoutMs` is sized per request by the controller
+   * (`MERGE_TIMEOUT_BASE_MS` + `MERGE_TIMEOUT_PER_INSTANCE_MS` per instance for a push). */
+  sendMergeIntent: (msg: MergeIntentMsg, opts: WsTimeoutOptions) => Promise<WireMergeOutcome>;
   /** The current user's world-scoped role; `"gm"` short-circuits `#isOwnerOrGm`. */
   role: "gm" | "player" | "spectator";
   /** The current user's id, compared against `effectiveOwner` in `#isOwnerOrGm`. */
@@ -95,6 +119,11 @@ export class TemplatesController {
    * mutated in place) on open/resolve/cancel — a `$state` reassignment, so readers must
    * re-read `pending` itself rather than caching the object. */
   pending = $state<PendingSession | null>(null);
+  /** Document ids (the child for a pull, the template for a push) with a merge intent still
+   * awaiting its reply. A second `pull`/`push` on the same id in that window is dropped: it
+   * would race the first call's commit and be refused by the server's recompute as stale
+   * against documents the first call itself moved. */
+  #inFlight = new Set<string>();
 
   /** Build a controller wired to its collaborators.
    * @param deps - The controller's collaborators (store/documents/sendMergeIntent/role/canEdit/
@@ -242,18 +271,26 @@ export class TemplatesController {
 
   /** Send (or re-send with `resolutions`) `MergePull` for `childId` and route the outcome.
    * Not exported (folded into `pull`'s public surface).
+   *
+   * A resolutions rejection carries the merge as recomputed from live documents: a
+   * conflicted fresh outcome re-opens the modal; a fresh `applied` outcome means the
+   * documents moved such that nothing conflicts any more — but the rejected call wrote
+   * NOTHING, so the pull is re-sent once as a compute-only call, which applies it. The
+   * retry is bounded to one (`retried`): a second consecutive rejection is reported.
    * @param childId - The instance document's id.
    * @param resolutions - Second-call resolutions (conflict paths to take the template side of).
+   * @param retried - Whether this call is the one bounded compute-only retry.
    * @example this.#sendPull(childId);
    */
-  async #sendPull(childId: string, resolutions?: string[]): Promise<void> {
+  async #sendPull(childId: string, resolutions?: string[], retried = false): Promise<void> {
+    if (this.#inFlight.has(childId)) return;
+    this.#inFlight.add(childId);
+    let retry = false;
     try {
-      const outcome = await this.#deps.sendMergeIntent({
-        type: "merge_pull",
-        request_id: crypto.randomUUID(),
-        child_id: childId,
-        resolutions,
-      });
+      const outcome = await this.#deps.sendMergeIntent(
+        { type: "merge_pull", request_id: crypto.randomUUID(), child_id: childId, resolutions },
+        { timeoutMs: MERGE_TIMEOUT_BASE_MS },
+      );
       if (outcome.kind !== "pull") return;
       if (outcome.status === "applied") {
         this.pending = null;
@@ -264,10 +301,15 @@ export class TemplatesController {
       const fresh = err instanceof MergeIntentError ? freshOutcome(err.reason) : null;
       if (fresh?.kind === "pull" && fresh.status !== "applied") {
         this.#openPullSession(childId, fresh.status.conflicts);
-        return;
+      } else if (fresh?.kind === "pull" && !retried) {
+        retry = true;
+      } else {
+        this.#warn(err instanceof Error ? err.message : "templates.pull: rejected");
       }
-      this.#warn(err instanceof Error ? err.message : "templates.pull: rejected");
+    } finally {
+      this.#inFlight.delete(childId);
     }
+    if (retry) await this.#sendPull(childId, undefined, true);
   }
 
   /** Open a single-group pull conflict session.
@@ -301,7 +343,10 @@ export class TemplatesController {
       return;
     }
     void this.#deps
-      .sendMergeIntent({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId })
+      .sendMergeIntent(
+        { type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId },
+        { timeoutMs: MERGE_TIMEOUT_BASE_MS },
+      )
       .catch((err: unknown) => {
         this.#warn(err instanceof Error ? err.message : "templates.revert: rejected");
       });
@@ -328,28 +373,46 @@ export class TemplatesController {
 
   /** Send (or re-send with `resolutions`) `MergePush` for `templateId` and route the outcome.
    * Not exported (folded into `push`'s public surface).
+   *
+   * The reply timeout scales with the instances the pusher can see (the server commits them
+   * one by one before replying). A resolutions rejection carries the freshly recomputed
+   * outcome: one with conflicted instances re-opens the modal; one with none means nothing
+   * conflicts any more — but the rejected call wrote NOTHING, so the push is re-sent once as
+   * a compute-only call, which applies it. The retry is bounded to one (`retried`).
    * @param templateId - The template document's id.
    * @param resolutions - Second-call resolutions, per instance.
+   * @param retried - Whether this call is the one bounded compute-only retry.
    * @example this.#sendPush(templateId);
    */
-  async #sendPush(templateId: string, resolutions?: Record<string, string[]>): Promise<void> {
+  async #sendPush(
+    templateId: string,
+    resolutions?: Record<string, string[]>,
+    retried = false,
+  ): Promise<void> {
+    if (this.#inFlight.has(templateId)) return;
+    this.#inFlight.add(templateId);
+    let retry = false;
     try {
-      const outcome = await this.#deps.sendMergeIntent({
-        type: "merge_push",
-        request_id: crypto.randomUUID(),
-        template_id: templateId,
-        resolutions,
-      });
+      const instances = this.findInstances(templateId).length;
+      const outcome = await this.#deps.sendMergeIntent(
+        { type: "merge_push", request_id: crypto.randomUUID(), template_id: templateId, resolutions },
+        { timeoutMs: MERGE_TIMEOUT_BASE_MS + MERGE_TIMEOUT_PER_INSTANCE_MS * instances },
+      );
       if (outcome.kind !== "push") return;
       this.#routePushOutcome(templateId, outcome.instances);
     } catch (err) {
       const fresh = err instanceof MergeIntentError ? freshOutcome(err.reason) : null;
-      if (fresh?.kind === "push") {
+      if (fresh?.kind === "push" && fresh.instances.some((i) => hasConflicts(i))) {
         this.#routePushOutcome(templateId, fresh.instances);
-        return;
+      } else if (fresh?.kind === "push" && !retried) {
+        retry = true;
+      } else {
+        this.#warn(err instanceof Error ? err.message : "templates.push: rejected");
       }
-      this.#warn(err instanceof Error ? err.message : "templates.push: rejected");
+    } finally {
+      this.#inFlight.delete(templateId);
     }
+    if (retry) await this.#sendPush(templateId, undefined, true);
   }
 
   /** Route one push outcome: open a conflict session for any conflicted instances, warn once

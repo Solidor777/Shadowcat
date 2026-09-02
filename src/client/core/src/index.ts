@@ -49,6 +49,7 @@ export { WsClient, MergeIntentError } from "./ws-client";
 export type {
   WsClientOptions,
   WsClientHandlers,
+  WsTimeoutOptions,
   WireWelcome,
   SearchPage,
   PathResult,

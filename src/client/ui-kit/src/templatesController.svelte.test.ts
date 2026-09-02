@@ -1,8 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { TemplatesController } from "./templatesController.svelte";
+import {
+  TemplatesController, MERGE_TIMEOUT_BASE_MS, MERGE_TIMEOUT_PER_INSTANCE_MS,
+} from "./templatesController.svelte";
 import {
   DocumentStore, silentLogger, MergeIntentError,
   type WireDocument, type WireOperation, type ClientMsg, type WireMergeOutcome,
+  type WsTimeoutOptions,
 } from "@shadowcat/core";
 
 type MergeIntentMsg = Extract<ClientMsg, { type: "merge_pull" | "merge_push" | "merge_revert" }>;
@@ -28,16 +31,28 @@ function make(
   const store = new DocumentStore();
   store.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: docs.map((d) => ({ op: "create", doc: d } as WireOperation)) });
   const sent: MergeIntentMsg[] = [];
-  const sendMergeIntent = vi.fn((msg: MergeIntentMsg) => {
+  const sentOpts: WsTimeoutOptions[] = [];
+  const warned: string[] = [];
+  const sendMergeIntent = vi.fn((msg: MergeIntentMsg, opts: WsTimeoutOptions) => {
     sent.push(msg);
+    sentOpts.push(opts);
     return answers(msg);
   });
   const ctrl = new TemplatesController({
     store, documents: store, sendMergeIntent,
     role: over.role ?? "gm", selfId: over.selfId ?? "u-self",
-    canEdit: over.canEdit ?? (() => true), logger: silentLogger, notify: () => {},
+    canEdit: over.canEdit ?? (() => true),
+    logger: { ...silentLogger, warn: (m: string) => warned.push(m) },
+    notify: () => {},
   });
-  return { store, ctrl, sent };
+  return { store, ctrl, sent, sentOpts, warned };
+}
+
+/** A promise plus its resolver, for a fake socket that answers when the test says so. */
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
 }
 
 describe("TemplatesController", () => {
@@ -112,6 +127,107 @@ describe("TemplatesController", () => {
     await vi.waitFor(() => expect(sent).toHaveLength(2));
     await vi.waitFor(() => expect(ctrl.pending).not.toBeNull());
     expect(ctrl.pending!.groups[0].conflicts[0].path).toBe("/system/obj/x");
+  });
+
+  it("pull drops a second send for the same child while the first awaits its reply", async () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const first = deferred<WireMergeOutcome>();
+    const { ctrl, sent, warned } = make([tmpl, child], () => first.promise);
+    ctrl.pull("C");
+    ctrl.pull("C");
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    first.resolve({ kind: "pull", child_id: "C", status: "applied" });
+    await vi.waitFor(() => expect(ctrl.pending).toBeNull());
+    // The window closes with the reply: a later pull sends again.
+    ctrl.pull("C");
+    await vi.waitFor(() => expect(sent).toHaveLength(2));
+    expect(warned).toHaveLength(0);
+  });
+
+  it("pull re-sends compute-only once when a rejection's fresh outcome is applied", async () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const { ctrl, sent, warned } = make([tmpl, child], async (msg) => {
+      const resolutions = "resolutions" in msg ? msg.resolutions : undefined;
+      if (resolutions) {
+        throw new MergeIntentError({ stale_resolutions: { kind: "pull", child_id: "C", status: "applied" } });
+      }
+      if (sent.length === 1) {
+        return { kind: "pull", child_id: "C", status: { conflicts: [{ path: "/system/hp", base: 1, parent: 5, child: 9, parentKind: "set" }] } };
+      }
+      return { kind: "pull", child_id: "C", status: "applied" };
+    });
+    ctrl.pull("C");
+    await vi.waitFor(() => expect(ctrl.pending).not.toBeNull());
+    ctrl.pending!.resolve(new Map([["C", new Set(["/system/hp"])]]));
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect((sent[1] as { resolutions?: string[] }).resolutions).toEqual(["/system/hp"]);
+    expect((sent[2] as { resolutions?: string[] }).resolutions).toBeUndefined();
+    expect(ctrl.pending).toBeNull();
+    expect(warned).toHaveLength(0);
+  });
+
+  it("pull's compute-only retry is bounded to one; a second rejection is reported", async () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const { ctrl, sent, warned } = make([tmpl, child], async (msg) => {
+      const resolutions = "resolutions" in msg ? msg.resolutions : undefined;
+      if (!resolutions && sent.length === 1) {
+        return { kind: "pull", child_id: "C", status: { conflicts: [{ path: "/system/hp", base: 1, parent: 5, child: 9, parentKind: "set" }] } };
+      }
+      throw new MergeIntentError({ stale_resolutions: { kind: "pull", child_id: "C", status: "applied" } });
+    });
+    ctrl.pull("C");
+    await vi.waitFor(() => expect(ctrl.pending).not.toBeNull());
+    ctrl.pending!.resolve(new Map([["C", new Set(["/system/hp"])]]));
+    await vi.waitFor(() => expect(warned).toHaveLength(1));
+    expect(sent).toHaveLength(3);
+  });
+
+  it("pull and revert wait the base timeout; push scales it by the visible instance count", async () => {
+    const tmpl = doc({ id: "T" });
+    const c1 = doc({ id: "C1", source: { id: "T", pack: null, version: 1 } });
+    const c2 = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    const { ctrl, sent, sentOpts } = make([tmpl, c1, c2], async (msg) => {
+      if (msg.type === "merge_push") return { kind: "push", template_id: "T", instances: [] };
+      if (msg.type === "merge_revert") return { kind: "revert", child_id: "C1", status: "applied" };
+      return { kind: "pull", child_id: "C1", status: "applied" };
+    });
+    ctrl.pull("C1");
+    ctrl.revert("C1");
+    ctrl.push("T");
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect(sentOpts[0].timeoutMs).toBe(MERGE_TIMEOUT_BASE_MS);
+    expect(sentOpts[1].timeoutMs).toBe(MERGE_TIMEOUT_BASE_MS);
+    expect(sentOpts[2].timeoutMs).toBe(MERGE_TIMEOUT_BASE_MS + 2 * MERGE_TIMEOUT_PER_INSTANCE_MS);
+  });
+
+  it("push re-sends compute-only once when a rejection's fresh outcome has no conflicts", async () => {
+    const tmpl = doc({ id: "T" });
+    const c1 = doc({ id: "C1", source: { id: "T", pack: null, version: 1 } });
+    const conflicted: WireMergeOutcome = {
+      kind: "push", template_id: "T",
+      instances: [{ instance_id: "C1", name: null, status: { conflicts: [{ path: "/system/hp", base: 1, parent: 5, child: 9, parentKind: "set" }] } }],
+    };
+    const { ctrl, sent, warned } = make([tmpl, c1], async (msg) => {
+      const resolutions = "resolutions" in msg ? msg.resolutions : undefined;
+      if (resolutions) {
+        throw new MergeIntentError({ stale_resolutions: {
+          kind: "push", template_id: "T", instances: [{ instance_id: "C1", name: null, status: "applied" }],
+        } });
+      }
+      return sent.length === 1
+        ? conflicted
+        : { kind: "push", template_id: "T", instances: [{ instance_id: "C1", name: null, status: "applied" }] };
+    });
+    ctrl.push("T");
+    await vi.waitFor(() => expect(ctrl.pending).not.toBeNull());
+    ctrl.pending!.resolve(new Map([["C1", new Set(["/system/hp"])]]));
+    await vi.waitFor(() => expect(sent).toHaveLength(3));
+    expect((sent[2] as { resolutions?: unknown }).resolutions).toBeUndefined();
+    expect(ctrl.pending).toBeNull();
+    expect(warned).toHaveLength(0);
   });
 
   it("pull is a no-op with a logged warning when the child is not in store", () => {
