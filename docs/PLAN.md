@@ -92,11 +92,37 @@ further at design time. Numbering continues from Phase 1.
 - Depends on: M14 (condition/damage triggers on the combat clock), M17 (light emitters).
 
 ### M19 · Tables, notes + chat media
-- Rollable tables on the dice engine + document model (weighted rows, nested draws, results to
-  chat as roll embeds).
-- Rich-text notes on the document model (journal-style documents; reuse the chat sanitizer
-  boundary and `Segment::DocLink` for cross-references).
-- Chat media linking: images; YouTube as thumbnail + external link only — no IFrame / Data API.
+- Design: [`superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`](superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md)
+  (decision log §11; YouTube thumbnail + external link is already delivered by the Bucket C
+  oEmbed work and is recorded there as evidence, not rebuilt). Three sub-projects in build order,
+  each a branch off `main` merged before the next:
+  - **M19a — Chat media** (plan:
+    [`superpowers/plans/2026-09-02-m19a-chat-media.md`](superpowers/plans/2026-09-02-m19a-chat-media.md)):
+    `Segment::Image` over asset ids from `[[asset:<uuid>|alt]]` spans (composer picker over the
+    M15b `pickAsset` seam) and from external image URLs fetched server-side through the
+    SSRF-guarded client and asset-ified post-publish (`Provenance::ChatImage`); the sanitizer
+    never emits a hotlinked `<img>` (closes the tracking-pixel gap its own comment names); the
+    `chat::body` composer extracted for reuse; edits keep doc links/images/buttons; the segment
+    renderer moves to ui-kit's `SegmentList` as the client's single `{@html}` sink.
+    Prerequisite: M15b merged.
+  - **M19b — Rollable tables** (plan:
+    [`superpowers/plans/2026-09-02-m19b-rollable-tables.md`](superpowers/plans/2026-09-02-m19b-rollable-tables.md)):
+    `table` engine documents (`Weighted` rows or a reference-free `Formula` with ranges; rows
+    yield text / doc links / images / nested draws), a `DrawTable` frame executed server-side
+    (READ on every table in the chain, fixed Total context, depth/breadth/total caps, cycle
+    refusal) and posted to chat as `Segment::TableDraw` with GM-only `spec`/`raw`; core
+    `buildTableDoc` + `ChatApi.drawTable`; card rendering + a Draw button on table doc links.
+  - **M19c — Notes** (plan:
+    [`superpowers/plans/2026-09-02-m19c-notes.md`](superpowers/plans/2026-09-02-m19c-notes.md)):
+    `note` engine documents whose sanitized `body` is server-derived from `source` at ingress
+    (`chat::body::compose_static` under a fixed note policy: markdown, links, `[[doc:]]`/
+    `[[token:]]` cross-references, `[[roll:]]` buttons, `[[asset:]]` images), a `parent_id` tree
+    of notes, private by default; core `buildNoteDoc` + `parseNoteBody`.
+- Depends on: M11, M14c-1/-4, M15a, M15b (M19a's picker seam).
+- Excludes: the table/notes **sheet modules** and their UI e2e (M20 — M19 leaves `SegmentList`,
+  the builders and `drawTable` as their seams; M19's e2e is the WS-level suite); FTS quality over
+  notes/tables (M21); recalculation of table draws; per-row table visibility; outbound fetches
+  for note bodies or table rows.
 
 ### M20 · Full default module suite
 - Every table-facing default module the dogfood alpha lacks, shipped as `src/modules/*` packages
