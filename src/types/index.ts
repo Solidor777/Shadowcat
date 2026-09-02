@@ -28,6 +28,11 @@ export type { FootprintsPayload } from "./generated/FootprintsPayload";
 export type { SceneFootprints } from "./generated/SceneFootprints";
 export type { TokenFootprint } from "./generated/TokenFootprint";
 export type { FootprintExtent } from "./generated/FootprintExtent";
+export type { CombatsPayload } from "./generated/CombatsPayload";
+export type { CombatView } from "./generated/CombatView";
+export type { CombatantView } from "./generated/CombatantView";
+export type { ResolvedResourceView } from "./generated/ResolvedResourceView";
+export type { ResourceBindingKind } from "./generated/ResourceBindingKind";
 
 // UI contribution contracts
 export type { Cardinality } from "./generated/Cardinality";

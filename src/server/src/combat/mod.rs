@@ -23,6 +23,7 @@ use crate::data::repository::Repository;
 use crate::ws::protocol::{ClientMsg, ResourceOp as WireResourceOp, ServerMsg};
 use crate::ws::room::Room;
 
+pub mod channel;
 pub mod effects;
 pub(crate) mod eval;
 pub mod history;

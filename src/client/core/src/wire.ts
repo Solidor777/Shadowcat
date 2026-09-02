@@ -1399,3 +1399,119 @@ export function parseServerMsg(text: string): ServerMsg | null {
   const result = ServerMsgSchema.safeParse(json);
   return result.success ? result.data : null;
 }
+
+/** One resource's resolved numbers for one combatant, as read off the `"combat"` derived
+ * channel — the Zod mirror of the generated `ResolvedResourceView`. */
+export interface ResolvedResourceView {
+  /** Whether the registry binds this resource as a derived mirror or a tracked spend. */
+  binding: "mirror" | "tracked";
+  /** The resolved current value; `null` on an evaluation failure. */
+  current: number | null;
+  /** The resolved ceiling; `null` on an evaluation failure. */
+  max: number | null;
+  /** The formula-evaluation failure's detail, when resolution failed. */
+  error: string | null;
+}
+
+/** One combatant's resolved numbers, as read off the `"combat"` derived channel — the Zod
+ * mirror of the generated `CombatantView`. */
+export interface CombatantView {
+  /** The combatant document's id. */
+  id: string;
+  /** Every registry-key resolution the recipient may see the `/engine/resources` pointer for;
+   * `null` when that band's tier is not visible to the recipient. */
+  resources: Record<string, ResolvedResourceView> | null;
+  /** The combat's movement resource converted to cells for this combatant, when resolvable. */
+  movementCells: number | null;
+}
+
+/** One combat's resolved view, as read off the `"combat"` derived channel — the Zod mirror of
+ * the generated `CombatView`. */
+export interface CombatView {
+  /** The combat document's id. */
+  id: string;
+  /** The scene this combat is bound to. */
+  sceneId: string;
+  /** Readable combatants. */
+  combatants: CombatantView[];
+}
+
+/** Read-only view of the resolved combats the server has broadcast on the `"combat"` derived
+ * channel. There is no client-side resource evaluation: every number here is read off the
+ * server's own `combat::eval` derivations. */
+export interface CombatsView {
+  /** Every combat the recipient may read. */
+  combats: CombatView[];
+}
+
+/** A view that has nothing to say — no combats. The state before the first `"combat"` frame
+ * arrives, and the value a malformed payload falls back to. */
+export const EMPTY_COMBATS: CombatsView = { combats: [] };
+
+/** Wire shape of one resolved resource. */
+const resolvedResourceViewSchema = z.object({
+  binding: z.enum(["mirror", "tracked"]),
+  current: z.number().nullable(),
+  max: z.number().nullable(),
+  error: z.string().nullable(),
+});
+
+/** Wire shape of one combatant view. */
+const combatantViewSchema = z.object({
+  id: z.string(),
+  resources: z.record(z.string(), resolvedResourceViewSchema).nullable(),
+  movement_cells: z.number().nullable(),
+});
+
+/** Wire shape of one combat view. */
+const combatViewSchema = z.object({
+  id: z.string(),
+  scene_id: z.string(),
+  combatants: z.array(combatantViewSchema),
+});
+
+/** Wire shape of the `"combat"` derived channel payload — the Zod mirror of the generated
+ * `CombatsPayload`. */
+const combatsPayloadSchemaImpl = z.object({
+  combats: z.array(combatViewSchema),
+});
+
+/** The `"combat"` derived-channel payload schema. */
+export const CombatsPayloadSchema = combatsPayloadSchemaImpl;
+
+/**
+ * Parse a `"combat"` derived-channel payload into a `CombatsView`.
+ *
+ * A payload that does not validate yields {@link EMPTY_COMBATS} rather than a partial read,
+ * mirroring `parseFootprints`: a half-parsed combat set would mix authoritative numbers with
+ * silently-dropped ones, and a caller cannot tell those apart. The failure is logged so a schema
+ * drift is visible in development rather than silently swallowed.
+ * @param payload The raw `SceneDerived` payload for the `"combat"` channel.
+ * @returns A `CombatsView` over the payload, or {@link EMPTY_COMBATS} when it does not validate.
+ * @example
+ * ```ts
+ * import { parseCombats } from "@shadowcat/core";
+ *
+ * declare const payload: unknown;
+ * const combats = parseCombats(payload);
+ * combats.combats.length; // number
+ * ```
+ */
+export function parseCombats(payload: unknown): CombatsView {
+  const parsed = combatsPayloadSchemaImpl.safeParse(payload);
+  if (!parsed.success) {
+    console.warn("parseCombats: malformed combat channel payload:", parsed.error.message);
+    return EMPTY_COMBATS;
+  }
+  return {
+    combats: parsed.data.combats.map((c) => ({
+      id: c.id,
+      sceneId: c.scene_id,
+      combatants: c.combatants.map((cc) => ({
+        id: cc.id,
+        resources: cc.resources,
+        movementCells: cc.movement_cells,
+      })),
+    })),
+  };
+}

@@ -43,6 +43,9 @@ import {
   type WireFieldChange,
   type WireCommand,
   type WireSearchHit,
+  parseCombats,
+  EMPTY_COMBATS,
+  CombatsPayloadSchema,
 } from "./wire";
 
 // Drift guard. Exact field-by-field type equality fights Zod's inference
@@ -727,5 +730,45 @@ describe("PathfindSchema", () => {
         token: "not-a-uuid",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("parseCombats", () => {
+  it("parses a well-formed combat channel payload", () => {
+    const view = parseCombats({
+      combats: [
+        {
+          id: "c1",
+          scene_id: "s1",
+          combatants: [
+            {
+              id: "cc1",
+              resources: {
+                movement: { binding: "tracked", current: 30, max: 30, error: null },
+              },
+              movement_cells: 6,
+            },
+            { id: "cc2", resources: null, movement_cells: null },
+          ],
+        },
+      ],
+    });
+    expect(view.combats).toHaveLength(1);
+    expect(view.combats[0].id).toBe("c1");
+    expect(view.combats[0].sceneId).toBe("s1");
+    expect(view.combats[0].combatants[0].resources?.movement.current).toBe(30);
+    expect(view.combats[0].combatants[0].movementCells).toBe(6);
+    expect(view.combats[0].combatants[1].resources).toBeNull();
+  });
+
+  it("fails closed to EMPTY_COMBATS on a malformed payload", () => {
+    expect(parseCombats({ combats: "not-an-array" })).toEqual(EMPTY_COMBATS);
+    expect(parseCombats(null)).toEqual(EMPTY_COMBATS);
+    expect(parseCombats(undefined)).toEqual(EMPTY_COMBATS);
+  });
+
+  it("CombatsPayloadSchema round-trips the same shape parseCombats accepts", () => {
+    const raw = { combats: [{ id: "c1", scene_id: "s1", combatants: [] }] };
+    expect(CombatsPayloadSchema.safeParse(raw).success).toBe(true);
   });
 });
