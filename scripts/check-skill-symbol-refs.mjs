@@ -1557,11 +1557,11 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Deliberate NEGATIVE citations, each in a sentence asserting the named thing does NOT exist:
   // no back-compat `*System` aliases (verified against `src/server/src/data/engine/`, which
   // declares none of them), no sidebar `tab` field on a `Contribution`, no `TabbedSurface`
-  // component, no `sys_f64` pointer-walk helper, no bespoke `get_pointer`, no polyanya
-  // `blocked_layers` mechanism, and no `rand` dependency (determinism by construction). The
-  // citation's own sentence is what makes the claim true, not a pointer to a live declaration.
+  // component, no `sys_f64` pointer-walk helper, no polyanya `blocked_layers` mechanism, and no
+  // `rand` dependency (determinism by construction). The citation's own sentence is what makes
+  // the claim true, not a pointer to a live declaration.
   "ActorSystem", "TokenSystem", "FactionRegistrySystem", "ConditionRegistrySystem", "RegionSystem",
-  "tab", "TabbedSurface", "sys_f64", "get_pointer", "blocked_layers", "rand",
+  "tab", "TabbedSurface", "sys_f64", "blocked_layers", "rand",
 ]);
 
 // The name of something EXTERNAL that owns members: a crate, a package, or a type declared inside

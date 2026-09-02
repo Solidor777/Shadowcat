@@ -698,3 +698,32 @@ are observations awaiting triage, not committed work.
   verified `pnpm docs:api:ts` green on post-M14c-2 main (2026-08-31, the
   M14c-4 baseline) with `treatWarningsAsErrors` intact — no exemption needed.
 
+- Title: `shadowcat-codebase-documents-permissions` cites three symbols the tree no
+  longer declares. Summary: running `node scripts/check-skill-symbol-refs-cli.mjs`
+  during M14c-5's skill-update gate surfaced three pre-existing broken citations in
+  the `Operation::Move` bullet, unrelated to and untouched by this branch:
+  `` `check_parent_placement` ``, `` `check_move_acyclic` ``, and `` `old_parent_id` ``
+  (`SKILL.md`'s Move-op paragraph) resolve against nothing in `src/server/src/data/`.
+  Confirmed pre-existing via `git diff` against this session's own edit to that file
+  (a single unrelated line, the `get_pointer` scoping fix below). Status: Needs
+  Review — the owning change is the Move-op work (a prior skill commit,
+  `docs: Move joins the document-mutation invariants`); whoever touches that bullet
+  next should verify whether the cited helpers were renamed, inlined, or never
+  landed, and correct or delete the citations.
+
+- Title: `shadowcat-codebase-documents-permissions`'s "no bespoke server
+  `get_pointer`" claim went stale mid-campaign. Summary: M14c-5's Task 2 added
+  `merge::tree::get_pointer` to the server crate; the documents-permissions skill's
+  null-intermediate-handling paragraph asserted flatly that no such helper exists
+  server-side, which the new function falsified without anyone editing that skill.
+  Caught only because M14c-5's Task 6 happened to run the symbol-ref checker over
+  the whole corpus, not because anything about the merge module's own review process
+  touched this skill. Status: **Resolved** — the claim is rescoped to
+  `data::command`'s own pointer family (which still has no bespoke helper) and the
+  checker's `get_pointer` acknowledgement entry (`scripts/check-skill-symbol-refs.mjs`)
+  removed, since it no longer names a genuine non-existent symbol. Residual risk: a
+  "never exists" claim about a whole SERVER (rather than one named module) is
+  inherently fragile against future modules landing their own same-named helper —
+  future negative-existence claims in this skill family should scope to the specific
+  module/subsystem they were verified against, not the whole binary.
+

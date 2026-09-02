@@ -78,6 +78,8 @@ Every `ServerMsg` variant:
 | `move_error` | Move request failed |
 | `chat_error` | Chat send/edit/delete failed |
 | `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
+| `merge_result` | Outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`: applied, or the conflict set to resolve |
+| `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown resolutions carrying the fresh outcome) |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
@@ -101,6 +103,9 @@ Every `ClientMsg` variant:
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+| `merge_pull` | Merge an instance's template into it — the server computes the 3-way merge and, when conflict-free, commits it |
+| `merge_push` | Merge a template into every same-world instance visible to the sender |
+| `merge_revert` | Reset an instance's mergeable bands to its template's current state (never conflicts) |
 
 Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
 attributes.str` — never a client-substituted string. The server rewrites each
@@ -111,6 +116,27 @@ combatant's formula host. A referencing roll with no binding fails with an
 `unknown-ref` system notice. The same raw-template rule applies to the
 `notation` of every combat-roll entry, and a combat roll's `channel` is
 validated against the channel registry the same way a message's is.
+
+## Template merge intents
+
+The server computes every template 3-way merge (pull/push/revert) — the client only sends the
+intent and renders whatever conflict set comes back. Each intent is a stateless two-call flow:
+
+1. **Compute-only call** (no `resolutions`): the server merges from live documents. Conflict-free
+   applies immediately and commits under the same `event` broadcast every other write uses;
+   conflicted answers `merge_result` with the conflict set (per instance for `merge_push`) and
+   writes nothing.
+2. **Resolution call** (`resolutions`: the conflict paths whose template side to take — per
+   instance for `merge_push`, keyed by instance id): the server RECOMPUTES the merge from live
+   documents and rejects with `merge_error` (`stale_resolutions`/`unknown_resolution`, both
+   carrying the freshly recomputed outcome) unless every submitted path is a current conflict —
+   there is no server-side session between the two calls.
+
+`merge_push` reports each same-world instance individually: `applied`, `conflicts`, or `excluded`
+(visible to the pusher but not writable by them). An instance the pusher cannot see at all is
+omitted from the reply entirely, matching redaction's own existence-hiding. Every conflict set is
+filtered to the paths the requester can see in both documents before it reaches the wire; a
+hidden conflict resolves to the instance's own (child) value automatically.
 
 ## Scene channels
 

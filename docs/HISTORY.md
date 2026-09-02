@@ -1932,6 +1932,60 @@ the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/auth
 GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
 
 
+#### M14c-5 — Templates merge server-side ✅
+**COMPLETE.** Branch `m14c-5-templates-merge`, executed mainline (Kimi) from
+[`superpowers/specs/2026-09-01-m14c-5-templates-merge-server-side-design.md`](superpowers/specs/2026-09-01-m14c-5-templates-merge-server-side-design.md)
+and its plan; two buddy-check checkpoints (both converged) plus a final full-branch review.
+Fifth of six.
+
+The server now owns the entire template 3-way merge. `merge::plan::merge3`/`compute_pull`/
+`compute_revert`/`plan_to_update`/`apply_resolutions` (with `merge::tree`/`merge::embedded`/
+`merge::bands` beneath them) are the exact behavioural twin of the retired TS engine, pinned by a
+48-case conformance corpus GENERATED from the TS engine's own live output before its deletion —
+that generation transcript is the equivalence evidence for the port. Three intents
+(`MergePull`/`MergePush`/`MergeRevert`) ride the `CombatRoll` reply pattern
+(`ServerMsg::MergeResult`/`MergeError`): a compute-only first call applies a conflict-free merge
+immediately or returns the conflict set; a resolutions call recomputes from live documents and
+rejects (`StaleResolutions`/`UnknownResolution`, both carrying the fresh outcome) unless every
+submitted path is still a current conflict — no server-side session state between calls.
+Authorization is derived against the ACTUAL computed `Update` (owner-or-GM plus every
+capability the change paths require, the same `required_cap_for_path` predicate `apply_intent`
+uses), never a guessed band list; authorized writes commit under a new
+`WriteOrigin::TemplateMerge`, mirroring `CombatTransition`/`ConfigSeed`. `MergePush` reports each
+same-world instance individually (`Applied`/`Conflicts`/`Excluded`); an instance invisible to the
+pusher is omitted from the reply entirely (existence-hiding), and every conflict set is filtered
+to paths the requester can see in both documents before it reaches the wire, with a hidden
+conflict auto-resolving child-wins.
+
+**The base-ownership fork:** `Document.base` — previously a fully opaque, client-writable blob —
+becomes server-owned: `/base` leaves the client-writable field set entirely (no capability maps to
+it, the same posture as `/source`), a `Create` derives it fresh from the document's own validated
+bands (discarding any client-supplied value), and `validate_engine_tree` now walks it (shape-check
++ per-doc_type engine normalization, embedded children correlated by `sourceId`) instead of
+skipping it outright. This was the necessary precondition for server-side merging at all: once
+server logic reads `base` to compute a merge, a forged or stale client-written `base` stops being
+a self-contained badge and becomes a channel for silent data loss in a future merge — the same
+reasoning invariant 6's server-authority principle already applies to every other computed value.
+A legacy stale-schema `base` on an since-deleted template leaves that document write-locked with
+no merge rescue; this is accepted as symmetric with the pre-existing behavior of a live `engine`
+band under an unrelated module-schema change, not a new defect class.
+
+Client: `TemplatesController` is now an intent sender — `pull`/`push`/`revert` call
+`WsClient.merge` (a one-shot correlated request/reply, the same shape as `pathfind`/`search`) via
+a new `WorldSession.mergeIntent` seam, and a conflicted reply opens the existing conflict modal
+exactly as before; `StaleResolutions`/`UnknownResolution` reopen it with the server's fresh
+conflict set with no extra round trip. `canPull`'s advisory gate drops the `/base` capability leg
+(the server writes `/base` unconditionally now, so gating on it would hide pull/revert from users
+the server authorizes). `@shadowcat/core`'s `merge3`/`merge3Tree`/`takeTemplate`/`computePull`/
+`computeRevert`/`planToUpdate`/`applyResolutions` and the hand-written `Conflict`/`MergePlan`
+types are deleted — evidenced by `pnpm -r typecheck`/`pnpm -r test` passing with zero remaining
+references repo-wide — leaving only the stamp/display surface (`structuralDiff`/`deepEqual`,
+`restampSubtree`/`snapshotBase`/`stampInstance`, `findInstances`, `syncState`) plus the
+`MergeBase`/`MergeBands`/`EmbeddedBaseChild` types those retained functions still need; the
+conflict modal now renders the ts-rs-generated `MergeConflict` in place of the hand-written type.
+Skills updated in the plugin checkout (templates, documents-permissions) through the reviewed
+skill-update gate.
+
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md` and plan
