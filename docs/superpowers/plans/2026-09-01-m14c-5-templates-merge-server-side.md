@@ -92,9 +92,9 @@ M14c-2 session). Run buddy-checking (two blind reviewers + brokered debate) at:
   absent-vs-`[]` `null` rule; `/base` = template snapshot), every `parentKind` shape.
 
 **Steps:**
-- [ ] Write the case matrix + dual-mode harness; run with `MERGE_CORPUS_GENERATE=1` to emit the
+- [x] Write the case matrix + dual-mode harness; run with `MERGE_CORPUS_GENERATE=1` to emit the
   fixture; run again normally to confirm assertion mode passes.
-- [ ] Commit fixture + harness together (the TS engine still exists; the corpus is its measured
+- [x] Commit fixture + harness together (the TS engine still exists; the corpus is its measured
   behaviour).
 
 ---
@@ -120,12 +120,12 @@ M14c-2 session). Run buddy-checking (two blind reviewers + brokered debate) at:
   same way before comparing).
 
 **Steps:**
-- [ ] Port unit-by-unit in the c-1 style (reader can diff against `merge.ts`/`templates.ts`).
+- [x] Port unit-by-unit in the c-1 style (reader can diff against `merge.ts`/`templates.ts`).
   Clone-at-crossing discipline per the TS comments (aliasing cases are in the corpus).
-- [ ] `deep_equal` numeric comparison matches TS `===` on f64; key-order-independent objects;
+- [x] `deep_equal` numeric comparison matches TS `===` on f64; key-order-independent objects;
   positional arrays.
-- [ ] Corpus runner green (`cargo test -p shadowcat merge`).
-- [ ] `cargo fmt` + `cargo clippy --all-targets` clean; commit.
+- [x] Corpus runner green (`cargo test -p shadowcat merge`).
+- [x] `cargo fmt` + `cargo clippy --all-targets` clean; commit.
 
 **→ Buddy checkpoint 1 here (Tasks 1–2 diff).**
 
@@ -151,12 +151,12 @@ M14c-2 session). Run buddy-checking (two blind reviewers + brokered debate) at:
   Task 4's suite.
 
 **Steps:**
-- [ ] Validation walk + normalization (mirror `validate_engine_tree`'s engine recursion).
-- [ ] Capability carve-out + `WriteOrigin::TemplateMerge` + Create-time derivation.
-- [ ] Sweep: every in-repo writer of `/base` (world seeds, test fixtures, chat/combat helpers)
+- [x] Validation walk + normalization (mirror `validate_engine_tree`'s engine recursion).
+- [x] Capability carve-out + `WriteOrigin::TemplateMerge` + Create-time derivation.
+- [x] Sweep: every in-repo writer of `/base` (world seeds, test fixtures, chat/combat helpers)
   still compiles/passes; re-fixture any test that wrote `/base` as a client.
-- [ ] Legacy-row test: a stored stale-schema `base` still READS (validation is ingest-time only).
-- [ ] Gates (fmt/clippy/test); commit.
+- [x] Legacy-row test: a stored stale-schema `base` still READS (validation is ingest-time only).
+- [x] Gates (fmt/clippy/test); commit.
 
 ---
 
@@ -180,16 +180,16 @@ UnknownResolution(MergeOutcome)` (+ shared validation/IO pass-through); push out
 display name.
 
 **Steps:**
-- [ ] Wire types + ts-rs regeneration.
-- [ ] `instances_of` + visibility filter (the requester's redacted view decides "visible";
+- [x] Wire types + ts-rs regeneration.
+- [x] `instances_of` + visibility filter (the requester's redacted view decides "visible";
       replicate the client's store-scoped reach per T4).
-- [ ] Handlers: compute → derive authorization per T4 (owner-or-GM gate; per-path derivation
+- [x] Handlers: compute → derive authorization per T4 (owner-or-GM gate; per-path derivation
       against the actual computed Update using the same capability predicate `apply_intent`'s
       per-op gate uses) → commit authorized Updates under `WriteOrigin::TemplateMerge` → reply.
       Resolutions path: recompute, strict subset check, apply; stale/unknown → error carrying
       the fresh outcome.
-- [ ] WS tests per spec §8's list.
-- [ ] Gates; commit.
+- [x] WS tests per spec §8's list.
+- [x] Gates; commit.
 
 **→ Buddy checkpoint 2 here (Tasks 3–4 diff).**
 
