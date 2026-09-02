@@ -150,11 +150,12 @@
   });
 
   /** Inserts a `[[asset:<id>|<label>]]` span at the textarea's cursor position, mirroring
-   * `insertDocLink`'s span-insertion mechanics and `[`/`]`/`|` stripping exactly (an asset's
-   * name is free text subject to the identical `scan_body` grammar hazard). No name lookup
-   * surface exists on `AppContext` for a picked asset id, so the label is always the id's
-   * first 8 characters — cosmetic display text only; `[[asset:...]]`'s authority is the id.
-   * A cancelled pick (`null`) is a no-op.
+   * `insertDocLink`'s span-insertion mechanics. No name lookup surface exists on
+   * `AppContext` for a picked asset id, so the label is always the id's first 8
+   * hex characters — never free text, so it needs none of `insertDocLink`'s
+   * `[`/`]`/`|` stripping (a UUID's hex characters cannot collide with the
+   * `scan_body_capped` grammar's delimiters). `[[asset:...]]`'s authority is the id, not the
+   * label. A cancelled pick (`null`) is a no-op.
    * @example
    * ```
    * // internal; wired to the "Insert image" button's click handler

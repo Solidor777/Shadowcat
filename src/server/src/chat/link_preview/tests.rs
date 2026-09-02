@@ -861,6 +861,7 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
         1_000,
         now,
         &[],
+        true,
     )
     .await;
 
@@ -899,6 +900,7 @@ async fn enrich_queues_an_inline_image_job_for_a_valid_image_source() {
             url: "https://x.example/a.png".to_string(),
             alt: "a map".to_string(),
         }],
+        true,
     )
     .await;
     assert_eq!(pending.len(), 1);
@@ -934,6 +936,7 @@ async fn enrich_skips_an_inline_image_source_with_a_blocked_url() {
             url: "http://169.254.169.254/x.png".to_string(),
             alt: "blocked".to_string(),
         }],
+        true,
     )
     .await;
     assert!(
@@ -968,9 +971,59 @@ async fn enrich_caps_inline_image_jobs_at_max_inline_images() {
         1_000,
         Instant::now(),
         &sources,
+        true,
     )
     .await;
     assert_eq!(pending.len(), MAX_INLINE_IMAGES);
+}
+
+// -- enrich: previews and images are independently gated -------------------
+
+#[tokio::test]
+async fn enrich_with_scan_previews_false_queues_the_image_but_skips_the_hyperlink() {
+    // Reproduces a world with `hyperlinks: true`, `link_previews: Some(false)`,
+    // `images: true`: `previews_enabled()` is false, so the composer's
+    // `image_urls` alone triggers the call into `enrich`, but the href/oEmbed
+    // scan over the message's own `Html` run must NOT run -- previews and
+    // images are independent toggles.
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = vec![Segment::Html {
+        sanitized_html: r#"<a href="https://example.com/page">a link</a>"#.to_string(),
+    }];
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &[ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }],
+        false,
+    )
+    .await;
+    assert_eq!(pending.len(), 1, "the image job must still be queued");
+    assert!(
+        matches!(pending[0], PendingEnrichment::InlineImage { .. }),
+        "expected only the inline-image job, got {:?}",
+        pending[0]
+    );
+    assert!(
+        !segments
+            .iter()
+            .any(|s| matches!(s, Segment::LinkPreview { .. })),
+        "no LinkPreview segment must be appended when scan_previews is false"
+    );
 }
 
 // -- link_preview_cache repository methods -------------------------------

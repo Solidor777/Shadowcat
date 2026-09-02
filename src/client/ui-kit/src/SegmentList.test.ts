@@ -97,6 +97,20 @@ describe("SegmentList — link preview", () => {
     expect(container.querySelector(".link-preview-title")?.textContent).toBe("T");
   });
 
+  it("a malformed url falls back to the raw string as the host caption without throwing", () => {
+    const { container } = render(SegmentList, {
+      props: {
+        segments: [{ kind: "link_preview", url: "not a url", title: "T", description: "D" }],
+        channel: "general",
+      },
+      context: setAppContextForTest({}),
+    });
+    expect(container.querySelector(".link-preview-host")?.textContent).toBe("not a url");
+    // An unparseable URL yields no clickable href (safeHref returns undefined) —
+    // the card still renders, just non-clickable.
+    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
+  });
+
   it("renders an <img> whose src starts with /api/assets/ when image_asset_id is present", () => {
     const { container } = render(SegmentList, {
       props: {

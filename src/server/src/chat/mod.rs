@@ -359,8 +359,12 @@ pub const MAX_IMAGE_ALT_CHARS: usize = 200;
 /// established "one anonymous cross-file-shared shape gets one name" precedent), given a
 /// server-side equivalent since `SheetRef` itself is client-only TS. Carried inside
 /// `Segment::DocLink`; parsed in full by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix
-/// branch — `handle_send_message`'s ingest arm does no further parsing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// branch — `handle_send_message`'s ingest arm does no further parsing. Also reused, unmodified,
+/// as `data::engine::table::TableEntry::Doc`'s target — the ts-rs export lives here (this type
+/// itself, not `Segment`/`MessageEngine`, which stay opaque and unexported) since the table
+/// engine body crosses the wire boundary and needs a generated mirror.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DocLinkTarget {
     /// A top-level document, optionally one level into an embedded child.
@@ -691,11 +695,16 @@ pub enum SendMessageError {
     Forbidden,
     /// An edit attempted to change audience (a `/w` inside an edit). Frozen.
     AudienceLocked,
-    /// A roll formula failed to parse, exceeded a wire-boundary cap, or a
-    /// message body's inline-roll scan failed. Never returned to the caller
-    /// as a hard error — `handle_send_message` catches this and authors a
-    /// `MessageKind::System` notice instead (see `build_roll_error_notice`);
-    /// kept as a variant for completeness/testability of the mapping.
+    /// A roll formula failed to parse, exceeded a wire-boundary cap, a
+    /// message body's inline-roll scan failed, or an image span was refused
+    /// (`ImagesDisabled`/`UnknownAsset`/`AltTooLong`/`MalformedAssetSpan`).
+    /// The two call sites diverge on how this surfaces: `handle_send_message`
+    /// catches it and authors a whispered `MessageKind::System` notice instead
+    /// (see `build_roll_error_notice`) — a send is never rejected as a hard
+    /// error — while `handle_edit_message` returns it DIRECTLY as this
+    /// `SendMessageError` variant, since an edit's rejected-intent path is
+    /// already the caller-visible `ChatError` frame and has no notice-authoring
+    /// step to route through.
     Roll(rolls::RollError),
     /// A roll's outcome is immutable once sent: editing a message whose
     /// STORED `kind == Roll`, or editing content that itself parses to
@@ -757,8 +766,9 @@ impl std::fmt::Display for SendMessageError {
             SendMessageError::Data(_) => {
                 f.write_str("The message could not be delivered. Please try again.")
             }
-            // Never surfaced here (caught upstream, authored as a System notice); kept
-            // total + player-safe via RollError's own presentable Display.
+            // From `handle_send_message`, caught upstream and authored as a System notice
+            // instead; from `handle_edit_message`, returned directly as this `ChatError`'s
+            // message — either way player-safe via `RollError`'s own presentable Display.
             SendMessageError::Roll(e) => write!(f, "{e}"),
         }
     }
@@ -1144,6 +1154,7 @@ pub async fn handle_send_message(
             now,
             std::time::Instant::now(),
             &image_urls,
+            policy.previews_enabled(),
         )
         .await;
     }
@@ -1362,6 +1373,7 @@ pub async fn handle_edit_message(
             now,
             std::time::Instant::now(),
             &image_urls,
+            policy.previews_enabled(),
         )
         .await;
     }

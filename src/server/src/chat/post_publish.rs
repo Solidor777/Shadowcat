@@ -491,6 +491,14 @@ async fn resolve_inline_image(
     image_url: String,
     alt: String,
 ) -> Option<ResolvedEnrichment> {
+    // `MAX_IMAGE_ALT_CHARS` is a REFUSAL cap (see its own doc), never a
+    // truncation -- a Markdown/HTML `alt` this long has no ingest-time
+    // rejection point (unlike a `[[asset:...]]` span's `AltTooLong`), so this
+    // background job drops silently, same posture as every other failure
+    // this pipeline already degrades on (a blocked host, a fetch error).
+    if alt.chars().count() > super::MAX_IMAGE_ALT_CHARS {
+        return None;
+    }
     let FetchDeps {
         repo,
         client,

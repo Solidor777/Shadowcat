@@ -86,7 +86,18 @@ pub(crate) async fn compose_message(
             rolls::BodyChunk::Text(t) => {
                 let sanitized = sanitize::sanitize(t, deps.policy);
                 segments.extend(sanitized.segments);
-                image_urls.extend(sanitized.image_urls);
+                // Each `sanitize` call dedups WITHIN its own chunk only; a
+                // URL repeated across two different Text chunks (e.g. the
+                // same image before and after an inline roll) must not queue
+                // two identical enrichment jobs / `Segment::Image`s.
+                for src in sanitized.image_urls {
+                    if !image_urls
+                        .iter()
+                        .any(|s: &sanitize::ImageSource| s.url == src.url)
+                    {
+                        image_urls.push(src);
+                    }
+                }
             }
             rolls::BodyChunk::Inline(formula) => match mode {
                 ScanMode::NoExecute => return Err(ComposeError::Inline),

@@ -233,10 +233,14 @@ async fn cached_or_fetch(
 /// not yet fetched -- for the background image pipeline
 /// (`chat::post_publish::run_pending_enrichments`), never run on this
 /// request path. `image_urls` is queued independently of the href-preview
-/// scan above: it carries Markdown/HTML image sources `sanitize` already
-/// gated on `policy.images()`, so no further policy check applies here --
-/// only the same URL-validation and per-user rate-limit guard every other
-/// outbound fetch candidate in this function passes through.
+/// scan above, gated by the caller-supplied `scan_previews` (the world's
+/// `previews_enabled()`) rather than a shared toggle: it carries Markdown/HTML
+/// image sources `sanitize` already gated on `policy.images()`, so no further
+/// policy check applies here -- only the same URL-validation and per-user
+/// rate-limit guard every other outbound fetch candidate in this function
+/// passes through. A world may enable images while previews are off (or vice
+/// versa); `scan_previews` is what keeps the href/oEmbed scan from running
+/// in the former case.
 pub async fn enrich(
     segments: &mut Vec<Segment>,
     deps: EnrichDeps<'_>,
@@ -244,6 +248,7 @@ pub async fn enrich(
     now_ms: i64,
     now: Instant,
     image_urls: &[ImageSource],
+    scan_previews: bool,
 ) -> Vec<PendingEnrichment> {
     let EnrichDeps {
         repo,
@@ -255,26 +260,31 @@ pub async fn enrich(
     } = deps;
     let mut urls: Vec<String> = Vec::new();
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    'outer: for seg in segments.iter() {
-        if let Segment::Html { sanitized_html } = seg {
-            for url in extract_href_urls(sanitized_html) {
-                if urls.contains(&url)
-                    || pending.iter().any(
-                        |p| matches!(p, PendingEnrichment::OEmbed { post_url, .. } if post_url == &url),
-                    )
-                {
-                    continue;
-                }
-                if let Some(provider) = crate::chat::match_oembed_provider(&url) {
-                    pending.push(PendingEnrichment::OEmbed {
-                        post_url: url,
-                        provider,
-                    });
-                } else {
-                    urls.push(url);
-                }
-                if urls.len() + pending.len() >= MAX_PREVIEWS_PER_MESSAGE {
-                    break 'outer;
+    // Gated independently of `image_urls` below: a world can have hyperlink
+    // previews off while images are on (or vice versa), and the two concerns
+    // must not couple through one shared caller-side gate.
+    if scan_previews {
+        'outer: for seg in segments.iter() {
+            if let Segment::Html { sanitized_html } = seg {
+                for url in extract_href_urls(sanitized_html) {
+                    if urls.contains(&url)
+                        || pending.iter().any(
+                            |p| matches!(p, PendingEnrichment::OEmbed { post_url, .. } if post_url == &url),
+                        )
+                    {
+                        continue;
+                    }
+                    if let Some(provider) = crate::chat::match_oembed_provider(&url) {
+                        pending.push(PendingEnrichment::OEmbed {
+                            post_url: url,
+                            provider,
+                        });
+                    } else {
+                        urls.push(url);
+                    }
+                    if urls.len() + pending.len() >= MAX_PREVIEWS_PER_MESSAGE {
+                        break 'outer;
+                    }
                 }
             }
         }

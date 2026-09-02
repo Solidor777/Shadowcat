@@ -141,97 +141,12 @@ describe("MessageCard — fail-closed body parse", () => {
   });
 });
 
-describe("MessageCard — the {@html} boundary", () => {
-  it("renders a text segment as a literal DOM text node, never executed as HTML", () => {
-    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "<b>x</b>" }] }));
-    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
-    expect(container.querySelector(".seg-text b")).toBeNull();
-    expect(container.querySelector(".seg-text")?.textContent).toBe("<b>x</b>");
-  });
-
-  it("renders an html segment's sanitized_html as real innerHTML markup", () => {
-    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "html", sanitized_html: "<strong>bold</strong>" }] }));
-    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
-    const strong = container.querySelector(".seg-html strong");
-    expect(strong).not.toBeNull();
-    expect(strong?.textContent).toBe("bold");
-  });
-
-  it("filters out an unknown segment kind without crashing, rendering only known segments", () => {
-    // "preview_card" is a genuinely unknown kind (per `parseMessageEngine`'s and
-    // `isKnownSegment`'s fail-closed pattern, a malformed roll_embed/roll_button/text/html
-    // segment would fail the WHOLE message parse instead of being rescued here).
-    const doc = msgDoc("m1", baseSystem({ content: [{ kind: "text", text: "a" }, { kind: "preview_card", url: "x" }] }));
-    const { container } = render(MessageCard, { props: { message: doc, showChannel: false }, context: setAppContextForTest({ documents: storeWith(doc) }) });
-    expect(container.querySelectorAll(".seg-text, .seg-html").length).toBe(1);
-    expect(container.textContent).toContain("a");
-  });
-});
-
-describe("MessageCard — link preview", () => {
-  it("renders title/description/host as text, with no img", () => {
-    const doc = msgDoc("m1", baseSystem({
-      content: [
-        { kind: "text", text: "check this out" },
-        { kind: "link_preview", url: "https://example.com/article", title: "An Article", description: "A short summary." },
-      ],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    expect(container.querySelector(".link-preview-title")?.textContent).toBe("An Article");
-    expect(container.querySelector(".link-preview-description")?.textContent).toBe("A short summary.");
-    expect(container.querySelector(".link-preview-host")?.textContent).toBe("example.com");
-    expect(container.querySelector("img")).toBeNull();
-  });
-
-  it("the anchor has the exact href, rel, and target", () => {
-    const doc = msgDoc("m1", baseSystem({
-      content: [{ kind: "link_preview", url: "https://example.com/x", title: "T", description: "D" }],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    const a = container.querySelector("a.link-preview");
-    expect(a?.getAttribute("href")).toBe("https://example.com/x");
-    expect(a?.getAttribute("rel")).toBe("noopener noreferrer nofollow");
-    expect(a?.getAttribute("target")).toBe("_blank");
-  });
-
-  it("a malformed url falls back to the raw string as the host caption without throwing", () => {
-    const doc = msgDoc("m1", baseSystem({
-      content: [{ kind: "link_preview", url: "not a url", title: "T", description: "D" }],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    expect(container.querySelector("article")).not.toBeNull();
-    expect(container.querySelector(".link-preview-host")?.textContent).toBe("not a url");
-    // An unparseable URL yields no clickable href (safeHref returns undefined) —
-    // the card still renders, just non-clickable.
-    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
-  });
-
-  it("a non-http(s) scheme url renders no clickable href (defensive scheme guard)", () => {
-    // Defense-in-depth: the server only ever stores http/https preview URLs, but the
-    // card independently refuses to emit a live href for any other scheme, so a
-    // javascript:/data: URL from any future bypass path can never become a live anchor.
-    const doc = msgDoc("m1", baseSystem({
-      content: [{ kind: "link_preview", url: "javascript:alert(1)", title: "T", description: "D" }],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    expect(container.querySelector("article")).not.toBeNull();
-    expect(container.querySelector("a.link-preview")?.hasAttribute("href")).toBe(false);
-    expect(container.querySelector(".link-preview-title")?.textContent).toBe("T");
-  });
-
-  it("renders both a text segment and a link_preview segment in the same message", () => {
+// Per-segment-kind rendering (the {@html} boundary, link_preview, oembed, image,
+// doc_link, roll_button) is `SegmentList`'s own coverage (`SegmentList.test.ts`,
+// ui-kit) — `MessageCard` delegates ALL of it, so this file asserts only the
+// delegation itself, never re-covering a segment kind's own rendering rules.
+describe("MessageCard — delegates segment rendering to SegmentList", () => {
+  it("renders a text segment and a link_preview segment via the shared SegmentList", () => {
     const doc = msgDoc("m1", baseSystem({
       content: [
         { kind: "text", text: "look at this" },
@@ -246,43 +161,7 @@ describe("MessageCard — link preview", () => {
     expect(container.querySelector(".link-preview-title")?.textContent).toBe("Example");
   });
 
-  it("renders an <img> whose src starts with /api/assets/ when image_asset_id is present", () => {
-    const doc = msgDoc("m1", baseSystem({
-      content: [
-        {
-          kind: "link_preview",
-          url: "https://example.com/article",
-          title: "An Article",
-          description: "A short summary.",
-          image_asset_id: "00000000-0000-0000-0000-000000000001",
-        },
-      ],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    const img = container.querySelector("img.link-preview-thumb");
-    expect(img).not.toBeNull();
-    expect(img?.getAttribute("src")).toMatch(/^\/api\/assets\//);
-  });
-
-  it("renders no <img> when image_asset_id is absent", () => {
-    const doc = msgDoc("m1", baseSystem({
-      content: [
-        { kind: "link_preview", url: "https://example.com/article", title: "An Article", description: "A short summary." },
-      ],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    expect(container.querySelector("img")).toBeNull();
-  });
-});
-
-describe("MessageCard — oembed", () => {
-  it("renders the provider name, title, and the open-on link text", () => {
+  it("renders an oembed segment via the shared SegmentList", () => {
     const doc = msgDoc("m1", baseSystem({
       content: [
         {
@@ -290,7 +169,6 @@ describe("MessageCard — oembed", () => {
           url: "https://www.youtube.com/watch?v=abc",
           provider_name: "YouTube",
           title: "A Video",
-          author_name: "Someone",
         },
       ],
     }));
@@ -300,28 +178,6 @@ describe("MessageCard — oembed", () => {
     });
     expect(container.querySelector(".oembed-provider")?.textContent).toBe("YouTube");
     expect(container.querySelector(".oembed-title")?.textContent).toBe("A Video");
-    expect(container.querySelector(".oembed-author")?.textContent).toBe("Someone");
-    expect(container.querySelector(".oembed-open")?.textContent).toBe("chat.oembedOpenOn");
-  });
-
-  it("renders an <img> whose src starts with /api/assets/ when thumbnail_asset_id is present", () => {
-    const doc = msgDoc("m1", baseSystem({
-      content: [
-        {
-          kind: "oembed",
-          url: "https://www.youtube.com/watch?v=abc",
-          provider_name: "YouTube",
-          thumbnail_asset_id: "00000000-0000-0000-0000-000000000002",
-        },
-      ],
-    }));
-    const { container } = render(MessageCard, {
-      props: { message: doc, showChannel: false },
-      context: setAppContextForTest({ documents: storeWith(doc) }),
-    });
-    const img = container.querySelector("img.oembed-thumb");
-    expect(img).not.toBeNull();
-    expect(img?.getAttribute("src")).toMatch(/^\/api\/assets\//);
   });
 });
 
