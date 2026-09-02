@@ -27,7 +27,7 @@
   .layout {
     display: grid;
     height: 100vh;
-    grid-template-columns: 3rem 1fr;
+    grid-template-columns: calc(var(--input-height-coarse) + var(--space-1) * 2 + 1px) 1fr;
     grid-template-rows: 2.5rem 1fr 2rem;
     grid-template-areas:
       "topbar topbar"

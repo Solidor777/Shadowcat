@@ -410,8 +410,13 @@
     padding: var(--space-1);
   }
   .tool {
-    min-height: 44px; /* touch target (#10) */
-    min-width: 44px;
+    /* Touch target floor (WCAG 2.5.5 / iOS HIG); the rail's own column width
+     * (`Layout.svelte`'s `.layout` grid-template-columns) derives from this same
+     * token so a tool button never gets clipped by its own containing cell. */
+    min-height: var(--input-height-coarse);
+    min-width: var(--input-height-coarse);
+    max-width: 100%;
+    box-sizing: border-box;
     padding: var(--space-1) var(--space-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
@@ -436,9 +441,12 @@
   .controls select,
   .controls input {
     min-height: 32px;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
 
     @media (pointer: coarse) {
-      min-height: 44px;
+      min-height: var(--input-height-coarse);
     }
   }
   .trigger-row {
