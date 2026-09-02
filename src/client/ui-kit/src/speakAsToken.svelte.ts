@@ -9,6 +9,9 @@
  * — the composer resolves against the current document store and handles a miss itself.
  * Diverges in offering `consume()`, since the pending value here targets only the next message
  * sent and is read-once by design, not a persistent selection like `SceneSelection`'s.
+ * Two consumers apply the same next-send contract: the composer (on send) and the chat card's
+ * roll buttons (on click) — each takes the pending token over the sticky `SpeakAs` selection
+ * and consumes it.
  */
 export class SpeakAsToken {
   /** Backing store for {@link SpeakAsToken.tokenId}. */

@@ -72,8 +72,8 @@ fn rebuild(prev: &CombatSnapshot, docs: HashMap<Uuid, Document>) -> CombatSnapsh
 
 fn running_with_history() -> (CombatSnapshot, Uuid) {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0x1B, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0x1B, None, false, 0.0);
     let host = actor_with_effect(0x1A, None, 2, ExpiryPoint::TurnEnd, DurationUnit::Turns);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, b.doc.id], None, 0, false),
@@ -106,7 +106,7 @@ fn start_and_each_advance_append_a_record_and_move_the_cursor() {
 #[test]
 fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
     let ev = event_combatant(11, combat, Some(1), None);
     let host = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
     let snap = snapshot(
@@ -205,7 +205,7 @@ fn rewind_restores_spent_resources_expired_effects_and_deleted_events() {
 #[test]
 fn rewind_restore_off_refuses_a_boundary_whose_turn_was_deleted() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0x1A, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x1A, None, false, 0.0);
     let ev = event_combatant(11, combat, Some(1), None);
     let host = actor_with_effect(0x1A, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
     let snap = snapshot(

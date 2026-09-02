@@ -50,12 +50,25 @@ impl Resolve for SystemLeafResolver<'_> {
     }
 }
 
-/// An `UnknownRef` for `joined`.
-fn unknown(joined: &str) -> FormulaValue {
+/// An `UnknownRef` for `joined` — the one place this wording lives; the
+/// no-host resolver below reuses it.
+pub(crate) fn unknown(joined: &str) -> FormulaValue {
     Err(FormulaError::new(
         FormulaErrorKind::UnknownRef,
         format!("unknown reference '{joined}'"),
     ))
+}
+
+/// The resolver used when there is no host document: every reference is an
+/// `UnknownRef` (the shared `unknown` wording), so reference-free text still
+/// evaluates while a referencing formula or template fails with the path it
+/// needed.
+pub(crate) struct NoHostResolver;
+
+impl Resolve for NoHostResolver {
+    fn resolve(&self, path: &[String]) -> FormulaValue {
+        unknown(&path.join("."))
+    }
 }
 
 #[cfg(test)]

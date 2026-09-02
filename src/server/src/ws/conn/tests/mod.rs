@@ -252,6 +252,71 @@ async fn welcome_unions_enabled_modules_requirements_with_gm_authored_ones() {
 }
 
 #[tokio::test]
+async fn reseed_world_config_seeds_missing_singletons_idempotently() {
+    use crate::data::repository::Repository;
+    use crate::ws::room::RoomRegistry;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    reseed_world_config(&room, repo.as_ref(), dir.path())
+        .await
+        .unwrap();
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    let docs = repo
+        .query_documents_by_types(world.id, &types)
+        .await
+        .unwrap();
+    assert_eq!(docs.len(), types.len());
+    // Second pass: still Ok, creates nothing (same ids survive).
+    reseed_world_config(&room, repo.as_ref(), dir.path())
+        .await
+        .unwrap();
+    let docs2 = repo
+        .query_documents_by_types(world.id, &types)
+        .await
+        .unwrap();
+    let ids: std::collections::BTreeSet<uuid::Uuid> = docs.iter().map(|d| d.id).collect();
+    let ids2: std::collections::BTreeSet<uuid::Uuid> = docs2.iter().map(|d| d.id).collect();
+    assert_eq!(ids, ids2, "second pass creates nothing");
+}
+
+#[tokio::test]
+async fn reseed_world_config_without_a_gm_is_a_noop_ok() {
+    use crate::data::repository::Repository;
+    use crate::ws::room::RoomRegistry;
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    // A world with no GM member (legacy fixture shape): nothing to attribute
+    // a seed to, so the pass is a no-op Ok rather than an error.
+    let world = repo.create_world("W", 0).await.unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    reseed_world_config(&room, repo.as_ref(), dir.path())
+        .await
+        .unwrap();
+    let types: Vec<&str> = crate::data::world_seed::CONFIG_SINGLETON_DOC_TYPES.to_vec();
+    assert!(repo
+        .query_documents_by_types(world.id, &types)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn welcome_capability_requirements_unions_caps_for_the_same_path_prefix() {
     use crate::data::document::CapabilityRequirement;
     use std::collections::BTreeSet;
@@ -800,6 +865,258 @@ async fn pathfind_handler_gm_ok_nongm_dark_unreachable() {
     assert!(
         matches!(player_result, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
         "non-GM in dark scene should be unreachable; got {player_result:?}"
+    );
+}
+
+/// The route-preview clamp mirrors the movement gate through the SAME shared resolution
+/// (`budget_gate_for_token` + `resolve_budget`): an enforced Hard turn-owner's preview
+/// truncates at their budget with the wire flag set, a non-turn-owner's preview is refused
+/// with the one generic wording, and a GM's preview is never clamped.
+#[tokio::test]
+async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement() {
+    use crate::auth::role::ServerRole;
+    use crate::data::document::{DocRole, WorldRole};
+    use crate::data::membership::PermissionContext;
+    use crate::ws::room::RoomRegistry;
+    use serde_json::json;
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let author = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", author, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: author,
+        world_role: WorldRole::Gm,
+    };
+    let p = repo
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    repo.add_member(world.id, p, WorldRole::Player)
+        .await
+        .unwrap();
+    let player = PermissionContext {
+        user_id: p,
+        world_role: WorldRole::Player,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let publish = |doc: crate::data::document::Document| {
+        let room = room.clone();
+        let repo = repo.clone();
+        let gm_ctx = crate::data::membership::PermissionContext { ..gm_ctx };
+        async move {
+            room.publish(
+                repo.as_ref(),
+                &gm_ctx,
+                vec![crate::data::command::Operation::Create { doc }],
+                0,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap();
+        }
+    };
+
+    let (scene_id, token_id, combat_id, combatant_id, event_id, registry_id, ws_id) = (
+        Uuid::from_u128(0xB001),
+        Uuid::from_u128(0xB002),
+        Uuid::from_u128(0xB003),
+        Uuid::from_u128(0xB004),
+        Uuid::from_u128(0xB005),
+        Uuid::from_u128(0xB006),
+        Uuid::from_u128(0xB007),
+    );
+
+    // Unrestricted movement: the clamp under test is the budget, not the mask.
+    let mut ws = wdoc(world.id, ws_id, "world-settings");
+    ws.owner = Some(author);
+    ws.system = json!({
+        "scene": {
+            "losRestriction": false, "fog": false,
+            "lightingEnabled": false, "lightMode": "environmentLight",
+            "environment": { "color": "#ffffff", "intensity": 1.0 },
+            "observerVision": false,
+            "movementRestriction": "unrestricted",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    });
+    // The resolvers read the ENGINE band; the system copy is display-side.
+    ws.engine = Some(crate::ws::test_support::ws_engine(ws.system.clone()));
+    publish(ws).await;
+
+    let mut scene = wdoc(world.id, scene_id, "scene");
+    scene.owner = Some(author);
+    scene.system = json!({ "grid": { "kind": "square", "size": 100 } });
+    publish(scene).await;
+
+    let mut token = wdoc(world.id, token_id, "token");
+    token.parent_id = Some(scene_id);
+    token.owner = Some(p);
+    token.permissions.users.insert(p, DocRole::Owner);
+    token.engine = Some(token_engine(50.0, 50.0));
+    publish(token).await;
+
+    let mut registry = wdoc(world.id, registry_id, "resource-registry");
+    registry.owner = Some(author);
+    registry.engine = Some(json!({
+        "resources": { "movement": { "name": "Movement", "order": 0,
+            "binding": { "kind": "tracked", "max": 30.0,
+                "recover": { "turn_start": 0, "turn_end": 0, "round_start": 0, "round_end": 0 } } } }
+    }));
+    publish(registry).await;
+
+    let mut combat = wdoc(world.id, combat_id, "combat");
+    combat.owner = Some(author);
+    combat.engine = Some(json!({
+        "scene_id": scene_id,
+        "active": true,
+        "round": 1,
+        "turn": combatant_id,
+        "turn_control": "owner_may_end",
+        "order": [combatant_id, event_id],
+        "movement": { "resource": "movement", "interpretation": "spaces", "enforcement": "hard" },
+        "effect_cleanup": true, "rewind_restore": true, "forward_restore": false,
+        "effect_lifecycle": {}
+    }));
+    publish(combat).await;
+
+    let mut combatant = wdoc(world.id, combatant_id, "combatant");
+    combatant.parent_id = Some(combat_id);
+    combatant.owner = Some(p);
+    combatant.permissions.users.insert(p, DocRole::Owner);
+    combatant.engine = Some(json!({
+        "kind": { "type": "actor", "token_id": token_id, "actor_id": null },
+        "initiative": null, "tiebreak": 0.0,
+        "resources": { "movement": { "current": 2.0 } }
+    }));
+    publish(combatant).await;
+
+    let mut ev = wdoc(world.id, event_id, "combatant");
+    ev.parent_id = Some(combat_id);
+    ev.owner = Some(author);
+    ev.engine = Some(json!({
+        "kind": { "type": "event", "lifespan": null, "message": null },
+        "initiative": null, "tiebreak": 0.0, "resources": {}
+    }));
+    publish(ev).await;
+
+    let request = |rid: u128| PathfindRequest {
+        request_id: Uuid::from_u128(rid),
+        scene: scene_id,
+        start: (50.0, 50.0),
+        waypoints: vec![(450.0, 50.0)],
+        footprint_radius: 0.1,
+        token: Some(token_id),
+    };
+
+    // Probe the layers separately so a failure names its layer: the mask-free route itself
+    // (no token named ⇒ no clamp), then the gate resolution the clamp consumes.
+    let unclamped = handle_pathfind(
+        PathfindRequest {
+            token: None,
+            ..request(0xF100)
+        },
+        &player,
+        &room,
+        repo.as_ref(),
+    )
+    .await;
+    assert!(
+        matches!(unclamped, ServerMsg::PathResult { .. }),
+        "the unclamped route itself must succeed; got {unclamped:?}"
+    );
+    {
+        let wd = repo.world_cap_defaults(world.id).await.unwrap();
+        let s = room.scene().read().await;
+        let bg = crate::ws::room::budget_gate_for_token(&s, scene_id, token_id, &player, &wd)
+            .expect("the gate resolves for the combatant-bound token");
+        match crate::ws::room::resolve_budget(&bg, false) {
+            crate::ws::room::BudgetResolution::Resolved { budget_cells, .. } => {
+                assert_eq!(budget_cells, Some(2.0), "enforced Hard turn-owner ceiling");
+            }
+            crate::ws::room::BudgetResolution::NotYourTurn => {
+                panic!("gate says NotYourTurn for the turn owner")
+            }
+            crate::ws::room::BudgetResolution::Unresolvable => {
+                panic!("gate says Unresolvable with a Tracked Number binding")
+            }
+        }
+    }
+
+    // Turn owner under Hard: the preview truncates at the 2-space budget with the flag set.
+    let clamped = handle_pathfind(request(0xF101), &player, &room, repo.as_ref()).await;
+    match clamped {
+        ServerMsg::PathResult {
+            ref path,
+            cost,
+            truncated,
+            arrested,
+            ..
+        } => {
+            assert!(truncated, "the budget cut must be flagged");
+            assert!(!arrested);
+            assert!(
+                (cost - 2.0).abs() < 1e-9,
+                "a 4-cell course cuts at the 2-cell budget, got cost {cost}"
+            );
+            // Chebyshev ties admit several equal-cost shapes; the INVARIANT is
+            // the cut distance, not the tie-broken geometry.
+            let last = path.last().unwrap();
+            let cheb = ((last.0 - 50.0).abs() / 100.0).max((last.1 - 50.0).abs() / 100.0);
+            assert!(
+                (cheb - 2.0).abs() < 1e-9,
+                "the cut lands exactly two cells out, got {last:?}"
+            );
+        }
+        other => panic!("expected a clamped PathResult, got {other:?}"),
+    }
+
+    // A GM's preview of the same route is never clamped.
+    let gm_result = handle_pathfind(request(0xF102), &gm_ctx, &room, repo.as_ref()).await;
+    match gm_result {
+        ServerMsg::PathResult {
+            ref path,
+            truncated,
+            ..
+        } => {
+            assert!(!truncated, "a GM preview passes no budget");
+            assert_eq!(path.last(), Some(&(450.0, 50.0)));
+        }
+        other => panic!("expected an unclamped GM PathResult, got {other:?}"),
+    }
+
+    // Advance the turn to the event: the owner's preview is refused generically.
+    room.publish(
+        repo.as_ref(),
+        &gm_ctx,
+        vec![crate::data::command::Operation::Update {
+            doc_id: combat_id,
+            changes: vec![crate::data::command::FieldChange {
+                remove: false,
+                path: "/engine/turn".into(),
+                old: json!(combatant_id),
+                new: json!(event_id),
+            }],
+        }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let refused = handle_pathfind(request(0xF103), &player, &room, repo.as_ref()).await;
+    assert!(
+        matches!(refused, ServerMsg::PathError { ref message, .. } if message == "unreachable"),
+        "a non-turn-owner's Hard preview is refused with the one generic wording; got {refused:?}"
     );
 }
 

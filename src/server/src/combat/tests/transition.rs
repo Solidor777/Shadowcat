@@ -4,8 +4,8 @@ use crate::data::command::Operation;
 #[test]
 fn start_initializes_round_one_and_runs_turn_start_recovery() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0xB, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, b.doc.id], None, 0, false),
         vec![a, b],
@@ -32,7 +32,7 @@ fn start_initializes_round_one_and_runs_turn_start_recovery() {
 #[test]
 fn start_with_a_turn_resumes_without_resnapshot_or_recovery() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (5.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 5.0);
     let mut engine = combat_engine(vec![a.doc.id], Some(a.doc.id), 3, false);
     engine.movement.enforcement = Enforcement::Warn;
     let snap = CombatSnapshot {
@@ -57,7 +57,7 @@ fn start_with_a_turn_resumes_without_resnapshot_or_recovery() {
 #[test]
 fn start_pauses_the_other_active_combat_on_the_scene() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let other = doc(
         2,
         "combat",
@@ -92,8 +92,8 @@ fn start_pauses_the_other_active_combat_on_the_scene() {
 #[test]
 fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (10.0, 30.0));
-    let b = actor_combatant(11, combat, 0xB, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 10.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
         vec![a, b],
@@ -127,26 +127,178 @@ fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries
 }
 
 #[test]
-fn text_recoveries_apply_nothing_server_side() {
+fn text_recoveries_evaluate_server_side_over_the_formula_host() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    // 0x9A, not 0xA — a host id must never numerically collide with a
+    // combatant doc id (`actor_combatant(10, ..)` is id 10 == 0xA).
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    let mut host = doc(0x9A, "actor", None, actor_body());
+    host.system = serde_json::json!({ "speed": 12.0 });
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id], None, 0, false),
+        vec![a],
+        vec![host],
+    );
+    snap.registry = Some(registry_with_movement(Formula::Text("speed / 2".into())));
+    let docs = apply(&snap, &start(&snap, 0, WORLD, Uuid::nil()).unwrap());
+    let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    assert_eq!(
+        a.resources["movement"].current, 6.0,
+        "the turn_start recovery evaluated over the host's system band"
+    );
+}
+
+#[test]
+fn a_failing_recovery_formula_applies_nothing_and_posts_one_gm_only_notice() {
+    let combat = Uuid::from_u128(1);
+    // No host document at all: the text recovery's reference cannot resolve.
+    let a = actor_combatant(10, combat, 0xA, None, false, 5.0);
     let mut snap = snapshot(
         combat_engine(vec![a.doc.id], None, 0, false),
         vec![a],
         vec![],
     );
     snap.registry = Some(registry_with_movement(Formula::Text("speed".into())));
-    let docs = apply(&snap, &start(&snap, 0, WORLD, Uuid::nil()).unwrap());
+    let ops = start(&snap, 0, WORLD, Uuid::nil()).unwrap();
+    let notices: Vec<_> = ops
+        .iter()
+        .filter_map(|o| match o {
+            Operation::Create { doc } if doc.doc_type == "message" => Some(doc),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        notices.len(),
+        1,
+        "one deduped notice for the whole transition"
+    );
+    let text = serde_json::to_string(notices[0].engine.as_ref().unwrap()).unwrap();
+    assert!(
+        text.contains("movement turn_start"),
+        "the notice names the failing resource and boundary: {text}"
+    );
+    let docs = apply(&snap, &ops);
     let a: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
-    assert_eq!(a.resources["movement"].current, 0.0);
+    assert_eq!(
+        a.resources["movement"].current, 5.0,
+        "the failing recovery applied nothing"
+    );
+}
+
+#[test]
+fn an_absent_tracked_entry_reads_full_and_materializes_on_first_change() {
+    let combat = Uuid::from_u128(1);
+    let mut a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    a.engine.resources.clear();
+    a.doc.engine = Some(serde_json::to_value(&a.engine).unwrap());
+    let mut registry = registry_with_movement(Formula::Number(0.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    assert_eq!(
+        e.resources["movement"].current, 20.0,
+        "full (the evaluated max, 30) minus the turn_end recovery, materializing the absent entry"
+    );
+}
+
+#[test]
+fn an_event_with_no_stored_entry_recovers_uniformly_like_any_combatant() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 0.0);
+    // Survives its own resolution (no lifespan) and carries NO resource entry.
+    let ev = event_combatant(11, combat, None, None);
+    let mut registry = registry_with_movement(Formula::Number(0.0));
+    if let ResourceBinding::Tracked { recover, .. } =
+        &mut registry.resources.get_mut("movement").unwrap().binding
+    {
+        recover.turn_end = Formula::Number(-10.0);
+    }
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id, ev.doc.id], Some(a.doc.id), 1, true),
+        vec![a, ev],
+        vec![],
+    );
+    snap.registry = Some(registry);
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(11));
+    assert_eq!(
+        e.resources["movement"].current, 20.0,
+        "the drain materialized the event's absent entry from full (30) exactly as it would an actor's"
+    );
+}
+
+#[test]
+fn resource_intent_refuses_a_mirror_binding_and_clamps_against_an_evaluated_text_max() {
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0x9A, None, false, 5.0);
+    let mut host = doc(0x9A, "actor", None, actor_body());
+    host.system = serde_json::json!({ "hp": 27.0, "mv": 8.0 });
+    let mut snap = snapshot(
+        combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
+        vec![a],
+        vec![host],
+    );
+    let mut registry = registry_with_movement(Formula::Number(0.0));
+    if let Some(r) = registry.resources.get_mut("movement") {
+        r.binding = ResourceBinding::Tracked {
+            max: Formula::Text("mv".into()),
+            recover: Recovery::default(),
+        };
+    }
+    registry.resources.insert(
+        "hp".into(),
+        Resource {
+            name: "HP".into(),
+            order: 1,
+            binding: ResourceBinding::Mirror {
+                value: Formula::Text("hp".into()),
+            },
+        },
+    );
+    snap.registry = Some(registry);
+    assert!(
+        matches!(
+            resource(
+                &snap,
+                Uuid::from_u128(10),
+                "hp",
+                ResourceOp::Delta { amount: -3.0 }
+            ),
+            Err(CombatError::Forbidden)
+        ),
+        "a Mirror number lives on the actor; the clock refuses to write it"
+    );
+    let ops = resource(
+        &snap,
+        Uuid::from_u128(10),
+        "movement",
+        ResourceOp::Set { value: 50.0 },
+    )
+    .unwrap();
+    let docs = apply(&snap, &ops);
+    let e: CombatantEngine = engine_of(&docs, Uuid::from_u128(10));
+    assert_eq!(
+        e.resources["movement"].current, 8.0,
+        "clamped to the evaluated text max"
+    );
 }
 
 #[test]
 fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let h = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
-    let c = actor_combatant(12, combat, 0xC, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, h.doc.id, c.doc.id], Some(a.doc.id), 1, true),
         vec![a.clone(), h.clone(), c.clone()],
@@ -175,7 +327,7 @@ fn hidden_combatant_auto_resolves_under_owner_may_end_and_holds_under_gm_only() 
 #[test]
 fn event_posts_its_message_decrements_lifespan_and_is_deleted_at_zero() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let ev = event_combatant(11, combat, Some(1), Some("Lair action"));
     let snap = snapshot(
         combat_engine(vec![a.doc.id, ev.doc.id], Some(a.doc.id), 1, true),
@@ -219,8 +371,8 @@ fn all_events_order_terminates_by_the_loop_guard() {
 #[test]
 fn roll_writes_initiative_rebuilds_order_and_posts_whispers_for_hidden() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let h = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, h.doc.id], None, 0, false),
         vec![a, h],
@@ -260,7 +412,7 @@ fn roll_writes_initiative_rebuilds_order_and_posts_whispers_for_hidden() {
 #[test]
 fn resource_delta_and_set_clamp_to_zero_and_max() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (10.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 10.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id], Some(a.doc.id), 1, true),
         vec![a],
@@ -317,12 +469,12 @@ fn resource_delta_and_set_clamp_to_zero_and_max() {
 #[test]
 fn sort_orders_by_initiative_then_tiebreak_then_existing_index() {
     let combat = Uuid::from_u128(1);
-    let mut a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let mut a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     a.engine.initiative = Some(12.0);
-    let mut b = actor_combatant(11, combat, 0xB, None, false, (0.0, 30.0));
+    let mut b = actor_combatant(11, combat, 0xB, None, false, 0.0);
     b.engine.initiative = Some(12.0);
     b.engine.tiebreak = 1.0;
-    let mut c = actor_combatant(12, combat, 0xC, None, false, (0.0, 30.0));
+    let mut c = actor_combatant(12, combat, 0xC, None, false, 0.0);
     c.engine.initiative = None;
     assert_eq!(
         rebuild_order(
@@ -344,14 +496,14 @@ fn sort_orders_by_initiative_then_tiebreak_then_existing_index() {
 #[test]
 fn end_expires_cleanup_effects_then_deletes_the_combat() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let host = actor_with_effect(0xA, None, 3, ExpiryPoint::TurnEnd, DurationUnit::Rounds);
     let snap = snapshot(
         combat_engine(vec![a.doc.id], Some(a.doc.id), 2, true),
         vec![a],
         vec![host],
     );
-    let ops = end(&snap).unwrap();
+    let ops = end(&snap, WORLD, Uuid::nil(), 0).unwrap();
     assert!(ops.iter().any(|o| matches!(o, Operation::Update { doc_id, changes } if *doc_id == Uuid::from_u128(0xA) && changes[0].path == "/embedded/effect/0/engine/active" && changes[0].new == serde_json::json!(false))));
     assert!(matches!(ops.last(), Some(Operation::Delete { doc }) if doc.id == combat));
     let mut off = snap.engine.clone();
@@ -361,7 +513,7 @@ fn end_expires_cleanup_effects_then_deletes_the_combat() {
         combat: doc(1, "combat", None, serde_json::to_value(&off).unwrap()),
         ..snap
     };
-    let ops = end(&snap_off).unwrap();
+    let ops = end(&snap_off, WORLD, Uuid::nil(), 0).unwrap();
     assert!(
         !ops.iter().any(
             |o| matches!(o, Operation::Update { doc_id, .. } if *doc_id == Uuid::from_u128(0xA))
@@ -373,7 +525,7 @@ fn end_expires_cleanup_effects_then_deletes_the_combat() {
 #[test]
 fn pause_only_clears_active() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id], Some(a.doc.id), 2, true),
         vec![a],
@@ -392,8 +544,8 @@ fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
     // effect is collected once per combatant, but a round-wrap sweep must
     // still tick it exactly once, not once per combatant that shares it.
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0x10, None, false, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0x10, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0x10, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0x10, None, false, 0.0);
     let host = actor_with_effect(0x10, None, 2, ExpiryPoint::RoundStart, DurationUnit::Rounds);
     // b is the current turn; ending it wraps the round straight into round_wrap.
     let snap = snapshot(
@@ -425,17 +577,13 @@ fn round_wrap_ticks_a_shared_unanchored_effect_at_most_once() {
 #[test]
 fn a_surviving_event_runs_its_own_turn_end_boundary_not_just_turn_start() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
     // lifespan None: the event survives its own resolution, so there IS a
     // document left for the turn_end boundary to write.
     let mut ev = event_combatant(11, combat, None, None);
-    ev.engine.resources.insert(
-        "movement".to_string(),
-        CombatantResource {
-            current: 20.0,
-            max: 30.0,
-        },
-    );
+    ev.engine
+        .resources
+        .insert("movement".to_string(), CombatantResource { current: 20.0 });
     ev.doc.engine = Some(serde_json::to_value(&ev.engine).unwrap());
     let mut registry = registry_with_movement(Formula::Number(30.0));
     if let ResourceBinding::Tracked { recover, .. } =
@@ -463,9 +611,9 @@ fn a_surviving_event_runs_its_own_turn_end_boundary_not_just_turn_start() {
 #[test]
 fn an_auto_resolved_hidden_entry_gets_its_own_history_record() {
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let h = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
-    let c = actor_combatant(12, combat, 0xC, None, false, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
     let snap = snapshot(
         combat_engine(vec![a.doc.id, h.doc.id, c.doc.id], Some(a.doc.id), 1, true),
         vec![a, h, c],
@@ -504,8 +652,8 @@ fn guard_exhaustion_still_fully_resolves_the_final_auto_resolving_entry() {
     // ALSO be fully resolved (its own turn_start AND turn_end both run),
     // never just parked mid-turn.
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, true, (0.0, 30.0));
-    let b = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, true, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let mut registry = registry_with_movement(Formula::Number(30.0));
     if let ResourceBinding::Tracked { recover, .. } =
         &mut registry.resources.get_mut("movement").unwrap().binding
@@ -547,8 +695,8 @@ fn auto_resolved_hidden_turn_coalesces_host_updates_into_one_operation() {
     // TurnStart, one at TurnEnd — so h's auto-resolved turn (its `enter_turn`
     // and `run_turn_end` back to back) writes the SAME host document twice.
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let h = actor_combatant(11, combat, 0x50, None, true, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let h = actor_combatant(11, combat, 0x50, None, true, 0.0);
     let mut host = actor_with_effect(0x50, None, 1, ExpiryPoint::TurnStart, DurationUnit::Turns);
     let turn_end_effect =
         actor_with_effect(0x51, None, 1, ExpiryPoint::TurnEnd, DurationUnit::Turns);
@@ -592,8 +740,8 @@ fn auto_resolved_hidden_turn_coalesces_combatant_updates_into_one_operation() {
     // combatant document. `Working::coalesce_updates` covers combatant
     // documents identically to host documents, not just hosts.
     let combat = Uuid::from_u128(1);
-    let a = actor_combatant(10, combat, 0xA, None, false, (0.0, 30.0));
-    let h = actor_combatant(11, combat, 0xB, None, true, (0.0, 30.0));
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let h = actor_combatant(11, combat, 0xB, None, true, 0.0);
     let mut registry = registry_with_movement(Formula::Number(30.0));
     if let ResourceBinding::Tracked { recover, .. } =
         &mut registry.resources.get_mut("movement").unwrap().binding

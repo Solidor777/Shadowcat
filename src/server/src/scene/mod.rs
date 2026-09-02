@@ -360,6 +360,9 @@ pub struct SceneEcs {
     /// The `system-defaults` singleton, hydrated for the settings chain (engine literal <
     /// system-defaults < world-settings < scene); not a scene entity.
     system_defaults: Option<Document>,
+    /// The `resource-registry` singleton, or `None` (the world defines no
+    /// turn resources; the movement-budget gate then resolves no binding).
+    resource_registry: Option<Document>,
     /// The `light-gradation` singleton config-doc, or `None` (built-in bands).
     gradation: Option<Document>,
     /// The `vision-modes` singleton config-doc, or `None` (seed modes).
@@ -564,6 +567,23 @@ fn engine_tier_visible(doc: &Document, viewer: Option<Uuid>) -> bool {
     engine_tier_visible_to(doc, &access)
 }
 
+/// The WORLD-DEFAULT form of `engine_geometry_visible_to`: would a world member carrying no
+/// per-user grant and no ownership receive this document's `/engine` band? Same whole-world
+/// question class as `combat::transition::is_hidden` — never a per-caller gate, so the two
+/// egress gates are still evaluated through the ONE shared predicate pair rather than restated
+/// here. A per-user grant that individually admits someone is invisible to this predicate, which
+/// therefore only ever under-discloses (a region notice forced GM-only though one granted member
+/// could have read it) — the safe direction, mirroring `is_hidden`'s documented residual.
+fn engine_geometry_visible_to_world(doc: &Document) -> bool {
+    let access = crate::data::permission::resolve_access(
+        Uuid::nil(),
+        crate::data::document::WorldRole::Player,
+        doc,
+        crate::data::permission::effective_owner(doc, None),
+    );
+    engine_geometry_visible_to(doc, &access)
+}
+
 /// Exact, order-independent key for a routing wall set — the third component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
@@ -612,6 +632,7 @@ impl SceneEcs {
             committed_seq: 0,
             world_settings: None,
             system_defaults: None,
+            resource_registry: None,
             gradation: None,
             vision_modes: None,
             actors: HashMap::new(),
@@ -689,11 +710,13 @@ impl SceneEcs {
         gradation: Option<Document>,
         vision_modes: Option<Document>,
         system_defaults: Option<Document>,
+        resource_registry: Option<Document>,
     ) {
         self.world_settings = world_settings;
         self.gradation = gradation;
         self.vision_modes = vision_modes;
         self.system_defaults = system_defaults;
+        self.resource_registry = resource_registry;
     }
 
     /// Seed the actor table (room-hydration path). Keyed by actor doc id.
@@ -731,6 +754,12 @@ impl SceneEcs {
     /// The `system-defaults` singleton, or `None` (resolvers fall through to the engine literal).
     pub fn system_defaults_doc(&self) -> Option<&Document> {
         self.system_defaults.as_ref()
+    }
+    /// The `resource-registry` singleton's parsed engine, or `None` (absent,
+    /// or a malformed body — fail closed to "no binding" rather than guessing).
+    pub fn resource_registry_engine(&self) -> Option<eng::ResourceRegistryEngine> {
+        let doc = self.resource_registry.as_ref()?;
+        self.engine_as_cached::<eng::ResourceRegistryEngine>(doc.id, doc)
     }
     /// The `vision-modes` singleton, or `None` (seed modes apply).
     pub fn vision_modes_doc(&self) -> Option<&Document> {
@@ -814,6 +843,7 @@ impl SceneEcs {
                 Self::apply_config_update(&mut self.system_defaults, *doc_id, changes);
                 Self::apply_config_update(&mut self.gradation, *doc_id, changes);
                 Self::apply_config_update(&mut self.vision_modes, *doc_id, changes);
+                Self::apply_config_update(&mut self.resource_registry, *doc_id, changes);
                 if let Some(a) = self.actors.get_mut(doc_id) {
                     // Same store-equal mutation rule: an actor's `/owner` is an authz
                     // input for every token linked to it, so a forked `remove` here
@@ -874,6 +904,11 @@ impl SceneEcs {
                     "vision-modes" if self.vision_modes.as_ref().map(|d| d.id) == Some(doc.id) => {
                         self.vision_modes = None;
                     }
+                    "resource-registry"
+                        if self.resource_registry.as_ref().map(|d| d.id) == Some(doc.id) =>
+                    {
+                        self.resource_registry = None;
+                    }
                     "actor" => {
                         self.actors.remove(&doc.id);
                     }
@@ -889,6 +924,7 @@ impl SceneEcs {
                     "system-defaults" => self.system_defaults = Some(doc.clone()),
                     "light-gradation" => self.gradation = Some(doc.clone()),
                     "vision-modes" => self.vision_modes = Some(doc.clone()),
+                    "resource-registry" => self.resource_registry = Some(doc.clone()),
                     "actor" => {
                         self.actors.insert(doc.id, doc.clone());
                     }
@@ -910,14 +946,11 @@ impl SceneEcs {
     }
 
     /// The validated world-settings engine body, or `None` when the doc is absent or its stored
-    /// `engine` fails to deserialize into `WorldSettingsEngine`. Ingress validation
-    /// (`data::engine::validate_engine`) already requires every persisted "world-settings" doc's
-    /// `engine` to be a complete, `deny_unknown_fields`-checked `WorldSettingsEngine` — this
-    /// enforces, at write time, the same `scene`+`pathfinding`+`animation`-all-present structural
-    /// completeness the TS mirror (`ws?.scene && ws?.pathfinding && ws?.animation`) still checks
-    /// at read time. A doc that never passed that ingress gate (e.g. a
-    /// test fixture built directly) falls back to built-in
-    /// defaults. Used by every resolver that reads world-settings so partial/
+    /// `engine` fails to deserialize into `WorldSettingsEngine`. Every leaf is optional
+    /// (`Option`-lifted overlay, the same shape `validated_system_defaults_engine` decodes), so
+    /// a partial doc still decodes and contributes only the leaves it declares; `None` means "no
+    /// doc" or a malformed body, and every reader falls through to the system layer, then the
+    /// engine literals. Used by every resolver that reads world-settings so partial/
     /// malformed-doc handling stays consistent across all of them.
     fn validated_world_settings_engine(&self) -> Option<eng::WorldSettingsEngine> {
         let doc = self.world_settings.as_ref()?;
@@ -937,57 +970,56 @@ impl SceneEcs {
     /// Resolve a scene's effective lighting/vision settings: engine literal < system-defaults <
     /// world < scene. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
-        // World layer: `validated_world_settings_engine` already enforces the
-        // scene+pathfinding+animation-all-present structural guard at write time (ingress),
-        // so a `None` here means the same "fall back to built-ins" case this guard covers.
+        // World and system layers share one overlay shape: each contributes
+        // only the leaves it declares.
         let ws = self.validated_world_settings_engine();
-        let ws_scene = ws.as_ref().map(|w| &w.scene);
-        // System-defaults layer: every leaf is optional (Option-lifted overlay), so a partial
-        // doc contributes only the leaves it declares.
+        let ws_scene = ws.as_ref().and_then(|w| w.scene.as_ref());
         let sd = self.validated_system_defaults_engine();
         let sd_scene = sd.as_ref().and_then(|s| s.scene.as_ref());
-        // Engine literal < system-defaults < world (mirror DEFAULT_WORLD_SETTINGS.scene /
-        // WorldSettingsEngine::default for the innermost fallback).
+        // Engine literal < system-defaults < world. The innermost fallback is
+        // the ONE shared source `WorldSceneDefaults::default` (the client's
+        // `DEFAULT_WORLD_SETTINGS` mirrors it) — never a per-field literal.
+        let d = eng::WorldSceneDefaults::default();
         let d_los = ws_scene
-            .map(|s| s.los_restriction)
+            .and_then(|s| s.los_restriction)
             .or(sd_scene.and_then(|s| s.los_restriction))
-            .unwrap_or(true);
+            .unwrap_or(d.los_restriction);
         let d_fog = ws_scene
-            .map(|s| s.fog)
+            .and_then(|s| s.fog)
             .or(sd_scene.and_then(|s| s.fog))
-            .unwrap_or(true);
+            .unwrap_or(d.fog);
         let d_obs = ws_scene
-            .map(|s| s.observer_vision)
+            .and_then(|s| s.observer_vision)
             .or(sd_scene.and_then(|s| s.observer_vision))
-            .unwrap_or(false);
+            .unwrap_or(d.observer_vision);
         let d_lit = ws_scene
-            .map(|s| s.lighting_enabled)
+            .and_then(|s| s.lighting_enabled)
             .or(sd_scene.and_then(|s| s.lighting_enabled))
-            .unwrap_or(true);
+            .unwrap_or(d.lighting_enabled);
         let d_mode = ws_scene
-            .map(|s| s.light_mode)
+            .and_then(|s| s.light_mode)
             .or(sd_scene.and_then(|s| s.light_mode))
-            .unwrap_or(eng::LightMode::EnvironmentLight);
+            .unwrap_or(d.light_mode);
         let d_env_color = ws_scene
-            .map(|s| s.environment.color.clone())
+            .and_then(|s| s.environment.as_ref().map(|e| e.color.clone()))
             .or_else(|| sd_scene.and_then(|s| s.environment.as_ref().map(|e| e.color.clone())))
-            .unwrap_or_else(|| "#0a0e1a".to_string());
+            .unwrap_or_else(|| d.environment.color.clone());
         let d_env_int = ws_scene
-            .map(|s| s.environment.intensity)
+            .and_then(|s| s.environment.as_ref().map(|e| e.intensity))
             .or_else(|| sd_scene.and_then(|s| s.environment.as_ref().map(|e| e.intensity)))
-            .unwrap_or(0.0);
+            .unwrap_or(d.environment.intensity);
         let d_move = ws_scene
-            .map(|s| s.movement_restriction)
+            .and_then(|s| s.movement_restriction)
             .or(sd_scene.and_then(|s| s.movement_restriction))
-            .unwrap_or(eng::MovementRestriction::Visible);
+            .unwrap_or(d.movement_restriction);
         let d_model = ws_scene
-            .map(|s| s.movement_model)
+            .and_then(|s| s.movement_model)
             .or(sd_scene.and_then(|s| s.movement_model))
-            .unwrap_or(eng::MovementModel::GridStepped);
+            .unwrap_or(d.movement_model);
         let d_lenient = ws_scene
-            .map(|s| s.partial_cell_leniency)
+            .and_then(|s| s.partial_cell_leniency)
             .or(sd_scene.and_then(|s| s.partial_cell_leniency))
-            .unwrap_or(true);
+            .unwrap_or(d.partial_cell_leniency);
 
         // Scene override layer (per-scene `vision`/`lighting`; absent/`null` ⇒ inherit — an
         // `Option<T>` field with `#[serde(default)]` deserializes a missing OR explicit-`null`
@@ -1060,19 +1092,18 @@ impl SceneEcs {
     }
 
     /// The world's pathfinding diagonal-cost rule. World-scoped (no per-scene override; the scene doc
-    /// overrides only vision/lighting/grid). Reads `world-settings.pathfinding.diagonalRule`;
-    /// when absent or structurally incomplete, falls through to `system-defaults.pathfinding
-    /// .diagonalRule`, and from there to `Chebyshev` — consistent with `resolve_scene`'s
-    /// engine literal < system-defaults < world < scene handling of the same partial-doc case.
+    /// overrides only vision/lighting/grid). Chain: `world-settings.pathfinding.diagonalRule`
+    /// (an authored overlay leaf) < `system-defaults.pathfinding.diagonalRule` < the
+    /// `Pathfinding::default` engine literal — consistent with `resolve_scene`'s per-leaf fold.
     pub(crate) fn resolved_diagonal_rule(&self) -> pathfinding::DiagonalRule {
         self.validated_world_settings_engine()
-            .map(|w| conv_diagonal_rule(w.pathfinding.diagonal_rule))
+            .and_then(|w| w.pathfinding.and_then(|p| p.diagonal_rule))
             .or_else(|| {
                 self.validated_system_defaults_engine()
                     .and_then(|s| s.pathfinding.and_then(|p| p.diagonal_rule))
-                    .map(conv_diagonal_rule)
             })
-            .unwrap_or(pathfinding::DiagonalRule::Chebyshev)
+            .map(conv_diagonal_rule)
+            .unwrap_or_else(|| conv_diagonal_rule(eng::Pathfinding::default().diagonal_rule))
     }
 
     /// Resolves `scene`'s `GridShape` implementation from its own `engine.grid.kind`. `"hex"`
@@ -1208,19 +1239,19 @@ impl SceneEcs {
     }
 
     /// Resolved animation token speed in cells/second. World-scoped (no per-scene override;
-    /// mirrors `resolved_diagonal_rule`'s structural guard). Reads
-    /// `world-settings.animation.speedCellsPerSec`; when absent or structurally incomplete,
-    /// falls through to `system-defaults.animation.speedCellsPerSec`, and from there to 6.
-    /// The floor of 0.001 prevents a zero/negative config from causing a division-by-zero in
-    /// the duration formula.
+    /// mirrors `resolved_diagonal_rule`'s fold). Chain:
+    /// `world-settings.animation.speedCellsPerSec` (an authored overlay leaf) <
+    /// `system-defaults.animation.speedCellsPerSec` < the `AnimationSettings::default` engine
+    /// literal. The floor of 0.001 prevents a zero/negative config from causing a
+    /// division-by-zero in the duration formula.
     pub(crate) fn resolved_animation_speed(&self) -> f64 {
         self.validated_world_settings_engine()
-            .map(|w| w.animation.speed_cells_per_sec)
+            .and_then(|w| w.animation.and_then(|a| a.speed_cells_per_sec))
             .or_else(|| {
                 self.validated_system_defaults_engine()
                     .and_then(|s| s.animation.and_then(|a| a.speed_cells_per_sec))
             })
-            .unwrap_or(6.0)
+            .unwrap_or(eng::AnimationSettings::default().speed_cells_per_sec)
             .max(0.001)
     }
 
@@ -1633,6 +1664,10 @@ impl SceneEcs {
     /// no mask; `visible` ⇒ `visible_cells`; `revealed` ⇒ `visible_cells ∪ requester.explored`.
     /// An empty non-GM mask ⇒ `find` returns Unreachable (fail-closed —
     /// the dark-scene freeze that mirrors the movement gate, by design).
+    /// `budget_cells` is the movement-budget preview clamp: `Some` cuts the
+    /// route at the last step whose cumulative weighted cost fits, setting
+    /// `PathOutcome.truncated` (both engines; the caller resolves it through
+    /// the same gate the executor enforces).
     ///
     /// Coupling: `visible_cells` is the ONE canonical mask shared between this
     /// method, the movement gate (`move_exec::execute_move`, reached via
@@ -1645,6 +1680,7 @@ impl SceneEcs {
         start: (f64, f64),
         waypoints: &[(f64, f64)],
         footprint_radius: f64,
+        budget_cells: Option<f64>,
     ) -> Result<pathfinding::PathOutcome, pathfinding::PathFail> {
         let RouteRequester {
             user,
@@ -1714,6 +1750,7 @@ impl SceneEcs {
                         mask: mask.as_ref(),
                         regions: Some(&regions),
                         shape: &*grid_shape,
+                        budget_cells,
                     },
                 )
             }
@@ -1749,6 +1786,10 @@ impl SceneEcs {
                             mask: mask.as_ref(),
                             regions: Some(&regions),
                             shape: &*euclid_shape,
+                            // The budget cuts the PRE-smooth route: `los_smooth` only ever
+                            // shortens a chord, so the smoothed result stays within budget —
+                            // an occasional under-reach, never an over-show.
+                            budget_cells,
                         },
                     )?;
                     // `find` already reports cost in CELLS — the wire contract `PathResult`'s
@@ -1804,6 +1845,17 @@ impl SceneEcs {
                     }
                     let outcome =
                         navmesh::truncate_at_arrest(clipped, &regions, cell, &*grid_shape);
+                    // Budget cut in scene units (the budget is authored in cells; `wu`
+                    // converts below): valid on this walls-only path because the field has
+                    // no terrain weights here, so Euclidean length IS the weighted cost —
+                    // the same assumption `truncate_at_arrest`'s own recompute makes.
+                    let wu_for_budget = grid_shape.world_units_per_cell();
+                    let outcome = match budget_cells {
+                        Some(b) if wu_for_budget.is_finite() && wu_for_budget > 0.0 => {
+                            navmesh::truncate_at_budget(outcome, b, wu_for_budget)
+                        }
+                        _ => outcome,
+                    };
                     // Convert once, at the boundary: `navmesh_find`/`clip_to_visible_mask`/
                     // `truncate_at_arrest` all compute Euclidean lengths in SCENE units, but
                     // `PathResult`'s wire contract (`ws::protocol`) promises cells, matching the
@@ -1876,6 +1928,52 @@ impl SceneEcs {
             builder.add(&shape, behavior, cost, cell, &*grid);
         }
         Some(builder.build())
+    }
+
+    /// The trigger-bearing region identity table for `scene`: one `regions::TriggerRegion` row
+    /// per ENABLED region carrying at least one trigger, each row's cells rasterized through the
+    /// SAME `regions::rasterize` the composed `region_field` above uses — one geometry
+    /// derivation feeds both consumers, so this table and the authoritative field cannot
+    /// disagree about a region's coverage (the parity battery pins that agreement). There is no
+    /// per-requester form: triggers fire on the server's authoritative view, springing secret
+    /// regions exactly as `move_exec` does; secrecy is enforced on the effect side (a
+    /// not-visible-to-all region's notices are forced GM-only), never by filtering this table.
+    /// Recomputed on demand from the same ECS entities `region_field` reads, so a region-doc
+    /// mutation applied through `apply_op` is reflected on the next call.
+    ///
+    /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
+    /// Rows are sorted by region id so downstream effect application order is deterministic
+    /// (entity-query order is unspecified).
+    pub(crate) fn trigger_regions(&self, scene: Uuid) -> Option<Vec<regions::TriggerRegion>> {
+        let cell = self.scene_grid_sizes().get(&scene).copied()?;
+        let grid = self.resolve_grid_shape(scene, cell);
+        let mut out = Vec::new();
+        for e in self.world.query::<&SceneEntity>().iter() {
+            let doc = &e.doc;
+            if doc.doc_type != "region" || doc.parent_id != Some(scene) {
+                continue;
+            }
+            let Some(region_eng) = self.engine_as_cached::<eng::RegionEngine>(doc.id, doc) else {
+                continue;
+            };
+            if !region_eng.enabled || region_eng.triggers.is_empty() {
+                continue;
+            }
+            let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
+                continue;
+            };
+            let Some(cells) = regions::rasterize(&shape, cell, &*grid) else {
+                continue;
+            };
+            out.push(regions::TriggerRegion {
+                region_id: doc.id,
+                visible_to_all: engine_geometry_visible_to_world(doc),
+                triggers: region_eng.triggers,
+                cells: cells.into_iter().collect(),
+            });
+        }
+        out.sort_by_key(|r| r.region_id);
+        Some(out)
     }
 
     /// The enabled `light` docs parented to `scene`, parsed into `lighting::Light`. Disabled lights
@@ -2213,6 +2311,32 @@ impl SceneEcs {
             }
         }
         by_actor
+    }
+
+    /// The combatant's formula-host DOCUMENT (cloned): resolved through
+    /// `combat::eval::formula_host` over a two-entry map built from the ECS's
+    /// own cached copies of the token (a scene entity) and its linked actor
+    /// (`actors` table) — so the movement gate and the combat transitions
+    /// share ONE host-precedence rule rather than two documented-to-agree
+    /// copies.
+    pub fn combatant_formula_host(&self, kind: &eng::CombatantKind) -> Option<Document> {
+        let eng::CombatantKind::Actor { token_id, actor_id } = kind else {
+            return None;
+        };
+        let mut hosts: HashMap<Uuid, Document> = HashMap::new();
+        if let Some(tid) = token_id {
+            if let Some(&e) = self.index.get(tid) {
+                if let Ok(c) = self.world.get::<&SceneEntity>(e) {
+                    hosts.insert(*tid, c.doc.clone());
+                }
+            }
+        }
+        if let Some(aid) = actor_id {
+            if let Some(a) = self.actors.get(aid) {
+                hosts.insert(*aid, a.clone());
+            }
+        }
+        crate::combat::eval::formula_host(&hosts, kind).cloned()
     }
 
     /// The scene's real-world distance-per-cell scale (`SceneEngine.grid.distance.per_cell`), or

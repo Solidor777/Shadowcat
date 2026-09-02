@@ -20,12 +20,13 @@ pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
     CombatantEngine, CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine,
     EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, Enforcement, ExpiryPoint, Formula,
-    Interpretation, MovementRules, Recovery, ResolvedCombatRules, ResolvedLifecycle, Resource,
-    ResourceBinding, ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
+    Interpretation, MovementRules, Recovery, ResolvedCombatRules, Resource, ResourceBinding,
+    ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
-    DrawingEngine, DrawingShape, Fill, RegionEngine, RegionShape, Seg, Stroke, TemplateEngine,
-    TemplateShape, WallEngine,
+    DrawingEngine, DrawingShape, Fill, NoticeAudience, RegionEngine, RegionShape, RegionTrigger,
+    Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallEngine,
+    MAX_TRIGGER_ID_CHARS,
 };
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
@@ -42,8 +43,8 @@ pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
 };
 pub use token::{
-    ActorEngine, AnimatedSource, RenderVisual, Size, TokenEngine, TokenOverrides, TokenVisual,
-    VisionAssignment,
+    ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
+    Size, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
 };
 
 use crate::data::DataError;
@@ -54,6 +55,16 @@ pub const WORLD_SETTINGS_DOC_TYPE: &str = "world-settings";
 pub const FACTION_REGISTRY_DOC_TYPE: &str = "faction-registry";
 /// Doc_type for the world's singleton condition registry config document.
 pub const CONDITION_REGISTRY_DOC_TYPE: &str = "condition-registry";
+/// Doc_type for the world's singleton channel registry config document.
+pub const CHANNEL_REGISTRY_DOC_TYPE: &str = "channel-registry";
+/// Maximum length of a chat channel id, in characters — the one declaration,
+/// shared by the message ingest check (`chat::handle_send_message`) and
+/// `ChannelRegistryEngine::validate` (a longer key could never be posted to).
+pub const MAX_CHANNEL_CHARS: usize = 128;
+/// Doc_type for the world's singleton vision-modes config document.
+pub const VISION_MODES_DOC_TYPE: &str = "vision-modes";
+/// Doc_type for the world's singleton light-gradation config document.
+pub const LIGHT_GRADATION_DOC_TYPE: &str = "light-gradation";
 /// Doc_type for a combat: a world document bound to one scene.
 pub const COMBAT_DOC_TYPE: &str = "combat";
 /// Doc_type for a combatant: always a child (`parent_id`) of a combat.
@@ -212,11 +223,25 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
             Ok(serde_json::to_value(typed)?)
         }
         "wall" => round_trip::<WallEngine>(v, "wall"),
-        "region" => round_trip::<RegionEngine>(v, "region"),
+        "region" => {
+            let typed: RegionEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("region: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("region: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "light" => round_trip::<LightEngine>(v, "light"),
         "drawing" => round_trip::<DrawingEngine>(v, "drawing"),
         "template" => round_trip::<TemplateEngine>(v, "template"),
-        "actor" => round_trip::<ActorEngine>(v, "actor"),
+        "actor" => {
+            let typed: ActorEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("actor: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("actor: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "message" => round_trip::<crate::chat::MessageEngine>(v, "message"),
         "world-settings" => {
             let typed: WorldSettingsEngine = serde_json::from_value(v.clone())
@@ -230,9 +255,23 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
         "dice-settings" => round_trip::<DiceSettingsEngine>(v, "dice-settings"),
-        "channel-registry" => round_trip::<ChannelRegistryEngine>(v, "channel-registry"),
+        "channel-registry" => {
+            let typed: ChannelRegistryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("channel-registry: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("channel-registry: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "faction-registry" => round_trip::<FactionRegistryEngine>(v, "faction-registry"),
-        "condition-registry" => round_trip::<ConditionRegistryEngine>(v, "condition-registry"),
+        "condition-registry" => {
+            let typed: ConditionRegistryEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("condition-registry: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("condition-registry: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "combat" => {
             let typed: CombatEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("combat: {e}")))?;

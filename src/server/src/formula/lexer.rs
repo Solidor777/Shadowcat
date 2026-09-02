@@ -5,6 +5,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use super::chars::{is_digit, is_word_char, is_word_start};
 use super::types::{FormulaError, FormulaErrorKind, MAX_FORMULA_LENGTH};
 
 /// A lexed token. `pos` is the UTF-16 offset of the token's first character.
@@ -32,21 +33,6 @@ pub enum Tok {
         /// UTF-16 offset of the character.
         pos: usize,
     },
-}
-
-/// True for an ASCII decimal digit.
-fn is_digit(c: char) -> bool {
-    c.is_ascii_digit()
-}
-
-/// True for a character that may start an identifier: ASCII letter or `_`.
-fn is_word_start(c: char) -> bool {
-    c.is_ascii_alphabetic() || c == '_'
-}
-
-/// True for a character that may continue an identifier: letter, digit or `_`.
-fn is_word_char(c: char) -> bool {
-    is_word_start(c) || is_digit(c)
 }
 
 /// True for one of the nine operator/punctuator characters.

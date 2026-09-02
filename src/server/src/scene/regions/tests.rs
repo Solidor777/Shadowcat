@@ -353,3 +353,71 @@ fn parse_region_shape_malformed_is_none() {
         "unknown kind"
     );
 }
+
+// -----------------------------------------------------------------------
+// Trigger identity rows + the firing plan
+// -----------------------------------------------------------------------
+
+/// A `TriggerRegion` fixture covering `cells` with `triggers`, id derived from `id`.
+fn trigger_region(id: u128, cells: &[(i32, i32)], triggers: Vec<RegionTrigger>) -> TriggerRegion {
+    TriggerRegion {
+        region_id: Uuid::from_u128(id),
+        visible_to_all: true,
+        triggers,
+        cells: cells.iter().copied().collect(),
+    }
+}
+
+/// A single-trigger fixture: `on` + a `condition_add` effect (the effect payload is
+/// irrelevant to the firing plan, which keys on `on` and coverage only).
+fn on(on: TriggerEvent) -> RegionTrigger {
+    RegionTrigger {
+        on,
+        effect: crate::data::engine::TriggerEffect::ConditionAdd {
+            condition: "x".to_string(),
+        },
+    }
+}
+
+#[test]
+fn fired_triggers_enter_matches_only_covered_entered_cells() {
+    let regions = vec![
+        trigger_region(1, &[(1, 0), (2, 0)], vec![on(TriggerEvent::Enter)]),
+        trigger_region(2, &[(5, 5)], vec![on(TriggerEvent::Enter)]),
+    ];
+    let fired = fired_triggers(&regions, &[(0, 0), (1, 0)], None);
+    assert_eq!(fired.len(), 1, "only the covered region's trigger fires");
+    assert_eq!(fired[0].0.region_id, Uuid::from_u128(1));
+
+    let none = fired_triggers(&regions, &[(0, 0)], None);
+    assert!(none.is_empty(), "no coverage, no fire");
+}
+
+#[test]
+fn fired_triggers_arrest_fires_only_on_arrest_inside_the_region() {
+    let regions = vec![trigger_region(1, &[(2, 0)], vec![on(TriggerEvent::Arrest)])];
+    // Entering the region without an arrest report does not fire an arrest trigger.
+    assert!(fired_triggers(&regions, &[(2, 0)], None).is_empty());
+    // An arrest outside the region does not fire it either.
+    assert!(fired_triggers(&regions, &[(2, 0)], Some((9, 9))).is_empty());
+    // Only an arrest inside does.
+    let fired = fired_triggers(&regions, &[(2, 0)], Some((2, 0)));
+    assert_eq!(fired.len(), 1);
+}
+
+#[test]
+fn fired_triggers_fires_each_trigger_once_per_report() {
+    // Two entered cells in the same region collapse to one firing of each of its triggers;
+    // two distinct triggers on the same region each fire.
+    let regions = vec![trigger_region(
+        1,
+        &[(1, 0), (2, 0)],
+        vec![on(TriggerEvent::Enter), on(TriggerEvent::Enter)],
+    )];
+    let fired = fired_triggers(&regions, &[(1, 0), (2, 0)], None);
+    assert_eq!(
+        fired.len(),
+        2,
+        "one firing per authored trigger, not per cell"
+    );
+}

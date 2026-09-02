@@ -258,8 +258,9 @@ pub struct CombatEngine {
     pub order: Vec<Uuid>,
     /// Movement rules (snapshot of the resolved chain at start).
     pub movement: MovementRules,
-    /// Whether an effect's `EffectLifecycle.resolved.on_combat_end`/`on_turn_end` flags
-    /// actually expire it (snapshot of the resolved chain at start).
+    /// Whether an effect's evaluated lifecycle flags (`on_combat_end`/
+    /// `on_turn_end`, resolved per boundary through the combat-defaults
+    /// chain) actually expire it (snapshot of the resolved chain at start).
     pub effect_cleanup: bool,
     /// Whether ending combat/rewinding restores documents an anchored `TurnRecord` snapshot
     /// (snapshot of the resolved chain at start).
@@ -314,17 +315,17 @@ pub enum CombatantKind {
     },
 }
 
-/// A combatant's numeric view of one registry resource (mirrors the client's
-/// `CombatantResource`). Numbers only: the client resolves formulas and
-/// writes these; the server only ever adds, subtracts and clamps.
+/// A combatant's stored state for one `Tracked` registry resource (mirrors
+/// the client's `CombatantResource`). Server-written: spends, recoveries and
+/// resource intents move it, clamped to the binding's evaluated `max`. An
+/// ABSENT entry means untouched — the server reads it as full (`current`
+/// equal to the evaluated `max`) and materializes the entry on first change.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct CombatantResource {
     /// Current value.
     pub current: f64,
-    /// Ceiling the server clamps `current` to; `>= 0`.
-    pub max: f64,
 }
 
 /// The engine body of a `combatant` document (mirrors the client's
@@ -346,8 +347,7 @@ pub struct CombatantEngine {
 }
 
 impl CombatantEngine {
-    /// An actor kind names a token or an actor; every number is finite and
-    /// every `max` is non-negative.
+    /// An actor kind names a token or an actor; every number is finite.
     pub(crate) fn validate(&self) -> Result<(), String> {
         if let CombatantKind::Actor {
             token_id: None,
@@ -365,11 +365,8 @@ impl CombatantEngine {
             return Err("tiebreak must be finite".into());
         }
         for (key, r) in &self.resources {
-            if !r.current.is_finite() || !r.max.is_finite() {
+            if !r.current.is_finite() {
                 return Err(format!("resource {key} must be finite"));
-            }
-            if r.max < 0.0 {
-                return Err(format!("resource {key} max must be >= 0"));
             }
         }
         Ok(())
@@ -391,7 +388,9 @@ pub enum Formula {
 
 impl Formula {
     /// Finite when a number; parses (within the formula caps) when text.
-    fn validate(&self, at: &str) -> Result<(), String> {
+    /// `pub(crate)` so every engine type holding a `Formula` (`RegionEngine`'s
+    /// triggers included) ingress-checks it through this one rule.
+    pub(crate) fn validate(&self, at: &str) -> Result<(), String> {
         match self {
             Formula::Number(n) if !n.is_finite() => Err(format!("{at} must be finite")),
             Formula::Number(_) => Ok(()),
@@ -434,13 +433,14 @@ impl Default for Recovery {
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResourceBinding {
-    /// Continuously equals `value` over the actor (e.g. HP); the client keeps
-    /// the combatant's numbers synced.
+    /// Continuously equals `value` evaluated over the combatant's formula
+    /// host (e.g. HP). Derived at each use, never stored on the combatant.
     Mirror {
         /// Formula for both `current` and `max`.
         value: Formula,
     },
-    /// Combat state seeded to `max` on join and moved by recoveries and spends.
+    /// Combat state moved by recoveries and spends; an absent combatant
+    /// entry reads as full (`current` equal to the evaluated `max`).
     Tracked {
         /// Formula for `max`.
         max: Formula,
@@ -535,8 +535,9 @@ pub enum ExpiryPoint {
 pub struct Duration {
     /// How many `unit`s the effect lasts; a `Formula::Number` must be `>= 1`.
     pub amount: Formula,
-    /// Remaining `unit`s until expiry; `None` until the client resolves `amount` for the
-    /// first time. Decremented by `EffectLifecycle.resolved.on_advance`.
+    /// Remaining `unit`s until expiry. Server-written: `None` = not yet
+    /// ticked (full duration); the first matching boundary evaluates `amount`
+    /// and materializes the countdown.
     #[serde(default)]
     #[ts(optional = nullable)]
     pub remaining: Option<u32>,
@@ -549,21 +550,9 @@ pub struct Duration {
     pub expires: ExpiryPoint,
 }
 
-/// Client-resolved lifecycle flags the server acts on (mirrors the client's `ResolvedLifecycle`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "../../types/generated/engine/")]
-#[serde(deny_unknown_fields)]
-pub struct ResolvedLifecycle {
-    /// Expire when the combat ends (when `CombatEngine.effect_cleanup`).
-    pub on_combat_end: bool,
-    /// Expire when the host combatant's turn ends (when `CombatEngine.effect_cleanup`).
-    pub on_turn_end: bool,
-    /// Decrement `Duration.remaining` at each matching boundary.
-    pub on_advance: bool,
-}
-
-/// Authored lifecycle policy: formulas the client resolves into `resolved`.
-/// Every formula is optional and falls through the combat-defaults chain.
+/// Authored lifecycle policy, evaluated server-side at each boundary. Every
+/// formula is optional and falls through the combat-defaults chain to the
+/// engine fallbacks (expire at combat end, keep at turn end, decrement).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
@@ -577,9 +566,6 @@ pub struct EffectLifecycle {
     /// Truthy ⇒ boundaries decrement `remaining`.
     #[ts(optional = nullable)]
     pub on_advance: Option<Formula>,
-    /// The client-written resolution of the three formulas; `None` = not on a clock yet.
-    #[ts(optional = nullable)]
-    pub resolved: Option<ResolvedLifecycle>,
 }
 
 /// The three lifecycle formulas as chain-level defaults (no `resolved`).

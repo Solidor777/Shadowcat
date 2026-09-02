@@ -19,6 +19,7 @@ fn empty_waypoints_is_invalid() {
             mask: None,
             regions: None,
             shape: &sq(100.0, DiagonalRule::Chebyshev),
+            budget_cells: None,
         },
     );
     assert_eq!(r, Err(PathFail::Invalid));
@@ -38,6 +39,7 @@ fn nonfinite_or_bad_footprint_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -54,6 +56,7 @@ fn nonfinite_or_bad_footprint_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -70,6 +73,7 @@ fn nonfinite_or_bad_footprint_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(0.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -86,6 +90,7 @@ fn nonfinite_or_bad_footprint_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -102,6 +107,7 @@ fn nonfinite_or_bad_footprint_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -118,6 +124,7 @@ fn nonfinite_or_bad_footprint_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -137,6 +144,7 @@ fn straight_route_returns_cell_centers_and_cost() {
             mask: None,
             regions: None,
             shape: &sq(100.0, DiagonalRule::Chebyshev),
+            budget_cells: None,
         },
     )
     .unwrap();
@@ -176,6 +184,7 @@ fn hex_route_off_the_square_diagonal_resolves_to_its_goal() {
             mask: None,
             regions: None,
             shape: &hex,
+            budget_cells: None,
         },
     )
     .expect("a reachable hex route must resolve, not read Unreachable");
@@ -210,6 +219,7 @@ fn waypoint_legs_sum_cost_and_carry_alternating_parity() {
             mask: None,
             regions: None,
             shape: &sq(100.0, DiagonalRule::Alternating),
+            budget_cells: None,
         },
     )
     .unwrap();
@@ -235,6 +245,7 @@ fn too_many_waypoints_is_invalid() {
                 mask: None,
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Invalid)
@@ -255,6 +266,7 @@ fn empty_mask_makes_a_nongm_route_unreachable() {
                 mask: Some(&mask),
                 regions: None,
                 shape: &sq(100.0, DiagonalRule::Chebyshev),
+                budget_cells: None,
             }
         ),
         Err(PathFail::Unreachable)
@@ -286,6 +298,7 @@ fn pathfind_reports_unreachable_when_route_exceeds_window_margin() {
             mask: None,
             regions: None,
             shape: &sq(c, DiagonalRule::Chebyshev),
+            budget_cells: None,
         },
     );
     assert_eq!(result, Err(PathFail::Unreachable));
@@ -330,6 +343,7 @@ fn arrest_region_truncates_the_route_and_flags_arrested() {
             mask: None,
             regions: Some(&field),
             shape: &sq(100.0, DiagonalRule::Chebyshev),
+            budget_cells: None,
         },
     )
     .unwrap();
@@ -357,6 +371,7 @@ fn no_regions_argument_is_backward_compatible() {
             mask: None,
             regions: None,
             shape: &sq(100.0, DiagonalRule::Chebyshev),
+            budget_cells: None,
         },
     )
     .unwrap();

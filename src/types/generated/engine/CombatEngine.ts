@@ -40,8 +40,9 @@ order: Array<string>,
  */
 movement: MovementRules, 
 /**
- * Whether an effect's `EffectLifecycle.resolved.on_combat_end`/`on_turn_end` flags
- * actually expire it (snapshot of the resolved chain at start).
+ * Whether an effect's evaluated lifecycle flags (`on_combat_end`/
+ * `on_turn_end`, resolved per boundary through the combat-defaults
+ * chain) actually expire it (snapshot of the resolved chain at start).
  */
 effect_cleanup: boolean, 
 /**

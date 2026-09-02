@@ -1826,6 +1826,111 @@ documents-permissions, formula, combat) through the reviewed skill-update gate.
 (M14c-2); world-config authority (M14c-3); notation references and the chat channel (M14c-4);
 the templates merge (M14c-5); the combat client seams (M14c-6).
 
+#### M14c-2 — Combat resolution server-side ✅
+**COMPLETE.** Branch `m14c-2-combat-resolution`, executed mainline (Fable) from
+[`superpowers/specs/2026-08-30-m14c-2-combat-resolution-server-side-design.md`](superpowers/specs/2026-08-30-m14c-2-combat-resolution-server-side-design.md)
+and its plan; two buddy-check checkpoints (both converged) plus the final two-reviewer branch
+review. Second of six.
+
+The combat clock now evaluates every formula it acts on. `combat::eval` owns the contracts:
+`formula_host` (the token-embedded actor copy, else the linked actor — the ONE host-precedence
+rule), `eval_formula`, `resolved_resource` (Mirror = pure derivation; a Tracked `max` is
+evaluated, a negative result clamps to 0), `lifecycle_flags` (authored formula →
+`CombatEngine.effect_lifecycle` → engine fallbacks), `duration_amount` (floor; below 1 refused).
+One stored home per value: `CombatantResource.max`, `EffectLifecycle.resolved` and
+`ResolvedLifecycle` are gone; an absent `Tracked` entry or an untouched countdown reads as FULL
+and materializes on first change (lazy-full — no join-time seeding, uniform across combatant
+kinds). An evaluation failure skips its one write and surfaces as ONE GM-only
+`MessageKind::System` notice per transition (`eval_notice`, deduped, each detail prefixed with
+the combatant's name or id); the clock never stops on a bad formula. `CombatResource` refuses
+Mirror-bound keys and clamps against the evaluated max.
+
+Egress: a combatant `Create` carrying no explicit `/engine/resources` property override is
+stamped `Visibility::OwnerOrGm` at `apply_intent` ingress (an explicit entry, `all` included, is
+respected; `buildCombatantDoc` mirrors the stamp) — stored resource scalars default to the
+trusted tier, closing the whole-move-scalar class for combat numbers.
+
+Movement: the ECS caches the `resource-registry` singleton beside the other config docs;
+`budget_gate_for_token` + `resolve_budget` — ONE resolution shared by `Room::execute_move` and
+`handle_pathfind` — derive the budget through `combat::eval::resolved_resource` over
+`SceneEcs::combatant_formula_host`'s document. Absent entries read as a full budget (the
+decrement materializes them with a Null OCC pre-image); a Mirror binding or evaluation failure
+is unresolvable (refusal for enforced callers, free-move-no-decrement for exempt ones).
+`SceneEcs::pathfind` gains `budget_cells`: the grid engine cuts by per-step replay, the
+walls-only continuous engine by `navmesh::truncate_at_budget`'s span cut, and EVERY
+budget-boundary comparison — both cuts and the executor's own stop — runs through the one
+predicate `pathfinding::budget_admits_step`. `PathOutcome`/`PathResult` gain `truncated`;
+refusals reuse the generic wording and the clamp binds only enforced `Hard` callers, so a hidden
+combatant discloses nothing through previews. Parity pinned by
+`budget_clamped_preview_last_point_equals_executor_stop` (sabotage-verified with a whole-cell
+perturbation; a half-cell one is absorbed by integer step costs — recorded, not kept).
+
+Review fold-ins beyond the above: combatant/host identity in failure details (the notice dedup
+cannot collapse distinct combatants), the Event exemption removed from `recover` (spec-true
+uniform recovery), stale `effect_cleanup`/skill prose corrected. Client: `ResolvedLifecycle`
+removed end to end; scene-tools test doubles carry `truncated`. Accepted residual: documents can
+change between a preview and the move, so a preview is advisory — the executor re-resolves at
+move time.
+
+#### M14c-3 — World-config authority ✅
+**COMPLETE.** Branch `m14c-3-world-config`, executed mainline (Fable) from
+[`superpowers/specs/2026-08-30-m14c-3-world-config-authority-design.md`](superpowers/specs/2026-08-30-m14c-3-world-config-authority-design.md)
+and its plan; one buddy-check checkpoint (the `ConfigSeed` ingress gate, converged) plus the
+final two-reviewer branch review. Third of six.
+
+Every world-config singleton is now server-authored. A new server-only
+`WriteOrigin::ConfigSeed` commits seed ops built by `data::world_seed::missing_config_ops` —
+ONE ops-builder deciding what is absent or drifted, with callers differing only in commit
+transport: `create_world` seeds all ten config singletons at creation (author = the creator);
+the WS world-join path lazily reseeds whatever is missing (`ws::conn::reseed_world_config`,
+attributed to the world's first GM by sorted user id; a lost seed race is swallowed, a world
+with no GM is skipped); and `set_world_enabled_modules` runs the same pass to refresh
+`system-defaults`. The engine seed bodies moved to Rust (`FactionRegistryEngine::seed` and
+siblings; `SINGLETON_DOC_TYPES` now gates all ten config types). A system package declares its
+defaults in `module.json` `systemDefaults` (validated against `SystemDefaultsEngine` at scan,
+warn-and-ignore on invalid; at most one enabled `shadowcat.system` provider per world; client
+writes to the `system-defaults` singleton are rejected outright — `ConfigSeed` is the only
+origin that may author it). `WorldSettingsEngine` became an `Option`-lifted overlay sharing
+`SystemDefaultsEngine`'s member shapes: the engine literals live once on
+`WorldSceneDefaults::default`/`Pathfinding::default`/`AnimationSettings::default` (the
+client's `DEFAULT_WORLD_SETTINGS` is the asserted mirror), `resolve_scene` folds per leaf, and
+the settings UI's reset CLEARS the leaf (writes null) instead of writing a client-resolved
+literal — provenance is structural (a present world leaf IS the override). Client seed paths
+(the game-settings five-singleton seed, the chat/faction/condition registry seeds,
+`systemDefaultsUpsertOps`, `Module.systemDefaults`, `seedResourceRegistryIfAbsent`) are
+deleted. Integration suites moved to the production-shaped world: the first join's seed
+command occupies seq 1, and absolute event-count assertions became post-seed baselines.
+
+#### M14c-4 — Dice references + chat channel ✅
+**COMPLETE.** Branch `m14c-4-dice-references`, executed mainline (Kimi) from
+[`superpowers/specs/2026-08-31-m14c-4-dice-references-chat-channel-design.md`](superpowers/specs/2026-08-31-m14c-4-dice-references-chat-channel-design.md)
+and its plan; two buddy-check checkpoints (both converged, one debate round each, nothing unresolved) plus the
+final two-reviewer branch review. Fourth of six.
+
+The server resolves dice-notation references itself. `formula::template` is the Rust behavioural twin of the
+TS template rewrite (recognizer chain + `claimNotationFunction`, `1d` synthesis, labeled substitution, UTF-16
+positions), pinned by a new `templates` section of the shared conformance corpus (31 cases both suites read;
+sabotage/mutation evidence recorded per commit). One design change the campaign found in flight:
+the template grammar learned the notation `fn_call` vocabulary — every roll now runs through the
+scan, so `floor(101d6/2)` would otherwise read `floor` as a stat reference and regress;
+both twins, the corpus, and the parity gate (now three declarations for modifiers AND for
+the function list) moved in one commit, and the final review caught that the reservation must
+tolerate spaces/tabs before the paren (`floor (2d6)`), matching the dice parser's token-level rule. `chat::rolls::execute_roll`/`validate_formula`
+substitute references pre-parse: chat rolls bind to the send's already-validated
+`actor_owner` (a token's embedded actor copy, else its linked actor — one shared
+`embedded_actor_copy` extraction, the combat precedence rule), `CombatRoll` binds per-entry
+through `combat::eval::formula_host`; unbound ⇒ `unknown-ref` refusal; buttons validate
+structurally with a placeholder zero and store the raw template, resolving per clicker at
+click (the composer's sticky speak-as lifted to ui-kit session state `SpeakAs` so the card
+resolves the clicker's binding). The stored `RollEmbed.formula` keeps the author's template;
+recalc re-derives from the stored `spec`/`raw`, never re-resolves. `MessageEngine.channel`
+is validated against the world's channel registry at ingest (chat + `CombatRoll`;
+`ChannelRegistryEngine::validate` wired into `normalize_engine`; ~105 re-fixtured tests
+re-anchored, one e2e caught at review). Two review fold-ins: `js_number` normalizes `-0`
+(JS parity, corpus-pinned — serde_json preserves `-0.0`); the spec was amended in-range to
+the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/authoring docs;
+GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
+
 ### M15b · Asset browser + generic document Move ✅
 Branch `m15b-asset-browser`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15b-asset-browser-design.md` and plan
@@ -1945,6 +2050,61 @@ rule for every writer); the client's single-shot placement failure hid the creat
 Coverage added: 8 `process` unit tests on generated fixtures, tag/query/upload/mutate unit tests,
 and five new integration files (`assets_chunked`, `assets_query`, `assets_mutate`, plus the
 extended `assets` and bundle round-trips).
+
+### M18 · Token enrichment ✅
+Branch `m18-token-enrichment`, executed from the approved brainstorm + design
+`docs/superpowers/specs/2026-08-31-m18-token-enrichment-brainstorm.md` and
+`docs/superpowers/specs/2026-08-31-m18-token-enrichment-design.md` as six sub-projects
+(M18c generated visuals, M18b trigger regions, M18a emitters, M18d built-in fx, M18e emotes,
+M18f art tooling), each landed with the full gate battery green; M18 is complete.
+Delivered, tokens: the `RenderVisual::Generated`/`TokenVisual::Generated` parametric compositor
+(art + shape crop + decorative border ring + background fill — authored data, distinct from the
+faction ring), resolved fail-closed in `resolveTokenVisual` (`isValidGeneratedArt`) and drawn by
+the PixiBackend `generated` frame (background → masked art → ring, inside `visualContainer`).
+Token art tooling closes the authoring loop: `VisualKindEditor` gained the `generated` kind and
+an `initial?: TokenVisual` prop (mount-time initialization from an existing visual, fail-closed
+on shapes the editor can't represent), the actors panel edits an existing actor's visual
+post-create through the panel's raw-`old` OCC convention, and `TokenVisualControl` writes the
+per-token `/engine/overrides/visual` override (clear writes `null`) — every pick through the
+M15b `ctx.pickAsset` seam.
+Delivered, scene: **trigger regions** — `RegionEngine.triggers` (`enter`/`arrest`;
+`condition_add`/`condition_remove`/`resource_delta`/`chat_notice` effects) sharing
+`regions::rasterize` with the composed field via the `SceneEcs::trigger_regions` identity
+side-table (parity-pinned), `MoveOutcome.entered_cells`+`arrested` keeping the move executor
+pure, `Room::fire_region_triggers` the single application path (placement fires on genuine
+token Creates/position Updates; region edits never re-fire; disabled regions inert), effects
+committed under `WriteOrigin::CombatTransition`, secret-region notices forced GM-only via
+`engine_geometry_visible_to_world`, resource deltas combat-scoped with a net-sum per key and
+GM-only failure notices. **Emote overlays** — `ClientMsg::Emote`/`ServerMsg::Emote` aux frames
+mirroring every ScenePing touch point (per-user rate limit in a separate bucket, effective-owner
+authz fail-closed via `token_scene_and_effective_owner`, ≤16-byte payload, `broadcast_aux`),
+the Zod/ws-client/worldSession chain with the `viewedSceneId` cross-scene guard, `EmoteView`
+(pure age-tracker; the glyph anchors at fire position and tracks nothing), and the scene-tools
+rail palette sharing speak-as's ownership predicate.
+Delivered, render: the emission component model — `AuraEmission`/`SoundEmission`/`VfxEmission`/
+`VfxAnchor` on `ActorEngine`+`TokenOverrides` (Option, wholesale-override like `vision`),
+`EffectiveActor.aura/sound/vfx` projections, the aura disc drawn under the art
+(`updateTokenAura`, `auraKey` memoization) with `EmissionEditor`/`TokenEmissionControl`
+authoring; and per-token built-in fx — `TokenNodeSpec.fx` (`tint`/`desaturate`/`highlight`),
+`composeTokenFxMatrix` folding the list into one `ColorMatrixFilter` on
+`visualContainer.filters` (art fx rotate with the art; badges stay clean; filters disposed with
+the node), condition-driven via `Condition.fx` (registry + ConditionsPanel editor) folded in
+effective-condition order by `TokenView.toSpec`, and the selection signifier moved onto the node
+as a `highlight` entry (`RenderEngineOpts.selectedTokens` + `reapplyTokenSelection`; the
+scene-tools overlay-ring draw deleted — one highlight mechanism; `"target"` a reserved source
+with no producer).
+Decisions taken: emissions follow standard write rules (no GM-only predicate — the spec was
+amended in-range); no server ECS emission accessors (no consumer; dead code fails lint);
+condition-fx strengths fixed at 0.5 (the registry authors colors, not strengths); selection
+highlight 0.4 at the preserved accent `0xffd400`. Found in flight: the m15b merge's auto-merge
+silently dropped the actors suite's `listAssets` module mock (the suite caught it — restored
+with the pickAsset flow); the merge itself was pulled forward onto the branch (origin/main +
+`m15b-asset-browser`) because M18f's editor targets `ctx.pickAsset` and main had not landed it.
+Sound/VFX playback stays Phase 3 by PLAN's own scoping — the component model is the deliverable.
+Coverage: 7 room region-trigger tests + 4 executor `entered_cells` tests (+ the rasterization
+parity pin), 6 `updateTokenFx` + condition-fx/selection tests across render/engine/stage, emote
+protocol + convergence + cross-scene guard tests, 17 new actors-module tests; full repo gates
+(`cargo test`/`clippy`/`fmt`, every `pnpm` gate, docs example check) green at every commit.
 
 ## Documentation campaign — completed sweeps
 

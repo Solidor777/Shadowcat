@@ -198,7 +198,23 @@ y: number,
 /**
  * Who pinged (senders receive their own echo).
  */
-user: string, } | { "type": "path_result", 
+user: string, } | { "type": "emote", 
+/**
+ * Scene the token stands on.
+ */
+scene: string, 
+/**
+ * Token the emote plays over.
+ */
+token: string, 
+/**
+ * Who emoted (senders receive their own echo).
+ */
+user: string, 
+/**
+ * The emote glyph(s).
+ */
+emote: string, } | { "type": "path_result", 
 /**
  * The originating pathfind's correlation token.
  */
@@ -214,7 +230,12 @@ cost: number,
 /**
  * True when an arrest region truncated the route short of the goal.
  */
-arrested: boolean, } | { "type": "path_error", 
+arrested: boolean, 
+/**
+ * True when the mover's movement budget truncated the route short of
+ * the goal (Hard enforcement; reaches only the requester's own preview).
+ */
+truncated: boolean, } | { "type": "path_error", 
 /**
  * The failed pathfind's correlation token.
  */

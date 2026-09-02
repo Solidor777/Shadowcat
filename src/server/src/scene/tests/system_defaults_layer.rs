@@ -64,6 +64,70 @@ fn diagonal_rule_and_animation_speed_read_the_system_layer() {
 }
 
 #[test]
+fn partial_world_overlay_leaf_beats_system_and_engine_fallback() {
+    let mut ecs = SceneEcs::new();
+    ecs.set_system_defaults_for_test(json!({
+        "scene": { "fog": false, "movementModel": "continuous" },
+        "pathfinding": { "diagonalRule": "manhattan" },
+        "animation": { "speedCellsPerSec": 3.0 }
+    }));
+    // A PARTIAL world body: only its authored leaves override; every absent
+    // leaf falls through to system, then to the engine literal.
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "fog": true },
+        "pathfinding": { "diagonalRule": "euclidean" }
+    }));
+    let scene_id = Uuid::from_u128(7);
+    ecs.insert_scene_for_test(
+        scene_id,
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+    );
+    let r = ecs.resolve_scene(scene_id);
+    assert!(r.fog, "authored world leaf beats the system layer");
+    assert_eq!(
+        r.movement_model,
+        MovementModel::Continuous,
+        "unauthored world leaf falls through to the system layer"
+    );
+    assert!(
+        r.los_restriction,
+        "leaf absent everywhere keeps the engine literal"
+    );
+    assert_eq!(
+        ecs.resolved_diagonal_rule(),
+        pathfinding::DiagonalRule::Euclidean,
+        "authored world pathfinding leaf wins"
+    );
+    assert!(
+        (ecs.resolved_animation_speed() - 3.0).abs() < 1e-9,
+        "unauthored world animation falls through to the system layer"
+    );
+}
+
+#[test]
+fn absent_world_settings_resolves_like_an_empty_one() {
+    let mut absent = SceneEcs::new();
+    let mut empty = SceneEcs::new();
+    empty.set_world_settings_for_test(json!({}));
+    let scene_id = Uuid::from_u128(7);
+    for ecs in [&mut absent, &mut empty] {
+        ecs.insert_scene_for_test(
+            scene_id,
+            json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+        );
+    }
+    let a = absent.resolve_scene(scene_id);
+    let e = empty.resolve_scene(scene_id);
+    assert_eq!(a.fog, e.fog);
+    assert_eq!(a.movement_model, e.movement_model);
+    assert_eq!(
+        absent.resolved_diagonal_rule(),
+        empty.resolved_diagonal_rule()
+    );
+    assert!((absent.resolved_animation_speed() - empty.resolved_animation_speed()).abs() < 1e-9);
+}
+
+#[test]
 fn apply_op_hydrates_and_retires_the_system_defaults_doc() {
     let mut ecs = SceneEcs::new();
     let sd = entity_doc_top_eng(

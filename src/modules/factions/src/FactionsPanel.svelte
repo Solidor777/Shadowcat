@@ -2,7 +2,6 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { resolveTokenActor, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
-  import { seedFactionRegistryIfAbsent } from "./seed";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -17,16 +16,8 @@
     return Object.entries(sys?.factions ?? {});
   });
 
-  // Idempotent GM seed: create the registry (deterministic id, so racing GMs converge on one)
-  // once, only when absent. The optimistic dispatch adds it to the store immediately, so a
-  // second reactive run sees it and `seeded` short-circuits further attempts.
-  let seeded = false;
-  $effect(() => {
-    if (ctx.role !== "gm" || seeded) return;
-    subscribe();
-    seeded = true;
-    seedFactionRegistryIfAbsent(ctx.documents, ctx.world, ctx.dispatchIntent);
-  });
+  // The faction registry is server-seeded (world creation / world join) with
+  // the engine's default three factions; this panel only reads and edits it.
 
   /** GM registry editor: patches one or more fields of a faction entry, dispatching one
    * `update` op per changed field. `old` reads the RAW currently-stored value (never a

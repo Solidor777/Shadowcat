@@ -157,9 +157,11 @@ surfacing, text evaluation tests). If the fold makes Task 2 unwieldy in practice
   `eval_formula(phase_formula(...), formula_host(..))`; on error push to `eval_failures` and
   continue. `resolved_resource` supplies `current`/`max` (absent entry ⇒ full); write
   `/engine/resources/<key>/current` when the clamped result differs from the PRIOR STORED value
-  — materializing an absent entry requires writing the FULL `CombatantResource` object at
-  `/engine/resources/<key>` (a `set_engine` at `/current` under an absent key fails `BadPath`,
-  the same constraint `history::append_record` works around for arrays).
+  — materializing an absent entry is an ordinary `set_engine` write at
+  `/engine/resources/<key>/current`: `set_pointer` creates missing intermediate OBJECT keys
+  (only array growth fails `BadPath`), and the real `apply_intent` path applies changes through
+  the same `apply_field_change`, so the harness and production agree. (Corrected during
+  execution — the original note wrongly claimed the leaf write would fail.)
 - `resource` (the `CombatResource` intent): Mirror-bound key ⇒ `Err(CombatError::Forbidden)`
   (uniform wording); Tracked ⇒ clamp against `eval(max)`; eval error ⇒ `Err(CombatError::Data)`
   (uniform wording); absent entry ⇒ start from full then apply.

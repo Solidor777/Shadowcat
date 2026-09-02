@@ -53,7 +53,9 @@ impl TokenEngine {
     /// the position inside the ONE shared movement-coordinate bound
     /// (`scene::move_exec::MAX_GATE_WALK_COORD`) — the GM-write/Create path
     /// and the move gate must agree on admissible coordinates structurally,
-    /// never by call ordering.
+    /// never by call ordering. The override whitelist's emission payloads
+    /// validate through `TokenOverrides::validate` here, so an actor-backed
+    /// token can never carry an emission the actor arm would have refused.
     ///
     /// # Examples
     ///
@@ -76,12 +78,167 @@ impl TokenEngine {
         if self.x.abs() > bound || self.y.abs() > bound {
             return Err(format!("position exceeds coordinate bound {bound}"));
         }
+        if let Some(overrides) = &self.overrides {
+            overrides.validate()?;
+        }
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+/// Where a token-anchored VFX emission renders relative to the token's art.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "snake_case")]
+pub enum VfxAnchor {
+    /// On the token itself.
+    Token,
+    /// Above the token's art.
+    Above,
+    /// Below the token's art.
+    Below,
+}
+
+/// An aura emission: a colored disc radiating `radius` grid cells from the
+/// token's center, drawn UNDER its art. Purely presentational — nothing
+/// server-side consumes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct AuraEmission {
+    /// Disc color, a css `#rrggbb` string.
+    pub color: String,
+    /// Disc opacity; the presentation range `0..=1` is clamped read-side where
+    /// consumed, so ingress validates finiteness only.
+    pub opacity: f64,
+    /// Disc radius in GRID CELLS (never scene units — the client converts at
+    /// the render boundary).
+    pub radius: f64,
+    /// Master switch; `false` suppresses the emission without dropping the
+    /// payload.
+    pub enabled: bool,
+}
+
+impl AuraEmission {
+    /// Ingress validation beyond serde shape: css-`#rrggbb` color, finite
+    /// `opacity`, and a finite, non-negative, cell-cap-bounded `radius` (see
+    /// `validate_emission_radius`).
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_emission_color(&self.color)?;
+        validate_emission_scalar("opacity", self.opacity)?;
+        validate_emission_radius(self.radius)?;
+        Ok(())
+    }
+}
+
+/// A sound emission: a looping or one-shot audio asset audible within
+/// `radius` grid cells. Playback-ready data only — no playback consumer exists
+/// yet, so nothing server-side or client-side reads it beyond storage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct SoundEmission {
+    /// Asset id of the audio to play.
+    pub asset: String,
+    /// Audible radius in GRID CELLS.
+    pub radius: f64,
+    /// Playback volume; the presentation range `0..=1` is clamped read-side
+    /// where consumed, so ingress validates finiteness only.
+    pub volume: f64,
+    /// Loop playback; false = play once.
+    #[serde(rename = "loop")]
+    pub loop_: bool,
+    /// Master switch; `false` suppresses the emission without dropping the
+    /// payload.
+    pub enabled: bool,
+}
+
+impl SoundEmission {
+    /// Ingress validation beyond serde shape: non-empty `asset`, finite
+    /// `volume`, and a finite, non-negative, cell-cap-bounded `radius` (see
+    /// `validate_emission_radius`).
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_emission_asset(&self.asset)?;
+        validate_emission_scalar("volume", self.volume)?;
+        validate_emission_radius(self.radius)?;
+        Ok(())
+    }
+}
+
+/// A VFX emission: a visual effect asset anchored to the token. Playback-ready
+/// data only — no playback consumer exists yet, so nothing server-side or
+/// client-side reads it beyond storage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct VfxEmission {
+    /// Asset id of the effect art.
+    pub asset: String,
+    /// Where the effect renders relative to the token's art.
+    pub anchor: VfxAnchor,
+    /// Loop playback; false = play once.
+    #[serde(rename = "loop")]
+    pub loop_: bool,
+    /// Master switch; `false` suppresses the emission without dropping the
+    /// payload.
+    pub enabled: bool,
+}
+
+impl VfxEmission {
+    /// Ingress validation beyond serde shape: non-empty `asset`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_emission_asset(&self.asset)?;
+        Ok(())
+    }
+}
+
+/// Shared emission-payload color check: exactly `#` + 6 hex digits (a css
+/// `#rrggbb` string).
+fn validate_emission_color(color: &str) -> Result<(), String> {
+    match color.strip_prefix('#') {
+        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(()),
+        _ => Err("color must be a css #rrggbb string".to_string()),
+    }
+}
+
+/// Shared emission-payload radius check: finite, non-negative, and within the
+/// ONE cell-radius cap every cell-measured radius reads
+/// (`scene::pathfinding::MAX_FOOTPRINT_CELLS`) — a second, emission-specific
+/// bound would fork the cap convention.
+fn validate_emission_radius(radius: f64) -> Result<(), String> {
+    if !radius.is_finite() {
+        return Err("radius must be finite".to_string());
+    }
+    if radius < 0.0 {
+        return Err("radius must be non-negative".to_string());
+    }
+    let bound = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS;
+    if radius > bound {
+        return Err(format!("radius exceeds cell bound {bound}"));
+    }
+    Ok(())
+}
+
+/// Shared emission-payload scalar check (`opacity`/`volume`): finite only —
+/// the `0..=1` presentation range is a read-side clamp where consumed, not an
+/// ingress rejection.
+fn validate_emission_scalar(name: &str, v: f64) -> Result<(), String> {
+    if !v.is_finite() {
+        return Err(format!("{name} must be finite"));
+    }
+    Ok(())
+}
+
+/// Shared emission-payload asset check: non-empty (an empty id can never
+/// resolve to an asset).
+fn validate_emission_asset(asset: &str) -> Result<(), String> {
+    if asset.is_empty() {
+        return Err("asset must be non-empty".to_string());
+    }
+    Ok(())
+}
 
 /// The per-token override whitelist for a linked token.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -110,6 +267,35 @@ pub struct TokenOverrides {
     /// when present.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Per-token aura override: replaces the actor's `aura` entirely when
+    /// present (wholesale, never merged).
+    #[serde(default)]
+    pub aura: Option<AuraEmission>,
+    /// Per-token sound override: replaces the actor's `sound` entirely when
+    /// present (wholesale, never merged).
+    #[serde(default)]
+    pub sound: Option<SoundEmission>,
+    /// Per-token VFX override: replaces the actor's `vfx` entirely when
+    /// present (wholesale, never merged).
+    #[serde(default)]
+    pub vfx: Option<VfxEmission>,
+}
+
+impl TokenOverrides {
+    /// Ingress validation of the emission payloads only (`aura`/`sound`/`vfx`);
+    /// every other whitelisted field's shape is serde-enforced.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(aura) = &self.aura {
+            aura.validate()?;
+        }
+        if let Some(sound) = &self.sound {
+            sound.validate()?;
+        }
+        if let Some(vfx) = &self.vfx {
+            vfx.validate()?;
+        }
+        Ok(())
+    }
 }
 
 /// A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
@@ -184,10 +370,24 @@ pub enum TokenVisual {
         #[serde(default, rename = "faceMap")]
         face_map: Option<BTreeMap<String, String>>,
     },
+    /// A generated visual — see `RenderVisual::Generated`, whose payload this
+    /// mirrors so an actor's whole visual can be a generated composition.
+    Generated {
+        /// The art being framed — an `Image` or `Animated` visual only.
+        art: Box<RenderVisual>,
+        /// The shape the art is cropped to.
+        crop: GeneratedCrop,
+        /// Decorative ring drawn around the cropped art, or `None` for none.
+        #[serde(default)]
+        border: Option<GeneratedBorder>,
+        /// Fill drawn behind the cropped art, or `None` for none.
+        #[serde(default)]
+        background: Option<GeneratedBackground>,
+    },
 }
 
-/// The two kinds the render layer actually draws — the render/resolution
-/// boundary. A face's own visual is always one of these — no nesting
+/// The kinds the render layer actually draws — the render/resolution
+/// boundary. A face's own visual is always one of these — no `faces` nesting
 /// (a face can never itself be `{kind:"faces"}`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
@@ -208,6 +408,58 @@ pub enum RenderVisual {
         #[serde(rename = "loop")]
         loop_: bool,
     },
+    /// A generated token visual: existing art framed by a shape crop, an
+    /// optional decorative border ring, and an optional background fill. The
+    /// decorative ring is authored data, distinct from the faction ring the
+    /// render layer draws from the faction registry.
+    Generated {
+        /// The art being framed — an `Image` or `Animated` visual only; a
+        /// nested `Generated` (or anything else) fails closed to no visual at
+        /// the resolution boundary (`resolveTokenVisual`), which is the read-side
+        /// guard compensating for this field's unrestricted serde shape.
+        art: Box<RenderVisual>,
+        /// The shape the art is cropped to.
+        crop: GeneratedCrop,
+        /// Decorative ring drawn around the cropped art, or `None` for none.
+        #[serde(default)]
+        border: Option<GeneratedBorder>,
+        /// Fill drawn behind the cropped art, or `None` for none.
+        #[serde(default)]
+        background: Option<GeneratedBackground>,
+    },
+}
+
+/// The crop shape of a generated token visual (`RenderVisual::Generated`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "lowercase")]
+pub enum GeneratedCrop {
+    /// The inscribed ellipse of the token's extent.
+    Circle,
+    /// The token's extent rectangle.
+    Square,
+}
+
+/// A generated token visual's decorative border ring
+/// (`RenderVisual::Generated`), distinct from the faction ring.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedBorder {
+    /// Ring color, a css `#rrggbb` string.
+    pub color: String,
+    /// Ring width, in token-fraction px.
+    pub width: f64,
+}
+
+/// A generated token visual's background fill (`RenderVisual::Generated`),
+/// drawn behind the cropped art in the crop shape.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedBackground {
+    /// Fill color, a css `#rrggbb` string.
+    pub color: String,
 }
 
 /// An animated visual's frame source: an ordered list of individually
@@ -274,4 +526,34 @@ pub struct ActorEngine {
     /// + range in grid cells.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// The actor's aura emission, inherited by linked tokens (a per-token
+    /// `TokenOverrides.aura` replaces it wholesale).
+    #[serde(default)]
+    pub aura: Option<AuraEmission>,
+    /// The actor's sound emission, inherited by linked tokens (a per-token
+    /// `TokenOverrides.sound` replaces it wholesale).
+    #[serde(default)]
+    pub sound: Option<SoundEmission>,
+    /// The actor's VFX emission, inherited by linked tokens (a per-token
+    /// `TokenOverrides.vfx` replaces it wholesale).
+    #[serde(default)]
+    pub vfx: Option<VfxEmission>,
+}
+
+impl ActorEngine {
+    /// Ingress validation beyond serde shape, covering ONLY the emission
+    /// payloads (`aura`/`sound`/`vfx`) — every pre-existing field keeps its
+    /// serde-enforced shape and its current behavior.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(aura) = &self.aura {
+            aura.validate()?;
+        }
+        if let Some(sound) = &self.sound {
+            sound.validate()?;
+        }
+        if let Some(vfx) = &self.vfx {
+            vfx.validate()?;
+        }
+        Ok(())
+    }
 }

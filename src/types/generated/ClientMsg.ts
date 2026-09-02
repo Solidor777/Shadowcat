@@ -86,7 +86,19 @@ x: number,
 /**
  * Scene-coordinate y.
  */
-y: number, } | { "type": "pathfind", 
+y: number, } | { "type": "emote", 
+/**
+ * Scene the token stands on.
+ */
+scene: string, 
+/**
+ * Token the emote plays over (must be effectively owned by the sender).
+ */
+token: string, 
+/**
+ * The emote glyph(s); 1..=16 bytes.
+ */
+emote: string, } | { "type": "pathfind", 
 /**
  * Correlation token for `PathResult`/`PathError`.
  */

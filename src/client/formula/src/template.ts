@@ -27,6 +27,17 @@ const DICE_OPERATOR = "d";
 export const NOTATION_KEYWORDS: readonly string[] =
   [DICE_OPERATOR, "kh", "kl", "dh", "dl", "r", "ro", "cs", "cf", "t", "e", "tr", "rs", "xs", "xf"];
 
+/** The dice-notation grammar's math-function vocabulary (`floor`, `ceil`, `round`, `abs`,
+ * `min`, `max` — the server's `FnName` set). These are NOT `NOTATION_KEYWORDS` members:
+ * the keyword list guards the dice-MECHANIC modifier vocabulary (`kh`/`cs`/`tr`/…), while
+ * function names are notation only when followed by `(` after any spaces/tabs —
+ * `claimNotationFunction`
+ * tests exactly that, and anywhere else the same word is an ordinary identifier a resolver
+ * may answer. Declared once, here, because neither template twin can read the dice parser's
+ * own declaration; the notation-modifier parity gate reads all three. */
+export const NOTATION_FUNCTIONS: readonly string[] =
+  ["floor", "ceil", "round", "abs", "min", "max"];
+
 const I32_MAX = 2147483647;
 
 /** Which recognizer claimed a span of notation-template source — the vocabulary
@@ -34,7 +45,8 @@ const I32_MAX = 2147483647;
  *
  * - `"label"` — a bracketed span.
  * - `"integer"` — a run of digits.
- * - `"keyword"` — an identifier-start run that is a `NOTATION_KEYWORDS` member when lowercased.
+ * - `"keyword"` — an identifier-start run that is a `NOTATION_KEYWORDS` member when
+ *   lowercased, or a `NOTATION_FUNCTIONS` member immediately followed by `(`.
  * - `"identifier"` — a dotted reference span.
  * - `"literal"` — one character no recognizer claimed.
  *
@@ -130,6 +142,25 @@ const claimNotationKeyword: Recognizer = {
   },
 };
 
+/** An identifier-start run that is a `NOTATION_FUNCTIONS` member when lowercased AND is
+ * followed by `(` after any spaces/tabs — the dice parser decides `fn_call` at TOKEN level,
+ * where the lexer's space/tab skip has already happened, so `floor (2d6)` is a function call
+ * there and must read as one here too (a newline is NOT skipped by that lexer, so it does not
+ * count here either). Reserved because the server now runs every roll
+ * through this scan: without it, `floor(101d6/2)` would read `floor` as a stat reference and
+ * the roll would fail (or, under placeholder validation, break shape). Ordered after
+ * `claimNotationKeyword`; the two sets are disjoint, so that adjacency is unobservable. */
+const claimNotationFunction: Recognizer = {
+  kind: "keyword",
+  claim: (src, at) => {
+    if (!isWordStart(src[at])) return null;
+    const run = readKeywordRun(src, at);
+    let j = at + run.length;
+    while (src[j] === " " || src[j] === "\t") j++;
+    return NOTATION_FUNCTIONS.includes(run.toLowerCase()) && src[j] === "(" ? run : null;
+  },
+};
+
 /** A dotted reference span: an `isWordStart` run continued by `isWordChar`, joined by a `.` to
  * a further such run only when the character immediately after that `.` is itself an
  * identifier-start character — a `.` not followed by one is not crossed and the span ends
@@ -161,6 +192,7 @@ const RECOGNIZERS: readonly Recognizer[] = [
   claimLabelSpan,
   claimIntegerRun,
   claimNotationKeyword,
+  claimNotationFunction,
   claimIdentifierSpan,
 ];
 
@@ -383,6 +415,15 @@ export function checkNotationKey(key: string): NotationKeyCheck {
  * `notation` is therefore NOT guaranteed to be text the server's parser accepts — e.g.
  * `resolveNotationTemplate("]", () => 7)` returns `{ notation: "]" }` unchanged.
  * INVARIANT: never throws; every failure path returns a FormulaError.
+ *
+ * **Preview/authoring aid only — never how a roll is SENT.** The wire carries the RAW
+ * template and the server resolves references authoritatively at ingest (against the send's
+ * actor binding — the roller's speak-as), so a system module sends `1d20 + str`, not this
+ * function's output. This function remains for two client-side jobs: previewing to the
+ * author what a template will roll as against locally-visible data, and validating stat
+ * keys at authoring time (`checkNotationKey`). Pre-substituted text still rolls correctly
+ * (a `3[str]` literal is already plain notation), so nothing breaks — but substituting
+ * here first buys nothing and forfeits the server's fresher, authoritative read.
  *
  * `emitClaim` is not a pass-through for the non-identifier branch: it may prepend a synthesized
  * count. Every identifier substitution is labeled, positive or negative.

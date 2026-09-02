@@ -6,9 +6,10 @@ import type { SceneDefaultsOverlay } from "./SceneDefaultsOverlay";
 
 /**
  * The engine body of the `system-defaults` singleton (mirrors the client's
- * `SystemDefaultsEngine`). Written by the GM's client from the active system
- * module's declaration, never edited by hand; `active_scene` is world state,
- * not a setting, and has no overlay.
+ * `SystemDefaultsEngine`). Server-written from the installed system
+ * package's manifest declaration (the world-config seed path — no client
+ * origin may author it); `active_scene` is world state, not a setting, and
+ * has no overlay.
  */
 export type SystemDefaultsEngine = { 
 /**

@@ -1596,7 +1596,7 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, PixiJS's
   // `Link` filter, the `ammonia` HTML-sanitizer's `PassThrough` element-handling mode,
   // `polyanya`'s `Mesh`/`Layer`, `axum`'s `DefaultBodyLimit`).
-  "Host", "Link", "PassThrough", "SqlSafeStr", "Date", "Url", "Mesh", "Layer",
+  "Host", "Link", "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
 ]);
 
 /**

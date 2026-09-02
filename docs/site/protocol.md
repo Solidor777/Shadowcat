@@ -103,9 +103,19 @@ Every `ClientMsg` variant:
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
-| `send_message` | Chat: post to a channel (optional actor attribution + audience) |
+| `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+
+Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
+attributes.str` — never a client-substituted string. The server rewrites each
+reference at ingest (labeled constants in the roll breakdown carry the value
+read) against the send's `actor_owner` host (a token instance's embedded actor
+copy, else the linked actor), or, for combat rolls, against each named
+combatant's formula host. A referencing roll with no binding fails with an
+`unknown-ref` system notice. The same raw-template rule applies to the
+`notation` of every combat-roll entry, and a combat roll's `channel` is
+validated against the channel registry the same way a message's is.
 
 ## Scene channels
 

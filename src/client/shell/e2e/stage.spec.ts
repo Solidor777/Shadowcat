@@ -383,3 +383,59 @@ test("pick a scene background via the scene browser; it reaches the stage", asyn
     timeout: 15_000,
   });
 });
+
+// The layout grid is `100vh` tall and its middle row is shared by the tool rail and the
+// panel host. A grid row is at least as tall as its tallest item's minimum contribution, so a
+// rail whose content outgrows the row would — without the growth cap on the `.toolrail`
+// cell — push the row, the grid, the panel host and the canvas past the viewport; the
+// document then scrolls, and every raw page coordinate measured before that scroll lands off
+// the canvas. Asserted with the rail genuinely overflowing its cell (the GM rail plus the
+// place tool's picker), otherwise the no-overflow claim is vacuous.
+test("a tool rail taller than the viewport scrolls inside its cell; the grid and canvas never grow past 100vh", async ({
+  page,
+  account,
+}) => {
+  const viewport = { width: 1280, height: 720 };
+  await page.setViewportSize(viewport);
+  await login(page, account.username, account.password);
+  await page.getByLabel("New world name").fill("Tall Rail World");
+  await page.getByRole("button", { name: "Create world" }).click();
+
+  const host = page.locator(".stage-host");
+  await expect(host).toHaveAttribute("data-render-ready", "true", {
+    timeout: 30_000,
+  });
+  // The place tool adds its asset picker to the rail, on top of the GM's full tool set.
+  await page.getByTestId("tool-place").click();
+  const rail = page.locator(".toolrail");
+  await expect(rail.locator(".asset-picker")).toBeVisible();
+
+  // Positive control: the rail's content really is taller than its cell.
+  await expect
+    .poll(() => rail.evaluate((el) => el.scrollHeight - el.clientHeight))
+    .toBeGreaterThan(0);
+
+  const overflow = () =>
+    page.evaluate(() => {
+      const layout = document.querySelector(".layout")!;
+      return {
+        document: document.documentElement.scrollHeight - innerHeight,
+        grid: layout.scrollHeight - layout.clientHeight,
+        gridHeight: Math.round(layout.getBoundingClientRect().height),
+      };
+    });
+  expect(await overflow()).toEqual({ document: 0, grid: 0, gridHeight: viewport.height });
+
+  const canvas = page.getByTestId("stage-canvas");
+  const before = (await canvas.boundingBox())!;
+  expect(before.y + before.height).toBeLessThanOrEqual(viewport.height);
+
+  // Reaching a control at the bottom of the rail scrolls the rail cell, never the document,
+  // so a canvas rect measured beforehand stays valid for a raw-coordinate gesture.
+  await rail.getByTestId("emote-send").scrollIntoViewIfNeeded();
+  await expect
+    .poll(() => rail.evaluate((el) => el.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await canvas.boundingBox()).toEqual(before);
+  expect(await overflow()).toEqual({ document: 0, grid: 0, gridHeight: viewport.height });
+});

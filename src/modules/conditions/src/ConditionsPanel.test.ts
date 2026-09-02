@@ -3,9 +3,8 @@ import { tick } from "svelte";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { TokenSelection } from "@shadowcat/ui-kit";
-import { DocumentStore, buildActorDoc, buildTokenFromActor, buildConditionRegistryDoc, deterministicId, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildTokenFromActor, buildConditionRegistryDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
 import ConditionsPanel from "./ConditionsPanel.svelte";
-import { seedConditionRegistryIfAbsent } from "./seed";
 
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -14,24 +13,17 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 const actorDoc = (id: string, conditions: string[]) =>
-  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null }, id);
+  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null, aura: null, sound: null, vfx: null }, id);
 
 describe("ConditionsPanel", () => {
-  it("seeds the condition registry once on GM mount when absent", async () => {
+  it("never dispatches a registry create on GM mount (the server seeds it at world creation/join)", async () => {
     const dispatchIntent = vi.fn();
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent }) });
-    await vi.waitFor(() => expect(dispatchIntent).toHaveBeenCalled());
-    const ops = dispatchIntent.mock.calls[0][0] as WireOperation[];
-    expect(ops[0].op).toBe("create");
-    const doc = (ops[0] as { doc: WireDocument }).doc;
-    expect(doc.doc_type).toBe("condition-registry");
-    // Deterministic id: matches the sibling faction-registry seed's convergence property.
-    expect(doc.id).toBe(deterministicId("w1", "condition-registry"));
-    const conds = (doc.engine as { conditions: Record<string, unknown> }).conditions;
-    expect(Object.keys(conds).sort()).toEqual(["blinded", "dead", "hasted", "invisible", "poisoned", "prone", "slowed", "stunned", "unconscious"]);
+    await Promise.resolve();
+    expect(dispatchIntent).not.toHaveBeenCalled();
   });
 
-  it("does not re-seed when a registry already exists", async () => {
+  it("does not dispatch a create when a registry already exists either", async () => {
     const dispatchIntent = vi.fn();
     const store = storeWith(buildConditionRegistryDoc("w1", { dead: { name: "Dead", icon: "💀" } }, "creg1"));
     render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
@@ -164,47 +156,50 @@ describe("ConditionsPanel", () => {
       { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/dead/name", old: "Deceased", new: "Deceased2" }] },
     ]);
   });
-});
 
-describe("condition-registry seed", () => {
-  it("two GMs entering a brand-new world simultaneously converge on ONE condition-registry, not two", () => {
-    const worldId = "world-1";
-    const store1 = new DocumentStore(); // GM connection 1
-    const store2 = new DocumentStore(); // GM connection 2
-    const dispatch1 = vi.fn();
-    const dispatch2 = vi.fn();
-
-    seedConditionRegistryIfAbsent(store1, worldId, dispatch1);
-    seedConditionRegistryIfAbsent(store2, worldId, dispatch2);
-
-    expect(dispatch1).toHaveBeenCalledTimes(1);
-    expect(dispatch2).toHaveBeenCalledTimes(1);
-    const doc1 = (dispatch1.mock.calls[0][0] as WireOperation[])[0] as { op: "create"; doc: WireDocument };
-    const doc2 = (dispatch2.mock.calls[0][0] as WireOperation[])[0] as { op: "create"; doc: WireDocument };
-    expect(doc1.doc.id).toBe(doc2.doc.id); // deterministic id: both racers compute the SAME id
-
-    // The server confirms only the winner's Create (per the singleton create-gate); since both
-    // racers used the same id, applying that single confirmed doc converges both stores.
-    const cmd = { seq: 1, world_id: worldId, author: "a", ts: 0, ops: [{ op: "create" as const, doc: doc1.doc }] };
-    store1.applyCommand(cmd);
-    store2.applyCommand(cmd);
-    expect(store1.query("condition-registry")).toHaveLength(1);
-    expect(store2.query("condition-registry")).toHaveLength(1);
-  });
-
-  it("a losing racer gracefully adopts the winning registry instead of erroring", () => {
-    const worldId = "world-1";
+  it("editing a condition's fx dispatches a whole-fx update, old read raw (null while unset)", async () => {
     const dispatchIntent = vi.fn();
-    const store = new DocumentStore();
+    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢" } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
 
-    // Simulate the server-side create-gate having already rejected this client's own Create,
-    // and the winner's registry (same deterministic id) having landed via the event stream.
-    const winner = buildConditionRegistryDoc(worldId, { dead: { name: "Dead", icon: "💀" } }, deterministicId(worldId, "condition-registry"));
-    store.applyCommand({ seq: 1, world_id: worldId, author: "other", ts: 0, ops: [{ op: "create", doc: winner }] });
+    await fireEvent.change(screen.getByLabelText("conditions.tint"), { target: { value: "#66ff66" } });
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: null, new: { tint: "#66ff66" } }] },
+    ]);
 
-    seedConditionRegistryIfAbsent(store, worldId, dispatchIntent);
+    // Apply the write, as the server would on success, then tick desaturate on: the second op's
+    // `old` must be the first write's result, and its `new` carries BOTH fields.
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: null, new: { tint: "#66ff66" } }] }],
+    });
+    await tick();
+    await fireEvent.click(screen.getByLabelText("conditions.desaturate"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(2, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: { tint: "#66ff66" }, new: { tint: "#66ff66", desaturate: true } }] },
+    ]);
+  });
 
-    expect(dispatchIntent).not.toHaveBeenCalled(); // no error, no duplicate Create attempt
-    expect(store.query("condition-registry")).toHaveLength(1); // adopted the existing one
+  it("clearing the last fx field writes null (no effect), not an empty shell", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    await fireEvent.click(screen.getByLabelText("conditions.clearTint"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: { tint: "#66ff66" }, new: null }] },
+    ]);
+  });
+
+  it("clearing one of several fx fields keeps the others", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildConditionRegistryDoc("w1", { hasted: { name: "Hasted", icon: "⚡", fx: { tint: "#66ff66", highlight: "#ffee00" } } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    await fireEvent.click(screen.getByLabelText("conditions.clearHighlight"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/hasted/fx", old: { tint: "#66ff66", highlight: "#ffee00" }, new: { tint: "#66ff66" } }] },
+    ]);
   });
 });
+

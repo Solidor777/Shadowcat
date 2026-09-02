@@ -19,8 +19,11 @@ describe("world defaults editor", () => {
     const sel = screen.getByLabelText("gameSettings.movementRestriction") as HTMLSelectElement;
     await fireEvent.change(sel, { target: { value: "revealed" } });
 
+    // The seeded doc is the empty overlay: the leaf's stored pre-image is
+    // genuinely absent, so OCC's `old` is null even though the DISPLAYED
+    // effective value was the engine default.
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/movementRestriction", old: "visible", new: "revealed" }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/movementRestriction", old: null, new: "revealed" }] },
     ]);
   });
 
@@ -31,7 +34,7 @@ describe("world defaults editor", () => {
     const sel = screen.getByLabelText("gameSettings.diagonalRule") as HTMLSelectElement;
     await fireEvent.change(sel, { target: { value: "alternating" } });
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/pathfinding/diagonalRule", old: "chebyshev", new: "alternating" }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/pathfinding/diagonalRule", old: null, new: "alternating" }] },
     ]);
   });
 
@@ -44,7 +47,7 @@ describe("world defaults editor", () => {
     await fireEvent.change(sel, { target: { value: "continuous" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
-      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/movementModel", old: "grid-stepped", new: "continuous" }] },
+      { op: "update", doc_id: "ws1", changes: [{ path: "/engine/scene/movementModel", old: null, new: "continuous" }] },
     ]);
   });
 });

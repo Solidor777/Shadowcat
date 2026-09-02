@@ -67,7 +67,7 @@ pub(super) fn actor_combatant(
     actor: u128,
     owner: Option<Uuid>,
     hidden: bool,
-    movement: (f64, f64),
+    movement: f64,
 ) -> Combatant {
     let engine = CombatantEngine {
         kind: CombatantKind::Actor {
@@ -78,10 +78,7 @@ pub(super) fn actor_combatant(
         tiebreak: 0.0,
         resources: BTreeMap::from([(
             "movement".to_string(),
-            CombatantResource {
-                current: movement.0,
-                max: movement.1,
-            },
+            CombatantResource { current: movement },
         )]),
     };
     let mut d = doc(
@@ -140,7 +137,9 @@ pub(super) fn actor_body() -> serde_json::Value {
     })
 }
 
-/// An actor hosting one effect with a resolved lifecycle and a 2-round duration anchored to `anchor`.
+/// An actor hosting one effect with no authored lifecycle (the engine
+/// fallbacks apply: expire at combat end, keep at turn end, decrement) and a
+/// duration of `remaining` units anchored to `anchor`.
 pub(super) fn actor_with_effect(
     id: u128,
     anchor: Option<Uuid>,
@@ -158,14 +157,7 @@ pub(super) fn actor_with_effect(
             anchor,
             expires,
         }),
-        lifecycle: Some(EffectLifecycle {
-            resolved: Some(ResolvedLifecycle {
-                on_combat_end: true,
-                on_turn_end: false,
-                on_advance: true,
-            }),
-            ..Default::default()
-        }),
+        lifecycle: None,
     };
     let mut actor = doc(id, "actor", None, actor_body());
     actor.embedded.insert(

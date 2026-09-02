@@ -122,10 +122,11 @@ impl SceneEcs {
     }
 }
 
-/// A COMPLETE `WorldSettingsEngine` body (all `WorldSceneDefaults` fields present, per the
-/// ingress-validated struct's `deny_unknown_fields` contract) with `patches` applied over the
-/// built-in default via JSON-pointer `set_pointer` — lets each test express only the field(s)
-/// it cares about instead of re-typing the full 9-field `scene` object every time.
+/// A `WorldSettingsEngine` overlay body: `patches` applied over the empty
+/// default via JSON-pointer `set_pointer` (a null member reads as absent, so
+/// a patch through it creates the overlay object) — each test expresses only
+/// the leaf it cares about; every other leaf falls through the resolution
+/// chain exactly as an authored partial doc would.
 pub(super) fn ws_body(patches: &[(&str, serde_json::Value)]) -> serde_json::Value {
     use crate::data::command::set_pointer;
     let mut v = serde_json::to_value(eng::WorldSettingsEngine::default()).unwrap();

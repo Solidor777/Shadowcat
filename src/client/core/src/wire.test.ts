@@ -262,6 +262,18 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses an inbound emote frame", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "emote", scene: "s1", token: "t1", user: "u1", emote: "😀" }),
+    );
+    expect(m?.type).toBe("emote");
+    if (m?.type === "emote") {
+      expect(m.token).toBe("t1");
+      expect(m.user).toBe("u1");
+      expect(m.emote).toBe("😀");
+    }
+  });
+
   it("parses path_result and path_error server frames", () => {
     const ok = parseServerMsg(
       JSON.stringify({
@@ -270,6 +282,7 @@ describe("parseServerMsg", () => {
         path: [[50, 50], [150, 50]],
         cost: 2,
         arrested: false,
+        truncated: false,
       }),
     );
     expect(ok?.type).toBe("path_result");
@@ -466,7 +479,8 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     scene_error: { type: "scene_error", request_id: "r", message: "x" },
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
-    path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false },
+    emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
+    path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false, truncated: false },
     path_error: { type: "path_error", request_id: "r", message: "x" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },

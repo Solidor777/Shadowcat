@@ -146,7 +146,7 @@ async fn send_message_is_broadcast_as_message_document_event() {
         serde_json::json!({
             "type": "send_message",
             "request_id": Uuid::new_v4(),
-            "channel": "all",
+            "channel": "general",
             "content": "hello",
             "actor_owner": null,
         })
@@ -159,16 +159,18 @@ async fn send_message_is_broadcast_as_message_document_event() {
     let op = &evt["command"]["ops"][0];
     assert_eq!(op["op"], "create");
     assert_eq!(op["doc"]["doc_type"], "message");
-    assert_eq!(op["doc"]["engine"]["channel"], "all");
+    assert_eq!(op["doc"]["engine"]["channel"], "general");
     assert_eq!(
         op["doc"]["engine"]["content"][0]["kind"], "text",
         "content segment is the plain-text producer's Segment::Text"
     );
     assert_eq!(op["doc"]["engine"]["content"][0]["text"], "hello");
 
-    // The authoritative log agrees: exactly one durable event, a message create.
+    // The authoritative log agrees: the join-time config seed (ONE command —
+    // `reseed_world_config` publishes its whole op batch as a single commit)
+    // plus exactly one durable message create.
     let seqs = h.repo.events_since(h.world, 0).await.unwrap();
-    assert_eq!(seqs.len(), 1);
+    assert_eq!(seqs.len(), 2);
 }
 
 /// A rejected `send_message` (empty content) is surfaced to the SENDER as a
@@ -186,7 +188,7 @@ async fn rejected_send_returns_a_correlated_chat_error_to_the_sender() {
         serde_json::json!({
             "type": "send_message",
             "request_id": request_id,
-            "channel": "all",
+            "channel": "general",
             "content": "   ", // whitespace-only -> SendMessageError::Empty
             "actor_owner": null,
         })
@@ -199,7 +201,9 @@ async fn rejected_send_returns_a_correlated_chat_error_to_the_sender() {
     assert_eq!(err["request_id"], request_id.to_string());
     assert_eq!(err["message"], "Message cannot be empty.");
 
-    // Nothing was persisted: the rejection never reached the authoritative log.
+    // Nothing was persisted beyond the join-time config seed (one command —
+    // the reseed's whole batch commits as a single seq): the rejection never
+    // reached the authoritative log.
     let seqs = h.repo.events_since(h.world, 0).await.unwrap();
-    assert!(seqs.is_empty());
+    assert_eq!(seqs.len(), 1);
 }
