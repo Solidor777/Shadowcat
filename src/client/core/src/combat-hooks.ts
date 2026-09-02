@@ -377,6 +377,60 @@ function turnWalk(touch: CombatTouch, history: HistoryTouch | undefined): TurnSt
   return moved ? [{ round: a.round, turn: a.turn }] : [];
 }
 
+/** One `combat:turn-start`/`combat:turn-end` event. `kind` resolves against the post-image
+ * first, then the pre-image: an exhausted `Event` deleted by the same command is only findable
+ * in the delete op's pre-image.
+ * @param combatId The combat the turn belongs to.
+ * @param name Which of the two turn hooks.
+ * @param round The round the turn falls in.
+ * @param turn The combatant document id.
+ * @param before Looks up a document's pre-image by id.
+ * @param after The post-command document view.
+ * @returns The event, ready to push.
+ * @example
+ * ```ts
+ * import { DocumentStore } from "@shadowcat/core";
+ *
+ * const store = new DocumentStore();
+ * turnEvent("combat-1", "combat:turn-start", 1, "combatant-a", (id) => store.get(id), store).name; // "combat:turn-start"
+ * ```
+ */
+function turnEvent(
+  combatId: string,
+  name: "combat:turn-start" | "combat:turn-end",
+  round: number,
+  turn: string,
+  before: (id: string) => WireDocument | undefined,
+  after: ReadableDocuments,
+): CombatHookEvent {
+  return {
+    name,
+    payload: { combatId, round, combatantId: turn, kind: combatantKindOf(after.get(turn) ?? before(turn)) },
+  };
+}
+
+/** Pushes the `combat:round-end`/`combat:round-start` pairs for every round boundary between
+ * `from` and `to`; round 0 (creation) never ends.
+ * @param events The event list to append to.
+ * @param combatId The combat the rounds belong to.
+ * @param from The round the clock is leaving.
+ * @param to The round the clock lands on.
+ * @example
+ * ```ts
+ * import type { CombatHookEvent } from "@shadowcat/core";
+ *
+ * const events: CombatHookEvent[] = [];
+ * pushRounds(events, "combat-1", 1, 2);
+ * events.map((e) => e.name); // ["combat:round-end", "combat:round-start"]
+ * ```
+ */
+function pushRounds(events: CombatHookEvent[], combatId: string, from: number, to: number): void {
+  for (let r = from; r < to; r++) {
+    if (r > 0) events.push({ name: "combat:round-end", payload: { combatId, round: r } });
+    events.push({ name: "combat:round-start", payload: { combatId, round: r + 1 } });
+  }
+}
+
 /** Derives one combat's `combat:*` hook events from its before/after engine pair and, when the
  * command carried it, the combat's history write.
  * @param touch The combat's before/after engine pair.
@@ -427,30 +481,17 @@ function processCombat(
     });
   }
 
-  // `kind` resolves against the post-image first, then the pre-image: an exhausted `Event`
-  // deleted by the same command is only findable in the delete op's pre-image.
-  const turnEvent = (name: "combat:turn-start" | "combat:turn-end", round: number, turn: string): CombatHookEvent => ({
-    name,
-    payload: { combatId: id, round, combatantId: turn, kind: combatantKindOf(after.get(turn) ?? before(turn)) },
-  });
-  const rounds = (from: number, to: number): void => {
-    for (let r = from; r < to; r++) {
-      if (r > 0) events.push({ name: "combat:round-end", payload: { combatId: id, round: r } });
-      events.push({ name: "combat:round-start", payload: { combatId: id, round: r + 1 } });
-    }
-  };
-
-  let prev: { round: number; turn: string | null } = { round: b?.round ?? 0, turn: b?.turn ?? null };
+  let prev = { round: b?.round ?? 0, turn: (b?.turn ?? null) as string | null };
   for (const step of turnWalk(touch, collectHistoryTouch(cmd, id, before, after))) {
-    if (prev.turn != null) events.push(turnEvent("combat:turn-end", prev.round, prev.turn));
-    rounds(prev.round, step.round);
-    events.push(turnEvent("combat:turn-start", step.round, step.turn));
+    if (prev.turn != null) events.push(turnEvent(id, "combat:turn-end", prev.round, prev.turn, before, after));
+    pushRounds(events, id, prev.round, step.round);
+    events.push(turnEvent(id, "combat:turn-start", step.round, step.turn, before, after));
     prev = step;
   }
   // The clock stopped holding a turn (the combat was deleted, or `turn` was cleared): the turn
   // it last held ended without a successor.
-  if (a?.turn == null && prev.turn != null) events.push(turnEvent("combat:turn-end", prev.round, prev.turn));
-  if (a) rounds(prev.round, a.round);
+  if (a?.turn == null && prev.turn != null) events.push(turnEvent(id, "combat:turn-end", prev.round, prev.turn, before, after));
+  if (a) pushRounds(events, id, prev.round, a.round);
 
   if (b?.active && a && !a.active) {
     events.push({ name: "combat:end", payload: { combatId: id, sceneId: b.scene_id, round: b.round, reason: "paused" } });

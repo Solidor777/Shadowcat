@@ -31,6 +31,7 @@
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
 import type { Logger } from "./logger";
+import type { CombatsPayload } from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -1477,8 +1478,9 @@ const combatsPayloadSchemaImpl = z.object({
   combats: z.array(combatViewSchema),
 });
 
-/** The `"combat"` derived-channel payload schema. */
-export const CombatsPayloadSchema = combatsPayloadSchemaImpl;
+/** The `"combat"` derived-channel payload schema, typed against the generated `CombatsPayload`
+ * so the validator and the ts-rs wire type cannot drift apart. */
+export const CombatsPayloadSchema: z.ZodType<CombatsPayload> = combatsPayloadSchemaImpl;
 
 /**
  * Parse a `"combat"` derived-channel payload into a `CombatsView`.
