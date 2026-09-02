@@ -2436,7 +2436,8 @@ impl SceneEcs {
     ///
     /// Readability mirrors `resolved_footprints`'s own two-gate discipline: a combat/combatant is
     /// included only when `ctx_access` grants whole-document `cap::READ` on it (a hidden
-    /// combatant is ABSENT, never a placeholder — the document stream's own D9 rule); its
+    /// combatant is ABSENT, never a placeholder, matching the document stream's own read
+    /// filter); its
     /// `resources` entry is additionally gated on the `/engine` property tier for the pointer
     /// `/engine/resources`, read from `permissions.property_overrides` (default `Visibility::All`)
     /// through `Access::can_see` — the exact pair `filter_properties` runs at document egress.
