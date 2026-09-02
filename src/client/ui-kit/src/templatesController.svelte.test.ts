@@ -145,6 +145,42 @@ describe("TemplatesController", () => {
     expect(warned).toHaveLength(0);
   });
 
+  it("revert drops a second send for the same child while the first awaits its reply", async () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const first = deferred<WireMergeOutcome>();
+    const { ctrl, sent, warned } = make([tmpl, child], () => first.promise);
+    ctrl.revert("C");
+    ctrl.revert("C");
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    first.resolve({ kind: "revert", child_id: "C", status: "applied" });
+    // The window closes with the reply: a later revert sends again.
+    await vi.waitFor(async () => {
+      ctrl.revert("C");
+      expect(sent).toHaveLength(2);
+    });
+    expect(warned).toHaveLength(0);
+  });
+
+  it("pull and revert share one per-child window: a revert during a pending pull is dropped, and vice versa", async () => {
+    const tmpl = doc({ id: "T" });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    const first = deferred<WireMergeOutcome>();
+    const { ctrl, sent } = make([tmpl, child], () => first.promise);
+    ctrl.pull("C");
+    ctrl.revert("C");
+    await vi.waitFor(() => expect(sent).toHaveLength(1));
+    expect(sent[0].type).toBe("merge_pull");
+    first.resolve({ kind: "pull", child_id: "C", status: "applied" });
+    await vi.waitFor(() => expect(ctrl.pending).toBeNull());
+    const second = deferred<WireMergeOutcome>();
+    const { ctrl: ctrl2, sent: sent2 } = make([tmpl, child], () => second.promise);
+    ctrl2.revert("C");
+    ctrl2.pull("C");
+    await vi.waitFor(() => expect(sent2).toHaveLength(1));
+    expect(sent2[0].type).toBe("merge_revert");
+  });
+
   it("pull re-sends compute-only once when a rejection's fresh outcome is applied", async () => {
     const tmpl = doc({ id: "T" });
     const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
@@ -191,11 +227,11 @@ describe("TemplatesController", () => {
     const c2 = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
     const { ctrl, sent, sentOpts } = make([tmpl, c1, c2], async (msg) => {
       if (msg.type === "merge_push") return { kind: "push", template_id: "T", instances: [] };
-      if (msg.type === "merge_revert") return { kind: "revert", child_id: "C1", status: "applied" };
+      if (msg.type === "merge_revert") return { kind: "revert", child_id: "C2", status: "applied" };
       return { kind: "pull", child_id: "C1", status: "applied" };
     });
     ctrl.pull("C1");
-    ctrl.revert("C1");
+    ctrl.revert("C2");
     ctrl.push("T");
     await vi.waitFor(() => expect(sent).toHaveLength(3));
     expect(sentOpts[0].timeoutMs).toBe(MERGE_TIMEOUT_BASE_MS);

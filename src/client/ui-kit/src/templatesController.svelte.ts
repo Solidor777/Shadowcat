@@ -119,10 +119,10 @@ export class TemplatesController {
    * mutated in place) on open/resolve/cancel — a `$state` reassignment, so readers must
    * re-read `pending` itself rather than caching the object. */
   pending = $state<PendingSession | null>(null);
-  /** Document ids (the child for a pull, the template for a push) with a merge intent still
-   * awaiting its reply. A second `pull`/`push` on the same id in that window is dropped: it
-   * would race the first call's commit and be refused by the server's recompute as stale
-   * against documents the first call itself moved. */
+  /** Document ids (the child for a pull or revert, the template for a push) with a merge intent
+   * still awaiting its reply. A second `pull`/`revert`/`push` on the same id in that window is
+   * dropped: it would race the first call's commit and be refused by the server's recompute as
+   * stale against documents the first call itself moved. */
   #inFlight = new Set<string>();
 
   /** Build a controller wired to its collaborators.
@@ -332,7 +332,10 @@ export class TemplatesController {
 
   /** Reset `childId`'s mergeable bands to the template (keeping placement) via `MergeRevert`.
    * Revert never conflicts — there is nothing to reconcile — so it always applies or is
-   * rejected outright. A no-op (with a logged warning) if `childId` is unresolvable.
+   * rejected outright. A no-op (with a logged warning) if `childId` is unresolvable, and dropped
+   * while any merge intent for `childId` (a pull or an earlier revert) still awaits its reply —
+   * the same per-id re-entry guard `pull` holds, since a revert racing that reply's commit would
+   * be refused by the server's recompute exactly the same way.
    * @param childId - The instance document's id to revert.
    * @example templates.revert(childId);
    */
@@ -342,6 +345,8 @@ export class TemplatesController {
       this.#deps.logger.warn(`templates.revert: child ${childId} not in store; revert unavailable`);
       return;
     }
+    if (this.#inFlight.has(childId)) return;
+    this.#inFlight.add(childId);
     void this.#deps
       .sendMergeIntent(
         { type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId },
@@ -349,6 +354,9 @@ export class TemplatesController {
       )
       .catch((err: unknown) => {
         this.#warn(err instanceof Error ? err.message : "templates.revert: rejected");
+      })
+      .finally(() => {
+        this.#inFlight.delete(childId);
       });
   }
 
