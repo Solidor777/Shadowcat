@@ -471,17 +471,34 @@ pub(crate) struct InstantSight<'a> {
 }
 
 impl InstantSight<'_> {
-    /// The LOS polygons at this instant (the union the recipient's fog shows).
-    pub(crate) fn los_polys(&self) -> Vec<Vec<vision::P>> {
-        self.views.iter().map(|(_, p)| p.to_vec()).collect()
+    /// Whether the disc `(center, radius)` touches some source's LOS polygon at this instant
+    /// (`ws::move_clip::disc_intersects_polys`) — the carried-light gate's cheap pre-filter,
+    /// read over the polygons in place rather than a per-sample copy of them.
+    pub(crate) fn disc_touches_los(&self, center: vision::P, radius: f64) -> bool {
+        crate::ws::move_clip::disc_intersects_polys(
+            center,
+            radius,
+            self.views.iter().map(|(_, poly)| &**poly),
+        )
     }
 
-    /// Whether `point` lies in some source's LOS polygon at this instant — the LOS half of
-    /// `sees` alone, with no illumination test.
-    pub(crate) fn in_los(&self, point: vision::P) -> bool {
-        self.views
-            .iter()
-            .any(|(_, poly)| vision::point_in_poly(poly, point))
+    /// `RecipientSight::sample_light` for this instant's sight — the field light a carried-
+    /// light sample composes as.
+    pub(crate) fn sample_light(&self, sample: &crate::ws::protocol::LightSample) -> InstantLight {
+        self.sight.sample_light(sample)
+    }
+
+    /// Whether `light` contributes at `center` on its own: `lighting::source_level` — the
+    /// per-source rule `cell_illumination_from` sums — is positive there (within `dim_radius`
+    /// and inside the light's own occluder polygon). Reach alone, never visibility: `sees`
+    /// answers whether the recipient sees the cell.
+    pub(crate) fn light_reaches(&self, light: &InstantLight, center: vision::P) -> bool {
+        lighting::source_level(
+            &light.light,
+            &light.occluder,
+            center,
+            self.sight.world_units_per_cell,
+        ) > 0.0
     }
 
     /// The centers of every cell of this scene's grid whose center may lie in the pixel AABB

@@ -335,38 +335,44 @@ fn chosen_vision_sample_selects_position_samples_by_the_same_fixture_rule() {
 
 #[test]
 fn disc_intersects_polys_center_inside_or_edge_within_reach() {
-    let unit: Vec<Vec<P>> = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
+    let unit: Vec<P> = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let polys = || [unit.as_slice()];
     assert!(
-        disc_intersects_polys((0.5, 0.5), 0.0, &unit),
+        disc_intersects_polys((0.5, 0.5), 0.0, polys()),
         "center inside"
     );
     assert!(
-        disc_intersects_polys((1.4, 0.5), 0.5, &unit),
+        disc_intersects_polys((1.4, 0.5), 0.5, polys()),
         "edge within reach"
     );
     assert!(
-        !disc_intersects_polys((1.6, 0.5), 0.5, &unit),
+        !disc_intersects_polys((1.6, 0.5), 0.5, polys()),
         "edge beyond reach"
     );
     assert!(
-        !disc_intersects_polys((1.4, 0.5), 0.0, &unit),
+        !disc_intersects_polys((1.4, 0.5), 0.0, polys()),
         "zero reach is the point test"
     );
     assert!(
-        !disc_intersects_polys((1.4, 0.5), -1.0, &unit),
+        !disc_intersects_polys((1.4, 0.5), -1.0, polys()),
         "negative reach is the point test"
     );
 }
 
 #[test]
 fn disc_intersects_polys_fails_closed_on_non_finite_or_degenerate_input() {
-    let unit: Vec<Vec<P>> = vec![vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]];
-    assert!(!disc_intersects_polys((0.5, 0.5), f64::NAN, &unit));
-    assert!(!disc_intersects_polys((0.5, 0.5), f64::INFINITY, &unit));
-    assert!(!disc_intersects_polys((f64::NAN, 0.5), 1.0, &unit));
-    let degenerate: Vec<Vec<P>> = vec![vec![(0.0, 0.0), (1.0, 0.0)]];
-    assert!(!disc_intersects_polys((0.5, 0.0), 10.0, &degenerate));
-    assert!(!disc_intersects_polys((0.5, 0.5), 1.0, &[]));
+    let unit: Vec<P> = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+    let polys = || [unit.as_slice()];
+    assert!(!disc_intersects_polys((0.5, 0.5), f64::NAN, polys()));
+    assert!(!disc_intersects_polys((0.5, 0.5), f64::INFINITY, polys()));
+    assert!(!disc_intersects_polys((f64::NAN, 0.5), 1.0, polys()));
+    let degenerate: Vec<P> = vec![(0.0, 0.0), (1.0, 0.0)];
+    assert!(!disc_intersects_polys(
+        (0.5, 0.0),
+        10.0,
+        [degenerate.as_slice()]
+    ));
+    assert!(!disc_intersects_polys((0.5, 0.5), 1.0, [] as [&[P]; 0]));
 }
 
 #[test]
@@ -389,21 +395,31 @@ fn admit_light_samples_is_none_in_none_out_and_none_when_nothing_reaches() {
 
 #[test]
 fn admit_light_samples_keeps_only_the_samples_whose_glow_reaches_the_line_of_sight() {
-    // The target's sight ends at the x=100 wall; a glow admits on line of sight alone
-    // (no illumination floor — the glow is what lights the cells it touches), so the dark
-    // fixture admits exactly as a lit one would.
-    let ecs = fixture(false, None);
+    // The target's sight ends at the x=100 wall. With lighting off every line-of-sight cell
+    // qualifies, so admission reduces to the glow's own reach into that sight.
+    let ecs = fixture(true, None);
     let sight = sight(&ecs, &[]);
-    let inputs = ClipInputs {
-        sight: &sight,
-        in_flight: &[],
-        target: TARGET,
-    };
     let samples = vec![
-        light(0, 0.0, [50.0, 60.0], 10.0),     // inside
+        light(0, 0.0, [50.0, 60.0], 60.0), // inside (reach 0.6 cells; its own cell is within the bright radius)
         light(1, 100.0, [300.0, 50.0], 100.0), // 200 past the wall, reach 100 → out
         light(2, 200.0, [300.0, 50.0], 260.0), // reach 260 crosses the wall → in
     ];
+    let positions: Vec<PosSample> = samples
+        .iter()
+        .map(|l| pos(l.t_ms, l.pos[0], l.pos[1]))
+        .collect();
+    let flight = [InFlight {
+        start_server_ms: 0.0,
+        mover: STRANGER,
+        token: Uuid::from_u128(0xC8),
+        positions: &positions,
+        light: Some(&samples),
+    }];
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &flight,
+        target: TARGET,
+    };
     let out = admit_light_samples(Some(&samples), 0.0, &inputs).unwrap();
     assert_eq!(out.iter().map(tag_of).collect::<Vec<_>>(), vec![0, 2]);
 }
@@ -414,14 +430,11 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
     // sight, but its own illumination polygon (raycast against a `blocksLight` wall at the
     // emitter's side) stops at x=120: no cell center the target sees is inside it, so the
     // client would paint nothing and the sample is dropped. The same lamp with an open
-    // polygon is admitted.
-    let ecs = fixture(false, None);
+    // polygon is admitted. Lighting off: every line-of-sight cell qualifies, so the
+    // occluder alone decides.
+    let ecs = fixture(true, None);
     let sight = sight(&ecs, &[]);
-    let inputs = ClipInputs {
-        sight: &sight,
-        in_flight: &[],
-        target: TARGET,
-    };
+    let positions = vec![pos(0.0, 150.0, 50.0)];
     let mut blocked = light(0, 0.0, [150.0, 50.0], 120.0);
     blocked.polygons = vec![vec![
         [120.0, -500.0],
@@ -429,10 +442,35 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
         [500.0, 500.0],
         [120.0, 500.0],
     ]];
-    assert!(admit_light_samples(Some(&[blocked]), 0.0, &inputs).is_none());
-    let open = light(1, 0.0, [150.0, 50.0], 120.0);
+    let blocked = [blocked];
+    let flight = [InFlight {
+        start_server_ms: 0.0,
+        mover: STRANGER,
+        token: Uuid::from_u128(0xC8),
+        positions: &positions,
+        light: Some(&blocked),
+    }];
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &flight,
+        target: TARGET,
+    };
+    assert!(admit_light_samples(Some(&blocked), 0.0, &inputs).is_none());
+    let open = [light(1, 0.0, [150.0, 50.0], 120.0)];
+    let flight = [InFlight {
+        start_server_ms: 0.0,
+        mover: STRANGER,
+        token: Uuid::from_u128(0xC8),
+        positions: &positions,
+        light: Some(&open),
+    }];
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &flight,
+        target: TARGET,
+    };
     assert_eq!(
-        admit_light_samples(Some(&[open]), 0.0, &inputs)
+        admit_light_samples(Some(&open), 0.0, &inputs)
             .unwrap()
             .len(),
         1
@@ -441,24 +479,33 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
 
 #[test]
 fn glow_reaches_fails_closed_on_a_degenerate_reach_and_keeps_the_disc_verdict_past_the_cap() {
-    let ecs = fixture(false, None);
+    // Lighting off: every line-of-sight cell qualifies, so reach geometry alone decides.
+    let ecs = fixture(true, None);
     let sight = sight(&ecs, &[]);
     let instant = sight.at(&[]);
     assert!(!glow_reaches(
         &instant,
+        &[],
         &light(0, 0.0, [50.0, 50.0], f64::NAN)
     ));
-    assert!(!glow_reaches(&instant, &light(0, 0.0, [50.0, 50.0], 0.0)));
+    assert!(!glow_reaches(
+        &instant,
+        &[],
+        &light(0, 0.0, [50.0, 50.0], 0.0)
+    ));
     // A reach of 10,000 units is a 200×200-cell box, past `MAX_GLOW_ADMISSION_CELLS`: the disc
     // test decides — it touches the target's sight, so the sample is admitted even though its
     // polygon has been emptied.
     let mut huge = light(0, 0.0, [50.0, 50.0], 10_000.0);
     huge.polygons.clear();
-    assert!(glow_reaches(&instant, &huge));
-    // The same emptied polygon under the cap paints nothing → dropped.
+    assert!(glow_reaches(&instant, &[], &huge));
+    // An emptied polygon under the cap composes as an unoccluded light and reaches its own
+    // cell; a polygon that excludes every cell in reach paints nothing → dropped.
     let mut small = light(0, 0.0, [50.0, 50.0], 100.0);
     small.polygons.clear();
-    assert!(!glow_reaches(&instant, &small));
+    assert!(glow_reaches(&instant, &[], &small));
+    small.polygons = vec![vec![[5000.0, 5000.0], [5001.0, 5000.0], [5001.0, 5001.0]]];
+    assert!(!glow_reaches(&instant, &[], &small));
 }
 
 #[test]
@@ -492,5 +539,69 @@ fn admit_light_samples_reads_the_same_instant_sight_as_clip_samples() {
     assert_eq!(
         clip_samples(&positions, 1000.0, &inputs),
         vec![pos(200.0, 150.0, 50.0)]
+    );
+}
+
+/// A stranger's in-flight move carrying `light` along `positions`, starting at 1000 ms.
+fn bearer<'a>(positions: &'a [PosSample], light: &'a [LightSample]) -> [InFlight<'a>; 1] {
+    [InFlight {
+        start_server_ms: 1000.0,
+        mover: STRANGER,
+        token: Uuid::from_u128(0xC8),
+        positions,
+        light: Some(light),
+    }]
+}
+
+#[test]
+fn glow_admission_requires_the_glow_to_light_a_cell_the_target_sees() {
+    // An ember (intensity 0.2, below the dim floor 0.34) at (50,60), in plain line of sight of a
+    // normal-vision target in a dark scene, lights nothing that target sees — the lit mask
+    // lights nothing for it either — so no glow-only frame discloses its bearer's position.
+    // A torch above the floor at the same spot is admitted; a darkvision target within range
+    // (dark floor) is shown the ember.
+    let positions = vec![pos(0.0, 50.0, 60.0)];
+    let ember = vec![LightSample {
+        intensity: 0.2,
+        ..light(0, 0.0, [50.0, 60.0], 150.0)
+    }];
+    let torch = vec![light(0, 0.0, [50.0, 60.0], 150.0)];
+    let ecs = fixture(false, None);
+    let dark = sight(&ecs, &[]);
+    let ember_flight = bearer(&positions, &ember);
+    let inputs = ClipInputs {
+        sight: &dark,
+        in_flight: &ember_flight,
+        target: TARGET,
+    };
+    assert!(
+        admit_light_samples(Some(&ember), 1000.0, &inputs).is_none(),
+        "an ember below the dim floor lights no cell a normal-vision target sees"
+    );
+    let torch_flight = bearer(&positions, &torch);
+    let inputs = ClipInputs {
+        sight: &dark,
+        in_flight: &torch_flight,
+        target: TARGET,
+    };
+    assert_eq!(
+        admit_light_samples(Some(&torch), 1000.0, &inputs)
+            .unwrap()
+            .len(),
+        1
+    );
+    let ecs = fixture(false, Some(json!([{ "mode": "darkvision", "range": 3.0 }])));
+    let darkvision = sight(&ecs, &[]);
+    let inputs = ClipInputs {
+        sight: &darkvision,
+        in_flight: &ember_flight,
+        target: TARGET,
+    };
+    assert_eq!(
+        admit_light_samples(Some(&ember), 1000.0, &inputs)
+            .unwrap()
+            .len(),
+        1,
+        "a darkvision target within range sees the ember-lit cell"
     );
 }

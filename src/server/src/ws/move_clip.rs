@@ -151,11 +151,15 @@ pub(crate) fn clip_samples(
 /// (`point_segment_distance`). Over-admission is the sanctioned direction for the carried-
 /// light gate — a disc that merely grazes a corner counts — but a non-finite radius or
 /// center admits nothing, and a non-positive radius reduces to the point test.
-pub(crate) fn disc_intersects_polys(center: P, radius: f64, polys: &[Vec<P>]) -> bool {
+pub(crate) fn disc_intersects_polys<'a>(
+    center: P,
+    radius: f64,
+    polys: impl IntoIterator<Item = &'a [P]>,
+) -> bool {
     if !center.0.is_finite() || !center.1.is_finite() || !radius.is_finite() {
         return false;
     }
-    polys.iter().any(|poly| {
+    polys.into_iter().any(|poly| {
         if poly.len() < 3 {
             return false;
         }
@@ -177,21 +181,32 @@ pub(crate) fn disc_intersects_polys(center: P, radius: f64, polys: &[Vec<P>]) ->
 pub(crate) const MAX_GLOW_ADMISSION_CELLS: i64 = 4096;
 
 /// Whether `sample`'s glow lights a cell the recipient sees at `sight`'s instant: some cell
-/// center within `sample.dim` of its position, inside one of the sample's own occluded
-/// illumination polygons AND inside the recipient's line of sight — exactly the cells the
-/// client's light sweep paints (`lightSampleCells`), so an admitted sample is one that shows
-/// on the recipient's screen and a dropped one is one that would paint nothing. The disc test
-/// (`disc_intersects_polys`) is the cheap pre-filter; past `MAX_GLOW_ADMISSION_CELLS` it is
-/// also the verdict. A non-finite or non-positive reach admits nothing.
-pub(crate) fn glow_reaches(sight: &InstantSight<'_>, sample: &LightSample) -> bool {
+/// center within `sample.dim` of its position that the sample's own light reaches
+/// (`InstantSight::light_reaches` — `lighting::source_level` over the sample composed as an
+/// `InstantLight`, so its occluder polygon and taper apply) AND that the recipient sees with
+/// `lights` composed into the field (`InstantSight::sees` — the ONE visibility predicate:
+/// line of sight, the composed illumination against the source's floor, darkvision ranges
+/// and floors inherited). `lights` is the field at this instant (`ClipInputs::at`), which
+/// carries this very sample as its own timeline's chosen light, so an ember below a normal-
+/// vision recipient's dim floor lights nothing they see and is not admitted, while a
+/// darkvision recipient within range is shown it — exactly the cells `player_lit_mask` would
+/// light at rest. The disc test (`disc_intersects_polys`) is the cheap pre-filter; past
+/// `MAX_GLOW_ADMISSION_CELLS` it is also the verdict. A non-finite or non-positive reach
+/// admits nothing.
+pub(crate) fn glow_reaches(
+    sight: &InstantSight<'_>,
+    lights: &[InstantLight],
+    sample: &LightSample,
+) -> bool {
     let (px, py) = (sample.pos[0], sample.pos[1]);
     let dim = sample.dim;
     if !px.is_finite() || !py.is_finite() || !dim.is_finite() || dim <= 0.0 {
         return false;
     }
-    if !disc_intersects_polys((px, py), dim, &sight.los_polys()) {
+    if !sight.disc_touches_los((px, py), dim) {
         return false;
     }
+    let own = sight.sample_light(sample);
     let Some(centers) = sight.cell_centers_in(
         (px - dim, py - dim),
         (px + dim, py + dim),
@@ -199,23 +214,19 @@ pub(crate) fn glow_reaches(sight: &InstantSight<'_>, sample: &LightSample) -> bo
     ) else {
         return true;
     };
-    centers.into_iter().any(|c| {
-        (c.0 - px).hypot(c.1 - py) <= dim
-            && sight.in_los(c)
-            && sample.polygons.iter().any(|ring| {
-                let poly: Vec<P> = ring.iter().map(|v| (v[0], v[1])).collect();
-                point_in_poly(&poly, c)
-            })
-    })
+    centers
+        .into_iter()
+        .any(|c| sight.light_reaches(&own, c) && sight.sees(c, lights))
 }
 
 /// Per-recipient admission of a carried-light timeline: keep each sample whose glow lights a
-/// cell inside the clip target's line of sight AT THAT SAMPLE'S INSTANT (`glow_reaches`
-/// against the SAME instant sight the position clip reads, `ClipInputs::at` — never a second
-/// rule). A glow is admitted on line of sight alone: the light is what makes the cells it
-/// touches visible, so no illumination floor applies to it. `None` in and `None` out; a
-/// timeline no sample of which reaches the recipient is `None` too (the recipient learns
-/// nothing, not even that a light moved), never an empty list.
+/// cell the clip target sees AT THAT SAMPLE'S INSTANT (`glow_reaches` against the SAME
+/// instant sight and composed field the position clip reads, `ClipInputs::at` — never a
+/// second rule). PRECONDITION: the frame's own move is among `inputs.in_flight` (as
+/// `clip_move_stream` guarantees), so the sample under test is composed into the field it is
+/// judged against exactly once. `None` in and `None` out; a timeline no sample of which
+/// reaches the recipient is `None` too (the recipient learns nothing, not even that a light
+/// moved), never an empty list.
 pub(crate) fn admit_light_samples(
     samples: Option<&[LightSample]>,
     start_server_ms: f64,
@@ -224,8 +235,8 @@ pub(crate) fn admit_light_samples(
     let admitted: Vec<LightSample> = samples?
         .iter()
         .filter(|s| {
-            let (sight, _) = inputs.at(start_server_ms + s.t_ms);
-            glow_reaches(&sight, s)
+            let (sight, lights) = inputs.at(start_server_ms + s.t_ms);
+            glow_reaches(&sight, &lights, s)
         })
         .cloned()
         .collect();

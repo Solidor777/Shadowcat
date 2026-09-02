@@ -98,13 +98,14 @@ fn wall() -> serde_json::Value {
 #[tokio::test]
 async fn observer_admits_a_light_sample_whose_glow_reaches_past_its_clipped_position_prefix() {
     // Position clip: only t=0 is in the observer's view (t=1000 is behind the wall). Light
-    // admission: the far sample's 210-unit disc from (250,50) crosses the wall line at x=100
-    // (150 away) and lights the observer's own cell center (50,50) inside its vision, so the
-    // glow is admitted where the token is not.
+    // admission: the far sample's 300-unit disc from (250,50) crosses the wall line at x=100
+    // (150 away) and lights the observer's own cell center (50,50) — two cells out, inside the
+    // taper at level 0.67, above the normal-vision dim floor — inside its vision, so the glow
+    // is admitted where the token is not.
     let (room, _, obs_ctx, scene_id, _) =
         setup_dark_clip_room(Some((50.0, 50.0)), Some(wall())).await;
     let now = crate::ws::time::now_millis();
-    let (n, light) = clip_for(&torch_walk(scene_id, now, 210.0), &obs_ctx, None, &room)
+    let (n, light) = clip_for(&torch_walk(scene_id, now, 300.0), &obs_ctx, None, &room)
         .await
         .expect("the near sample is visible");
     assert_eq!(n, 1, "the position prefix is clipped exactly as before");
@@ -158,7 +159,7 @@ async fn glow_only_recipient_gets_a_frame_with_no_position_samples() {
     let (room, _, obs_ctx, scene_id, _) =
         setup_dark_clip_room(Some((50.0, 50.0)), Some(wall())).await;
     let now = crate::ws::time::now_millis();
-    let mut frame = torch_walk(scene_id, now, 210.0);
+    let mut frame = torch_walk(scene_id, now, 300.0);
     if let ServerMsg::MoveStream {
         samples,
         mover_light,
@@ -167,7 +168,7 @@ async fn glow_only_recipient_gets_a_frame_with_no_position_samples() {
     {
         samples[0].pos = [150.0, 60.0];
         let lamps = mover_light.as_mut().unwrap();
-        lamps[0] = lamp(0.0, [150.0, 60.0], 210.0);
+        lamps[0] = lamp(0.0, [150.0, 60.0], 300.0);
     }
     let out = clip_move_stream(
         &frame,
@@ -468,8 +469,8 @@ async fn egress_reemit_re_admits_the_concurrent_streams_light_timeline() {
 
 /// The own-move re-emit yields a glow-only frame when the recipient's new viewpoint is
 /// reached by a concurrent torch's glow but never by its bearer: A stands behind a second
-/// wall at x=300, and only from R's viewpoint past the first wall does A's 120-unit glow
-/// light a cell (250,50) in R's sight.
+/// wall at x=300, and only from R's viewpoint past the first wall does A's 150-unit glow
+/// light a cell (250,50) in R's sight (one cell out, level 0.67 — above the dim floor).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
     use crate::data::command::Operation;
@@ -517,8 +518,8 @@ async fn egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches() {
         ],
         mover_vision: None,
         mover_light: Some(vec![
-            lamp(0.0, [350.0, 50.0], 120.0),
-            lamp(1_000.0, [350.0, 50.0], 120.0),
+            lamp(0.0, [350.0, 50.0], 150.0),
+            lamp(1_000.0, [350.0, 50.0], 150.0),
         ]),
         cost: Some(0.0),
         truncated: Some(false),

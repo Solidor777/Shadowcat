@@ -318,6 +318,32 @@ pub fn cell_illumination(
     )
 }
 
+/// One source's contribution at `center` BEFORE composition: `0.0` when the source's own
+/// occluder polygon (`occluder`, non-empty) excludes the center, else `light_illumination` at
+/// the center's distance in cells. THE per-source reach rule — `cell_illumination_from` sums
+/// it over every source and the egress clip's `glow_reaches` reads it for a carried-light
+/// sample's own light (`InstantSight::light_reaches`), so "does this light reach this cell" is
+/// answered once. An empty occluder means "no occluder computed" and never occludes. A
+/// non-finite or non-positive level reads as `0.0` (fail-closed per source; a NaN reaching a
+/// running sum would poison the saturation clamp, which panics on NaN).
+pub fn source_level(light: &Light, occluder: &[P], center: P, world_units_per_cell: f64) -> f64 {
+    if !occluder.is_empty() && !point_in_poly(occluder, center) {
+        return 0.0;
+    }
+    let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
+    let dist_cells = if world_units_per_cell > 0.0 {
+        d / world_units_per_cell
+    } else {
+        d
+    };
+    let level = light_illumination(light, dist_cells);
+    if level.is_finite() && level > 0.0 {
+        level
+    } else {
+        0.0
+    }
+}
+
 /// `cell_illumination` over an arbitrary `(light, occluder polygon)` source sequence — THE
 /// composition body; `cell_illumination` is its index-aligned-slices spelling. Exists so a
 /// caller can append sources the scene's committed field does not hold (an in-flight carried
@@ -346,20 +372,8 @@ pub fn cell_illumination_from<'a>(
         add_tint(&mut tint_sum, env_color, level);
     }
     for (light, poly) in sources {
-        // Occlusion: a non-empty polygon that excludes the cell center kills this light's reach here.
-        if !poly.is_empty() && !point_in_poly(poly, center) {
-            continue;
-        }
-        let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
-        let dist_cells = if world_units_per_cell > 0.0 {
-            d / world_units_per_cell
-        } else {
-            d
-        };
-        let level = light_illumination(light, dist_cells);
-        // Non-finite or zero levels contribute nothing (fail-closed per source); a NaN reaching
-        // the running sum would also poison the saturation clamp below, which panics on NaN.
-        if level.is_finite() && level > 0.0 {
+        let level = source_level(light, poly, center, world_units_per_cell);
+        if level > 0.0 {
             total += level;
             add_tint(&mut tint_sum, light.color, level);
         }
