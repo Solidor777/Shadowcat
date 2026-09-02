@@ -219,16 +219,16 @@ display name.
   `TemplateControls.test.ts`, modal tests.
 
 **Steps:**
-- [ ] Controller/shell/modal re-plumb against generated types.
-- [ ] Drop the `/base` leg from the advisory gates: Task 3's `/base` capability removal makes
+- [x] Controller/shell/modal re-plumb against generated types.
+- [x] Drop the `/base` leg from the advisory gates: Task 3's `/base` capability removal makes
       `canPull`'s `canEdit(child, "/base")` leg (and `#canApplyUpdate`'s coverage of the `/base`
       change) unsatisfiable for non-GM effective owners, which would hide pull/revert/push from
       exactly the users the server now authorizes. Remove both, mirroring the server's
       `TemplateMerge` exemption of the whole-band `/base` refresh; update
       `templatesController.svelte.ts`'s `canPull` comment (the "WRITE_FIELDS (base/system) ∪
       MANAGE_EMBEDDED" cap-union description) and the controller tests that mock `canEdit`.
-- [ ] Deletion pass (verify zero remaining imports of the deleted symbols repo-wide first).
-- [ ] Client gates (`pnpm -r test`, `pnpm -r typecheck`, lint family); commit.
+- [x] Deletion pass (verify zero remaining imports of the deleted symbols repo-wide first).
+- [x] Client gates (`pnpm -r test`, `pnpm -r typecheck`, lint family); commit.
 
 ---
 
@@ -245,10 +245,10 @@ display name.
 - Sweep: `docs/POST_WORK_FINDINGS.md` per campaign convention.
 
 **Steps:**
-- [ ] Skill rewrites in the plugin repo; commit + push there (only this campaign's files — other
+- [x] Skill rewrites in the plugin repo; commit + push there (only this campaign's files — other
   agents have in-flight edits in that repo).
-- [ ] Docs updates committed on the branch.
-- [ ] Full gate suite (Global Constraints list) green.
+- [x] Docs updates committed on the branch.
+- [x] Full gate suite (Global Constraints list) green.
 - [ ] Final two-reviewer buddy review of the whole branch; fold findings.
 - [ ] Merge to main via temp detached worktree (`git merge --no-ff`), push, `gh run watch` to
   green, remove temp worktree.
