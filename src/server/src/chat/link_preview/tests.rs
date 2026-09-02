@@ -338,6 +338,7 @@ async fn fetch_image_bytes_succeeds_with_correct_content_type() {
         &client,
         &format!("http://stub.test:{port}/"),
         Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
     )
     .await
     .unwrap();
@@ -363,6 +364,7 @@ async fn fetch_image_bytes_rejects_wrong_content_type() {
         &client,
         &format!("http://stub.test:{port}/"),
         Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
     )
     .await
     .unwrap_err();
@@ -385,6 +387,7 @@ async fn fetch_image_bytes_rejects_oversized_body() {
         &client,
         &format!("http://stub.test:{port}/"),
         Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
     )
     .await
     .unwrap_err();
@@ -397,9 +400,14 @@ async fn fetch_image_bytes_rejects_literal_blocked_ip_hosts() {
     // re-run against `fetch_image_bytes` directly: the SSRF guard applies
     // identically to every `guarded_get` consumer.
     let client = build_client_allow_loopback();
-    let err = fetch_image_bytes(&client, "http://169.254.169.254/", Duration::from_secs(5))
-        .await
-        .unwrap_err();
+    let err = fetch_image_bytes(
+        &client,
+        "http://169.254.169.254/",
+        Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, PreviewError::BlockedAddress);
 }
 
@@ -408,9 +416,14 @@ async fn fetch_image_bytes_rejects_a_host_that_resolves_to_a_blocked_address() {
     let mut hosts = HashMap::new();
     hosts.insert("blocked.test", vec!["10.0.0.5".parse().unwrap()]);
     let client = client_with_hosts(hosts);
-    let err = fetch_image_bytes(&client, "http://blocked.test/", Duration::from_secs(5))
-        .await
-        .unwrap_err();
+    let err = fetch_image_bytes(
+        &client,
+        "http://blocked.test/",
+        Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, PreviewError::BlockedAddress);
 }
 
@@ -847,6 +860,7 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
         Uuid::new_v4(),
         1_000,
         now,
+        &[],
     )
     .await;
 
@@ -858,6 +872,105 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
         .expect("persisted tier not written");
     assert_eq!(row.title.as_deref(), Some("Fresh Title"));
     assert_eq!(row.description.as_deref(), Some("Fresh Description"));
+}
+
+// -- enrich: inline chat image queueing -----------------------------------
+
+#[tokio::test]
+async fn enrich_queues_an_inline_image_job_for_a_valid_image_source() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = Vec::new();
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &[ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }],
+    )
+    .await;
+    assert_eq!(pending.len(), 1);
+    match &pending[0] {
+        PendingEnrichment::InlineImage { image_url, alt } => {
+            assert_eq!(image_url, "https://x.example/a.png");
+            assert_eq!(alt, "a map");
+        }
+        other => panic!("expected InlineImage, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn enrich_skips_an_inline_image_source_with_a_blocked_url() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = Vec::new();
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &[ImageSource {
+            url: "http://169.254.169.254/x.png".to_string(),
+            alt: "blocked".to_string(),
+        }],
+    )
+    .await;
+    assert!(
+        pending.is_empty(),
+        "a blocked-address image source must never be queued"
+    );
+}
+
+#[tokio::test]
+async fn enrich_caps_inline_image_jobs_at_max_inline_images() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = Vec::new();
+    let sources: Vec<ImageSource> = (0..MAX_INLINE_IMAGES + 3)
+        .map(|i| ImageSource {
+            url: format!("https://x.example/{i}.png"),
+            alt: String::new(),
+        })
+        .collect();
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &sources,
+    )
+    .await;
+    assert_eq!(pending.len(), MAX_INLINE_IMAGES);
 }
 
 // -- link_preview_cache repository methods -------------------------------

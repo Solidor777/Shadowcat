@@ -49,7 +49,7 @@ async fn text_only_body_matches_sanitize_byte_identically() {
         actor_owner: None,
         policy: &policy,
     };
-    let got = compose_message("hello world", deps, ScanMode::Execute)
+    let (got, _image_urls) = compose_message("hello world", deps, ScanMode::Execute)
         .await
         .unwrap();
     assert_eq!(got, sanitize::sanitize("hello world", &policy).segments);
@@ -66,7 +66,7 @@ async fn inline_roll_executes_under_execute_mode() {
         actor_owner: None,
         policy: &policy,
     };
-    let got = compose_message("roll [[1d6]] now", deps, ScanMode::Execute)
+    let (got, _image_urls) = compose_message("roll [[1d6]] now", deps, ScanMode::Execute)
         .await
         .unwrap();
     assert!(
@@ -103,7 +103,7 @@ async fn button_span_validates_without_rolling() {
         actor_owner: None,
         policy: &policy,
     };
-    let got = compose_message("[[roll:1d20|Attack]]", deps, ScanMode::NoExecute)
+    let (got, _image_urls) = compose_message("[[roll:1d20|Attack]]", deps, ScanMode::NoExecute)
         .await
         .unwrap();
     assert_eq!(
@@ -127,9 +127,10 @@ async fn doc_link_span_stores_target_and_label() {
         policy: &policy,
     };
     let id = "00000000-0000-0000-0000-000000000001";
-    let got = compose_message(&format!("[[doc:{id}|My Doc]]"), deps, ScanMode::NoExecute)
-        .await
-        .unwrap();
+    let (got, _image_urls) =
+        compose_message(&format!("[[doc:{id}|My Doc]]"), deps, ScanMode::NoExecute)
+            .await
+            .unwrap();
     assert_eq!(
         got,
         vec![Segment::DocLink {
@@ -178,7 +179,7 @@ async fn asset_span_stores_an_image_segment_when_images_are_enabled() {
         actor_owner: None,
         policy: &policy,
     };
-    let got = compose_message(
+    let (got, _image_urls) = compose_message(
         &format!("[[asset:{asset_id}|a map]]"),
         deps,
         ScanMode::NoExecute,
@@ -206,9 +207,10 @@ async fn asset_span_with_no_alt_stores_empty_alt() {
         actor_owner: None,
         policy: &policy,
     };
-    let got = compose_message(&format!("[[asset:{asset_id}]]"), deps, ScanMode::NoExecute)
-        .await
-        .unwrap();
+    let (got, _image_urls) =
+        compose_message(&format!("[[asset:{asset_id}]]"), deps, ScanMode::NoExecute)
+            .await
+            .unwrap();
     assert_eq!(
         got,
         vec![Segment::Image {
@@ -329,4 +331,36 @@ async fn asset_span_with_over_long_alt_is_refused() {
     .await
     .unwrap_err();
     assert!(matches!(err, ComposeError::Roll(RollError::AltTooLong)));
+}
+
+#[tokio::test]
+async fn markdown_image_urls_are_collected_from_a_text_chunk_alongside_a_doc_link() {
+    let (repo, world_id) = seed_world().await;
+    let policy = ChatContentPolicy {
+        markdown: Some(true),
+        images: Some(true),
+        ..Default::default()
+    };
+    let deps = ComposeDeps {
+        repo: &repo,
+        world_id,
+        channel: "general",
+        actor_owner: None,
+        policy: &policy,
+    };
+    let id = "00000000-0000-0000-0000-000000000001";
+    let (_got, image_urls) = compose_message(
+        &format!("![a map](https://x.example/a.png) [[doc:{id}|My Doc]]"),
+        deps,
+        ScanMode::NoExecute,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        image_urls,
+        vec![sanitize::ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }]
+    );
 }

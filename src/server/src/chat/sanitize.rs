@@ -20,6 +20,19 @@ use std::sync::{Arc, Mutex};
 use crate::chat::{ChatContentPolicy, Segment};
 use pulldown_cmark::{html, Event, Options, Parser, Tag, TagEnd};
 
+/// One image source `sanitize` extracted from raw input: a Markdown
+/// `![alt](url)` span's `dest_url` + accumulated alt text, or a raw HTML
+/// `<img src=...>` tag's `src` (whose `alt` is NOT captured — see
+/// `ammonia_for`'s attribute_filter doc for why only the Markdown-syntax
+/// path can correlate `src` and `alt` from the same element).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageSource {
+    /// The image URL as authored (relative to the message, not yet fetched).
+    pub url: String,
+    /// Alt text, or empty when none was captured.
+    pub alt: String,
+}
+
 /// The result of sanitizing one message body: the segment(s) to store, plus
 /// every image source the input carried (Markdown `![alt](url)` syntax or a
 /// raw HTML `<img src>`) — collected ONLY when `policy.images()` is on, empty
@@ -32,7 +45,7 @@ pub struct Sanitized {
     /// shape).
     pub segments: Vec<Segment>,
     /// Deduped (first-seen order), uncapped image sources this body carried.
-    pub image_urls: Vec<String>,
+    pub image_urls: Vec<ImageSource>,
 }
 
 /// Enrich raw user input into a sanitized `Sanitized` under `policy`.
@@ -53,7 +66,7 @@ pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Sanitized {
             image_urls: Vec::new(),
         };
     }
-    let mut image_urls: Vec<String> = Vec::new();
+    let mut image_urls: Vec<ImageSource> = Vec::new();
     // Produce an HTML string, then hand the WHOLE thing to ammonia once.
     let html_input = if policy.markdown() {
         let mut opts = Options::empty();
@@ -78,8 +91,13 @@ pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Sanitized {
             .into_inner()
             .expect("attribute_filter never panics while holding the lock");
         for url in raw_html_srcs {
-            if !image_urls.contains(&url) {
-                image_urls.push(url);
+            if !image_urls.iter().any(|s| s.url == url) {
+                // Raw HTML `<img>` syntax has no correlated alt text (see
+                // `ImageSource`'s doc) -- empty, not guessed.
+                image_urls.push(ImageSource {
+                    url,
+                    alt: String::new(),
+                });
             }
         }
     }
@@ -110,7 +128,7 @@ pub fn sanitize(raw: &str, policy: &ChatContentPolicy) -> Sanitized {
 fn rewrite_markdown_images<'a>(
     parser: Parser<'a>,
     policy: &ChatContentPolicy,
-    image_urls: &mut Vec<String>,
+    image_urls: &mut Vec<ImageSource>,
 ) -> Vec<Event<'a>> {
     let mut out = Vec::new();
     // `(dest_url, accumulated alt text)` while inside an image span.
@@ -120,8 +138,11 @@ fn rewrite_markdown_images<'a>(
             match ev {
                 Event::End(TagEnd::Image) => {
                     let (dest_url, alt) = in_image.take().expect("in_image checked Some above");
-                    if policy.images() && !image_urls.contains(&dest_url) {
-                        image_urls.push(dest_url);
+                    if policy.images() && !image_urls.iter().any(|s| s.url == dest_url) {
+                        image_urls.push(ImageSource {
+                            url: dest_url,
+                            alt: alt.clone(),
+                        });
                     }
                     out.push(Event::Text(alt.into()));
                 }

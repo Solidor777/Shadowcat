@@ -60,25 +60,33 @@ pub(crate) enum ComposeError {
     Data(DataError),
 }
 
-/// Composes a message body into its segment list, per this module's doc
-/// comment. Moved verbatim from `handle_send_message`'s Normal/Emote arm.
+/// Composes a message body into its segment list plus every inline image
+/// source `sanitize` collected across every `Text` chunk (see
+/// `Sanitized.image_urls`'s doc -- the fast path's single whole-body sanitize
+/// call and the per-chunk loop's per-`Text`-chunk calls both contribute),
+/// per this module's doc comment. Moved verbatim from `handle_send_message`'s
+/// Normal/Emote arm.
 pub(crate) async fn compose_message(
     body: &str,
     deps: ComposeDeps<'_>,
     mode: ScanMode,
-) -> Result<Vec<Segment>, ComposeError> {
+) -> Result<(Vec<Segment>, Vec<sanitize::ImageSource>), ComposeError> {
     let chunks =
         rolls::scan_body_capped(body, rolls::MAX_INLINE_ROLLS).map_err(ComposeError::Roll)?;
     if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
-        return Ok(sanitize::sanitize(body, deps.policy).segments);
+        let sanitized = sanitize::sanitize(body, deps.policy);
+        return Ok((sanitized.segments, sanitized.image_urls));
     }
     let mut dice_ctx: Option<crate::dice::ParseContext> = None;
     let mut roll_host: Option<Option<Document>> = None;
     let mut segments = Vec::with_capacity(chunks.len());
+    let mut image_urls: Vec<sanitize::ImageSource> = Vec::new();
     for chunk in chunks {
         match chunk {
             rolls::BodyChunk::Text(t) => {
-                segments.extend(sanitize::sanitize(t, deps.policy).segments)
+                let sanitized = sanitize::sanitize(t, deps.policy);
+                segments.extend(sanitized.segments);
+                image_urls.extend(sanitized.image_urls);
             }
             rolls::BodyChunk::Inline(formula) => match mode {
                 ScanMode::NoExecute => return Err(ComposeError::Inline),
@@ -155,7 +163,7 @@ pub(crate) async fn compose_message(
             }
         }
     }
-    Ok(segments)
+    Ok((segments, image_urls))
 }
 
 #[cfg(test)]

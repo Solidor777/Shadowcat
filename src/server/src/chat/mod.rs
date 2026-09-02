@@ -61,7 +61,7 @@ pub use preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
     PREVIEW_FETCH_PER_MIN,
 };
-pub use sanitize::{sanitize, Sanitized};
+pub use sanitize::{sanitize, ImageSource, Sanitized};
 pub use settings::{
     channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
     CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE,
@@ -1042,7 +1042,7 @@ pub async fn handle_send_message(
     // sanitize call and the enrich gate, both of which run regardless of
     // whether this attempt turns out to be a roll.
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let mut content_segments = if parsed.kind == MessageKind::Roll {
+    let (mut content_segments, image_urls) = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id, &channel).await;
         // The roll's actor binding: the send's validated `actor_owner` —
         // references resolve against that document's `system` band, or fail
@@ -1054,14 +1054,17 @@ pub async fn handle_send_message(
             None => None,
         };
         match rolls::execute_roll(&parsed.body, dice_ctx, host.as_ref()) {
-            Ok((formula, outcome, spec, raw)) => vec![Segment::RollEmbed {
-                formula,
-                outcome,
-                roll_id: Uuid::new_v4(),
-                spec: Some(Box::new(spec)),
-                raw: Some(Box::new(raw)),
-                recalc_history: None,
-            }],
+            Ok((formula, outcome, spec, raw)) => (
+                vec![Segment::RollEmbed {
+                    formula,
+                    outcome,
+                    roll_id: Uuid::new_v4(),
+                    spec: Some(Box::new(spec)),
+                    raw: Some(Box::new(raw)),
+                    recalc_history: None,
+                }],
+                Vec::new(),
+            ),
             Err(e) => {
                 let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
                 return room
@@ -1091,7 +1094,7 @@ pub async fn handle_send_message(
             policy: &policy,
         };
         match body::compose_message(&parsed.body, compose_deps, body::ScanMode::Execute).await {
-            Ok(segments) => segments,
+            Ok((segments, image_urls)) => (segments, image_urls),
             Err(body::ComposeError::Data(e)) => return Err(SendMessageError::Data(e)),
             Err(body::ComposeError::Inline) => {
                 unreachable!("ComposeError::Inline cannot occur under ScanMode::Execute")
@@ -1113,16 +1116,24 @@ pub async fn handle_send_message(
         }
     };
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
-    // The `kind != Roll` guard is EXPLICIT, not incidental: a
-    // successful roll falls through here with `content_segments == [RollEmbed]`
-    // (only the roll-EXECUTION-FAILURE arm returns early), so without this
-    // guard a `/roll` on a preview-enabled world would enter `enrich` — a no-op
-    // today only because `enrich` scans `Segment::Html` runs (none in a
-    // RollEmbed), but a latent path to attaching outbound-fetched previews to a
-    // roll message if that ever changes. Synchronous, before publish — no
-    // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
-    if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
+    // Link-preview / inline-image enrich stage: only for non-Roll bodies. The
+    // `kind != Roll` guard is EXPLICIT, not incidental: a successful roll
+    // falls through here with `content_segments == [RollEmbed]` (only the
+    // roll-EXECUTION-FAILURE arm returns early), so without this guard a
+    // `/roll` on a preview/image-enabled world would enter `enrich` — a
+    // no-op today only because `enrich` scans `Segment::Html` runs and
+    // `image_urls` (never populated for a roll body), but a latent path to
+    // attaching outbound-fetched content to a roll message if that ever
+    // changes. Runs when EITHER href-preview scanning is enabled
+    // (`previews_enabled`, which requires `hyperlinks`) OR the composer
+    // already collected inline image sources (`image_urls`, gated
+    // independently on `policy.images()` inside `sanitize` -- a world can
+    // enable images without hyperlinks) -- otherwise a body with
+    // hyperlinks off but images on would collect `image_urls` in vain,
+    // since only `enrich` turns them into `PendingEnrichment::InlineImage`
+    // jobs. Synchronous, before publish — no spawned task, no post-publish
+    // revision, no message-deleted-mid-fetch race.
+    if parsed.kind != MessageKind::Roll && (policy.previews_enabled() || !image_urls.is_empty()) {
         pending = link_preview::enrich(
             &mut content_segments,
             link_preview::EnrichDeps {
@@ -1132,6 +1143,7 @@ pub async fn handle_send_message(
             ctx.user_id,
             now,
             std::time::Instant::now(),
+            &image_urls,
         )
         .await;
     }
@@ -1291,9 +1303,11 @@ pub async fn handle_edit_message(
         }
         // Roll immutability: editing content INTO a roll (e.g. a plain message
         // edited to "/roll 1d6") is rejected the same as editing a message
-        // that already IS one — no editing-in-to a roll either. Edits also
-        // never call `scan_body`: an edit's `[[...]]` spans stay literal text
-        // through the ordinary sanitize path below (never re-executed).
+        // that already IS one — no editing-in-to a roll either. An edit's
+        // body IS scanned below (`body::compose_message`, `ScanMode::NoExecute`)
+        // for `[[...]]` spans -- `[[doc:...]]`/`[[asset:...]]`/`[[roll:...]]`
+        // resolve exactly like a send, but an inline `[[formula]]` roll span
+        // is refused rather than executed (`ComposeError::Inline`).
         if parsed.kind == MessageKind::Roll {
             return Err(SendMessageError::RollImmutable);
         }
@@ -1304,13 +1318,40 @@ pub async fn handle_edit_message(
     }
 
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let mut segments = sanitize(&body, &policy).segments;
-    // A preview is derived, not authored — re-derive on every edit so the
-    // card always reflects the CURRENT edited content (never a stale link
-    // preview from before the edit). The roll-immutability checks above
-    // already guarantee `kind != Roll` here.
+    // Routed through the SAME chunk->segment composer `handle_send_message`
+    // uses, under `ScanMode::NoExecute` -- an edit's `[[...]]`/`[[roll:...]]`
+    // spans are recognized (so a `[[doc:...]]`/`[[asset:...]]` link/image span
+    // authored in an edit resolves exactly like one authored at send time),
+    // but an inline `[[formula]]` roll span is REFUSED (`ComposeError::Inline`
+    // -> `RollImmutable` below) rather than executed: a roll's outcome is
+    // immutable once sent, and this is the one difference from the send
+    // path's `ScanMode::Execute`.
+    let compose_deps = body::ComposeDeps {
+        repo,
+        world_id: room.world_id,
+        channel: &sys.channel,
+        actor_owner: sys.actor_owner.as_ref(),
+        policy: &policy,
+    };
+    let (mut segments, image_urls) =
+        match body::compose_message(&body, compose_deps, body::ScanMode::NoExecute).await {
+            Ok((segments, image_urls)) => (segments, image_urls),
+            Err(body::ComposeError::Data(e)) => return Err(SendMessageError::Data(e)),
+            Err(body::ComposeError::Inline) => return Err(SendMessageError::RollImmutable),
+            // Edits never author a whispered System error notice the way
+            // `handle_send_message` does on a scan/roll failure -- an edit's
+            // malformed span is reported to the editor directly as a
+            // rejected request, not published as a new message.
+            Err(body::ComposeError::Roll(e)) => return Err(SendMessageError::Roll(e)),
+        };
+    // A preview/inline-image is derived, not authored — re-derive on every
+    // edit so the card always reflects the CURRENT edited content (never a
+    // stale link preview or inline image from before the edit). The
+    // roll-immutability checks above already guarantee `kind != Roll` here.
+    // See `handle_send_message`'s identical gate for why `image_urls` alone
+    // (independent of `previews_enabled`) also triggers this stage.
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    if policy.previews_enabled() {
+    if policy.previews_enabled() || !image_urls.is_empty() {
         pending = link_preview::enrich(
             &mut segments,
             link_preview::EnrichDeps {
@@ -1320,6 +1361,7 @@ pub async fn handle_edit_message(
             ctx.user_id,
             now,
             std::time::Instant::now(),
+            &image_urls,
         )
         .await;
     }

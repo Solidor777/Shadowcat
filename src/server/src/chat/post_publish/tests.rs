@@ -219,6 +219,244 @@ async fn resolve_preview_image_cache_miss_fetches_and_creates_asset() {
 }
 
 #[tokio::test]
+async fn resolve_inline_image_cache_miss_fetches_creates_a_chat_image_asset() {
+    let router = Router::new().route(
+        "/pic.png",
+        get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                vec![4u8, 4, 4],
+            )
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let root = tempfile::tempdir().unwrap();
+
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    let image_url = format!("http://stub.test:{port}/pic.png");
+
+    let resolved = resolve_inline_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        image_url.clone(),
+        "a map".to_string(),
+    )
+    .await
+    .expect("cache miss must fetch and create a chat-image asset");
+    let ResolvedEnrichment::NewImageSegment(Segment::Image { asset_id, alt }) = resolved else {
+        panic!("expected a new Image segment");
+    };
+    assert_eq!(alt, "a map");
+    let asset = repo.get_asset(asset_id).await.unwrap().unwrap();
+    assert_eq!(asset.created_by, None);
+    assert_eq!(asset.byte_size, 3);
+    assert_eq!(asset.original_name, "pic.png");
+    assert_eq!(
+        crate::data::asset::tags::provenance_of(&asset.derived_tags),
+        crate::data::asset::Provenance::ChatImage
+    );
+    let row = repo
+        .get_link_preview_cache(&image_url)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.image_asset_id, Some(asset_id));
+}
+
+#[tokio::test]
+async fn resolve_inline_image_cache_hit_skips_network_fetch() {
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let asset = crate::data::asset::Asset {
+        id: Uuid::new_v4(),
+        world_id: world.id,
+        storage_key: "x".into(),
+        original_name: "pic.png".into(),
+        content_type: "image/png".into(),
+        byte_size: 3,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    };
+    repo.insert_asset(&asset).await.unwrap();
+    let image_url = "https://cached.example/pic.png";
+    repo.upsert_link_preview_cache(image_url, None, None, 0)
+        .await
+        .unwrap();
+    repo.set_link_preview_cache_image(image_url, asset.id)
+        .await
+        .unwrap();
+
+    // A client pointed at nothing reachable: a cache-hit skip is proven by
+    // resolving without hanging/erroring on a real fetch attempt.
+    let unreachable_client = Arc::new(build_link_preview_client());
+    let root = tempfile::tempdir().unwrap();
+    let resolved = resolve_inline_image(
+        test_fetch_deps(
+            repo,
+            unreachable_client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        image_url.to_string(),
+        "cached alt".to_string(),
+    )
+    .await
+    .expect("cache hit must resolve without a network fetch");
+    let ResolvedEnrichment::NewImageSegment(Segment::Image { asset_id, alt }) = resolved else {
+        panic!("expected a new Image segment");
+    };
+    assert_eq!(asset_id, asset.id);
+    assert_eq!(alt, "cached alt");
+}
+
+#[tokio::test]
+async fn resolve_inline_image_refuses_a_body_over_max_inline_image_bytes() {
+    let router = Router::new().route(
+        "/big.png",
+        get(|| async {
+            let body = vec![0u8; MAX_INLINE_IMAGE_BYTES + 1024];
+            ([(axum::http::header::CONTENT_TYPE, "image/png")], body)
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    let image_url = format!("http://stub.test:{port}/big.png");
+
+    let resolved = resolve_inline_image(
+        test_fetch_deps(
+            repo.clone(),
+            client,
+            root.path().to_path_buf(),
+            test_preview_fetch_locks(),
+        ),
+        world.id,
+        image_url,
+        "too big".to_string(),
+    )
+    .await;
+    assert!(
+        resolved.is_none(),
+        "a body over MAX_INLINE_IMAGE_BYTES must be refused, not asset-ified"
+    );
+    assert!(repo
+        .list_assets_by_world(world.id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn run_pending_enrichments_appends_new_image_segment_for_an_inline_image_job() {
+    let router = Router::new().route(
+        "/pic.png",
+        get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/png")],
+                vec![2u8, 2, 2],
+            )
+        }),
+    );
+    let (addr, _handle) = spawn_stub(router).await;
+    let port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+
+    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+    let owner = repo
+        .create_user("u", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("w", owner, 0).await.unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg
+        .get_or_create(repo.as_ref(), world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let ctx = PermissionContext {
+        user_id: owner,
+        world_role: WorldRole::Gm,
+    };
+    let message_id = seed_message(&room, &repo, &ctx).await;
+
+    let client = Arc::new(crate::chat::link_preview::build_client_with_resolve_fn(
+        |_host| Ok(vec!["127.0.0.1".parse().unwrap()]),
+    ));
+    let jobs = vec![PendingEnrichment::InlineImage {
+        image_url: format!("http://stub.test:{port}/pic.png"),
+        alt: "a map".to_string(),
+    }];
+    let root = tempfile::tempdir().unwrap();
+
+    run_pending_enrichments(
+        PostPublishDeps {
+            room: room.clone(),
+            repo: repo.clone(),
+            client,
+            assets_root: root.path().to_path_buf(),
+            retain_originals: true,
+            write_barrier: test_write_barrier(),
+            preview_fetch_locks: test_preview_fetch_locks(),
+        },
+        message_id,
+        world.id,
+        jobs,
+    )
+    .await;
+
+    let stored = repo.get_document(message_id).await.unwrap().unwrap();
+    let sys: MessageEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    let found = sys
+        .content
+        .iter()
+        .find_map(|s| match s {
+            Segment::Image { asset_id, alt } => Some((*asset_id, alt.clone())),
+            _ => None,
+        })
+        .expect("expected an appended Image segment");
+    assert_eq!(found.1, "a map");
+    let asset = repo.get_asset(found.0).await.unwrap().unwrap();
+    assert_eq!(
+        crate::data::asset::tags::provenance_of(&asset.derived_tags),
+        crate::data::asset::Provenance::ChatImage
+    );
+}
+
+#[tokio::test]
 async fn run_pending_enrichments_patches_matching_preview_by_url() {
     let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
     let owner = repo

@@ -28,6 +28,7 @@ use uuid::Uuid;
 use super::preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, NEGATIVE_TTL, POSITIVE_TTL, PREVIEW_FETCH_PER_MIN,
 };
+use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
 /// A server-fetched preview. Stored verbatim by the ingest stage (a later
@@ -62,6 +63,18 @@ pub struct LinkPreview {
 /// order, applied to the DEDUPED candidate list — a message pasting the same
 /// link four times still counts it once toward this cap.
 pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;
+
+/// Cap on distinct inline chat images (Markdown/HTML image sources
+/// `sanitize` collected) queued for background asset-ification per message,
+/// independent of `MAX_PREVIEWS_PER_MESSAGE` — an inline image is the
+/// message's own primary content, not a linked page's preview.
+pub const MAX_INLINE_IMAGES: usize = 4;
+/// Byte cap for one inline chat image fetch
+/// (`post_publish::resolve_inline_image`): larger than `MAX_IMAGE_BYTES`
+/// (a link-preview `og:image` thumbnail) since an inline chat image is
+/// full-size message content, not a small thumbnail; smaller than
+/// `MAX_PREVIEW_BYTES` (a page's whole HTML document).
+pub const MAX_INLINE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Bounded scan for the `href` attribute of a genuine `<a ...>` tag opener
 /// across an already ammonia-sanitized HTML run — NOT a raw `href="..."`
@@ -216,15 +229,21 @@ async fn cached_or_fetch(
 ///
 /// Returns any `PendingEnrichment` jobs the caller must run AFTER its own
 /// synchronous publish returns -- an extracted `og:image` candidate not yet
-/// fetched -- for the background image pipeline
+/// fetched, or an inline chat image (`image_urls`, from `Sanitized.image_urls`)
+/// not yet fetched -- for the background image pipeline
 /// (`chat::post_publish::run_pending_enrichments`), never run on this
-/// request path.
+/// request path. `image_urls` is queued independently of the href-preview
+/// scan above: it carries Markdown/HTML image sources `sanitize` already
+/// gated on `policy.images()`, so no further policy check applies here --
+/// only the same URL-validation and per-user rate-limit guard every other
+/// outbound fetch candidate in this function passes through.
 pub async fn enrich(
     segments: &mut Vec<Segment>,
     deps: EnrichDeps<'_>,
     user: Uuid,
     now_ms: i64,
     now: Instant,
+    image_urls: &[ImageSource],
 ) -> Vec<PendingEnrichment> {
     let EnrichDeps {
         repo,
@@ -346,6 +365,35 @@ pub async fn enrich(
             });
         }
     }
+
+    // Inline chat images: `image_urls` already passed `policy.images()` inside
+    // `sanitize` (only populated when the toggle is on), so the remaining
+    // gates here are the same ones every other outbound fetch candidate in
+    // this function passes through -- URL validation and the per-user rate
+    // limit -- never a second policy check. Capped at `MAX_INLINE_IMAGES`
+    // SUCCESSFULLY queued jobs, first-seen order; a rejected/rate-limited
+    // candidate does not consume a slot.
+    let mut queued = 0usize;
+    for src in image_urls {
+        if queued >= MAX_INLINE_IMAGES {
+            break;
+        }
+        let Ok(parsed) = Url::parse(&src.url) else {
+            continue;
+        };
+        if validate_url(&parsed).is_err() {
+            continue;
+        }
+        if !rate.check(user, now_ms, PREVIEW_FETCH_PER_MIN) {
+            continue;
+        }
+        pending.push(PendingEnrichment::InlineImage {
+            image_url: src.url.clone(),
+            alt: src.alt.clone(),
+        });
+        queued += 1;
+    }
+
     pending
 }
 
@@ -904,17 +952,22 @@ async fn fetch_preview_inner(
 }
 
 /// Fetches `raw_url` through the SAME SSRF-guarded pipeline `fetch_preview`
-/// uses (`guarded_get`), gated on an `image/*` Content-Type. Used by the
-/// post-publish image background pipeline (`post_publish`) -- never on the
-/// synchronous send/edit request path.
+/// uses (`guarded_get`), gated on an `image/*` Content-Type and `max_bytes`.
+/// Used by the post-publish image background pipeline (`post_publish`) --
+/// never on the synchronous send/edit request path. Callers pass
+/// `MAX_IMAGE_BYTES` for a link-preview/oEmbed thumbnail or
+/// `MAX_INLINE_IMAGE_BYTES` for a full-size inline chat image -- the two
+/// pipelines share this one guarded fetch but differ on how large a "small
+/// thumbnail" vs. "message's own content" is allowed to be.
 pub async fn fetch_image_bytes(
     client: &reqwest::Client,
     raw_url: &str,
     deadline: Duration,
+    max_bytes: usize,
 ) -> Result<(String, Vec<u8>), PreviewError> {
     match tokio::time::timeout(
         deadline,
-        guarded_get(client, raw_url, ExpectedContentType::Image, MAX_IMAGE_BYTES),
+        guarded_get(client, raw_url, ExpectedContentType::Image, max_bytes),
     )
     .await
     {

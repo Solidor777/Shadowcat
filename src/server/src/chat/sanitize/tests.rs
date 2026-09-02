@@ -1,4 +1,4 @@
-use crate::chat::{sanitize, ChatContentPolicy, Segment};
+use crate::chat::{sanitize, ChatContentPolicy, ImageSource, Segment};
 
 fn off() -> ChatContentPolicy {
     ChatContentPolicy::default()
@@ -294,11 +294,18 @@ fn images_on_collects_markdown_image_url_and_strips_the_tag() {
     let rendered = render(&out.segments);
     assert!(!rendered.contains("<img"), "img survived: {rendered}");
     assert!(rendered.contains("a map"), "alt text lost: {rendered}");
-    assert_eq!(out.image_urls, vec!["https://x.example/a.png".to_string()]);
+    assert_eq!(
+        out.image_urls,
+        vec![ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }]
+    );
 }
 
 /// A raw HTML `<img src=... alt=...>` (not Markdown `![]()` syntax) is
-/// collected the same way, via ammonia's `attribute_filter`.
+/// collected the same way, via ammonia's `attribute_filter` — alt text is
+/// NOT correlated for this path (see `ImageSource`'s doc).
 #[test]
 fn images_on_collects_raw_html_image_url_and_strips_the_tag() {
     let out = sanitize(
@@ -307,7 +314,13 @@ fn images_on_collects_raw_html_image_url_and_strips_the_tag() {
     );
     let rendered = render(&out.segments);
     assert!(!rendered.contains("<img"), "img survived: {rendered}");
-    assert_eq!(out.image_urls, vec!["https://x.example/a.png".to_string()]);
+    assert_eq!(
+        out.image_urls,
+        vec![ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: String::new(),
+        }]
+    );
 }
 
 /// Multiple images in one body are deduped in first-seen order.
@@ -320,8 +333,14 @@ fn images_on_dedupes_repeated_urls_in_first_seen_order() {
     assert_eq!(
         out.image_urls,
         vec![
-            "https://x.example/a.png".to_string(),
-            "https://x.example/b.png".to_string(),
+            ImageSource {
+                url: "https://x.example/a.png".to_string(),
+                alt: "a".to_string(),
+            },
+            ImageSource {
+                url: "https://x.example/b.png".to_string(),
+                alt: "b".to_string(),
+            },
         ]
     );
 }
