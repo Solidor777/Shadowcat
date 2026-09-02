@@ -41,8 +41,7 @@ pub struct ImageSource {
 /// read `image_urls` to queue `PendingEnrichment::InlineImage` jobs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sanitized {
-    /// The segments to store (identical to the pre-M19a `sanitize` return
-    /// shape).
+    /// The segments to store.
     pub segments: Vec<Segment>,
     /// Deduped (first-seen order), uncapped image sources this body carried.
     pub image_urls: Vec<ImageSource>,

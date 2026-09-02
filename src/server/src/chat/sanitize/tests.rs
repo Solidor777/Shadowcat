@@ -214,10 +214,10 @@ fn surviving_anchor_strips_js_scheme_and_event_handler() {
 }
 
 /// An `<img>` element NEVER survives `sanitize`, even when `images` is on —
-/// this is the whole point of the M19a rework: images travel only as
-/// structured `Segment::Image` references. A `javascript:`/`data:` src is
-/// additionally never even collected into `image_urls` (ammonia's own
-/// scheme gate refuses it before the attribute_filter callback runs).
+/// images travel only as structured `Segment::Image` references. A
+/// `javascript:`/`data:` src is additionally never even collected into
+/// `image_urls` (ammonia's own scheme gate refuses it before the
+/// attribute_filter callback runs).
 #[test]
 fn img_never_survives_and_dangerous_schemes_are_never_collected() {
     for src in [
