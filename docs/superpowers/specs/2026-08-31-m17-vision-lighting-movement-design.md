@@ -423,6 +423,36 @@ They amend §6.2/§8 above where they conflict; the code is the truth.
   is ingress-validated at every carrier (standalone light, actor, token override): finite
   intensity, finite non-negative radii bounded by the shared cell cap `MAX_FOOTPRINT_CELLS`,
   unknown fields refused.
+- **Every registered move contributes at every instant, started or not.** `ClipInputs::at`
+  composes the instant's sight and field from EVERY in-flight frame the room registers
+  (`concurrent_streams` + the recipient's own `mover_streams`), keyed by the frame's absolute
+  clock; a move whose first sample lies after the instant stands at that first sample
+  (`chosen_vision_sample`'s negative-elapsed rule) rather than being skipped. Skipping
+  not-yet-started moves forked the decision: a torch-carrying move registered a beat after
+  the frame under evaluation lit nothing at the frame's early instants even though its bearer
+  already stood at its START, and a recipient's own not-yet-started move gave its viewpoint to
+  nothing. The client plays the same rule, so what the server admits is what the sweep paints.
+- **Creature senses reach into the move-stream clip, never into the glow.** `InstantSight::sees_token`
+  is the clip's per-instant TOKEN predicate: `sees` (the `LOS ∩ lit` rule above) OR
+  `senses::sense_perceives` — the ONE creature-sense rule `player_perceived_tokens` decides the
+  `perceived` channel with (§6.2), evaluated from each of the recipient's sources with its
+  senses and elevation against the mover's elevation and the sample's distance. A tremorsense
+  observer is streamed a grounded mover walking behind a wall in the dark, as the channel
+  already names it at rest; the READ gate is unchanged (`recipient_sight` resolves the mover's
+  senses-relevant state only under the recipient's document READ, and an unreadable mover is
+  never perceived). Senses do not admit a `mover_light`: a glow is terrain illumination, which
+  a creature sense does not perceive, so `glow_reaches` reads `sees` alone.
+- **The clip's field is raycast once per frame, and the memo is value-compared.**
+  `lighting_inputs`/`lighting_inputs_excluding` return `Arc<LightingInputs>` through
+  `lighting_inputs_cache`, keyed on `(scene, excluded emitters)` and validated by a
+  `LightingInputsSnapshot` (settings, cell, lights, light walls, sight walls) compared by value
+  on every hit — the `visible_cells_cached`/`engine_as_cached` posture, since the ECS is
+  mutated by more than `apply_op`. One frame's recipients therefore share one illumination
+  raycast (pinned by `every_recipient_of_one_frame_shares_one_lighting_raycast`), and the
+  movement gate's `visible_cells_cached` miss path reads the same memo instead of its own
+  copy. `env_light_polys` is skipped outright at zero environment intensity — an occlusion
+  polygon of a light that contributes nothing was pure cost. `MAX_LIGHTING_INPUTS_CACHE_ENTRIES`
+  bounds the map (cleared wholesale at capacity, never evicted piecemeal).
 - **Client lighting during the mover's own vision sweep: union, then newest.** The
   post-move `vision` frame lights the cells seen from the STOP; the sweeping fog runs from the
   START. `applyCommittedLighting` paints `unionLightingInputs(lightingBeforeSweep, newest)`
@@ -431,7 +461,12 @@ They amend §6.2/§8 above where they conflict; the code is the truth.
   cosmetic approximation with the committed frame the truth at rest, the same posture as the
   sweep's band approximation. Ordering assumption: the derived `vision` frame follows the
   `MoveStream` (`egress_loop` recomputes derived channels after the move commit's debounce), so
-  the snapshot taken when the sweep starts is the pre-move lighting.
+  the snapshot taken when the sweep starts is the pre-move lighting. A committed lighting frame
+  arriving mid-LIGHT-sweep is applied at once, holding the sweep's END cells lit
+  (`holdLightingCells` over `lightSampleCellKeys` of the last admitted sample) until the sweep
+  ends: parking the frame until the sweep ended painted the corridor lit-then-dark-then-lit
+  when the post-commit rebroadcast landed before the sweep's last sample, and dropping the hold
+  let the sweep's own glow vanish a beat before the committed light replaced it.
 - **Dark-band alpha.** `MAX_DARK_ALPHA` (0.6) leaves an in-sight unlit cell 40% visible,
   consistent with the explored-fog sheet (0.5) under the same invariant; a token drawn under it
   is dimmed, not hidden. Hiding it fully would require the client to model visibility per

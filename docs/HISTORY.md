@@ -2120,11 +2120,16 @@ raycasts. The timeline is NOT gated on the mover's role (a GM walking a torch-be
 the corridor for the players watching it — the spec's D6 puts no role gate on the light, only
 on `mover_vision`). Egress: `ws::move_clip::admit_light_samples` keeps, per recipient, only the
 samples whose glow lights a cell in the recipient's sight at that sample's instant
-(`glow_reaches`: a cell center within `dim`, inside the sample's own occluded polygon and in the
-target's line of sight — the cells the client's sweep paints; `disc_intersects_polys` is the
-pre-filter and, past `MAX_GLOW_ADMISSION_CELLS`, the verdict; non-finite ⇒ nothing), resolved
-through `ClipInputs::at` — the SAME instant sight `clip_samples` reads; `chosen_vision_sample`
-is generic over the `Timed` trait so every sample kind selects by the one fixture-pinned rule.
+(`glow_reaches`: a cell center within `dim` that the sample's own light reaches —
+`lighting::source_level`, the per-source rule `cell_illumination_from` sums — AND that the
+recipient sees with the instant's field composed (`InstantSight::sees`); `disc_intersects_polys`
+is the pre-filter only, the fine test scans the disc box ∩ the recipient's line-of-sight box ∩
+the sample's polygon box under `explored::MAX_CELLS_PER_POLYGON` and a box past even that
+admits nothing; non-finite ⇒ nothing), resolved through `ClipInputs::at` — the SAME instant
+sight `clip_samples` reads, both resolved once per distinct instant by `clip_frame`;
+`chosen_vision_sample` is generic over the `Timed` trait so every sample kind selects by the one
+fixture-pinned rule, and every registered in-flight move contributes at every instant, a move
+not yet started standing at its first sample.
 Mover and plain GM receive the full timeline, see-as keys admission on the target's sight, a
 timeline no sample of which reaches the recipient is `None`, and the own-move re-emit
 (`concurrent_streams`, also triggered by a torch-carrying move starting) re-admits through the
@@ -2143,9 +2148,14 @@ predicate — some source's LOS polygon contains the point AND `point_qualifies`
 center, the lit mask's own conjunction, pinned cell-for-cell by
 `recipient_sight_agrees_with_player_lit_mask_cell_for_cell` — with in-flight movers' carried
 emissions excluded from the committed field (`recipient_sight`'s `exclude_emitters`,
-`scene_lights_excluding`) and composed back per instant from the registered frames'
-`mover_light` (`RecipientSight::sample_light`, `LightingInputs::cell_light` over
-`lighting::cell_illumination_from`); a token walking unlit through plain line of sight streams
+`scene_lights_excluding`, memoized per `(scene, excluded)` by value through
+`lighting_inputs_cache` so one frame's recipients share one raycast) and composed back per
+instant from the registered frames' `mover_light` (`RecipientSight::sample_light`,
+`LightingInputs::cell_light` over `lighting::cell_illumination_from`); the token predicate is
+`InstantSight::sees_token` — `sees` OR the creature-sense rule `senses::sense_perceives` the
+`perceived` channel already decides with, so a tremorsense observer is streamed a grounded
+mover it cannot see (`a_tremorsense_observer_is_streamed_a_grounded_token_it_cannot_see`) while
+senses never admit a glow; a token walking unlit through plain line of sight streams
 to a darkvision observer within range and a GM but not to a normal-vision observer
 (`an_unlit_token_in_line_of_sight_streams_only_to_darkvision_and_the_gm`); explored memory
 accumulates the `lit` cells (`ExploredSet::mark_cells`, replacing polygon rasterization), never
@@ -2158,9 +2168,10 @@ chosen sample, inside its polygons and the viewer's own line of sight, brightest
 one-sided cell fading toward `MAX_DARK_ALPHA` and dropped at zero weight; fail-closed on a
 degenerate sample or more than `MAX_LIGHT_SWEEP_CELLS` candidates) feeds `Lighting.setSweep`,
 unioned over the fade-interpolated committed frame by `mergeSweepCells`. A committed lighting
-frame arriving mid-sweep is parked (`retargetLighting`/`lastLightingInput`) and applied through
-`applyCommittedLighting` once the last sweep ends — the post-commit rebroadcast already carries
-the light at its final cell; while the viewer's own vision sweep plays, `applyCommittedLighting`
+frame arriving mid-sweep is applied at once through `applyCommittedLighting`, which holds the
+light sweep's END cells lit (`holdLightingCells` over `lightSampleCellKeys`) until the sweep
+ends — the post-commit rebroadcast carries the light at its final cell, and the hold keeps the
+corridor from going dark for the beat between the two; while the viewer's own vision sweep plays, `applyCommittedLighting`
 paints the `unionLightingInputs` of the lighting held at sweep start (`lightingBeforeSweep`, lit
 from the START) and the newest frame (lit from the STOP). A glow-only frame starts the light
 sweep alone (no position samples reach `TokenAnimator`). **The client renders "in sight but
@@ -2172,13 +2183,20 @@ darkest band, never brighter than a dim cell; withheld when no lighting model ap
 `mode:"all"`). A sweep's duration extends to its last admitted sample; a client-local scene
 switch ends every sweep; `chooseVisionSample` is generic so the light timeline reuses the shared
 `chosen-vision-sample.json` fixture. `Stage` exposes read-only `data-light-sweep` /
-`data-lit-cells` / `data-lit-bbox` through `RenderEngineOpts.onLightingApplied`. Tests: protocol
+`data-lit-cells` / `data-lit-bbox` through `RenderEngineOpts.onLightingApplied`, each written
+only when its value changes; with nothing lit the darkness sheet paints whole with its mask
+cleared rather than through an inverse mask over an empty `Graphics`. `LightEmission::validate`
+bounds every carrier's radii (standalone light, actor, token override) by
+`MAX_FOOTPRINT_CELLS` at ingress. Tests: protocol
 round-trip; `ws::room::tests::mover_light` (lightless, carried torch sampled at every instant with
 scene-unit reaches + photometry, GM mover, suppressed emission, all-bright); `ws::move_clip::tests`
 (fixture parity on light samples, LOS clip, own in-flight viewpoint per instant, illumination
 required for normal vision, darkvision in range, another mover's torch lighting a bystander per
 instant, disc intersection incl. fail-closed, admission none-in/none-out, sample-level filtering,
-an occluded glow dropped, the cap fallback, same-instant parity with `clip_samples`);
+an occluded glow dropped, a wide glow never falling open, an ember below the dim floor
+dropped for normal vision and admitted to darkvision, a not-yet-started torch lighting the
+frame's first instant, a tremorsense mover streamed and its glow not, `clip_frame` resolving
+each distinct instant once, same-instant parity with `clip_samples`);
 `ws::conn::tests::mover_light` (observer admission past its clipped position prefix, out-of-reach
 drop, neither-token-nor-glow ⇒ no frame, the glow-only frame, unlit-token secrecy across normal /
 darkvision / GM, mover + plain GM full timeline, see-as by the target's sight, the target's own
