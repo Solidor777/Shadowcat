@@ -333,6 +333,141 @@ async fn asset_span_with_over_long_alt_is_refused() {
     assert!(matches!(err, ComposeError::Roll(RollError::AltTooLong)));
 }
 
+fn rich_text_policy() -> ChatContentPolicy {
+    ChatContentPolicy {
+        markdown: Some(true),
+        hyperlinks: Some(true),
+        images: Some(false),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn compose_static_sanitizes_text_under_the_passed_policy() {
+    let policy = rich_text_policy();
+    let got = compose_static(
+        "**bold** <b>raw</b> [a link](https://x.example)",
+        &policy,
+        8,
+    )
+    .unwrap();
+    let html = match got.as_slice() {
+        [Segment::Html { sanitized_html }] => sanitized_html,
+        other => panic!("expected one Html segment, got {other:?}"),
+    };
+    assert!(html.contains("<a href"), "hyperlinks stay live: {html}");
+    assert!(!html.contains("<img"), "images policy is off: {html}");
+    assert!(
+        html.contains("&lt;b&gt;") || !html.contains("<b>raw</b>"),
+        "a raw <b> tag is escaped when html is off: {html}"
+    );
+}
+
+#[test]
+fn compose_static_inline_span_becomes_a_button_never_a_roll_embed() {
+    let policy = ChatContentPolicy::default();
+    let got = compose_static("roll [[1d6]] now", &policy, 8).unwrap();
+    assert_eq!(
+        got.iter()
+            .filter(|s| matches!(s, Segment::RollButton { .. }))
+            .count(),
+        1,
+        "expected exactly one RollButton, got {got:?}"
+    );
+    assert!(
+        !got.iter().any(|s| matches!(s, Segment::RollEmbed { .. })),
+        "a static body never executes a roll: {got:?}"
+    );
+    assert!(matches!(
+        got.iter()
+            .find(|s| matches!(s, Segment::RollButton { .. }))
+            .unwrap(),
+        Segment::RollButton { label: None, .. }
+    ));
+}
+
+#[test]
+fn compose_static_button_span_becomes_a_labeled_button() {
+    let policy = ChatContentPolicy::default();
+    let got = compose_static("[[roll:1d20|Luck]]", &policy, 8).unwrap();
+    assert_eq!(
+        got,
+        vec![Segment::RollButton {
+            formula: "1d20".to_string(),
+            label: Some("Luck".to_string()),
+        }]
+    );
+}
+
+#[test]
+fn compose_static_a_formula_with_a_target_validates_under_the_default_context() {
+    let policy = ChatContentPolicy::default();
+    let got = compose_static("[[4d6t15]]", &policy, 8).unwrap();
+    assert!(matches!(got.as_slice(), [Segment::RollButton { .. }]));
+}
+
+#[test]
+fn compose_static_doc_link_span_passes_through() {
+    let policy = ChatContentPolicy::default();
+    let id = "00000000-0000-0000-0000-000000000001";
+    let got = compose_static(&format!("[[doc:{id}|My Doc]]"), &policy, 8).unwrap();
+    assert_eq!(
+        got,
+        vec![Segment::DocLink {
+            target: DocLinkTarget::Doc {
+                doc_id: id.parse().unwrap(),
+                embedded_path: None,
+            },
+            label: "My Doc".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compose_static_asset_span_becomes_an_image_with_no_existence_check() {
+    let policy = ChatContentPolicy::default();
+    let asset_id = Uuid::new_v4();
+    let got = compose_static(&format!("[[asset:{asset_id}|a map]]"), &policy, 8).unwrap();
+    assert_eq!(
+        got,
+        vec![Segment::Image {
+            asset_id,
+            alt: "a map".to_string(),
+        }]
+    );
+}
+
+#[test]
+fn compose_static_over_long_alt_is_refused() {
+    let policy = ChatContentPolicy::default();
+    let asset_id = Uuid::new_v4();
+    let long_alt = "a".repeat(crate::chat::MAX_IMAGE_ALT_CHARS + 1);
+    let err = compose_static(&format!("[[asset:{asset_id}|{long_alt}]]"), &policy, 8).unwrap_err();
+    assert!(matches!(err, RollError::AltTooLong));
+}
+
+#[test]
+fn compose_static_malformed_span_propagates_the_scan_error() {
+    let policy = ChatContentPolicy::default();
+    let err = compose_static("[[doc:not-a-uuid|x]]", &policy, 8).unwrap_err();
+    assert!(matches!(err, RollError::MalformedDocLink));
+}
+
+#[test]
+fn compose_static_unterminated_span_propagates_the_scan_error() {
+    let policy = ChatContentPolicy::default();
+    let err = compose_static("[[unterminated", &policy, 8).unwrap_err();
+    assert!(matches!(err, RollError::Unterminated));
+}
+
+#[test]
+fn compose_static_over_cap_spans_are_refused_as_too_many_inline() {
+    let policy = ChatContentPolicy::default();
+    let body = "[[1d6]] ".repeat(65);
+    let err = compose_static(&body, &policy, 64).unwrap_err();
+    assert!(matches!(err, RollError::TooManyInline(65)));
+}
+
 #[tokio::test]
 async fn markdown_image_urls_are_collected_from_a_text_chunk_alongside_a_doc_link() {
     let (repo, world_id) = seed_world().await;

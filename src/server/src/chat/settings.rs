@@ -89,6 +89,23 @@ pub async fn resolve_content_policy(repo: &dyn Repository, world_id: Uuid) -> Ch
         .unwrap_or_default()
 }
 
+/// Fixed content policy every note's `body` derives under
+/// (`data::engine::note`'s `normalize_engine` arm) -- deliberately NOT the
+/// world's own `chat-settings` policy: a note is a journal page, not a chat
+/// message, and a world that keeps chat plain-text still wants rich notes.
+/// Markdown/hyperlinks/images on, raw HTML off (markdown alone is enough
+/// authoring power), emails off (no autolinking, matching the fixed shape),
+/// link previews off (a note body composes synchronously with no outbound
+/// fetch on its write path -- see `chat::body::compose_static`'s doc).
+pub const NOTE_CONTENT_POLICY: ChatContentPolicy = ChatSettingsEngine {
+    markdown: Some(true),
+    html: Some(false),
+    images: Some(true),
+    hyperlinks: Some(true),
+    emails: Some(false),
+    link_previews: Some(false),
+};
+
 /// Doc_type for the single per-world dice-settings config `Document`.
 pub const DICE_SETTINGS_DOC_TYPE: &str = "dice-settings";
 

@@ -64,8 +64,10 @@ pub use preview_cache::{
 pub use sanitize::{sanitize, ImageSource, Sanitized};
 pub use settings::{
     channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
-    CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE,
+    CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, NOTE_CONTENT_POLICY,
 };
+
+pub(crate) use body::compose_static;
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, Visibility, WorldRole};

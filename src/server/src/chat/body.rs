@@ -177,5 +177,73 @@ pub(crate) async fn compose_message(
     Ok((segments, image_urls))
 }
 
+/// Composes a body into segments synchronously, with no repository or
+/// network access: a `Text` chunk sanitizes under `policy`; an `Inline` OR
+/// `Button` chunk validates (never executes, since a static body has no
+/// per-send host to resolve a reference against) and becomes an unexecuted
+/// `Segment::RollButton` -- an inline `[[formula]]` span is NOT a
+/// `Segment::RollEmbed` here, because a static body composes once at
+/// document-write time and must never roll dice as a side effect of that
+/// write; a `DocLink` chunk passes its parsed target/label straight through;
+/// an `Image` chunk becomes a `Segment::Image` with NO existence check -- the
+/// referenced asset id is not confirmed to exist, because no outbound fetch
+/// or repository lookup exists on the document-write path this composes for.
+/// `Sanitized.image_urls` is deliberately DISCARDED for the same reason: a
+/// markdown image in a document body renders as its alt text (the sanitizer
+/// already replaced the image event with it), and only an explicit
+/// `[[asset:...]]` span produces an image. Used for a document body derived
+/// synchronously at ingress (a note's `body`, a table row's text), never for
+/// a chat message's own asynchronous send/edit pipeline (`compose_message`).
+pub(crate) fn compose_static(
+    body: &str,
+    policy: &ChatContentPolicy,
+    max_spans: usize,
+) -> Result<Vec<Segment>, rolls::RollError> {
+    let chunks = rolls::scan_body_capped(body, max_spans)?;
+    if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
+        return Ok(sanitize::sanitize(body, policy).segments);
+    }
+    let mut segments = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        match chunk {
+            rolls::BodyChunk::Text(t) => {
+                segments.extend(sanitize::sanitize(t, policy).segments);
+            }
+            rolls::BodyChunk::Inline(formula) => {
+                rolls::validate_formula(formula, crate::dice::ParseContext::default())?;
+                segments.push(Segment::RollButton {
+                    formula: formula.to_string(),
+                    label: None,
+                });
+            }
+            rolls::BodyChunk::Button { formula, label } => {
+                let formula = formula.trim();
+                rolls::validate_formula(formula, crate::dice::ParseContext::default())?;
+                segments.push(Segment::RollButton {
+                    formula: formula.to_string(),
+                    label: label.map(|s| s.to_string()),
+                });
+            }
+            rolls::BodyChunk::DocLink { target, label } => {
+                segments.push(Segment::DocLink {
+                    target,
+                    label: label.to_string(),
+                });
+            }
+            rolls::BodyChunk::Image { asset_id, alt } => {
+                let alt = alt.unwrap_or("");
+                if alt.chars().count() > super::MAX_IMAGE_ALT_CHARS {
+                    return Err(rolls::RollError::AltTooLong);
+                }
+                segments.push(Segment::Image {
+                    asset_id,
+                    alt: alt.to_string(),
+                });
+            }
+        }
+    }
+    Ok(segments)
+}
+
 #[cfg(test)]
 mod tests;
