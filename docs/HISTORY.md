@@ -2190,6 +2190,52 @@ a hidden table's generic refusal, a self-referencing cycle refusal, a `Formula` 
 landing in its matched row's range) — all green. Full repo gates (`cargo test`/`clippy`/`fmt`,
 `pnpm -r test`, typecheck, lint, `lint:comments`) green at every commit.
 
+### M19c · Notes ✅
+Branch `m19`, executed from the approved plan
+`docs/superpowers/plans/2026-09-02-m19c-notes.md` (design:
+`docs/superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`), as 6 sequential
+tasks. Delivered: `chat::body::compose_static`, a synchronous, no-repository/no-network sibling of
+`compose_message` sharing `scan_body_capped`'s chunk grammar but never executing an inline roll
+(always a `RollButton`) and never checking asset existence, plus `chat::NOTE_CONTENT_POLICY` (the
+fixed policy every note body derives under — markdown/links/images on, html/emails/link-previews
+off, independent of the world's own `chat-settings`); the `note` engine doc type
+(`NoteEngine{source, body, sort}`, `NOTE_DOC_TYPE`/`MAX_NOTE_SOURCE_CHARS`/`MAX_NOTE_SPANS`,
+registered in `is_engine_doc_type`/`normalize_engine` — the `"note"` arm derives `body` from
+`source` via `compose_static` on every Create/Update post-image, unconditionally discarding
+whatever `body` a client sent); `data::sqlite::notes::check_note_parent` (mirrors
+`check_asset_folder_parent`'s batch-then-database resolution, wired into the shared
+`check_parent_placement`/`batch_folders` machinery Create and Move both already thread) plus
+`validate_containment`'s `note` arm (never embedded); the client `note-docs.ts`
+(`buildNoteDoc` — private-by-default permissions, the author granted `Owner` when passed —
+and the fail-closed `parseNoteBody`, both re-exported from `@shadowcat/core`) and a
+`note-body.e2e.test.ts` Node↔Rust suite.
+Deviation from plan: none in scope, one fix-forward mid-task — `buildNoteDoc`'s initial
+implementation constructed `NoteEngine.sort` via `BigInt()` (matching the ts-rs `bigint` mapping
+for `i64`), which is not `JSON.stringify`-serializable and broke every `Create` containing a note
+at `WsClient.send`; caught by the e2e spec (not the unit tests, which never serialize the object)
+and fixed to build a plain `number` at that one construction site, following `wire.ts`'s own
+documented precedent for the same i64/bigint gap.
+Coverage: `chat::body::tests` (`compose_static`'s text/inline/button/doc-link/asset-image/
+malformed-span/over-cap-span cases), `data::engine::note::tests` (markdown→html, labeled/bare roll
+spans, doc/asset spans, malformed-span `BadEngine`, over-cap source, `deny_unknown_fields`, an
+`/engine/source` Update through `apply_intent` re-deriving `body`), `data::sqlite`'s
+`commands_and_intents` (same-world/foreign-world/non-note-parent placement, same-batch parent+
+child, `check_move_acyclic` cycle refusal, parent-delete cascade via the existing FK), a
+`note-docs.test.ts` suite (builder shape/defaults, fail-closed parse, a
+`JSON.stringify`-round-trips regression test), and the `note-body.e2e.test.ts` Node↔Rust suite
+(server-derived body over a real wire round-trip, re-derivation on edit, malformed-span and
+non-note-parent rejections, a player watcher receiving no create for the private-by-default note
+at all). Full repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint,
+`lint:comments`) green at every commit; `pnpm --filter @shadowcat/core test:e2e` run alone (10
+files / 15 tests) green.
+
+**M19 · Tables, notes + chat media — CLOSED.** All three sub-projects (M19a chat media, M19b
+rollable tables, M19c notes) merged to `main` in build order. Delivered: server-fetched/asset-ified
+chat images (never hotlinked), rollable `table` documents drawn server-side into GM-redacted chat
+segments, and server-derived `note` documents — plus the shared seams M20's table/notes sheets
+build on (`SegmentList` moved into `@shadowcat/ui-kit`, `buildTableDoc`/`buildNoteDoc`,
+`ChatApi.drawTable`).
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

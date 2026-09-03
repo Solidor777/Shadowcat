@@ -147,6 +147,25 @@ validation as `send_message`, and the same asymmetric confirm-by-broadcast
 protocol — a refusal (unknown table, no READ, cycle, too many/deep draws) is
 a correlated `chat_error`, never a hard `reject`.
 
+## Notes
+
+A `note` document (`NoteEngine`: author `source` markdown, a server-derived
+`body`, sibling `sort`) is authored/edited like any other document — plain
+`Create`/`Update` through the generic engine-ingress gate, no dedicated wire
+frame. `body` is unconditionally overwritten on every Create/Update
+post-image: the server renders `source` through the same span grammar and
+sanitizer boundary chat messages use, under a policy fixed to the note
+subsystem rather than the world's own chat settings, so notes stay rich even
+in a plain-text-chat world. `[[roll:...]]`/bare `[[...]]` spans become
+`roll_button` segments (never executed — a note save must never roll dice as
+a side effect), `[[doc:...]]`/`[[token:...]]` spans become `doc_link`
+segments, and `[[asset:...]]` spans become `image` segments; there is no
+outbound fetch on this write path, so a Markdown image URL in a note's
+source renders only as its alt text. Notes form a `parent_id` tree of notes
+(a note's parent must be another note in the same world; a note is never
+embedded); private to its author by default (`permissions.default: "none"`,
+the author granted `Owner`) until shared.
+
 ## Scene channels
 
 Scene-derived data (vision, fog, lighting masks) does not travel as documents —

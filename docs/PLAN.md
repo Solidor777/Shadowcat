@@ -70,37 +70,16 @@ per-token built-in fx (condition-driven + selection highlight), emote overlays, 
 tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX PLAYBACK remains
 Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
-### M19 · Tables, notes + chat media
-- Design: [`superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`](superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md)
-  (decision log §11; YouTube thumbnail + external link is already delivered by the Bucket C
-  oEmbed work and is recorded there as evidence, not rebuilt). Three sub-projects in build order,
-  each a branch off `main` merged before the next:
-  - **M19a — Chat media ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s M19a entry,
-    including the Playwright `chat-media.spec.ts` browser e2e spec.
-  - **M19b — Rollable tables ✅** — complete; delivery notes in [`HISTORY.md`](HISTORY.md)'s
-    M19b entry, plan:
-    [`superpowers/plans/2026-09-02-m19b-rollable-tables.md`](superpowers/plans/2026-09-02-m19b-rollable-tables.md).
-    `table` engine documents (`Weighted` rows or a reference-free `Formula` with ranges; rows
-    yield text / doc links / images / nested draws), a `DrawTable` frame executed server-side
-    (READ on every table in the chain, fixed Total context, depth/breadth/total caps, cycle
-    refusal) and posted to chat as `Segment::TableDraw` with GM-only `spec`/`raw`; core
-    `buildTableDoc` + `ChatApi.drawTable`; card rendering + a Draw button on table doc links.
-  - **M19c — Notes** (plan:
-    [`superpowers/plans/2026-09-02-m19c-notes.md`](superpowers/plans/2026-09-02-m19c-notes.md)):
-    `note` engine documents whose sanitized `body` is server-derived from `source` at ingress
-    (`chat::body::compose_static` under a fixed note policy: markdown, links, `[[doc:]]`/
-    `[[token:]]` cross-references, `[[roll:]]` buttons, `[[asset:]]` images), a `parent_id` tree
-    of notes, private by default; core `buildNoteDoc` + `parseNoteBody`.
-- Depends on: M11, M14c-1/-4, M15a, M15b (M19a's picker seam).
-- Excludes: the table/notes **sheet modules** and their UI e2e (M20 — M19 leaves `SegmentList`,
-  the builders and `drawTable` as their seams; M19's e2e is the WS-level suite); FTS quality over
-  notes/tables (M21); recalculation of table draws; per-row table visibility; outbound fetches
-  for note bodies or table rows.
-
 ### M20 · Full default module suite
 - Every table-facing default module the dogfood alpha lacks, shipped as `src/modules/*` packages
   over the M14–M19 seams (combat tracker UI, asset browser UI, table/notes sheets, emitter
   editors), each independently replaceable.
+- Table and notes sheets build on the seams M19 shipped: `@shadowcat/ui-kit`'s `SegmentList` (the
+  recursive segment renderer, moved out of `module-chat-card`, that a note sheet reuses to render
+  `parseNoteBody`'s output and a table sheet reuses for row previews), `@shadowcat/core`'s
+  `buildTableDoc`/`buildNoteDoc` document builders, and `ChatApi.drawTable` for the table sheet's
+  draw affordance — none of M19's own e2e exercises the sheets themselves (M19's e2e is the
+  WS-level suite; the sheet-driven UI flows are this milestone's).
 - The suite is the second internal-module exercise of the API surface toward the Phase-4 freeze
   gate.
 
