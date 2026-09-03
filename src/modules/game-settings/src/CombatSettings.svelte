@@ -124,7 +124,7 @@
     {ctx.t("gameSettings.combat.movementResource")}
     <select aria-label="gameSettings.combat.movementResource" value={prov("combat.movementResource").value ?? "__inherit"}
       onchange={(e) => onMovementResourceChange((e.currentTarget as HTMLSelectElement).value)}>
-      <option value="__inherit">{ctx.t("gameSettings.source.world")}</option>
+      <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
       <option value="__none">{ctx.t("gameSettings.combat.none")}</option>
       {#each registryKeys as key (key)}<option value={key}>{key}</option>{/each}
     </select>
@@ -142,7 +142,7 @@
         if (v === "__inherit") leafRemove("interpretation");
         else leafSet("interpretation", v as CombatDefaults["interpretation"]);
       }}>
-      <option value="__inherit">{ctx.t("gameSettings.source.world")}</option>
+      <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
       {#each INTERPRETATION as v}<option value={v}>{v}</option>{/each}
     </select>
   </label>
@@ -159,7 +159,7 @@
         if (v === "__inherit") leafRemove("enforcement");
         else leafSet("enforcement", v as CombatDefaults["enforcement"]);
       }}>
-      <option value="__inherit">{ctx.t("gameSettings.source.world")}</option>
+      <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
       {#each ENFORCEMENT as v}<option value={v}>{v}</option>{/each}
     </select>
   </label>
@@ -176,7 +176,7 @@
         if (v === "__inherit") leafRemove("turnControl");
         else leafSet("turnControl", v as CombatDefaults["turnControl"]);
       }}>
-      <option value="__inherit">{ctx.t("gameSettings.source.world")}</option>
+      <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
       {#each TURN_CONTROL as v}<option value={v}>{v}</option>{/each}
     </select>
   </label>
@@ -195,7 +195,7 @@
           if (v === "__inherit") leafRemove(k);
           else leafSet(k, v === "true");
         }}>
-        <option value="__inherit">{ctx.t("gameSettings.source.world")}</option>
+        <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
         <option value="true">{ctx.t("gameSettings.combat.on")}</option>
         <option value="false">{ctx.t("gameSettings.combat.off")}</option>
       </select>
