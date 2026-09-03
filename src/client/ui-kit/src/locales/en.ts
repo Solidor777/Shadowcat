@@ -240,6 +240,8 @@ export const en: Messages = {
   "conditions.remove": "Remove",
   "conditions.selectHint": "Select a token to toggle conditions.",
   "conditions.toggleHint": "Toggle a condition on the selected token(s).",
+  "combatTracker.tab": "Combat",
+  "combatTracker.title": "Combat tracker",
   "tools.title": "Tools",
   "tools.select": "Select / Move",
   "tools.place": "Place token",
