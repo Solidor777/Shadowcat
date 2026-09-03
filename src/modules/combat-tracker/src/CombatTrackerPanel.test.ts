@@ -154,3 +154,88 @@ describe("CombatTrackerPanel scoping/picker/create", () => {
     expect(button.disabled).toBe(false);
   });
 });
+
+describe("CombatTrackerPanel reorder wiring", () => {
+  function twoCombatantCombat(): { store: DocumentStore; combatId: string } {
+    const store = new DocumentStore();
+    const c = combatOn("scene-1", { id: "c1", active: true });
+    const engineA: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const engineB: CombatantEngine = { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} };
+    const a = buildCombatantDoc("w1", "c1", engineA, { id: "a", name: "a" });
+    const b = buildCombatantDoc("w1", "c1", engineB, { id: "b", name: "b" });
+    (c.engine as { order: string[] }).order = ["a", "b"];
+    store.applyCommand({ seq: 1, world_id: "w1", author: "x", ts: 0, ops: [{ op: "create", doc: c }, { op: "create", doc: a }, { op: "create", doc: b }] });
+    return { store, combatId: "c1" };
+  }
+
+  it("a completed pointer drag past the other row's midpoint dispatches ONE reorder with moveInOrder's result", async () => {
+    const { store, combatId } = twoCombatantCombat();
+    const combat = fakeCombatApi(store, { role: "gm" });
+    const { container } = render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "gm" }),
+    });
+    const rowEls = Array.from(container.querySelectorAll(".rows > div")) as HTMLElement[];
+    expect(rowEls.length).toBe(2);
+    rowEls[0].getBoundingClientRect = () => ({ top: 0, height: 40, bottom: 40, left: 0, right: 0, width: 0, x: 0, y: 0, toJSON: () => ({}) });
+    rowEls[1].getBoundingClientRect = () => ({ top: 40, height: 40, bottom: 80, left: 0, right: 0, width: 0, x: 0, y: 40, toJSON: () => ({}) });
+    const handle = rowEls[0].querySelector("button.drag-handle") as HTMLButtonElement;
+    await fireEvent.pointerDown(handle, { clientY: 0 });
+    await fireEvent(window, new PointerEvent("pointermove", { clientY: 70 }));
+    await fireEvent(window, new PointerEvent("pointerup", { clientY: 70 }));
+    expect(combat.calls.reorder).toEqual([[combatId, ["b", "a"]]]);
+  });
+
+  it("a two-step pointer drag (from 0 to 2 of three rows) discriminates argument order — moveInOrder(order, 0, 2) differs from moveInOrder(order, 2, 0)", async () => {
+    const store = new DocumentStore();
+    const c = combatOn("scene-1", { id: "c1", active: true });
+    const mk = (id: string) => buildCombatantDoc("w1", "c1", { kind: { type: "actor", token_id: null, actor_id: null }, initiative: null, tiebreak: 0, resources: {} } as CombatantEngine, { id, name: id });
+    (c.engine as { order: string[] }).order = ["a", "b", "c"];
+    store.applyCommand({ seq: 1, world_id: "w1", author: "x", ts: 0, ops: [{ op: "create", doc: c }, { op: "create", doc: mk("a") }, { op: "create", doc: mk("b") }, { op: "create", doc: mk("c") }] });
+    const combat = fakeCombatApi(store, { role: "gm" });
+    const { container } = render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "gm" }),
+    });
+    const rowEls = Array.from(container.querySelectorAll(".rows > div")) as HTMLElement[];
+    expect(rowEls.length).toBe(3);
+    const stub = (top: number): DOMRect => ({ top, height: 40, bottom: top + 40, left: 0, right: 0, width: 0, x: 0, y: top, toJSON: () => ({}) });
+    rowEls[0].getBoundingClientRect = () => stub(0);
+    rowEls[1].getBoundingClientRect = () => stub(40);
+    rowEls[2].getBoundingClientRect = () => stub(80);
+    const handle = rowEls[0].querySelector("button.drag-handle") as HTMLButtonElement;
+    await fireEvent.pointerDown(handle, { clientY: 0 });
+    await fireEvent(window, new PointerEvent("pointermove", { clientY: 110 })); // past both other midpoints (60, 100)
+    await fireEvent(window, new PointerEvent("pointerup", { clientY: 110 }));
+    // moveInOrder(["a","b","c"], 0, 2) => ["b","c","a"]; the swapped-argument bug would instead
+    // produce moveInOrder(["a","b","c"], 2, 0) => ["c","a","b"] — the two are NOT equal, so this
+    // assertion is direction-sensitive, unlike a one-step (adjacent) move.
+    expect(combat.calls.reorder).toEqual([["c1", ["b", "c", "a"]]]);
+  });
+
+  it("Alt+ArrowDown on a focused row dispatches the one-step move", async () => {
+    const { store, combatId } = twoCombatantCombat();
+    const combat = fakeCombatApi(store, { role: "gm" });
+    const { container } = render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "gm" }),
+    });
+    const rowEls = Array.from(container.querySelectorAll(".rows > div")) as HTMLElement[];
+    await fireEvent.keyDown(rowEls[0], { key: "ArrowDown", altKey: true });
+    expect(combat.calls.reorder).toEqual([[combatId, ["b", "a"]]]);
+  });
+
+  it("a player without edit affordance gets neither a drag handle nor the keyboard move", async () => {
+    const { store } = twoCombatantCombat();
+    const combat = fakeCombatApi(store, { role: "player" });
+    combat.setCanAct({ edit: false });
+    const { container } = render(CombatTrackerPanel, {
+      props: { badge: new TurnBadge() },
+      context: setAppContextForTest({ store, documents: store, combat, viewedSceneId: "scene-1", role: "player" }),
+    });
+    expect(container.querySelector("button.drag-handle")).toBeNull();
+    const rowEls = Array.from(container.querySelectorAll(".rows > div")) as HTMLElement[];
+    await fireEvent.keyDown(rowEls[0], { key: "ArrowDown", altKey: true });
+    expect(combat.calls.reorder).toBeUndefined();
+  });
+});
