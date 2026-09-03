@@ -271,6 +271,94 @@ async fn recalc_on_a_table_draws_roll_id_is_roll_not_found() {
     assert!(matches!(err, crate::chat::RecalcRollError::RollNotFound));
 }
 
+#[tokio::test]
+async fn a_whisper_draw_reaches_only_its_recipients() {
+    let (repo, world, gm, player, table_id) = world_with_table().await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, world).await.unwrap().unwrap();
+    let rate = crate::ws::PingRateLimiter::new();
+
+    let cmd = handle_draw_table(
+        DrawTableRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            now: 100,
+            budget_per_min: 30,
+        },
+        table_id,
+        "general".into(),
+        1,
+        None,
+        Audience::Whisper {
+            recipients: vec![player],
+        },
+    )
+    .await
+    .unwrap();
+
+    let doc = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.clone(),
+        other => panic!("expected Create, got {other:?}"),
+    };
+    // Whisper mapping (chat::build_message_doc): default None, gm_role
+    // Some(DocRole::None) (a non-addressed GM does NOT see a whisper by
+    // default), users = {owner: Owner, ...recipients: Observer}.
+    assert_eq!(doc.permissions.default, DocRole::None);
+    assert_eq!(doc.permissions.gm_role, Some(DocRole::None));
+    assert_eq!(doc.permissions.users.get(&gm), Some(&DocRole::Owner));
+    assert_eq!(doc.permissions.users.get(&player), Some(&DocRole::Observer));
+    assert_eq!(doc.permissions.users.len(), 2);
+}
+
+#[tokio::test]
+async fn a_gm_only_draw_reaches_no_player() {
+    let (repo, world, gm, player, table_id) = world_with_table().await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, world).await.unwrap().unwrap();
+    let rate = crate::ws::PingRateLimiter::new();
+
+    let cmd = handle_draw_table(
+        DrawTableRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &ctx,
+            rate: &rate,
+            now: 100,
+            budget_per_min: 30,
+        },
+        table_id,
+        "general".into(),
+        1,
+        None,
+        Audience::GmOnly,
+    )
+    .await
+    .unwrap();
+
+    let doc = match &cmd.ops[0] {
+        Operation::Create { doc } => doc.clone(),
+        other => panic!("expected Create, got {other:?}"),
+    };
+    // GmOnly mapping: default None, gm_role Some(Observer) (any current GM
+    // sees it, re-resolved dynamically), users = {owner: Owner} only -- the
+    // player is named nowhere.
+    assert_eq!(doc.permissions.default, DocRole::None);
+    assert_eq!(doc.permissions.gm_role, Some(DocRole::Observer));
+    assert_eq!(doc.permissions.users.get(&gm), Some(&DocRole::Owner));
+    assert_eq!(doc.permissions.users.get(&player), None);
+    assert_eq!(doc.permissions.users.len(), 1);
+}
+
 #[test]
 fn draw_table_error_display_has_no_debug_artifacts() {
     let variants: Vec<DrawTableError> = vec![
