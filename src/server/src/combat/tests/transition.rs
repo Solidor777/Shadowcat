@@ -127,6 +127,98 @@ fn advance_moves_to_the_next_combatant_and_wraps_the_round_with_round_recoveries
 }
 
 #[test]
+fn advance_skips_a_combatant_moved_out_of_the_active_combat() {
+    // `order` still names the moved-out combatant's id; `combatants` (a
+    // fresh query of the combat's current children) does not — exactly the
+    // shape an ordinary `Move` of the `combatant` document produces.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let departed = Uuid::from_u128(11);
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, departed, c.doc.id], Some(a.doc.id), 1, true),
+        vec![a, c],
+        vec![],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let engine: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(
+        engine.turn,
+        Some(Uuid::from_u128(12)),
+        "advance succeeded and landed on the next real combatant, skipping the departed slot"
+    );
+    assert_eq!(
+        engine.order,
+        vec![Uuid::from_u128(10), Uuid::from_u128(12)],
+        "the departed combatant's id was dropped from the persisted order"
+    );
+}
+
+#[test]
+fn advance_never_auto_admits_an_arrival_but_an_explicit_sort_does() {
+    // `c` is a queryable child of the combat (present in `combatants`) that
+    // `order` never named — exactly the shape an ordinary `Move` of the
+    // `combatant` document into this combat produces. Whether such a
+    // combatant ever takes a turn is a GM decision (`CombatSort`/
+    // `CombatRoll`), never something `advance` decides on its own: a
+    // combatant created without an `order` entry from the start is a
+    // genuine, permanent design state (a staged/hidden combatant), and
+    // `order` alone cannot distinguish that from a fresh arrival —
+    // `heal_order` must not guess.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
+    let c = actor_combatant(12, combat, 0xC, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b, c],
+        vec![],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let engine: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(
+        engine.order,
+        vec![Uuid::from_u128(10), Uuid::from_u128(11)],
+        "advance leaves the arrival out of order — it is not a departed entry to prune"
+    );
+    assert_eq!(engine.turn, Some(Uuid::from_u128(11)));
+
+    // The arrival is not invisible forever: an explicit `CombatSort` folds
+    // it in deterministically, proving the closure is available on demand
+    // rather than automatic.
+    let sort_docs = apply(&snap, &sort(&snap).unwrap());
+    let sorted: CombatEngine = engine_of(&sort_docs, combat);
+    assert!(
+        sorted.order.contains(&Uuid::from_u128(12)),
+        "an explicit sort admits the arrival"
+    );
+}
+
+#[test]
+fn a_stale_order_entry_heals_on_the_next_transition_even_when_the_walk_never_reaches_it() {
+    // The stale entry sits between the current turn and the next real
+    // combatant, so this advance's own walk stops one step short of ever
+    // reaching its slot — proving the correction is structural (applied at
+    // snapshot load) rather than a side effect of the walk passing over it.
+    let combat = Uuid::from_u128(1);
+    let a = actor_combatant(10, combat, 0xA, None, false, 0.0);
+    let stale = Uuid::from_u128(99);
+    let b = actor_combatant(11, combat, 0xB, None, false, 0.0);
+    let snap = snapshot(
+        combat_engine(vec![a.doc.id, stale, b.doc.id], Some(a.doc.id), 1, true),
+        vec![a, b],
+        vec![],
+    );
+    let docs = apply(&snap, &advance(&snap, WORLD, Uuid::nil(), 0).unwrap());
+    let engine: CombatEngine = engine_of(&docs, combat);
+    assert_eq!(
+        engine.order,
+        vec![Uuid::from_u128(10), Uuid::from_u128(11)],
+        "the already-inconsistent row healed on this transition's own commit"
+    );
+}
+
+#[test]
 fn text_recoveries_evaluate_server_side_over_the_formula_host() {
     let combat = Uuid::from_u128(1);
     // 0x9A, not 0xA — a host id must never numerically collide with a

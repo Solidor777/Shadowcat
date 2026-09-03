@@ -200,8 +200,8 @@
     padding: var(--space-1);
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
-    background: var(--surface, #fff);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    background: var(--surface-raised);
+    box-shadow: var(--shadow-elevated);
     font-size: 0.9em;
     white-space: nowrap;
   }

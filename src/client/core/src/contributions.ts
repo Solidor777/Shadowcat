@@ -119,6 +119,13 @@ export interface Contribution {
   panel?: PanelMeta;
   /** Sheet metadata, present iff `contract` is a `shadowcat.sheet:<doc_type>` family member. */
   sheet?: SheetMeta;
+  /** How this contribution relates to the host theme: `"host"` (default)
+   * consumes the active theme's tokens like every engine surface; `"isolated"`
+   * wraps the content in the theme-isolation class, which re-declares every
+   * theme token at its engine-default value for that subtree — the module's
+   * own styling then applies unaffected by user themes. Isolation scopes
+   * tokens only; it imposes no layout or behavior change. */
+  styling?: "host" | "isolated";
 }
 
 /** Internal registration record: a `Contribution` plus its registering module and insertion

@@ -32,12 +32,17 @@ further at design time. Numbering continues from Phase 1.
   - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
     conflict set returned for human review; `Document.base` under engine-tree validation.
-  - **M14c-6 — combat client seams**: `AppContext.combat`, `CoreHooks` first entries +
-    delta-derived emission, `Warn` overage label.
+  - **M14c-6 — combat client seams** — DONE (see [`HISTORY.md`](HISTORY.md)).
 - **M14d — tracker module + settings editors** (panel + settings-editor conventions to follow
-  the M15b asset-browser module, which landed first): the default tracker UI, the world/scene combat
-  settings editors (including the combat chain editor over `resolve_combat_rules`'s
-  engine→system-defaults→world→scene precedence), and end-to-end coverage.
+  the M15b asset-browser module, which landed first): the default tracker UI
+  (`@shadowcat/module-combat-tracker`), the world/scene combat settings editors inside
+  `@shadowcat/module-game-settings` (the combat chain editor over `resolve_combat_rules`'s
+  engine→system-defaults→world→scene precedence, plus the resource-registry editor), and
+  end-to-end coverage. Design:
+  [`superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md`](superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md);
+  plan: [`superpowers/plans/2026-09-02-m14d-tracker-module-settings-editors.md`](superpowers/plans/2026-09-02-m14d-tracker-module-settings-editors.md).
+  M16 and M18 have merged; builds after the M17 branch merges (theme tokens, condition fx,
+  actor controls are consumed through stable seams only).
 - Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
 - Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
 
@@ -46,23 +51,20 @@ Complete: M15a (pipeline) and M15b (browser module + the generic GM-only documen
 operation) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M15a/M15b entries. The FTS
 integration for asset search remains deferred to M21 by design.
 
-### M16 · Layout + theming completion
-- Drag-resize of floating panels where the M12 panel engine does not already provide it;
-  multi-window arrangement persistence.
-- Multiple themes + user themes over the 3-tier SCSS token system; module styling modes
-  (how a module opts into or out of the host theme).
-- Excludes: pop-out windows (shipped, M12e).
+### M16 · Layout + theming completion ✅
+Complete: M16a (theme engine — token data, controller, ui-state + pre-login persistence,
+picker, dockview chrome, stage recolor), M16b (floating-window arrangement persistence and
+gesture restore, keyboard move/resize, a11y resize targets), and M16c (custom theme editor
+with live preview and contrast warnings, module styling modes, external-module stylesheets)
+— delivery notes in [`HISTORY.md`](HISTORY.md)'s M16 entry.
 
-### M17 · Vision, lighting + movement completion
-- Photometric lighting (illumination coupling replacing the flat/edge-projected environment light
-  model), darkvision / tremorsense / height.
-- **Per-actor/faction movement exemptions** (deferred from M10g): flying/incorporeal ignore
-  difficult terrain; needs movement-type tags on actors.
-- **Moving light source mid-walk** (residual of the move-stream live clip): a third-party mover
-  carrying a light that opens a sightline reveals per sample of that move, not at its stop — the
-  observer's vision recomputed per light-carrying sample; cost only on request.
-- Depends on: M14 for anything keyed to the turn owner.
-- Excludes: Web-Worker optimistic vision (stays server-authoritative by design).
+### M17 · Vision, lighting + movement completion ✅
+Complete: M17a (photometric field, carried emitters, light/wall authoring), M17b (vision-mode
+descriptor v2, tremorsense + the perceived channel, elevation), M17c (movement-type tags +
+terrain exemptions) and M17d (moving light source mid-walk: the carried-light timeline on
+`MoveStream`, per-recipient reach admission, the client lighting sweep) — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M17 entries. Web-Worker optimistic vision stays excluded (vision is
+server-authoritative by design).
 
 ### M18 · Token enrichment ✅
 Complete: generated token visuals, trigger regions, the aura/sound/VFX emitter component model,

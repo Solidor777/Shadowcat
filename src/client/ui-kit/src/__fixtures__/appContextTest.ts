@@ -1,6 +1,6 @@
 import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
-import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
@@ -30,6 +30,7 @@ import { AssetPickController, type PickAssetOptions } from "../assetPickControll
  * render(MyPanel, { context: setAppContextForTest({ role: "gm" }) });
  */
 export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknown, unknown> {
+  const documents = over.documents ?? over.store ?? new DocumentStore();
   // One shared controller so an overridden-free `pickAsset` and `assetPick`
   // observe the same pending state, exactly as the shell wires them.
   const assetPick = over.assetPick ?? new AssetPickController();
@@ -42,7 +43,24 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     assetPick,
     pickAsset: over.pickAsset ?? defaultPickAsset,
     store: over.store ?? new DocumentStore(),
-    documents: over.documents ?? over.store ?? new DocumentStore(),
+    documents,
+    combat:
+      over.combat ??
+      new CombatController({
+        documents,
+        // `AppContext.dispatchIntent` is fire-and-forget; the controller's dep reports whether
+        // the host transmitted, which a fixture host always does.
+        dispatchIntent: (ops) => {
+          over.dispatchIntent?.(ops);
+          return true;
+        },
+        sendCombat: () => Promise.reject(new Error("not connected")),
+        selfId: over.selfId ?? "u-self",
+        role: () => ((over.role ?? "gm") === "gm" ? "gm" : "player"),
+        canEdit: over.canEdit ?? (() => true),
+        world: () => over.world ?? "w1",
+        logger: silentLogger,
+      }),
     assets: over.assets ?? new AssetResolver(),
     world: over.world ?? "w1",
     role: over.role ?? "gm",

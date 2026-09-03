@@ -295,7 +295,7 @@
     cursor: pointer;
   }
   .danger {
-    color: var(--danger, #c33);
+    color: var(--danger);
   }
   input {
     min-height: 2rem;

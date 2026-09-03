@@ -4334,6 +4334,49 @@ async fn two_updates_to_the_same_doc_in_one_command_synthesize_exactly_one_trans
     assert!(matches!(&out.ops[0], Operation::Create { .. }));
 }
 
+#[test]
+fn carried_light_ancestor_echo_with_shifted_number_variant_is_not_a_touch() {
+    // Stored emission carries whole-number `f64` radii (Float variant); a JS client's
+    // faithful echo comes back PosInt. The ancestor-write comparison must treat the
+    // echo as unchanged, or a non-GM whole-`/engine/overrides` write touching only a
+    // SIBLING field is refused on a pure representation mismatch.
+    let whole = serde_json::json!({
+        "engine": { "x": 0.0, "overrides": { "light": {
+            "color": "#ffaa00", "intensity": 1.0, "brightRadius": 4.0,
+            "dimRadius": 8.0, "falloff": null, "enabled": true
+        }, "vision": null } }
+    });
+    let echoed = serde_json::json!({
+        "light": {
+            "color": "#ffaa00", "intensity": 1, "brightRadius": 4,
+            "dimRadius": 8, "falloff": null, "enabled": true
+        },
+        "vision": null
+    });
+    assert!(!carried_light_touched(
+        "token",
+        "/engine/overrides",
+        false,
+        &whole,
+        &echoed
+    ));
+    // Control: a genuine change under the same ancestor write still counts.
+    let changed = serde_json::json!({
+        "light": {
+            "color": "#ffaa00", "intensity": 1, "brightRadius": 5,
+            "dimRadius": 8, "falloff": null, "enabled": true
+        },
+        "vision": null
+    });
+    assert!(carried_light_touched(
+        "token",
+        "/engine/overrides",
+        false,
+        &whole,
+        &changed
+    ));
+}
+
 /// One Move op over a doc whose COMMIT-time and CURRENT permission sets are
 /// supplied independently, filtered for `recipient`. `current_created_seq`
 /// lets a test diverge the id's generation from the snapshot's.

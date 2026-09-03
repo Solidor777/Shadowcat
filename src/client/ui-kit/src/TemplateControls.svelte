@@ -60,8 +60,8 @@
 {/if}
 
 <style lang="scss">
-  .template-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border); background: var(--surface); }
-  .badge { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--font-sm); opacity: 0.85; }
+  .template-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--border); background: var(--surface-base); }
+  .badge { display: inline-flex; align-items: center; gap: var(--space-1); font-size: var(--font-size-sm); opacity: 0.85; }
   .badge.changed .state { color: var(--accent); font-weight: 600; }
   button { min-height: 44px; padding: 0 var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); color: inherit; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }

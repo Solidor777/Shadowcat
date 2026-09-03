@@ -28,6 +28,11 @@ export type { FootprintsPayload } from "./generated/FootprintsPayload";
 export type { SceneFootprints } from "./generated/SceneFootprints";
 export type { TokenFootprint } from "./generated/TokenFootprint";
 export type { FootprintExtent } from "./generated/FootprintExtent";
+export type { CombatsPayload } from "./generated/CombatsPayload";
+export type { CombatView } from "./generated/CombatView";
+export type { CombatantView } from "./generated/CombatantView";
+export type { ResolvedResourceView } from "./generated/ResolvedResourceView";
+export type { ResourceBindingKind } from "./generated/ResourceBindingKind";
 
 // UI contribution contracts
 export type { Cardinality } from "./generated/Cardinality";
@@ -90,12 +95,16 @@ export type { WorldSceneDefaults } from "./generated/engine/WorldSceneDefaults";
 export type { Pathfinding } from "./generated/engine/Pathfinding";
 export type { AnimationSettings } from "./generated/engine/AnimationSettings";
 export type { LightEngine } from "./generated/engine/LightEngine";
+export type { LightEmission } from "./generated/engine/LightEmission";
 export type { Falloff } from "./generated/engine/Falloff";
+export type { FalloffCurve } from "./generated/engine/FalloffCurve";
 export type { GradationBand } from "./generated/engine/GradationBand";
 export type { LightGradationEngine } from "./generated/engine/LightGradationEngine";
 export type { VisionMode } from "./generated/engine/VisionMode";
+export type { Perception } from "./generated/engine/Perception";
 export type { VisionModesEngine } from "./generated/engine/VisionModesEngine";
 export type { WallEngine } from "./generated/engine/WallEngine";
+export type { WallElevation } from "./generated/engine/WallElevation";
 export type { Seg } from "./generated/engine/Seg";
 export type { RegionEngine } from "./generated/engine/RegionEngine";
 export type { RegionShape } from "./generated/engine/RegionShape";

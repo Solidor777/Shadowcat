@@ -119,8 +119,8 @@
     font-family: monospace;
     padding: 0 0.5rem;
     &.active {
-      background: var(--accent, #46f);
-      color: var(--text-on-accent, #fff);
+      background: var(--accent);
+      color: var(--on-accent);
     }
   }
   .tags {

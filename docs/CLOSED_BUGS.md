@@ -663,3 +663,35 @@ Confirmed-real defects that have since been fixed, kept for provenance. New fixe
   did not initiate (back/forward, the user editing the URL bar). Regression coverage: a
   `route.svelte.ts` unit test proving `currentRoute()` updates with no hashchange event dispatched
   at all, plus an `App.svelte` end-to-end test of the deep-link-with-failing-backend scenario.
+
+## Client / the layout grid grew past the viewport when the tool rail outgrew the shared 1fr row (reported as a stage-canvas mis-size after a world leave/re-enter cycle)
+
+- [Client layout, FIXED] `.stage-host` and the whole dockview ancestry reported a bounding box far
+  taller than the viewport and vertically offset (`{x:48, y:-756, w:616, h:1444}` on a 720px
+  viewport), so a raw-coordinate pointer gesture computed from an earlier `boundingBox()` landed
+  off the canvas — `hex-movement.spec`'s wall-crossing test failed at the GM's token-placement
+  step. Measured root cause (a Playwright dump of every ancestor's rect at each step): the world's
+  leave/re-enter cycle was incidental. `Layout`'s grid is `100vh` tall with a `1fr` middle row
+  shared by the `.toolrail` and `.main` cells; a grid row is at least as tall as its tallest
+  item's minimum contribution, and only `.main` carried the growth cap (`min-height: 0` +
+  `overflow: hidden`, since `a6b31da3`). The `ToolRail`'s content — every GM tool, the snap toggle
+  and, from `551183a9`, the ten-glyph emote palette stacked one-per-row in the 3rem rail —
+  measures 1114px on a fresh world (1444px with the place tool's `AssetPicker` open), taller
+  than the row at both the default 720px and the spec's 1000px viewport, so the row, the grid,
+  the panel host and the canvas all grew to the rail's height and the document became
+  scrollable. Playwright's `locator.click` on a rail control below the fold then scrolled the
+  document (by 796px / 516px), which is what shifted every rect measured beforehand; a
+  `locator.click({ position })` re-measures at click time, which is why only the raw
+  `page.mouse.click` gestures failed. Not on `main` because `main`'s rail (no palette) is ~530px,
+  under both rows — the uncapped `.toolrail` cell was a latent defect there. Fixed by giving the
+  `.toolrail` cell the same growth cap as `.main` (`min-height: 0`, `overflow-y: auto` so the
+  rail's contributions scroll inside the cell, `overflow-x: hidden` so the scrollbar's own width
+  cannot demand a second one); the emote palette's free-text input additionally fits the rail's
+  width instead of overflowing it. Regression coverage: `Layout.test`'s "every region sharing the
+  1fr row carries the growth cap" enumerates the row's cells against the cap through jsdom's
+  cascade (core-ui's vitest config compiles component styles with `emitCss: false` so the
+  declarations are readable; mutation-proven by dropping the cap from `.toolrail`), and
+  `stage.spec`'s "a tool rail taller than the viewport scrolls inside its cell; the grid and
+  canvas never grow past 100vh" asserts the real-layout property with a positive control (the
+  rail genuinely overflowing its cell) and then reaches a below-the-fold rail control without
+  moving the canvas rect or the document. `hex-movement.spec` remains the end-to-end witness.

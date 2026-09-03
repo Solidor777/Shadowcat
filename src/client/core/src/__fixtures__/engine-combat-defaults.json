@@ -1,0 +1,10 @@
+{
+  "movementResource": null,
+  "interpretation": "per_cell",
+  "enforcement": "none",
+  "turnControl": "owner_may_end",
+  "effectCleanup": true,
+  "effectLifecycle": { "onCombatEnd": null, "onTurnEnd": null, "onAdvance": null },
+  "rewindRestore": true,
+  "forwardRestore": false
+}

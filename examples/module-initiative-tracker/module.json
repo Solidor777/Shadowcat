@@ -6,5 +6,6 @@
   "capabilities": [],
   "requirements": [],
   "provides": [],
-  "requires": ["shadowcat.panel"]
+  "requires": ["shadowcat.panel"],
+  "style": "style.css"
 }

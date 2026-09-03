@@ -225,7 +225,7 @@
   }
   .hint {
     margin: 0;
-    color: var(--text-secondary);
+    color: var(--text-muted);
     font-size: 0.85em;
   }
   .palette {

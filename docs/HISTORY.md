@@ -1931,6 +1931,155 @@ re-anchored, one e2e caught at review). Two review fold-ins: `js_number` normali
 the as-built shapes. Client: `resolveNotationTemplate` re-scoped to preview/authoring docs;
 GM pseudo-channel targets the registry's first channel; the last channel can't be removed.
 
+#### M14c-6 — Combat client seams ✅
+**COMPLETE.** Branch `m14c-6-combat-seams`, executed mainline from
+[`superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md`](superpowers/specs/2026-09-02-m14c-6-combat-client-seams-design.md)
+and its plan. Sixth of six.
+
+Server: `ServerMsg::CombatResult { request_id, seq }` answers an accepted `combat_*` intent
+(originator-only; a rejection still yields only `CombatError`); a shared `ws::room::resource_cells`
+helper backs both the `Hard`-enforcement truncation ceiling and the new `PathResult.budget_cells`
+disclosure (present under any enforcement level whenever the mover's budget resolves — `None` for
+a hidden combatant, a non-combatant token, or an unresolvable binding). The `"combat"` derived
+scene channel (`CombatsPayload`/`CombatView`/`CombatantView`/`ResolvedResourceView`) mirrors
+`resolved_footprints`'s two-gate egress: whole-document `cap::READ` plus the `/engine/resources`
+property-tier visibility, with every resource number resolved per recipient through the shared
+formula host — a GM, an owner, and an outside observer of the same combat can see different
+numbers from the same combat state. `combat_start` re-derives `movement`/`turn_control`/
+`effect_cleanup`/`rewind_restore`/`forward_restore`/`effect_lifecycle` from the resolved defaults
+chain (scene > world > system `CombatDefaults`) every time it runs — these fields are a snapshot
+of that chain at start, not authored state carried over from `Create`; an override belongs on the
+scene's `engine.combat`.
+
+Client (`@shadowcat/core`): `WsClient.combat()`'s pre-M14c-6 correlation was an author-echo FIFO —
+a self-authored `event` with no `combat_result` resolved the oldest pending entry regardless of
+which intent it actually answered, a defect present since M14b. Fixed in this range: an entry now
+resolves only once both its `combat_result` has arrived and `nextExpected` has advanced past its
+seq, correlated by `request_id`. `CombatController` (`CombatApi`, `COMBAT_SERVICE`) composes reads
+over the optimistic document view with the `"combat"` channel, the eight `combat_*` clock intents,
+and document helpers (create/add/remove/hide/reorder/setInitiative) built on `dispatchIntent`;
+`ENGINE_COMBAT_DEFAULTS`/`newCombatEngine` are pinned against a single JSON fixture both a Rust
+test and a Vitest test read. The first nine `CoreHooks` entries (`combat:start`/`end`/
+`round-start`/`round-end`/`turn-start`/`turn-end`/`rewind`/`effect-tick`/`effect-expired`) derive
+purely from an applied command's document delta (`deriveCombatHookEvents`), emitted in seq order
+by `CombatHookEmitter`; `WorldSession` captures pre-images only for commands `commandTouchesCombat`
+admits, so an ordinary token drag pays nothing.
+
+Shell/ui-kit: `WorldSession.combat`/`COMBAT_SERVICE` wired at construction (before any world is
+entered — `CombatControllerDeps.world`/`role` are live getters, not construction-time snapshots,
+because of that ordering); `AppContext.combat` exposed to every module and Svelte surface;
+`setAppContextForTest` defaults it to a real `CombatController` over the fixture's `documents`.
+scene-tools' `requestRoute` labels a `Warn`-enforcement overage ("35 ft · 10 ft over budget",
+`ROUTE_WARN_COLOR` stroke) or a `Hard`-enforcement stop ("stops at budget", polyline unchanged —
+the server already truncated it) beside the plain budget label; the pre-existing `arrested` `⚠`
+suffix composes with either. A core e2e spec drives two real `WsClient` connections against the
+real `test_server` binary through one GM/player scenario, confirming `combat_result` correlation,
+identical `combat:*` derivation across both clients' own filtered document streams, per-recipient
+channel visibility (a hidden combatant reaches the GM's store only), and the player's own
+`budget_cells` preview under `Warn`.
+
+Decisions of note: the controller lives in `@shadowcat/core` (framework-neutral), not ui-kit;
+resolved numbers come from the server-derived channel only, never re-evaluated client-side; hook
+derivation reads the authoritative `DocumentStore` pre/post image, never the optimistic view (a
+predicted event a rejection would have to un-emit); an unresolvable `turn` still emits its hook
+rather than being suppressed.
+
+Post-close fold-ins (two-reviewer findings on the range): turn hooks derive from the
+`combat-history` records a command appended (`crossedRecords`/`turnWalk`) instead of inferring
+intermediate turns from `lifespan`/delete deltas — a `lifespan: null` event's turn and a
+same-actor lap (the coalesced `/engine/turn` write folds to a same-value change) were invisible
+to every recipient, the GM included; the GM-only history reaches the GM alone, so a player's
+hooks are the combat document's endpoints (a subsequence). One movement-budget resolution,
+`combat::budget::resolve_movement_budget`, now backs the gate, the `"combat"` channel and the
+route preview — the channel had priced a `Mirror`-bound movement resource the gate refused.
+`ToolRail` wires `AppContext.t` (the overage/stop labels rendered a hardcoded English fallback
+in every locale) and builds its controller argument `satisfies HostToolContext`, so an
+AppContext-supplied seam can no longer be omitted without a type error; `fallbackT` is gone and
+`ToolContext.t` is required. `WorldSession.dispatchIntent` reports a dropped intent (`false`)
+and `CombatApi`'s document helpers throw `CombatClientError` `"not-connected"` instead of
+returning an id for a discarded op. `parseCombats` reports a malformed frame through the
+session logger, never `console.warn`. The core e2e asserts the GM's exact nine-event list
+(the event's turn pair included) against the player's seven-event subset.
+
+### M16 · Layout + theming completion ✅
+Branch `m16-layout-theming`, executed mainline (Kimi) from the approved design
+`docs/superpowers/specs/2026-08-31-m16-layout-theming-completion-design.md`; plans
+`docs/superpowers/plans/2026-08-31-m16a-theme-engine.md`,
+`...-m16b-layout-completion.md`, `...-m16c-user-themes-styling-modes.md`. M16 is
+complete in three sub-milestones.
+M16a (theme engine): the ui-kit theme data module (`THEME_TOKEN_NAMES`, 46 tokens;
+`BUILTIN_THEMES` slate-dark/slate-light/contrast-dark; `resolveTheme` + custom-theme
+sanitizers) and the `ThemeController` singleton (`theme`, `activeTheme`) writing every
+token and the color scheme as inline styles on each registered document's root — pop-out
+windows via `registerDocument`, so every open window follows a swap. Persistence rides
+`UiState.global.theme` through the sessionState leaf-key patch pipeline plus a
+localStorage mirror (`THEME_MIRROR_STORAGE_KEY`) the `main` entry applies pre-login, so
+neither the login screen nor the first paint flashes the default. Stage canvas runtime
+recolor (`RenderEngine.setThemeColors` over a named `ThemeColors`), all dockview chrome
+skinned onto theme tokens (with the library's own theme class bridged off), the settings
+theme picker, a token-mismatch sweep, an executable WCAG contrast audit of the built-ins,
+and a stylesheet↔theme-data parity test. e2e: theme switch applies immediately, persists,
+survives reload.
+M16b (layout completion): the layout tree carries `popouts: PopoutWindowLayout[]` (one
+record per window — engine-minted key, tab-ordered panels, screen-absolute rect, dormant
+marker) with the `withPopouts` codec migration (a legacy `poppedOut` id array becomes one
+single-panel window per id, key derived deterministically); ops `popOut` (carries
+key/rect), `updatePopoutGeometry`, `popOutInto`. `apply()` reconciles already-floating
+panels onto the tree rect instead of resetting them; floating windows move with Arrow
+keys (Shift for the coarse step) and resize with Ctrl+Arrows; resize hit targets meet the
+24/44px a11y floor. Popout geometry is captured from the live window, never the event
+payload — vendored dockview-core 7.0.2 populates screenY from screenX (logged in
+`OPEN_BUGS.md`). The restore flow: dormant records survive rehydrate, the
+`panels.popoutRestoredFloating` notice carries a Reopen action (info notifications with
+an action never auto-dismiss), `flushPendingNotice` withholds action notices until
+`restorablePopouts()` is non-empty (PanelHost re-flushes on `visibleRegs`), and
+`restorePopouts()` reopens each window in one user gesture. Found in flight: a
+stale-tree `apply()` from a resizeZone op yanked panels out of in-flight popups —
+`#pendingPopouts` guards both placement loops in `DockviewEngine.apply`;
+`placeFromPersistedLocation`'s popped-out branch restores the dormant record so
+trickle-prune cannot destroy the arrangement server-side. e2e: panels-floating.spec
+(keyboard resize persistence; the popout/restore round trip).
+M16c (user themes + styling modes): the settings `ThemeEditor.svelte` — name, base
+theme, every curated color token via color inputs, per-token reset, advisory WCAG
+contrast warnings (`contrastWarnings`/`CONTRAST_PAIRINGS`/`wcagContrast`) — with live
+whole-app preview through `previewCustom(draft, owner)`, presentational only and never
+serialized. Module styling modes: `Contribution.styling` host/isolated; isolated content
+is wrapped by `Surface.svelte` and slot-classed by `PanelHost.svelte` with
+`THEME_ISOLATION_CLASS`, whose rule (`themeIsolationCss`, generated from the default
+theme's data, installed per themed document under `THEME_ISOLATION_SHEET_ID`)
+re-declares every token at its engine default for that subtree only. External modules
+ship a stylesheet via the manifest `style` field (schema-validated relative `.css`,
+traversal rejected), installed as one link per enabled module by the world session with
+disable/leave cleanup; the initiative-tracker example declares it and the
+creating-a-module guide documents it. e2e: the custom-theme lifecycle — author, live
+preview, persist, reload, delete with fallback to the default. Found in flight: a
+component destroyed in the same flush that mutated controller state reads its `$state`
+fields stale (minimally reproduced under Svelte 5.56.3) — the editor's teardown clear is
+microtask-deferred and owner-scoped (`clearPreview(owner)`), and the preview entry is
+`$state.raw` because the deep proxy breaks owner identity; the e2e settings re-open is
+toggle-aware because the persisted panel layout may restore the panel open; typedoc
+cannot attach nested `@param`s to an inline object literal nor `{@link}` a private.
+Coverage: repo unit suites green (core 564, ui-kit 183, settings 42, panels 270, shell
+127, render 192, scripts 427), full gate battery including strict typedoc
+(`pnpm build:all`), and the full e2e suite 23/23 quiet. The close-out whole-branch
+adversarial review found one Important issue — spec §F's drag-into-existing-popout
+producer had never been wired (a will-drop on an open popout's group was silently
+converted to a pseudo-edge dock; shipped now as `#handlePopoutWillDrop`, classifying via
+`#popoutWindowKeys` ahead of `#toDropSite` with flat placement semantics and imperative
+moving-locked joins) — and nine Minor items, all fixed in the same campaign: the
+isolation sheet now re-declares `color-scheme`; `saveCustom` ignores a sanitizer-rejected
+entry; the manifest `style` refine rejects backslash separators; module stylesheets
+install only for modules that actually activated; the codec's referential guard rejects a
+panel id in two live locations (dormant records are tombstones, not locations);
+`#popOutPanel`'s success continuation skips a mid-flight-closed panel instead of ghosting
+it; `describeOp`'s fallthrough comment is current (and `popOutInto` stays unnarrated by
+design); PanelMenu documents the floating-window keyboard shortcuts; and the theme e2e
+gains an isolation-under-non-default-theme case plus a multi-panel restore case. Skills
+updated in the plugin checkout (panels rewritten to the
+popouts-record model, client-shell theming bullet; plugin v1.4.1); the pre-existing
+skill-citation drift naming unbuilt M14c/M17/M18 symbols (59 at the skills-corpus HEAD
+baseline, zero added by M16) is logged in `POST_WORK_FINDINGS.md`.
+
 ### M15b · Asset browser + generic document Move ✅
 Branch `m15b-asset-browser`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15b-asset-browser-design.md` and plan
@@ -2105,6 +2254,259 @@ Coverage: 7 room region-trigger tests + 4 executor `entered_cells` tests (+ the 
 parity pin), 6 `updateTokenFx` + condition-fx/selection tests across render/engine/stage, emote
 protocol + convergence + cross-scene guard tests, 17 new actors-module tests; full repo gates
 (`cargo test`/`clippy`/`fmt`, every `pnpm` gate, docs example check) green at every commit.
+### M17a · Photometric field + carried emitters + light/wall authoring ✅
+Branch `m17`, executed from the design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D1, D2, D9-light, fold-in fix 2) and plan
+[`superpowers/plans/2026-08-31-m17a-photometric-emitters.md`](superpowers/plans/2026-08-31-m17a-photometric-emitters.md);
+M17b (senses/elevation), M17c (movement tags) and M17d (moving light mid-walk) remain.
+Delivered, server: `cell_illumination` is additive superposition with saturation
+(`clamp01(Σ)` per cell) and illuminance-weighted tint mixing (`Σ(levelᵢ × colorᵢ) /
+Σ(levelᵢ)` over the unsaturated sum), replacing max-of-contributors/dominant-tint; the
+boundary-projected environment ambient is one more additive contributor with its
+`blocksLight` occlusion unchanged. `LightEmission` is the single emission payload shared by
+standalone lights (`LightEngine` restructured to `{ x, y, emission }`) and token/actor-carried
+emissions (`ActorEngine.light`, `TokenOverrides.light`, wholesale override with `enabled:false`
+as the suppress path); `Falloff.curve` is the closed `FalloffCurve` enum. The new
+`scene::emitters` module resolves a token's effective emission with `token_vision_floors`'
+precedence (uncached embedded-actor read) and `SceneEcs::scene_lights` returns standalone lights
+∪ carried emissions at each token's live position — the one read path into the illumination
+field, so the lit mask, the movement gate and the visibility-cache snapshot all inherit the
+union. Fold-in fix: `compute_derived` resolves the gradation once and passes it into
+`player_lit_mask`. Review-found and fixed in flight (two independent reviewers, converged):
+**carried-light authoring is GM-only** — `permission::carried_light_touched` /
+`carried_light_in_body` classify any write that creates, changes or removes an emission (direct
+pointer writes, value-compared ancestor writes, removals, create bodies) and `apply_intent`
+refuses them for non-GMs on both arms, because an emission edits the SHARED illumination field
+every viewer's mask reads, unlike the owner-writable presentation fields; `light_illumination`
+refuses a non-finite distance for every falloff curve (the flat arm would otherwise light every
+cell of a NaN-positioned light); the visibility-cache snapshot membership of carried lights is
+pinned by recompute-count tests on both the carrier-move and the emission-value-edit paths;
+`scene_lights`'s sort chain is fully deterministic. Client: `EffectiveActor.light` joins
+`resolveTokenActor`'s projection; `DEFAULT_LIGHT_EMISSION` (`@shadowcat/core`) is the one
+authoring default. Authoring: `makeLightTool` (place with defaults / click-select /
+drag-reposition with raw-stored OCC pre-images), `LightView` markers on the walls layer
+(visible to any doc recipient, like walls; editing is GM-gated at the tool layer), the select
+tool picks lights/walls into `ToolController.editingEntity`, and `ToolRail` renders the light
+editor (enabled/color/intensity/radii/falloff/delete) and the wall flag editor
+(`blocksSight`/`blocksMove`/`blocksLight`/delete). `LightEmissionEditor` (ui-kit) is the shared
+emission field set across the light editor, the actor panel (per-row + create form), the actor
+sheet, and the per-token override control (`TokenLightControl`: inherit / suppress / custom as a
+whole-object `/engine/overrides` write). Accepted without action per the no-migrations
+pre-customers rule: a pre-restructure flat `light` document fails the new engine decode and goes
+dark (fail-closed). Two existing test expectations changed for the additive composition
+(env-plus-light saturation and a max-compose rename); no other suite moved.
+
+### M17b · Senses: tremorsense + elevation ✅
+Branch `m17`, executed from the same design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D3, D9-senses, fold-in fix 1) and plan
+[`superpowers/plans/2026-08-31-m17b-senses.md`](superpowers/plans/2026-08-31-m17b-senses.md);
+M17c (movement tags) and M17d (moving light mid-walk) remain. Delivered: `VisionMode` is the v2
+descriptor (`perceives` terrain/creatures, `requiresLos`, `renderHint`), and
+`VisionModesEngine::seed` gains `tremorsense` (creatures, no-LOS, 12 cells). The masked `vision`
+payload carries `perceived` — the grounded tokens the recipient's grounded creature-sense
+sources perceive per scene, READ-gated through the same `ctx_access` authority as the document
+stream, disjoint from the `lit` set by construction (`compute_derived` passes the one computed
+mask in), absent on the GM arm; `scene::senses` resolves senses through the SAME
+`token_vision_assignments` precedence walk the terrain floors use, so the two views cannot
+disagree. Client: `toVisibility` parses `perceived` fail-closed (garbled ⇒ empty) and
+`PixiBackend` re-parents a perceived token's node — never a duplicate copy — into the
+above-`mask` `perceivedTokens` container and back, so the reveal is immediate in both
+directions and survives vision sweeps. Elevation: `TokenEngine.elevation` /
+`LightEngine.elevation` (absent = ground; readers clamp non-finite to ground) and
+`WallEngine.elevation` `{ bottom, top }` — the band a wall's sight/light occlusion applies to
+(absent = every elevation, absent end unbounded, malformed or non-finite fails closed to
+occluding everything via `scene::elevation::wall_occludes`, including a non-finite source
+elevation). One filtered accessor pair (`sight_walls_for`/`light_walls_for` over the banded
+collectors) feeds every consumer; environment ambient keeps the full wall set at every
+elevation (walls always shadow sky-light); the visibility-cache snapshot fingerprints source
+elevation so no stale mask is served. Fold-in fix: observer-vision source admission routes
+through `resolve_access_world` — the same capability resolution `filter_command` uses — with a
+parity test exercising both masks at genuinely diverging inputs. Authoring: the game-settings
+vision-mode editor edits every descriptor field and adds/removes modes, with the floor dropdown
+derived from `resolveGradation` (the hardcoded band list is gone) and add/remove band on the
+gradation editor (band names stay non-editable — they are the floor reference key); the actors
+panel's darkvision-only input is now the shared `VisionAssignmentsEditor` list (mode + range +
+add/remove) on rows, the create form, and the actor sheet; `TokenVisionControl` (inherit /
+custom wholesale override) and `TokenElevationControl` (0 normalizes to absent) join the
+per-token surfaces; the wall editor gains the occlusion-band interval inputs and the light
+editor an elevation input; off-ground tokens render an upright `↑n`/`↓n` badge chip. E2e
+(Playwright, real server + two sessions): a tremorsense row assigned through the real UI
+reveals a grounded token through fog on the player's client, raising the target's elevation
+ends the perception, and the elevation badge renders. Review (two independent reviewers,
+converged): the lit-mask pass-through, the NaN-closed `wall_occludes`, and the legacy-mode
+display defaults above were found and fixed in flight; accepted and documented in the spec's
+security section — owner-writable token elevation can lift a carried GM-authored light over a
+deliberately banded wall (bounded by the emission's reach; GM-gating it would fork the movement
+model ahead of M17c's flight tags).
+
+### M17c · Movement-type tags + terrain exemptions ✅
+Branch `m17`, executed from the same design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D5, D9-tags) and plan
+[`superpowers/plans/2026-08-31-m17c-movement-tags.md`](superpowers/plans/2026-08-31-m17c-movement-tags.md);
+M17d (moving light mid-walk) remains. Delivered, data: `ActorEngine.movement: Vec<String>`
+(`#[serde(default)]`), `TokenOverrides.movement: Option<Vec<String>>` (wholesale replacement, the
+`vision` shape) and `Faction.movement: Vec<String>` — the first faction-record property that flows
+into an effective actor; ts-rs + Zod + builders + round-trip tests. Resolution: the client's
+`EffectiveActor.movement` is the token override, else dedup(actor ∪ faction record) read inside
+`resolveTokenActor`; the server twin `SceneEcs::token_movement_tags` (`scene::movement_tags`)
+walks the same linked/instanced/override precedence as `token_vision_floors`, with the faction
+registry hydrated into the ECS config side-tables beside `vision_modes`/`gradation` and a dangling
+link resolving to the empty set (never exempt). Threading: `ignores_terrain_cost` over
+`TERRAIN_EXEMPT_TAGS` (`flying`, `incorporeal`) is resolved ONCE per request at the two seams —
+`handle_pathfind` (named, authorized token only) and `Room::execute_move` (same guard block as
+`footprint`) — into `pathfinding::MoveTraits { ignore_terrain }`, carried by the new
+`RouteMover` (`SceneEcs::pathfind`'s mover bundle: footprint, budget clamp, traits) and
+`MoveGateInputs.traits`, and read at every multiplier site through the single
+`pathfinding::terrain_cost` chokepoint: `astar_leg`, `replay_step_costs`, `navmesh::los_smooth`'s
+per-span cost (its chord rule drops the terrain refusal for an exempt mover, never impassable or
+arrest), and `execute_move`'s per-transition and Continuous tail pricing. The continuous dispatch
+predicate splits into `RegionField::has_impassable`/`has_weighted_terrain`: an exempt mover's
+terrain-only field takes the plain any-angle route, impassable still forces the weighted sub-path
+for everyone. `los_smooth` now takes the same `PathInputs` bundle `find` searched under (the caller
+hands `find` a copy differing only in `shape`), so mask/walls/field/footprint/traits cannot diverge
+between search and smoothing. Found and fixed in flight by the new parity test: `navmesh_find`
+reported polyanya's f32 leg length, which `clip_to_visible_mask` passes through unrecomputed on a
+wall-less GM preview — a cost the executor's f64 span sum could not reproduce; it now sums its own
+polyline in f64. Walls, impassable, arrest and the visibility mask gate an exempt mover exactly as
+anyone else, and the per-requester region-field secrecy rules are untouched. Tests:
+`scene::tests::cost_parity` gains four exempt-mover cases (grid preview == execution == unweighted
+Chebyshev; pure-polyanya continuous; impassable-forced weighted continuous; the `los_smooth` chord
+path — the last mutation-checked against the chord rule), the `move_exec` unified-cost suite gains
+the exempt transition/tail/budget-stop cases plus `exemption_never_covers_impassable_or_arrest`, and
+the movement-budget suite proves the decrement consumes the exempt cost (ground 6, flying 2, same
+move). Authoring: `MovementTagsEditor` (ui-kit chip editor: reserved-tag toggles + free-form chips)
+on actor rows, the actor create form, the actor sheet and faction rows, plus `TokenMovementControl`
+(inherit / custom wholesale override on `/engine/overrides`) beside the other per-token controls —
+every write with the raw stored value as the OCC pre-image. Skill updates: the stale
+`los_smooth` claim that `cost` was carried through unchanged (the code recomputes it per span) was
+corrected while extending the bullet. Gate note: `pnpm run test:scripts` and the e2e suites
+timed out on vitest worker start-up while a sibling worktree's cargo build was running; each
+failing file passed in isolation once the machine quieted, with no assertion failure at any point.
+
+### M17d · Moving light source mid-walk ✅ — M17 closes
+Branch `m17`, executed from the same design
+[`superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md`](superpowers/specs/2026-08-31-m17-vision-lighting-movement-design.md)
+(D6) and plan
+[`superpowers/plans/2026-08-31-m17d-moving-light-midwalk.md`](superpowers/plans/2026-08-31-m17d-moving-light-midwalk.md).
+With it M17 (a–d) is complete. Delivered, wire: `ServerMsg::MoveStream.mover_light:
+Option<Vec<LightSample>>` where `LightSample {t_ms, pos, bright, dim, color, intensity, falloff,
+polygons}` pairs a position sample with the mover's carried emission raycast at that instant
+(`pos`/`bright`/`dim` in scene units; `intensity`/`falloff` make the sample self-describing for
+the egress clip; ts-rs export, Zod + `MoveLightSample` + mapper on the client, pinned
+field-for-field on the present and null paths). Server, "cost only
+on request": `SceneEcs::mover_light_inputs(scene, token, cell)` hoists one `MoverLightInputs`
+per move (the resolved `token_light_emission` as a `Light` template, the `blocksLight` walls
+filtered at the token's elevation, `world_units_per_cell`) and `MoverLightInputs::sample_at`
+raycasts each position sample through `emitters::light_polygon` — THE light raycast, which
+`lighting_inputs_from` now also calls, so the committed field and the timeline cannot diverge
+— capped at `MAX_VISION_POLYGON_VERTS`. `ResolvedScene::all_bright` is the one lighting-off
+predicate (`lighting_inputs`, the visibility-cache snapshot and this seam), and an all-bright
+scene, a lightless or suppressed emission, or a zero-progress move yields `None` with zero
+raycasts. The timeline is NOT gated on the mover's role (a GM walking a torch-bearing NPC lights
+the corridor for the players watching it — the spec's D6 puts no role gate on the light, only
+on `mover_vision`). Egress: `ws::move_clip::admit_light_samples` keeps, per recipient, only the
+samples whose glow lights a cell in the recipient's sight at that sample's instant
+(`glow_reaches`: a cell center within `dim` that the sample's own light reaches —
+`lighting::source_level`, the per-source rule `cell_illumination_from` sums — AND that the
+recipient sees with the instant's field composed (`InstantSight::sees`); `disc_intersects_polys`
+is the pre-filter only, the fine test scans the disc box ∩ the recipient's line-of-sight box ∩
+the sample's polygon box under `explored::MAX_CELLS_PER_POLYGON` and a box past even that
+admits nothing; non-finite ⇒ nothing), resolved through `ClipInputs::at` — the SAME instant
+sight `clip_samples` reads, both resolved once per distinct instant by `clip_frame`;
+`chosen_vision_sample` is generic over the `Timed` trait so every sample kind selects by the one
+fixture-pinned rule, and every registered in-flight move contributes at every instant, a move
+not yet started standing at its first sample.
+Mover and plain GM receive the full timeline, see-as keys admission on the target's sight, a
+timeline no sample of which reaches the recipient is `None`, and the own-move re-emit
+(`concurrent_streams`, also triggered by a torch-carrying move starting) re-admits through the
+identical path (pinned by `egress_reemit_re_admits_the_concurrent_streams_light_timeline`).
+Frame delivery is decided by BOTH clips: a recipient the glow alone reaches gets a glow-only
+frame (`samples` empty, `mover_light` the admitted timeline, `stop`/`duration_ms` at the last
+admitted light sample — `glow_only_recipient_gets_a_frame_with_no_position_samples`,
+`egress_reemit_yields_a_glow_only_frame_when_only_the_glow_reaches`), a recipient reached by
+neither gets no frame, and the wire invariant is "at least one of `samples`/`mover_light` is
+non-empty". The invariant-11 disclosure is the admitted polygons outside the recipient's sight,
+bounded by the emission's own reach. **Visibility is `LOS ∩ lit`, server-authoritative, at
+every site** (the close-out's second finding): `SceneEcs::sight_sources`/`SightSources::los_at`
+are the ONE line-of-sight read (`player_vision_polygons`, the mover's streamed timeline and the
+egress clip), `SceneEcs::recipient_sight` → `InstantSight::sees` is the clip's per-instant
+predicate — some source's LOS polygon contains the point AND `point_qualifies` at its cell
+center, the lit mask's own conjunction, pinned cell-for-cell by
+`recipient_sight_agrees_with_player_lit_mask_cell_for_cell` — with in-flight movers' carried
+emissions excluded from the committed field (`recipient_sight`'s `exclude_emitters`,
+`scene_lights_excluding`, memoized per `(scene, excluded)` by value through
+`lighting_inputs_cache` so one frame's recipients share one raycast) and composed back per
+instant from the registered frames' `mover_light` (`RecipientSight::sample_light`,
+`LightingInputs::cell_light` over `lighting::cell_illumination_from`); the token predicate is
+`InstantSight::sees_token` — `sees` OR the creature-sense rule `senses::sense_perceives` the
+`perceived` channel already decides with, so a tremorsense observer is streamed a grounded
+mover it cannot see (`a_tremorsense_observer_is_streamed_a_grounded_token_it_cannot_see`) while
+senses never admit a glow; a token walking unlit through plain line of sight streams
+to a darkvision observer within range and a GM but not to a normal-vision observer
+(`an_unlit_token_in_line_of_sight_streams_only_to_darkvision_and_the_gm`); explored memory
+accumulates the `lit` cells (`ExploredSet::mark_cells`, replacing polygon rasterization), never
+a line-of-sight polygon on its own. Client:
+`RenderEngine.animateSamples(..., moverLight)` starts a `lightSweeps` entry beside
+`visionSweeps`; the pure `light-sweep` module (`lightSampleCells`: cells within `dim` of the
+chosen sample, inside its polygons and the viewer's own line of sight, brightest band within
+`bright`, band 1 beyond, tinted by the light's color through the shared `bandAlpha`/`TINT_ALPHA`;
+`blendLightCells`: the consecutive-sample cross-fade at the `computeFogBlendFactor` clock, a
+one-sided cell fading toward `MAX_DARK_ALPHA` and dropped at zero weight; fail-closed on a
+degenerate sample or more than `MAX_LIGHT_SWEEP_CELLS` candidates) feeds `Lighting.setSweep`,
+unioned over the fade-interpolated committed frame by `mergeSweepCells`. A committed lighting
+frame arriving mid-sweep is applied at once through `applyCommittedLighting`, which holds the
+light sweep's END cells lit (`holdLightingCells` over `lightSampleCellKeys`) until the sweep
+ends — the post-commit rebroadcast carries the light at its final cell, and the hold keeps the
+corridor from going dark for the beat between the two; while the viewer's own vision sweep plays, `applyCommittedLighting`
+paints the `unionLightingInputs` of the lighting held at sweep start (`lightingBeforeSweep`, lit
+from the START) and the newest frame (lit from the STOP). A glow-only frame starts the light
+sweep alone (no position samples reach `TokenAnimator`). **The client renders "in sight but
+unlit"**: `Lighting.setDarkness` carries the viewer's current line of sight (the committed
+`visible` set, or the vision sweep's chosen/blend polygons) as `LightingFrame.darkness`, which
+`PixiBackend.setLighting` paints as a sheet at `MAX_DARK_ALPHA` inverse-masked by the lit cells'
+polygons (`litHoles`) beneath the per-cell fills — an in-sight unlit cell is as dark as the
+darkest band, never brighter than a dim cell; withheld when no lighting model applies (a GM's
+`mode:"all"`). A sweep's duration extends to its last admitted sample; a client-local scene
+switch ends every sweep; `chooseVisionSample` is generic so the light timeline reuses the shared
+`chosen-vision-sample.json` fixture. `Stage` exposes read-only `data-light-sweep` /
+`data-lit-cells` / `data-lit-bbox` through `RenderEngineOpts.onLightingApplied`, each written
+only when its value changes; with nothing lit the darkness sheet paints whole with its mask
+cleared rather than through an inverse mask over an empty `Graphics`. `LightEmission::validate`
+bounds every carrier's radii (standalone light, actor, token override) by
+`MAX_FOOTPRINT_CELLS` at ingress. Tests: protocol
+round-trip; `ws::room::tests::mover_light` (lightless, carried torch sampled at every instant with
+scene-unit reaches + photometry, GM mover, suppressed emission, all-bright); `ws::move_clip::tests`
+(fixture parity on light samples, LOS clip, own in-flight viewpoint per instant, illumination
+required for normal vision, darkvision in range, another mover's torch lighting a bystander per
+instant, disc intersection incl. fail-closed, admission none-in/none-out, sample-level filtering,
+an occluded glow dropped, a wide glow never falling open, an ember below the dim floor
+dropped for normal vision and admitted to darkvision, a not-yet-started torch lighting the
+frame's first instant, a tremorsense mover streamed and its glow not, `clip_frame` resolving
+each distinct instant once, same-instant parity with `clip_samples`);
+`ws::conn::tests::mover_light` (observer admission past its clipped position prefix, out-of-reach
+drop, neither-token-nor-glow ⇒ no frame, the glow-only frame, unlit-token secrecy across normal /
+darkvision / GM, mover + plain GM full timeline, see-as by the target's sight, the target's own
+in-flight timeline, the re-emit and the glow-only re-emit); `scene::tests`
+(`recipient_sight_agrees_with_player_lit_mask_cell_for_cell`, fog polygons sharing the
+observer-tier admission, `wire_falloff_round_trips_field_falloff`); client `wire`/`ws-client`
+(glow-only parse + map, photometry by value, unknown falloff rejected), `light-sweep`, `lighting`
+(`bandAlpha`, `mergeSweepCells`, `unionLightingInputs`, `setSweep`, `setDarkness` with and
+without a model), `pixi-backend` (darkness sheet + lit holes), `fog-blend` fixture parity, engine
+sweep suite (mid-walk lighting with the parked frame and revert, null timeline untouched,
+concurrent union, LOS intersection, extended duration, scene switch, glow-only sweep with no
+token tween, darkness over the committed sight and lifted for a GM, the vision-sweep union),
+bridge/session forwarding; shell e2e `light-midwalk.spec.ts` (corridor lit mid-walk before the
+commit; walled-in observer never sees a sweep; a sight-only wall hides the bearer but its glow
+still sweeps). Found in flight: the sweep
+blend's one-sided fade lerped toward alpha 0 (brightest) and kept zero-weight cells — inverted
+against the overlay's "absent = fully dark" convention; fixed before commit. Skill updates:
+`shadowcat-codebase-scene-rendering` (M17a–d seams), `-realtime-sync` (`moverLight` on the
+egress transform and client chain) and `-actors-tokens` (carried light, elevation, v2 vision
+descriptor authoring). Gate note: the shell Playwright suite was NOT run in this session (the
+dispatcher serializes it across worktrees); every other gate ran.
 
 ### M19a · Chat media ✅
 Branch `m19`, executed from the approved plan

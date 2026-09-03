@@ -12,6 +12,8 @@ export class MockBackend implements DisplayBackend {
   /** Last `setBackground` spec, recorded verbatim; `null` before the first call, or after a
    * clear (`setBackground(null)`). */
   background: BackgroundSpec | null = null;
+  /** Last `setClearColor` value, recorded verbatim; `null` before the first call. */
+  clearColor: number | null = null;
   /** Count of lines passed to the last `drawGrid` call — the geometry itself is discarded. */
   gridLineCount = 0;
   /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
@@ -113,6 +115,20 @@ export class MockBackend implements DisplayBackend {
   setBackground(spec: BackgroundSpec | null): void {
     this.background = spec;
   }
+  /** `DisplayBackend.setClearColor`: records `color` verbatim into `this.clearColor`.
+   * @param color The clear color to record, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setClearColor(0x1e1e2e);
+   * backend.clearColor; // 0x1e1e2e
+   * ```
+   */
+  setClearColor(color: number): void {
+    this.clearColor = color;
+  }
   /** `DisplayBackend.drawGrid`: records only `lines.length` (as `gridLineCount`) and `color` — NOT
    * the line geometry itself. Unlike `PixiBackend`, which strokes every segment's exact
    * coordinates, a test using this mock can assert line COUNT and color but cannot assert the
@@ -157,8 +173,8 @@ export class MockBackend implements DisplayBackend {
    * import { MockBackend } from "@shadowcat/render";
    *
    * const backend = new MockBackend();
-   * backend.setVisibility({ mode: "all", visible: [], explored: [] });
-   * backend.visibility; // { mode: "all", visible: [], explored: [] }
+   * backend.setVisibility({ mode: "all", visible: [], explored: [], perceived: [] });
+   * backend.visibility; // { mode: "all", visible: [], explored: [], perceived: [] }
    * ```
    */
   setVisibility(input: VisibilityInput): void {
@@ -183,8 +199,8 @@ export class MockBackend implements DisplayBackend {
    *
    * const backend = new MockBackend();
    * backend.setVisibilityBlend(
-   *   { mode: "masked", visible: [], explored: [] },
-   *   { mode: "masked", visible: [], explored: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
    *   0.5,
    * );
    * backend.visibilityBlend?.factor; // 0.5
@@ -228,8 +244,9 @@ export class MockBackend implements DisplayBackend {
     };
   }
   /** `DisplayBackend.setToken`: upserts `spec` verbatim into `this.tokens`, keyed by `id`. Unlike
-   * `PixiBackend.setToken`, this does not simulate texture loading, rotation, or badge diffing —
-   * `this.tokens.get(id)` always reflects the LAST spec passed, immediately.
+   * `PixiBackend.setToken`, this does not simulate texture loading, rotation, badge diffing, or the
+   * perceived-flag re-parenting — `this.tokens.get(id)` always reflects the LAST spec passed,
+   * immediately, including its `perceived` flag.
    * @param id The token document id.
    * @param spec The resolved token render spec to record.
    * @example
@@ -240,7 +257,7 @@ export class MockBackend implements DisplayBackend {
    * backend.setToken("00000000-0000-0000-0000-000000000001", {
    *   x: 0, y: 0, w: 70, h: 70, rotation: 0,
    *   visual: { kind: "image", url: "https://example.test/token.png" },
-   *   borderColor: null, badges: [], shape: "square",
+   *   borderColor: null, badges: [], shape: "square", perceived: false,
    * });
    * ```
    */
@@ -393,7 +410,7 @@ export class MockBackend implements DisplayBackend {
    * import { MockBackend } from "@shadowcat/render";
    *
    * const backend = new MockBackend();
-   * backend.setLighting({ cell: 70, cells: [] });
+   * backend.setLighting({ cell: 70, cells: [], darkness: [] });
    * ```
    */
   setLighting(frame: LightingFrame): void {
@@ -487,7 +504,7 @@ export class MockBackend implements DisplayBackend {
    * backend.setToken("00000000-0000-0000-0000-000000000001", {
    *   x: 42, y: 0, w: 70, h: 70, rotation: 0,
    *   visual: { kind: "image", url: "https://example.test/token.png" },
-   *   borderColor: null, badges: [], shape: "square",
+   *   borderColor: null, badges: [], shape: "square", perceived: false,
    * });
    * backend.lastTokenX("00000000-0000-0000-0000-000000000001"); // 42
    * ```

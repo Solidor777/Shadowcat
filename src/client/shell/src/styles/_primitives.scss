@@ -34,6 +34,11 @@
   --radius-2: 8px;
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 
+  // Type scale. --font-size-md matches the body default.
+  --font-size-caption: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+
   // Coarse-pointer (touch) input minimum: WCAG 2.5.5 / iOS HIG target size.
   // Consumed globally via `var(--input-height-coarse)` — every package already
   // reads shell's :root custom properties this way (--space-*, --accent, etc.)

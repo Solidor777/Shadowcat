@@ -102,10 +102,10 @@
 </div>
 
 <style lang="scss">
-  .modal-scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-  .modal { background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-2); padding: var(--space-3); max-width: min(90vw, 40rem); max-height: 85vh; overflow: auto; display: flex; flex-direction: column; gap: var(--space-2); }
-  h2 { margin: 0; font-size: var(--font-lg); }
-  h3 { margin: var(--space-1) 0 0; font-size: var(--font-md); }
+  .modal-scrim { position: fixed; inset: 0; background: var(--scrim); display: flex; align-items: center; justify-content: center; z-index: var(--z-popover); }
+  .modal { background: var(--surface-raised); color: var(--text-primary); border: 1px solid var(--border); border-radius: var(--radius-2); padding: var(--space-3); max-width: min(90vw, 40rem); max-height: 85vh; overflow: auto; display: flex; flex-direction: column; gap: var(--space-2); }
+  h2 { margin: 0; font-size: var(--font-size-md); }
+  h3 { margin: var(--space-1) 0 0; font-size: var(--font-size-md); }
   .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
   .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding: var(--space-1); border-bottom: 1px solid var(--border); }
   .field { font-family: monospace; font-weight: 600; }
@@ -113,10 +113,10 @@
   label { display: inline-flex; align-items: center; gap: var(--space-1); }
   .actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-2); }
   // Touch-target constraint: ≥44px targets under coarse-pointer input.
-  button { min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface); color: inherit; }
+  button { min-height: 44px; padding: 0 var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); color: inherit; }
   @media (pointer: coarse) {
     button, input[type="radio"] { min-height: 44px; min-width: 44px; }
   }
-  .apply { background: var(--accent); color: var(--accent-contrast, #fff); }
+  .apply { background: var(--accent); color: var(--on-accent); }
   input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>

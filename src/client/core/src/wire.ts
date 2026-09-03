@@ -30,6 +30,8 @@
 // one this pattern replaces everywhere else — missing-required-field
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
+import type { Logger } from "./logger";
+import type { CombatsPayload } from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -573,6 +575,34 @@ export type WireMoveStreamVisionSample = {
   polygons: [number, number][][];
 };
 
+/** A single carried-light sample in a `move_stream` timeline, paired with a position sample
+ * by `t_ms`: the mover's enabled emission raycast at that instant's position. `pos` is the
+ * emitter position and `bright`/`dim` its reaches, all in scene units; `color` is the packed
+ * `0xRRGGBB` tint; `polygons` the `blocksLight`-occluded illumination polygon(s), NOT clipped
+ * to the recipient's line of sight (the client intersects them with its own fog). Mirrors
+ * `crate::ws::protocol::LightSample`. */
+export type WireMoveStreamLightSample = {
+  /** Elapsed time in milliseconds — matches the corresponding position sample's `t_ms`. */
+  t_ms: number;
+  /** The emitter's scene-coordinate position (x, y) at this instant. */
+  pos: [number, number];
+  /** Full-brightness reach from `pos`, scene units. */
+  bright: number;
+  /** Dim-light outer reach from `pos`, scene units — the server's admission disc radius. */
+  dim: number;
+  /** Packed `0xRRGGBB` light color. */
+  color: number;
+  /** The emission's intensity in `[0, 1]`. With `falloff`, what makes the sample
+   * self-describing: the server's per-recipient clip composes an in-flight light into the
+   * illumination field from the frame alone. */
+  intensity: number;
+  /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
+  falloff: "linear" | "quadratic" | "none";
+  /** The light's illumination polygon(s) at this instant, each an ordered list of [x, y]
+   * scene-coord vertices. */
+  polygons: [number, number][][];
+};
+
 /** The `welcome` server frame, sent right after a successful join. Carries the world's default
  * capability grants, the connecting user's world role, and the declarative capability
  * requirements so the client can replicate access resolution for advisory UI gating (the server
@@ -776,6 +806,11 @@ export type ServerMsg =
       arrested: boolean;
       /** True when the mover's movement budget truncated the route short of the goal. */
       truncated: boolean;
+      /** The named token's remaining movement budget in cells, present iff the requester can
+       * read the combat's combatant for that token — regardless of enforcement mode, so a GM
+       * or a `warn`/`none` mover still sees the number. `null` when the token names no
+       * combatant, the caller cannot read it, or no combat is running. */
+      budget_cells: number | null;
     }
   | {
       /** The `pathfind` with this `request_id` failed (unreachable / invalid request /
@@ -813,12 +848,23 @@ export type ServerMsg =
        * `combat_rewind`/`combat_roll`/`combat_resource`/`combat_sort`) was rejected. One
        * wording for every refusal — never distinguishes hidden from absent from not-yours.
        * Addressed to the originating connection only; never broadcast. Success is confirmed
-       * by the broadcast `event` echo. */
+       * by a correlated `combat_result`. */
       type: "combat_error";
       /** The refused combat intent's correlation token. */
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+    }
+  | {
+      /** A combat intent was accepted and committed as the sequenced `event` at `seq`.
+       * Addressed to the originating connection only; never broadcast. The broadcast
+       * `event` remains the state notification — this frame only correlates it, and may
+       * arrive before OR after that `event`. */
+      type: "combat_result";
+      /** The confirmed combat intent's correlation token. */
+      request_id: string;
+      /** The committed command's sequence number — matches the broadcast `event`'s `seq`. */
+      seq: number;
     }
   | {
       /** Broadcast to the scene, then clipped per recipient at egress: the mover receives
@@ -848,6 +894,11 @@ export type ServerMsg =
        * server-clipped position samples and render against their existing authoritative fog;
        * the client computes no vision. Sending mover vision to observers would leak geometry. */
       mover_vision: WireMoveStreamVisionSample[] | null;
+      /** Per-sample carried-light timeline: the mover's enabled emission raycast at each
+       * sample position, computed only in an environment-lit scene. Full for the mover and a
+       * plain GM; every other recipient keeps only the samples whose dim-reach disc intersects
+       * their own vision at that instant, and receives `null` when no sample does. */
+      mover_light: WireMoveStreamLightSample[] | null;
       /** Total terrain-weighted movement cost accumulated over the executed move.
        * Informational — no per-turn budget cap consumes it in v1. Present for the mover and
        * a GM (trusted, full information); `null` for a clipped observer, mirroring
@@ -981,6 +1032,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     cost: z.number(),
     arrested: z.boolean(),
     truncated: z.boolean(),
+    budget_cells: z.number().nullable(),
   }),
   z.object({
     type: z.literal("path_error"),
@@ -1003,6 +1055,11 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     message: z.string(),
   }),
   z.object({
+    type: z.literal("combat_result"),
+    request_id: z.string(),
+    seq: int,
+  }),
+  z.object({
     type: z.literal("move_stream"),
     request_id: z.string(),
     token_id: z.string(),
@@ -1011,6 +1068,8 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     start_server_ms: z.number(),
     duration_ms: z.number(),
     stop: z.tuple([z.number(), z.number()]),
+    // Empty for a GLOW-ONLY frame: a recipient reached by the mover's carried light but never
+    // by the token itself gets the admitted `mover_light` timeline and no position sample.
     samples: z.array(
       z.object({
         t_ms: z.number(),
@@ -1021,6 +1080,21 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
       .array(
         z.object({
           t_ms: z.number(),
+          polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
+        }),
+      )
+      .nullable(),
+    // Declared for the same reason as `truncated` below: an omitted key is stripped at parse.
+    mover_light: z
+      .array(
+        z.object({
+          t_ms: z.number(),
+          pos: z.tuple([z.number(), z.number()]),
+          bright: z.number(),
+          dim: z.number(),
+          color: z.number(),
+          intensity: z.number(),
+          falloff: z.enum(["linear", "quadratic", "none"]),
           polygons: z.array(z.array(z.tuple([z.number(), z.number()]))),
         }),
       )
@@ -1445,4 +1519,124 @@ export function parseServerMsg(text: string): ServerMsg | null {
   })();
   const result = ServerMsgSchema.safeParse(json);
   return result.success ? result.data : null;
+}
+
+/** One resource's resolved numbers for one combatant, as read off the `"combat"` derived
+ * channel — the Zod mirror of the generated `ResolvedResourceView`. */
+export interface ResolvedResourceView {
+  /** Whether the registry binds this resource as a derived mirror or a tracked spend. */
+  binding: "mirror" | "tracked";
+  /** The resolved current value; `null` on an evaluation failure. */
+  current: number | null;
+  /** The resolved ceiling; `null` on an evaluation failure. */
+  max: number | null;
+  /** The formula-evaluation failure's detail, when resolution failed. */
+  error: string | null;
+}
+
+/** One combatant's resolved numbers, as read off the `"combat"` derived channel — the Zod
+ * mirror of the generated `CombatantView`. */
+export interface CombatantView {
+  /** The combatant document's id. */
+  id: string;
+  /** Every registry-key resolution the recipient may see the `/engine/resources` pointer for;
+   * `null` when that band's tier is not visible to the recipient. */
+  resources: Record<string, ResolvedResourceView> | null;
+  /** The combat's movement resource converted to cells for this combatant, when resolvable. */
+  movementCells: number | null;
+}
+
+/** One combat's resolved view, as read off the `"combat"` derived channel — the Zod mirror of
+ * the generated `CombatView`. */
+export interface CombatView {
+  /** The combat document's id. */
+  id: string;
+  /** The scene this combat is bound to. */
+  sceneId: string;
+  /** Readable combatants. */
+  combatants: CombatantView[];
+}
+
+/** Read-only view of the resolved combats the server has broadcast on the `"combat"` derived
+ * channel. There is no client-side resource evaluation: every number here is read off the
+ * server's own `combat::eval` derivations. */
+export interface CombatsView {
+  /** Every combat the recipient may read. */
+  combats: CombatView[];
+}
+
+/** A view that has nothing to say — no combats. The state before the first `"combat"` frame
+ * arrives, and the value a malformed payload falls back to. */
+export const EMPTY_COMBATS: CombatsView = { combats: [] };
+
+/** Wire shape of one resolved resource. */
+const resolvedResourceViewSchema = z.object({
+  binding: z.enum(["mirror", "tracked"]),
+  current: z.number().nullable(),
+  max: z.number().nullable(),
+  error: z.string().nullable(),
+});
+
+/** Wire shape of one combatant view. */
+const combatantViewSchema = z.object({
+  id: z.string(),
+  resources: z.record(z.string(), resolvedResourceViewSchema).nullable(),
+  movement_cells: z.number().nullable(),
+});
+
+/** Wire shape of one combat view. */
+const combatViewSchema = z.object({
+  id: z.string(),
+  scene_id: z.string(),
+  combatants: z.array(combatantViewSchema),
+});
+
+/** Wire shape of the `"combat"` derived channel payload — the Zod mirror of the generated
+ * `CombatsPayload`. */
+const combatsPayloadSchemaImpl = z.object({
+  combats: z.array(combatViewSchema),
+});
+
+/** The `"combat"` derived-channel payload schema, typed against the generated `CombatsPayload`
+ * so the validator and the ts-rs wire type cannot drift apart. */
+export const CombatsPayloadSchema: z.ZodType<CombatsPayload> = combatsPayloadSchemaImpl;
+
+/**
+ * Parse a `"combat"` derived-channel payload into a `CombatsView`.
+ *
+ * A payload that does not validate yields {@link EMPTY_COMBATS} rather than a partial read — the
+ * same fail-closed shape as `parseFootprints`: a half-parsed combat set would mix authoritative
+ * numbers with silently-dropped ones, and a caller cannot tell those apart. Unlike
+ * `parseFootprints`, which stays silent, the failure is reported through the caller's `logger`
+ * when one is given, so a schema drift on this channel reaches the project logger (never a bare
+ * console) and stays visible in development.
+ * @param payload The raw `SceneDerived` payload for the `"combat"` channel.
+ * @param logger Where a malformed payload is reported; absent ⇒ the failure is silent.
+ * @returns A `CombatsView` over the payload, or {@link EMPTY_COMBATS} when it does not validate.
+ * @example
+ * ```ts
+ * import { parseCombats } from "@shadowcat/core";
+ *
+ * declare const payload: unknown;
+ * const combats = parseCombats(payload);
+ * combats.combats.length; // number
+ * ```
+ */
+export function parseCombats(payload: unknown, logger?: Logger): CombatsView {
+  const parsed = combatsPayloadSchemaImpl.safeParse(payload);
+  if (!parsed.success) {
+    logger?.warn("parseCombats: malformed combat channel payload", parsed.error.message);
+    return EMPTY_COMBATS;
+  }
+  return {
+    combats: parsed.data.combats.map((c) => ({
+      id: c.id,
+      sceneId: c.scene_id,
+      combatants: c.combatants.map((cc) => ({
+        id: cc.id,
+        resources: cc.resources,
+        movementCells: cc.movement_cells,
+      })),
+    })),
+  };
 }

@@ -36,6 +36,7 @@ function tokenEngine(linked: boolean, overrides: TokenEngine["overrides"] = null
     h: 100,
     rotation: 0,
     visual: null,
+    elevation: null,
     actor_id: linked ? "act1" : null,
     overrides,
     face: null,
@@ -73,7 +74,7 @@ describe("TokenEmissionControl", () => {
 
   it("reflects the token's raw stored overrides", () => {
     const tok = tokenWith(
-      tokenEngine(true, { name: null, visual: null, size: null, shape: null, vision: null, aura: { color: "#0000ff", opacity: 0.9, radius: 3, enabled: true }, sound: null, vfx: null }),
+      tokenEngine(true, { name: null, visual: null, size: null, shape: null, vision: null, aura: { color: "#0000ff", opacity: 0.9, radius: 3, enabled: true }, sound: null, vfx: null , light: null, movement: null }),
     );
     render(TokenEmissionControl, {
       context: setAppContextForTest({ documents: storeWith(tok), dispatchIntent: vi.fn(), canEdit: () => true }),
@@ -87,7 +88,7 @@ describe("TokenEmissionControl", () => {
     const dispatchIntent = vi.fn();
     const existing = { color: "#0000ff", opacity: 0.9, radius: 3, enabled: true };
     const tok = tokenWith(
-      tokenEngine(true, { name: null, visual: null, size: null, shape: null, vision: null, aura: existing, sound: null, vfx: null }),
+      tokenEngine(true, { name: null, visual: null, size: null, shape: null, vision: null, aura: existing, sound: null, vfx: null , light: null, movement: null }),
     );
     render(TokenEmissionControl, {
       context: setAppContextForTest({ documents: storeWith(tok), dispatchIntent, canEdit: () => true }),

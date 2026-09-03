@@ -1,4 +1,6 @@
 use super::*;
+use crate::data::document::{WorldCapDefaults, WorldRole};
+use crate::scene::pathfinding::MoveTraits;
 use crate::scene::MovementModel;
 use serde_json::json;
 
@@ -117,6 +119,7 @@ fn full_clear_path_reaches_goal() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -142,6 +145,7 @@ fn wall_truncates_at_last_legal_cell() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -175,6 +179,7 @@ fn unseen_cell_truncates_under_visible_restriction() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -209,6 +214,7 @@ fn gate_walk_mask_gate_routes_through_grid_shape_not_hardcoded_supercover() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (200.0, 200.0)],
@@ -250,6 +256,7 @@ fn revealed_mode_uses_caller_supplied_union_mask() {
             visible: &union_mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -275,6 +282,7 @@ fn revealed_mode_uses_caller_supplied_union_mask() {
             visible: &raw_mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -299,6 +307,7 @@ fn unrestricted_ignores_mask_but_not_walls() {
             visible: &empty,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -322,6 +331,7 @@ fn rejects_path_not_starting_at_token() {
                 visible: &v,
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &[(500.0, 0.0), (600.0, 0.0)],
@@ -347,6 +357,7 @@ fn long_jump_is_subdivided_and_gated_not_rejected() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         // 5 cells in one authored jump
@@ -384,6 +395,7 @@ fn long_jump_truncates_at_the_fog_boundary_mid_segment() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (500.0, 0.0)],
@@ -416,6 +428,7 @@ fn rejects_path_exceeding_gate_walk_cap() {
                 visible: &v,
                 cell: 1.0,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &[(0.0, 0.0), (1.0e7, 0.0)],
@@ -439,6 +452,7 @@ fn rejects_empty_path() {
                 visible: &v,
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &[(0.0, 0.0)],
@@ -463,6 +477,7 @@ fn rejects_unknown_token() {
                 visible: &v,
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             unknown,
             &[(0.0, 0.0), (100.0, 0.0)],
@@ -486,6 +501,7 @@ fn unrestricted_full_path_no_walls() {
             visible: &empty,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -550,6 +566,7 @@ fn impassable_region_stops_before_entry_like_a_wall() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -610,6 +627,7 @@ fn continuous_axis_aligned_move_mask_gate_reaches_the_same_boundary_point_the_wa
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         // k=3 subdivision (Chebyshev distance 300 over cell 100): dense samples land exactly
@@ -660,6 +678,7 @@ fn arrest_region_stops_at_entry_including_final_step() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (100.0, 0.0)],
@@ -709,6 +728,7 @@ fn terrain_region_accumulates_weighted_cost() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (100.0, 0.0)],
@@ -792,6 +812,7 @@ fn impassable_hex_region_stops_a_hex_move_at_the_correct_hex_cell() {
             visible: &visible,
             cell: hex.size,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), c10],
@@ -890,6 +911,7 @@ fn arrest_hex_region_stops_at_entry_composed_with_a_hex_visibility_mask() {
             visible: &visible,
             cell: hex.size,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), c30],
@@ -949,6 +971,7 @@ fn authoritative_field_springs_a_secret_region_a_player_was_routed_through() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -1074,6 +1097,7 @@ fn gm_move_crosses_a_blocks_move_wall_untruncated() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &path,
@@ -1101,6 +1125,7 @@ fn gm_move_ignores_impassable_and_arrest_regions() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &path,
@@ -1124,6 +1149,7 @@ fn non_gm_move_is_blocked_by_the_wall_a_gm_crosses() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -1147,6 +1173,7 @@ fn gm_move_is_refused_beyond_the_coordinate_bound() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (over, 50.0)],
@@ -1169,6 +1196,7 @@ fn gm_move_accrues_terrain_cost() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -1203,6 +1231,7 @@ fn continuous_any_angle_path_reaches_goal_when_fully_visible() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (350.0, 120.0)],
@@ -1257,6 +1286,7 @@ fn continuous_path_truncates_at_a_wall_crossed_mid_segment() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (400.0, 0.0)],
@@ -1306,6 +1336,7 @@ fn continuous_path_stops_before_entering_an_impassable_region_mid_segment() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (400.0, 0.0)],
@@ -1352,6 +1383,7 @@ fn continuous_path_arrest_stops_at_entry_mid_segment_not_before() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (400.0, 0.0)],
@@ -1403,6 +1435,7 @@ fn execute_move_handles_an_any_angle_weighted_continuous_polyline() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(50.0, 50.0), (250.0, 50.0), (350.0, 50.0)],
@@ -1675,6 +1708,7 @@ fn frozen_parity_king_step_grid_outcomes() {
                 visible: &case.visible,
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &case.path,
@@ -2015,6 +2049,7 @@ fn hex_scene_gate_walk_blocks_entry_at_a_wall() {
             visible: &empty,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), c1, c2],
@@ -2049,6 +2084,7 @@ fn hex_scene_gate_walk_respects_the_visibility_mask() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), c1, c2],
@@ -2394,20 +2430,31 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
         let (ecs, scene, token, user, start, goal) =
             scene_with_narrow_gap_and_wide_token(kind, MovementModel::GridStepped);
         let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
-        let mask = ecs.visible_cells(user, scene, false);
+        let mask = ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &WorldCapDefaults::default(),
+            scene,
+            false,
+        );
         // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
         let route = ecs
             .pathfind(
                 crate::scene::RouteRequester {
                     user,
                     is_gm: false,
+                    world_role: WorldRole::Player,
+                    world_defaults: &WorldCapDefaults::default(),
                     explored: None,
                 },
                 scene,
                 start,
                 &[goal],
-                fp,
-                None,
+                crate::scene::RouteMover {
+                    footprint_radius: fp,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
             )
             .expect("the fixture is routable for this footprint");
         let out = execute_move(
@@ -2418,6 +2465,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
                 visible: &mask,
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &route.path,
@@ -2446,19 +2494,30 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
     let (ecs, scene, token, user, start, goal) =
         scene_with_narrow_gap_and_wide_token("square", MovementModel::Continuous);
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range");
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let route = ecs
         .pathfind(
             crate::scene::RouteRequester {
                 user,
                 is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &WorldCapDefaults::default(),
                 explored: None,
             },
             scene,
             start,
             &[goal],
-            fp,
-            None,
+            crate::scene::RouteMover {
+                footprint_radius: fp,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+            },
         )
         .expect("the fixture is routable for this footprint");
     assert!(
@@ -2473,6 +2532,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
             visible: &mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &route.path,
@@ -2492,7 +2552,13 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
     // permissive than the router (e.g. a gate that omits the `segments_cross` check).
     let (ecs, scene, token, user) = scene_with_wall_between_adjacent_cells_and_default_footprint();
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // 0.4
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let candidates = [
         [(50.0, 50.0), (150.0, 50.0)],
         [(50.0, 50.0), (150.0, 150.0)],
@@ -2507,6 +2573,7 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
                 visible: &mask,
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &path,
@@ -2519,13 +2586,18 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
                 crate::scene::RouteRequester {
                     user,
                     is_gm: false,
+                    world_role: WorldRole::Player,
+                    world_defaults: &WorldCapDefaults::default(),
                     explored: None,
                 },
                 scene,
                 path[0],
                 &[path[1]],
-                fp,
-                None,
+                crate::scene::RouteMover {
+                    footprint_radius: fp,
+                    budget_cells: None,
+                    traits: MoveTraits::default(),
+                },
             );
             if let Ok(r) = route {
                 assert!(
@@ -2545,7 +2617,13 @@ fn a_default_footprint_step_across_a_wall_is_truncated() {
     // disc test: a wall between two adjacent cell centers sits 0.5 cell from each, so the
     // 0.4-radius disc test alone would pass it.
     let (ecs, scene, token, user) = scene_with_wall_between_adjacent_cells_and_default_footprint();
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2554,6 +2632,7 @@ fn a_default_footprint_step_across_a_wall_is_truncated() {
             visible: &mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -2568,7 +2647,13 @@ fn a_default_footprint_step_across_a_wall_is_truncated() {
 fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
     let (ecs, scene, token, user) = scene_with_lit_center_line_only();
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2577,6 +2662,7 @@ fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
             visible: &mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -2595,7 +2681,13 @@ fn a_sub_half_cell_footprint_diagonal_is_admissible() {
     // A footprint disc smaller than half a cell clears both corner flankers of a diagonal
     // step in a fully-lit area, so the step is admissible.
     let (ecs, scene, token, user) = scene_with_open_lit_area();
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2604,6 +2696,7 @@ fn a_sub_half_cell_footprint_diagonal_is_admissible() {
             visible: &mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 150.0)],
@@ -2621,7 +2714,13 @@ fn arrest_stays_center_cell_matching_the_router() {
     // arrested, or the gate becomes stricter than the router and route-gate parity breaks.
     let (ecs, scene, token, user) = scene_with_arrest_cell_beside_the_path_and_wide_token();
     let fp = ecs.resolve_token_footprint(token, scene).expect("in-range"); // > 0.5
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        scene,
+        false,
+    );
     let out = execute_move(
         &ecs,
         MoveGateInputs {
@@ -2630,6 +2729,7 @@ fn arrest_stays_center_cell_matching_the_router() {
             visible: &mask,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -2655,6 +2755,7 @@ fn a_gm_is_exempt_from_every_footprint_check() {
             visible: &empty_mask(),
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[start, goal],
@@ -2686,6 +2787,7 @@ fn execute_move_refuses_an_out_of_range_footprint() {
                 visible: &empty_mask(),
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
+                traits: MoveTraits::default(),
             },
             token,
             &[(50.0, 50.0), (150.0, 50.0)],
@@ -2716,6 +2818,7 @@ fn entered_cells_reports_each_transition_once_in_order() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
@@ -2741,6 +2844,7 @@ fn entered_cells_reports_a_revisit_as_a_second_entry() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (0.0, 0.0)],
@@ -2784,6 +2888,7 @@ fn entered_cells_include_the_arrest_cell_and_set_the_arrest_flag() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token_id,
         &[(0.0, 0.0), (100.0, 0.0)],
@@ -2810,6 +2915,7 @@ fn entered_cells_exclude_a_cell_the_walk_was_stopped_before() {
             visible: &visible,
             cell: FIXTURE_GRID_SIZE,
             budget: None,
+            traits: MoveTraits::default(),
         },
         token,
         &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],

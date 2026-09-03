@@ -1,6 +1,6 @@
 import { consoleLogger } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
-import { i18n } from "@shadowcat/ui-kit";
+import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
 
 const logger = consoleLogger();
 let state: UiState = { global: { locale: "en", lastWorld: null }, worlds: {} };
@@ -23,7 +23,8 @@ let persistInFlight: Promise<void> | null = null;
  * settling always resolves every waiting caller together, once. */
 let persistQueued: Promise<void> | null = null;
 
-/** A dirty-trackable key of `UiState.global` (`"locale"` or `"lastWorld"`). */
+/** A dirty-trackable key of `UiState.global` (`"locale"`, `"lastWorld"`, or
+ * `"theme"`). */
 type GlobalField = keyof UiState["global"];
 /** A dirty-trackable key of one `UiState.worlds[id]` entry (`"panelLayout"` or
  * `"chatRead"`). */
@@ -147,6 +148,9 @@ function copyGlobalField(
       return;
     case "lastWorld":
       patch.lastWorld = g.lastWorld;
+      return;
+    case "theme":
+      patch.theme = g.theme;
       return;
     default:
       field satisfies never;
@@ -328,6 +332,55 @@ function schedulePersist(): void {
   }
 }
 
+/** The single localStorage key holding the theme mirror: the last-loaded
+ * `UiState.global.theme` value, applied pre-login by the app entry so the
+ * login/world-select screens honor the last-used theme. Deliberately the
+ * codebase's only localStorage use — a cosmetic, non-secret preference. */
+export const THEME_MIRROR_STORAGE_KEY = "shadowcat.theme";
+
+/** Reads the theme mirror, garbage-tolerantly: an absent key, malformed JSON,
+ * or a non-object payload all yield `undefined` (which `ThemeController.load`
+ * resolves to the default theme). Deep validation of the parsed shape is
+ * `ThemeController.load`'s job — this helper only parses.
+ * @param storage The storage to read (injectable for tests; the app entry
+ *   passes `localStorage`).
+ * @returns The mirrored value, or `undefined` when absent or unreadable.
+ * @example
+ * ```ts
+ * const mirror = readThemeMirror(localStorage);
+ * ```
+ */
+export function readThemeMirror(storage: Pick<Storage, "getItem">): PersistedTheme | undefined {
+  const raw = storage.getItem(THEME_MIRROR_STORAGE_KEY);
+  if (raw === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    return parsed as PersistedTheme;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes the theme mirror. A throwing storage (quota, privacy mode) is
+ * swallowed with a log — the mirror is a pre-login cosmetic convenience and a
+ * failed write must never break the theme change that triggered it.
+ * @param storage The storage to write (injectable for tests; callers pass
+ *   `localStorage`).
+ * @param value The canonical `ThemeController.serialize` output to mirror.
+ * @example
+ * ```ts
+ * writeThemeMirror(localStorage, theme.serialize());
+ * ```
+ */
+export function writeThemeMirror(storage: Pick<Storage, "setItem">, value: PersistedTheme): void {
+  try {
+    storage.setItem(THEME_MIRROR_STORAGE_KEY, JSON.stringify(value));
+  } catch (e) {
+    logger.warn("theme mirror write failed", e);
+  }
+}
+
 /** Fetches the UI-state blob, applies its saved locale, marks the module
  * loaded, and — once per process lifetime — starts observing future locale
  * changes to persist them. Clears any dirty tracking left over from a prior
@@ -347,6 +400,14 @@ export async function loadSessionState(): Promise<UiState> {
   state = await getUiState();
   // Apply locale before marking loaded so the initial apply does not persist.
   if (i18n.locale !== state.global.locale) i18n.setLocale(state.global.locale);
+  // Same for the theme: `ThemeController.load` tolerates garbage (falling back
+  // to the default theme), then the in-memory slice is canonicalized to
+  // `ThemeController.serialize`'s output so the change subscriber below
+  // compares against a canonical baseline. The mirror is overwritten on every
+  // load, whatever a previous tab or session left behind.
+  theme.load(state.global.theme);
+  state.global.theme = theme.serialize();
+  if (typeof localStorage !== "undefined") writeThemeMirror(localStorage, state.global.theme);
   loaded = true;
   // Observe future locale changes (switcher, etc.) and persist them — once for the
   // process lifetime (load runs again on re-login; the singleton must not stack
@@ -357,6 +418,21 @@ export async function loadSessionState(): Promise<UiState> {
       if (state.global.locale !== i18n.locale) {
         state.global.locale = i18n.locale;
         dirty.global.add("locale");
+        schedulePersist();
+      }
+    });
+    theme.subscribe(() => {
+      // Unlike the locale arm above, an equality check alone cannot tell a
+      // `loadSessionState` apply apart from a user change (`ThemeController.load`
+      // canonicalizes, so the raw loaded slice legitimately differs from the
+      // serialized one) — the `loaded` guard does that instead, and the load
+      // path above writes the mirror explicitly.
+      if (!loaded) return;
+      const serialized = theme.serialize();
+      if (JSON.stringify(state.global.theme) !== JSON.stringify(serialized)) {
+        state.global.theme = serialized;
+        dirty.global.add("theme");
+        if (typeof localStorage !== "undefined") writeThemeMirror(localStorage, serialized);
         schedulePersist();
       }
     });

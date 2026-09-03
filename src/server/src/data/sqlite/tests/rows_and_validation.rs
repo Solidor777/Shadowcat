@@ -5,6 +5,8 @@
 
 use super::*;
 
+use crate::data::command::values_semantically_eq;
+
 // --- values_semantically_eq: OCC pre-image PosInt/Float variant equality ---
 
 #[test]

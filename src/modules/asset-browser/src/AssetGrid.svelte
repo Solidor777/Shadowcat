@@ -188,7 +188,7 @@
     background: var(--surface-raised);
     cursor: pointer;
     &.selected {
-      outline: 2px solid var(--accent, #46f);
+      outline: 2px solid var(--accent);
       outline-offset: -2px;
     }
     img {
@@ -203,8 +203,8 @@
       right: 2px;
       min-width: 1.1rem;
       border-radius: 0.55rem;
-      background: var(--accent, #46f);
-      color: var(--text-on-accent, #fff);
+      background: var(--accent);
+      color: var(--on-accent);
       font-size: 0.7rem;
       text-align: center;
     }

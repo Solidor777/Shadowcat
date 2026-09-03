@@ -42,7 +42,7 @@ test("poppedOut degrades to a floating window (bespoke-fallback engine has no cr
 
   let l = defaultLayout([{ id: "chat" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   eng.apply(l.expanded, new Map());
 
   // Rendered as a float window, so the slot stays adopted (never lost).
@@ -99,9 +99,9 @@ test("two simultaneously popped-out ids cascade to distinct floating rects under
 
   let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   l = applyOp(l, { op: "dock", id: "assets", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "assets" });
+  l = applyOp(l, { op: "popOut", id: "assets", key: "w-assets", rect: null });
   eng.apply(l.expanded, new Map());
 
   const chatEl = eng.floatEl("chat")!;
@@ -113,6 +113,39 @@ test("two simultaneously popped-out ids cascade to distinct floating rects under
     top: assetsEl.style.top,
   });
   expect(chatEl.style.zIndex).not.toBe(assetsEl.style.zIndex);
+  eng.destroy();
+});
+
+// Keyboard-driven floating resize reaches this engine through the reducer
+// with NO engine-side code path of its own: `apply()` re-reads each floating
+// entry's `Rect` on every reconcile, so a `resizeFloating` op's round trip
+// (op → `applyOp` → `apply`) repositions the float container directly. This
+// pins that property against a future refactor of `apply()`'s floating loop.
+test("a resizeFloating op round-trip repositions FakeEngine's float container (no engine-specific resize path)", () => {
+  const host = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const eng = new FakeEngine();
+  eng.init(host, slotFor, document.createElement("div"));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  eng.apply(l.expanded, new Map());
+
+  // The controller loop: an engine-emitted op reduces onto the tree and the
+  // result re-applies.
+  eng.onOp((op) => {
+    l = applyOp(l, op);
+    eng.apply(l.expanded, new Map());
+  });
+  eng.emitOp({ op: "resizeFloating", id: "chat", rect: { x: 42, y: 18, w: 260, h: 190 } });
+
+  const el = eng.floatEl("chat")!;
+  expect({ left: el.style.left, top: el.style.top, width: el.style.width, height: el.style.height }).toEqual({
+    left: "42px",
+    top: "18px",
+    width: "260px",
+    height: "190px",
+  });
   eng.destroy();
 });
 
@@ -148,7 +181,7 @@ test.each([0, 1, 3, 5, 7])(
     let popped = defaultLayout([]);
     for (const id of ids) {
       popped = applyOp(popped, { op: "open", id, placement: { kind: "docked", zone: "right" } });
-      popped = applyOp(popped, { op: "popOut", id });
+      popped = applyOp(popped, { op: "popOut", id, key: `w-${id}`, rect: null });
     }
     eng.apply(popped.expanded, new Map());
     const el = eng.floatEl(probe)!;

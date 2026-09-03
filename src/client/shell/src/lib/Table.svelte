@@ -89,6 +89,7 @@
     contributions: session.contributions,
     store: session.store,
     documents: session.documents,
+    combat: session.combat,
     world: session.world!,
     role: session.role!,
     serverRole,

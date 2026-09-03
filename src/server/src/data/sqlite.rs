@@ -21,8 +21,8 @@ use crate::data::engine::{
     SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
-    cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world, Access,
+    cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
+    declared_caps_for_path, required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
@@ -2308,14 +2308,20 @@ impl SqliteRepository {
     /// Parent-placement checks the Create AND Move arms share — the one
     /// statement of "may a document of this type sit under this parent",
     /// covering the checks that need the database or the batch bookkeeping:
-    /// a `combatant`/`combat-history` parent must be a combat (batch-aware),
-    /// an `asset_folder` parent must be a same-scope folder
-    /// (`check_asset_folder_parent`, batch-aware), and a `note` parent must
-    /// be a same-scope note (`check_note_parent`, batch-aware).
-    /// `validate_containment` (pure placement shape) runs separately at both
-    /// callers.
+    /// a stored parent must belong to this command's world
+    /// (`check_command_scope`), a `combatant`/`combat-history` parent must be
+    /// a combat (batch-aware), an `asset_folder` parent must be a
+    /// same-scope folder (`check_asset_folder_parent`, batch-aware), and a
+    /// `note` parent must be a same-scope note (`check_note_parent`,
+    /// batch-aware). A parent this same batch Creates is not in the database
+    /// yet — it resolves through the batch maps, and its own Create was
+    /// scope-checked; a parent that exists nowhere yet is left to the
+    /// self-FK at apply time, so batched parent+child creates still pass.
+    /// `validate_containment` (pure placement shape) runs separately at
+    /// every caller.
     async fn check_parent_placement(
         tx: &mut sqlx::SqliteConnection,
+        world_id: Uuid,
         doc: &Document,
         batch_folders: &std::collections::HashMap<Uuid, Document>,
         batch_combats: &std::collections::HashSet<Uuid>,
@@ -2326,15 +2332,29 @@ impl SqliteRepository {
             let pid = doc.parent_id.expect(
                 "validate_containment requires a combatant/combat-history doc to carry a parent_id",
             );
+            let stored_parent = if batch_combats.contains(&pid) {
+                None
+            } else {
+                Self::load_document(&mut *tx, pid).await?
+            };
+            if let Some(parent) = &stored_parent {
+                check_command_scope(parent, world_id)?;
+            }
             let parent_is_combat = batch_combats.contains(&pid)
-                || Self::load_document(&mut *tx, pid)
-                    .await?
-                    .is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
+                || stored_parent.is_some_and(|p| p.doc_type == COMBAT_DOC_TYPE);
             if !parent_is_combat {
                 return Err(DataError::OpFailed(format!(
                     "{} parent must be a combat document",
                     doc.doc_type
                 )));
+            }
+        } else if let Some(pid) = doc.parent_id {
+            // Every other doc_type: no parent-TYPE rule, but a stored parent
+            // still belongs to this command's world.
+            if !batch_folders.contains_key(&pid) && !batch_combats.contains(&pid) {
+                if let Some(parent) = Self::load_document(&mut *tx, pid).await? {
+                    check_command_scope(&parent, world_id)?;
+                }
             }
         }
         Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
@@ -2343,9 +2363,13 @@ impl SqliteRepository {
     }
 
     /// Rejects a Move that would parent `moved` beneath itself: walks the
-    /// ancestor chain upward from `new_parent` — through this batch's
-    /// not-yet-inserted Creates (`batch_folders`) and the stored tree alike —
-    /// refusing if `moved` appears anywhere in it (self-parent included).
+    /// ancestor chain upward from `new_parent`, resolving each hop against
+    /// this batch's not-yet-applied Moves first (`batch_moves` — the
+    /// prospective parent wins over the stored one, since the walk must see
+    /// the tree the batch will leave, and Phase 2 applies nothing until
+    /// every op has validated), then this batch's not-yet-inserted Creates
+    /// (`batch_folders`), then the stored tree — refusing if `moved` appears
+    /// anywhere in the chain (self-parent included).
     /// Bounded: a chain deeper than `MAX_MOVE_ANCESTRY` (or a stored cycle,
     /// which cannot arise but would otherwise loop) is refused, not walked.
     async fn check_move_acyclic(
@@ -2353,6 +2377,7 @@ impl SqliteRepository {
         moved: Uuid,
         new_parent: Option<Uuid>,
         batch_folders: &std::collections::HashMap<Uuid, Document>,
+        batch_moves: &std::collections::HashMap<Uuid, Option<Uuid>>,
     ) -> Result<(), DataError> {
         /// Depth bound for the ancestor walk; no legitimate tree approaches it.
         const MAX_MOVE_ANCESTRY: u32 = 1_000;
@@ -2370,11 +2395,15 @@ impl SqliteRepository {
                     "parent chain too deep to verify".into(),
                 ));
             }
-            cursor = match batch_folders.get(&pid) {
-                Some(batch_doc) => batch_doc.parent_id,
-                None => Self::load_document(&mut *tx, pid)
-                    .await?
-                    .and_then(|d| d.parent_id),
+            cursor = if let Some(prospective) = batch_moves.get(&pid) {
+                *prospective
+            } else {
+                match batch_folders.get(&pid) {
+                    Some(batch_doc) => batch_doc.parent_id,
+                    None => Self::load_document(&mut *tx, pid)
+                        .await?
+                        .and_then(|d| d.parent_id),
+                }
             };
         }
         Ok(())
@@ -2749,89 +2778,6 @@ fn merged_combat_engine(cur: &Document, changes: &[FieldChange]) -> Option<Comba
     doc.engine.and_then(|e| serde_json::from_value(e).ok())
 }
 
-/// Largest integer magnitude an `f64` represents exactly (2^53); beyond this,
-/// adjacent integers alias to the same `f64`, so a Number/variant comparison
-/// falling back to `as f64` would silently equate genuinely different values.
-const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
-
-/// Structural equality used ONLY at `SqliteRepository::apply_intent`'s Phase-1 OCC pre-image
-/// comparison (`actual != ch.old`). `serde_json::Value::Number`
-/// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
-/// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
-/// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
-/// `JSON.parse`/re-serialize for a whole-number value, so an echoed pre-image
-/// comes back as `PosInt(100)`. Raw `==` treats these as unequal, causing a
-/// spurious `Conflict` on an otherwise up-to-date write (e.g. an ordinary token
-/// drag after a server-executed `execute_move`, or the `ActorsPanel` vision-range
-/// editor's nested `range` field). This function recurses into `Object`/`Array`
-/// structure and treats mismatched-variant Number leaves as equal when they
-/// represent the same value. Two Numbers that BOTH parse as integers (either
-/// PosInt/NegInt variant) are compared EXACTLY as `i128`, with no magnitude
-/// limit -- this case never touches `f64`, so distinct large integers (past
-/// 2^53) never alias into a false match. The `|n| <= 2^53` exactness guard
-/// applies ONLY to the genuinely mixed case, one side an integer and the other
-/// a `Float`, where an `f64` comparison is unavoidable because the Float side
-/// has no exact integer form; outside that range, or for any non-Number
-/// mismatch, it falls back to serde's derived `PartialEq`.
-fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    use serde_json::Value;
-    match (a, b) {
-        (Value::Object(ma), Value::Object(mb)) => {
-            ma.len() == mb.len()
-                && ma
-                    .iter()
-                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_semantically_eq(va, vb)))
-        }
-        (Value::Array(xa), Value::Array(xb)) => {
-            xa.len() == xb.len()
-                && xa
-                    .iter()
-                    .zip(xb.iter())
-                    .all(|(va, vb)| values_semantically_eq(va, vb))
-        }
-        (Value::Number(na), Value::Number(nb)) => {
-            if na == nb {
-                return true;
-            }
-            // Variants differ (one PosInt/NegInt, the other Float, or the pair
-            // straddles PosInt/NegInt with mismatched sign representation).
-            // Compare numerically only when any integer operand is exactly
-            // representable as f64; otherwise trust the exact comparison above.
-            let ia = na
-                .as_i64()
-                .map(|v| v as i128)
-                .or_else(|| na.as_u64().map(|v| v as i128));
-            let ib = nb
-                .as_i64()
-                .map(|v| v as i128)
-                .or_else(|| nb.as_u64().map(|v| v as i128));
-            match (ia, ib) {
-                // Both sides parse as integers (PosInt/NegInt pair): i128 holds
-                // every i64/u64 value without loss, so compare exactly. Never
-                // fall through to f64 here -- two distinct integers past 2^53
-                // (e.g. 2^62 vs 2^62 + 1) alias to the same f64 and would
-                // falsely compare equal, which is an OCC bypass (a stale
-                // pre-image would match a genuinely different stored value).
-                (Some(va), Some(vb)) => va == vb,
-                // Genuinely mixed case: one side is an integer, the other a
-                // Float. f64 comparison is unavoidable here since the Float
-                // side has no exact integer representation; only exact when
-                // the integer side is within f64's exact range.
-                (Some(v), None) | (None, Some(v))
-                    if v.unsigned_abs() > MAX_EXACT_F64_INT as u128 =>
-                {
-                    false
-                }
-                _ => match (na.as_f64(), nb.as_f64()) {
-                    (Some(fa), Some(fb)) => fa == fb,
-                    _ => false,
-                },
-            }
-        }
-        _ => a == b,
-    }
-}
-
 #[async_trait]
 impl Repository for SqliteRepository {
     async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<StoredCommand, DataError> {
@@ -2967,13 +2913,20 @@ impl Repository for SqliteRepository {
                         validation::validate_containment(&doc)?;
                         Self::check_parent_placement(
                             &mut tx,
+                            sequenced.world_id,
                             &doc,
                             &Default::default(),
                             &Default::default(),
                         )
                         .await?;
-                        Self::check_move_acyclic(&mut tx, *doc_id, *parent_id, &Default::default())
-                            .await?;
+                        Self::check_move_acyclic(
+                            &mut tx,
+                            *doc_id,
+                            *parent_id,
+                            &Default::default(),
+                            &Default::default(),
+                        )
+                        .await?;
                         doc.updated_at = sequenced.ts;
                         Self::upsert_document(&mut tx, &doc, seq).await?;
                         if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
@@ -3168,6 +3121,15 @@ impl Repository for SqliteRepository {
         // it before falling back to the database.
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
             std::collections::HashMap::new();
+        // `batch_moves` records the PROSPECTIVE parent of each Move already
+        // validated in this batch. Phase 2 applies nothing until every op
+        // clears Phase 1, so a cycle walk that read only the stored tree
+        // would validate each Move against a tree no op has rewritten yet —
+        // two Moves that swap a pair of subtrees into a cycle would each
+        // pass alone. `check_move_acyclic` consults this map first, so it
+        // sees the tree the batch will actually leave.
+        let mut batch_moves: std::collections::HashMap<Uuid, Option<Uuid>> =
+            std::collections::HashMap::new();
         // `scene_owner` maps a scene id to the id of the `combat` document
         // that holds its active slot, AS OF THIS POINT in a single simulated
         // walk of `ops` in their actual batch order. The one-active-combat-
@@ -3341,13 +3303,21 @@ impl Repository for SqliteRepository {
                         validation::validate_containment(&post)?;
                         Self::check_parent_placement(
                             &mut tx,
+                            world_id,
                             &post,
                             &batch_folders,
                             &batch_combats,
                         )
                         .await?;
-                        Self::check_move_acyclic(&mut tx, *doc_id, *parent_id, &batch_folders)
-                            .await?;
+                        Self::check_move_acyclic(
+                            &mut tx,
+                            *doc_id,
+                            *parent_id,
+                            &batch_folders,
+                            &batch_moves,
+                        )
+                        .await?;
+                        batch_moves.insert(*doc_id, *parent_id);
                     }
                 }
                 Operation::Create { doc } => {
@@ -3380,8 +3350,14 @@ impl Repository for SqliteRepository {
                     // now covers both the submitted and the derived shape.
                     validation::validate_system_size(doc)?;
                     validation::validate_containment(doc)?;
-                    Self::check_parent_placement(&mut tx, doc, &batch_folders, &batch_combats)
-                        .await?;
+                    Self::check_parent_placement(
+                        &mut tx,
+                        world_id,
+                        doc,
+                        &batch_folders,
+                        &batch_combats,
+                    )
+                    .await?;
                     if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE
                         || doc.doc_type == crate::data::engine::NOTE_DOC_TYPE
                     {
@@ -3427,19 +3403,14 @@ impl Repository for SqliteRepository {
                     validation::validate_system_schema_tree(doc, &world_schemas)?;
                     // A self-referential parent_id satisfies the self-FK and
                     // commits, then poisons the doc's deletion (the descendant
-                    // walk would loop). Reject it; and when the parent already
-                    // exists it must be in this world (an unborn same-command
-                    // parent is left to the FK at apply time, so batched
-                    // scene+children creates still pass).
-                    if let Some(pid) = doc.parent_id {
-                        if pid == doc.id {
-                            return Err(DataError::OpFailed(
-                                "document cannot be its own parent".into(),
-                            ));
-                        }
-                        if let Some(parent) = Self::load_document(&mut *tx, pid).await? {
-                            check_command_scope(&parent, world_id)?;
-                        }
+                    // walk would loop). Reject it. A stored parent's world
+                    // scope is `check_parent_placement`'s check above; an
+                    // unborn same-command parent is left to the FK at apply
+                    // time, so batched scene+children creates still pass.
+                    if doc.parent_id == Some(doc.id) {
+                        return Err(DataError::OpFailed(
+                            "document cannot be its own parent".into(),
+                        ));
                     }
                     // `system-defaults` is server-authored: its content mirrors
                     // the installed system package's declaration, so every
@@ -3515,6 +3486,20 @@ impl Repository for SqliteRepository {
                             );
                             return Err(DataError::Forbidden);
                         }
+                    }
+                    // Create carries no field paths, so the carried-light GM gate
+                    // (see the Update arm below) checks the body directly: a non-GM may not
+                    // create a token/actor already carrying an emission, even in a world whose
+                    // `core:create` grant otherwise admits the Create itself.
+                    if !origin.skips_capability_gates()
+                        && ctx.world_role != WorldRole::Gm
+                        && carried_light_in_body(&doc.doc_type, &doc_json)
+                    {
+                        tracing::debug!(
+                            user = %ctx.user_id, doc_type = %doc.doc_type,
+                            "create denied: carried-light authoring is GM-only"
+                        );
+                        return Err(DataError::Forbidden);
                     }
                     // Create is non-clobbering: an existing id is a conflict,
                     // not a silent overwrite (unlike upsert in apply_command).
@@ -3778,6 +3763,29 @@ impl Repository for SqliteRepository {
                                 }
                             }
                         }
+                        // Carried-light authoring is GM-only, value-aware
+                        // (`permission::carried_light_touched`): an emission joins the SHARED
+                        // illumination field every viewer's lit mask and movement gate read, so
+                        // unlike an owner's other writable fields (presentation/self-scoped),
+                        // writing one edits other players' secrecy masks. An ancestor write is
+                        // refused only when the emission subtree actually changes, so a whole-
+                        // `/engine/overrides` write that leaves `light` untouched stays legal.
+                        if !origin.skips_capability_gates()
+                            && ctx.world_role != WorldRole::Gm
+                            && carried_light_touched(
+                                &cur.doc_type,
+                                &ch.path,
+                                ch.remove,
+                                &whole,
+                                &ch.new,
+                            )
+                        {
+                            tracing::debug!(
+                                user = %ctx.user_id, path = %ch.path,
+                                "intent denied: carried-light authoring is GM-only"
+                            );
+                            return Err(DataError::Forbidden);
+                        }
                         let actual = whole
                             .pointer(&ch.path)
                             .cloned()
@@ -3786,7 +3794,7 @@ impl Repository for SqliteRepository {
                         // through a JS client loses its Float-ness (PosInt/Float variant
                         // split), so raw `!=` here would spuriously Conflict an otherwise
                         // up-to-date write. See `values_semantically_eq` doc comment.
-                        if !values_semantically_eq(&actual, &ch.old) {
+                        if !crate::data::command::values_semantically_eq(&actual, &ch.old) {
                             return Err(DataError::Conflict(format!(
                                 "stale pre-image at {}",
                                 ch.path

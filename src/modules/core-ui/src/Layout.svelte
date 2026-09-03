@@ -27,7 +27,7 @@
   .layout {
     display: grid;
     height: 100vh;
-    grid-template-columns: 3rem 1fr;
+    grid-template-columns: calc(var(--input-height-coarse) + var(--space-1) * 2 + 1px) 1fr;
     grid-template-rows: 2.5rem 1fr 2rem;
     grid-template-areas:
       "topbar topbar"
@@ -41,16 +41,28 @@
     background: var(--surface-raised);
     border-bottom: 1px solid var(--border);
   }
+  /* Growth cap on BOTH items of the 1fr row: a grid row is at least as tall as its
+   * tallest item's minimum contribution, so one uncapped item grows the row, the grid and
+   * every sibling past 100vh — the document then scrolls, and a canvas rect measured before
+   * that scroll no longer describes where the canvas is. Zeroing the automatic minimum size
+   * plus a non-visible overflow is what removes an item's content from the row's minimum.
+   * `Layout.test` enumerates the row's items against this cap. */
   .toolrail {
     grid-area: toolrail;
     background: var(--surface-overlay);
     border-right: 1px solid var(--border);
+    /* The rail's contributions are plain stacked content, so this cell is their scroll
+     * container (the compact bottom strip scrolls itself horizontally instead; its `auto`
+     * row is content-sized, so nothing overflows here). Horizontal overflow is clipped, or
+     * the vertical scrollbar's own width would demand a second, horizontal one. */
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: thin;
   }
   .main {
     grid-area: main;
-    /* Growth cap: zeroes the grid item's automatic minimum size so tall panel
-     * content scrolls inside the panel host's panes instead of growing the 1fr
-     * track past 100vh. Inner scrolling is owned by the panel host. */
+    /* Inner scrolling is owned by the panel host's panes. */
     min-height: 0;
     overflow: hidden;
   }

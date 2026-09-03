@@ -17,7 +17,7 @@ function makeController(): ToolController {
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
   });
 }
 

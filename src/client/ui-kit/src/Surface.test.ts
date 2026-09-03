@@ -34,3 +34,14 @@ test("updates reactively when a contribution is added then disposed", async () =
   dispose();
   await waitFor(() => expect(screen.queryByTestId("probe")).toBeNull());
 });
+
+test("an isolated contribution renders wrapped in the theme-isolation class; a default one is not wrapped", () => {
+  const registry = new ContributionRegistry();
+  registry.contribute({ id: "iso", contract: "s:bar", component: Probe, props: { label: "I" }, styling: "isolated" });
+  registry.contribute({ id: "plain", contract: "s:bar", component: Probe, props: { label: "P" } });
+
+  render(Harness, { props: { registry, contract: "s:bar" } });
+
+  expect(screen.getByText("I").closest(".sc-theme-isolate")).toBeTruthy();
+  expect(screen.getByText("P").closest(".sc-theme-isolate")).toBeNull();
+});

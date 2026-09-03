@@ -26,17 +26,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
-## Follow-on feature sub-projects (own brainstorm → spec → plan each)
-
-Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
-(user: build ALL of bucket C):
-
-1. **Real-time per-recipient move-streaming** — DONE (2026-08-27, spec
-   `docs/superpowers/specs/2026-08-27-move-stream-live-clip-design.md`): observer's own-move
-   timeline clip + re-emit. Residual, parked: third-party moving light source opening a sightline
-   mid-walk still reveals at that mover's stop — needs the observer's vision recomputed per sample
-   of the light-carrying move; cost only on request.
-
 ## Actionable now — Kimi Code parity is written but never installed
 - TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo
   (`github.com/Solidor777/shadowcat-codebase`); this item now targets
@@ -59,19 +48,6 @@ Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one de
     status, so the agent-registration and skill-invocation questions above remain unverified for
     a reason outside this session's control. Re-attempt once quota refreshes or extra usage is
     purchased.
-
-## Actionable now — observer-vision source selection forks the role-resolution decision
-- TODO: `SceneEcs::player_lit_mask` and `SceneEcs::gather_vision_sources_in_scene` each hand-roll
-  `permissions.users.get(user).copied().unwrap_or(permissions.default)` to decide whether an
-  observer-vision token is a vision source — a duplicate of `effective_role`'s non-GM branch,
-  written out twice. Same never-fork-a-decision class the combat clock's `combat::authorize` was
-  converted for (it now reads `resolve_access_world`/`effective_owner`), but in the
-  vision/observer subsystem and pre-dating that work. Both copies silently diverge from
-  `effective_role` on any input it grows a rule for — a `gm_role` cap, an ownership floor, a role
-  the copies do not order the same way — and the divergence widens VISION, which no write-authz
-  gate re-checks. Route both through `effective_role` (or `resolve_access_world`, if the
-  `DocRole::Observer` threshold is better expressed as a capability), and pin the parity with a
-  test that exercises both paths through the shared symbol.
 
 ## Actionable now — next file-size split candidate
 - TODO: `src/server/src/data/sqlite.rs` production code is ~3,900 lines after its test module moved out — the largest remaining production file and the next to cross the 5,000-line soft limit at its growth rate. Split `SqliteRepository` by concern (documents/commands, membership/invites, search, world export/import) into `data/sqlite/<concern>.rs` `impl` blocks before it reaches the limit; the gate (`pnpm lint:file-size`) fails the build at that point and no allowlist entry is to be added.

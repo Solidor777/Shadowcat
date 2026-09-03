@@ -297,7 +297,7 @@
     color: var(--text-primary);
     &.selected {
       background: var(--surface-raised);
-      outline: 1px solid var(--accent, #46f);
+      outline: 1px solid var(--accent);
     }
   }
   .mini {
@@ -322,7 +322,7 @@
     }
   }
   .delete-dialog .danger {
-    color: var(--danger, #c33);
+    color: var(--danger);
   }
   input {
     min-height: 2rem;

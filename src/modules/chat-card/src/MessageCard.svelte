@@ -499,10 +499,10 @@
     font-weight: 700;
   }
   .roll-pass.pass {
-    color: var(--success, seagreen);
+    color: var(--success);
   }
   .roll-pass.fail {
-    color: var(--danger, crimson);
+    color: var(--danger);
   }
   .roll-dice {
     display: flex;
@@ -522,10 +522,10 @@
     text-decoration: line-through;
   }
   .die-chip.crit-success {
-    border-color: var(--success, seagreen);
+    border-color: var(--success);
   }
   .die-chip.crit-fail {
-    border-color: var(--danger, crimson);
+    border-color: var(--danger);
   }
   .die-label,
   .die-symbols {
@@ -540,10 +540,10 @@
     font-size: 0.9em;
   }
   .counter.positive {
-    color: var(--success, seagreen);
+    color: var(--success);
   }
   .counter.negative {
-    color: var(--danger, crimson);
+    color: var(--danger);
   }
   .chip.recalculated {
     font-style: normal;
@@ -618,5 +618,83 @@
   .edit-actions {
     display: flex;
     gap: var(--space-1);
+  }
+  // Images size to the card and sit on their own line, forced to a new line rather than
+  // flowing inline with surrounding text. `max-width` caps the width; `display: block` forces
+  // the break an inline <img> would not take.
+  .seg-html :global(img) {
+    max-width: 100%;
+    display: block;
+  }
+  // Link-preview card: server-fetched title/description/host, all escaped text; an <img>
+  // renders only when image_asset_id is present, its src always ctx.assets.url(uuid) — never
+  // a raw external URL. The whole card is the link (44px touch floor on the anchor itself).
+  .link-preview {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 44px;
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    text-decoration: none;
+    color: inherit;
+  }
+  .link-preview-title {
+    font-weight: 700;
+  }
+  .link-preview-description {
+    opacity: 0.75;
+    // Clamps to ~2 lines rather than letting a long server-fetched description balloon the
+    // card's height in the message list.
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .link-preview-host {
+    font-size: 0.85em;
+    opacity: 0.6;
+  }
+  .link-preview-thumb,
+  .oembed-thumb {
+    display: block;
+    max-width: 100%;
+    max-height: 160px;
+    object-fit: cover;
+    border-radius: var(--radius-1);
+  }
+  .oembed-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    text-decoration: none;
+    color: inherit;
+  }
+  .oembed-provider {
+    font-size: 0.85em;
+    opacity: 0.7;
+    text-transform: uppercase;
+  }
+  .oembed-open {
+    font-size: 0.8em;
+    opacity: 0.6;
+  }
+  .doc-link {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    text-decoration: underline;
+  }
+  .doc-link:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
   }
 </style>

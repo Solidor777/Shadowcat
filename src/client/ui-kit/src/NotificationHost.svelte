@@ -1,8 +1,9 @@
 <script lang="ts">
   // Global toast/banner host — mounted once alongside `TemplateModalHost`, not scoped to any
   // particular surface. Renders `activeNotifications()`, the UI-visible counterpart to `Logger`
-  // (see `AppContext.notify`). `info`-level notifications auto-dismiss (they're transient status
-  // confirmations a user doesn't need to act on); `warning`/`error` never do — these are exactly
+  // (see `AppContext.notify`). `info`-level notifications auto-dismiss UNLESS they carry an
+  // action (a call-to-action is a decision the user must be able to make at their own pace);
+  // `warning`/`error` never do — these are exactly
   // the class of message ("an operation partially applied") a user must not miss by looking away.
   import { notifications, activeNotifications } from "./notifications.svelte";
   import { t } from "./i18n.svelte";
@@ -18,7 +19,10 @@
 
   $effect(() => {
     for (const n of items) {
-      if (n.level !== "info" || scheduled.has(n.id)) continue;
+      // An action-carrying notification never auto-dismisses regardless of
+      // level: the action IS the user's decision to make ("Reopen windows"),
+      // and a vanished toast can't be clicked.
+      if (n.level !== "info" || n.action || scheduled.has(n.id)) continue;
       scheduled.add(n.id);
       setTimeout(() => notifications.dismiss(n.id), INFO_AUTO_DISMISS_MS);
     }
@@ -29,6 +33,21 @@
   {#each items as n (n.id)}
     <div class="sc-notify sc-notify-{n.level}" role="status">
       <span class="sc-notify-message">{n.message}</span>
+      {#if n.action}
+        <button
+          type="button"
+          class="sc-notify-action"
+          onclick={() => {
+            // The action IS the user's response to this notification — run it
+            // and dismiss together, so an already-acted-on notice can't be
+            // clicked twice.
+            n.action!.run();
+            notifications.dismiss(n.id);
+          }}
+        >
+          {n.action.label}
+        </button>
+      {/if}
       <button
         type="button"
         class="sc-notify-dismiss"
@@ -75,6 +94,27 @@
   .sc-notify-message {
     flex: 1;
     font-size: 0.9rem;
+  }
+  .sc-notify-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px; /* touch target (mobile invariant); >=24px a11y floor */
+    padding: 0 var(--space-3);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-1);
+    background: transparent;
+    color: var(--accent);
+    font-size: 0.9rem;
+    cursor: pointer;
+    white-space: nowrap;
+    &:hover {
+      background: var(--surface-base);
+    }
+    &:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
   }
   .sc-notify-dismiss {
     display: inline-flex;

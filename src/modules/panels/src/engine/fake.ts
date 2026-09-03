@@ -158,7 +158,8 @@ export class FakeEngine implements EngineAdapter {
 
   /** `EngineAdapter.apply`: full-rebuild reconcile (never a diff) — every
    * zone's group wrapper divs are torn down and rebuilt fresh from `expanded`
-   * on every call, then every floating entry (including `poppedOut` ids,
+   * on every call, then every floating entry (including the panels of live
+   * popout windows,
    * degraded to floating here — see below) is placed or repositioned.
    * Idempotent per the `EngineAdapter` contract: repeat calls with the same
    * `expanded` produce the identical DOM shape each time — but the two
@@ -228,7 +229,8 @@ export class FakeEngine implements EngineAdapter {
     }
 
     // Floating: one container per floating panel, adopted directly and
-    // positioned from its `Rect`. Popped-out ids are degraded to floating here
+    // positioned from its `Rect`. Panels of a live (non-dormant) popout
+    // window are degraded to floating here
     // (this bespoke-fallback engine has no cross-window popout) so a
     // slot is never lost and the keep-mounted invariant holds — production
     // pop-out is dockview-only.
@@ -243,19 +245,22 @@ export class FakeEngine implements EngineAdapter {
     const maxZ = expanded.floating.reduce((m, f) => Math.max(m, f.z), -1);
     const floatEntries = [
       ...expanded.floating,
-      ...expanded.poppedOut.map((id, i) => {
-        const off = (i % 6) * POPOUT_FALLBACK_STEP;
-        return {
-          id,
-          rect: {
-            x: POPOUT_FALLBACK_BASE.x + off,
-            y: POPOUT_FALLBACK_BASE.y + off,
-            w: POPOUT_FALLBACK_BASE.w,
-            h: POPOUT_FALLBACK_BASE.h,
-          },
-          z: maxZ + 1 + i,
-        };
-      }),
+      ...expanded.popouts
+        .filter((w) => w.dormant !== true)
+        .flatMap((w) => w.panels)
+        .map((id, i) => {
+          const off = (i % 6) * POPOUT_FALLBACK_STEP;
+          return {
+            id,
+            rect: {
+              x: POPOUT_FALLBACK_BASE.x + off,
+              y: POPOUT_FALLBACK_BASE.y + off,
+              w: POPOUT_FALLBACK_BASE.w,
+              h: POPOUT_FALLBACK_BASE.h,
+            },
+            z: maxZ + 1 + i,
+          };
+        }),
     ];
     const floatIds = new Set(floatEntries.map((f) => f.id));
     for (const [id, el] of [...this.#floatEls]) {

@@ -139,6 +139,10 @@ export interface ModuleManifest {
   /** Engine-compat range; optional because first-party modules never set it (see `ModuleEngines`
    * doc) while community modules must. */
   engines?: ModuleEngines;
+  /** The module's stylesheet: a single CSS file relative to the module's install folder
+   * (conventionally `"style.css"`), served from the module's static route and injected as a
+   * `<link>` while the module is active. Absent means the module ships no styles. */
+  style?: string;
   /** A system package's declared world-setting defaults. Read AUTHORITATIVELY by the server's
    * installed-module scanner (`modules::scan_installed_modules` validates it against
    * `SystemDefaultsEngine` and the world-config seed path writes the `system-defaults` singleton
@@ -182,6 +186,26 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
     )
     .optional(),
   engines: ModuleEnginesSchema.optional(),
+  // A bare relative `.css` path: no leading slash, no `..` segment, and no
+  // backslash — WHATWG URL resolution treats `\` as a path separator for
+  // special schemes, so a `\`-carrying path could resolve outside the module
+  // folder even with every `/`-segment clean. The server's module static
+  // route re-guards traversal at serve time; this refinement is authoring
+  // feedback, not the security boundary.
+  style: z
+    .string()
+    .min(1)
+    .refine(
+      (s) =>
+        !s.startsWith("/") &&
+        !s.includes("\\") &&
+        !s.split("/").includes("..") &&
+        s.endsWith(".css"),
+      {
+        message: "style must be a relative .css path within the module folder",
+      },
+    )
+    .optional(),
   systemDefaults: z
     .custom<SystemDefaultsEngine>((v) => typeof v === "object" && v !== null && !Array.isArray(v))
     .optional(),

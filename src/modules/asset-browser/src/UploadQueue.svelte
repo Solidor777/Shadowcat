@@ -63,13 +63,13 @@
       width: 6rem;
     }
     .error {
-      color: var(--danger, #c33);
+      color: var(--danger);
     }
     .warn {
-      color: var(--warning, #a80);
+      color: var(--warning);
     }
     .ok {
-      color: var(--success, #291);
+      color: var(--success);
     }
   }
 </style>

@@ -3,8 +3,8 @@
 //! `SquareGrid` implements the ordinary square-grid formulas; `HexGrid` is the pointy-top axial
 //! implementation mirroring the client's `Grid` class exactly.
 //!
-//! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`,
-//! `explored::mark_polygons`, and `regions::rasterize`;
+//! `cell_center`/`cells_in_bounds` are wired into `accumulate_visible_cells`, `player_lit_mask`
+//! and `regions::rasterize`;
 //! `neighbors_with_cost`/`footprint_cells`/`line_traversal` are wired into
 //! `pathfinding::astar_leg`/`cell_enterable`; `line_traversal` is also wired into
 //! `move_exec::execute_move`; `neighbors_with_cost` is ALSO wired into `move_exec::execute_move`,
@@ -45,8 +45,8 @@ pub(crate) trait GridShape {
     /// `[min.0, max.0] × [min.1, max.1]`. A SUPERSET filter, not an exact one — the caller's own
     /// per-cell center/vertex membership test narrows it. `None` on a degenerate input (non-finite
     /// `min`/`max`/`cell`, `cell <= 0.0`) or an over-cap span (> `max_cells`); every caller
-    /// (`accumulate_visible_cells`, `player_lit_mask`, `explored::mark_polygons`,
-    /// `regions::rasterize`) fails closed on `None`. `max_cells` is the caller's own DoS bound
+    /// (`accumulate_visible_cells`, `player_lit_mask`, `regions::rasterize`) fails closed on
+    /// `None`. `max_cells` is the caller's own DoS bound
     /// (vision/explored scans pass `explored::MAX_CELLS_PER_POLYGON`, region rasterization passes
     /// the 40× tighter `regions::MAX_REGION_CELLS`) — never hardcoded here, so routing a
     /// tighter-capped caller through this primitive can't LOOSEN its bound.
@@ -329,9 +329,9 @@ impl GridShape for SquareGrid {
 
     /// `floor(min/cell)..=floor(max/cell)` on each axis, row-major (`for i { for j }`). `f64 as
     /// i32` saturates on an extreme coordinate; the `saturating_mul` span check then fails closed
-    /// against the caller-supplied `max_cells` bound. `accumulate_visible_cells`,
-    /// `ExploredSet::mark_polygons`, and `player_lit_mask` all reach this through the `GridShape`
-    /// trait rather than scanning a square grid themselves.
+    /// against the caller-supplied `max_cells` bound. `accumulate_visible_cells` and
+    /// `player_lit_mask` both reach this through the `GridShape` trait rather than scanning a
+    /// square grid themselves.
     fn cells_in_bounds(
         &self,
         min: vision::P,
