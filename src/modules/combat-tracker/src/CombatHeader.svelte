@@ -72,7 +72,7 @@
   {/if}
   {#if can.advance}
     {#if ctx.role === "gm"}
-      <button type="button" disabled={busy} onclick={() => void run(() => ctx.combat.advance(combat.id))}>{ctx.t("combatTracker.advance")}</button>
+      <button type="button" data-testid="combat-tracker:advance" disabled={busy} onclick={() => void run(() => ctx.combat.advance(combat.id))}>{ctx.t("combatTracker.advance")}</button>
     {:else}
       <button type="button" data-testid="combat-tracker:end-my-turn" disabled={busy} onclick={() => void run(() => ctx.combat.advance(combat.id))}>{ctx.t("combatTracker.endMyTurn")}</button>
     {/if}

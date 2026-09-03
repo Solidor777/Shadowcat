@@ -137,7 +137,7 @@
   {/if}
 
   {#if can.edit}
-    <button type="button" onclick={toggleHidden}>{row.doc.permissions.default === "none" ? ctx.t("combatTracker.visible") : ctx.t("combatTracker.hidden")}</button>
+    <button type="button" data-testid={"combat-tracker:hide-" + row.doc.id} onclick={toggleHidden}>{row.doc.permissions.default === "none" ? ctx.t("combatTracker.visible") : ctx.t("combatTracker.hidden")}</button>
     <button type="button" disabled={isTurn} title={isTurn ? ctx.t("combatTracker.removeTurnHint") : undefined} onclick={remove}>{ctx.t("combatTracker.remove")}</button>
   {/if}
 </div>
