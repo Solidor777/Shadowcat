@@ -2309,9 +2309,11 @@ impl SqliteRepository {
     /// statement of "may a document of this type sit under this parent",
     /// covering the checks that need the database or the batch bookkeeping:
     /// a `combatant`/`combat-history` parent must be a combat (batch-aware),
-    /// and an `asset_folder` parent must be a same-scope folder
-    /// (`check_asset_folder_parent`, batch-aware). `validate_containment`
-    /// (pure placement shape) runs separately at both callers.
+    /// an `asset_folder` parent must be a same-scope folder
+    /// (`check_asset_folder_parent`, batch-aware), and a `note` parent must
+    /// be a same-scope note (`check_note_parent`, batch-aware).
+    /// `validate_containment` (pure placement shape) runs separately at both
+    /// callers.
     async fn check_parent_placement(
         tx: &mut sqlx::SqliteConnection,
         doc: &Document,
@@ -2336,6 +2338,7 @@ impl SqliteRepository {
             }
         }
         Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
+        Self::check_note_parent(&mut *tx, doc, batch_folders).await?;
         Ok(())
     }
 
@@ -3156,9 +3159,13 @@ impl Repository for SqliteRepository {
         // the combatant-parentage check without a DB round trip that would
         // see nothing yet inserted.
         let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-        // `batch_folders` plays the same role for `asset_folder` documents: a
-        // folder Created earlier in this batch is a valid parent for a later
-        // one, and `check_asset_folder_parent` walks through it for cycles.
+        // `batch_folders` plays the same role for `asset_folder` AND `note`
+        // documents (a mixed-doc_type map keyed by id, since ids are unique
+        // regardless of type): a folder/note Created earlier in this batch is
+        // a valid parent for a later one, and `check_asset_folder_parent`/
+        // `check_note_parent` — plus `check_move_acyclic`'s cycle walk, shared
+        // across every doc_type that supports a parent tree — resolve through
+        // it before falling back to the database.
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
             std::collections::HashMap::new();
         // `scene_owner` maps a scene id to the id of the `combat` document
@@ -3365,7 +3372,9 @@ impl Repository for SqliteRepository {
                     validation::validate_containment(doc)?;
                     Self::check_parent_placement(&mut tx, doc, &batch_folders, &batch_combats)
                         .await?;
-                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE
+                        || doc.doc_type == crate::data::engine::NOTE_DOC_TYPE
+                    {
                         batch_folders.insert(doc.id, doc.clone());
                     }
                     if doc.doc_type == COMBAT_DOC_TYPE {
@@ -4542,6 +4551,7 @@ fn world_settings_keys(world: Uuid) -> [String; 5] {
 }
 
 mod assets;
+mod notes;
 
 #[cfg(test)]
 mod tests;

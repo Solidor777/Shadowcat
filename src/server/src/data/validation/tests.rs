@@ -651,8 +651,8 @@ fn validate_containment_requires_a_parent_for_combat_history_and_forbids_embeddi
 }
 
 #[test]
-fn validate_containment_rejects_combat_and_combatant_as_embedded_children() {
-    for child_type in ["combat", "combatant"] {
+fn validate_containment_rejects_combat_combatant_and_note_as_embedded_children() {
+    for child_type in ["combat", "combatant", "note"] {
         let mut child = crate::data::document::tests::sample_doc();
         child.doc_type = child_type.into();
         child.engine = crate::data::document::tests::default_test_engine(child_type);

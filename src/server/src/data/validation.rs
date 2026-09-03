@@ -392,6 +392,7 @@ pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
                 || child.doc_type == engine::COMBAT_HISTORY_DOC_TYPE
                 || child.doc_type == engine::ASSET_FOLDER_DOC_TYPE
                 || child.doc_type == engine::TABLE_DOC_TYPE
+                || child.doc_type == engine::NOTE_DOC_TYPE
             {
                 return Err(DataError::OpFailed(format!(
                     "a '{}' document cannot be embedded",
