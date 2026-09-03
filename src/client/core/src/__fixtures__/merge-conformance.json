@@ -12,7 +12,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -96,7 +98,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -180,7 +184,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -270,7 +276,9 @@
         "name": null,
         "engine": null,
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -361,7 +369,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -448,7 +458,9 @@
             "c": 1
           }
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -541,7 +553,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -628,7 +642,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -718,7 +734,9 @@
           "hp": 1,
           "mp": 2
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -803,7 +821,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -883,7 +903,9 @@
             "str": 10
           }
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -974,7 +996,9 @@
             "str": 10
           }
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1077,7 +1101,9 @@
             2
           ]
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1175,7 +1201,9 @@
             2
           ]
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1288,7 +1316,9 @@
           "a/b": 1,
           "c~d": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1381,7 +1411,9 @@
         "name": "A",
         "engine": null,
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1468,7 +1500,9 @@
           "b": 1
         },
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1560,7 +1594,9 @@
           "hp": 1
         },
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1735,7 +1771,9 @@
         "system": {
           "s": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -1861,7 +1899,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -2074,7 +2114,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -2266,7 +2308,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -2506,7 +2550,9 @@
         "system": {},
         "embedded": {
           "items": []
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -2698,7 +2744,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -2952,7 +3000,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -3080,7 +3130,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -3263,7 +3315,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -3562,7 +3616,9 @@
               "sourceId": "tc2"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -3850,7 +3906,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -4057,7 +4115,9 @@
               "sourceId": "tc2"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -4290,7 +4350,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -4548,7 +4610,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -4797,7 +4861,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -4898,12 +4964,13 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
+                "embedded": {},
                 "engine": null,
+                "name": null,
+                "property_overrides": {},
                 "system": {
                   "hp": 1
-                },
-                "embedded": {}
+                }
               },
               "new": {
                 "name": null,
@@ -4928,7 +4995,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -5018,12 +5087,13 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
+                "embedded": {},
                 "engine": null,
+                "name": null,
+                "property_overrides": {},
                 "system": {
                   "hp": 1
-                },
-                "embedded": {}
+                }
               },
               "new": {
                 "name": null,
@@ -5058,7 +5128,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -5260,9 +5332,6 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
-                "engine": null,
-                "system": {},
                 "embedded": {
                   "items": [
                     {
@@ -5275,7 +5344,11 @@
                       "sourceId": "tc1"
                     }
                   ]
-                }
+                },
+                "engine": null,
+                "name": null,
+                "property_overrides": {},
+                "system": {}
               },
               "new": {
                 "name": null,
@@ -5508,7 +5581,9 @@
         "name": null,
         "engine": null,
         "system": {},
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -5588,10 +5663,11 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
+                "embedded": {},
                 "engine": null,
-                "system": {},
-                "embedded": {}
+                "name": null,
+                "property_overrides": {},
+                "system": {}
               },
               "new": {
                 "name": null,
@@ -5618,7 +5694,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -5717,14 +5795,15 @@
             {
               "path": "/base",
               "old": {
-                "name": "A",
+                "embedded": {},
                 "engine": {
                   "e": 1
                 },
+                "name": "A",
+                "property_overrides": {},
                 "system": {
                   "hp": 1
-                },
-                "embedded": {}
+                }
               },
               "new": {
                 "name": "A",
@@ -5753,7 +5832,9 @@
             "b": 1
           }
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -5851,14 +5932,15 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
+                "embedded": {},
                 "engine": null,
+                "name": null,
+                "property_overrides": {},
                 "system": {
                   "a": {
                     "b": 1
                   }
-                },
-                "embedded": {}
+                }
               },
               "new": {
                 "name": null,
@@ -5885,7 +5967,9 @@
         "system": {
           "hp": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -5981,12 +6065,13 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
+                "embedded": {},
                 "engine": null,
+                "name": null,
+                "property_overrides": {},
                 "system": {
                   "hp": 1
-                },
-                "embedded": {}
+                }
               },
               "new": {
                 "name": null,
@@ -6010,7 +6095,9 @@
           "a/b": 1,
           "c~d": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -6124,13 +6211,14 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
+                "embedded": {},
                 "engine": null,
+                "name": null,
+                "property_overrides": {},
                 "system": {
                   "a/b": 1,
                   "c~d": 1
-                },
-                "embedded": {}
+                }
               },
               "new": {
                 "name": null,
@@ -6157,7 +6245,9 @@
         "embedded": {
           "items": [],
           "spells": []
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -6448,13 +6538,14 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
-                "engine": null,
-                "system": {},
                 "embedded": {
                   "items": [],
                   "spells": []
-                }
+                },
+                "engine": null,
+                "name": null,
+                "property_overrides": {},
+                "system": {}
               },
               "new": {
                 "name": null,
@@ -6505,7 +6596,9 @@
         "system": {
           "s": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -6622,7 +6715,9 @@
         "system": {},
         "embedded": {
           "items": []
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -6823,12 +6918,13 @@
             {
               "path": "/base",
               "old": {
-                "name": null,
-                "engine": null,
-                "system": {},
                 "embedded": {
                   "items": []
-                }
+                },
+                "engine": null,
+                "name": null,
+                "property_overrides": {},
+                "system": {}
               },
               "new": {
                 "name": null,
@@ -6874,7 +6970,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -7056,7 +7154,9 @@
               "sourceId": "tc1"
             }
           ]
-        }
+        },
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",
@@ -7535,7 +7635,9 @@
         "system": {
           "s": 1
         },
-        "embedded": {}
+        "embedded": {},
+        "property_overrides": {},
+        "owner_standing": "owner"
       },
       "parent": {
         "id": "t1",

@@ -116,6 +116,7 @@ fn pair(
         "engine": null,
         "system": {},
         "embedded": { "items": records },
+        "property_overrides": {},
     }));
     (template, child)
 }
@@ -403,6 +404,7 @@ fn template_hidden_path_never_moves_into_the_child_in_either_direction() {
     child.base = Some(json!({
         "name": null, "engine": null,
         "system": { "hp": 1, "secret": "S1" }, "embedded": {},
+        "property_overrides": {},
     }));
     let vis = Hide::default().on_template("t1", "/system/secret");
     let plan = compute_pull(&child, &template, &vis).expect("merges");

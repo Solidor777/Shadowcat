@@ -62,15 +62,29 @@ fn snapshot_base_falls_back_to_own_id_for_non_provenance_children() {
 }
 
 #[test]
-fn merge_base_deserialization_defaults_missing_bands() {
-    // A partial historical record reads with `null`/empty bands, matching the
-    // client engine's `?? null` coalescing.
-    let parsed: crate::merge::bands::MergeBase =
-        serde_json::from_value(json!({ "system": { "hp": 1 } })).expect("partial base parses");
-    assert_eq!(parsed.name, None);
-    assert_eq!(parsed.engine, json!(null));
-    assert_eq!(parsed.system, json!({ "hp": 1 }));
-    assert!(parsed.embedded.is_empty());
+fn merge_base_deserialization_rejects_a_record_missing_a_required_band() {
+    // Ingest (`check_base_node_shape`) requires every band present; the read
+    // path must fail the same way rather than coalescing an absent key into
+    // `null`/empty, which would read a malformed stored base as an ordinary
+    // one.
+    let err =
+        serde_json::from_value::<crate::merge::bands::MergeBase>(json!({ "system": { "hp": 1 } }))
+            .expect_err("a record missing name/engine/embedded/property_overrides does not parse");
+    assert!(err.to_string().contains("missing field"), "got {err}");
+}
+
+#[test]
+fn merge_base_deserialization_rejects_a_record_missing_property_overrides() {
+    // The full band set present, `property_overrides` alone absent: still a
+    // shape violation, not a legitimate row to tolerate.
+    let err = serde_json::from_value::<crate::merge::bands::MergeBase>(json!({
+        "name": null,
+        "engine": null,
+        "system": null,
+        "embedded": {}
+    }))
+    .expect_err("a record missing property_overrides does not parse");
+    assert!(err.to_string().contains("property_overrides"), "got {err}");
 }
 
 #[test]

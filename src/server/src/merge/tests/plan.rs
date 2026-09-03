@@ -26,6 +26,10 @@ fn compute_pull_fails_closed_on_a_corrupt_base() {
         json!(5),
         json!({ "name": 5 }),
         json!({ "embedded": { "items": {} } }),
+        // Every band present, `property_overrides` alone absent: ingest
+        // requires the key on every write, so a stored value missing it is
+        // a shape violation, never a legitimate row to coalesce to `{}`.
+        json!({ "name": null, "engine": null, "system": null, "embedded": {} }),
     ] {
         let mut child = doc("c1");
         child.source = Some(source_from("t1"));
@@ -95,6 +99,63 @@ fn plan_to_update_targets_the_child_and_refreshes_base_only_when_it_changed() {
         panic!("plan_to_update emits an update");
     };
     assert!(changes.is_empty(), "an in-sync instance yields no changes");
+}
+
+#[test]
+fn plan_to_update_refreshes_base_when_the_stored_standing_is_absent_or_malformed() {
+    // Ingest requires `owner_standing` on every stored base
+    // (`check_base_node_shape`); a row missing it, or carrying a value that
+    // does not parse as `OwnerStanding`, is never a legitimate row for this
+    // write to default toward its own standing — it must compare as
+    // differing so the refresh that repairs it actually runs.
+    let mut template = doc("t1");
+    template.name = Some("T".to_string());
+    let mut child = doc("c1");
+    child.source = Some(source_from("t1"));
+    child.name = Some("T".to_string());
+
+    let stored_ok = serde_json::to_value(StoredBase {
+        snapshot: snapshot_base(&template),
+        owner_standing: OwnerStanding::Owner,
+    })
+    .expect("stored base serializes");
+
+    // Absent `owner_standing`.
+    let mut stored_absent = stored_ok.clone();
+    stored_absent
+        .as_object_mut()
+        .expect("stored base is an object")
+        .remove("owner_standing");
+    child.base = Some(stored_absent);
+    let plan = compute_pull(&child, &template, &AllVisible).expect("merges");
+    let Operation::Update { changes, .. } =
+        plan_to_update(&child, &template, &plan.merged_bands, OwnerStanding::Owner)
+    else {
+        panic!("plan_to_update emits an update");
+    };
+    assert_eq!(
+        changes.len(),
+        1,
+        "an absent standing must force the base refresh, not compare equal"
+    );
+    assert_eq!(changes[0].path, "/base");
+
+    // Malformed (non-`OwnerStanding`) `owner_standing`.
+    let mut stored_malformed = stored_ok;
+    stored_malformed["owner_standing"] = json!("not-a-standing");
+    child.base = Some(stored_malformed);
+    let plan = compute_pull(&child, &template, &AllVisible).expect("merges");
+    let Operation::Update { changes, .. } =
+        plan_to_update(&child, &template, &plan.merged_bands, OwnerStanding::Owner)
+    else {
+        panic!("plan_to_update emits an update");
+    };
+    assert_eq!(
+        changes.len(),
+        1,
+        "a malformed standing must force the base refresh, not compare equal"
+    );
+    assert_eq!(changes[0].path, "/base");
 }
 
 #[test]

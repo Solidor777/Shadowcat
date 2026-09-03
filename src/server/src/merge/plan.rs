@@ -192,9 +192,11 @@ fn is_empty_collection(v: &Value) -> bool {
 /// under `owner_standing`, the instance owner's standing on the template as
 /// the caller resolved it for THIS write (`permission::owner_standing`); each
 /// emitted, like every other change, only when it differs from the stored
-/// value (the stored `/base` read through `MergeBase`'s own defaults, so a
-/// snapshot that predates a key the shape later gained is not rewritten for
-/// the key alone). An instance already in sync with its template
+/// value — and a stored value that fails to parse as a `MergeBase`, or
+/// carries no valid `owner_standing`, compares as differing unconditionally
+/// (never as an equal-to-refreshed default), so a malformed stored base
+/// always triggers the refresh that repairs it rather than comparing equal
+/// to a correct one. An instance already in sync with its template
 /// therefore yields an update with NO changes, which the handlers report as
 /// applied without publishing (no no-op `Event` per clean instance per
 /// resolution round). Every `old` is the child's REAL current stored value
@@ -275,26 +277,28 @@ pub fn plan_to_update(
             .expect("property overrides serialize to JSON"),
     );
     let stored_base = child.base.clone().unwrap_or(Value::Null);
-    // A stored base predating `owner_standing` (or a base-less child falling
-    // back to a plain snapshot) carries no signal about standing at all —
-    // absence is not a recorded `Stranger`, so comparing against a fixed
-    // default would force a spurious `/base` rewrite on every merge of every
-    // such document. Read whatever standing IS recorded and default to the
-    // standing THIS write is deriving when none is: the comparison then
-    // turns on snapshot content alone for a legacy value, and still refreshes
-    // when a recorded standing has genuinely changed.
+    // Ingest requires `owner_standing` on every stored base
+    // (`check_base_node_shape`), so an absent or unparseable value here is
+    // never a legitimate row — it is exactly as much a shape violation as a
+    // missing `property_overrides` key, and the read path must treat it the
+    // same way: `stored_normalized` stays `Value::Null` rather than
+    // defaulting the standing to the one THIS write is deriving, which would
+    // make a malformed stored base compare equal to a correct one and skip
+    // the refresh that would repair it.
     let stored_standing: Option<OwnerStanding> = stored_base
         .get("owner_standing")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let stored_normalized = serde_json::from_value::<MergeBase>(stored_base.clone())
-        .map(|snapshot| {
-            serde_json::to_value(StoredBase {
-                snapshot,
-                owner_standing: stored_standing.unwrap_or(owner_standing),
-            })
-            .expect("StoredBase serializes to JSON")
+    let stored_normalized = match (
+        serde_json::from_value::<MergeBase>(stored_base.clone()),
+        stored_standing,
+    ) {
+        (Ok(snapshot), Some(standing)) => serde_json::to_value(StoredBase {
+            snapshot,
+            owner_standing: standing,
         })
-        .unwrap_or(Value::Null);
+        .expect("StoredBase serializes to JSON"),
+        _ => Value::Null,
+    };
     let refreshed = serde_json::to_value(StoredBase {
         snapshot: snapshot_base(template),
         owner_standing,

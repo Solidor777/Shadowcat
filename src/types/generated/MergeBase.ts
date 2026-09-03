@@ -16,14 +16,13 @@ import type { Visibility } from "./Visibility";
  * hidden fields read as instance-authored deletions on the first merge —
  * see `derive_create_base`'s own doc for the consequence this has for
  * `syncState`. Either way, each recipient's view of the stored value is cut
- * at egress by the policy it records (`property_overrides`). Every field
- * defaults so a historical record still
- * parses on READ (a missing band reads as `null`/empty, exactly the
- * coalescing the client's `snapshotBase` produces when it stamps); the
- * write path never admits such a record — `check_base_node_shape` requires
- * every key present at ingest, so the leniency here is read-only, exercised
- * by `compute_pull` parsing a stored value that predates a key the shape
- * later gained. The ts-rs export is the client's `MergeBase`.
+ * at egress by the policy it records (`property_overrides`). No field
+ * defaults: `check_base_node_shape` requires every key present at ingest,
+ * so a stored value missing one is not a legitimate row this shape must
+ * tolerate — the read path (`compute_pull`, `plan_to_update`) fails the
+ * same way ingest would, rather than coalescing a missing key into
+ * `null`/empty and reading a malformed snapshot as an ordinary one. The
+ * ts-rs export is the client's `MergeBase`.
  */
 export type MergeBase = { 
 /**
