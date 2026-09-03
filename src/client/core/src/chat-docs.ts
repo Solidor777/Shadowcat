@@ -614,7 +614,11 @@ const UnknownSegmentSchema = z
   );
 /** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
-const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
+/** A segment list under the same known-or-forward-compat-opaque rule `ChatMessageEngine.content`
+ * uses. Exported so another document body composed of the same segment grammar (e.g. a note's
+ * `body`, see `note-docs.ts`'s `parseNoteBody`) validates against the identical shape rather than
+ * a re-spelled copy. */
+export const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
 /** Narrows a parsed segment to a known `ChatSegment` kind. See the type guard's
  * companion `UnknownSegmentSchema` note: this fallback deliberately refuses
