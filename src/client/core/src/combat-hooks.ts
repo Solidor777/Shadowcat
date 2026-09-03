@@ -177,6 +177,9 @@ export function commandTouchesCombat(cmd: WireCommand, store: ReadableDocuments)
   for (const op of cmd.ops) {
     if (op.op === "create" || op.op === "delete") {
       if (op.doc.doc_type === "combat" || op.doc.doc_type === "combatant") return true;
+    } else if (op.op === "move") {
+      const doc = store.get(op.doc_id);
+      if (doc && (doc.doc_type === "combat" || doc.doc_type === "combatant")) return true;
     } else {
       const doc = store.get(op.doc_id);
       if (doc && (doc.doc_type === "combat" || doc.doc_type === "combatant")) return true;

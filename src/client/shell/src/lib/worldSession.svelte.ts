@@ -948,7 +948,7 @@ export class WorldSession {
           const before = new Map<string, WireDocument | undefined>();
           if (touches) {
             for (const op of cmd.ops) {
-              const id = op.op === "update" ? op.doc_id : op.doc.id;
+              const id = op.op === "update" || op.op === "move" ? op.doc_id : op.doc.id;
               before.set(id, this.store.get(id));
             }
           }

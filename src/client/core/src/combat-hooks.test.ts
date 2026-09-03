@@ -70,7 +70,7 @@ function transition(
   store.seedDocuments(docs);
   const preimages = new Map<string, WireDocument | undefined>();
   for (const op of ops) {
-    const id = op.op === "update" ? op.doc_id : op.doc.id;
+    const id = op.op === "update" || op.op === "move" ? op.doc_id : op.doc.id;
     preimages.set(id, store.get(id));
   }
   const cmd: WireCommand = { seq: 1, world_id: WORLD, author: "gm", ts: 0, ops };
