@@ -14,8 +14,10 @@
     run: (fn: () => Promise<void>) => Promise<void>;
     /** The initiative-roll notation, bindable so the panel can persist it across renders. */
     notation: string;
+    /** Whether the panel is in the compact (narrow-viewport) layout. */
+    compact?: boolean;
   }
-  let { combat, rows, busy, run, notation = $bindable() }: Props = $props();
+  let { combat, rows, busy, run, notation = $bindable(), compact = false }: Props = $props();
 
   const ctx = getAppContext();
 
@@ -58,7 +60,7 @@
   }
 </script>
 
-<header>
+<header class:compact>
   <span>{engine.round > 0 ? ctx.t("combatTracker.round", { n: engine.round }) : ctx.t("combatTracker.notStarted")}</span>
   <span>{engine.turn ? ctx.t("combatTracker.turn") : ctx.t("combatTracker.noTurn")}</span>
 
@@ -98,3 +100,24 @@
     {/if}
   {/if}
 </header>
+
+<style lang="scss">
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+
+    button,
+    input {
+      min-height: 32px;
+    }
+
+    &.compact {
+      button,
+      input {
+        min-height: 44px;
+      }
+    }
+  }
+</style>

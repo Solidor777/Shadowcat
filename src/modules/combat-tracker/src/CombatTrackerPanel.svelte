@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
   import type { WireDocument, ResourceRegistryEngine, Resource } from "@shadowcat/core";
   import type { TurnBadge } from "./turnBadge";
   import { rowsFor, moveInOrder, type Row } from "./model";
@@ -59,6 +59,7 @@
   });
 
   const can = $derived.by(() => (selectedCombat ? ctx.combat.canAct(selectedCombat.id) : null));
+  const compact = $derived(sizeClass() === "compact");
 
   let busy = $state(false);
   let notation = $state("1d20");
@@ -133,7 +134,7 @@
   }
 </script>
 
-<section aria-label={ctx.t("combatTracker.title")}>
+<section class="combat-tracker" class:compact aria-label={ctx.t("combatTracker.title")}>
   <h2>{ctx.t("combatTracker.title")}</h2>
 
   {#if combats.length > 1}
@@ -150,11 +151,11 @@
 
   {#if selectedCombat && can}
     <p data-testid="combat-tracker:selected" hidden>{selectedCombat.id}</p>
-    <CombatHeader combat={selectedCombat} {rows} {busy} {run} bind:notation />
-    <div class="rows">
+    <CombatHeader combat={selectedCombat} {rows} {busy} {run} {compact} bind:notation />
+    <div class="rows" class:compact>
       {#each rows as row, i (row.doc.id)}
-        <div use:trackRow={row.doc.id} onkeydown={(e) => onRowKeydown(i, e)} role="presentation">
-          <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as { turn: string | null }).turn === row.doc.id} {can} {busy} {run} {notation} {onDragStart} index={i} />
+        <div class="row-wrap" class:stacked={compact} use:trackRow={row.doc.id} onkeydown={(e) => onRowKeydown(i, e)} role="presentation">
+          <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as { turn: string | null }).turn === row.doc.id} {can} {busy} {run} {notation} {onDragStart} index={i} {compact} />
         </div>
       {/each}
     </div>
@@ -167,3 +168,38 @@
   {/if}
   {#if busy}<span aria-hidden="true">{ctx.t("combatTracker.busy")}</span>{/if}
 </section>
+
+<style lang="scss">
+  .combat-tracker {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    color: var(--text);
+
+    button,
+    select {
+      min-height: var(--input-height, 32px);
+    }
+
+    &.compact {
+      button,
+      select {
+        min-height: 44px;
+      }
+    }
+  }
+
+  .rows {
+    display: grid;
+    gap: var(--space-1);
+
+    &.compact {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .row-wrap.stacked {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+</style>

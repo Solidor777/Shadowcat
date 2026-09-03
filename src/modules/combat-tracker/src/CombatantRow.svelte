@@ -26,8 +26,10 @@
     onDragStart: (index: number, ev: PointerEvent) => void;
     /** This row's index within the visible order (passed to `onDragStart`). */
     index: number;
+    /** Whether the panel is in the compact (narrow-viewport) layout. */
+    compact?: boolean;
   }
-  const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index }: Props = $props();
+  const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index, compact = false }: Props = $props();
 
   const ctx = getAppContext();
 
@@ -79,7 +81,7 @@
   }
 </script>
 
-<div class="row" class:turn={isTurn} aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
+<div class="row" class:turn={isTurn} class:compact aria-current={isTurn ? "true" : undefined} data-testid={"combat-tracker:row-" + row.doc.id}>
   {#if can.edit}
     <button type="button" class="drag-handle" aria-label={ctx.t("combatTracker.dragHandle")} onpointerdown={(e) => onDragStart(index, e)}>⠿</button>
   {/if}
@@ -139,3 +141,35 @@
     <button type="button" disabled={isTurn} title={isTurn ? ctx.t("combatTracker.removeTurnHint") : undefined} onclick={remove}>{ctx.t("combatTracker.remove")}</button>
   {/if}
 </div>
+
+<style lang="scss">
+  .row {
+    display: grid;
+    grid-auto-flow: column;
+    align-items: center;
+    gap: var(--space-1);
+
+    .drag-handle,
+    button,
+    input {
+      min-height: 32px;
+    }
+    .drag-handle {
+      min-width: 44px;
+    }
+
+    &.turn {
+      border-inline-start: 2px solid var(--accent);
+    }
+
+    &.compact {
+      grid-auto-flow: row;
+      grid-template-columns: 1fr;
+
+      button,
+      input {
+        min-height: 44px;
+      }
+    }
+  }
+</style>
