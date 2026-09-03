@@ -9,6 +9,7 @@
     type ChatSettingsEngine, type ChannelRegistryEngine,
     type SettingPath,
   } from "@shadowcat/core";
+  import CombatSettings from "./CombatSettings.svelte";
 
   const ctx = getAppContext();
 
@@ -302,6 +303,8 @@
       </select>
     </label>
     {@render provControl("animation.easing", wsys.animation?.easing)}
+
+    <CombatSettings {ws} {wsys} {set} {prov} {scene} />
   {/if}
 
   {#if ctx.role === "gm" && lgsys && lgDoc}

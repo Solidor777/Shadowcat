@@ -7,6 +7,7 @@
   "dependencies": {
     "@shadowcat/core": "workspace:*",
     "@shadowcat/ui-kit": "workspace:*",
+    "@shadowcat/formula": "workspace:*",
     "@shadowcat/types": "workspace:^"
   },
   "devDependencies": {
