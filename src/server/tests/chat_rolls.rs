@@ -10,8 +10,8 @@ use shadowcat::chat::{
     LinkPreviewCache, LinkPreviewDeps, MessageEngine, MessageKind, MessageRequestCtx,
     PreviewRateLimiter, Segment, SendMessageError,
 };
-use shadowcat::data::command::{Command, Operation};
-use shadowcat::data::document::{Document, WorldRole};
+use shadowcat::data::command::{Command, Operation, WriteOrigin};
+use shadowcat::data::document::{Document, PermissionSet, Scope, WorldRole};
 use shadowcat::data::membership::PermissionContext;
 use shadowcat::data::permission::{cap, resolve_access};
 use shadowcat::data::repository::Repository;
@@ -57,6 +57,43 @@ impl Fixture {
             .await
             .unwrap();
         let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        // The send path refuses an unregistered channel; worlds built
+        // directly here never pass through create/join seeding, so the
+        // channel-registry singleton is seeded explicitly.
+        let channel_registry = Document {
+            id: Uuid::new_v4(),
+            scope: Scope::World { world_id: w.id },
+            doc_type: shadowcat::data::engine::CHANNEL_REGISTRY_DOC_TYPE.to_string(),
+            schema_version: 1,
+            name: None,
+            source: None,
+            base: None,
+            owner: Some(gm),
+            permissions: PermissionSet::default(),
+            embedded: std::collections::BTreeMap::new(),
+            parent_id: None,
+            engine: Some(
+                serde_json::to_value(shadowcat::data::engine::ChannelRegistryEngine::seed())
+                    .unwrap(),
+            ),
+            system: serde_json::json!({}),
+            created_at: 0,
+            updated_at: 0,
+        };
+        repo.apply_intent(
+            &PermissionContext {
+                user_id: gm,
+                world_role: WorldRole::Gm,
+            },
+            w.id,
+            vec![Operation::Create {
+                doc: channel_registry,
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
         repo.add_member(w.id, alice_id, WorldRole::Player)
             .await
             .unwrap();
@@ -97,7 +134,7 @@ impl Fixture {
                 now: 1,
                 budget_per_min: 60,
             },
-            "all".into(),
+            "general".into(),
             content.into(),
             None,
             Audience::Public,
@@ -110,6 +147,7 @@ impl Fixture {
         let doc_id = match &cmd.ops[0] {
             Operation::Create { doc } => doc.id,
             Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Move { doc_id, .. } => *doc_id,
             Operation::Delete { doc } => doc.id,
         };
         self.repo
@@ -196,10 +234,15 @@ async fn roll_button_stored_unexecuted_with_trimmed_formula() {
 #[tokio::test]
 async fn failed_roll_authors_system_notice_not_a_message() {
     let f = Fixture::new().await;
+    // Baseline the event log (the fixture's config seed is an event) so the
+    // post-send check can prove exactly one message total was persisted for
+    // this attempt — no separate Roll-kind message exists alongside the
+    // notice.
+    let before = f.repo.events_since(f.room.world_id, 0).await.unwrap().len();
     let cmd = f.send("/roll garbage").await.unwrap();
     let sys = f.stored_message_system(&cmd).await;
     assert_eq!(sys.kind, MessageKind::System);
-    assert_eq!(sys.channel, "all");
+    assert_eq!(sys.channel, "general");
     assert_eq!(sys.user_owner, f.alice_id);
     assert_eq!(
         sys.audience,
@@ -211,10 +254,12 @@ async fn failed_roll_authors_system_notice_not_a_message() {
         [Segment::Text { text }] => assert!(!text.is_empty(), "error text must be non-empty"),
         other => panic!("expected one Text segment, got {other:?}"),
     }
-    // Exactly one message total was persisted for this attempt — no separate
-    // Roll-kind message exists alongside the notice.
     let events = f.repo.events_since(f.room.world_id, 0).await.unwrap();
-    assert_eq!(events.len(), 1, "one message per send attempt: {events:?}");
+    assert_eq!(
+        events.len(),
+        before + 1,
+        "one message per send attempt: {events:?}"
+    );
 }
 
 /// (e) A whisper body's `kind` is `Normal` (whisper bodies are never parsed
@@ -375,7 +420,7 @@ async fn edit_content_with_inline_span_stays_literal_text() {
 #[test]
 fn stored_message_without_roll_segments_still_deserializes() {
     let j = serde_json::json!({
-        "channel": "all",
+        "channel": "general",
         "user_owner": Uuid::from_u128(1),
         "kind": "normal",
         "audience": { "kind": "public" },
@@ -393,6 +438,9 @@ fn stored_message_without_roll_segments_still_deserializes() {
 #[tokio::test]
 async fn over_max_inline_rolls_authors_system_notice_not_a_message() {
     let f = Fixture::new().await;
+    // Baseline the event log (the fixture's config seed is an event) so the
+    // post-send check can prove exactly one message was persisted.
+    let before = f.repo.events_since(f.room.world_id, 0).await.unwrap().len();
     let body = "[[1d6]]".repeat(9); // MAX_INLINE_ROLLS = 8, one past the cap
     let cmd = f.send(&body).await.unwrap();
     let sys = f.stored_message_system(&cmd).await;
@@ -402,5 +450,9 @@ async fn over_max_inline_rolls_authors_system_notice_not_a_message() {
         other => panic!("expected one Text segment, got {other:?}"),
     }
     let events = f.repo.events_since(f.room.world_id, 0).await.unwrap();
-    assert_eq!(events.len(), 1, "one message per send attempt: {events:?}");
+    assert_eq!(
+        events.len(),
+        before + 1,
+        "one message per send attempt: {events:?}"
+    );
 }

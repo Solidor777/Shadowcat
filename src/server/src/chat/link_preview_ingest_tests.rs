@@ -46,6 +46,9 @@ impl Fixture {
             .await
             .unwrap();
         let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+        // The send path refuses unregistered channels; "ic" is registered
+        // for the per-channel dice-override tests.
+        crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &["ic"]).await;
         repo.add_member(w.id, player, WorldRole::Player)
             .await
             .unwrap();
@@ -110,7 +113,7 @@ impl Fixture {
     }
 
     /// Same as `send`, but to an explicit `channel` rather than the
-    /// hardcoded `"all"` — needed to exercise per-channel dice-settings
+    /// hardcoded `"general"` — needed to exercise per-channel dice-settings
     /// resolution, which `send` alone cannot reach.
     async fn send_channel(
         &self,
@@ -194,7 +197,7 @@ impl Fixture {
                 now,
                 budget_per_min: 60,
             },
-            "all".into(),
+            "general".into(),
             content.into(),
             None,
             Audience::Public,
@@ -233,6 +236,7 @@ impl Fixture {
         let doc_id = match &cmd.ops[0] {
             Operation::Create { doc } => doc.id,
             Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Move { doc_id, .. } => *doc_id,
             Operation::Delete { doc } => doc.id,
         };
         let doc = self.repo.get_document(doc_id).await.unwrap().unwrap();

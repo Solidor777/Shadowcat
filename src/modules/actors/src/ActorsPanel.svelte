@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle } from "@shadowcat/core";
+  import { buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
+  import EmissionEditor from "./EmissionEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
   import TokenRotationControl from "./TokenRotationControl.svelte";
@@ -10,6 +11,8 @@
   import TokenVisionControl from "./TokenVisionControl.svelte";
   import TokenMovementControl from "./TokenMovementControl.svelte";
   import TokenElevationControl from "./TokenElevationControl.svelte";
+  import TokenEmissionControl from "./TokenEmissionControl.svelte";
+  import TokenVisualControl from "./TokenVisualControl.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -43,6 +46,12 @@
       /** Height in grid cells. */
       h: number;
     };
+  };
+  /** Shape of an actor's `engine.visual` field. */
+  type VisualEngineShape = {
+    /** The actor's authored visual, inherited by linked tokens; the row's visual editor
+     * initializes from it and the apply dispatch reads it as the OCC pre-image. */
+    visual?: TokenVisual;
   };
 
   // Reactive read of the document store (same bridge as Surface): reading
@@ -107,6 +116,20 @@
     reset: () => void;
   }>();
 
+  // Post-create visual editing: the id of the one actor row whose `VisualKindEditor` is
+  // currently open (null = none), and that editor's last built visual — `null` while its active
+  // kind's data is incomplete, which gates the row's apply button exactly like `pendingVisual`
+  // gates the create button.
+  let editingVisualId = $state<string | null>(null);
+  let editedVisual = $state<TokenVisual | null>(null);
+
+  // The emission editor is a controlled child component: this panel OWNS the three pending
+  // emission values, fed by its `onAura`/`onSound`/`onVfx` callbacks, and consumes them at
+  // create time (snapshotted like `pendingVisual` — see that field's read-site comment).
+  let pendingAura = $state<AuraEmission | null>(null);
+  let pendingSound = $state<SoundEmission | null>(null);
+  let pendingVfx = $state<VfxEmission | null>(null);
+
   const conditionOptions = $derived.by((): [string, Condition][] => {
     subscribe();
     const reg = ctx.documents.query("condition-registry")[0]?.engine as ConditionRegistryEngine | undefined;
@@ -117,8 +140,9 @@
    * face-swap palette (`FaceSwapPalette`), the ownership override control
    * (`TokenOwnerControl`), the rotation control (`TokenRotationControl`), the carried-light
    * override control (`TokenLightControl`), the vision override control (`TokenVisionControl`),
-   * the movement-tag override control (`TokenMovementControl`), and the elevation control
-   * (`TokenElevationControl`). */
+   * the movement-tag override control (`TokenMovementControl`), the elevation control
+   * (`TokenElevationControl`), and the per-token emission/visual override controls
+   * (`TokenEmissionControl`, `TokenVisualControl`). */
   const selectedTokenId = $derived.by((): string | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
@@ -278,6 +302,33 @@
   }
 
   /**
+   * Dispatches the open row editor's built visual as an `/engine/visual` Update on its actor,
+   * `old` carrying the RAW stored visual — the same raw-`old` OCC convention as the panel's
+   * other per-row edits (`/engine/faction`, `/engine/vision` above and below): the server's
+   * field-level optimistic-concurrency check rejects an Update whose `old` differs from the
+   * stored value. No-op while the editor's build is incomplete (the apply button is disabled on
+   * `null`, so this is the belt to that suspenders). Closes the row editor on dispatch.
+   * @param a The actor document whose row editor is open.
+   * @returns Nothing; dispatches an intent and clears the editing state as side effects.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the row editor's apply button
+   * declare const actorDoc: WireDocument;
+   * applyVisual(actorDoc);
+   * ```
+   */
+  function applyVisual(a: WireDocument): void {
+    // `$state.snapshot` for the same Proxy/structuredClone reason as `create()`'s `pendingVisual`
+    // read above — `editedVisual` is a `$state` holding the editor's built literal.
+    const visual = $state.snapshot(editedVisual);
+    if (!visual) return;
+    const old = (a.engine as VisualEngineShape | undefined)?.visual ?? null;
+    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/visual", old, new: visual }] }]);
+    editingVisualId = null;
+    editedVisual = null;
+  }
+
+  /**
    * Creates a new actor from the form's current fields plus the visual editor's last built
    * `pendingVisual` — a no-op if either the name or the visual is missing, mirroring the submit
    * button's own `disabled` condition. Resets every form field on success, including the visual
@@ -308,6 +359,12 @@
       vision: pendingVision.length > 0 ? $state.snapshot(pendingVision) : null,
       light: pendingLight ? $state.snapshot(pendingLight) : null,
       movement: $state.snapshot(pendingMovement),
+      // Emissions are optional (null = none); snapshotted out of `$state` for the same
+      // Proxy/structuredClone reason as `visual` above (emission payloads are flat, but the
+      // `$state.snapshot` read-site convention stays uniform).
+      aura: $state.snapshot(pendingAura),
+      sound: $state.snapshot(pendingSound),
+      vfx: $state.snapshot(pendingVfx),
     };
     const doc = buildActorDoc(ctx.world, name, engine);
     if (hideName) setNameHidden(doc, true);
@@ -322,6 +379,9 @@
     pendingVision = [];
     pendingLight = null;
     pendingMovement = [];
+    pendingAura = null;
+    pendingSound = null;
+    pendingVfx = null;
     visualEditor?.reset();
   }
 </script>
@@ -335,6 +395,8 @@
   <TokenLightControl tokenId={selectedTokenId} />
   <TokenVisionControl tokenId={selectedTokenId} />
   <TokenMovementControl tokenId={selectedTokenId} />
+  <TokenEmissionControl tokenId={selectedTokenId} />
+  <TokenVisualControl tokenId={selectedTokenId} />
   <input
     class="actor-search"
     type="search"
@@ -425,6 +487,23 @@
           {#if lightOf(a)}
             <LightEmissionEditor value={lightOf(a)!} onCommit={(next) => commitLight(a, next)} />
           {/if}
+          <button type="button" class="edit-visual" onclick={() => { editingVisualId = editingVisualId === a.id ? null : a.id; editedVisual = null; }}>
+            {t("actors.editVisual")}
+          </button>
+        {/if}
+        {#if editingVisualId === a.id}
+          <!-- Post-create visual edit: the same VisualKindEditor the create form hosts, here
+               initialized FROM the actor's current visual via its `initial` prop; apply
+               dispatches through `applyVisual`'s raw-`old` OCC convention. -->
+          <div class="visual-edit">
+            <VisualKindEditor
+              conditionOptions={conditionOptions}
+              initial={(a.engine as VisualEngineShape | undefined)?.visual}
+              onBuild={(v) => (editedVisual = v)}
+            />
+            <button type="button" disabled={!editedVisual} onclick={() => applyVisual(a)}>{t("actors.applyVisual")}</button>
+            <button type="button" onclick={() => { editingVisualId = null; editedVisual = null; }}>{t("actors.cancelVisual")}</button>
+          </div>
         {/if}
       </li>
     {/each}
@@ -481,6 +560,14 @@
       {/if}
     {/if}
     <VisualKindEditor bind:this={visualEditor} conditionOptions={conditionOptions} onBuild={(v) => (pendingVisual = v)} />
+    <EmissionEditor
+      aura={pendingAura}
+      sound={pendingSound}
+      vfx={pendingVfx}
+      onAura={(v) => (pendingAura = v)}
+      onSound={(v) => (pendingSound = v)}
+      onVfx={(v) => (pendingVfx = v)}
+    />
     <button type="submit" disabled={!name || !pendingVisual}>{t("actors.create")}</button>
   </form>
 </section>

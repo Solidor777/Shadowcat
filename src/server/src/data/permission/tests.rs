@@ -74,6 +74,7 @@ fn immediate_snapshot<'a>(
             Operation::Update { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
             Operation::Create { doc } => Some(doc),
             Operation::Delete { doc } => Some(doc),
+            Operation::Move { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
         };
         let Some(d) = target_doc else {
             per_op.push(None);
@@ -4374,4 +4375,174 @@ fn carried_light_ancestor_echo_with_shifted_number_variant_is_not_a_touch() {
         &whole,
         &changed
     ));
+}
+
+/// One Move op over a doc whose COMMIT-time and CURRENT permission sets are
+/// supplied independently, filtered for `recipient`. `current_created_seq`
+/// lets a test diverge the id's generation from the snapshot's.
+fn filter_move_with(
+    commit_perms: PermissionSet,
+    current_perms: PermissionSet,
+    recipient: &PermissionContext,
+    current_created_seq: i64,
+) -> Command {
+    let world = Uuid::from_u128(9);
+    let target = Uuid::from_u128(41);
+    let mut at_commit = doc(commit_perms, serde_json::json!({}));
+    at_commit.id = target;
+    at_commit.scope = Scope::World { world_id: world };
+    let mut now = doc(current_perms, serde_json::json!({}));
+    now.id = target;
+    now.scope = Scope::World { world_id: world };
+    now.parent_id = Some(Uuid::from_u128(42));
+
+    let cmd = Command {
+        seq: 5,
+        world_id: world,
+        author: Uuid::from_u128(1),
+        ts: 0,
+        ops: vec![Operation::Move {
+            doc_id: target,
+            parent_id: Some(Uuid::from_u128(42)),
+            old_parent_id: None,
+        }],
+    };
+    let commit_current: HashMap<Uuid, CurrentDoc> =
+        [(target, current_doc(at_commit, 1))].into_iter().collect();
+    let mut snapshot = immediate_snapshot(&cmd, &commit_current, &[], &|_| None);
+    // `immediate_snapshot` records no generation; stamp the commit-time one so
+    // the recreated-id guard is exercisable.
+    if let Some(Some(s)) = snapshot.per_op.get_mut(0) {
+        s.created_seq_at_commit = Some(1);
+    }
+    let live_current: HashMap<Uuid, CurrentDoc> = [(target, current_doc(now, current_created_seq))]
+        .into_iter()
+        .collect();
+    filter_command(
+        &cmd,
+        &snapshot,
+        recipient,
+        &WorldCapDefaults::default(),
+        &live_current,
+        |_| None,
+    )
+}
+
+#[test]
+fn move_is_delivered_verbatim_iff_read_holds_at_commit_and_now() {
+    let player = PermissionContext {
+        user_id: Uuid::from_u128(77),
+        world_role: WorldRole::Player,
+    };
+    let readable = PermissionSet {
+        default: DocRole::Observer,
+        ..Default::default()
+    };
+    let out = filter_move_with(readable.clone(), readable, &player, 1);
+    // Exactly the Move op, unmodified — and NOTHING synthesized: READ never
+    // consults `parent_id` (`resolve_access_world`), so a Move alone can
+    // produce no READ transition for any recipient.
+    assert_eq!(out.ops.len(), 1);
+    assert!(matches!(
+        &out.ops[0],
+        Operation::Move { doc_id, parent_id: Some(p), old_parent_id: None }
+            if *doc_id == Uuid::from_u128(41) && *p == Uuid::from_u128(42)
+    ));
+}
+
+#[test]
+fn move_is_dropped_without_commit_time_read() {
+    let player = PermissionContext {
+        user_id: Uuid::from_u128(77),
+        world_role: WorldRole::Player,
+    };
+    let denied = PermissionSet {
+        default: DocRole::None,
+        ..Default::default()
+    };
+    let readable = PermissionSet {
+        default: DocRole::Observer,
+        ..Default::default()
+    };
+    let out = filter_move_with(denied, readable, &player, 1);
+    assert!(out.ops.is_empty());
+}
+
+#[test]
+fn move_is_dropped_without_current_read() {
+    let player = PermissionContext {
+        user_id: Uuid::from_u128(77),
+        world_role: WorldRole::Player,
+    };
+    let denied = PermissionSet {
+        default: DocRole::None,
+        ..Default::default()
+    };
+    let readable = PermissionSet {
+        default: DocRole::Observer,
+        ..Default::default()
+    };
+    let out = filter_move_with(readable, denied, &player, 1);
+    assert!(out.ops.is_empty());
+}
+
+#[test]
+fn move_for_a_recreated_id_generation_is_dropped() {
+    let player = PermissionContext {
+        user_id: Uuid::from_u128(77),
+        world_role: WorldRole::Player,
+    };
+    let readable = PermissionSet {
+        default: DocRole::Observer,
+        ..Default::default()
+    };
+    // The current row's generation differs from the snapshot's: the id was
+    // hard-deleted and recreated since commit.
+    let out = filter_move_with(readable.clone(), readable, &player, 2);
+    assert!(out.ops.is_empty());
+}
+
+#[test]
+fn move_with_a_legacy_recorded_command_is_dropped_on_replay() {
+    let player = PermissionContext {
+        user_id: Uuid::from_u128(77),
+        world_role: WorldRole::Player,
+    };
+    let world = Uuid::from_u128(9);
+    let target = Uuid::from_u128(41);
+    let mut now = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({}),
+    );
+    now.id = target;
+    now.scope = Scope::World { world_id: world };
+    let cmd = Command {
+        seq: 5,
+        world_id: world,
+        author: Uuid::from_u128(1),
+        ts: 0,
+        ops: vec![Operation::Move {
+            doc_id: target,
+            parent_id: None,
+            old_parent_id: Some(Uuid::from_u128(42)),
+        }],
+    };
+    // A legacy `world_events` row: no recorded per-op snapshot at all.
+    let snapshot = CommandSnapshot {
+        per_op: vec![None],
+        world_gm_at_commit: Default::default(),
+    };
+    let live: HashMap<Uuid, CurrentDoc> = [(target, current_doc(now, 1))].into_iter().collect();
+    let out = filter_command(
+        &cmd,
+        &snapshot,
+        &player,
+        &WorldCapDefaults::default(),
+        &live,
+        |_| None,
+    );
+    assert!(out.ops.is_empty());
 }

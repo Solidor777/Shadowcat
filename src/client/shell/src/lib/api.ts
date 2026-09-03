@@ -1,5 +1,6 @@
 import type { WorldEntry } from "@shadowcat/types";
 import type { WireDocument } from "@shadowcat/core";
+import type { PersistedTheme } from "@shadowcat/ui-kit";
 
 /** Local mirror of the server's MeResponse (not ts-rs-exported). */
 export interface Me {
@@ -175,6 +176,12 @@ export interface UiState {
     /** The most recently entered world id, or `null`. Seeds `App.boot()`'s
      * non-route load only — a world route always wins (see `resolveBootWorld`). */
     lastWorld: string | null;
+    /** The account's theme preference, in the ui-kit `PersistedTheme` shape
+     * (`ThemeController.serialize`'s output). Optional: blobs written before
+     * the field existed simply omit it. The server stores it opaquely —
+     * validation happens in `ThemeController.load`, which `loadSessionState`
+     * passes the value through. */
+    theme?: PersistedTheme;
   };
   /** Per-world settings, keyed by world id. */
   worlds: Record<

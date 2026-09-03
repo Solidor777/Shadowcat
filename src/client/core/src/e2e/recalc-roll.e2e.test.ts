@@ -84,7 +84,7 @@ test("GM recalc: spec/raw stay GM-only, recalc_history is visible to everyone an
   await playerWatch.start();
   await sleep(300);
 
-  await gm.sendChatMessage({ channel: "all", content: "/roll 1d6" });
+  await gm.sendChatMessage({ channel: "general", content: "/roll 1d6" });
   await sleep(500);
 
   expect(messageId).not.toBe("");

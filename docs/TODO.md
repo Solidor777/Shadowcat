@@ -26,15 +26,6 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
-## Follow-on feature sub-projects (own brainstorm → spec → plan each)
-
-Out of scope for the Phase-1 cleanup burndown; built after Sub-project 1, one design pass each
-(user: build ALL of bucket C):
-
-1. **Real-time per-recipient move-streaming** — DONE (2026-08-27, spec
-   `docs/superpowers/specs/2026-08-27-move-stream-live-clip-design.md`): observer's own-move
-   timeline clip + re-emit; the moving-light residual is delivered by M17d (`HISTORY.md`).
-
 ## Actionable now — Kimi Code parity is written but never installed
 - TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo
   (`github.com/Solidor777/shadowcat-codebase`); this item now targets

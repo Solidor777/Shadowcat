@@ -6,7 +6,7 @@ import type { ReadableDocuments, WireDocument, FootprintLookup } from "@shadowca
 function fakeStore(docs: WireDocument[]): ReadableDocuments {
   return { get: (id) => docs.find((d) => d.id === id), query: (type) => docs.filter((d) => d.doc_type === type), subscribe: () => () => {}, appliedSeq: 0 } as ReadableDocuments;
 }
-const actorEngine = (over = {}) => ({ displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], ...over });
+const actorEngine = (over = {}) => ({ displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null, ...over });
 
 /** A lookup stating one token's server-resolved extent, standing in for a `"footprints"` frame. */
 function footprintsFor(tokenId: string, w: number, h: number): FootprintLookup {

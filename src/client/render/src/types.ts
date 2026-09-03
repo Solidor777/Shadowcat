@@ -92,8 +92,63 @@ export type ResolvedAnimatedSource =
       count?: number;
     };
 
-/** A resolved token render node: transform + size + resolved visual + faction border + footprint
- * shape + the perceived (creature-sense) flag. */
+/** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is
+ * both a `TokenNodeSpec.visual` arm in its own right and the `art` payload of a resolved
+ * `"generated"` visual (whose frame composes around exactly these two drawable kinds). */
+export type ResolvedArtVisual =
+  | {
+      /** Discriminant: a static image visual. */
+      kind: "image";
+      /** Resolved image serve URL (already asset-id-resolved). */
+      url: string;
+    }
+  | {
+      /** Discriminant: a tick-driven animated visual. */
+      kind: "animated";
+      /** Resolved frame/sheet source — see `ResolvedAnimatedSource`. */
+      source: ResolvedAnimatedSource;
+      /** Playback rate, in frames per second — the `fps` `computeAnimatedFrame` scales
+       * `elapsedMs` by. */
+      fps: number;
+      /** `true` wraps at the end of the sequence; `false` holds the final frame — see
+       * `computeAnimatedFrame`. */
+      loop: boolean;
+    };
+
+/** One built-in per-token art effect, applied to the token's visual by the backend (composed
+ * into a single `ColorMatrixFilter` by `PixiBackend.updateTokenFx`, in array order). Every color
+ * is already packed `0xRRGGBB` and every strength already clamped to `[0,1]` by `TokenView.toSpec`
+ * — the backend never parses colors. Entries compose: a `tint` scales the
+ * art's channels toward the given color, a `desaturate` strips color to luminance, a `highlight`
+ * brightens the art toward the given color. */
+export type TokenFx =
+  | {
+      /** Discriminant: scale the art's RGB channels toward `color`, by `strength`. */
+      kind: "tint";
+      /** Tint target color, packed `0xRRGGBB`. */
+      color: number;
+      /** Blend amount, `[0,1]`: `0` = no effect, `1` = full channel multiply by `color`. */
+      strength: number;
+    }
+  | {
+      /** Discriminant: strip the art to luminance (full desaturation; no strength — partial
+       * desaturation is a `tint` toward the art's own gray). */
+      kind: "desaturate";
+    }
+  | {
+      /** Discriminant: brighten the art toward `color`, by `strength`. Produced for a token's
+       * selection signifier and for condition-registry `highlight` fx; a `"target"` source is
+       * reserved for this same arm (a targeted token would brighten the same way) but has no
+       * producer — no targeting feature exists. */
+      kind: "highlight";
+      /** Brighten-toward target color, packed `0xRRGGBB`. */
+      color: number;
+      /** Blend amount, `[0,1]`: `0` = no effect, `1` = the art replaced by `color`. */
+      strength: number;
+    };
+
+/** A resolved token render node: transform + size + resolved visual + faction border +
+ * footprint shape + the perceived (creature-sense) flag. */
 export interface TokenNodeSpec {
   /** Center's scene x-coordinate — from `resolveTokenBox`. */
   x: number;
@@ -107,25 +162,33 @@ export interface TokenNodeSpec {
   h: number;
   /** Facing, in degrees — see `TokenTransform.rotation`. */
   rotation: number;
-  /** The resolved, already-URL'd visual to draw: image, or a tick-driven animation. */
+  /** The resolved, already-URL'd visual to draw: an art visual (see `ResolvedArtVisual`), or a
+   * generated composition framing one. */
   visual:
+    | ResolvedArtVisual
     | {
-        /** Discriminant: a static image visual. */
-        kind: "image";
-        /** Resolved image serve URL (already asset-id-resolved). */
-        url: string;
-      }
-    | {
-        /** Discriminant: a tick-driven animated visual. */
-        kind: "animated";
-        /** Resolved frame/sheet source — see `ResolvedAnimatedSource`. */
-        source: ResolvedAnimatedSource;
-        /** Playback rate, in frames per second — the `fps` `computeAnimatedFrame` scales
-         * `elapsedMs` by. */
-        fps: number;
-        /** `true` wraps at the end of the sequence; `false` holds the final frame — see
-         * `computeAnimatedFrame`. */
-        loop: boolean;
+        /** Discriminant: a generated composition — `art` cropped to `crop`, over an optional
+         * background fill, ringed by an optional decorative border. */
+        kind: "generated";
+        /** The art being framed — never itself `"generated"` (`resolveTokenVisual` fails closed
+         * on nesting before a spec reaches the backend). */
+        art: ResolvedArtVisual;
+        /** The shape `art` is cropped to: the inscribed ellipse of the token extent
+         * (`"circle"`), or the extent rect (`"square"`). */
+        crop: "circle" | "square";
+        /** Decorative ring drawn around the cropped art, or absent for none — authored data,
+         * distinct from the outer faction border (`borderColor`). */
+        border?: {
+          /** Ring color, packed `0xRRGGBB` (already `parseColor`-resolved). */
+          color: number;
+          /** Ring width, in token-fraction px. */
+          width: number;
+        };
+        /** Fill drawn behind the cropped art (in the crop shape), or absent for none. */
+        background?: {
+          /** Fill color, packed `0xRRGGBB` (already `parseColor`-resolved). */
+          color: number;
+        };
       };
   /** Faction border color (0xRRGGBB), or null for no border. */
   borderColor: number | null;
@@ -141,6 +204,23 @@ export interface TokenNodeSpec {
    * duplicate copy), and back when the token leaves the perceived set. Terrain fog itself is
    * untouched (no fog holes). */
   perceived: boolean;
+  /** The token's aura disc, drawn UNDER the art (a `container` child ordered below
+   * `visualContainer`), or absent for none. Fully pre-resolved by `TokenView.toSpec`: color is
+   * already `parseColor`-packed, radius already converted from grid cells to scene units — the
+   * backend never parses colors or computes grid math. */
+  aura?: {
+    /** Disc fill color, packed `0xRRGGBB`. */
+    color: number;
+    /** Disc fill opacity, read-side-clamped to `[0,1]` by the resolver. */
+    opacity: number;
+    /** Disc radius, in scene units. */
+    radius: number;
+  };
+  /** Built-in art effects (see `TokenFx`), composed by the backend onto the token's visual
+   * container — the fx rotate with the art; the badge chips stay clean. Fully pre-resolved by
+   * `TokenView.toSpec` (condition-registry fx folded in condition array order, then the
+   * selection highlight); absent or empty for no effects. */
+  fx?: TokenFx[];
 }
 
 /** A drawn shape node: a polyline/polygon (flat scene-coord points) with optional fill
@@ -324,6 +404,12 @@ export interface SceneToolHost {
    * @param x The ping's scene x-coordinate.
    * @param y The ping's scene y-coordinate. */
   addPing(x: number, y: number): void;
+  /** Spawn a transient emote glyph above `tokenId`'s current position (from a
+   * received/own emote). A token the host cannot resolve renders no overlay — the
+   * relay is room-wide, so recipients drop overlays for unknown token ids.
+   * @param tokenId The token document id the emote plays over.
+   * @param emote The emote glyph(s). */
+  addEmote(tokenId: string, emote: string): void;
   /** Drive a smooth local walk of a token along a route's scene-coord waypoints.
    * @param id The token document id to animate.
    * @param path Scene-coord `[x,y]` waypoints, in walk order. */

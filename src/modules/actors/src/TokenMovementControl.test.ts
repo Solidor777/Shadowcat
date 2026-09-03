@@ -17,7 +17,7 @@ const actorEngine = {
   displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 },
   shape: "square" as const, faction: null as string | null, conditions: [], prototype: false,
   vision: null, light: null, movement: ["flying"],
-};
+ aura: null, sound: null, vfx: null };
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
@@ -78,7 +78,7 @@ describe("TokenMovementControl", () => {
           {
             path: "/engine/overrides",
             old: null, // the RAW stored overrides object (absent on a fresh linked token)
-            new: { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["flying"] },
+            new: { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["flying"] , aura: null, sound: null, vfx: null },
           },
         ],
       },
@@ -99,7 +99,7 @@ describe("TokenMovementControl", () => {
   });
 
   it("a stored empty override list reads as custom (wholesale 'no movement tags', not inherit)", () => {
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: [] });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: [] , aura: null, sound: null, vfx: null });
     render(TokenMovementControl, {
       context: setAppContextForTest({ documents, dispatchIntent: vi.fn(), canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -110,7 +110,7 @@ describe("TokenMovementControl", () => {
   it("the tag editor commits whole-payload override writes with the raw stored old", async () => {
     const dispatchIntent = vi.fn();
     const prior = ["flying"];
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: prior });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: prior , aura: null, sound: null, vfx: null });
     render(TokenMovementControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -124,8 +124,8 @@ describe("TokenMovementControl", () => {
         changes: [
           {
             path: "/engine/overrides",
-            old: { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: prior },
-            new: { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["flying", "incorporeal"] },
+            old: { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: prior , aura: null, sound: null, vfx: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["flying", "incorporeal"] , aura: null, sound: null, vfx: null },
           },
         ],
       },
@@ -134,7 +134,7 @@ describe("TokenMovementControl", () => {
 
   it("switching back to inherit clears the override (movement: null)", async () => {
     const dispatchIntent = vi.fn();
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["flying"] });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["flying"] , aura: null, sound: null, vfx: null });
     render(TokenMovementControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },

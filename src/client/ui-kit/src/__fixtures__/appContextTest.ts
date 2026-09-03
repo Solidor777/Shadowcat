@@ -6,7 +6,9 @@ import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
 import { PanelsBridge } from "../panelsBridge.svelte";
 import { SceneSelection } from "../sceneSelection.svelte";
+import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
+import { AssetPickController, type PickAssetOptions } from "../assetPickController.svelte";
 
 /**
  * Build a Map for @testing-library/svelte's `context` option holding a minimal
@@ -28,8 +30,17 @@ import { SpeakAsToken } from "../speakAsToken.svelte";
  * render(MyPanel, { context: setAppContextForTest({ role: "gm" }) });
  */
 export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknown, unknown> {
+  // One shared controller so an overridden-free `pickAsset` and `assetPick`
+  // observe the same pending state, exactly as the shell wires them.
+  const assetPick = over.assetPick ?? new AssetPickController();
+  const defaultPickAsset = ((opts?: PickAssetOptions) =>
+    assetPick
+      .request(opts ?? {})
+      .then((ids) => (opts?.multiple ? ids : (ids?.[0] ?? null)))) as AppContext["pickAsset"];
   const ctx: AppContext = {
     contributions: over.contributions ?? new ContributionRegistry(),
+    assetPick,
+    pickAsset: over.pickAsset ?? defaultPickAsset,
     store: over.store ?? new DocumentStore(),
     documents: over.documents ?? over.store ?? new DocumentStore(),
     assets: over.assets ?? new AssetResolver(),
@@ -51,9 +62,11 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     actorSelection: over.actorSelection ?? new ActorSelection(),
     tokenSelection: over.tokenSelection ?? new TokenSelection(),
     sendPing: over.sendPing ?? (() => {}),
+    sendEmote: over.sendEmote ?? (() => {}),
     pathfind: over.pathfind ?? (() => Promise.reject(new Error("not connected"))),
     moveRequest: over.moveRequest ?? (() => Promise.reject(new Error("not connected"))),
     onPing: over.onPing ?? (() => () => {}),
+    onEmote: over.onEmote ?? (() => () => {}),
     onMoveOutcome: over.onMoveOutcome ?? (() => () => {}),
     chat: over.chat ?? {
       send: () => Promise.resolve(),
@@ -77,6 +90,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     searchDocuments: over.searchDocuments ?? (() => Promise.reject(new Error("not connected"))),
     sceneSelection: over.sceneSelection ?? new SceneSelection(),
     speakAsToken: over.speakAsToken ?? new SpeakAsToken(),
+    speakAs: over.speakAs ?? new SpeakAs(),
     templates: over.templates ?? {
       stampInstance: (s) => s,
       pull: () => {},

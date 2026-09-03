@@ -171,6 +171,7 @@ pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<
             Operation::Update { doc_id, .. } => *doc_id,
             Operation::Create { doc } => doc.id,
             Operation::Delete { doc } => doc.id,
+            Operation::Move { doc_id, .. } => *doc_id,
         };
         if let std::collections::hash_map::Entry::Vacant(e) = out.entry(doc_id) {
             if let Ok(Some((doc, created_seq))) = repo.get_document_with_created_seq(doc_id).await {
@@ -213,6 +214,7 @@ pub fn mirror_current_snapshot<'a>(
             Operation::Update { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
             Operation::Create { doc } => Some(doc),
             Operation::Delete { doc } => Some(doc),
+            Operation::Move { doc_id, .. } => current.get(doc_id).map(|c| &c.doc),
         };
         let Some(d) = target_doc else {
             per_op.push(None);
@@ -1191,6 +1193,51 @@ pub fn filter_command<'a>(
                     Err(e) => {
                         tracing::warn!(doc_id = %doc.id, error = %e, "redaction failed; dropping Create op for recipient");
                     }
+                }
+            }
+            Operation::Move { doc_id, .. } => {
+                // A Move carries only envelope placement (ids) — no content
+                // band rides it, so redaction reduces to the whole-document
+                // READ conjunction: delivered iff READ at commit AND READ
+                // now, the same two gates the Update arm resolves. No
+                // transition synthesis is needed: `resolve_access_world`
+                // never consults `parent_id`, and a Move changes neither
+                // `permissions` nor `owner`, so its own before/commit halves
+                // are identical by construction — a same-batch permission
+                // change synthesizes through that Update op's own arm.
+                let Some(cur) = current.get(doc_id) else {
+                    continue;
+                };
+                if let Some(commit_seq) = op_snapshot.created_seq_at_commit {
+                    if cur.created_seq != commit_seq {
+                        continue;
+                    }
+                }
+                let commit_doc = Document {
+                    doc_type: op_snapshot.doc_type.clone(),
+                    permissions: op_snapshot
+                        .permissions_at_commit
+                        .clone()
+                        .unwrap_or_default(),
+                    ..cur.doc.clone()
+                };
+                let access_commit = resolve_access_world(
+                    ctx.user_id,
+                    world_role_commit,
+                    &commit_doc,
+                    &world_defaults.grants_for(&commit_doc.doc_type),
+                    op_snapshot.owner_at_commit,
+                );
+                let owner_current = effective_owner_via(&cur.doc, &actor_lookup);
+                let access_current = resolve_access_world(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &cur.doc,
+                    &world_defaults.grants_for(&cur.doc.doc_type),
+                    owner_current,
+                );
+                if access_commit.has(cap::READ) && access_current.has(cap::READ) {
+                    out_ops.push(op.clone());
                 }
             }
             Operation::Delete { doc } => {

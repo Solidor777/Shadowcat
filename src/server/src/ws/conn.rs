@@ -324,6 +324,9 @@ async fn handle_socket(
     // Ingress: parse client frames, forward intents to egress / publish.
     // Per-user ping budget (shared across this user's connections; survives reconnect).
     let ping_rate = state.ws.ping_rate.clone();
+    // Per-user emote budget (shared across this user's connections) — a SEPARATE bucket
+    // from `ping_rate`, so neither relay can starve the other.
+    let emote_rate = state.ws.emote_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
@@ -468,6 +471,31 @@ async fn handle_socket(
                                             x,
                                             y,
                                             user: user_id,
+                                        });
+                                    }
+                                }
+                                Ok(ClientMsg::Emote { scene, token, emote }) => {
+                                    // Out-of-band relay over a token, same shape as `ScenePing`
+                                    // (silent drop on any denial — no error frame to oracle
+                                    // against), but authorized on the TOKEN: it must be parented
+                                    // to `scene` AND effectively owned by the sender (the same
+                                    // `token_effective_owner` rule the presence gate and
+                                    // write-authz use — never a forked, looser test; a GM is
+                                    // exempt from the ownership half, not the scene-membership
+                                    // half). Guard order mirrors ping: the cheap rate check first
+                                    // (its own bucket, so emotes can't starve pings), then the
+                                    // authz lookup, then the payload bound — 1..=16 bytes covers
+                                    // 1–4 emoji graphemes and caps relay frame size.
+                                    if emote_rate.check(user_id, now_millis(), 30)
+                                        && token_emote_permitted(&room, scene, token, &ctx).await
+                                        && !emote.is_empty()
+                                        && emote.len() <= EMOTE_MAX_BYTES
+                                    {
+                                        room.broadcast_aux(ServerMsg::Emote {
+                                            scene,
+                                            token,
+                                            user: user_id,
+                                            emote,
                                         });
                                     }
                                 }
@@ -761,6 +789,32 @@ async fn scene_ping_permitted(
         crate::data::permission::effective_owner(&doc, None),
     );
     access.has(crate::data::permission::cap::READ)
+}
+
+/// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
+/// site): 16 bytes covers 1–4 emoji graphemes (a 4-byte code point plus variation
+/// selector/ZWJ joiners) while capping the relayed frame size.
+const EMOTE_MAX_BYTES: usize = 16;
+
+/// Whether `ctx` may emote over `token` on `scene`: the token must be known to the room's
+/// scene ECS, parented to `scene`, and effectively owned by the sender (a GM is exempt from
+/// the ownership half, not the scene-membership half). Ownership routes through the SAME
+/// `token_effective_owner` rule `handle_pathfind`'s token gate and the write-authz path use —
+/// never a forked, looser test. Unlike `scene_ping_permitted` this reads the room's in-memory
+/// ECS (zero pool reads), and unlike ping a token-less member has NO standing here. Denial is
+/// a SILENT drop at the call site, so a non-owner never learns whether `token` exists.
+async fn token_emote_permitted(
+    room: &Room,
+    scene: Uuid,
+    token: Uuid,
+    ctx: &crate::data::membership::PermissionContext,
+) -> bool {
+    let is_gm = ctx.world_role == crate::data::document::WorldRole::Gm;
+    let s = room.scene().read().await;
+    match s.token_scene_and_effective_owner(token) {
+        Some((t_scene, owner)) => t_scene == scene && (is_gm || owner == Some(ctx.user_id)),
+        None => false,
+    }
 }
 
 /// The `ClientMsg::Pathfind` frame's payload, carried as one value from the ingress match arm

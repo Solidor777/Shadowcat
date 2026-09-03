@@ -247,7 +247,9 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         "light-gradation" => Some(serde_json::json!({ "bands": [] })),
         "chat-settings" => Some(serde_json::json!({})),
         "dice-settings" => Some(serde_json::json!({})),
-        "channel-registry" => Some(serde_json::json!({ "channels": {} })),
+        "channel-registry" => {
+            Some(serde_json::to_value(crate::data::engine::ChannelRegistryEngine::seed()).unwrap())
+        }
         "faction-registry" => Some(serde_json::json!({ "factions": {} })),
         "condition-registry" => Some(serde_json::json!({ "conditions": {} })),
         "combat" => Some(serde_json::json!({

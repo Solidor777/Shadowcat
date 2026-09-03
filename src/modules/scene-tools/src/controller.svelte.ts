@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, resolveTokenBox, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
@@ -236,6 +236,11 @@ export class ToolController {
     /** The edited document's id. */
     id: string;
   } | null>(null);
+
+  /** Region-tool authored triggers, deep-copied onto the next region the tool persists (an
+   * empty list persists a plain movement-only region). Editing a row in the rail must never
+   * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
+  regionTriggers = $state<RegionTrigger[]>([]);
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -572,7 +577,7 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
  * @param controller Supplies the configured `regionShapeMode`/`regionBehavior`/`regionCost`/
- * `regionSecret`.
+ * `regionSecret`/`regionTriggers`.
  * @returns A `SceneTool` implementing the drag-to-author gesture.
  * @example
  * ```
@@ -608,12 +613,18 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
         mode === "polygon" ? freehand.length >= 6 : Math.hypot(b.x - anchor.x, b.y - anchor.y) >= 1;
       if (scene && hasExtentForRegion) {
         const shapePoints = regionShapeGeometry(mode, anchor, b, freehand);
-        const doc = buildRegionDoc(ctx.world, scene.id, {
+        const engine: RegionEngine = {
           shape: { kind: mode, points: shapePoints },
           behavior: controller.regionBehavior,
           cost: Math.max(1, controller.regionCost),
           enabled: true,
-        });
+          // Deep copy: the rail's list stays editable for the NEXT region, and a later
+          // row edit must never mutate the doc this persist already handed out.
+          // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
+          // array wraps its contents in is not cloneable.
+          triggers: $state.snapshot(controller.regionTriggers),
+        };
+        const doc = buildRegionDoc(ctx.world, scene.id, engine);
         if (controller.regionSecret) setRegionVisibility(doc, true);
         ctx.dispatchIntent([{ op: "create", doc }]);
       }
@@ -1442,10 +1453,11 @@ const DRAG_THROTTLE_MS = 50;
  * non-GM's is request-only (`pathfind`/`moveRequest`), so the landed position is
  * SERVER-DETERMINED and may differ from the drop point (a wall/mask refusal or an arrest
  * truncation can land the token short of, or not at, where it was released). Empty space clears
- * the selection and yields the gesture to the camera. A ring overlay marks the selection
- * (`drawSelection`). For a GM, an empty-space click additionally picks a light marker or wall
- * segment into `controller.editingEntity` (the rail editor's selection source); a token hit
- * clears it.
+ * the selection and yields the gesture to the camera. The selection itself is signified on the
+ * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
+ * `tokenSelection` state), never by a tool overlay. For a GM, an empty-space click additionally
+ * picks a light marker or wall segment into `controller.editingEntity` (the rail editor's
+ * selection source); a token hit clears it.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
  * @param controller Receives the light/wall editing selection (`editingEntity`).
@@ -1488,37 +1500,6 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
     return { x: e?.x ?? 0, y: e?.y ?? 0 };
   };
 
-  /** A closed ring per selected token into the tool overlay (cleared when empty). Circle
-   * tokens receive an ellipse ring, square tokens an axis-aligned box — both keyed off
-   * `resolveTokenBox(...).shape`, the SAME field `topTokenAt`'s hit-test
-   * and the render layer's faction border
-   * (`PixiBackend.updateTokenBorder`) also
-   * read — so the ring, hit-test, and faction border agree on shape structurally (one shared
-   * source), not by three independent implementations happening to match.
-   * @example
-   * ```
-   * declare function drawSelection(): void;
-   * drawSelection();
-   * ```
-   */
-  const drawSelection = (): void => {
-    if (!sel) return;
-    const rings = [...sel.ids].map((id) => {
-      const c = centerOf(id);
-      const doc = ctx.documents.get(id);
-      const box = doc ? resolveTokenBox(doc, ctx.documents, footprintsOf(ctx)) : null;
-      const w = (box?.w || 0) || 100;
-      const h = (box?.h || 0) || 100;
-      const hw = w / 2;
-      const hh = h / 2;
-      const points = box?.shape === "circle"
-        ? ellipsePoints(c.x - hw, c.y - hh, c.x + hw, c.y + hh)
-        : [c.x - hw, c.y - hh, c.x + hw, c.y - hh, c.x + hw, c.y + hh, c.x - hw, c.y + hh];
-      return { points, closed: true, stroke: { color: 0xffd400, width: 2 }, fill: null };
-    });
-    if (rings.length === 0) ctx.scene.clearOverlay();
-    else ctx.scene.previewOverlay(rings);
-  };
 
   /** Drag feedback only — never a document write and never a move request. A player's token
    * must not appear to move until the server executes it (no optimistic prediction for a gated
@@ -1637,7 +1618,6 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
       moved = false;
       lastSentAt = -Infinity;
       ctx.scene.setDraggingToken(id);
-      drawSelection();
       return true;
     },
     onPointerMove(p: Point): void {

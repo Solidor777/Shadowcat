@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -42,9 +42,18 @@
   // like `panels`/`sheets`.
   const sceneSelection = new SceneSelection();
 
+  // Asset pick-mode orchestration: `pickAsset` requests land here; the
+  // asset-browser module's overlay contribution renders `pending` and settles
+  // it. Stable per Table, like the selections above.
+  const assetPick = new AssetPickController();
+
   // Speak-as-token pending selection: the scene-tools affordance sets it, the composer
   // consumes it on send. Stable per Table, like `sceneSelection`.
   const speakAsToken = new SpeakAsToken();
+
+  // Sticky speak-as actor selection: every roll-producing surface (composer, chat-card
+  // buttons) resolves the same session-level selection. Stable per Table, like `speakAsToken`.
+  const speakAs = new SpeakAs();
 
   // Template merge controller: stamp/pull/push/revert orchestration + the conflict modal.
   // `session` is fixed per Table, so capturing it once here is intended (see the identical
@@ -90,6 +99,11 @@
     members: session.members,
     t,
     assets: session.assets,
+    assetPick,
+    pickAsset: ((opts?: PickAssetOptions) =>
+      assetPick
+        .request(opts ?? {})
+        .then((ids) => (opts?.multiple ? ids : (ids?.[0] ?? null)))) as AppContext["pickAsset"],
     onAssetChanged: (cb) => session.onAssetChanged(cb),
     subscribeScene: (c, cb, opts) => session.subscribeScene(c, cb, opts),
     dispatchIntent: (ops) => session.dispatchIntent(ops),
@@ -106,10 +120,13 @@
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
     sceneSelection,
     speakAsToken,
+    speakAs,
     sendPing: (x, y) => session.sendPing(x, y),
+    sendEmote: (token, emote) => session.sendEmote(token, emote),
     pathfind: (s, st, wp, fr, tk) => session.pathfind(s, st, wp, fr, tk),
     moveRequest: (s, tid, p) => session.moveRequest(s, tid, p),
     onPing: (cb) => session.onPing(cb),
+    onEmote: (cb) => session.onEmote(cb),
     onMoveOutcome: (cb) => session.onMoveOutcome(cb),
     chat: {
       send: (o) => session.sendChatMessage(o),

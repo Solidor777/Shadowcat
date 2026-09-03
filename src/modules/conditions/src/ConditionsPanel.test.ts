@@ -13,7 +13,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 const actorDoc = (id: string, conditions: string[]) =>
-  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null, light: null, movement: [] }, id);
+  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null }, id);
 
 describe("ConditionsPanel", () => {
   it("never dispatches a registry create on GM mount (the server seeds it at world creation/join)", async () => {
@@ -154,6 +154,51 @@ describe("ConditionsPanel", () => {
     await fireEvent.change(nameInput, { target: { value: "Deceased2" } });
     expect(dispatchIntent).toHaveBeenNthCalledWith(2, [
       { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/dead/name", old: "Deceased", new: "Deceased2" }] },
+    ]);
+  });
+
+  it("editing a condition's fx dispatches a whole-fx update, old read raw (null while unset)", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢" } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    await fireEvent.change(screen.getByLabelText("conditions.tint"), { target: { value: "#66ff66" } });
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: null, new: { tint: "#66ff66" } }] },
+    ]);
+
+    // Apply the write, as the server would on success, then tick desaturate on: the second op's
+    // `old` must be the first write's result, and its `new` carries BOTH fields.
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: null, new: { tint: "#66ff66" } }] }],
+    });
+    await tick();
+    await fireEvent.click(screen.getByLabelText("conditions.desaturate"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(2, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: { tint: "#66ff66" }, new: { tint: "#66ff66", desaturate: true } }] },
+    ]);
+  });
+
+  it("clearing the last fx field writes null (no effect), not an empty shell", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildConditionRegistryDoc("w1", { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    await fireEvent.click(screen.getByLabelText("conditions.clearTint"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/poisoned/fx", old: { tint: "#66ff66" }, new: null }] },
+    ]);
+  });
+
+  it("clearing one of several fx fields keeps the others", async () => {
+    const dispatchIntent = vi.fn();
+    const store = storeWith(buildConditionRegistryDoc("w1", { hasted: { name: "Hasted", icon: "⚡", fx: { tint: "#66ff66", highlight: "#ffee00" } } }, "creg1"));
+    render(ConditionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
+
+    await fireEvent.click(screen.getByLabelText("conditions.clearHighlight"));
+    expect(dispatchIntent).toHaveBeenNthCalledWith(1, [
+      { op: "update", doc_id: "creg1", changes: [{ path: "/engine/conditions/hasted/fx", old: { tint: "#66ff66", highlight: "#ffee00" }, new: { tint: "#66ff66" } }] },
     ]);
   });
 });

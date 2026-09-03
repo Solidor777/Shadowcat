@@ -18,7 +18,7 @@ const actorVision: VisionAssignment[] = [{ mode: "darkvision", range: 12 }];
 const actorEngine = {
   displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 },
   shape: "square" as const, faction: null, conditions: [], prototype: false, vision: actorVision, light: null, movement: [],
-};
+ aura: null, sound: null, vfx: null };
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
@@ -76,7 +76,7 @@ describe("TokenVisionControl", () => {
           {
             path: "/engine/overrides",
             old: null, // the RAW stored overrides object (absent on a fresh linked token)
-            new: { name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null , aura: null, sound: null, vfx: null },
           },
         ],
       },
@@ -84,7 +84,7 @@ describe("TokenVisionControl", () => {
   });
 
   it("a stored empty override list reads as custom (wholesale 'no senses', not inherit)", () => {
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: [], light: null, movement: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: [], light: null, movement: null , aura: null, sound: null, vfx: null });
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents, dispatchIntent: vi.fn(), canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -95,7 +95,7 @@ describe("TokenVisionControl", () => {
   it("the list editor commits whole-payload override writes with the raw stored old", async () => {
     const dispatchIntent = vi.fn();
     const prior: VisionAssignment[] = [{ mode: "darkvision", range: 4 }];
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null , aura: null, sound: null, vfx: null });
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },
@@ -109,8 +109,8 @@ describe("TokenVisionControl", () => {
         changes: [
           {
             path: "/engine/overrides",
-            old: { name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null },
-            new: { name: null, visual: null, size: null, shape: null, vision: [{ mode: "darkvision", range: 9 }], light: null, movement: null },
+            old: { name: null, visual: null, size: null, shape: null, vision: prior, light: null, movement: null , aura: null, sound: null, vfx: null },
+            new: { name: null, visual: null, size: null, shape: null, vision: [{ mode: "darkvision", range: 9 }], light: null, movement: null , aura: null, sound: null, vfx: null },
           },
         ],
       },
@@ -119,7 +119,7 @@ describe("TokenVisionControl", () => {
 
   it("switching back to inherit clears the override (vision: null)", async () => {
     const dispatchIntent = vi.fn();
-    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null });
+    const documents = linkedSetup({ name: null, visual: null, size: null, shape: null, vision: actorVision, light: null, movement: null , aura: null, sound: null, vfx: null });
     render(TokenVisionControl, {
       context: setAppContextForTest({ documents, dispatchIntent, canEdit: () => true }),
       props: { tokenId: "tok1" },

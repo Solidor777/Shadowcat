@@ -334,12 +334,24 @@ test("no button renders when more than one token is selected, even for a GM", ()
   expect(screen.queryByTestId("speak-as-token")).toBeNull();
 });
 
-test("select/input controls get a 44px coarse-pointer min-height", () => {
+test("select/input controls get a touch-target-floor coarse-pointer min-height", () => {
   // jsdom doesn't evaluate @media (pointer: coarse), so assert the rule's
-  // presence directly in the component's source styles instead.
+  // presence directly in the component's source styles instead (mirrors the
+  // "select/input controls get a 44px coarse-pointer min-height" convention used elsewhere).
   const controlsRuleMatch = toolRailSource.match(/\.controls select,\s*\.controls input\s*\{([^}]*@media[^}]*\{[^}]*\}[^}]*)\}/);
   expect(controlsRuleMatch).toBeTruthy();
-  expect(controlsRuleMatch?.[1]).toMatch(/@media \(pointer: coarse\)\s*\{\s*min-height:\s*44px;\s*\}/);
+  expect(controlsRuleMatch?.[1]).toMatch(/@media \(pointer: coarse\)\s*\{\s*min-height:\s*var\(--input-height-coarse\);\s*\}/);
+});
+
+test("select/input controls fit the rail's content box instead of overflowing it", () => {
+  // The rail's containing cell is sized to exactly the touch-target floor (see
+  // `Layout.test`'s toolrail-column test), so every child — buttons already carried
+  // `min-width: 44px` — must also cap its own box at the container width or it clips.
+  const controlsRuleMatch = toolRailSource.match(/\.controls select,\s*\.controls input\s*\{([^}]*)\}/);
+  expect(controlsRuleMatch).toBeTruthy();
+  expect(controlsRuleMatch?.[1]).toMatch(/min-width:\s*0;/);
+  expect(controlsRuleMatch?.[1]).toMatch(/max-width:\s*100%;/);
+  expect(controlsRuleMatch?.[1]).toMatch(/box-sizing:\s*border-box;/);
 });
 
 // --- Light/wall editors (the shared editing selection) ---

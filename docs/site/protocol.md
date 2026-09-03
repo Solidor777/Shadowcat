@@ -43,7 +43,12 @@ Clients never mutate state — they send an `intent` carrying operations
   ([`WireFieldChange`](/api/ts/types/_shadowcat_core.WireFieldChange.html)):
   JSON-pointer `path`, the OCC pre-image `old`, the value `new`, and an optional
   `remove: true` meaning *delete the key* (genuine absence, distinct from
-  `null`).
+  `null`),
+- `move` — re-parent a top-level document: `doc_id`, the new `parent_id`
+  (`null` = top level), and `old_parent_id` as the OCC pre-image. GM-only, and
+  legal exactly where a `create` with that parent would be (the server enforces
+  placement and folder-cycle rules); the one write path for the envelope's
+  otherwise-immutable `parent_id`.
 
 The server validates (permissions, OCC, schema), applies, and broadcasts a
 [`WireCommand`](/api/ts/types/_shadowcat_core.WireCommand.html) inside an
@@ -98,9 +103,19 @@ Every `ClientMsg` variant:
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
-| `send_message` | Chat: post to a channel (optional actor attribution + audience) |
+| `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+
+Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
+attributes.str` — never a client-substituted string. The server rewrites each
+reference at ingest (labeled constants in the roll breakdown carry the value
+read) against the send's `actor_owner` host (a token instance's embedded actor
+copy, else the linked actor), or, for combat rolls, against each named
+combatant's formula host. A referencing roll with no binding fails with an
+`unknown-ref` system notice. The same raw-template rule applies to the
+`notation` of every combat-roll entry, and a combat roll's `channel` is
+validated against the channel registry the same way a message's is.
 
 ## Scene channels
 

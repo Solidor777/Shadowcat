@@ -2,6 +2,7 @@ import type { DisplayBackend, BackgroundSpec } from "./backend";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
+import type { EmoteGlyph } from "./emote-view";
 
 /** A recording DisplayBackend for unit tests — never touches Pixi/GL. */
 export class MockBackend implements DisplayBackend {
@@ -11,6 +12,8 @@ export class MockBackend implements DisplayBackend {
   /** Last `setBackground` spec, recorded verbatim; `null` before the first call, or after a
    * clear (`setBackground(null)`). */
   background: BackgroundSpec | null = null;
+  /** Last `setClearColor` value, recorded verbatim; `null` before the first call. */
+  clearColor: number | null = null;
   /** Count of lines passed to the last `drawGrid` call — the geometry itself is discarded. */
   gridLineCount = 0;
   /** Color passed to the last `drawGrid` call, `0xRRGGBB`. */
@@ -62,6 +65,8 @@ export class MockBackend implements DisplayBackend {
   } | null = null;
   /** Last `drawPings` rings, recorded verbatim. */
   pings: PingRing[] = [];
+  /** Last `drawEmotes` glyphs, recorded verbatim. */
+  emotes: EmoteGlyph[] = [];
   /** Last `setLighting` frame, recorded verbatim. */
   lighting: LightingFrame | null = null;
   /** The callback recorded by `startTicker`, driven manually via `runTicker` — see
@@ -109,6 +114,20 @@ export class MockBackend implements DisplayBackend {
    */
   setBackground(spec: BackgroundSpec | null): void {
     this.background = spec;
+  }
+  /** `DisplayBackend.setClearColor`: records `color` verbatim into `this.clearColor`.
+   * @param color The clear color to record, packed `0xRRGGBB`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setClearColor(0x1e1e2e);
+   * backend.clearColor; // 0x1e1e2e
+   * ```
+   */
+  setClearColor(color: number): void {
+    this.clearColor = color;
   }
   /** `DisplayBackend.drawGrid`: records only `lines.length` (as `gridLineCount`) and `color` — NOT
    * the line geometry itself. Unlike `PixiBackend`, which strokes every segment's exact
@@ -370,6 +389,19 @@ export class MockBackend implements DisplayBackend {
    */
   drawPings(rings: PingRing[]): void {
     this.pings = rings;
+  }
+  /** `DisplayBackend.drawEmotes`: records `glyphs` verbatim into `this.emotes`.
+   * @param glyphs The current emote glyphs to record.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.drawEmotes([{ x: 0, y: 0, emote: "😀", alpha: 0.8 }]);
+   * ```
+   */
+  drawEmotes(glyphs: EmoteGlyph[]): void {
+    this.emotes = glyphs;
   }
   /** `DisplayBackend.setLighting`: records `frame` verbatim into `this.lighting`.
    * @param frame The resolved per-cell lighting to record.

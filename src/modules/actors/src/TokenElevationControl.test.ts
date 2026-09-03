@@ -18,8 +18,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
 function tokenWith(elevation: number | null): WireDocument {
   const engine: TokenEngine = {
     x: 0, y: 0, w: 100, h: 100, rotation: 0,
-    visual: null, actor_id: null, overrides: null, face: null, elevation,
-  };
+    visual: null, actor_id: null, overrides: null, face: null, elevation };
   return buildTokenDoc("w1", "scene1", engine, "tok1");
 }
 

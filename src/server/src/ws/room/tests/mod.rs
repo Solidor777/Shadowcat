@@ -3492,3 +3492,4 @@ mod movement_budget;
 
 /// `MoveStream.mover_light` computation: presence, sampling, suppression.
 mod mover_light;
+mod region_triggers;

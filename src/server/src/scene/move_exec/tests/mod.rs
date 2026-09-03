@@ -2802,4 +2802,131 @@ fn execute_move_refuses_an_out_of_range_footprint() {
     }
 }
 
+// -----------------------------------------------------------------------
+// MoveOutcome::entered_cells — the trigger fire sites' entered-cell report
+// -----------------------------------------------------------------------
+
+#[test]
+fn entered_cells_reports_each_transition_once_in_order() {
+    let (ecs, scene, token) = clear_scene();
+    let visible = visible_grid(3);
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+        },
+        token,
+        &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+        false,
+        0.4,
+    )
+    .unwrap();
+    // The origin cell is not "entered"; each subsequent cell appears exactly
+    // once, in walk order, however many dense sub-samples crossed into it.
+    assert_eq!(out.entered_cells, vec![(1, 0), (1, 1)]);
+    assert!(!out.arrested);
+}
+
+#[test]
+fn entered_cells_reports_a_revisit_as_a_second_entry() {
+    let (ecs, scene, token) = clear_scene();
+    let visible = visible_grid(3);
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+        },
+        token,
+        &[(0.0, 0.0), (100.0, 0.0), (0.0, 0.0)],
+        false,
+        0.4,
+    )
+    .unwrap();
+    // Dedup is across a single cell's dense sub-samples, never across the
+    // walk: leaving and re-entering a cell reports both entries.
+    assert_eq!(out.entered_cells, vec![(1, 0), (0, 0)]);
+}
+
+#[test]
+fn entered_cells_include_the_arrest_cell_and_set_the_arrest_flag() {
+    let scene_id = Uuid::from_u128(10);
+    let token_id = Uuid::from_u128(11);
+    let ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc(
+                10,
+                0,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": FIXTURE_GRID_SIZE }, "background": null }),
+            ),
+            entity_doc(
+                11,
+                10,
+                "token",
+                json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+            ),
+            region_doc(12, 10, "arrest", 1.0, (50.0, -50.0, 150.0, 50.0)),
+        ],
+        0,
+    );
+    let visible = visible_grid(3);
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene: scene_id,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+        },
+        token_id,
+        &[(0.0, 0.0), (100.0, 0.0)],
+        false,
+        0.4,
+    )
+    .unwrap();
+    // The arrest cell counts as entered (its cost was accrued, the mover's
+    // center rests there) so an `arrest`-trigger region can resolve its own
+    // membership from the report alone.
+    assert_eq!(out.entered_cells, vec![(1, 0)]);
+    assert!(out.arrested);
+}
+
+#[test]
+fn entered_cells_exclude_a_cell_the_walk_was_stopped_before() {
+    let (ecs, scene, token) = walled_scene();
+    let visible = visible_grid(4);
+    let out = execute_move(
+        &ecs,
+        MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Visible,
+            visible: &visible,
+            cell: FIXTURE_GRID_SIZE,
+            budget: None,
+            traits: MoveTraits::default(),
+        },
+        token,
+        &[(0.0, 0.0), (100.0, 0.0), (100.0, 100.0)],
+        false,
+        0.4,
+    )
+    .unwrap();
+    // The wall blocks (100,0)→(100,100): the blocked cell is never entered,
+    // and a wall stop is not an arrest.
+    assert_eq!(out.entered_cells, vec![(1, 0)]);
+    assert!(!out.arrested);
+}
+
 mod unified_cost;

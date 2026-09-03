@@ -6,7 +6,7 @@
 // stays with PanelHost's staging container for the component's entire
 // lifetime).
 import type { PanelMeta } from "@shadowcat/core";
-import type { ExpandedLayout, LayoutOp } from "../layout/tree";
+import type { ExpandedLayout, LayoutOp, PopoutWindowLayout } from "../layout/tree";
 
 /** The seam a docking engine implements to reconcile the panel-manager's layout tree onto
  * its own widget tree. This is the statement of record for what each member guarantees —
@@ -43,6 +43,18 @@ export interface EngineAdapter {
    * @returns An unsubscribe function.
    */
   onNotice?(cb: (key: string) => void): () => void;
+  /** Re-opens each saved pop-out window (one user gesture — e.g. a
+   * notification action click — covers every `window.open` inside): the
+   * first listed panel pops out at the window's saved rect, the rest join
+   * that window. Optional: engines without real cross-window pop-out
+   * (`FakeEngine` — it degrades pop-out to floating, so there is nothing to
+   * reopen) omit it, and callers must treat its absence as "no restore
+   * affordance".
+   * @param windows The saved arrangement records to restore (dormant
+   * `PopoutWindowLayout` entries — the caller reads them from the controller's
+   * retained persisted source, the truthful full record).
+   */
+  restorePopouts?(windows: readonly PopoutWindowLayout[]): void;
   /** Brings a panel's group/window to the foreground.
    * @param id The panel id to focus.
    */

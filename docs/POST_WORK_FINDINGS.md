@@ -705,6 +705,33 @@ are observations awaiting triage, not committed work.
   M15a branch point), so `pnpm build:all` — and the CI docs job — cannot pass on
   either branch until those tagged unions carry a documented discriminant or an
   exemption. M15a produced `dist-docs` locally with warnings non-fatal only to run
-  the local-only `check-skill-api-refs` gate. Status: Needs Review (M14 owns the
-  types).
+  the local-only `check-skill-api-refs` gate. Status: **Resolved.** The M14c-2
+  combat-shapes regeneration carried the discriminants' doc comments through:
+  verified `pnpm docs:api:ts` green on post-M14c-2 main (2026-08-31, the
+  M14c-4 baseline) with `treatWarningsAsErrors` intact — no exemption needed.
 
+
+- Title: Skill symbol citations reference unbuilt combat-resolution symbols. Summary: the
+  local-only `check-skill-symbol-refs` gate reports 25 broken citations in the
+  `shadowcat-codebase-combat`, `-formula`, and `-scene-rendering` skills (`resolve_budget`,
+  `eval_formula`, `formula_host`, `budget_cells`, `replay_step_costs`, and kin) — symbols the
+  combat-resolution sub-project of M14c describes but has not yet built. Surfaced during the
+  M15b skill-update gate (whose own four skill diffs verify clean); the fix belongs to that
+  sub-project's close-out, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.
+
+- Title: Skill symbol citations run ahead of the code for M14c/M17/M18 symbols.
+  Summary: the local-only `check-skill-symbol-refs` gate reports 59 broken
+  citations against the skills corpus at its HEAD commit (measured via a HEAD
+  extraction through `SHADOWCAT_CODEBASE_SKILLS_DIR`), spread across the
+  actors-tokens, chat, client-shell, combat, dice, documents-permissions,
+  formula, module-toolchain, panels, and scene-rendering skills — symbols the
+  M14c combat-resolution sub-projects, M17 (vision/lighting), and M18 (token
+  enrichment: `ActorEngine.aura`, `sound`, `vfx`, `VfxAnchor`,
+  `TokenNodeSpec.aura`, `updateTokenAura`, `auraKey`, `regionTriggers`, and
+  kin) describe but have not built. Surfaced during the M16 close-out gates;
+  M16's own skill diffs (panels rewrite, client-shell theming bullet) add zero
+  new breakage against that baseline. Same class as the M15b
+  combat-resolution finding above: the fix belongs to those milestones'
+  close-outs, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.

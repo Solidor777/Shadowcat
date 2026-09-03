@@ -77,6 +77,9 @@ pub struct WsState {
     pub rooms: Arc<RoomRegistry>,
     /// Per-user ping budget (shared across a user's connections).
     pub ping_rate: Arc<PingRateLimiter>,
+    /// Per-user emote budget (shared across a user's connections); a SEPARATE bucket
+    /// from `ping_rate` so emote spam cannot starve pings and vice versa.
+    pub emote_rate: Arc<PingRateLimiter>,
     /// Per-user flood budget for every handler `MESSAGE_RATE_PER_MIN` governs (shared across a
     /// user's connections).
     pub message_rate: Arc<PingRateLimiter>,
@@ -112,6 +115,7 @@ impl WsState {
         Self {
             rooms: Arc::new(RoomRegistry::new()),
             ping_rate: Arc::new(PingRateLimiter::new()),
+            emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
@@ -126,6 +130,7 @@ impl WsState {
         Self {
             rooms: Arc::new(RoomRegistry::with_capacity(capacity)),
             ping_rate: Arc::new(PingRateLimiter::new()),
+            emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),

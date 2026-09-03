@@ -247,7 +247,10 @@
   });
 
   /** Roll-button click: a fresh, public, sender-attributed `/roll` on the carrying message's
-   * channel — never re-executes the carrying message's own roll.
+   * channel — never re-executes the carrying message's own roll. A statted button is per-clicker: the send carries
+   * the clicker's own actor binding (the pending one-shot `speakAsToken` first, else the sticky session
+   * `speakAs`), so the server resolves a statted template's references against the clicker's own
+   * actor, never the button author's stats.
    * @param s The clicked `roll_button` segment.
    * @example
    * ```
@@ -256,7 +259,23 @@
    */
   function sendRollButton(s: RollButtonSegment): void {
     if (!sys) return;
-    ctx.chat.send({ channel: sys.channel, content: `/roll ${s.formula}` });
+    const pendingToken = ctx.speakAsToken.consume();
+    const actorOwner: WireActorOwnerRef | undefined = pendingToken
+      ? { kind: "token_instance", token_id: pendingToken }
+      : ctx.speakAs.actorId
+        ? { kind: "actor", actor_id: ctx.speakAs.actorId }
+        : undefined;
+    // The same precedence the composer applies (pending one-shot beats the sticky selection);
+    // a server refusal (e.g. an unresolvable reference) is player-presentable, so surface it.
+    void Promise.resolve(
+      ctx.chat.send(
+        actorOwner
+          ? { channel: sys.channel, content: `/roll ${s.formula}`, actorOwner }
+          : { channel: sys.channel, content: `/roll ${s.formula}` },
+      ),
+    ).catch((e: unknown) => {
+      ctx.notify(e instanceof Error ? e.message : String(e), "error");
+    });
   }
 
   // Advisory only — the server independently re-authorizes every edit/delete against its own
@@ -656,10 +675,10 @@
     font-weight: 700;
   }
   .roll-pass.pass {
-    color: var(--success, seagreen);
+    color: var(--success);
   }
   .roll-pass.fail {
-    color: var(--danger, crimson);
+    color: var(--danger);
   }
   .roll-dice {
     display: flex;
@@ -679,10 +698,10 @@
     text-decoration: line-through;
   }
   .die-chip.crit-success {
-    border-color: var(--success, seagreen);
+    border-color: var(--success);
   }
   .die-chip.crit-fail {
-    border-color: var(--danger, crimson);
+    border-color: var(--danger);
   }
   .die-label,
   .die-symbols {
@@ -697,10 +716,10 @@
     font-size: 0.9em;
   }
   .counter.positive {
-    color: var(--success, seagreen);
+    color: var(--success);
   }
   .counter.negative {
-    color: var(--danger, crimson);
+    color: var(--danger);
   }
   .chip.recalculated {
     font-style: normal;
@@ -826,15 +845,15 @@
     max-width: 100%;
     max-height: 160px;
     object-fit: cover;
-    border-radius: var(--radius-1, 4px);
+    border-radius: var(--radius-1);
   }
   .oembed-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
     padding: var(--space-1);
-    border: 1px solid var(--border-color, #444);
-    border-radius: var(--radius-1, 4px);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
     text-decoration: none;
     color: inherit;
   }

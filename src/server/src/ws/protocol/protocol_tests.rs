@@ -52,6 +52,35 @@ fn scene_ping_round_trips_and_is_out_of_band() {
 }
 
 #[test]
+fn emote_round_trips_and_is_out_of_band() {
+    let c = ClientMsg::Emote {
+        scene: Uuid::from_u128(1),
+        token: Uuid::from_u128(2),
+        emote: "😀".to_string(),
+    };
+    let s = serde_json::to_string(&c).unwrap();
+    assert!(s.contains("\"type\":\"emote\""), "got {s}");
+    let _back: ClientMsg = serde_json::from_str(&s).unwrap();
+
+    let sv = ServerMsg::Emote {
+        scene: Uuid::from_u128(1),
+        token: Uuid::from_u128(2),
+        user: Uuid::from_u128(3),
+        emote: "😀".to_string(),
+    };
+    // Out-of-band: never buffered/resynced.
+    assert_eq!(sv.event_seq(), None);
+    let j = serde_json::to_value(&sv).unwrap();
+    assert_eq!(j["type"], "emote");
+    assert_eq!(
+        j["token"],
+        serde_json::to_value(Uuid::from_u128(2)).unwrap()
+    );
+    assert_eq!(j["emote"], "😀");
+    assert!(j.get("user").is_some());
+}
+
+#[test]
 fn client_hello_round_trips_and_is_tagged() {
     let m = ClientMsg::Hello {
         world: Uuid::from_u128(7),

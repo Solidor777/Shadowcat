@@ -36,6 +36,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 mod commands;
+mod host;
 mod link_preview;
 mod oembed;
 mod post_publish;
@@ -61,8 +62,8 @@ pub use preview_cache::{
 };
 pub use sanitize::sanitize;
 pub use settings::{
-    resolve_content_policy, resolve_dice_context, ChatContentPolicy, CHAT_SETTINGS_DOC_TYPE,
-    DICE_SETTINGS_DOC_TYPE,
+    channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
+    CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE,
 };
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
@@ -94,7 +95,10 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 pub fn ops_target_message(ops: &[Operation]) -> bool {
     ops.iter().any(|op| match op {
         Operation::Create { doc } | Operation::Delete { doc } => doc.doc_type == MESSAGE_DOC_TYPE,
-        Operation::Update { .. } => false,
+        // Like Update: the op carries only an id, so a Move targeting a stored
+        // `message` doc is classified (and rejected) in `apply_intent`'s Move
+        // branch against the authoritative stored `doc_type`.
+        Operation::Update { .. } | Operation::Move { .. } => false,
     })
 }
 
@@ -620,9 +624,12 @@ fn build_roll_error_notice(
 /// Max characters accepted for a single message's raw content (pre-producer).
 pub const MAX_MESSAGE_CHARS: usize = 4096;
 
-/// Max characters accepted for a message's `channel` name. Otherwise `channel`
-/// is unbounded save for the 256 KB whole-document size cap.
-pub const MAX_CHANNEL_CHARS: usize = 128;
+/// Max characters accepted for a message's `channel` name. The one
+/// declaration lives in `data::engine`
+/// (`crate::data::engine::MAX_CHANNEL_CHARS`) so the channel registry's own
+/// validation can read it without a layering inversion; re-exported here
+/// where the ingest check uses it.
+pub use crate::data::engine::MAX_CHANNEL_CHARS;
 
 /// Max recipients accepted on an `Audience::Whisper`. A world's realistic
 /// member count is small; this is generous but bounded — without it, a single
@@ -648,6 +655,10 @@ pub enum SendMessageError {
     /// An `Audience::Whisper` recipient uuid does not belong to this world.
     /// Fail-closed: the whole send is rejected, nothing is persisted.
     UnknownRecipient,
+    /// The `channel` is not a key of the world's channel registry — refuse the send
+    /// rather than file a message under (and select dice settings by) a
+    /// channel that does not exist.
+    UnknownChannel,
     /// The authoritative write (`Room::publish`) failed.
     Data(DataError),
     /// The target message does not exist (edit/delete).
@@ -698,6 +709,12 @@ impl std::fmt::Display for SendMessageError {
                 // so this discloses nothing a sender cannot already enumerate; the
                 // offending id is never echoed.
                 f.write_str("One or more whisper recipients are not members of this world.")
+            }
+            SendMessageError::UnknownChannel => {
+                // Safe: the sender supplied the channel string, and the
+                // registry's keys are already visible to every member through
+                // the channel views.
+                f.write_str("That channel does not exist.")
             }
             SendMessageError::AudienceLocked => {
                 f.write_str("You cannot change who can see a message after it is sent.")
@@ -824,6 +841,16 @@ pub async fn handle_send_message(
     }
     if !rate.check(ctx.user_id, now, budget_per_min) {
         return Err(SendMessageError::RateLimited);
+    }
+    // Channel membership gate: `channel` selects the per-channel dice
+    // `ParseContext` and labels the clients' channel views, so an
+    // unregistered channel is refused, not filed. Placed after the flood
+    // check so the cheap guard stays ahead of the registry read.
+    if !channel_registered(repo, room.world_id, &channel)
+        .await
+        .map_err(SendMessageError::Data)?
+    {
+        return Err(SendMessageError::UnknownChannel);
     }
     // Attribution ownership gate: `actor_owner` is client-supplied
     // and otherwise stored verbatim — without this check any world member
@@ -972,7 +999,16 @@ pub async fn handle_send_message(
     let policy = resolve_content_policy(repo, room.world_id).await;
     let mut content_segments = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id, &channel).await;
-        match rolls::execute_roll(&parsed.body, dice_ctx) {
+        // The roll's actor binding: the send's validated `actor_owner` —
+        // references resolve against that document's `system` band, or fail
+        // `unknown-ref` when nothing is bound.
+        let host = match &actor_owner {
+            Some(owner_ref) => host::host_for_actor_owner(repo, owner_ref)
+                .await
+                .map_err(SendMessageError::Data)?,
+            None => None,
+        };
+        match rolls::execute_roll(&parsed.body, dice_ctx, host.as_ref()) {
             Ok((formula, outcome, spec, raw)) => vec![Segment::RollEmbed {
                 formula,
                 outcome,
@@ -1022,8 +1058,10 @@ pub async fn handle_send_message(
             sanitize(&parsed.body, &policy)
         } else {
             // Ambient dice context is resolved at most once, lazily, only when
-            // a roll/button chunk actually appears in this body.
+            // a roll/button chunk actually appears in this body. The roll's
+            // host (the send's actor binding) resolves just as lazily.
             let mut dice_ctx: Option<crate::dice::ParseContext> = None;
+            let mut roll_host: Option<Option<Document>> = None;
             let mut segments = Vec::with_capacity(chunks.len());
             let mut roll_err = None;
             for chunk in chunks {
@@ -1034,7 +1072,16 @@ pub async fn handle_send_message(
                             dice_ctx =
                                 Some(resolve_dice_context(repo, room.world_id, &channel).await);
                         }
-                        match rolls::execute_roll(formula, dice_ctx.unwrap()) {
+                        if roll_host.is_none() {
+                            roll_host = Some(match &actor_owner {
+                                Some(owner_ref) => host::host_for_actor_owner(repo, owner_ref)
+                                    .await
+                                    .map_err(SendMessageError::Data)?,
+                                None => None,
+                            });
+                        }
+                        let host_ref = roll_host.as_ref().expect("roll host computed").as_ref();
+                        match rolls::execute_roll(formula, dice_ctx.unwrap(), host_ref) {
                             Ok((formula, outcome, spec, raw)) => {
                                 segments.push(Segment::RollEmbed {
                                     formula,
@@ -1344,7 +1391,7 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
     match cmd.ops.first()? {
         Operation::Create { doc } => Some(doc.id),
         Operation::Update { doc_id, .. } => Some(*doc_id),
-        Operation::Delete { .. } => None,
+        Operation::Delete { .. } | Operation::Move { .. } => None,
     }
 }
 

@@ -6,7 +6,7 @@
 // the envelope; `ActorEngine`/`TokenEngine` carry every other engine-owned field.
 import type { WireDocument, WireScope } from "./wire";
 import type { ReadableDocuments } from "./store";
-import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission } from "./scene-docs";
+import type { ActorEngine, TokenEngine, TokenVisual, TokenOverrides, Condition, ConditionRegistryEngine, FactionRegistryEngine, VisionAssignment, RenderVisual, FaceVisual, LightEmission, AuraEmission, SoundEmission, VfxEmission } from "./scene-docs";
 import type { FootprintLookup } from "./footprints";
 
 /** The projected, display-ready shape every token-decoration consumer reads: a per-token
@@ -56,6 +56,13 @@ export interface EffectiveActor {
    * impassable, arrest and the visibility mask all still gate); every other tag is inert system
    * vocabulary. Advisory only — the authoritative pricing runs server-side. */
   movement: string[];
+  /** Effective aura emission, or `null` for none. Per-token override replaces the actor base
+   * wholesale (never merged), exactly like `visionModes`. */
+  aura: AuraEmission | null;
+  /** Effective sound emission, or `null` for none. Same wholesale-override precedence as `aura`. */
+  sound: SoundEmission | null;
+  /** Effective VFX emission, or `null` for none. Same wholesale-override precedence as `aura`. */
+  vfx: VfxEmission | null;
 }
 
 /** Fold a per-token `TokenOverrides` whitelist onto its actor's `ActorEngine` base to produce the
@@ -91,6 +98,10 @@ function project(actorDoc: WireDocument, base: ActorEngine, overrides?: TokenOve
     light: overrides?.light ?? base.light ?? null,
     // Override replaces the whole resolved set; otherwise actor ∪ faction, deduplicated.
     movement: overrides?.movement ?? [...new Set([...(base.movement ?? []), ...factionMovement])],
+    // Emissions follow the same wholesale-override precedence as visionModes; null when absent.
+    aura: overrides?.aura ?? base.aura ?? null,
+    sound: overrides?.sound ?? base.sound ?? null,
+    vfx: overrides?.vfx ?? base.vfx ?? null,
   };
 }
 
@@ -254,6 +265,10 @@ interface ConditionDisplayEntry {
   name: string;
   /** The registry's emoji glyph for `id` at resolution time. */
   icon: string;
+  /** The registry's authored built-in art effects for `id` at resolution time (css colors,
+   * unfolded), or absent for none — folding into the token's render fx is `TokenView.toSpec`'s
+   * job, so display-only consumers can ignore this. */
+  fx: Condition["fx"];
 }
 
 /** Resolve a token's effective conditions to display entries (id preserved for keying), via the
@@ -261,7 +276,7 @@ interface ConditionDisplayEntry {
  * never a render error (fail-closed). The single read-through every condition consumer uses.
  * @param token The token to resolve effective conditions for.
  * @param store The document store to resolve the actor + condition registry against.
- * @returns Display entries `{id, name, icon}`, one per effective condition id that IS present in
+ * @returns Display entries `{id, name, icon, fx}`, one per effective condition id that IS present in
  * the world's condition registry (an unregistered id is dropped, not the whole list); `[]` for a
  * raw/dangling token, or when none of the token's condition ids are registered.
  * @example
@@ -270,7 +285,7 @@ interface ConditionDisplayEntry {
  *
  * declare const token: WireDocument;
  * declare const store: ReadableDocuments;
- * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "..." }, ...]
+ * resolveConditions(token, store); // [{ id: "prone", name: "Prone", icon: "...", fx: null }, ...]
  * ```
  */
 export function resolveConditions(token: WireDocument, store: ReadableDocuments): ConditionDisplayEntry[] {
@@ -281,7 +296,7 @@ export function resolveConditions(token: WireDocument, store: ReadableDocuments)
   const out: ConditionDisplayEntry[] = [];
   for (const id of eff.conditions) {
     const c = map[id];
-    if (c) out.push({ id, name: c.name, icon: c.icon });
+    if (c) out.push({ id, name: c.name, icon: c.icon, fx: c.fx });
   }
   return out;
 }
@@ -459,10 +474,30 @@ function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` t
   return Number.isInteger(v.source.rows) && v.source.rows > 0 && Number.isInteger(v.source.cols) && v.source.cols > 0;
 }
 
-/** The render boundary: resolves a token's `TokenVisual` (image, animated, or faces) down to a
- * plain `RenderVisual` (image or animated) — the only two kinds the render layer ever draws.
- * Fail-closed to `null` on any malformed/unknown shape; never throws. Pass a pre-resolved `eff`
- * to avoid a second `resolveTokenActor` call; omit to resolve internally.
+/** Structural validity of a `"generated"` `RenderVisual`'s `art`: an image, or an animated
+ * visual satisfying `isValidAnimated`. Anything else — a nested `generated`, or a hand-edited
+ * `faces` value the type system forbids but a garbled doc could still carry — fails closed.
+ * The check is one level deep by construction: nested `generated` is refused outright, so no
+ * recursion guard is needed. Not exported (folded into `resolveTokenVisual`'s public surface).
+ * @param art The `art` payload of a `"generated"` visual to validate.
+ * @returns `true` iff `art` is itself a drawable image/animated visual.
+ * @example
+ * ```
+ * // internal helper; not part of the public API (see resolveTokenVisual for the public entry point)
+ * isValidGeneratedArt({ kind: "image", asset: "a.png" });
+ * ```
+ */
+function isValidGeneratedArt(art: RenderVisual | undefined): boolean {
+  if (!art) return false;
+  if (art.kind === "image") return true;
+  if (art.kind === "animated") return isValidAnimated(art);
+  return false;
+}
+
+/** The render boundary: resolves a token's `TokenVisual` (image, animated, generated, or faces)
+ * down to a plain `RenderVisual` (image, animated, or generated) — the only kinds the render
+ * layer ever draws. Fail-closed to `null` on any malformed/unknown shape; never throws. Pass a
+ * pre-resolved `eff` to avoid a second `resolveTokenActor` call; omit to resolve internally.
  * @param token The token to resolve a visual for.
  * @param store The document store to resolve the actor against.
  * @param eff A pre-resolved `EffectiveActor` to reuse; pass `null` for a known actorless token,
@@ -474,7 +509,7 @@ function isValidAnimated(v: Extract<RenderVisual, { /** Narrows `RenderVisual` t
  *
  * declare const token: WireDocument;
  * declare const store: ReadableDocuments;
- * resolveTokenVisual(token, store); // { kind: "image", asset: "..." } | { kind: "animated", ... } | null
+ * resolveTokenVisual(token, store); // { kind: "image", asset: "..." } | { kind: "animated", ... } | { kind: "generated", ... } | null
  * ```
  */
 export function resolveTokenVisual(
@@ -488,7 +523,11 @@ export function resolveTokenVisual(
   if (!visual) return null;
   const resolved = visual.kind === "faces" ? resolveFace(visual, eng?.face, actor?.conditions ?? []) : visual;
   if (!resolved) return null;
-  if (resolved.kind !== "image" && resolved.kind !== "animated") return null;
-  if (resolved.kind === "animated" && !isValidAnimated(resolved)) return null;
-  return resolved;
+  if (resolved.kind === "image") return resolved;
+  if (resolved.kind === "animated") return isValidAnimated(resolved) ? resolved : null;
+  if (resolved.kind !== "generated") return null;
+  if (resolved.crop !== "circle" && resolved.crop !== "square") return null;
+  if (resolved.border && (!Number.isFinite(resolved.border.width) || resolved.border.width <= 0 || typeof resolved.border.color !== "string")) return null;
+  if (resolved.background && typeof resolved.background.color !== "string") return null;
+  return isValidGeneratedArt(resolved.art) ? resolved : null;
 }
