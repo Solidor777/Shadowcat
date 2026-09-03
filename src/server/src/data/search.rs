@@ -48,7 +48,7 @@ pub struct SearchPage {
 /// let doc: Document = serde_json::from_value(serde_json::json!({
 ///     "id": "00000000-0000-0000-0000-000000000001",
 ///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
-///     "doc_type": "note",
+///     "doc_type": "item",
 ///     "schema_version": 1,
 ///     "name": "MOCK_NOTE_A",
 ///     "system": { "body": "the cellar key", "hidden_flag": true },
@@ -89,7 +89,7 @@ pub fn index_content(doc: &Document) -> String {
 /// let doc: Document = serde_json::from_value(serde_json::json!({
 ///     "id": "00000000-0000-0000-0000-000000000001",
 ///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
-///     "doc_type": "note",
+///     "doc_type": "item",
 ///     "schema_version": 1,
 ///     "permissions": {
 ///         "default": "observer", "users": {},

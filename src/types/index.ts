@@ -155,4 +155,5 @@ export type { DrawRule } from "./generated/engine/DrawRule";
 export type { TableRow } from "./generated/engine/TableRow";
 export type { RowRange } from "./generated/engine/RowRange";
 export type { TableEntry } from "./generated/engine/TableEntry";
+export type { NoteEngine } from "./generated/engine/NoteEngine";
 export type { DocLinkTarget } from "./generated/engine/DocLinkTarget";

@@ -270,6 +270,7 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
         }
         "system-defaults" => Some(serde_json::json!({})),
         "combat-history" => Some(serde_json::json!({ "records": [], "cursor": 0 })),
+        "note" => Some(serde_json::json!({ "source": "", "body": [], "sort": 0 })),
         _ => None,
     }
 }
