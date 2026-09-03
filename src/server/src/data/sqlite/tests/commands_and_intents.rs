@@ -191,8 +191,8 @@ async fn player_may_create_message_but_not_other_types() {
         },
         2,
     );
-    other.doc_type = "note".into();
-    // "note" is not engine-defined (unlike "message"); the engine body
+    other.doc_type = "item".into();
+    // "item" is not engine-defined (unlike "message"); the engine body
     // `build_message_doc` set must not follow the doc_type override.
     other.engine = None;
     let err = r

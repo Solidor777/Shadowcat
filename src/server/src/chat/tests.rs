@@ -3665,8 +3665,8 @@ async fn send_message_rejects_attribution_to_a_non_actor_doc() {
         .await
         .unwrap();
     let mut wrong_type = seed_actor_doc(Uuid::new_v4(), w.id, Some(player));
-    wrong_type.doc_type = "note".into();
-    // "note" is not engine-defined; a present engine body would now be
+    wrong_type.doc_type = "item".into();
+    // "item" is not engine-defined; a present engine body would be
     // rejected by apply_command's /engine normalization gate.
     wrong_type.engine = None;
     let doc_id = wrong_type.id;
