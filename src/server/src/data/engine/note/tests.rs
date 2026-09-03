@@ -256,3 +256,95 @@ async fn an_update_to_engine_source_through_apply_intent_re_derives_the_body() {
     let engine: NoteEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
     assert!(matches!(engine.body.as_slice(), [Segment::Html { .. }]));
 }
+
+/// A `source` at `MAX_NOTE_SOURCE_CHARS`, made entirely of `&`, which
+/// `chat::sanitize`'s HTML-escaping expands ~5x (`&` -> `&amp;`) -- well past
+/// `crate::data::validation::MAX_SYSTEM_BYTES` in the DERIVED body, while
+/// the raw `source` itself stays comfortably under the cap. This is the
+/// exact shape `validate_system_size`'s pre-derivation check cannot see.
+fn oversized_escaping_source() -> String {
+    "&".repeat(crate::data::engine::note::MAX_NOTE_SOURCE_CHARS)
+}
+
+#[tokio::test]
+async fn a_create_whose_derived_body_exceeds_the_size_cap_is_rejected() {
+    use crate::data::command::{Operation, WriteOrigin};
+    use crate::data::document::WorldRole;
+    use crate::data::membership::PermissionContext;
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let doc = note_doc(world_id, None, &oversized_escaping_source());
+    let err = repo
+        .apply_intent(
+            &ctx,
+            world_id,
+            vec![Operation::Create { doc }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::TooLarge(_)),
+        "expected TooLarge on the DERIVED body, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_update_whose_derived_body_exceeds_the_size_cap_is_rejected() {
+    use crate::data::command::{FieldChange, Operation, WriteOrigin};
+    use crate::data::document::WorldRole;
+    use crate::data::membership::PermissionContext;
+    use crate::data::repository::Repository;
+
+    let (repo, world_id, gm) = seed_world().await;
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let doc = note_doc(world_id, None, "hello");
+    let doc_id = doc.id;
+    repo.apply_intent(
+        &ctx,
+        world_id,
+        vec![Operation::Create { doc }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let big = oversized_escaping_source();
+    let err = repo
+        .apply_intent(
+            &ctx,
+            world_id,
+            vec![Operation::Update {
+                doc_id,
+                changes: vec![FieldChange {
+                    path: "/engine/source".to_string(),
+                    old: serde_json::json!("hello"),
+                    new: serde_json::json!(big),
+                    remove: false,
+                }],
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::TooLarge(_)),
+        "expected TooLarge on the DERIVED body, got {err:?}"
+    );
+
+    // The rejected Update must not have persisted a half-written derived body.
+    let stored = repo.get_document(doc_id).await.unwrap().unwrap();
+    let engine: NoteEngine = serde_json::from_value(stored.engine.unwrap()).unwrap();
+    assert_eq!(engine.source, "hello");
+}

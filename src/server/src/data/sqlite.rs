@@ -3369,6 +3369,16 @@ impl Repository for SqliteRepository {
                     validation::validate_system_size(doc)?;
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
+                    // Re-checked AFTER `validate_engine_tree`: for a `note`
+                    // document that call replaces `doc.engine` with the
+                    // SERVER-DERIVED body (`NoteEngine::derive_body`), and the
+                    // cap above ran against the client's pre-derivation
+                    // payload (an empty `body: []`), not the value that is
+                    // actually about to be stored, written to `world_events`,
+                    // and broadcast. Reusing `validate_system_size` (rather
+                    // than a second size rule) keeps ONE cap statement that
+                    // now covers both the submitted and the derived shape.
+                    validation::validate_system_size(doc)?;
                     validation::validate_containment(doc)?;
                     Self::check_parent_placement(&mut tx, doc, &batch_folders, &batch_combats)
                         .await?;
@@ -3998,6 +4008,15 @@ impl Repository for SqliteRepository {
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
                     validation::validate_engine_tree(&mut doc)?;
+                    // Re-checked AFTER `validate_engine_tree`: for a `note`
+                    // document that call replaces `doc.engine` with the
+                    // SERVER-DERIVED body (`NoteEngine::derive_body`), so the
+                    // cap above ran against the merged pre-derivation
+                    // payload, not the value about to be stored, written to
+                    // `world_events`, and broadcast. Reusing
+                    // `validate_system_size` keeps ONE cap statement that now
+                    // covers both the merged and the derived shape.
+                    validation::validate_system_size(&doc)?;
                     validation::validate_containment(&doc)?;
                     // One-active-combat-per-scene is validated ONLY in Phase
                     // 1 (see `apply_intent`'s Update arm there, and the
