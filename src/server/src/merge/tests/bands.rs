@@ -88,6 +88,34 @@ fn merge_base_deserialization_rejects_a_record_missing_property_overrides() {
 }
 
 #[test]
+fn embedded_base_child_deserialization_rejects_a_record_missing_a_required_band() {
+    // Ingest (`check_base_node_shape`) requires every band present on an
+    // embedded record exactly as on the root; the read path must fail the
+    // same way rather than coalescing an absent key into `null`/empty.
+    let err = serde_json::from_value::<crate::merge::bands::EmbeddedBaseChild>(json!({
+        "sourceId": "tc1",
+        "system": { "hp": 1 }
+    }))
+    .expect_err("a record missing name/engine/embedded/propertyOverrides does not parse");
+    assert!(err.to_string().contains("missing field"), "got {err}");
+}
+
+#[test]
+fn embedded_base_child_deserialization_rejects_a_record_missing_property_overrides() {
+    // The full band set present, `propertyOverrides` alone absent: still a
+    // shape violation, not a legitimate row to tolerate.
+    let err = serde_json::from_value::<crate::merge::bands::EmbeddedBaseChild>(json!({
+        "sourceId": "tc1",
+        "name": null,
+        "engine": null,
+        "system": null,
+        "embedded": {}
+    }))
+    .expect_err("a record missing propertyOverrides does not parse");
+    assert!(err.to_string().contains("propertyOverrides"), "got {err}");
+}
+
+#[test]
 fn snapshot_base_records_the_mergeable_band_policy_at_every_depth() {
     use crate::data::document::Visibility;
     let mut kid = doc("ic1");

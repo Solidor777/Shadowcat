@@ -34,12 +34,16 @@ pub struct MergeBands {
 /// correlation key (the child's `source.id` at sync time — the template
 /// child's id). Recurses (finite-depth embedding). The stored JSON spells
 /// the key `sourceId` (camelCase), the shape every existing snapshot was
-/// written in. The serde defaults exist so a pre-validation legacy row
-/// still parses on READ; at ingest `validate_engine_tree` REJECTS a record
-/// with an absent key rather than letting the defaults coalesce it (a
-/// coalesced record reads as unchanged against a `null` band — the
-/// data-losing direction for a template-deleted child). The ts-rs export
-/// is the client's `EmbeddedBaseChild`.
+/// written in. No field defaults, on the same rule `MergeBase` states in
+/// full: `check_base_node_shape` requires every key present at ingest
+/// (including at every embedded depth — `is_child` selects this record's own
+/// key set), so a stored record missing one is not a legitimate row this
+/// shape must tolerate — the read path fails the same way ingest would,
+/// rather than coalescing a missing key into `null`/empty and reading a
+/// malformed embedded record as an ordinary one (a coalesced record reads as
+/// unchanged against a `null` band — the data-losing direction for a
+/// template-deleted child). The ts-rs export is the client's
+/// `EmbeddedBaseChild`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
@@ -48,26 +52,21 @@ pub struct EmbeddedBaseChild {
     /// `merge3_embedded` matches instance/template children by.
     pub source_id: String,
     /// The child's `name` band at sync time.
-    #[serde(default)]
     pub name: Option<String>,
     /// The child's `engine` band at sync time (`null` when absent).
-    #[serde(default)]
     #[ts(type = "unknown")]
     pub engine: Value,
     /// The child's `system` band at sync time (`null` when absent).
-    #[serde(default)]
     #[ts(type = "unknown")]
     pub system: Value,
     /// The child's own embedded collections at sync time, recursively in the
     /// same shape.
-    #[serde(default)]
     pub embedded: BTreeMap<String, Vec<EmbeddedBaseChild>>,
     /// The redaction policy the snapshotted child carried over its own
     /// bands at sync time (`recorded_overrides`), so egress can redact this
     /// record by the policy that governed its content (`permission`'s
     /// `own_overrides`). Spelled `propertyOverrides` on the wire like this
     /// record's other keys.
-    #[serde(default)]
     pub property_overrides: BTreeMap<String, Visibility>,
 }
 

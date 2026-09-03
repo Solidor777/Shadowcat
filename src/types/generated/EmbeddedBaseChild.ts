@@ -6,12 +6,16 @@ import type { Visibility } from "./Visibility";
  * correlation key (the child's `source.id` at sync time — the template
  * child's id). Recurses (finite-depth embedding). The stored JSON spells
  * the key `sourceId` (camelCase), the shape every existing snapshot was
- * written in. The serde defaults exist so a pre-validation legacy row
- * still parses on READ; at ingest `validate_engine_tree` REJECTS a record
- * with an absent key rather than letting the defaults coalesce it (a
- * coalesced record reads as unchanged against a `null` band — the
- * data-losing direction for a template-deleted child). The ts-rs export
- * is the client's `EmbeddedBaseChild`.
+ * written in. No field defaults, on the same rule `MergeBase` states in
+ * full: `check_base_node_shape` requires every key present at ingest
+ * (including at every embedded depth — `is_child` selects this record's own
+ * key set), so a stored record missing one is not a legitimate row this
+ * shape must tolerate — the read path fails the same way ingest would,
+ * rather than coalescing a missing key into `null`/empty and reading a
+ * malformed embedded record as an ordinary one (a coalesced record reads as
+ * unchanged against a `null` band — the data-losing direction for a
+ * template-deleted child). The ts-rs export is the client's
+ * `EmbeddedBaseChild`.
  */
 export type EmbeddedBaseChild = { 
 /**
