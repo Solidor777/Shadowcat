@@ -403,10 +403,7 @@ async fn a_formula_table_hit_and_miss() {
     let seg_low = draw_table_with_seed(&mut cx_low, table_id, 0, 2)
         .await
         .unwrap();
-    assert_eq!(
-        seg_low.row.as_ref().map(|r| r.label.as_str()),
-        Some("low")
-    );
+    assert_eq!(seg_low.row.as_ref().map(|r| r.label.as_str()), Some("low"));
 
     // seed=0 -> 2d6 total 7, inside "high"'s [7,9].
     let mut cx_high = base_cx(&repo, &ctx, world).await;
