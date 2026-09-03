@@ -197,7 +197,7 @@ export class WorldSession {
    * preserves a selection instead of leaking it across scenes or losing it. */
   #tokenSelectionByScene = new Map<string, Set<string>>();
   /** The server's resolved token footprints, replaced wholesale by each `"footprints"` frame.
-   * `$state` so every consumer — canvas reconcile, hit-test, selection ring, the place tool —
+   * `$state` so every consumer — canvas reconcile, hit-test, the place tool —
    * re-reads the same authoritative extents the moment a frame lands. `EMPTY_FOOTPRINTS` until
    * the first frame, under which a token draws at its document's own authored `w`/`h`. */
   #footprints = $state<FootprintLookup>(EMPTY_FOOTPRINTS);
@@ -254,7 +254,7 @@ export class WorldSession {
   }
 
   /** The server's resolved token footprints. There is no client-side footprint formula: the extent
-   * the canvas draws, the hit-test picks and the selection ring traces is the one the server's
+   * the canvas draws and the hit-test picks is the one the server's
    * movement gate collides with, read off the `"footprints"` derived channel.
    * @returns The current lookup; `EMPTY_FOOTPRINTS` before the first frame. */
   get footprints(): FootprintLookup {
@@ -943,8 +943,8 @@ export class WorldSession {
         stream.moverLight,
       );
     });
-    // Session-owned, not engine-owned: the resolved footprints feed the canvas, the hit-test, the
-    // selection ring and the place tool, so they belong beside the document view every one of
+    // Session-owned, not engine-owned: the resolved footprints feed the canvas, the hit-test and
+    // the place tool, so they belong beside the document view every one of
     // those reads rather than inside the render engine one of them happens to live in. The first
     // attempt runs before the socket is up and is dropped; `#onWelcome` re-establishes it.
     this.#footprintsSub = this.subscribeScene("footprints", (f) => {

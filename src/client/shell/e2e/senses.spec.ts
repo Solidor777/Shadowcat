@@ -76,15 +76,29 @@ async function disableSnap(page: Page): Promise<void> {
 /** Upload the 1×1 PNG through the assets panel (real upload pipeline). */
 async function uploadTokenArt(page: Page): Promise<void> {
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
-  await page.getByTestId("asset-upload").setInputFiles({
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
+  await expect(page.getByTestId("asset-browser")).toBeVisible();
+  await page.getByTestId("asset-upload-input").setInputFiles({
     name: "tok.png",
     mimeType: "image/png",
     buffer: PNG_1X1,
   });
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
+}
+
+/** Choose the uploaded art for the actor create form: the form's visual editor opens the asset
+ * pick dialog, and a single-select pick confirms one tile.
+ * @param page The GM's page.
+ */
+async function pickActorArt(page: Page): Promise<void> {
+  await page.locator(".actors").getByTestId("visual-pick").click();
+  const dialog = page.getByTestId("asset-pick-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("asset-tile").first().click();
+  await dialog.getByTestId("pick-confirm").click();
+  await expect(dialog).not.toBeVisible();
 }
 
 test("a tremorsense assignment reveals a grounded token through fog, and raising its elevation ends the perception", async ({
@@ -145,7 +159,7 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
     const actors = gm.locator(".actors");
     await actors.getByLabel("Name", { exact: true }).fill("Lurker");
     await actors.getByLabel("New independent copy on each placement").uncheck();
-    await actors.getByRole("button", { name: "tok.png" }).click();
+    await pickActorArt(gm);
     await actors.getByRole("button", { name: "Create actor" }).click();
     const row = actors.getByRole("listitem");
     await expect(row).toHaveCount(1);

@@ -346,7 +346,7 @@ export function conditionTarget(token: WireDocument, store: ReadableDocuments): 
 }
 
 /** A token's resolved footprint in scene pixels + its shape — the single read-through the
- * renderer, hit-test, and selection ring share so they cannot diverge for multi-cell/circle
+ * renderer and the hit-test share so they cannot diverge for multi-cell/circle
  * tokens, or between square and hex scenes. The box is READ from the server's resolved footprint
  * (`FootprintLookup.token`), never computed here: the geometry the client draws and the geometry
  * the movement gate collides with come from one definition, which lives server-side. When the
@@ -365,7 +365,7 @@ export interface TokenBox {
   w: number;
   /** Scene-pixel height of the footprint. */
   h: number;
-  /** The footprint shape used for hit-testing and the selection ring. */
+  /** The footprint shape used for hit-testing. */
   shape: "square" | "circle";
 }
 

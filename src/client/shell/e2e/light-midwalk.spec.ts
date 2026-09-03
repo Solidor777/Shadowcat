@@ -45,8 +45,23 @@ const GOAL_MIN_COL = 2;
 /** The sight-only wall of the third test: a vertical segment between the observer and the whole
  * walk, spanning far past both in y so no ray from the observer to any point of the walk clears
  * an end. Its `blocksLight` flag is switched off through the wall editor, so the torch's
- * illumination polygon crosses it while the observer's line of sight stops at it. */
+ * illumination polygon crosses it while the observer's line of sight stops at it — `x=600` keeps
+ * the committed lit set's westmost column (5, same as the open corridor) on the observer's own
+ * side of the wall, which is what makes it reachable through sight at all: `player_lit_mask`
+ * bounds illumination admission by the observer's own line-of-sight polygon, so a cell east of a
+ * sight-blocking wall (even one transparent to light) never lights up regardless of glow. */
 const SIGHT_WALL = { x: 600, y0: 60, y1: 760 };
+
+/** The third test's own walk goal — distinct from the shared `GOAL`, because its resting cell
+ * (650, centered) sits within the mover's real 1×1 footprint radius (0.5 cells = 50 units) of
+ * the sight-only wall at x=600, and `blocksMove` stays on: the pathfinder reports the shared
+ * `GOAL` genuinely unreachable there. This goal's resting cell (750) clears the wall by a full
+ * 100 units past the footprint radius. */
+const SIGHT_WALL_GOAL = { x: 760, y: 310 };
+/** Westmost committed lit column once the torch rests at (750, 350) — same derivation as
+ * `GOAL_MIN_COL`, using the row-aligned cell center (dy = 0): `x ≥ 750 - 464 = 286`; the
+ * smallest admitted cell center `100·i + 50 ≥ 286` is `i = 3`. */
+const SIGHT_WALL_GOAL_MIN_COL = 3;
 
 // The walled-off observer of the second test sits inside a closed box; the walk runs outside.
 const BOX = { x0: 60, y0: 160, x1: 360, y1: 460 };
@@ -84,15 +99,16 @@ async function disableSnap(page: Page): Promise<void> {
 /** Upload the 1×1 PNG through the assets panel (real upload pipeline), then close the panel. */
 async function uploadTokenArt(page: Page): Promise<void> {
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
-  await page.getByTestId("asset-upload").setInputFiles({
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
+  await expect(page.getByTestId("asset-browser")).toBeVisible();
+  await page.getByTestId("asset-upload-input").setInputFiles({
     name: "tok.png",
     mimeType: "image/png",
     buffer: PNG_1X1,
   });
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
 }
 
 /** One pointermove for the whole displacement (the wall tool authors a segment per drag). */
@@ -138,6 +154,19 @@ function minCol(bbox: string): number | null {
  * re-entered (so the owner select sees the player), snap off, token art uploaded, and a LINKED
  * player-owned "Watcher" actor placed at `observerAt` plus a LINKED torch-carrying "Bearer"
  * actor placed at `bearerAt`. Returns the player's page and its context closer. */
+/** Choose the uploaded art for the actor create form: the form's visual editor opens the asset
+ * pick dialog, and a single-select pick confirms one tile.
+ * @param page The GM's page.
+ */
+async function pickActorArt(page: Page): Promise<void> {
+  await page.locator(".actors").getByTestId("visual-pick").click();
+  const dialog = page.getByTestId("asset-pick-dialog");
+  await expect(dialog).toBeVisible();
+  await dialog.getByTestId("asset-tile").first().click();
+  await dialog.getByTestId("pick-confirm").click();
+  await expect(dialog).not.toBeVisible();
+}
+
 async function setupTorchScene(
   gm: Page,
   browser: import("@playwright/test").Browser,
@@ -176,10 +205,22 @@ async function setupTorchScene(
   await expect(stageHost(player)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
   // AppContext's member roster is a session-start snapshot, so the GM re-enters the world for
-  // the freshly seated player to appear in the owner select.
+  // the freshly seated player to appear in the owner select. "Leave world" lives inside the
+  // settings panel content, so the panel must still be open/mounted-visible for this click —
+  // closing it any earlier hides that button.
   await gm.getByRole("button", { name: /leave world/i }).click();
   await gm.getByRole("button", { name: new RegExp(worldName) }).click();
   await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+
+  // The settings panel docks beside the stage and halves the canvas width; the corridor's
+  // east end lies outside that half, so close it before any canvas gesture. Chat is docked
+  // right by default and reserves that same zone independently of whatever else shares it —
+  // minimizing settings/actors alone leaves the canvas narrowed to the zone's width, so chat
+  // must be minimized too before any gesture past that boundary.
+  await gm.getByTestId("launcher-trigger").click();
+  await gm.getByTestId("launcher-item-settings:panel").click();
+  await gm.getByTestId("launcher-trigger").click();
+  await gm.getByTestId("launcher-item-chat:panel").click();
 
   await disableSnap(gm);
   await uploadTokenArt(gm);
@@ -192,14 +233,14 @@ async function setupTorchScene(
   await actors.getByLabel("New independent copy on each placement").uncheck();
 
   await actors.getByLabel("Name", { exact: true }).fill("Watcher");
-  await actors.getByRole("button", { name: "tok.png" }).click();
+  await pickActorArt(gm);
   await actors.getByRole("button", { name: "Create actor" }).click();
   const watcher = actors.getByRole("listitem").filter({ hasText: "Watcher" });
   await expect(watcher).toHaveCount(1);
   await watcher.getByLabel("Owner").selectOption({ label: playerName });
 
   await actors.getByLabel("Name", { exact: true }).fill("Bearer");
-  await actors.getByRole("button", { name: "tok.png" }).click();
+  await pickActorArt(gm);
   await actors.getByRole("button", { name: "Create actor" }).click();
   const bearer = actors.getByRole("listitem").filter({ hasText: "Bearer" });
   await expect(bearer).toHaveCount(1);
@@ -212,23 +253,30 @@ async function setupTorchScene(
   let origin = await canvasOrigin(gm);
   await gm.mouse.click(origin.x + observerAt.x, origin.y + observerAt.y);
   await bearer.getByRole("button", { name: "Bearer", exact: true }).click();
-  await gm.getByTestId("tool-place").click();
+  // The bearer's cell sits far enough east that the docked actors panel narrows the canvas past
+  // it, so the panel closes before this gesture (and stays closed for the walk below). Both the
+  // place tool and the actor selection outlive the close: `ToolController.toggle` only clears a
+  // tool on a second click of that same tool, and only the ACTOR deselects itself after a linked
+  // placement.
+  await gm.getByTestId("launcher-trigger").click();
+  await gm.getByTestId("launcher-item-actors:panel").click();
   origin = await canvasOrigin(gm);
   await gm.mouse.click(origin.x + bearerAt.x, origin.y + bearerAt.y);
   await expect(stageHost(gm)).toHaveAttribute("data-token-count", "2", { timeout: 15_000 });
   await expect(stageHost(player)).toHaveAttribute("data-token-count", "2", { timeout: 15_000 });
-  // Close the actors panel so the canvas origin stays put for the gestures below.
-  await gm.getByTestId("launcher-trigger").click();
-  await gm.getByTestId("launcher-item-actors:panel").click();
 
   return { player, close: () => playerCtx.close() };
 }
 
 /** Walk the bearer from `from` to `to` as the GM: select it, then double-click the goal with
  * the measure tool — the route commit goes through `moveRequest` → `Room::execute_move`, the
- * only path that broadcasts a `MoveStream` (a GM's select-tool drag is a raw position write). */
+ * only path that broadcasts a `MoveStream` (a GM's select-tool drag is a raw position write).
+ * `ToolController.toggle` deselects a tool on a second click of the SAME active tool (the same
+ * hazard the place tool has), so this only clicks "Select / Move" when it isn't already active —
+ * the wall-editing steps preceding the third test leave it active already. */
 async function walkBearer(gm: Page, from: Point, to: Point): Promise<void> {
-  await gm.getByTestId("tool-select").click();
+  const select = gm.getByTestId("tool-select");
+  if ((await select.getAttribute("aria-pressed")) !== "true") await select.click();
   let origin = await canvasOrigin(gm);
   await gm.mouse.click(origin.x + from.x, origin.y + from.y);
   await gm.getByTestId("tool-measure").click();
@@ -393,7 +441,7 @@ test("a sight-only wall hides the bearer but its glow still sweeps the observer'
     await expect(stageHost(player)).toHaveAttribute("data-light-sweep", "0");
 
     await watchLighting(player);
-    await walkBearer(gm, START, GOAL);
+    await walkBearer(gm, START, SIGHT_WALL_GOAL);
 
     // Every position sample of the walk lies east of the wall, outside the observer's sight, so
     // the only frame this observer can receive is the glow-only one — and the sweep it drives
@@ -409,7 +457,7 @@ test("a sight-only wall hides the bearer but its glow still sweeps the observer'
         message: "the committed lighting after the walk lights the observer's side up to the goal",
         timeout: 20_000,
       })
-      .toBe(GOAL_MIN_COL);
+      .toBe(SIGHT_WALL_GOAL_MIN_COL);
     const log = await lightLog(player);
     const midWalk = log.filter((v) => v.startsWith("1|"));
     expect(midWalk.length, `the observer must have painted a glow-only sweep: ${log.join(" ; ")}`).toBeGreaterThan(0);
