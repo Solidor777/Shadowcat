@@ -2,5 +2,9 @@
   "extends": "../../../typedoc.base.json",
   "entryPoints": [
     "src/index.ts"
+  ],
+  "intentionallyNotDocumented": [
+    "SegmentListSchema.__type.kind",
+    "parseNoteBody.__type.kind"
   ]
 }
