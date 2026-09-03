@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from "vitest";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import { z } from "zod";
 import type * as Ts from "@shadowcat/types";
 import {
@@ -44,6 +44,9 @@ import {
   type WireFieldChange,
   type WireCommand,
   type WireSearchHit,
+  parseCombats,
+  EMPTY_COMBATS,
+  CombatsPayloadSchema,
 } from "./wire";
 
 // Drift guard. Exact field-by-field type equality fights Zod's inference
@@ -283,6 +286,7 @@ describe("parseServerMsg", () => {
         cost: 2,
         arrested: false,
         truncated: false,
+        budget_cells: null,
       }),
     );
     expect(ok?.type).toBe("path_result");
@@ -480,11 +484,20 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
     emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
-    path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false, truncated: false },
+    path_result: {
+      type: "path_result",
+      request_id: "r",
+      path: [],
+      cost: 0,
+      arrested: false,
+      truncated: false,
+      budget_cells: null,
+    },
     path_error: { type: "path_error", request_id: "r", message: "x" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
+    combat_result: { type: "combat_result", request_id: "r", seq: 1 },
     move_stream: {
       type: "move_stream",
       request_id: "r",
@@ -731,6 +744,63 @@ describe("PathfindSchema", () => {
         token: "not-a-uuid",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("parseCombats", () => {
+  it("parses a well-formed combat channel payload", () => {
+    const view = parseCombats({
+      combats: [
+        {
+          id: "c1",
+          scene_id: "s1",
+          combatants: [
+            {
+              id: "cc1",
+              resources: {
+                movement: { binding: "tracked", current: 30, max: 30, error: null },
+              },
+              movement_cells: 6,
+            },
+            { id: "cc2", resources: null, movement_cells: null },
+          ],
+        },
+      ],
+    });
+    expect(view.combats).toHaveLength(1);
+    expect(view.combats[0].id).toBe("c1");
+    expect(view.combats[0].sceneId).toBe("s1");
+    expect(view.combats[0].combatants[0].resources?.movement.current).toBe(30);
+    expect(view.combats[0].combatants[0].movementCells).toBe(6);
+    expect(view.combats[0].combatants[1].resources).toBeNull();
+  });
+
+  it("fails closed to EMPTY_COMBATS on a malformed payload", () => {
+    expect(parseCombats({ combats: "not-an-array" })).toEqual(EMPTY_COMBATS);
+    expect(parseCombats(null)).toEqual(EMPTY_COMBATS);
+    expect(parseCombats(undefined)).toEqual(EMPTY_COMBATS);
+  });
+
+  it("reports a malformed payload through the given logger, never the console", () => {
+    const warn = vi.fn();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(parseCombats({ combats: "not-an-array" }, logger)).toEqual(EMPTY_COMBATS);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe("parseCombats: malformed combat channel payload");
+      expect(typeof warn.mock.calls[0][1]).toBe("string");
+      expect(consoleWarn).not.toHaveBeenCalled();
+      expect(parseCombats({ combats: [] }, logger).combats).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it("CombatsPayloadSchema round-trips the same shape parseCombats accepts", () => {
+    const raw = { combats: [{ id: "c1", scene_id: "s1", combatants: [] }] };
+    expect(CombatsPayloadSchema.safeParse(raw).success).toBe(true);
   });
 });
 

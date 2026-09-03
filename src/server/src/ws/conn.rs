@@ -983,9 +983,16 @@ async fn handle_pathfind(
     // None/exempt previews pass no budget and are untouched. The decrement half of a
     // resolution is ignored: a preview commits nothing.
     let mut budget_cells: Option<f64> = None;
+    // The reply value disclosed as `PathResult.budget_cells`: present whenever the caller is
+    // `enforced` on the named combatant (GM included), regardless of enforcement mode — distinct
+    // from `budget_cells` above, which stays the `Hard`-only truncation ceiling `s.pathfind(..)`
+    // consumes. The two locals must never share a binding: reusing `budget_cells` for the reply
+    // would truncate `Warn`/`None` previews that must render in full.
+    let mut reply_budget_cells: Option<f64> = None;
     if let Some(t) = token {
         if let Some(bg) = crate::ws::room::budget_gate_for_token(&s, scene, t, ctx, &world_defaults)
         {
+            let enforced = bg.enforced();
             match crate::ws::room::resolve_budget(&bg, is_gm) {
                 crate::ws::room::BudgetResolution::NotYourTurn
                 | crate::ws::room::BudgetResolution::Unresolvable => {
@@ -995,9 +1002,13 @@ async fn handle_pathfind(
                     };
                 }
                 crate::ws::room::BudgetResolution::Resolved {
-                    budget_cells: b, ..
+                    budget_cells: b,
+                    decrement,
                 } => {
                     budget_cells = b;
+                    if enforced {
+                        reply_budget_cells = decrement.map(|d| d.resource_cells());
+                    }
                 }
             }
         }
@@ -1020,6 +1031,7 @@ async fn handle_pathfind(
             cost: outcome.cost,
             arrested: outcome.arrested,
             truncated: outcome.truncated,
+            budget_cells: reply_budget_cells,
         },
         Err(e) => ServerMsg::PathError {
             request_id,

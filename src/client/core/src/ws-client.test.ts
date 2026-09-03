@@ -830,9 +830,16 @@ describe("WsClient", () => {
         cost: 2,
         arrested: false,
         truncated: false,
+        budget_cells: 6,
       }),
     );
-    await expect(p).resolves.toEqual({ path: [[50, 50], [250, 50]], cost: 2, arrested: false, truncated: false });
+    await expect(p).resolves.toEqual({
+      path: [[50, 50], [250, 50]],
+      cost: 2,
+      arrested: false,
+      truncated: false,
+      budgetCells: 6,
+    });
 
     const p2 = client.pathfind("scene-1", [50, 50], [[9999, 9999]], 0.5);
     const sentFrame2 = JSON.parse(sent.find((s, i) => i > firstIndex && JSON.parse(s).type === "pathfind")!);
@@ -1006,11 +1013,10 @@ describe("WsClient", () => {
     ).rejects.toThrow(/not connected/i);
   });
 
-  it("combat() with selfUserId configured does not resolve on an unrelated event, and resolves on the matching one", async () => {
+  it("combat() resolves only after the event at its combat_result's seq is applied — reply before event", async () => {
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
       world: "w1",
-      selfUserId: "userA",
       connect: (h) => {
         onMessage = h.onMessage;
         return Promise.resolve({ send: () => {}, close: () => {} });
@@ -1023,29 +1029,50 @@ describe("WsClient", () => {
     let resolved = false;
     void p.then(() => (resolved = true));
 
-    // Unrelated event (different author) must NOT resolve the pending combat entry.
-    onMessage(
-      JSON.stringify({
-        type: "event",
-        command: { seq: 1, world_id: "w1", author: "userB", ts: 0, ops: [] },
-        intent_id: null,
-      }),
-    );
+    // combat_result arrives ahead of its event: seq 1 is not yet applied (nextExpected is 1).
+    onMessage(JSON.stringify({ type: "combat_result", request_id: "r1", seq: 1 }));
     await flush();
     expect(resolved).toBe(false);
 
-    // Matching-author event resolves it.
+    // The event at that seq applies: the post-apply sweep resolves the pending entry.
     onMessage(
       JSON.stringify({
         type: "event",
-        command: { seq: 2, world_id: "w1", author: "userA", ts: 0, ops: [] },
+        command: { seq: 1, world_id: "w1", author: "userA", ts: 0, ops: [] },
         intent_id: null,
       }),
     );
     await expect(p).resolves.toBeUndefined();
   });
 
-  it("combat() without selfUserId configured never resolves from an event frame", async () => {
+  it("combat() resolves immediately when combat_result arrives after its event already applied", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+
+    // The event applies first (nextExpected advances to 2).
+    onMessage(
+      JSON.stringify({
+        type: "event",
+        command: { seq: 1, world_id: "w1", author: "userA", ts: 0, ops: [] },
+        intent_id: null,
+      }),
+    );
+    // combat_result names an already-applied seq: resolves right away.
+    onMessage(JSON.stringify({ type: "combat_result", request_id: "r1", seq: 1 }));
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("an event authored by self with no combat_result resolves nothing (the old FIFO behaviour is gone)", async () => {
     let onMessage: (d: string) => void = () => {};
     const client = new WsClient({
       world: "w1",
@@ -1068,6 +1095,7 @@ describe("WsClient", () => {
       () => (rejected = true),
     );
 
+    // An ordinary self-authored write (e.g. a token drag), never a combat_result.
     onMessage(
       JSON.stringify({
         type: "event",
@@ -1079,8 +1107,93 @@ describe("WsClient", () => {
     expect(resolved).toBe(false);
     expect(rejected).toBe(false);
 
-    // Only settles via combat_error or timeout — confirm the timeout path still fires.
+    // Only combat_error or the timeout settles it — confirm the timeout path still fires.
     await expect(p).rejects.toThrow(/timeout/i);
+  });
+
+  it("combat_error rejects with the server's message", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+    onMessage(JSON.stringify({ type: "combat_error", request_id: "r1", message: "combat rejected" }));
+    await expect(p).rejects.toThrow("combat rejected");
+  });
+
+  it("combat() times out and clears its entry when neither combat_result nor combat_error arrives", async () => {
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.combat(
+      { type: "combat_advance", request_id: "r1", combat_id: "c1" },
+      { timeoutMs: 20 },
+    );
+    await expect(p).rejects.toThrow(/timeout/i);
+  });
+
+  it("failPending rejects a pending combat() on disconnect", async () => {
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: () => {}, close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    const p = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+    client.stop();
+    await expect(p).rejects.toThrow();
+  });
+
+  it("two in-flight combat intents resolve independently by request_id regardless of reply order", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: noop,
+    });
+    await client.start();
+
+    const p1 = client.combat({ type: "combat_advance", request_id: "r1", combat_id: "c1" });
+    const p2 = client.combat({ type: "combat_advance", request_id: "r2", combat_id: "c1" });
+
+    // r2's event applies first, then its combat_result — r1 must remain pending.
+    onMessage(
+      JSON.stringify({
+        type: "event",
+        command: { seq: 1, world_id: "w1", author: "userA", ts: 0, ops: [] },
+        intent_id: null,
+      }),
+    );
+    onMessage(JSON.stringify({ type: "combat_result", request_id: "r2", seq: 1 }));
+    await expect(p2).resolves.toBeUndefined();
+
+    let p1Resolved = false;
+    void p1.then(() => (p1Resolved = true));
+    await flush();
+    expect(p1Resolved).toBe(false);
+
+    onMessage(
+      JSON.stringify({
+        type: "event",
+        command: { seq: 2, world_id: "w1", author: "userA", ts: 0, ops: [] },
+        intent_id: null,
+      }),
+    );
+    onMessage(JSON.stringify({ type: "combat_result", request_id: "r1", seq: 2 }));
+    await expect(p1).resolves.toBeUndefined();
   });
 
   it("sendChatMessage sends a send_message frame with defaulted audience and actor_owner", async () => {

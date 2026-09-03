@@ -235,7 +235,14 @@ arrested: boolean,
  * True when the mover's movement budget truncated the route short of
  * the goal (Hard enforcement; reaches only the requester's own preview).
  */
-truncated: boolean, } | { "type": "path_error", 
+truncated: boolean, 
+/**
+ * The named token's remaining movement budget in cells, present iff the requester can
+ * READ the combat's combatant for that token (`BudgetGate::enforced`) — regardless of
+ * enforcement mode, so a GM or a `Warn`/`None` mover still sees the number. `None` when
+ * the token names no combatant, the caller cannot read it, or no combat is running.
+ */
+budget_cells: number | null, } | { "type": "path_error", 
 /**
  * The failed pathfind's correlation token.
  */
@@ -267,7 +274,15 @@ request_id: string,
 /**
  * Player-presentable failure text.
  */
-message: string, } | { "type": "move_stream", 
+message: string, } | { "type": "combat_result", 
+/**
+ * The confirmed combat intent's correlation token.
+ */
+request_id: string, 
+/**
+ * The committed command's sequence number — matches the broadcast `Event`'s `seq`.
+ */
+seq: bigint, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */

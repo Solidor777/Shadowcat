@@ -9,8 +9,10 @@ import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-
 import {
   buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
   COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
+  newCombatEngine, ENGINE_COMBAT_DEFAULTS,
   type CombatEngine, type CombatantEngine, type ResourceRegistryEngine, type Resource, type EffectEngine,
 } from "./scene-docs";
+import { readFileSync } from "node:fs";
 import {
   buildSystemDefaultsDoc, resolveSettingProvenance,
   type SystemDefaultsEngine,
@@ -528,6 +530,30 @@ describe("combat document builders", () => {
     effect_cleanup: true, rewind_restore: true, forward_restore: false,
     effect_lifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
   };
+
+  it("ENGINE_COMBAT_DEFAULTS matches the shared fixture the Rust side pins byte-equal", () => {
+    const fixture = JSON.parse(
+      readFileSync(new URL("./__fixtures__/engine-combat-defaults.json", import.meta.url), "utf8"),
+    );
+    expect(ENGINE_COMBAT_DEFAULTS).toEqual(fixture);
+  });
+
+  it("newCombatEngine builds a placeholder clock at the engine defaults", () => {
+    const e = newCombatEngine("scene-1");
+    expect(e).toEqual({
+      scene_id: "scene-1",
+      active: false,
+      round: 0,
+      turn: null,
+      order: [],
+      turn_control: "owner_may_end",
+      movement: { resource: null, interpretation: "per_cell", enforcement: "none" },
+      effect_cleanup: true,
+      rewind_restore: true,
+      forward_restore: false,
+      effect_lifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: null },
+    });
+  });
 
   it("buildCombatDoc is a parentless engine doc", () => {
     const d = buildCombatDoc("world-1", combatEngine);

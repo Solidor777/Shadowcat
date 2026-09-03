@@ -609,6 +609,11 @@ pub enum ServerMsg {
         /// True when the mover's movement budget truncated the route short of
         /// the goal (Hard enforcement; reaches only the requester's own preview).
         truncated: bool,
+        /// The named token's remaining movement budget in cells, present iff the requester can
+        /// READ the combat's combatant for that token (`BudgetGate::enforced`) — regardless of
+        /// enforcement mode, so a GM or a `Warn`/`None` mover still sees the number. `None` when
+        /// the token names no combatant, the caller cannot read it, or no combat is running.
+        budget_cells: Option<f64>,
     },
     /// The `Pathfind` with this `request_id` failed (unreachable / invalid request / search exceeded).
     PathError {
@@ -641,12 +646,23 @@ pub enum ServerMsg {
     /// A combat intent (`CombatStart`/`CombatPause`/`CombatEnd`/`CombatAdvance`/`CombatRewind`/
     /// `CombatRoll`/`CombatResource`/`CombatSort`) was rejected. One wording for every refusal —
     /// never distinguishes hidden from absent from not-yours. Addressed to the originating
-    /// connection only; never broadcast. Success is confirmed by the broadcast `Event` echo.
+    /// connection only; never broadcast. Success is confirmed by a correlated `CombatResult`.
     CombatError {
         /// The refused combat intent's correlation token.
         request_id: Uuid,
         /// Player-presentable failure text.
         message: String,
+    },
+    /// A combat intent was accepted and committed as the sequenced `Event` at `seq`. Addressed to
+    /// the originating connection only; never broadcast. The broadcast `Event` remains the state
+    /// notification — this frame only correlates it, and may arrive before OR after that `Event`
+    /// (`egress_loop` is `biased;` on this connection's own reply channel, ahead of the room
+    /// broadcast channel).
+    CombatResult {
+        /// The confirmed combat intent's correlation token.
+        request_id: Uuid,
+        /// The committed command's sequence number — matches the broadcast `Event`'s `seq`.
+        seq: i64,
     },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
     /// trajectory and `mover_vision`; observers receive only the position samples their own vision

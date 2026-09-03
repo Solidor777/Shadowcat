@@ -1,7 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { test, expect } from "vitest";
 import type { SceneTool } from "@shadowcat/render";
-import { SceneInteractionBridge } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildSceneDoc, buildTokenDoc, type WireOperation } from "@shadowcat/core";
@@ -92,7 +92,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
       scene,
       documents: docs,
       tokenSelection: sel,
-      pathfind: async () => ({ path: [[0, 0], [100, 0]], cost: 1, arrested: false, truncated: false }),
+      pathfind: async () => ({ path: [[0, 0], [100, 0]], cost: 1, arrested: false, truncated: false, budgetCells: null }),
       moveRequest: async (_s, tokenId, path) => {
         moves.push({ tokenId, path });
         return {
@@ -115,6 +115,60 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
 
   expect(moves.length).toBe(1);
   expect(moves[0].tokenId).toBe("tok1");
+});
+
+// Regression, same class as the `moveRequest` omission above: `AppContext.t` exists and
+// `requestRoute`'s label logic is proven under a unit-level `ToolContext`, but ToolRail's
+// `new ToolController({...})` literal is the ONE place the host's seams become the tools',
+// and a member it leaves out degrades silently. Drives the real rail with a translator that
+// marks every call, so the label can only carry the marker if the rail wired `t` through.
+test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must wire it into the controller)", async () => {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1") },
+      {
+        op: "create",
+        doc: buildTokenDoc("w1", "s1", {
+          x: 50, y: 50, w: 100, h: 100, rotation: 0,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+        }, "tok1"),
+      },
+    ],
+  });
+  const sel = new TokenSelection();
+  sel.set(["tok1"]);
+  const labels: string[] = [];
+  const tools: (SceneTool | null)[] = [];
+  const scene = new SceneInteractionBridge();
+  scene.attach(fakeSceneHost({
+    setActiveTool: (t) => tools.push(t),
+    snap: (p) => p,
+    drawMeasure: (_f, _t, label) => labels.push(label),
+  }));
+  const combat = {
+    activeFor: () => ({ id: "combat-1", engine: { movement: { resource: "movement", interpretation: "per_cell", enforcement: "warn" } } }),
+  } as unknown as AppContext["combat"];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      documents: docs,
+      tokenSelection: sel,
+      combat,
+      t: (key, params) => `<${key}${params ? ":" + JSON.stringify(params) : ""}>`,
+      pathfind: async () => ({ path: [[50, 50], [150, 50]], cost: 7, arrested: false, truncated: false, budgetCells: 5 }),
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-measure"));
+  const tool = tools.at(-1)!;
+  const ev = {} as PointerEvent;
+  tool.onPointerDown({ x: 50, y: 50 }, ev);
+  tool.onPointerMove({ x: 150, y: 50 }, ev);
+  await new Promise((r) => setTimeout(r, 0)); // drain the pathfind microtasks
+
+  expect(labels.at(-1)).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}>');
 });
 
 /** Every authoring tool: creates or edits scene content, GM-only. */
@@ -176,7 +230,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
       documents: docs,
       tokenSelection: new TokenSelection(),
       dispatchIntent: (ops) => dispatched.push(ops),
-      pathfind: async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!], cost: 1, arrested: false, truncated: false }),
+      pathfind: async (_s, start, waypoints) => ({ path: [start, waypoints.at(-1)!], cost: 1, arrested: false, truncated: false, budgetCells: null }),
       moveRequest: async (s, tokenId, path) => {
         moves.push({ tokenId, path });
         return {

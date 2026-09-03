@@ -78,11 +78,13 @@ Every `ServerMsg` variant:
 | `scene_error` | Scene subscription failed |
 | `asset_changed` | Out-of-band notice: an asset was `created`, `replaced` (cache-bust signal), `moved` (name/folder/tags; version unchanged) or `deleted` |
 | `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
-| `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
+| `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag, and `budget_cells` — the mover's remaining movement budget in cells under an enforced combat, `null` when no enforced combat applies ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
 | `path_error` | Pathfind request failed |
 | `move_error` | Move request failed |
 | `chat_error` | Chat send/edit/delete failed |
 | `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
+| `combat_result` | A `combat_*` intent from you was accepted; carries the committed `seq` your correlated wait resolves on |
+| `combat_error` | A `combat_*` intent from you was refused; carries the player-presentable reason |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
@@ -106,6 +108,14 @@ Every `ClientMsg` variant:
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+| `combat_start` | Activate a combat |
+| `combat_pause` | Deactivate a combat, preserving its clock position |
+| `combat_end` | End a combat (deletes it; children cascade) |
+| `combat_advance` | End the current turn |
+| `combat_rewind` | Step the clock back to the previous turn record |
+| `combat_sort` | Rebuild the turn order from current initiatives |
+| `combat_roll` | Roll initiative for named combatants, posting the result to a chat channel |
+| `combat_resource` | Adjust one combatant's tracked resource (delta or set) |
 
 Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
 attributes.str` — never a client-substituted string. The server rewrites each
@@ -132,3 +142,14 @@ position samples and mover-vision polygons are **clipped per recipient** before
 sending — an observer who cannot see a stretch of the path simply never
 receives it (the nullable `cost` exists for the same reason: the true cost can
 leak secret terrain).
+
+The `"combat"` channel carries every combat's resolved per-combatant resource numbers
+(`current`/`max`/`error` for each registry-key binding) and movement-in-cells conversion
+(`movement_cells` — present only when the combat's movement resource is a `tracked` binding
+that resolves, through the same resolution the movement-budget gate reads, so a `mirror`
+binding is `null` here exactly as the gate refuses it), recomputed on every combat/combatant
+mutation. There is no client-side formula evaluation for
+combat resources: a hidden combatant is absent from the payload entirely, and a visible
+combatant's `resources` is `null` for a recipient the `/engine/resources` property tier does not
+admit (a non-owner, non-GM reader) — the same two-gate discipline the `"footprints"` channel
+follows.

@@ -99,3 +99,29 @@ test("the logout handler logs out, resets session state, then navigates in that 
 
   session.leave();
 });
+
+test("AppContext.combat is the session's own combat controller", async () => {
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  let ctx!: AppContext;
+  session.contributions.contribute({
+    id: "app-context-capture",
+    contract: "shadowcat.surface:root",
+    component: AppContextCapture,
+    props: { onContext: (c: AppContext) => { ctx = c; } },
+  });
+
+  render(Table, { props: { session, leaveWorld: vi.fn(), serverRole: "user" } });
+  await vi.waitFor(() => expect(ctx).toBeTruthy());
+
+  expect(ctx.combat).toBe(session.combat);
+
+  session.leave();
+});

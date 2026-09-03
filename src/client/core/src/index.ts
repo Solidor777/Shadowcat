@@ -70,6 +70,9 @@ export {
   ServerMsgSchema,
   CapabilityRequirementSchema,
   SearchHitSchema,
+  parseCombats,
+  EMPTY_COMBATS,
+  CombatsPayloadSchema,
 } from "./wire";
 export type {
   ServerMsg,
@@ -90,6 +93,12 @@ export type {
   WireMoveStreamSample,
   WireMoveStreamVisionSample,
   WireRecalcOp,
+  WireCombatRollEntry,
+  WireResourceOp,
+  CombatsView,
+  CombatView,
+  CombatantView,
+  ResolvedResourceView,
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type {
@@ -118,12 +127,29 @@ export { listInstalledModules, getEnabledModules, setEnabledModules } from "./mo
 export type { InstalledModuleInfo } from "@shadowcat/types";
 export { listUsers, createUser, deleteUser, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite } from "./user-rest";
 export type { ServerUser, WorldMember, MintedInvite, InviteEntry } from "./user-rest";
-export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE, deterministicId, COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, SYSTEM_DEFAULTS_DOC_TYPE, buildSystemDefaultsDoc, resolveSettingProvenance } from "./scene-docs";
+export { buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE, deterministicId, COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, buildCombatDoc, buildCombatantDoc, newCombatEngine, ENGINE_COMBAT_DEFAULTS, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, SYSTEM_DEFAULTS_DOC_TYPE, buildSystemDefaultsDoc, resolveSettingProvenance } from "./scene-docs";
 export type { SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, VisionModesEngine, VisionAssignment, LightEngine, RegionShapeKind, RegionShape, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, NoticeAudience, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, CombatEngine, CombatantEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
 export { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { parseFootprints, EMPTY_FOOTPRINTS } from "./footprints";
 export type { FootprintExtent, FootprintLookup } from "./footprints";
+export { COMBAT_SERVICE, CombatController, CombatClientError } from "./combat";
+export type {
+  CombatApi,
+  CombatControllerDeps,
+  CombatAffordances,
+  NewCombatant,
+  NewEvent,
+  WorldRole,
+} from "./combat";
+export {
+  COMBAT_HOOK_VERSION,
+  defineCombatHooks,
+  deriveCombatHookEvents,
+  commandTouchesCombat,
+  CombatHookEmitter,
+} from "./combat-hooks";
+export type { CombatHookEvent } from "./combat-hooks";
 export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
 export type { SheetRef, SheetTarget } from "./sheets";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, DocLinkTargetSchema, ChatSegmentSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
