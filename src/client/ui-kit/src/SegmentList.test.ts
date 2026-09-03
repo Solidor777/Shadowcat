@@ -332,6 +332,13 @@ describe("SegmentList — table_draw", () => {
     });
     expect(container.querySelector(".table-draw-nested .table-draw")).not.toBeNull();
     expect(container.textContent).toContain("a gem");
+    // The nested block carries an accessible label (chat.table.nested) --
+    // a screen reader gets nothing from the CSS indent alone. This fixture's
+    // `t` is an identity echo (see appContextTest.ts), so the resolved
+    // value is the raw key, not the catalog's rendered string.
+    expect(container.querySelector(".table-draw-nested")?.getAttribute("aria-label")).toBe(
+      "chat.table.nested",
+    );
   });
 
   it("renders row.content through this same component", () => {

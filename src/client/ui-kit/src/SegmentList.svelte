@@ -36,7 +36,18 @@
    */
   function docLinkOpenRef(
     target: DocLinkTarget,
-  ): { /** The resolved top-level document's id. */ docId: string; /** A one-level embedded-child pointer, if any. */ embeddedPath?: string } | { /** The resolved placed token's document id. */ tokenId: string } | null {
+  ):
+    | {
+        /** The resolved top-level document's id. */
+        docId: string;
+        /** A one-level embedded-child pointer, if any. */
+        embeddedPath?: string;
+      }
+    | {
+        /** The resolved placed token's document id. */
+        tokenId: string;
+      }
+    | null {
     if (target.kind === "doc") {
       return ctx.documents.get(target.doc_id)
         ? { docId: target.doc_id, embeddedPath: target.embedded_path ?? undefined }
@@ -222,9 +233,11 @@
     `roll_property_overrides`) — this component never reads them, same as
     `roll_embed`'s own GM-only fields staying opaque to RollTooltip beyond
     the recalc menu. Recursive: `row.content` renders through this SAME
-    component (`<svelte:self>`), and each `row.nested` entry is itself a
-    full `table_draw` segment, wrapped as a one-element segment list so the
-    identical recursive branch renders it, indented. -->
+    component, self-imported at the top of this file (the Svelte-5-idiomatic
+    way to self-reference a component, in place of `<svelte:self>`), and
+    each `row.nested` entry is itself a full `table_draw` segment, wrapped
+    as a one-element segment list so the identical recursive branch renders
+    it, indented. -->
     <div class="table-draw">
       <div class="table-draw-header">
         <RollTooltip outcome={s.outcome} recalcHistory={null} />
@@ -233,7 +246,7 @@
         <div class="table-draw-row-label">{s.row.label}</div>
         <SegmentList segments={s.row.content} {channel} />
         {#if s.row.nested.length > 0}
-          <div class="table-draw-nested">
+          <div class="table-draw-nested" aria-label={t("chat.table.nested")}>
             {#each s.row.nested as nested, j (j)}
               <SegmentList segments={[nested]} {channel} />
             {/each}
