@@ -10,6 +10,7 @@
     type SettingPath,
   } from "@shadowcat/core";
   import CombatSettings from "./CombatSettings.svelte";
+  import CombatSceneOverrides from "./CombatSceneOverrides.svelte";
 
   const ctx = getAppContext();
 
@@ -700,6 +701,8 @@
             unit: (e.currentTarget as HTMLInputElement).value,
           })} />
       </label>
+
+      <CombatSceneOverrides {scene} {ssys} {setScene} />
 
       <!-- Scene bounds: per-scene only, fixed default (not an inherit-from-world tri-state). -->
       <label>
