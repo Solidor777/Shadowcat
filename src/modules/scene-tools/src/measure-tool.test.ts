@@ -25,7 +25,7 @@ function setup() {
     clearMeasure: () => { cleared++; },
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {} };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: new DocumentStore(), assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
   return { tool: makeMeasureTool(ctx), measures, sent, clears: () => cleared };
 }
 
@@ -44,6 +44,10 @@ test("measuring draws the distance label and persists nothing", () => {
 
 // --- Route-mode tests ---
 
+/** A translator that marks every call with its key and params, so a label assertion proves the
+ * string went through `ctx.t` — there is no English default a label could have come from. */
+const markedT: ToolContext["t"] = (key, params) => `<${key}${params ? ":" + JSON.stringify(params) : ""}>`;
+
 /** Build a ToolContext with a scene + token seeded, a single token selected, and a pathfind stub. */
 function setupRoute(over: {
   pathfind?: ToolContext["pathfind"];
@@ -53,6 +57,10 @@ function setupRoute(over: {
   clearScheduledTimeout?: ToolContext["clearScheduledTimeout"];
   /** Scene-level vision overrides. Absent ⇒ grid-stepped default. */
   sceneVision?: { movementModel?: "grid-stepped" | "continuous" };
+  /** Advisory combat seam; absent ⇒ no active combat (plain budget label). */
+  combat?: ToolContext["combat"];
+  /** Translate seam; absent ⇒ `markedT`. */
+  t?: ToolContext["t"];
 } = {}) {
   const docs = new DocumentStore();
   // Scene with grid.distance so the budget label can be computed.
@@ -112,9 +120,23 @@ function setupRoute(over: {
     now: over.now,
     scheduleTimeout: over.scheduleTimeout,
     clearScheduledTimeout: over.clearScheduledTimeout,
+    combat: over.combat,
+    t: over.t ?? markedT,
   };
 
   return { tool: makeMeasureTool(ctx), overlays, measures, overlayClears: () => overlayClears, measureClears: () => measureClears };
+}
+
+/** A fake `CombatApi` exposing only `activeFor`, returning a combat whose
+ * `engine.movement.enforcement` is `enforcement` for every scene. */
+function fakeCombat(enforcement: "none" | "warn" | "hard"): ToolContext["combat"] {
+  return {
+    activeFor: () =>
+      ({
+        id: "combat-1",
+        engine: { movement: { resource: null, interpretation: "per_cell", enforcement } },
+      }) as never,
+  } as unknown as ToolContext["combat"];
 }
 
 test("measure tool routes via pathfind for the selected token and previews the path", async () => {
@@ -123,6 +145,7 @@ test("measure tool routes via pathfind for the selected token and previews the p
     cost: 2,
     arrested: false,
       truncated: false,
+      budgetCells: null,
   });
   const { tool, overlays, measures } = setupRoute({ pathfind });
 
@@ -135,11 +158,100 @@ test("measure tool routes via pathfind for the selected token and previews the p
   expect(measures.at(-1)!.label).toContain("10 ft"); // budget = cost(2) × perCell(5)
 });
 
+test("Warn overage: label gets the over-budget suffix, stroke turns ROUTE_WARN_COLOR", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 7,
+    arrested: false,
+    truncated: false,
+    budgetCells: 5,
+  });
+  const { tool, overlays, measures } = setupRoute({ pathfind, combat: fakeCombat("warn") });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(measures.at(-1)!.label).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}>');
+  const stroke = (overlays.at(-1)![0] as { stroke: { color: number } }).stroke;
+  expect(stroke.color).toBe(0xffa500);
+});
+
+test("Hard truncation: label gets the budget-stop suffix, polyline stroke is unchanged", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 7,
+    arrested: false,
+    truncated: true,
+    budgetCells: 5,
+  });
+  const { tool, overlays, measures } = setupRoute({ pathfind, combat: fakeCombat("hard") });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(measures.at(-1)!.label).toBe("35 ft · <tools.budgetStop>");
+  const stroke = (overlays.at(-1)![0] as { stroke: { color: number } }).stroke;
+  expect(stroke.color).toBe(0x3399ff);
+});
+
+test("no overage/stop suffix under none enforcement, a null budget, or no active combat", async () => {
+  const base = { path: [[50, 50], [150, 50]] as [number, number][], cost: 7, arrested: false };
+
+  // enforcement: "none"
+  {
+    const pathfind: ToolContext["pathfind"] = async () => ({ ...base, truncated: false, budgetCells: 5 });
+    const { tool, measures } = setupRoute({ pathfind, combat: fakeCombat("none") });
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 150, y: 50 }, ev());
+    await flush();
+    expect(measures.at(-1)!.label).toBe("35 ft");
+  }
+
+  // budgetCells: null under Warn
+  {
+    const pathfind: ToolContext["pathfind"] = async () => ({ ...base, truncated: false, budgetCells: null });
+    const { tool, measures } = setupRoute({ pathfind, combat: fakeCombat("warn") });
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 150, y: 50 }, ev());
+    await flush();
+    expect(measures.at(-1)!.label).toBe("35 ft");
+  }
+
+  // no active combat
+  {
+    const pathfind: ToolContext["pathfind"] = async () => ({ ...base, truncated: false, budgetCells: 5 });
+    const { tool, measures } = setupRoute({ pathfind });
+    tool.onPointerDown({ x: 50, y: 50 }, ev());
+    tool.onPointerMove({ x: 150, y: 50 }, ev());
+    await flush();
+    expect(measures.at(-1)!.label).toBe("35 ft");
+  }
+});
+
+test("arrested keeps its warning suffix alongside a Warn overage label", async () => {
+  const pathfind: ToolContext["pathfind"] = async () => ({
+    path: [[50, 50], [150, 50]] as [number, number][],
+    cost: 7,
+    arrested: true,
+    truncated: false,
+    budgetCells: 5,
+  });
+  const { tool, measures } = setupRoute({ pathfind, combat: fakeCombat("warn") });
+
+  tool.onPointerDown({ x: 50, y: 50 }, ev());
+  tool.onPointerMove({ x: 150, y: 50 }, ev());
+  await flush();
+
+  expect(measures.at(-1)!.label).toBe('35 ft · <tools.overBudget:{"over":"10 ft"}> ⚠');
+});
+
 test("measure tool falls back to plain anchor-point measure when no token is selected", () => {
   const pathfinderCalled: boolean[] = [];
   const pathfind: ToolContext["pathfind"] = async () => {
     pathfinderCalled.push(true);
-    return { path: [], cost: 0, arrested: false, truncated: false };
+    return { path: [], cost: 0, arrested: false, truncated: false, budgetCells: null };
   };
   // Build the route context but override tokenIds to empty — no selection.
   const { tool, overlays } = setupRoute({ pathfind, tokenIds: [] });
@@ -158,6 +270,7 @@ test("measure tool clears overlay and measure label on pointer up (mid-gesture-c
     cost: 2,
     arrested: false,
       truncated: false,
+      budgetCells: null,
   });
   const { tool, overlayClears, measureClears } = setupRoute({ pathfind });
 
@@ -189,7 +302,7 @@ test("measure tool with no pathfind function falls back to plain measure", () =>
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
     tokenSelection: sel,
     // pathfind intentionally omitted — defensive fallback
   };
@@ -210,7 +323,7 @@ test("measure tool onDeactivate clears route overlay on tool swap (mid-gesture-c
   // onDeactivate fires and clears the live overlay + budget label. We test onDeactivate
   // directly because ToolController.toggle calls tool.onDeactivate?.() before swapping.
   const { tool, overlayClears, measureClears } = setupRoute({
-    pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2, arrested: false, truncated: false }),
+    pathfind: async () => ({ path: [[50, 50], [150, 50]] as [number, number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
   });
 
   tool.onPointerDown({ x: 50, y: 50 }, ev());
@@ -248,7 +361,7 @@ test("ToolController.toggle fires onDeactivate on outgoing measure tool", () => 
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
   };
 
   const controller = new ToolController(ctx);
@@ -274,7 +387,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
   const calls: { start: [number,number]; waypoints: [number,number][] }[] = [];
   const pathfind: ToolContext["pathfind"] = async (_, start, waypoints) => {
     calls.push({ start, waypoints: [...waypoints] });
-    return { path: [[start[0], start[1]], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number,number][], cost: waypoints.length, arrested: false, truncated: false };
+    return { path: [[start[0], start[1]], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number,number][], cost: waypoints.length, arrested: false, truncated: false, budgetCells: null };
   };
 
   const bridge = new SceneInteractionBridge();
@@ -282,7 +395,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
 
   const sel = new TokenSelection();
   sel.set(["tok-1"]);
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: () => {}, documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, tokenSelection: sel, pathfind };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: () => {}, documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, tokenSelection: sel, pathfind };
 
   const tool = makeMeasureTool(ctx);
 
@@ -303,7 +416,7 @@ test("route preview names the single selected token in the pathfind call", async
   const calls: (string | undefined)[] = [];
   const pathfind: ToolContext["pathfind"] = async (_scene, _start, waypoints, _fp, token) => {
     calls.push(token);
-    return { path: [[50, 50], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false, truncated: false };
+    return { path: [[50, 50], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null };
   };
   const { tool } = setupRoute({ pathfind });
 
@@ -318,7 +431,7 @@ test("commit's fallback pathfind also names the single selected token", async ()
   const calls: (string | undefined)[] = [];
   const pathfind: ToolContext["pathfind"] = async (_scene, _start, waypoints, _fp, token) => {
     calls.push(token);
-    return { path: [[0, 0], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false, truncated: false };
+    return { path: [[0, 0], [waypoints.at(-1)![0], waypoints.at(-1)![1]]] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null };
   };
   const { ctx, now } = seedRouteCtx({
     pathfind,
@@ -341,7 +454,7 @@ test("route mode is never entered with zero or multiple tokens selected, so path
   const pathfinderCalled: unknown[] = [];
   const pathfind: ToolContext["pathfind"] = async (_scene, _start, _waypoints, _fp, token) => {
     pathfinderCalled.push(token);
-    return { path: [], cost: 0, arrested: false, truncated: false };
+    return { path: [], cost: 0, arrested: false, truncated: false, budgetCells: null };
   };
   const { tool: multiTool, overlays: multiOverlays } = setupRoute({ pathfind, tokenIds: ["tok-1", "tok-2"] });
 
@@ -359,6 +472,7 @@ test("route mode: an arrested PathResult appends an arrest marker to the budget 
     cost: 2,
     arrested: true,
       truncated: false,
+      budgetCells: null,
   });
   const { tool, measures } = setupRoute({ pathfind });
 
@@ -382,6 +496,7 @@ test("route mode on a continuous-movement scene labels the wire cost as cells, n
     cost: 5, // cells: a 500-scene-unit straight route at cell 100
     arrested: false,
       truncated: false,
+      budgetCells: null,
   });
   const { tool, measures } = setupRoute({ pathfind, sceneVision: { movementModel: "continuous" } });
 
@@ -440,7 +555,7 @@ function makeFakeClock(initial = 0): FakeClock {
 test("rapid pointer moves during route preview are debounced to a bounded request rate, leading-edge", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
-    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false }); });
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false, budgetCells: null }); });
   const clock = makeFakeClock();
   const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
@@ -458,7 +573,7 @@ test("rapid pointer moves during route preview are debounced to a bounded reques
 test("a stale route-preview pathfind response is ignored via the pendingSeq guard", async () => {
   // The debounce reduces REQUEST volume only: it must not touch or weaken the last-write-wins
   // staleness check on RESPONSES.
-  const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean; truncated: boolean }) => void> = [];
+  const resolvers: Array<(r: { path: [number, number][]; cost: number; arrested: boolean; truncated: boolean; budgetCells: number | null }) => void> = [];
   const pathfind: ToolContext["pathfind"] = () => new Promise((res) => { resolvers.push(res); });
   const clock = makeFakeClock();
   const { tool, measures } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
@@ -470,9 +585,9 @@ test("a stale route-preview pathfind response is ignored via the pendingSeq guar
   expect(resolvers.length).toBe(2);
 
   // Resolve the NEWER request first, then the STALE one — the stale one must be ignored.
-  resolvers[1]({ path: [[50, 50], [200, 50]], cost: 4, arrested: false, truncated: false });
+  resolvers[1]({ path: [[50, 50], [200, 50]], cost: 4, arrested: false, truncated: false, budgetCells: null });
   await flush();
-  resolvers[0]({ path: [[50, 50], [60, 50]], cost: 1, arrested: false, truncated: false });
+  resolvers[0]({ path: [[50, 50], [60, 50]], cost: 1, arrested: false, truncated: false, budgetCells: null });
   await flush();
 
   expect(measures.at(-1)!.label).toContain("20 ft"); // request #2's budget: cost(4) × perCell(5)
@@ -481,7 +596,7 @@ test("a stale route-preview pathfind response is ignored via the pendingSeq guar
 test("a move suppressed by the debounce still fires once the cooldown elapses, even with no further move event (hover-only stop)", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
-    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false }); });
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false, budgetCells: null }); });
   const clock = makeFakeClock();
   const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
@@ -498,7 +613,7 @@ test("a move suppressed by the debounce still fires once the cooldown elapses, e
 test("clearing the route before the deferred timer elapses cancels it (no leaked-timer stray request)", () => {
   const calls: number[] = [];
   const pathfind: ToolContext["pathfind"] = () =>
-    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false }); });
+    new Promise((res) => { calls.push(1); res({ path: [[50, 50], [150, 50]], cost: 2, arrested: false, truncated: false, budgetCells: null }); });
   const clock = makeFakeClock();
   const { tool } = setupRoute({ pathfind, now: clock.now, scheduleTimeout: clock.scheduleTimeout, clearScheduledTimeout: clock.clearScheduledTimeout });
 
@@ -603,6 +718,7 @@ function seedRouteCtx(over: {
     scene: bridge,
     dispatchIntent: over.dispatchIntent ?? defaultDispatch,
     documents: docs,
+    t: (k) => k,
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
@@ -623,7 +739,7 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
     return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2, arrested: false, truncated: false }),
+    pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
@@ -646,7 +762,7 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
     return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false, truncated: false }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
     sceneVision: { movementModel: "continuous" },
@@ -662,7 +778,7 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
 test("a single click in route mode does NOT commit", async () => {
   const moves: Array<unknown> = [];
   const { ctx } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
     moveRequest: async (_s, tokenId, path) => {
       moves.push({ tokenId, path });
       return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
@@ -690,7 +806,7 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
   let clearCount = 0;
 
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4, arrested: false, truncated: false }),
+    pathfind: async () => ({ path: [[0, 0], [200, 0], [200, 200]] as [number, number][], cost: 4, arrested: false, truncated: false, budgetCells: null }),
     moveRequest: deferredMoveRequest,
     onClearOverlay: () => { clearCount++; },
     tokenAt: { id: "tok1", x: 0, y: 0 },
@@ -734,7 +850,7 @@ test("rejected moveRequest calls clearRoute and does NOT animate", async () => {
   const animated: Array<{ id: string; path: [number, number][] }> = [];
 
   const { ctx, now } = seedRouteCtx({
-    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false }),
+    pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
     moveRequest: async () => Promise.reject(new Error("server denied")),
     animateAlongPath: (id, path) => animated.push({ id, path }),
     onClearOverlay: () => { overlayClears++; },
@@ -772,7 +888,7 @@ test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => {
       pathfindCalls.push(1);
-      return { path: cachedPath, cost: 2, arrested: false, truncated: false };
+      return { path: cachedPath, cost: 2, arrested: false, truncated: false, budgetCells: null };
     },
     moveRequest,
     tokenAt: { id: "tok1", x: 0, y: 0 },
@@ -825,6 +941,7 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
       cost: 1,
       arrested: false,
       truncated: false,
+      budgetCells: null,
     }),
     moveRequest: deferredMoveRequest,
     onClearOverlay: () => { clearCount++; },

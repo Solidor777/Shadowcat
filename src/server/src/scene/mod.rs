@@ -2896,6 +2896,149 @@ impl SceneEcs {
             scenes: by_scene.into_values().map(|(_, s)| s).collect(),
         }
     }
+    /// The resolved `"combat"` derived-channel payload for `ctx`: every combat `ctx` may READ,
+    /// each with every combatant `ctx` may READ, each with the registry's resolved resource
+    /// numbers (when the `/engine/resources` band is visible to `ctx`) and the combat's movement
+    /// budget in cells through the SAME `combat::budget::resolve_movement_budget` the
+    /// movement-budget gate (`ws::room::resolve_budget`) reads — including its
+    /// `ResourceBinding::Tracked` gate, so a `Mirror`-bound movement resource is `None` here
+    /// exactly as the gate refuses it. Sorted by id at every level (combats, then combatants)
+    /// for a stable fingerprint — the egress loop's change detection compares whole payloads.
+    ///
+    /// Readability mirrors `resolved_footprints`'s own two-gate discipline: a combat/combatant is
+    /// included only when `ctx_access` grants whole-document `cap::READ` on it (a hidden
+    /// combatant is ABSENT, never a placeholder, matching the document stream's own read
+    /// filter); its
+    /// `resources` entry is additionally gated on the `/engine` property tier for the pointer
+    /// `/engine/resources`, read from `permissions.property_overrides` (default `Visibility::All`)
+    /// through `Access::can_see` — the exact pair `filter_properties` runs at document egress.
+    pub(crate) fn resolved_combats(
+        &self,
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+    ) -> crate::combat::channel::CombatsPayload {
+        use crate::combat::channel::{
+            CombatView, CombatantView, CombatsPayload, ResolvedResourceView, ResourceBindingKind,
+        };
+        use crate::data::document::Visibility;
+
+        let registry = self.resource_registry_engine();
+
+        let mut combats: Vec<CombatView> = Vec::new();
+        for (combat_id, combat_doc) in &self.combats {
+            let access = self.ctx_access(ctx, world_defaults, combat_doc);
+            if !access.has(crate::data::permission::cap::READ) {
+                continue;
+            }
+            let Some(ce) = self.engine_as_cached::<eng::CombatEngine>(*combat_id, combat_doc)
+            else {
+                continue;
+            };
+
+            let mut combatants: Vec<(Uuid, CombatantView)> = Vec::new();
+            for e in self.world.query::<&SceneEntity>().iter() {
+                if e.doc.doc_type != "combatant" || e.doc.parent_id != Some(*combat_id) {
+                    continue;
+                }
+                let c_access = self.ctx_access(ctx, world_defaults, &e.doc);
+                if !c_access.has(crate::data::permission::cap::READ) {
+                    continue;
+                }
+                let Some(cengine) = self.engine_as_cached::<eng::CombatantEngine>(e.doc.id, &e.doc)
+                else {
+                    continue;
+                };
+
+                let resources_visible = e
+                    .doc
+                    .permissions
+                    .property_overrides
+                    .get("/engine/resources")
+                    .copied()
+                    .unwrap_or(Visibility::All);
+                let host = self.combatant_formula_host(&cengine.kind);
+                let resources = if c_access.can_see(resources_visible) {
+                    let mut resolved: BTreeMap<String, ResolvedResourceView> = BTreeMap::new();
+                    if let Some(reg) = &registry {
+                        for (key, def) in &reg.resources {
+                            let stored = cengine.resources.get(key).map(|r| r.current);
+                            let binding = match &def.binding {
+                                eng::ResourceBinding::Mirror { .. } => ResourceBindingKind::Mirror,
+                                eng::ResourceBinding::Tracked { .. } => {
+                                    ResourceBindingKind::Tracked
+                                }
+                            };
+                            match crate::combat::eval::resolved_resource(
+                                &def.binding,
+                                stored,
+                                host.as_ref(),
+                            ) {
+                                Ok(nums) => resolved.insert(
+                                    key.clone(),
+                                    ResolvedResourceView {
+                                        binding,
+                                        current: Some(nums.current),
+                                        max: Some(nums.max),
+                                        error: None,
+                                    },
+                                ),
+                                Err(e) => resolved.insert(
+                                    key.clone(),
+                                    ResolvedResourceView {
+                                        binding,
+                                        current: None,
+                                        max: None,
+                                        error: Some(e.detail),
+                                    },
+                                ),
+                            };
+                        }
+                    }
+                    Some(resolved)
+                } else {
+                    None
+                };
+
+                let movement_cells = resources.as_ref().and_then(|_| {
+                    let resource_key = ce.movement.resource.as_ref()?;
+                    let binding = registry
+                        .as_ref()?
+                        .resources
+                        .get(resource_key)
+                        .map(|r| &r.binding);
+                    crate::combat::budget::resolve_movement_budget(
+                        &crate::combat::budget::BudgetInputs {
+                            binding,
+                            stored: cengine.resources.get(resource_key).map(|r| r.current),
+                            host: host.as_ref(),
+                            interpretation: ce.movement.interpretation,
+                            per_cell: self.scene_per_cell(ce.scene_id),
+                        },
+                    )
+                    .map(|mb| mb.cells())
+                });
+
+                combatants.push((
+                    e.doc.id,
+                    CombatantView {
+                        id: e.doc.id,
+                        resources,
+                        movement_cells,
+                    },
+                ));
+            }
+            combatants.sort_by_key(|(id, _)| *id);
+
+            combats.push(CombatView {
+                id: *combat_id,
+                scene_id: ce.scene_id,
+                combatants: combatants.into_iter().map(|(_, v)| v).collect(),
+            });
+        }
+        combats.sort_by_key(|c| c.id);
+
+        CombatsPayload { combats }
+    }
 
     /// Scene-shared lighting/wall inputs for the visibility mask — `lighting_inputs_excluding`
     /// with nothing excluded, memoised the same way. `all_bright` short-circuits light
@@ -3897,6 +4040,9 @@ pub fn compute_derived(
         // The resolved drawn footprint of every readable token, so the client renders and
         // hit-tests the authoritative geometry instead of re-deriving it from a second formula.
         "footprints" => serde_json::to_value(ecs.resolved_footprints(ctx, world_defaults)).ok(),
+        // Server-resolved combat resource numbers and movement budgets, per recipient — the
+        // client evaluates and stores nothing (`SceneEcs::resolved_combats`'s own doc comment).
+        "combat" => serde_json::to_value(ecs.resolved_combats(ctx, world_defaults)).ok(),
         // Per-player vision: the GM sees all; a player gets ONLY their own visibility
         // polygons, per-recipient. A token-less player gets empty polygons → full fog (the
         // client masks everything outside `polygons`, so empty = see nothing, never see-all).

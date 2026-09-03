@@ -2,11 +2,13 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
   import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
-  import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
+  import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
   const ctx = getAppContext();
   // The controller is fixed per ToolRail instance; capturing the context once is intended.
+  // `satisfies HostToolContext` makes every AppContext-supplied ToolContext member mandatory
+  // here, so a seam the host has can never be left out of this literal without a type error.
   // svelte-ignore state_referenced_locally
   const controller = new ToolController({
     scene: ctx.scene,
@@ -20,9 +22,11 @@
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
+    combat: ctx.combat,
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
-  });
+    t: ctx.t,
+  } satisfies HostToolContext);
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   // Gating is PER TOOL, not per component: the controller is constructed for every user so

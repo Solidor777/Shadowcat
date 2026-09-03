@@ -30,6 +30,8 @@
 // one this pattern replaces everywhere else — missing-required-field
 // detection via ordinary assignability — which is sound for them because
 // neither declares a top-level discriminated union of its own to narrow.
+import type { Logger } from "./logger";
+import type { CombatsPayload } from "@shadowcat/types";
 import { z } from "zod";
 
 /** A wire integer (i64/u32) — see the module note on number vs bigint. */
@@ -804,6 +806,11 @@ export type ServerMsg =
       arrested: boolean;
       /** True when the mover's movement budget truncated the route short of the goal. */
       truncated: boolean;
+      /** The named token's remaining movement budget in cells, present iff the requester can
+       * read the combat's combatant for that token — regardless of enforcement mode, so a GM
+       * or a `warn`/`none` mover still sees the number. `null` when the token names no
+       * combatant, the caller cannot read it, or no combat is running. */
+      budget_cells: number | null;
     }
   | {
       /** The `pathfind` with this `request_id` failed (unreachable / invalid request /
@@ -841,12 +848,23 @@ export type ServerMsg =
        * `combat_rewind`/`combat_roll`/`combat_resource`/`combat_sort`) was rejected. One
        * wording for every refusal — never distinguishes hidden from absent from not-yours.
        * Addressed to the originating connection only; never broadcast. Success is confirmed
-       * by the broadcast `event` echo. */
+       * by a correlated `combat_result`. */
       type: "combat_error";
       /** The refused combat intent's correlation token. */
       request_id: string;
       /** Player-presentable failure text. */
       message: string;
+    }
+  | {
+      /** A combat intent was accepted and committed as the sequenced `event` at `seq`.
+       * Addressed to the originating connection only; never broadcast. The broadcast
+       * `event` remains the state notification — this frame only correlates it, and may
+       * arrive before OR after that `event`. */
+      type: "combat_result";
+      /** The confirmed combat intent's correlation token. */
+      request_id: string;
+      /** The committed command's sequence number — matches the broadcast `event`'s `seq`. */
+      seq: number;
     }
   | {
       /** Broadcast to the scene, then clipped per recipient at egress: the mover receives
@@ -1014,6 +1032,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     cost: z.number(),
     arrested: z.boolean(),
     truncated: z.boolean(),
+    budget_cells: z.number().nullable(),
   }),
   z.object({
     type: z.literal("path_error"),
@@ -1034,6 +1053,11 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("combat_error"),
     request_id: z.string(),
     message: z.string(),
+  }),
+  z.object({
+    type: z.literal("combat_result"),
+    request_id: z.string(),
+    seq: int,
   }),
   z.object({
     type: z.literal("move_stream"),
@@ -1477,4 +1501,124 @@ export function parseServerMsg(text: string): ServerMsg | null {
   })();
   const result = ServerMsgSchema.safeParse(json);
   return result.success ? result.data : null;
+}
+
+/** One resource's resolved numbers for one combatant, as read off the `"combat"` derived
+ * channel — the Zod mirror of the generated `ResolvedResourceView`. */
+export interface ResolvedResourceView {
+  /** Whether the registry binds this resource as a derived mirror or a tracked spend. */
+  binding: "mirror" | "tracked";
+  /** The resolved current value; `null` on an evaluation failure. */
+  current: number | null;
+  /** The resolved ceiling; `null` on an evaluation failure. */
+  max: number | null;
+  /** The formula-evaluation failure's detail, when resolution failed. */
+  error: string | null;
+}
+
+/** One combatant's resolved numbers, as read off the `"combat"` derived channel — the Zod
+ * mirror of the generated `CombatantView`. */
+export interface CombatantView {
+  /** The combatant document's id. */
+  id: string;
+  /** Every registry-key resolution the recipient may see the `/engine/resources` pointer for;
+   * `null` when that band's tier is not visible to the recipient. */
+  resources: Record<string, ResolvedResourceView> | null;
+  /** The combat's movement resource converted to cells for this combatant, when resolvable. */
+  movementCells: number | null;
+}
+
+/** One combat's resolved view, as read off the `"combat"` derived channel — the Zod mirror of
+ * the generated `CombatView`. */
+export interface CombatView {
+  /** The combat document's id. */
+  id: string;
+  /** The scene this combat is bound to. */
+  sceneId: string;
+  /** Readable combatants. */
+  combatants: CombatantView[];
+}
+
+/** Read-only view of the resolved combats the server has broadcast on the `"combat"` derived
+ * channel. There is no client-side resource evaluation: every number here is read off the
+ * server's own `combat::eval` derivations. */
+export interface CombatsView {
+  /** Every combat the recipient may read. */
+  combats: CombatView[];
+}
+
+/** A view that has nothing to say — no combats. The state before the first `"combat"` frame
+ * arrives, and the value a malformed payload falls back to. */
+export const EMPTY_COMBATS: CombatsView = { combats: [] };
+
+/** Wire shape of one resolved resource. */
+const resolvedResourceViewSchema = z.object({
+  binding: z.enum(["mirror", "tracked"]),
+  current: z.number().nullable(),
+  max: z.number().nullable(),
+  error: z.string().nullable(),
+});
+
+/** Wire shape of one combatant view. */
+const combatantViewSchema = z.object({
+  id: z.string(),
+  resources: z.record(z.string(), resolvedResourceViewSchema).nullable(),
+  movement_cells: z.number().nullable(),
+});
+
+/** Wire shape of one combat view. */
+const combatViewSchema = z.object({
+  id: z.string(),
+  scene_id: z.string(),
+  combatants: z.array(combatantViewSchema),
+});
+
+/** Wire shape of the `"combat"` derived channel payload — the Zod mirror of the generated
+ * `CombatsPayload`. */
+const combatsPayloadSchemaImpl = z.object({
+  combats: z.array(combatViewSchema),
+});
+
+/** The `"combat"` derived-channel payload schema, typed against the generated `CombatsPayload`
+ * so the validator and the ts-rs wire type cannot drift apart. */
+export const CombatsPayloadSchema: z.ZodType<CombatsPayload> = combatsPayloadSchemaImpl;
+
+/**
+ * Parse a `"combat"` derived-channel payload into a `CombatsView`.
+ *
+ * A payload that does not validate yields {@link EMPTY_COMBATS} rather than a partial read — the
+ * same fail-closed shape as `parseFootprints`: a half-parsed combat set would mix authoritative
+ * numbers with silently-dropped ones, and a caller cannot tell those apart. Unlike
+ * `parseFootprints`, which stays silent, the failure is reported through the caller's `logger`
+ * when one is given, so a schema drift on this channel reaches the project logger (never a bare
+ * console) and stays visible in development.
+ * @param payload The raw `SceneDerived` payload for the `"combat"` channel.
+ * @param logger Where a malformed payload is reported; absent ⇒ the failure is silent.
+ * @returns A `CombatsView` over the payload, or {@link EMPTY_COMBATS} when it does not validate.
+ * @example
+ * ```ts
+ * import { parseCombats } from "@shadowcat/core";
+ *
+ * declare const payload: unknown;
+ * const combats = parseCombats(payload);
+ * combats.combats.length; // number
+ * ```
+ */
+export function parseCombats(payload: unknown, logger?: Logger): CombatsView {
+  const parsed = combatsPayloadSchemaImpl.safeParse(payload);
+  if (!parsed.success) {
+    logger?.warn("parseCombats: malformed combat channel payload", parsed.error.message);
+    return EMPTY_COMBATS;
+  }
+  return {
+    combats: parsed.data.combats.map((c) => ({
+      id: c.id,
+      sceneId: c.scene_id,
+      combatants: c.combatants.map((cc) => ({
+        id: cc.id,
+        resources: cc.resources,
+        movementCells: cc.movement_cells,
+      })),
+    })),
+  };
 }

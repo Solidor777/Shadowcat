@@ -42,6 +42,11 @@ export interface PathResult {
   arrested: boolean;
   /** True when the mover's movement budget truncated the route short of the goal. */
   truncated: boolean;
+  /** The named token's remaining movement budget in cells, present iff the requester can read
+   * the combat's combatant for that token — regardless of enforcement mode, so a GM or a
+   * `warn`/`none` mover still sees the number. `null` when the token names no combatant, the
+   * caller cannot read it, or no combat is running. */
+  budgetCells: number | null;
 }
 
 /** A single position sample in a MoveStream, with elapsed-ms origin at startServerMs. */
@@ -297,13 +302,6 @@ export interface WsClientOptions {
   welcomeTimeoutMs?: number;
   /** The world id sent as `Hello.world` on every socket open. */
   world: string;
-  /** This connection's own user id, needed only to confirm a request whose success is signaled
-   * by the shared broadcast `event` echo rather than a correlated reply frame (`combat()`):
-   * `case "event":` resolves a pending combat entry only when this is set AND matches
-   * `WireCommand.author` on the received event, so a broadcast authored by another user can
-   * never be mistaken for this connection's own confirm. Omitted by default; `combat()` then
-   * settles only via `combat_error` or timeout. */
-  selfUserId?: string;
 }
 
 /** Default `WsClientOptions.sleep`: a bare `setTimeout` wrapped as a promise.
@@ -385,28 +383,29 @@ export class WsClient {
       timer: ReturnType<typeof setTimeout>;
     }
   >();
-  /** In-flight combat intents (`CombatStart`/`CombatPause`/etc.), keyed by request_id. Unlike
-   * `pending` (search/pathfind/moveRequest), a combat intent's success is confirmed by the
-   * broadcast `event` echo rather than a correlated reply frame — `event` carries no
-   * combat-specific correlation token. `case "event":` resolves an entry only when
-   * `WsClientOptions.selfUserId` is configured and matches the received `WireCommand.author`,
-   * genuinely mirroring `OptimisticClient.applyCommand`'s own author-filtered self-confirm
-   * (never a blind FIFO resolve, which would incorrectly settle on any OTHER connected user's
-   * unrelated broadcast). When `selfUserId` is omitted, no `event` ever resolves an entry here —
-   * only a correlated `combat_error` or the timeout settles it. A `combat_error` rejects the
-   * correlated entry directly by `request_id` (mirrors `move_error`'s handling). */
+  /** In-flight combat intents (`CombatStart`/`CombatPause`/etc.), keyed by request_id. An entry
+   * resolves when BOTH its `combat_result` has arrived AND the broadcast `event` at that
+   * `seq` has been applied (`nextExpected > seq`): `case "combat_result"` resolves immediately
+   * if the event already applied (`msg.seq < nextExpected`), else records `seq` on the entry;
+   * `applyEvent` then resolves any entry whose recorded `seq` falls below the newly-advanced
+   * `nextExpected`. This correlates by `request_id`/`seq` rather than a same-connection
+   * author-echo FIFO, which could not tell its own broadcast apart from another connected
+   * user's and could permanently misalign on an out-of-order reply/broadcast pair. A
+   * `combat_error` rejects the correlated entry directly by `request_id` (mirrors
+   * `move_error`'s handling). */
   private combatPending = new Map<
     string,
     {
-      /** Resolves (void) once a matching-author `event` frame arrives (see this field's own
-       * doc for the `selfUserId` correlation this requires). */
+      /** Resolves (void) once both the `combat_result` and its `event` have arrived. */
       resolve: () => void;
       /** Rejects with the server's reason on a correlated `combat_error`, on timeout, or on
        * disconnect. */
       reject: (e: Error) => void;
-      /** Timeout handle that rejects if neither an `event` nor a `combat_error` arrives in
-       * time. */
+      /** Timeout handle that rejects if neither a `combat_result` nor a `combat_error` arrives
+       * in time. */
       timer: ReturnType<typeof setTimeout>;
+      /** The committed command's `seq`, once a `combat_result` names it; `null` until then. */
+      seq: number | null;
     }
   >();
   /** In-flight chat ops (send/edit/delete), keyed by request_id. Chat is
@@ -853,22 +852,6 @@ export class WsClient {
         break;
       case "event":
         this.applyEvent(msg.command);
-        // Combat-intent confirm: this connection's own broadcast echo (never another user's)
-        // resolves the oldest still-pending combat entry, per `combatPending`'s own field doc.
-        // `selfUserId` unset means this connection cannot tell its own echo apart from any
-        // other user's, so no `event` resolves anything here — `combat()` settles only via
-        // `combat_error` or timeout.
-        if (this.opts.selfUserId !== undefined && msg.command.author === this.opts.selfUserId) {
-          const oldest = this.combatPending.keys().next();
-          if (!oldest.done) {
-            const p = this.combatPending.get(oldest.value);
-            if (p) {
-              clearTimeout(p.timer);
-              this.combatPending.delete(oldest.value);
-              p.resolve();
-            }
-          }
-        }
         break;
       case "reject":
         this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason));
@@ -922,7 +905,13 @@ export class WsClient {
         if (p) {
           clearTimeout(p.timer);
           this.pending.delete(msg.request_id);
-          (p.resolve as (r: PathResult) => void)({ path: msg.path, cost: msg.cost, arrested: msg.arrested, truncated: msg.truncated });
+          (p.resolve as (r: PathResult) => void)({
+            path: msg.path,
+            cost: msg.cost,
+            arrested: msg.arrested,
+            truncated: msg.truncated,
+            budgetCells: msg.budget_cells,
+          });
         }
         break;
       }
@@ -998,13 +987,28 @@ export class WsClient {
         break;
       }
       case "combat_error": {
-        // A rejected combat intent: reject the correlated entry directly by request_id
-        // (mirrors move_error's handling above, not the FIFO resolve path).
+        // A rejected combat intent: reject the correlated entry directly by request_id.
         const p = this.combatPending.get(msg.request_id);
         if (p) {
           clearTimeout(p.timer);
           this.combatPending.delete(msg.request_id);
           p.reject(new Error(msg.message));
+        }
+        break;
+      }
+      case "combat_result": {
+        // An accepted combat intent: resolve now if its event already applied
+        // (nextExpected > seq — the reply arrived after the broadcast), else record the seq
+        // and let `applyEvent`'s post-apply sweep resolve it once that event applies.
+        const p = this.combatPending.get(msg.request_id);
+        if (p) {
+          if (msg.seq < this.nextExpected) {
+            clearTimeout(p.timer);
+            this.combatPending.delete(msg.request_id);
+            p.resolve();
+          } else {
+            p.seq = msg.seq;
+          }
         }
         break;
       }
@@ -1497,14 +1501,14 @@ export class WsClient {
   /**
    * Send any one of the eight combat intent frames (`combat_start`/`combat_pause`/
    * `combat_end`/`combat_advance`/`combat_rewind`/`combat_roll`/`combat_resource`/
-   * `combat_sort`). Resolves once this connection's own broadcast `event` echo arrives while
-   * this is the oldest pending combat entry — requires `WsClientOptions.selfUserId` to be
-   * configured (see `combatPending`'s field doc); without it, this only settles via a matching
-   * `combat_error` or the timeout. Rejects on a matching `combat_error` or after `timeoutMs`.
+   * `combat_sort`). Resolves once the correlated `combat_result` has arrived AND the broadcast
+   * `event` it names has been applied (see `combatPending`'s field doc for the exact rule);
+   * the resolved value is `void` because the document store already reflects the event by the
+   * time the promise settles. Rejects on a matching `combat_error` or after `timeoutMs`.
    * @param msg The combat frame to send, already carrying its own `request_id`.
    * @param opts Request options; `timeoutMs` (how long to wait for confirmation/`combat_error`
    * before rejecting) defaults to 10000.
-   * @returns Resolves (void) once the intent is confirmed; rejects with the server's
+   * @returns Resolves (void) once the intent's event has applied; rejects with the server's
    * player-presentable reason otherwise.
    * @example
    * ```ts
@@ -1538,7 +1542,7 @@ export class WsClient {
         this.combatPending.delete(msg.request_id);
         reject(new Error("combat request timeout"));
       }, timeoutMs);
-      this.combatPending.set(msg.request_id, { resolve, reject, timer });
+      this.combatPending.set(msg.request_id, { resolve, reject, timer, seq: null });
       this.send(msg);
     });
   }
@@ -1573,5 +1577,16 @@ export class WsClient {
       this.opts.handlers.onError?.(err);
     }
     this.nextExpected = cmd.seq + 1;
+    // Resolve every combat entry whose recorded `combat_result` seq is now behind the
+    // watermark — in practice at most one, but a loop keeps this correct if several combat
+    // intents landed close together. See `combatPending`'s own field doc for the full
+    // correlation rule.
+    for (const [id, p] of this.combatPending) {
+      if (p.seq !== null && p.seq < this.nextExpected) {
+        clearTimeout(p.timer);
+        this.combatPending.delete(id);
+        p.resolve();
+      }
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -102,6 +102,10 @@ export interface AppContext {
   /** Optimistic (predicted) document view — the canvas render source, so a placed or
    * dragged document shows immediately. */
   documents: ReadableDocuments;
+  /** The combat seam: reads over the per-recipient optimistic view, server-resolved resource
+   * numbers, the server-owned clock's intents, and the document helpers; see `CombatApi`.
+   * Advisory affordances only — the server authorizes every intent. */
+  combat: CombatApi;
   /** The current world's id. */
   world: string;
   /** The current user's world-scoped role. */

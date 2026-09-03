@@ -1057,6 +1057,7 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
             cost,
             truncated,
             arrested,
+            budget_cells,
             ..
         } => {
             assert!(truncated, "the budget cut must be flagged");
@@ -1064,6 +1065,11 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
             assert!(
                 (cost - 2.0).abs() < 1e-9,
                 "a 4-cell course cuts at the 2-cell budget, got cost {cost}"
+            );
+            assert_eq!(
+                budget_cells,
+                Some(2.0),
+                "an enforced Hard owner's preview discloses the ceiling even while truncating"
             );
             // Chebyshev ties admit several equal-cost shapes; the INVARIANT is
             // the cut distance, not the tie-broken geometry.
@@ -1077,19 +1083,92 @@ async fn pathfind_preview_clamps_at_the_movement_budget_under_hard_enforcement()
         other => panic!("expected a clamped PathResult, got {other:?}"),
     }
 
-    // A GM's preview of the same route is never clamped.
+    // A GM's preview of the same route is never clamped, but the number still reaches them: a GM
+    // reads every document, so `BudgetGate::enforced` is `true` for a GM too.
     let gm_result = handle_pathfind(request(0xF102), &gm_ctx, &room, repo.as_ref()).await;
     match gm_result {
         ServerMsg::PathResult {
             ref path,
             truncated,
+            budget_cells,
             ..
         } => {
             assert!(!truncated, "a GM preview passes no budget");
+            assert_eq!(
+                budget_cells,
+                Some(2.0),
+                "a GM preview still discloses the number, exempt only from truncation"
+            );
             assert_eq!(path.last(), Some(&(450.0, 50.0)));
         }
         other => panic!("expected an unclamped GM PathResult, got {other:?}"),
     }
+
+    // Switch enforcement to `warn`: the owner's preview no longer truncates, but the same
+    // `budget_cells` number is still disclosed — the `Warn` overage label's data source.
+    let mut warn_engine: crate::data::engine::combat::CombatEngine = serde_json::from_value(
+        repo.get_document(combat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .engine
+            .unwrap(),
+    )
+    .unwrap();
+    warn_engine.movement.enforcement = crate::data::engine::combat::Enforcement::Warn;
+    let warn_doc = repo.get_document(combat_id).await.unwrap().unwrap();
+    let change = crate::combat::ops::whole_engine_replace(
+        &warn_doc,
+        serde_json::to_value(&warn_engine).unwrap(),
+    );
+    room.publish(
+        repo.as_ref(),
+        &gm_ctx,
+        vec![crate::data::command::Operation::Update {
+            doc_id: combat_id,
+            changes: vec![change],
+        }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let warn_result = handle_pathfind(request(0xF103), &player, &room, repo.as_ref()).await;
+    match warn_result {
+        ServerMsg::PathResult {
+            truncated,
+            budget_cells,
+            ..
+        } => {
+            assert!(!truncated, "Warn enforcement never truncates the preview");
+            assert_eq!(
+                budget_cells,
+                Some(2.0),
+                "Warn still discloses the budget number for the client's overage label"
+            );
+        }
+        other => panic!("expected an unclamped Warn PathResult, got {other:?}"),
+    }
+
+    // Restore Hard enforcement — the remaining scenarios below exercise Hard-only behavior.
+    warn_engine.movement.enforcement = crate::data::engine::combat::Enforcement::Hard;
+    let hard_doc = repo.get_document(combat_id).await.unwrap().unwrap();
+    let restore = crate::combat::ops::whole_engine_replace(
+        &hard_doc,
+        serde_json::to_value(&warn_engine).unwrap(),
+    );
+    room.publish(
+        repo.as_ref(),
+        &gm_ctx,
+        vec![crate::data::command::Operation::Update {
+            doc_id: combat_id,
+            changes: vec![restore],
+        }],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
 
     // Advance the turn to the event: the owner's preview is refused generically.
     room.publish(

@@ -710,6 +710,27 @@ are observations awaiting triage, not committed work.
   verified `pnpm docs:api:ts` green on post-M14c-2 main (2026-08-31, the
   M14c-4 baseline) with `treatWarningsAsErrors` intact — no exemption needed.
 
+- Title: HTTP throttle tests flaked under machine contention during M14c-6.
+  Summary: `login_throttles_identity_after_budget_spending_no_argon2`,
+  `accept_invite_throttles_by_ip_over_real_transport`, and
+  `login_throttles_by_ip_over_real_transport` intermittently failed timing-window
+  assertions while three other background agents' own `cargo`/`vitest` runs shared
+  the machine concurrently (confirmed via each process's own log identifying its
+  own worktree). Isolated re-runs (no contention) passed. Same class as the
+  pre-existing "shell ui-e2e reuses a foreign server" and render-ready-timeout
+  entries above: real-clock rate-limit windows compete with CPU-bound sibling
+  processes for wall-clock budget. Status: Needs Review — not a regression;
+  flagged for the same audit already pending against the render-ready class.
+
+- Title: `@shadowcat/shell`'s full `vitest run` intermittently timed out 3 of 10
+  worker files (`[vitest-pool-runner]: Timeout waiting for worker to respond` on
+  `bootResolution.test.ts`, `route.test.ts`, `smoke.test.ts`) during M14c-6, while
+  every file passed individually and the same full run with
+  `--no-file-parallelism` passed 10/10 files (115 tests) cleanly. Reproduced
+  twice with other background agents' cargo/vitest processes concurrently active.
+  Status: Needs Review — machine-contention class, not a code regression; a
+  future CI-parity check should confirm the default (parallel) mode is stable
+  when run alone.
 
 - Title: Skill symbol citations reference unbuilt combat-resolution symbols. Summary: the
   local-only `check-skill-symbol-refs` gate reports 25 broken citations in the

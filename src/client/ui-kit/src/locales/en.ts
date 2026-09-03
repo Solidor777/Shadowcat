@@ -303,6 +303,8 @@ export const en: Messages = {
   "tools.wallElevationTop": "Occludes up to elevation (empty = unbounded)",
   "tools.snap": "Snap to grid",
   "tools.speakAsToken": "Speak as this token",
+  "tools.overBudget": "{over} over budget",
+  "tools.budgetStop": "stops at budget",
   "tools.emote": "Emote",
   "tools.emoteCustom": "Custom emote",
   "tools.emoteSend": "Send emote",

@@ -18,7 +18,7 @@ function setup(mode: TemplateMode, snap: (p: { x: number; y: number }) => { x: n
     snap,
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {} };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
   const controller = new ToolController(ctx);
   controller.templateMode = mode;
   return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared };

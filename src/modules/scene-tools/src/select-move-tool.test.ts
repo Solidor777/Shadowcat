@@ -26,7 +26,7 @@ function setup() {
   let t = 0;
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, now: () => t,
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, now: () => t,
     tokenSelection: new TokenSelection(),
   };
   const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
@@ -48,7 +48,7 @@ function setupTwo() {
   const sent: WireOperation[][] = [];
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, now: () => 0,
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, now: () => 0,
     tokenSelection: new TokenSelection(),
   };
   return { ctx, sent };
@@ -156,7 +156,7 @@ function harness(opts: {
 
   const pathfind: ToolContext["pathfind"] = async (_scene, start, waypoints) => {
     const goal = waypoints.at(-1)!;
-    return { path: [start, goal], cost: 1, arrested: false, truncated: false };
+    return { path: [start, goal], cost: 1, arrested: false, truncated: false, budgetCells: null };
   };
   const moveRequest: ToolContext["moveRequest"] = (scene, token, path): Promise<MoveStream> => {
     const goal = path.at(-1)!;
@@ -175,7 +175,7 @@ function harness(opts: {
     assets: new AssetResolver(),
     world: "w1",
     role: opts.role,
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
     now: () => t,
     tokenSelection: sel,
     pathfind,
@@ -282,7 +282,7 @@ test("a GM click on a light marker selects it for editing; a wall click selects 
   bridge.attach(fakeSceneHost({}));
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: () => {}, documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {},
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k,
     tokenSelection: new TokenSelection(),
   };
   const controller = new ToolController(ctx);
@@ -321,7 +321,7 @@ test("a non-GM click on a wall or light opens NO editor selection", () => {
   bridge.attach(fakeSceneHost({}));
   const ctx: ToolContext = {
     scene: bridge, dispatchIntent: () => {}, documents: docs,
-    assets: new AssetResolver(), world: "w1", role: "player", sendPing: () => {},
+    assets: new AssetResolver(), world: "w1", role: "player", sendPing: () => {}, t: (k) => k,
     tokenSelection: new TokenSelection(),
   };
   const controller = new ToolController(ctx);

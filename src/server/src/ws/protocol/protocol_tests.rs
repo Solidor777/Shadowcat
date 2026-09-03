@@ -201,12 +201,20 @@ fn pathfind_frames_round_trip() {
         cost: 2.0,
         arrested: true,
         truncated: false,
+        budget_cells: Some(6.0),
     };
     let json = serde_json::to_string(&ok).unwrap();
     assert!(json.contains("\"type\":\"path_result\""));
     let back: ServerMsg = serde_json::from_str(&json).unwrap();
     match back {
-        ServerMsg::PathResult { arrested, .. } => assert!(arrested),
+        ServerMsg::PathResult {
+            arrested,
+            budget_cells,
+            ..
+        } => {
+            assert!(arrested);
+            assert_eq!(budget_cells, Some(6.0));
+        }
         _ => panic!("expected PathResult"),
     }
     let err = ServerMsg::PathError {
@@ -531,6 +539,14 @@ fn combat_intents_round_trip_snake_case_tags() {
         message: "combat rejected".into(),
     };
     assert_eq!(serde_json::to_value(&e).unwrap()["type"], "combat_error");
+
+    let r = ServerMsg::CombatResult {
+        request_id: Uuid::nil(),
+        seq: 7,
+    };
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["type"], "combat_result");
+    assert_eq!(v["seq"], 7);
 }
 
 #[test]
