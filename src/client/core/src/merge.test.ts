@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import { structuralDiff, deepEqual } from "./merge";
-import { isPlacementExcluded, restampSubtree, placementExclusions } from "./merge";
+import { isPlacementExcluded, restampSubtree, placementExclusions, isMergeableBandPointer } from "./merge";
 import type { WireDocument } from "./wire";
 
 describe("deepEqual", () => {
@@ -109,5 +111,25 @@ describe("restampSubtree", () => {
     child.base = { name: null, engine: null, system: {}, embedded: {} };
     const stamped = restampSubtree(child);
     expect(stamped.base).toBeUndefined();
+  });
+});
+
+describe("isMergeableBandPointer", () => {
+  // Shared conformance fixture, read on both sides: this file (JSON, via
+  // `readFileSync`, since the package has no `resolveJsonModule`) and the
+  // server's `writes_a_content_band` test (`include_str!`). One corpus, so
+  // the two classifiers cannot silently drift apart on which pointers name
+  // a mergeable band.
+  const corpus: { cases: { pointer: string; mergeable: boolean }[] } = JSON.parse(
+    readFileSync(
+      fileURLToPath(new URL("./__fixtures__/mergeable-band-pointer-conformance.json", import.meta.url)),
+      "utf-8",
+    ),
+  );
+
+  it("agrees with the server's writes_a_content_band on every corpus case", () => {
+    for (const { pointer, mergeable } of corpus.cases) {
+      expect(isMergeableBandPointer(pointer), pointer).toBe(mergeable);
+    }
   });
 });
