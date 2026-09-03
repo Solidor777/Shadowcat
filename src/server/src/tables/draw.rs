@@ -230,7 +230,7 @@ pub(crate) fn weighted_row(rows: &[TableRow], total: i64) -> Option<usize> {
 pub(crate) fn ranged_row(rows: &[TableRow], total: i64) -> Option<usize> {
     rows.iter().position(|r| {
         r.range
-            .is_some_and(|range| range.lo <= total && total <= range.hi)
+            .is_some_and(|range| i64::from(range.lo) <= total && total <= i64::from(range.hi))
     })
 }
 

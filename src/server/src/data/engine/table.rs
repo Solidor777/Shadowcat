@@ -78,15 +78,21 @@ pub struct TableRow {
     pub results: Vec<TableEntry>,
 }
 
-/// An inclusive total range (`lo <= hi`) a `DrawRule::Formula` row matches against.
+/// An inclusive total range (`lo <= hi`) a `DrawRule::Formula` row matches
+/// against. `i32`, not `i64`: a row range bounds a dice roll's total, which
+/// `TableEngine::validate` already caps well within `i32` via
+/// `chat::rolls::MAX_DIE_SIDES`/`MAX_ROLL_DICE`, and an `i64` here forces
+/// ts-rs to emit a `bigint` field on a type constructed by client authoring
+/// code (`table-docs.ts`'s `buildTableDoc` callers), which `JSON.stringify`
+/// (`WsClient.send`) cannot serialize.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct RowRange {
     /// Inclusive lower bound.
-    pub lo: i64,
+    pub lo: i32,
     /// Inclusive upper bound.
-    pub hi: i64,
+    pub hi: i32,
 }
 
 /// One thing a drawn row yields, resolved by `crate::tables::draw::draw_table`

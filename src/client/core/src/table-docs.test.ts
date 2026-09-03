@@ -24,4 +24,22 @@ describe("buildTableDoc", () => {
     const doc = buildTableDoc("w1", "Loot", engine, "t1");
     expect(doc.id).toBe("t1");
   });
+
+  test("a Formula table's RowRange bounds are plain numbers that survive JSON.stringify", () => {
+    // RowRange.lo/hi are i32 (not i64), so ts-rs emits `number`, not `bigint` --
+    // a `bigint` literal here would throw inside WsClient.send's JSON.stringify
+    // before the write ever reached the wire.
+    const formulaEngine: TableEngine = {
+      draw: { kind: "formula", notation: "2d6" },
+      rows: [
+        { weight: 1, range: { lo: 2, hi: 6 }, label: "low", results: [] },
+        { weight: 1, range: { lo: 7, hi: 12 }, label: "high", results: [] },
+      ],
+      description: "",
+    };
+    const doc = buildTableDoc("w1", "Ranged", formulaEngine);
+    expect(() => JSON.stringify(doc)).not.toThrow();
+    const roundTripped = JSON.parse(JSON.stringify(doc));
+    expect(roundTripped.engine).toEqual(formulaEngine);
+  });
 });

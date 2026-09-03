@@ -11,7 +11,7 @@ fn weighted_row(weight: u32, label: &str) -> TableRow {
     }
 }
 
-fn ranged_row(lo: i64, hi: i64, label: &str) -> TableRow {
+fn ranged_row(lo: i32, hi: i32, label: &str) -> TableRow {
     TableRow {
         weight: 1,
         range: Some(RowRange { lo, hi }),
