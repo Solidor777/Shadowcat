@@ -1840,23 +1840,30 @@ async fn template_hidden_pair(h: &Harness, template_id: Uuid, child_id: Uuid) ->
 }
 
 /// The stored `base` is ONE canonical value: the FULL, unredacted template
-/// snapshot with its recorded policy re-expressed for this instance
-/// (`snapshot_for_instance` under the two documents' effective-owner
-/// relation), whichever seat ran the merge that wrote it. Proves the write
-/// path stores the full snapshot (not the writer's view of it): under a
+/// snapshot with the template's recorded policy verbatim (`snapshot_base`),
+/// whichever seat ran the merge that wrote it. Proves the write path stores
+/// the full snapshot (not the writer's view of it): under a
 /// requester-relative snapshot this fails for any non-GM writer.
 async fn assert_base_is_the_full_snapshot(h: &Harness, template: Uuid, child: Uuid) {
     let t = h.get(template).await;
-    let c = h.get(child).await;
-    let same_owner = h.repo.effective_owner_of(&c).await.unwrap()
-        == h.repo.effective_owner_of(&t).await.unwrap();
-    let expected =
-        serde_json::to_value(crate::merge::bands::snapshot_for_instance(&t, same_owner)).unwrap();
     let stored = h
         .get(child)
         .await
         .base
         .expect("a merge write refreshes base");
+    // This helper checks snapshot CONTENT parity only; the recorded
+    // `owner_standing` is a separate, per-writer access fact tested on its
+    // own (see the `owner_standing` tests below), so carry the stored
+    // value's own standing into `expected` rather than asserting one here.
+    let standing = stored
+        .get("owner_standing")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let mut expected = serde_json::to_value(crate::merge::snapshot_base(&t)).unwrap();
+    expected
+        .as_object_mut()
+        .expect("a snapshot serializes to an object")
+        .insert("owner_standing".to_string(), standing);
     assert!(
         crate::merge::tree::structural_diff(&stored, &expected).is_empty(),
         "stored base {stored} is the full template snapshot {expected}"
@@ -1878,16 +1885,90 @@ async fn seat_view(h: &Harness, ctx: &PermissionContext, id: Uuid) -> Document {
     crate::data::permission::filter_properties(&d, &access).unwrap()
 }
 
-/// One seat's `syncState` parity, computed the way the client computes it:
-/// that seat's egress view of the stored base, read through `MergeBase`'s
-/// own defaults (the client's `normalizeBase`), structurally equals
-/// `snapshot_base` of that seat's egress view of the template on CONTENT
-/// (the recorded policy maps are excluded, as the client's `syncState`
-/// excludes them — the snapshot's is re-expressed for the instance, the
-/// template's is verbatim) — so the client's badge reads up-to-date for this
-/// seat. Pinned per seat because the two views are cut by different policies
-/// (the snapshot's recorded one and the template's current one) and must
-/// still agree.
+/// The template is `default: DocRole::None` — nobody but the GM (and whoever
+/// is individually listed) may READ it. The instance's owner is a `Stranger`
+/// on that template (`permission::owner_standing`), so the recorded policy
+/// hides the WHOLE `/base` snapshot from them — not just the paths the
+/// template happens to hide — while the GM's view carries it in full.
+#[tokio::test]
+async fn a_stranger_instance_owner_never_receives_base_even_after_a_gm_push() {
+    let h = merge_harness().await;
+    let (template, child) = (Uuid::from_u128(0xE921), Uuid::from_u128(0xE922));
+    h.create(template_doc(
+        h.world_id,
+        template,
+        h.gm.user_id,
+        DocRole::None,
+        json!({ "hp": 10 }),
+    ))
+    .await;
+    let mut inst = instance_doc(
+        h.world_id,
+        child,
+        template,
+        h.player.user_id,
+        DocRole::Observer,
+        json!({ "hp": 10 }),
+    );
+    inst.permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    h.create(inst).await;
+    assert!(
+        seat_view(&h, &h.player, child).await.base.is_none(),
+        "the Create derivation already records a Stranger standing"
+    );
+
+    // The GM edits the template and pushes the change to the instance.
+    h.set_system(template, json!({ "hp": 20 })).await;
+    let reply = handle_merge_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::MergePush {
+            request_id: Uuid::from_u128(1),
+            template_id: template,
+            resolutions: None,
+        },
+        0,
+    )
+    .await
+    .expect("a reply");
+    let ServerMsg::MergeResult {
+        outcome: MergeOutcome::Push { instances, .. },
+        ..
+    } = &reply
+    else {
+        panic!("expected a MergeResult::Push, got {reply:?}");
+    };
+    assert_eq!(instances.len(), 1);
+    assert!(matches!(instances[0].status, PushInstanceStatus::Applied));
+
+    let player_view = seat_view(&h, &h.player, child).await;
+    assert!(
+        player_view.base.is_none(),
+        "a Stranger owner receives no /base at all after the push: {:?}",
+        player_view.base
+    );
+    let gm_view = seat_view(&h, &h.gm, child).await;
+    assert!(
+        gm_view.base.is_some(),
+        "the GM's view carries the full snapshot"
+    );
+}
+
+/// One seat's `syncState` parity, computed the way the client's `syncState`
+/// actually computes it: that seat's egress view of the stored base, read
+/// through `MergeBase`'s own defaults (the client's `normalizeBase`),
+/// structurally equals `snapshot_base` of that seat's egress view of the
+/// template — recorded policy INCLUDED, since the stored snapshot's policy
+/// is the template's own carried verbatim (`propagate_overrides`), so it
+/// agrees key for key rather than needing exclusion — so the client's badge
+/// reads up-to-date for this seat. Placement exclusions are not applied
+/// here: every fixture in this file uses `doc_type: "actor"`, whose
+/// exclusion set is empty. Pinned per seat because the two views are cut by
+/// different policies (the snapshot's recorded one and the template's
+/// current one) and must still agree.
 async fn assert_sync_state_parity(
     h: &Harness,
     ctx: &PermissionContext,
@@ -1895,16 +1976,13 @@ async fn assert_sync_state_parity(
     child: Uuid,
 ) {
     let template_view = seat_view(h, ctx, template).await;
-    let expected = serde_json::to_value(crate::merge::bands::content_only(
-        &crate::merge::snapshot_base(&template_view),
-    ))
-    .unwrap();
+    let expected = serde_json::to_value(crate::merge::snapshot_base(&template_view)).unwrap();
     let base_view = seat_view(h, ctx, child)
         .await
         .base
         .expect("an owner-or-GM seat receives base");
     let normalized: MergeBase = serde_json::from_value(base_view).expect("a redacted base parses");
-    let normalized = serde_json::to_value(crate::merge::bands::content_only(&normalized)).unwrap();
+    let normalized = serde_json::to_value(normalized).unwrap();
     assert!(
         crate::merge::tree::structural_diff(&normalized, &expected).is_empty(),
         "this seat's view of the stored base {normalized} equals its view of the template {expected}"

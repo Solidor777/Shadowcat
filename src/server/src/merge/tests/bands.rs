@@ -154,7 +154,7 @@ fn propagate_overrides_is_additive_keeps_the_stricter_tier_and_correlates_childr
     i_kid.source = Some(source_from("tc1"));
     instance.embedded.insert("items".to_string(), vec![i_kid]);
 
-    assert!(propagate_overrides(&mut instance, &template, true));
+    assert!(propagate_overrides(&mut instance, &template));
     let p = &instance.permissions.property_overrides;
     assert_eq!(p["/system/secret"], Visibility::GmOnly, "added");
     assert_eq!(
@@ -186,15 +186,12 @@ fn propagate_overrides_is_additive_keeps_the_stricter_tier_and_correlates_childr
         !kp.contains_key("/system/z"),
         "not the positional neighbour's"
     );
-    assert!(
-        !propagate_overrides(&mut instance, &template, true),
-        "idempotent"
-    );
+    assert!(!propagate_overrides(&mut instance, &template), "idempotent");
 }
 
 #[test]
 fn derive_create_base_propagates_the_template_policy_and_records_the_snapshot_policy() {
-    use crate::data::document::Visibility;
+    use crate::data::document::{OwnerStanding, Visibility};
     use crate::merge::bands::derive_create_base;
 
     let mut template = doc("t1");
@@ -206,7 +203,7 @@ fn derive_create_base_propagates_the_template_policy_and_records_the_snapshot_po
     instance.source = Some(source_from("t1"));
     instance.system = json!({ "hp": 1 });
 
-    derive_create_base(&mut instance, Some(&template), true);
+    derive_create_base(&mut instance, Some(&template), OwnerStanding::Owner);
     assert_eq!(
         instance.permissions.property_overrides["/system/secret"],
         Visibility::GmOnly
@@ -217,70 +214,139 @@ fn derive_create_base_propagates_the_template_policy_and_records_the_snapshot_po
         json!("gm_only")
     );
     assert_eq!(base["system"], json!({ "hp": 1 }));
+    assert_eq!(base["owner_standing"], json!("owner"));
 
     // No loadable template: nothing to propagate; the snapshot records the
-    // document's own policy (empty here).
+    // document's own policy (empty here), with the caller-supplied standing
+    // (`Stranger`, since `apply_intent`'s Create arm has no template to
+    // resolve a standing against).
     let mut orphan = doc("c2");
     orphan.source = Some(source_from("t-missing"));
-    derive_create_base(&mut orphan, None, true);
+    derive_create_base(&mut orphan, None, OwnerStanding::Stranger);
     assert!(orphan.permissions.property_overrides.is_empty());
-    assert_eq!(orphan.base.unwrap()["property_overrides"], json!({}));
+    assert_eq!(
+        orphan.base.clone().unwrap()["property_overrides"],
+        json!({})
+    );
+    assert_eq!(orphan.base.unwrap()["owner_standing"], json!("stranger"));
 }
 
 #[test]
-fn relate_tier_re_expresses_owner_or_gm_across_an_ownership_boundary_only() {
+fn propagate_overrides_carries_every_tier_verbatim_and_never_re_tightens_an_instance_entry() {
     use crate::data::document::Visibility;
-    use crate::merge::bands::{relate_tier, snapshot_for_instance};
-    for tier in [Visibility::All, Visibility::GmOnly, Visibility::OwnerOrGm] {
-        assert_eq!(
-            relate_tier(tier, true),
-            tier,
-            "same owner: every tier stands"
-        );
-    }
-    assert_eq!(relate_tier(Visibility::All, false), Visibility::All);
-    assert_eq!(relate_tier(Visibility::GmOnly, false), Visibility::GmOnly);
-    assert_eq!(
-        relate_tier(Visibility::OwnerOrGm, false),
-        Visibility::GmOnly,
-        "another owner's private value is nobody's private value here"
-    );
+    use crate::merge::bands::propagate_overrides;
 
     let mut kid = doc("tc1");
     kid.permissions
         .property_overrides
         .insert("/engine/hp".to_string(), Visibility::OwnerOrGm);
     let mut template = doc("t1");
+    template.permissions.property_overrides.extend([
+        ("/system/note".to_string(), Visibility::OwnerOrGm),
+        ("/system/secret".to_string(), Visibility::GmOnly),
+    ]);
+    template.embedded.insert("items".to_string(), vec![kid]);
+
+    // An instance with another owner: the template's `OwnerOrGm` lands
+    // VERBATIM (naming the instance's own owner there), at every depth.
+    let mut instance = doc("c1");
+    instance.owner = Some(super::test_id("someone-else"));
+    let mut i_kid = doc("ic1");
+    i_kid.source = Some(source_from("tc1"));
+    instance.embedded.insert("items".to_string(), vec![i_kid]);
+    assert!(propagate_overrides(&mut instance, &template));
+    assert_eq!(
+        instance.permissions.property_overrides["/system/note"],
+        Visibility::OwnerOrGm,
+        "an owner-or-GM tier is carried as is across an ownership boundary"
+    );
+    assert_eq!(
+        instance.embedded["items"][0].permissions.property_overrides["/engine/hp"],
+        Visibility::OwnerOrGm,
+        "verbatim at every depth"
+    );
+
+    // A tier a GM deliberately loosened on the instance stands: the
+    // template's stricter tier lands only where the instance holds no entry.
+    let mut loosened = doc("c2");
+    loosened
+        .permissions
+        .property_overrides
+        .insert("/system/secret".to_string(), Visibility::All);
+    assert!(propagate_overrides(&mut loosened, &template));
+    assert_eq!(
+        loosened.permissions.property_overrides["/system/secret"],
+        Visibility::All,
+        "never re-tightened"
+    );
+    assert_eq!(
+        loosened.permissions.property_overrides["/system/note"],
+        Visibility::OwnerOrGm,
+        "the template's tier lands where the instance has none"
+    );
+    assert!(
+        !propagate_overrides(&mut loosened, &template),
+        "idempotent: a second pass changes nothing"
+    );
+}
+
+#[test]
+fn propagate_overrides_skips_a_no_op_all_tier_at_root_and_on_embedded_records() {
+    use crate::data::document::Visibility;
+    use crate::merge::bands::propagate_overrides;
+
+    // A no-op `All` audience recorded on the template's root AND on one of
+    // its embedded children — propagating either would write
+    // `/permissions/property_overrides` (root) or force a whole
+    // `/embedded/<coll>` collection rewrite (record) for zero visibility
+    // effect, needlessly demanding a capability the change accomplishes
+    // nothing to justify.
+    let mut kid = doc("tc1");
+    kid.permissions
+        .property_overrides
+        .insert("/engine/hp".to_string(), Visibility::All);
+    let mut template = doc("t1");
     template
         .permissions
         .property_overrides
-        .insert("/system/note".to_string(), Visibility::OwnerOrGm);
+        .insert("/system/note".to_string(), Visibility::All);
     template.embedded.insert("items".to_string(), vec![kid]);
-    let same = snapshot_for_instance(&template, true);
-    assert_eq!(
-        same.property_overrides["/system/note"],
-        Visibility::OwnerOrGm
-    );
-    assert_eq!(
-        same.embedded["items"][0].property_overrides["/engine/hp"],
-        Visibility::OwnerOrGm
-    );
-    let other = snapshot_for_instance(&template, false);
-    assert_eq!(other.property_overrides["/system/note"], Visibility::GmOnly);
-    assert_eq!(
-        other.embedded["items"][0].property_overrides["/engine/hp"],
-        Visibility::GmOnly,
-        "re-expressed at every depth"
-    );
-    // A propagated tier follows the same relation.
+
     let mut instance = doc("c1");
-    assert!(crate::merge::bands::propagate_overrides(
-        &mut instance,
-        &template,
-        false
-    ));
+    let mut i_kid = doc("ic1");
+    i_kid.source = Some(source_from("tc1"));
+    instance.embedded.insert("items".to_string(), vec![i_kid]);
+
+    assert!(
+        !propagate_overrides(&mut instance, &template),
+        "an All-only template policy propagates nothing"
+    );
+    assert!(
+        instance.permissions.property_overrides.is_empty(),
+        "the no-op root entry is never written onto the instance"
+    );
+    assert!(
+        instance.embedded["items"][0]
+            .permissions
+            .property_overrides
+            .is_empty(),
+        "the no-op record entry is never written onto the embedded child"
+    );
+
+    // A real hidden tier alongside the no-op one still propagates.
+    template
+        .permissions
+        .property_overrides
+        .insert("/system/secret".to_string(), Visibility::GmOnly);
+    assert!(propagate_overrides(&mut instance, &template));
     assert_eq!(
-        instance.permissions.property_overrides["/system/note"],
+        instance.permissions.property_overrides.len(),
+        1,
+        "only the real tier lands: {:?}",
+        instance.permissions.property_overrides
+    );
+    assert_eq!(
+        instance.permissions.property_overrides["/system/secret"],
         Visibility::GmOnly
     );
 }

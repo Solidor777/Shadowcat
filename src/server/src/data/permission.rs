@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, DocRole, Document, PermissionSet, Visibility,
-    WorldCapDefaults, WorldRole,
+    CapabilityGrants, CapabilityRequirement, DocRole, Document, OwnerStanding, PermissionSet,
+    Visibility, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
@@ -927,18 +927,23 @@ pub(crate) fn redact_pointers(
 /// and `filter_properties`/`hidden_own_pointers` read at a single level.
 ///
 /// `base` is a snapshot of the TEMPLATE's bands (full, unredacted — `merge::bands::snapshot_base`
-/// of the template at the last merge write; the stamped document's own bands at Create). Two
-/// rules govern its egress, both from this function: (1) the whole band is hardcoded
+/// of the template at the last merge write; the stamped document's own bands at Create). Three
+/// rules govern its egress, all from this function: (1) the whole band is hardcoded
 /// `OwnerOrGm`, unconditional and non-overridable, so no recipient outside the owner-or-GM
-/// pair ever receives the raw snapshot; (2) inside it, every pointer the snapshot's own
+/// pair ever receives the raw snapshot; (2) the whole band is `GmOnly` when the snapshot
+/// records that the instance's owner held no READ on the template
+/// (`StoredBase::owner_standing` is `OwnerStanding::Stranger`), so the owner receives no
+/// template content through `/base` at all; (3) inside it, every pointer the snapshot's own
 /// recorded `property_overrides` name is hidden at the recorded tier — the policy the
-/// snapshotted document carried over that content, stored WITH the content by
-/// `snapshot_base` (`MergeBase::property_overrides`, `EmbeddedBaseChild::property_overrides`,
-/// the embedded records addressed at their positions in the snapshot). The owner therefore
-/// receives `/base` minus exactly what the template hid, with no template lookup on the
-/// egress path. The synthetic `/base` entry is never classified (it is hardcoded, not
-/// user-supplied); a recorded entry is classified as `/base{pointer}`, which is what egress
-/// strips.
+/// TEMPLATE carried over that content, verbatim, stored WITH the content by `snapshot_base`
+/// (`MergeBase::property_overrides`, `EmbeddedBaseChild::property_overrides`, the embedded
+/// records addressed at their positions in the snapshot) — evaluated under the recorded
+/// standing (`OwnerStanding::relate`): a recorded `OwnerOrGm` is the template owner's tier,
+/// so it admits the instance's owner only when that owner is the template's owner too. The
+/// owner therefore receives `/base` minus exactly what the template hid FROM THEM, with no
+/// template lookup on the egress path. The synthetic `/base` entries are never classified
+/// (they are hardcoded, not user-supplied); a recorded entry is classified as
+/// `/base{pointer}`, which is what egress strips.
 ///
 /// Classifies every REAL override pointer via `redaction_target` eagerly (not only the hidden
 /// ones): safe because every document reaching this function has already passed
@@ -957,7 +962,7 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
     }
     out.push(("/base".to_string(), Visibility::OwnerOrGm));
     if let Some(base) = &doc.base {
-        base_policy(base, "/base", &mut out)?;
+        base_policy(base, "/base", None, &mut out)?;
     }
     Ok(out)
 }
@@ -965,21 +970,42 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
 /// The policy a `base` snapshot node records over its own content: its
 /// `property_overrides` map (`MergeBase`'s spelling at the root,
 /// `EmbeddedBaseChild`'s `propertyOverrides` on a record), each entry emitted
-/// as `{prefix}{pointer}` at the recorded tier, recursing into the records
-/// under `embedded` at their snapshot positions (`{prefix}/embedded/<coll>/<k>`).
-/// Fails closed on a tier that does not parse as a `Visibility` or a pointer
-/// that names no mergeable band (`writes_a_content_band` — every such pointer
-/// classifies `Within` once prefixed, so the strip below can act on it) — the
-/// ingest walk (`validation::validate_engine_tree`) admits neither, so both
-/// mean hand-seeded data. A snapshot node that is not an object records
-/// nothing (the ingest walk rejects that shape too).
+/// as `{prefix}{pointer}` at the recorded tier related to the recorded owner
+/// standing (`OwnerStanding::relate`), recursing into the records under
+/// `embedded` at their snapshot positions (`{prefix}/embedded/<coll>/<k>`)
+/// under the same standing. `standing` is `None` at the ROOT, where it is
+/// read from the node's `owner_standing` key (`StoredBase`) — a `Stranger`
+/// root first emits the whole band as `GmOnly` — and `Some` on every record
+/// beneath it. Fails closed on a root without a parseable standing, a tier
+/// that does not parse as a `Visibility`, or a pointer that names no
+/// mergeable band (`writes_a_content_band` — every such pointer classifies
+/// `Within` once prefixed, so the strip below can act on it) — the ingest walk
+/// (`validation::validate_engine_tree`) admits none of these, so each means
+/// hand-seeded data. A snapshot node that is not an object records nothing
+/// (the ingest walk rejects that shape too).
 fn base_policy(
     node: &serde_json::Value,
     prefix: &str,
+    standing: Option<OwnerStanding>,
     out: &mut Vec<(String, Visibility)>,
 ) -> Result<(), RedactionError> {
     let Some(obj) = node.as_object() else {
         return Ok(());
+    };
+    let standing = match standing {
+        Some(standing) => standing,
+        None => {
+            let standing: OwnerStanding = obj
+                .get("owner_standing")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .ok_or_else(|| RedactionError {
+                    pointer: format!("{prefix}/owner_standing"),
+                })?;
+            if standing == OwnerStanding::Stranger {
+                out.push((prefix.to_string(), Visibility::GmOnly));
+            }
+            standing
+        }
     };
     let key = if prefix == "/base" {
         "property_overrides"
@@ -996,7 +1022,7 @@ fn base_policy(
             if !writes_a_content_band(p) {
                 return Err(RedactionError { pointer });
             }
-            out.push((pointer, tier));
+            out.push((pointer, standing.relate(tier)));
         }
     }
     if let Some(embedded) = obj.get("embedded").and_then(serde_json::Value::as_object) {
@@ -1005,11 +1031,46 @@ fn base_policy(
                 continue;
             };
             for (k, record) in records.iter().enumerate() {
-                base_policy(record, &format!("{prefix}/embedded/{coll}/{k}"), out)?;
+                base_policy(
+                    record,
+                    &format!("{prefix}/embedded/{coll}/{k}"),
+                    Some(standing),
+                    out,
+                )?;
             }
         }
     }
     Ok(())
+}
+
+/// The `OwnerStanding` of an instance's effective owner on the instance's
+/// template: `resolve_access_world` for that user on the template — the same
+/// resolution every egress site performs, never a literal `owner`
+/// comparison — then `Owner` when the access holds `cap::READ` and
+/// `is_owner`, `Reader` with `READ` alone, `Stranger` otherwise. `owner` is
+/// `None` for an instance with no effective owner or an owner with no world
+/// membership (no `WorldRole` to resolve under), which is `Stranger`: fail
+/// closed — `/base` for such an instance reaches a GM alone either way, and
+/// an owner assigned later is re-resolved by the next merge write. Both
+/// writers of a stored base call this — `apply_intent`'s Create arm and
+/// `ws::conn::merge_intents` — so the standing is decided in one place.
+pub fn owner_standing(
+    owner: Option<(Uuid, WorldRole)>,
+    template: &Document,
+    world_grants: &CapabilityGrants,
+    template_owner: Option<Uuid>,
+) -> OwnerStanding {
+    let Some((user, role)) = owner else {
+        return OwnerStanding::Stranger;
+    };
+    let access = resolve_access_world(user, role, template, world_grants, template_owner);
+    if !access.has(cap::READ) {
+        OwnerStanding::Stranger
+    } else if access.is_owner {
+        OwnerStanding::Owner
+    } else {
+        OwnerStanding::Reader
+    }
 }
 
 /// The pointers of `doc`'s OWN properties (this level only, relative to `doc`'s root) that

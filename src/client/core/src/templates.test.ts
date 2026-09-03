@@ -180,10 +180,10 @@ describe("syncState", () => {
   });
 
   // The server's egress of a stored base to each seat, pinned as explicit fixtures: the stored
-  // snapshot is the FULL template (`{ hp, gm_secret, owner_note }`, policy recorded); a player who
-  // owns the instance but not the template receives it minus the recorded `gm_only` and (re-expressed
-  // for another owner) `owner_or_gm` paths, and receives the template minus the same paths under its
-  // own policy; a GM receives both whole.
+  // snapshot is the FULL template (`{ hp, gm_secret, owner_note }`, the template's policy recorded
+  // verbatim); a player who owns the instance but not the template receives it minus the recorded
+  // `gm_only` and `owner_or_gm` paths, and receives the template minus the same paths under its own
+  // policy; a GM receives both whole. The policy maps themselves are never redacted.
   const fullTemplate = () =>
     doc({
       id: "T", name: "T", system: { hp: 11, gm_secret: "S2", owner_note: "N2" },
@@ -197,19 +197,19 @@ describe("syncState", () => {
     t.system = { hp: 11 };
     return t;
   };
-  const playerBaseView = () => ({
+  const playerBaseView = (): MergeBase => ({
     name: "T",
     engine: null,
     system: { hp: 11 },
     embedded: {},
-    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "gm_only" },
+    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "owner_or_gm" },
   });
-  const gmBaseView = () => ({
+  const gmBaseView = (): MergeBase => ({
     name: "T",
     engine: null,
     system: { hp: 11, gm_secret: "S2", owner_note: "N2" },
     embedded: {},
-    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "gm_only" },
+    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "owner_or_gm" },
   });
 
   it("parity: a player's redacted base against their redacted template reads up_to_date", () => {
@@ -246,16 +246,29 @@ describe("syncState", () => {
     expect(syncState(child, tmpl)).toBe("up_to_date");
   });
 
-  it("parity: the recorded policy maps themselves are not compared", () => {
-    // The snapshot's `owner_or_gm` is re-expressed as `gm_only` for another owner's instance; the
-    // template's stays verbatim. The VIEWS agree, so the badge must too.
-    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
-    const stored = playerBaseView();
-    child.base = stored;
-    const t = playerTemplateView();
-    expect(t.permissions.property_overrides["/system/owner_note"]).toBe("owner_or_gm");
-    expect(stored.property_overrides["/system/owner_note"]).toBe("gm_only");
-    expect(syncState(child, t)).toBe("up_to_date");
+  it("a template policy change reads template_changed on every seat; the merge that propagates it clears it", () => {
+    // The stored policy is the template's policy at last sync, verbatim, so hiding one more path
+    // on the template is a template change for the GM and the player alike — until a merge writes
+    // the snapshot with the new policy recorded.
+    const hidden = fullTemplate();
+    hidden.permissions.property_overrides["/system/hp"] = "owner_or_gm";
+    const gmChild = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    gmChild.base = gmBaseView();
+    expect(syncState(gmChild, hidden)).toBe("template_changed");
+    const playerHidden = playerTemplateView();
+    playerHidden.permissions.property_overrides["/system/hp"] = "owner_or_gm";
+    const playerChild = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    playerChild.base = playerBaseView();
+    expect(syncState(playerChild, playerHidden)).toBe("template_changed");
+
+    const refreshed = gmBaseView();
+    refreshed.property_overrides["/system/hp"] = "owner_or_gm";
+    gmChild.base = refreshed;
+    expect(syncState(gmChild, hidden)).toBe("up_to_date");
+    const playerRefreshed = playerBaseView();
+    playerRefreshed.property_overrides["/system/hp"] = "owner_or_gm";
+    playerChild.base = playerRefreshed;
+    expect(syncState(playerChild, playerHidden)).toBe("up_to_date");
   });
 
   it("template_changed when the template diverged from base (ignoring placement)", () => {
@@ -266,6 +279,38 @@ describe("syncState", () => {
     expect(syncState(child, tmpl)).toBe("template_changed");
     child.base = { name: "T", engine: { x: 0, hp: 9 }, system: {}, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("up_to_date"); // only x differs → excluded
+  });
+
+  it("parity: an embedded record's recorded policy reads up_to_date on every seat", () => {
+    // A record-level override (`/engine/hp` hidden from non-GMs) is recorded on the EMBEDDED
+    // CHILD's own snapshot position (`EmbeddedBaseChild.propertyOverrides`), not the root.
+    // `structuralDiff` treats the whole `/embedded/<coll>` array as one opaque leaf, so the base
+    // and the template's current snapshot must agree on the record's content AND its recorded
+    // policy for the array to structurally match — pinning the ordinary happy path once the
+    // (unreachable) per-record policy exclusion is gone.
+    const itemChild = doc({
+      id: "tc", source: { id: "tc", pack: null, version: 1 }, engine: { hp: 5 },
+      permissions: {
+        default: "observer", users: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null,
+        property_overrides: { "/engine/hp": "gm_only" },
+      },
+    });
+    const fullTmpl = doc({ id: "T", name: "T", system: {}, embedded: { items: [itemChild] } });
+    const gmChild = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    gmChild.base = snapshotBase(fullTmpl);
+    expect(syncState(gmChild, fullTmpl)).toBe("up_to_date");
+
+    // The player's view of both the template and the stored base has the record's hidden leaf
+    // stripped (the record's own tier is unaffected — it is recorded verbatim, not re-expressed).
+    const playerTmpl = doc({
+      id: "T", name: "T", system: {},
+      embedded: { items: [{ ...itemChild, engine: null }] },
+    });
+    const playerBase = snapshotBase(playerTmpl);
+    playerBase.embedded.items[0].propertyOverrides = { "/engine/hp": "gm_only" };
+    const playerChild = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    playerChild.base = playerBase;
+    expect(syncState(playerChild, playerTmpl)).toBe("up_to_date");
   });
 });
 

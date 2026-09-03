@@ -655,7 +655,9 @@ fn base_is_hardcoded_owner_or_gm_unconditional_of_overrides() {
     let other = Uuid::from_u128(2);
     let mut d = doc(PermissionSet::default(), serde_json::json!({ "hp": 10 }));
     d.owner = Some(owner);
-    d.base = Some(serde_json::json!({ "name": "Goblin", "system": { "hp": 10 } }));
+    d.base = Some(serde_json::json!({
+        "name": "Goblin", "system": { "hp": 10 }, "owner_standing": "owner",
+    }));
 
     // Non-owner, non-GM: base is nulled.
     let a_other = resolve_access(other, WorldRole::Player, &d, d.owner);
@@ -695,6 +697,33 @@ async fn filter_command_update_drops_base_field_change_for_non_owner_non_gm() {
         .await
         .unwrap();
 
+    r.add_member(w.id, owner, WorldRole::Player).await.unwrap();
+
+    // The template the instance is stamped from — readable by, and owned by,
+    // `owner`, so the derived `owner_standing` is `Owner` and `/base` is not
+    // hidden from the owner by the standing gate alone.
+    let mut template = doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "hp": 10 }),
+    );
+    template.id = Uuid::from_u128(55);
+    template.scope = Scope::World { world_id: w.id };
+    template.owner = Some(owner);
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create {
+            doc: template.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
     let mut d = doc(
         PermissionSet {
             default: DocRole::Observer,
@@ -717,7 +746,7 @@ async fn filter_command_update_drops_base_field_change_for_non_owner_non_gm() {
         &gm_ctx,
         w.id,
         vec![Operation::Create { doc: d.clone() }],
-        1,
+        2,
         WriteOrigin::Client,
     )
     .await
@@ -4371,7 +4400,8 @@ fn base_egress_is_cut_by_the_policy_the_snapshot_records() {
             "/system/secret": "gm_only",
             "/system/note": "owner_or_gm",
             "/name": "gm_only"
-        }
+        },
+        "owner_standing": "owner"
     }));
 
     let a_owner = resolve_access(owner, WorldRole::Player, &inst, inst.owner);
@@ -4442,8 +4472,14 @@ async fn base_egress_redacts_the_update_delta_by_the_recorded_policy() {
         .create_user("owner", None, ServerRole::User, 0)
         .await
         .unwrap();
+    r.add_member(w.id, owner, WorldRole::Player).await.unwrap();
+    let mut template_perms = perms_with(&[("/system/secret", Visibility::GmOnly)]);
+    // `owner` needs whole-document READ on the template for its derived
+    // `owner_standing` to be anything but `Stranger` — a `PermissionSet`'s
+    // default role is `DocRole::None`.
+    template_perms.default = DocRole::Observer;
     let mut template = doc(
-        perms_with(&[("/system/secret", Visibility::GmOnly)]),
+        template_perms,
         serde_json::json!({ "hp": 1, "secret": "S1" }),
     );
     template.id = Uuid::from_u128(55);
@@ -4520,4 +4556,34 @@ async fn base_egress_redacts_the_update_delta_by_the_recorded_policy() {
         .new;
     assert!(base["system"].get("secret").is_none(), "{base}");
     assert_eq!(base["system"]["hp"], 2);
+}
+
+#[test]
+fn writes_a_content_band_agrees_with_the_clients_ismergeablebandpointer_on_every_corpus_case() {
+    // Shared conformance fixture, read on both sides: this file
+    // (`include_str!`) and the client's `isMergeableBandPointer` test
+    // (`readFileSync`). One corpus, so the two classifiers cannot silently
+    // drift apart on which pointers name a mergeable band.
+    const CORPUS: &str = include_str!(
+        "../../../../client/core/src/__fixtures__/mergeable-band-pointer-conformance.json"
+    );
+    #[derive(serde::Deserialize)]
+    struct Case {
+        pointer: String,
+        mergeable: bool,
+    }
+    #[derive(serde::Deserialize)]
+    struct Corpus {
+        cases: Vec<Case>,
+    }
+    let corpus: Corpus =
+        serde_json::from_str(CORPUS).expect("mergeable-band-pointer-conformance.json parses");
+    for case in corpus.cases {
+        assert_eq!(
+            writes_a_content_band(&case.pointer),
+            case.mergeable,
+            "{}",
+            case.pointer
+        );
+    }
 }

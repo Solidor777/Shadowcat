@@ -4,7 +4,8 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::data::document::{
-    AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType, Visibility,
+    AdditionalProperties, Document, OwnerStanding, Schema, SchemaDeclaration, SchemaType,
+    Visibility,
 };
 use crate::data::engine;
 use crate::data::DataError;
@@ -100,10 +101,17 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
 }
 
 /// The band keys every `MergeBase`-shaped node must carry exactly; an
-/// embedded child record additionally carries `sourceId`. The recorded
-/// policy key is required too, under the node's own spelling
-/// (`base_policy_key`).
+/// embedded child record additionally carries `sourceId`, the root
+/// additionally `BASE_STANDING_KEY`. The recorded policy key is required
+/// too, under the node's own spelling (`base_policy_key`).
 const BASE_BAND_KEYS: [&str; 4] = ["name", "engine", "system", "embedded"];
+
+/// The key the ROOT of a stored base records the instance owner's standing
+/// on the template under (`merge::bands::StoredBase::owner_standing`).
+/// Required at the root — an absent standing would leave egress with no rule
+/// for the whole snapshot, the fail-open direction — and rejected on a
+/// record, where the root's standing applies.
+const BASE_STANDING_KEY: &str = "owner_standing";
 
 /// The key a `MergeBase`-shaped node records its content-band policy under:
 /// `MergeBase` spells it `property_overrides`, an `EmbeddedBaseChild` record
@@ -124,8 +132,9 @@ fn base_policy_key(is_child: bool) -> &'static str {
 /// recorded policy an object whose keys name a mergeable band
 /// (`writes_a_content_band` — the only pointers `snapshot_base` records, and
 /// the only ones the egress reader `permission`'s `base_policy` acts on) and
-/// whose values parse as `Visibility`, and — for a child record —
-/// `sourceId` a string. Reads nothing but shape.
+/// whose values parse as `Visibility`, for the root an `owner_standing` that
+/// parses as `OwnerStanding`, and — for a child record — `sourceId` a
+/// string. Reads nothing but shape.
 fn check_base_node_shape(
     node: &serde_json::Value,
     pointer: &str,
@@ -150,10 +159,16 @@ fn check_base_node_shape(
     if is_child && !obj.contains_key("sourceId") {
         return Err(shape_err("missing required key 'sourceId'".to_string()));
     }
+    if !is_child && !obj.contains_key(BASE_STANDING_KEY) {
+        return Err(shape_err(format!(
+            "missing required key '{BASE_STANDING_KEY}'"
+        )));
+    }
     for key in obj.keys() {
         if BASE_BAND_KEYS.contains(&key.as_str())
             || key == policy_key
             || (is_child && key == "sourceId")
+            || (!is_child && key == BASE_STANDING_KEY)
         {
             continue;
         }
@@ -180,6 +195,13 @@ fn check_base_node_shape(
                 json_type_name(tier)
             )));
         }
+    }
+    if !is_child && serde_json::from_value::<OwnerStanding>(obj[BASE_STANDING_KEY].clone()).is_err()
+    {
+        return Err(shape_err(format!(
+            "expected an owner standing at '{BASE_STANDING_KEY}', got {}",
+            json_type_name(&obj[BASE_STANDING_KEY])
+        )));
     }
     let name = &obj["name"];
     if !(name.is_string() || name.is_null()) {

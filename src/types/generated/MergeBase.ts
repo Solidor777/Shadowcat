@@ -3,20 +3,27 @@ import type { EmbeddedBaseChild } from "./EmbeddedBaseChild";
 import type { Visibility } from "./Visibility";
 
 /**
- * The merge snapshot stored at `Document.base`: the TEMPLATE's top-level
- * bands plus recursive embedded content keyed for provenance correlation,
- * FULL and unredacted — one canonical value per instance, never relative
- * to the requester who wrote it (a requester-relative snapshot would make
- * two seats' merges rewrite each other's view forever). Written only by
- * the Create derivation (`derive_create_base`) and the merge write path
- * (`plan_to_update` under `WriteOrigin::TemplateMerge`); each recipient's
- * view of it is cut at egress by the policy it records
- * (`property_overrides`). Every field defaults so a historical record still
+ * The merge snapshot half of the value stored at `Document.base`
+ * (`StoredBase`): the TEMPLATE's top-level bands plus recursive embedded
+ * content keyed for provenance correlation. A MERGE WRITE
+ * (`plan_to_update`, under `WriteOrigin::TemplateMerge`) stores it FULL and
+ * unredacted — one canonical value per instance, never relative to the
+ * requester who wrote it (a requester-relative snapshot would make two
+ * seats' merges rewrite each other's view forever). The CREATE derivation
+ * (`derive_create_base`) is the one exception: it snapshots the STAMPER's
+ * OWN bands (the assembled instance, not the template), because a
+ * full-template base at Create would make a redacted stamper's missing
+ * hidden fields read as instance-authored deletions on the first merge —
+ * see `derive_create_base`'s own doc for the consequence this has for
+ * `syncState`. Either way, each recipient's view of the stored value is cut
+ * at egress by the policy it records (`property_overrides`). Every field
+ * defaults so a historical record still
  * parses on READ (a missing band reads as `null`/empty, exactly the
  * coalescing the client's `snapshotBase` produces when it stamps); the
- * write path never admits such a record — `validate_engine_tree` requires
- * every key present at ingest. The ts-rs export is the client's
- * `MergeBase`.
+ * write path never admits such a record — `check_base_node_shape` requires
+ * every key present at ingest, so the leniency here is read-only, exercised
+ * by `compute_pull` parsing a stored value that predates a key the shape
+ * later gained. The ts-rs export is the client's `MergeBase`.
  */
 export type MergeBase = { 
 /**
@@ -38,11 +45,13 @@ system: unknown,
 embedded: { [key in string]: Array<EmbeddedBaseChild> }, 
 /**
  * The redaction policy the snapshotted document carried over its own
- * bands at sync time (`recorded_overrides`): the snapshot travels with
- * the policy that governed its content, so egress redacts `/base` by
- * it (`permission`'s `own_overrides`) and the client's `syncState`
- * compares it against the template's current policy. Not consulted by
- * the merge itself, which reduces the base by the template's CURRENT
- * hidden set (`merge3`).
+ * bands at sync time (`recorded_overrides`, verbatim — the tiers are
+ * the template's own): the snapshot travels with the policy that
+ * governed its content, so egress redacts `/base` by it (`permission`'s
+ * `own_overrides`) and the client's `syncState` compares it, key for
+ * key, against the template's current policy — a template policy
+ * change reads as a template change until the merge that propagates it
+ * refreshes the snapshot. Not consulted by the merge itself, which
+ * reduces the base by the template's CURRENT hidden set (`merge3`).
  */
 property_overrides: { [key in string]: Visibility }, };

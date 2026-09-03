@@ -2,13 +2,14 @@
 //! stamped document, the `MergeBands` a merge produces, the synthetic
 //! name/engine/system tree adapters, and the placement exclusion set.
 
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
-use crate::data::document::{Document, Visibility};
+use crate::data::document::{Document, OwnerStanding, Visibility};
 use crate::data::permission::writes_a_content_band;
 
 /// The mergeable bands of a live document; `embedded` children are full
@@ -70,20 +71,27 @@ pub struct EmbeddedBaseChild {
     pub property_overrides: BTreeMap<String, Visibility>,
 }
 
-/// The merge snapshot stored at `Document.base`: the TEMPLATE's top-level
-/// bands plus recursive embedded content keyed for provenance correlation,
-/// FULL and unredacted — one canonical value per instance, never relative
-/// to the requester who wrote it (a requester-relative snapshot would make
-/// two seats' merges rewrite each other's view forever). Written only by
-/// the Create derivation (`derive_create_base`) and the merge write path
-/// (`plan_to_update` under `WriteOrigin::TemplateMerge`); each recipient's
-/// view of it is cut at egress by the policy it records
-/// (`property_overrides`). Every field defaults so a historical record still
+/// The merge snapshot half of the value stored at `Document.base`
+/// (`StoredBase`): the TEMPLATE's top-level bands plus recursive embedded
+/// content keyed for provenance correlation. A MERGE WRITE
+/// (`plan_to_update`, under `WriteOrigin::TemplateMerge`) stores it FULL and
+/// unredacted — one canonical value per instance, never relative to the
+/// requester who wrote it (a requester-relative snapshot would make two
+/// seats' merges rewrite each other's view forever). The CREATE derivation
+/// (`derive_create_base`) is the one exception: it snapshots the STAMPER's
+/// OWN bands (the assembled instance, not the template), because a
+/// full-template base at Create would make a redacted stamper's missing
+/// hidden fields read as instance-authored deletions on the first merge —
+/// see `derive_create_base`'s own doc for the consequence this has for
+/// `syncState`. Either way, each recipient's view of the stored value is cut
+/// at egress by the policy it records (`property_overrides`). Every field
+/// defaults so a historical record still
 /// parses on READ (a missing band reads as `null`/empty, exactly the
 /// coalescing the client's `snapshotBase` produces when it stamps); the
-/// write path never admits such a record — `validate_engine_tree` requires
-/// every key present at ingest. The ts-rs export is the client's
-/// `MergeBase`.
+/// write path never admits such a record — `check_base_node_shape` requires
+/// every key present at ingest, so the leniency here is read-only, exercised
+/// by `compute_pull` parsing a stored value that predates a key the shape
+/// later gained. The ts-rs export is the client's `MergeBase`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct MergeBase {
@@ -103,14 +111,42 @@ pub struct MergeBase {
     #[serde(default)]
     pub embedded: BTreeMap<String, Vec<EmbeddedBaseChild>>,
     /// The redaction policy the snapshotted document carried over its own
-    /// bands at sync time (`recorded_overrides`): the snapshot travels with
-    /// the policy that governed its content, so egress redacts `/base` by
-    /// it (`permission`'s `own_overrides`) and the client's `syncState`
-    /// compares it against the template's current policy. Not consulted by
-    /// the merge itself, which reduces the base by the template's CURRENT
-    /// hidden set (`merge3`).
+    /// bands at sync time (`recorded_overrides`, verbatim — the tiers are
+    /// the template's own): the snapshot travels with the policy that
+    /// governed its content, so egress redacts `/base` by it (`permission`'s
+    /// `own_overrides`) and the client's `syncState` compares it, key for
+    /// key, against the template's current policy — a template policy
+    /// change reads as a template change until the merge that propagates it
+    /// refreshes the snapshot. Not consulted by the merge itself, which
+    /// reduces the base by the template's CURRENT hidden set (`merge3`).
     #[serde(default)]
     pub property_overrides: BTreeMap<String, Visibility>,
+}
+
+/// The value stored at `Document.base`: the template's `MergeBase` snapshot
+/// — flattened, so the stored JSON is the snapshot's own keys plus
+/// `owner_standing` — and the standing the instance's effective owner held
+/// on the template at the write that stored it. Written only by the Create
+/// derivation (`derive_create_base`) and the merge write path
+/// (`plan_to_update`); parsed by the merge (`compute_pull` reads the
+/// snapshot half) and by egress (`permission`'s `base_policy` reads the
+/// standing). The ts-rs export is the client's `StoredBase`, which the
+/// client never constructs: `normalizeBase` reads the `MergeBase` half for
+/// `syncState` and leaves `owner_standing` out BY TYPE — it is an access
+/// fact about the instance's owner, not a template property, and no
+/// template edit changes it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct StoredBase {
+    /// The template's snapshot at last sync.
+    #[serde(flatten)]
+    #[ts(flatten)]
+    pub snapshot: MergeBase,
+    /// The instance owner's standing on the template at this write
+    /// (`permission::owner_standing`), under which egress evaluates the
+    /// snapshot's recorded policy (`OwnerStanding::relate`) and, for a
+    /// `Stranger`, hides the whole snapshot.
+    pub owner_standing: OwnerStanding,
 }
 
 /// The overrides of `doc` that govern its MERGEABLE bands — the pointers
@@ -128,34 +164,28 @@ pub(crate) fn recorded_overrides(doc: &Document) -> BTreeMap<String, Visibility>
         .collect()
 }
 
-/// A template's tier re-expressed for the instance that will hold it. The
-/// `OwnerOrGm` tier names the OWNER of the document it sits on, and every
-/// document evaluates its tiers against its own effective owner
-/// (`Access::is_owner`) — so a template-owner-private value carried onto an
-/// instance is private to the same person only when the two documents share
-/// an effective owner (`same_owner`); otherwise it is nobody's private value
-/// on the instance and becomes `GmOnly` there. `All` and `GmOnly` name no
-/// owner and are unchanged. The one relation both `propagate_overrides` (the
-/// instance's content policy) and `snapshot_for_instance` (the recorded
-/// policy of its `/base`) apply, so the instance's content and its snapshot
-/// hide the same paths from the same seats.
-pub fn relate_tier(tier: Visibility, same_owner: bool) -> Visibility {
-    match tier {
-        Visibility::OwnerOrGm if !same_owner => Visibility::GmOnly,
-        other => other,
-    }
-}
-
-/// Carry `template`'s content-band policy onto `instance`, ADDITIVELY: every
-/// pointer the template hides (`recorded_overrides`) gets the template's
-/// tier, re-expressed for the instance (`relate_tier`), unless the instance
-/// already holds a tier at least as strict (`Visibility::strictness`); an
+/// Carry `template`'s content-band policy onto `instance` VERBATIM and
+/// ADDITIVELY: every pointer the template hides (`recorded_overrides`) lands
+/// on the instance at the template's own tier where the instance holds NO
+/// entry for that pointer; an entry the instance already holds — stricter,
+/// equal or looser — is never touched, so a tier a GM deliberately loosened
+/// on the instance is not re-tightened by the next merge, and an
 /// instance-authored override is never removed or widened. Recurses into the
 /// instance's embedded children by IDENTITY — a child whose `source.id`
 /// names a template child takes that child's policy — never by position.
-/// `same_owner` is the ROOT relation (an embedded child's tiers resolve
-/// against the root's access, as `filter_properties` recurses). Returns
-/// whether anything changed.
+/// Returns whether anything changed.
+///
+/// `OwnerOrGm` is carried as is: on the instance it names the INSTANCE's
+/// owner (`Access::is_owner` is resolved per document), which is the
+/// per-owner-private pattern — each instance's owner plus the GM — and the
+/// value under it reaches an instance only through a merge run by a
+/// requester who can see it. Re-expressing it as `GmOnly` across an
+/// ownership boundary would permanently hide a player's own notes, and no GM
+/// could repair it while propagation re-applied the re-expression on every
+/// merge. A stored snapshot's recorded policy therefore equals the
+/// template's policy at last sync, which is what lets the client's
+/// `syncState` read a template policy change as `template_changed` on every
+/// seat until the pull that propagates it clears it.
 ///
 /// This is what closes the recipient direction of merge secrecy: a merge
 /// write moves the template's values into the instance under the
@@ -163,17 +193,24 @@ pub fn relate_tier(tier: Visibility, same_owner: bool) -> Visibility {
 /// instance whose OWNER then reads it — unless the path arrives hidden. The
 /// Create derivation and every merge write (`plan_to_update`) apply this,
 /// server-authored, before the instance's content is written.
-pub fn propagate_overrides(instance: &mut Document, template: &Document, same_owner: bool) -> bool {
+///
+/// A recorded `Visibility::All` tier is skipped: it is a no-op audience —
+/// `Access::can_see(All)` is unconditionally `true`, the same as an
+/// unlisted pointer — so propagating it changes nothing about who sees the
+/// path while still writing `/permissions/property_overrides` (or, on an
+/// embedded record, the record's whole `/embedded/<coll>` collection,
+/// requiring `cap::MANAGE_EMBEDDED`) for zero visibility effect. The stored
+/// snapshot still records an explicit `All` verbatim
+/// (`recorded_overrides`/`snapshot_base` are unaffected) — only propagation
+/// onto a LIVE document's own policy skips it.
+pub fn propagate_overrides(instance: &mut Document, template: &Document) -> bool {
     let mut changed = false;
     for (p, tier) in recorded_overrides(template) {
-        let tier = relate_tier(tier, same_owner);
-        let keep = instance
-            .permissions
-            .property_overrides
-            .get(&p)
-            .is_some_and(|own| own.strictness() >= tier.strictness());
-        if !keep {
-            instance.permissions.property_overrides.insert(p, tier);
+        if tier == Visibility::All {
+            continue;
+        }
+        if let Entry::Vacant(slot) = instance.permissions.property_overrides.entry(p) {
+            slot.insert(tier);
             changed = true;
         }
     }
@@ -186,34 +223,11 @@ pub fn propagate_overrides(instance: &mut Document, template: &Document, same_ow
                 continue;
             };
             if let Some(t) = template_kids.iter().find(|t| t.id == sid) {
-                changed |= propagate_overrides(kid, t, same_owner);
+                changed |= propagate_overrides(kid, t);
             }
         }
     }
     changed
-}
-
-/// The `/base` value a merge write stores on an instance: `snapshot_base` of
-/// the FULL template with every recorded tier re-expressed for the instance
-/// (`relate_tier`, at every depth) — the policy the instance's egress
-/// evaluates against its own owner. Compared and written by `plan_to_update`.
-pub fn snapshot_for_instance(template: &Document, same_owner: bool) -> MergeBase {
-    fn relate_records(records: &mut BTreeMap<String, Vec<EmbeddedBaseChild>>, same_owner: bool) {
-        for kids in records.values_mut() {
-            for k in kids {
-                for tier in k.property_overrides.values_mut() {
-                    *tier = relate_tier(*tier, same_owner);
-                }
-                relate_records(&mut k.embedded, same_owner);
-            }
-        }
-    }
-    let mut base = snapshot_base(template);
-    for tier in base.property_overrides.values_mut() {
-        *tier = relate_tier(*tier, same_owner);
-    }
-    relate_records(&mut base.embedded, same_owner);
-    base
 }
 
 /// Per-`doc_type` instance-local paths that never merge. Currently only
@@ -369,9 +383,10 @@ pub fn snapshot_base(doc: &Document) -> MergeBase {
 /// The Create-write `base` rule: `base` is server-owned, so the write path
 /// DERIVES it rather than trusting the submitted value — a stamped instance
 /// (`source` set) first takes `template`'s content-band policy
-/// (`propagate_overrides` under `same_owner`, the two documents' effective-
-/// owner relation, when the template is loadable), then snapshots its OWN
-/// bands and policy (`snapshot_base`). The stamper's copy IS the template as
+/// (`propagate_overrides`, when the template is loadable), then snapshots
+/// its OWN bands and policy (`snapshot_base`) under `owner_standing`, the
+/// instance owner's standing on the template (`permission::owner_standing`
+/// — `OwnerStanding::Stranger` when no template is loadable). The stamper's copy IS the template as
 /// that seat saw it at the stamp, so this is the template snapshot the merge
 /// treats as "last sync"; a hidden template value absent from a redacted
 /// stamper's copy reads as template-ADDED on the first merge a seat that
@@ -382,14 +397,21 @@ pub fn snapshot_base(doc: &Document) -> MergeBase {
 /// branch calls this BEFORE validation, so the derived value is what
 /// `validate_engine_tree` shape-checks and normalizes and what gets stored,
 /// broadcast and logged.
-pub fn derive_create_base(doc: &mut Document, template: Option<&Document>, same_owner: bool) {
+pub fn derive_create_base(
+    doc: &mut Document,
+    template: Option<&Document>,
+    owner_standing: OwnerStanding,
+) {
     if let Some(template) = template {
-        propagate_overrides(doc, template, same_owner);
+        propagate_overrides(doc, template);
     }
-    let derived = doc
-        .source
-        .as_ref()
-        .map(|_| serde_json::to_value(snapshot_base(doc)).expect("MergeBase serializes to JSON"));
+    let derived = doc.source.as_ref().map(|_| {
+        serde_json::to_value(StoredBase {
+            snapshot: snapshot_base(doc),
+            owner_standing,
+        })
+        .expect("StoredBase serializes to JSON")
+    });
     doc.base = derived;
     for children in doc.embedded.values_mut() {
         for child in children {

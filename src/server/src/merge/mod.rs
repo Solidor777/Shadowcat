@@ -58,7 +58,7 @@ use ts_rs::TS;
 
 pub use bands::{
     is_placement_excluded, placement_exclusions, snapshot_base, EmbeddedBaseChild, MergeBands,
-    MergeBase,
+    MergeBase, StoredBase,
 };
 pub use plan::{
     apply_resolutions, compute_pull, compute_revert, merge3, plan_to_update, MergePlan,
@@ -72,7 +72,7 @@ pub use visibility::{AllVisible, MergeVisibility, RequesterView, Side};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeError {
     /// The child's stored `base` snapshot is present but does not parse as a
-    /// `MergeBase`. A corrupt snapshot cannot carry correlation information
+    /// `StoredBase`. A corrupt snapshot cannot carry correlation information
     /// the merge could trust, and falling back to a clean template-wins
     /// merge would silently destroy child-local edits — so the pull fails
     /// closed and nothing is written. Carries no user data: the offending
@@ -94,7 +94,7 @@ impl std::fmt::Display for MergeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MergeError::CorruptBase => {
-                f.write_str("the stored merge base does not parse as a MergeBase snapshot")
+                f.write_str("the stored merge base does not parse as a StoredBase snapshot")
             }
             MergeError::VisibilityUnknown => {
                 f.write_str("the requester's view of a merged document could not be resolved")

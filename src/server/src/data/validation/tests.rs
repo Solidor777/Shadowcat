@@ -406,7 +406,8 @@ fn valid_wall_base(child_source_id: &str) -> serde_json::Value {
                 "propertyOverrides": {}
             }]
         },
-        "property_overrides": {}
+        "property_overrides": {},
+        "owner_standing": "owner"
     })
 }
 
@@ -448,7 +449,8 @@ fn validate_engine_tree_normalizes_the_root_base_engine_band() {
         },
         "system": {},
         "embedded": {},
-        "property_overrides": {}
+        "property_overrides": {},
+        "owner_standing": "owner"
     }));
     validate_engine_tree(&mut doc).unwrap();
     let base = doc.base.unwrap();
@@ -697,7 +699,8 @@ fn validate_engine_tree_normalizes_a_correlated_embedded_child_engine() {
                 "propertyOverrides": {}
             }]
         },
-        "property_overrides": {}
+        "property_overrides": {},
+        "owner_standing": "owner"
     }));
     validate_engine_tree(&mut parent).unwrap();
     let base = parent.base.unwrap();

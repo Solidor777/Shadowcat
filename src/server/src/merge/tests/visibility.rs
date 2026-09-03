@@ -431,7 +431,12 @@ fn revert_keeps_the_child_value_on_a_template_hidden_path() {
     child.system = json!({ "hp": 9, "secret": "S3", "extra": true });
     let vis = Hide::default().on_template("t1", "/system/secret");
     let bands = crate::merge::compute_revert(&child, &template, &vis).expect("reverts");
-    let op = crate::merge::plan_to_update(&child, &template, &bands, true);
+    let op = crate::merge::plan_to_update(
+        &child,
+        &template,
+        &bands,
+        crate::data::document::OwnerStanding::Owner,
+    );
     let crate::data::command::Operation::Update { changes, .. } = op else {
         panic!("revert emits an update");
     };
@@ -441,4 +446,31 @@ fn revert_keeps_the_child_value_on_a_template_hidden_path() {
         .expect("system reset")
         .new;
     assert_eq!(system, &json!({ "hp": 2, "secret": "S3" }));
+}
+
+#[test]
+fn template_deleted_conflict_discloses_only_the_system_band() {
+    // `TEMPLATE_DELETED_PAYLOAD_BAND` (`/system`) is stated separately from
+    // the conflict construction's `child: cd.system, base: b.system` field
+    // access — pin that the two agree: a distinguishable name/engine on
+    // both the record and the child must never leak through the payload.
+    let mut cd = instance_child("I_a", "T_a", json!({ "hp": 5 }));
+    cd.name = Some("child-name".to_string());
+    cd.engine = Some(json!({ "e": "child-engine" }));
+    let mut b = record("T_a", json!({ "hp": 1 }), vec![]);
+    b.name = Some("record-name".to_string());
+    b.engine = json!({ "e": "record-engine" });
+    let (template, child) = pair(vec![], vec![cd], vec![b]);
+    let plan = compute_pull(&child, &template, &Hide::default()).expect("merges");
+    assert_eq!(plan.conflicts.len(), 1);
+    assert_eq!(
+        plan.conflicts[0].base,
+        Some(json!({ "hp": 1 })),
+        "the base half is the RECORD's system, not its name/engine"
+    );
+    assert_eq!(
+        plan.conflicts[0].child,
+        Some(json!({ "hp": 5 })),
+        "the child half is the CHILD's system, not its name/engine"
+    );
 }

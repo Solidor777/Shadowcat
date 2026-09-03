@@ -8,9 +8,10 @@ use std::collections::BTreeSet;
 use serde_json::json;
 
 use crate::data::command::{FieldChange, Operation};
+use crate::data::document::OwnerStanding;
 use crate::merge::{
     apply_resolutions, compute_pull, compute_revert, plan_to_update, snapshot_base, AllVisible,
-    MergeConflict, MergeError, ParentKind,
+    MergeConflict, MergeError, ParentKind, StoredBase,
 };
 
 use super::{doc, source_from, test_id};
@@ -69,22 +70,27 @@ fn plan_to_update_targets_the_child_and_refreshes_base_only_when_it_changed() {
     // No stored base: the refresh is a change (null -> snapshot).
     let plan =
         compute_pull(&child, &template, &AllVisible).expect("no base is stored on this child");
-    let op = plan_to_update(&child, &template, &plan.merged_bands, true);
+    let op = plan_to_update(&child, &template, &plan.merged_bands, OwnerStanding::Owner);
     let Operation::Update { doc_id, changes } = op else {
         panic!("plan_to_update emits an update");
     };
     assert_eq!(doc_id, test_id("c1"));
     assert_eq!(changes.len(), 1, "no band changed; only the base refresh");
     assert_eq!(changes[0].path, "/base");
-    let snapshot = serde_json::to_value(snapshot_base(&template)).expect("snapshot serializes");
-    assert_eq!(changes[0].new, snapshot);
+    let stored = serde_json::to_value(StoredBase {
+        snapshot: snapshot_base(&template),
+        owner_standing: OwnerStanding::Owner,
+    })
+    .expect("stored base serializes");
+    assert_eq!(changes[0].new, stored);
     assert!(!changes[0].remove);
 
-    // Stored base already equal to the template snapshot: nothing to write.
-    child.base = Some(snapshot);
+    // Stored base already equal to the template snapshot, under the same
+    // owner standing: nothing to write.
+    child.base = Some(stored);
     let plan = compute_pull(&child, &template, &AllVisible).expect("merges");
     let Operation::Update { changes, .. } =
-        plan_to_update(&child, &template, &plan.merged_bands, true)
+        plan_to_update(&child, &template, &plan.merged_bands, OwnerStanding::Owner)
     else {
         panic!("plan_to_update emits an update");
     };
@@ -141,7 +147,9 @@ fn compute_revert_keeps_token_placement_and_refreshes_base() {
     );
 
     let bands = compute_revert(&child, &template, &AllVisible).expect("reverts");
-    let Operation::Update { changes, .. } = plan_to_update(&child, &template, &bands, true) else {
+    let Operation::Update { changes, .. } =
+        plan_to_update(&child, &template, &bands, OwnerStanding::Owner)
+    else {
         panic!("plan_to_update emits an update");
     };
     let find = |path: &str| {

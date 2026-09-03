@@ -100,17 +100,44 @@ pub enum Visibility {
     OwnerOrGm,
 }
 
-impl Visibility {
-    /// Audience-inclusion rank: the audiences nest — every recipient `GmOnly`
-    /// admits is admitted by `OwnerOrGm`, and every recipient `OwnerOrGm`
-    /// admits is admitted by `All` (`Access::can_see`) — so a higher rank is a
-    /// strictly smaller audience. `merge::bands::propagate_overrides` keeps
-    /// the higher-ranked of two tiers at one path, never widening an audience.
-    pub fn strictness(self) -> u8 {
-        match self {
-            Visibility::All => 0,
-            Visibility::OwnerOrGm => 1,
-            Visibility::GmOnly => 2,
+/// The standing an instance's effective owner held on the instance's
+/// TEMPLATE at the write that stored the instance's `base` snapshot
+/// (`merge::bands::StoredBase::owner_standing`), resolved by
+/// `permission::owner_standing` from that owner's `Access` on the template.
+/// `/base` reaches the instance's owner or a GM and nobody else, and its
+/// content is the TEMPLATE's, so the policy recorded inside it is evaluated
+/// under this standing rather than under the instance's own ownership
+/// (`relate`): a recorded `OwnerOrGm` names the template's owner, not the
+/// instance's. Recorded as of the write; the next merge write re-resolves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerStanding {
+    /// The owner holds no whole-document `READ` on the template — or the
+    /// instance has no effective owner, or its owner is not a world member:
+    /// the whole snapshot is `GmOnly`, so the owner receives no template
+    /// content through `/base` at all.
+    Stranger,
+    /// The owner reads the template but is not its effective owner: the
+    /// snapshot minus the recorded `GmOnly` AND `OwnerOrGm` entries.
+    Reader,
+    /// The owner is the template's effective owner too: the snapshot minus
+    /// the recorded `GmOnly` entries only.
+    Owner,
+}
+
+impl OwnerStanding {
+    /// A recorded tier as the instance's `/base` egress evaluates it:
+    /// `OwnerOrGm` is the TEMPLATE owner's tier, so it stands only under
+    /// `Owner` and is `GmOnly` otherwise; every other tier names no owner
+    /// and is unchanged. A `Stranger` hides the whole snapshot before any
+    /// entry is read (`permission`'s `base_policy`), so the per-entry
+    /// relation only ever matters for a `Reader` or an `Owner`.
+    pub fn relate(self, tier: Visibility) -> Visibility {
+        match (self, tier) {
+            (OwnerStanding::Owner, tier) => tier,
+            (_, Visibility::OwnerOrGm) => Visibility::GmOnly,
+            (_, tier) => tier,
         }
     }
 }

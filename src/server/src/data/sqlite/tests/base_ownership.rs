@@ -55,8 +55,14 @@ async fn create_derives_base_for_an_instance_discarding_a_client_supplied_value(
     let base = stored.base.clone().expect("an instance carries a base");
     // The stored value is the SERVER's snapshot of the document's own
     // (validated, normalized) bands — nothing of the forged value survives.
-    let expected =
-        serde_json::to_value(crate::merge::snapshot_base(&stored)).expect("MergeBase serializes");
+    // The named template (900) does not exist, so the derived standing is
+    // `Stranger` (`permission::owner_standing` fails closed with no template
+    // to resolve READ against).
+    let expected = serde_json::to_value(crate::merge::StoredBase {
+        snapshot: crate::merge::snapshot_base(&stored),
+        owner_standing: crate::data::document::OwnerStanding::Stranger,
+    })
+    .expect("StoredBase serializes");
     assert_eq!(base, expected);
     assert_eq!(base["name"], serde_json::json!("Goblin"));
     assert_eq!(base["system"], serde_json::json!({ "hp": 7 }));
@@ -324,9 +330,10 @@ async fn template_merge_origin_still_runs_engine_and_scope_checks() {
 #[tokio::test]
 async fn legacy_row_with_a_stale_schema_base_still_reads() {
     let (r, world, gm_ctx) = gm_setup().await;
-    // A row predating the base walk: its snapshot holds an engine shape that
-    // is invalid under the doc's CURRENT schema. Seed it raw
-    // (`seed_document_unvalidated` bypasses every ingress gate by design).
+    // A row predating both the base walk and the owner-standing key: its
+    // snapshot holds an engine shape invalid under the doc's CURRENT schema
+    // AND lacks `owner_standing`. Seed it raw (`seed_document_unvalidated`
+    // bypasses every ingress gate by design).
     let mut doc = world_doc(1, world, serde_json::json!({}));
     doc.doc_type = "wall".into();
     doc.engine = crate::data::document::tests::default_test_engine("wall");
@@ -335,6 +342,9 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
         pack: None,
         version: 1,
     });
+    // Missing `owner_standing` too — this row genuinely predates that key
+    // (`check_base_node_shape`'s requirement), not a fixture papered over to
+    // dodge it.
     doc.base = Some(serde_json::json!({
         "name": "Old",
         "engine": { "seg": { "x1": "not-a-number" } },
@@ -348,7 +358,12 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
     let loaded = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
     assert_eq!(loaded.base, doc.base);
 
-    // Rewriting the row re-validates the post-image — and fails closed.
+    // Rewriting the row re-validates the post-image — and fails closed on
+    // the FIRST shape defect `check_base_node_shape` finds: the missing
+    // `owner_standing` key, before ever reaching the stale `engine` content
+    // the fixture also carries. Asserting the actual first failure (rather
+    // than adding `owner_standing` to reach a deeper `BadEngine` failure)
+    // keeps this test honest about what a genuinely legacy row hits.
     let err = r
         .apply_intent(
             &gm_ctx,
@@ -368,7 +383,8 @@ async fn legacy_row_with_a_stale_schema_base_still_reads() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, DataError::BadEngine(_)),
+        matches!(&err, DataError::SchemaViolation { pointer, reason }
+            if pointer == "/base" && reason.contains("owner_standing")),
         "a stale-schema base fails re-validation on rewrite, got {err:?}"
     );
 }

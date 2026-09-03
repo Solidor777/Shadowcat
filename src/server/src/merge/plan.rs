@@ -8,11 +8,11 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::data::command::{FieldChange, Operation};
-use crate::data::document::Document;
+use crate::data::document::{Document, OwnerStanding};
 use crate::data::permission::redact_pointers;
 use crate::merge::bands::{
-    bands_tree, placement_exclusions, propagate_overrides, snapshot_base, snapshot_for_instance,
-    MergeBands, MergeBase,
+    bands_tree, placement_exclusions, propagate_overrides, snapshot_base, MergeBands, MergeBase,
+    StoredBase,
 };
 use crate::merge::embedded::{merge3_embedded, revert_embedded};
 use crate::merge::tree::{
@@ -134,7 +134,13 @@ pub fn merge3(
 /// A stored snapshot that is PRESENT but fails to parse as `MergeBase` is
 /// corruption, not absence: returning a clean template-wins merge here would
 /// silently destroy child-local edits, so the pull fails closed with
-/// `MergeError::CorruptBase` and nothing is written.
+/// `MergeError::CorruptBase` and nothing is written. Only the snapshot half
+/// enters the merge; the recorded owner standing (`StoredBase::owner_standing`,
+/// flattened alongside these same keys in the stored value) is egress's
+/// business, and `MergeBase` carries no `deny_unknown_fields`, so parsing the
+/// stored value straight into it ignores that key rather than requiring it —
+/// a stored base predating the standing key, or a corpus fixture that never
+/// carried one, is not corruption.
 pub fn compute_pull(
     child: &Document,
     template: &Document,
@@ -178,16 +184,17 @@ fn is_empty_collection(v: &Value) -> bool {
 /// change per changed band (`/name`, `/engine`, `/system`), one per changed
 /// embedded collection (whole array), a `/permissions/property_overrides`
 /// change carrying the template's content-band policy propagated onto the
-/// instance (`propagate_overrides` under `same_owner`, additive — every
-/// merged embedded child takes its template child's policy the same way
-/// inside its collection write), plus a `/base` refresh whose new value is
-/// `template`'s CURRENT snapshot re-expressed for this instance
-/// (`snapshot_for_instance`) — `template` being the FULL, unredacted
+/// instance (`propagate_overrides`, verbatim and additive — every merged
+/// embedded child takes its template child's policy the same way inside its
+/// collection write), plus a `/base` refresh whose new value is `template`'s
+/// CURRENT snapshot (`snapshot_base`) — `template` being the FULL, unredacted
 /// template, so the stored base is one canonical value whoever wrote it —
-/// each emitted, like every other change, only when it differs from the
-/// stored value (the stored `/base` read through `MergeBase`'s own defaults,
-/// so a snapshot that predates a key the shape later gained is not rewritten
-/// for the key alone). An instance already in sync with its template
+/// under `owner_standing`, the instance owner's standing on the template as
+/// the caller resolved it for THIS write (`permission::owner_standing`); each
+/// emitted, like every other change, only when it differs from the stored
+/// value (the stored `/base` read through `MergeBase`'s own defaults, so a
+/// snapshot that predates a key the shape later gained is not rewritten for
+/// the key alone). An instance already in sync with its template
 /// therefore yields an update with NO changes, which the handlers report as
 /// applied without publishing (no no-op `Event` per clean instance per
 /// resolution round). Every `old` is the child's REAL current stored value
@@ -203,12 +210,12 @@ pub fn plan_to_update(
     child: &Document,
     template: &Document,
     merged_bands: &MergeBands,
-    same_owner: bool,
+    owner_standing: OwnerStanding,
 ) -> Operation {
     let mut changes = Vec::new();
     let mut policy_carrier = child.clone();
     policy_carrier.embedded = merged_bands.embedded.clone();
-    propagate_overrides(&mut policy_carrier, template, same_owner);
+    propagate_overrides(&mut policy_carrier, template);
     let merged_bands = &MergeBands {
         name: merged_bands.name.clone(),
         engine: merged_bands.engine.clone(),
@@ -268,11 +275,31 @@ pub fn plan_to_update(
             .expect("property overrides serialize to JSON"),
     );
     let stored_base = child.base.clone().unwrap_or(Value::Null);
+    // A stored base predating `owner_standing` (or a base-less child falling
+    // back to a plain snapshot) carries no signal about standing at all —
+    // absence is not a recorded `Stranger`, so comparing against a fixed
+    // default would force a spurious `/base` rewrite on every merge of every
+    // such document. Read whatever standing IS recorded and default to the
+    // standing THIS write is deriving when none is: the comparison then
+    // turns on snapshot content alone for a legacy value, and still refreshes
+    // when a recorded standing has genuinely changed.
+    let stored_standing: Option<OwnerStanding> = stored_base
+        .get("owner_standing")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
     let stored_normalized = serde_json::from_value::<MergeBase>(stored_base.clone())
-        .map(|b| serde_json::to_value(b).expect("MergeBase serializes to JSON"))
+        .map(|snapshot| {
+            serde_json::to_value(StoredBase {
+                snapshot,
+                owner_standing: stored_standing.unwrap_or(owner_standing),
+            })
+            .expect("StoredBase serializes to JSON")
+        })
         .unwrap_or(Value::Null);
-    let refreshed = serde_json::to_value(snapshot_for_instance(template, same_owner))
-        .expect("MergeBase serializes to JSON");
+    let refreshed = serde_json::to_value(StoredBase {
+        snapshot: snapshot_base(template),
+        owner_standing,
+    })
+    .expect("StoredBase serializes to JSON");
     if !deep_equal(&stored_normalized, &refreshed) {
         changes.push(FieldChange {
             path: "/base".to_string(),

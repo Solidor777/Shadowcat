@@ -22,11 +22,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 use crate::data::command::{Operation, WriteOrigin};
-use crate::data::document::{world_of, CapabilityRequirement, Document, WorldCapDefaults};
+use crate::data::document::{
+    world_of, CapabilityRequirement, Document, OwnerStanding, WorldCapDefaults,
+};
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
-    cap, declared_caps_for_path, filter_properties, required_cap_for_path, resolve_access_world,
-    Access,
+    cap, declared_caps_for_path, filter_properties, owner_standing, required_cap_for_path,
+    resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::DataError;
@@ -65,25 +67,48 @@ impl AuthInputs {
     /// `resolve_access_world` for `doc` under this world's default grants, with the
     /// effective owner joined LIVE (`Repository::effective_owner_of` — the same
     /// linked-actor join `apply_intent`'s Update arm performs through
-    /// `load_effective_owner`), never a literal `owner` read — returned beside
-    /// the access, since the instance/template owner relation
-    /// (`merge::bands::relate_tier`'s `same_owner`) compares the same value.
-    async fn access_and_owner(
+    /// `load_effective_owner`), never a literal `owner` read.
+    async fn access(
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
         doc: &Document,
-    ) -> Result<(Access, Option<Uuid>), DataError> {
+    ) -> Result<Access, DataError> {
         let owner = repo.effective_owner_of(doc).await?;
-        Ok((
-            resolve_access_world(
-                ctx.user_id,
-                ctx.world_role,
-                doc,
-                &self.defaults.grants_for(&doc.doc_type),
-                owner,
-            ),
+        Ok(resolve_access_world(
+            ctx.user_id,
+            ctx.world_role,
+            doc,
+            &self.defaults.grants_for(&doc.doc_type),
             owner,
+        ))
+    }
+
+    /// The standing `instance`'s effective owner holds on `template` for the
+    /// `/base` this write stores (`permission::owner_standing`): both
+    /// effective owners joined LIVE (`Repository::effective_owner_of`) and the
+    /// owner's membership role (`Repository::member_role`), never a literal
+    /// `owner` read.
+    async fn owner_standing(
+        &self,
+        repo: &dyn Repository,
+        world_id: Uuid,
+        instance: &Document,
+        template: &Document,
+    ) -> Result<OwnerStanding, DataError> {
+        let owner = match repo.effective_owner_of(instance).await? {
+            Some(user) => repo
+                .member_role(world_id, user)
+                .await?
+                .map(|role| (user, role)),
+            None => None,
+        };
+        let template_owner = repo.effective_owner_of(template).await?;
+        Ok(owner_standing(
+            owner,
+            template,
+            &self.defaults.grants_for(&template.doc_type),
+            template_owner,
         ))
     }
 }
@@ -329,10 +354,9 @@ struct PullDocs {
     /// the `RequesterView` oracle, which excludes the template-hidden paths from
     /// the parent diff at every embedded depth.
     template_access: Access,
-    /// Whether the instance and the template share an effective owner — the
-    /// relation the propagated tiers and the stored snapshot's recorded policy
-    /// are expressed under (`merge::bands::relate_tier`).
-    same_owner: bool,
+    /// The instance owner's standing on the template (`AuthInputs::owner_standing`),
+    /// recorded in the `/base` this write stores.
+    owner_standing: OwnerStanding,
 }
 
 /// Load and gate the pull/revert document pair.
@@ -368,8 +392,8 @@ async fn load_pull_docs(
     if world_of(&template).is_some_and(|w| w != room.world_id) {
         return Err(MergeErrorKind::NotFound);
     }
-    let (child_access, child_owner) = inputs
-        .access_and_owner(repo, ctx, &child)
+    let child_access = inputs
+        .access(repo, ctx, &child)
         .await
         .map_err(|_| MergeErrorKind::Internal)?;
     // Owner-or-GM is `Access::is_owner` (the effective-owner rule) — the uncapped
@@ -379,21 +403,25 @@ async fn load_pull_docs(
     if !(child_access.is_owner && child_access.has(cap::READ)) {
         return Err(MergeErrorKind::Forbidden);
     }
-    let (template_access, template_owner) = inputs
-        .access_and_owner(repo, ctx, &template)
+    let template_access = inputs
+        .access(repo, ctx, &template)
         .await
         .map_err(|_| MergeErrorKind::Internal)?;
     if !template_access.has(cap::READ) {
         return Err(MergeErrorKind::NotFound);
     }
     let template_view = visible_template(&template, &template_access)?;
+    let owner_standing = inputs
+        .owner_standing(repo, room.world_id, &child, &template)
+        .await
+        .map_err(|_| MergeErrorKind::Internal)?;
     Ok(PullDocs {
         child,
         template: template_view,
         template_full: template,
         child_access,
         template_access,
-        same_owner: child_owner == template_owner,
+        owner_standing,
     })
 }
 
@@ -472,7 +500,12 @@ async fn pull(
             );
         }
     };
-    let update = plan_to_update(&docs.child, &docs.template_full, &bands, docs.same_owner);
+    let update = plan_to_update(
+        &docs.child,
+        &docs.template_full,
+        &bands,
+        docs.owner_standing,
+    );
     if !update_authorized(&update, &docs.child_access, &inputs) {
         return merge_error(request_id, MergeErrorKind::Forbidden);
     }
@@ -543,7 +576,12 @@ async fn revert(
         child: &docs.child_access,
     };
     let update = match compute_revert(&docs.child, &docs.template, &vis) {
-        Ok(bands) => plan_to_update(&docs.child, &docs.template_full, &bands, docs.same_owner),
+        Ok(bands) => plan_to_update(
+            &docs.child,
+            &docs.template_full,
+            &bands,
+            docs.owner_standing,
+        ),
         Err(e) => return merge_error(request_id, engine_error(child_id, e)),
     };
     if !update_authorized(&update, &docs.child_access, &inputs) {
@@ -590,13 +628,14 @@ struct PlannedInstance {
     /// already filtered to the conflicts this pusher may see
     /// (`visible_pull_plan` against BOTH the instance and the template).
     plan: MergePlan,
-    /// Whether this instance and the template share an effective owner
-    /// (`merge::bands::relate_tier`'s relation).
-    same_owner: bool,
+    /// This instance's owner's standing on the template
+    /// (`AuthInputs::owner_standing`), recorded in the `/base` its write stores.
+    owner_standing: OwnerStanding,
 }
 
 /// Plan every same-world instance of a push before any commit: load each,
-/// resolve the pusher's access, compute its plan. Planning the whole set
+/// resolve the pusher's access, compute its plan, resolve its owner's standing
+/// on `template_full` (the FULL template; `template` is the pusher's view). Planning the whole set
 /// first is what lets a resolutions rejection precede every write.
 /// An instance the pusher cannot READ is OMITTED from the outcome entirely —
 /// true existence-hiding parity with redaction (the pusher's store never
@@ -610,8 +649,8 @@ async fn plan_push(
     ctx: &PermissionContext,
     inputs: &AuthInputs,
     template: &Document,
+    template_full: &Document,
     template_access: &Access,
-    template_owner: Option<Uuid>,
 ) -> Result<Vec<(Uuid, PlannedInstance)>, MergeErrorKind> {
     let instances = repo
         .instances_of(room.world_id, template.id)
@@ -622,8 +661,8 @@ async fn plan_push(
         })?;
     let mut planned = Vec::with_capacity(instances.len());
     for doc in instances {
-        let (access, owner) = inputs
-            .access_and_owner(repo, ctx, &doc)
+        let access = inputs
+            .access(repo, ctx, &doc)
             .await
             .map_err(|_| MergeErrorKind::Internal)?;
         if !access.has(cap::READ) {
@@ -637,6 +676,10 @@ async fn plan_push(
             }
         };
         let plan = visible_pull_plan(&doc, &access, template, template_access)?;
+        let owner_standing = inputs
+            .owner_standing(repo, room.world_id, &doc, template_full)
+            .await
+            .map_err(|_| MergeErrorKind::Internal)?;
         planned.push((
             doc.id,
             PlannedInstance {
@@ -644,7 +687,7 @@ async fn plan_push(
                 name,
                 access,
                 plan,
-                same_owner: owner == template_owner,
+                owner_standing,
             },
         ));
     }
@@ -667,7 +710,7 @@ fn push_outcome(
     let instances = instances
         .iter()
         .map(|(id, p)| {
-            let update = plan_to_update(&p.doc, template, &p.plan.merged_bands, p.same_owner);
+            let update = plan_to_update(&p.doc, template, &p.plan.merged_bands, p.owner_standing);
             let status = if !update_authorized(&update, &p.access, inputs) {
                 PushInstanceStatus::Excluded
             } else if p.plan.conflicts.is_empty() {
@@ -749,11 +792,10 @@ async fn push(
     if world_of(&template) != Some(room.world_id) {
         return merge_error(request_id, MergeErrorKind::NotFound);
     }
-    let (template_access, template_owner) =
-        match inputs.access_and_owner(repo, ctx, &template).await {
-            Ok(a) => a,
-            Err(_) => return merge_error(request_id, MergeErrorKind::Internal),
-        };
+    let template_access = match inputs.access(repo, ctx, &template).await {
+        Ok(a) => a,
+        Err(_) => return merge_error(request_id, MergeErrorKind::Internal),
+    };
     // Owner-or-GM of the TEMPLATE plus `/embedded` writability on it — the one
     // capability every push can require (merged embedded collections add/remove
     // children on instances), read off the shared `required_cap_for_path`
@@ -782,8 +824,8 @@ async fn push(
         ctx,
         &inputs,
         &template_view,
+        &template,
         &template_access,
-        template_owner,
     )
     .await
     {
@@ -832,7 +874,7 @@ async fn push(
     // commit — or, on a first call with conflicts, report without writing.
     let mut outcomes: Vec<PushInstanceOutcome> = Vec::with_capacity(resolved.len());
     for (id, p, bands) in resolved {
-        let update = plan_to_update(&p.doc, &template, &bands, p.same_owner);
+        let update = plan_to_update(&p.doc, &template, &bands, p.owner_standing);
         if !update_authorized(&update, &p.access, &inputs) {
             outcomes.push(PushInstanceOutcome {
                 instance_id: id,
@@ -877,8 +919,8 @@ async fn push(
                         ctx,
                         &inputs,
                         &template_view,
+                        &template,
                         &template_access,
-                        template_owner,
                     )
                     .await?;
                     Ok(push_outcome(template_id, &instances, &inputs, &template))

@@ -1827,10 +1827,24 @@ impl SqliteRepository {
         world_id: Uuid,
         user_id: Uuid,
     ) -> Result<Option<WorldRole>, DataError> {
+        Self::load_member_role(&self.pool, world_id, user_id).await
+    }
+
+    /// `member_role` over any executor, for a caller already inside a
+    /// transaction (the single-writer pool holds one connection, so a pool
+    /// query mid-transaction would deadlock).
+    async fn load_member_role<'e, E>(
+        executor: E,
+        world_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<WorldRole>, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let row = sqlx::query("SELECT role FROM world_members WHERE world_id = ? AND user_id = ?")
             .bind(world_id.to_string())
             .bind(user_id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
         match row {
             Some(r) => {
@@ -3173,18 +3187,31 @@ impl Repository for SqliteRepository {
                         },
                         None => None,
                     };
-                    // The owner relation the propagated tiers are expressed
-                    // under (`merge::bands::relate_tier`): both effective
-                    // owners through the one linked-actor join
-                    // (`load_effective_owner`), never a literal `owner` read.
-                    let same_owner = match &template {
+                    // The instance owner's standing on the template, under
+                    // which egress evaluates the derived snapshot's recorded
+                    // policy: both effective owners through the one
+                    // linked-actor join (`load_effective_owner`) and the
+                    // owner's membership role, resolved by the one
+                    // `permission::owner_standing` the merge writers use.
+                    let owner_standing = match &template {
                         Some(t) => {
-                            Self::load_effective_owner(&mut *tx, doc).await?
-                                == Self::load_effective_owner(&mut *tx, t).await?
+                            let owner = match Self::load_effective_owner(&mut *tx, doc).await? {
+                                Some(user) => Self::load_member_role(&mut *tx, world_id, user)
+                                    .await?
+                                    .map(|role| (user, role)),
+                                None => None,
+                            };
+                            let template_owner = Self::load_effective_owner(&mut *tx, t).await?;
+                            crate::data::permission::owner_standing(
+                                owner,
+                                t,
+                                &world_defaults.grants_for(&t.doc_type),
+                                template_owner,
+                            )
                         }
-                        None => true,
+                        None => crate::data::document::OwnerStanding::Stranger,
                     };
-                    crate::merge::bands::derive_create_base(doc, template.as_ref(), same_owner);
+                    crate::merge::bands::derive_create_base(doc, template.as_ref(), owner_standing);
                     // A combatant's stored resource numbers derive from actor
                     // formulas that may read hidden leaves, so their egress
                     // defaults to the trusted tier: stamp the override when
