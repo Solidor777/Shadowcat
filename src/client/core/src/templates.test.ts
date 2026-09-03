@@ -271,6 +271,20 @@ describe("syncState", () => {
     expect(syncState(playerChild, playerHidden)).toBe("up_to_date");
   });
 
+  it("a malformed stored base never reads up_to_date — it falls back exactly as an absent base does", () => {
+    // `child.base` is present but missing the STRUCTURAL `property_overrides` key (never subject
+    // to redaction, so its absence is not a legitimate wire shape), and its `name`/`system` happen
+    // to already match the template's current snapshot. A coalescing reader would default the
+    // missing key and read this as caught up; the server itself never accepts such a value as a
+    // legitimate snapshot (`check_base_node_shape`), so the client must not either — it falls back
+    // to the child's own current bands, the same treatment `syncState` already gives a genuinely
+    // absent `base`.
+    const tmpl = doc({ id: "T", name: "T", system: { hp: 5 } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, name: "T", system: { hp: 999 } });
+    child.base = { name: "T", engine: null, system: { hp: 5 }, embedded: {} };
+    expect(syncState(child, tmpl)).toBe("template_changed");
+  });
+
   it("template_changed when the template diverged from base (ignoring placement)", () => {
     const tmpl = doc({ id: "T", doc_type: "token", name: "T", engine: { x: 5, hp: 9 }, system: {} });
     const child = doc({ id: "C", doc_type: "token", source: { id: "T", pack: null, version: 1 } });
@@ -315,8 +329,16 @@ describe("syncState", () => {
 });
 
 describe("normalizeBase", () => {
-  it("reads a snapshot with the server's MergeBase defaults, recursively", () => {
-    expect(normalizeBase({ system: { hp: 1 }, embedded: { items: [{ sourceId: "t" }] } })).toEqual<MergeBase>({
+  it("parses a snapshot carrying every required key, recursively", () => {
+    expect(
+      normalizeBase({
+        name: null,
+        engine: null,
+        system: { hp: 1 },
+        property_overrides: {},
+        embedded: { items: [{ sourceId: "t", name: null, engine: null, system: null, embedded: {}, propertyOverrides: {} }] },
+      }),
+    ).toEqual<MergeBase>({
       name: null,
       engine: null,
       system: { hp: 1 },
@@ -325,8 +347,35 @@ describe("normalizeBase", () => {
     });
   });
 
-  it("reads a non-object as an empty base", () => {
-    expect(normalizeBase(undefined).system).toBeNull();
-    expect(normalizeBase(42).embedded).toEqual({});
+  it("reads an absent content band (name/engine/system) as null — a redacted band is legitimately missing", () => {
+    // The server's egress REMOVES a hidden `/base/<band>` key wholesale (`redaction_target`
+    // classifies it `Within`), so a recipient's redacted copy misses any of these three keys with
+    // nothing wrong; reading the gap as `null` is what matches the live template's own hidden band
+    // (nulled in place there, per `redaction_target::Band`).
+    expect(normalizeBase({ system: { hp: 1 }, embedded: {}, property_overrides: {} })).toEqual<MergeBase>({
+      name: null,
+      engine: null,
+      system: { hp: 1 },
+      embedded: {},
+      property_overrides: {},
+    });
+  });
+
+  it("rejects a root missing a structural key (never subject to redaction)", () => {
+    // `embedded` and `property_overrides` are never named by a recorded policy entry
+    // (`writes_a_content_band` admits only `/name`/`/engine…`/`/system…`), so their absence is
+    // not a legitimate redacted shape — it can only be corrupted/foreign data.
+    expect(normalizeBase({ name: "T", engine: null, system: null, property_overrides: {} })).toBeNull();
+    expect(normalizeBase({ name: "T", engine: null, system: null, embedded: {} })).toBeNull();
+  });
+
+  it("rejects an embedded record missing a structural key", () => {
+    expect(normalizeBase({ embedded: { items: [{ sourceId: "t", embedded: {} }] }, property_overrides: {} })).toBeNull();
+    expect(normalizeBase({ embedded: { items: [{ embedded: {}, propertyOverrides: {} }] }, property_overrides: {} })).toBeNull();
+  });
+
+  it("rejects a non-object", () => {
+    expect(normalizeBase(undefined)).toBeNull();
+    expect(normalizeBase(42)).toBeNull();
   });
 });

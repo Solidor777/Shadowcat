@@ -192,8 +192,13 @@ export function findInstances(templateId: string, all: Iterable<WireDocument>): 
  * recipient compares its view of the snapshot with its view of the template, a GM both in full.
  * The recorded policy map is compared like every other key: a template policy change reads
  * `template_changed` on every seat until the merge that propagates it refreshes the snapshot.
- * Reading `base` through `normalizeBase` is what keeps a stripped snapshot key and a nulled
- * template band reading as the same value.
+ *
+ * `normalizeBase` parses `base` STRICTLY, the same shape the server's ingest requires
+ * (`check_base_node_shape`) — it never coalesces a missing key. A `base` present but failing that
+ * parse gets the exact same treatment as a genuinely absent one below: falling back to the
+ * child's own current bands rather than defaulting the gap to a value that could spuriously equal
+ * the template's current snapshot and read as caught up when the stored snapshot cannot be
+ * trusted at all.
  * @param child The instance document to check.
  * @param template The template document, or `undefined` if not in store.
  * @returns `"none"` (unstamped or template missing), `"up_to_date"`, or `"template_changed"`.
@@ -208,7 +213,8 @@ export function findInstances(templateId: string, all: Iterable<WireDocument>): 
  */
 export function syncState(child: WireDocument, template: WireDocument | undefined): SyncState {
   if (!child.source || !template) return "none";
-  const base: MergeBase = child.base === undefined || child.base === null ? snapshotBase(child) : normalizeBase(child.base);
+  const parsed = child.base === undefined || child.base === null ? null : normalizeBase(child.base);
+  const base: MergeBase = parsed ?? snapshotBase(child);
   const excl = placementExclusions(child.doc_type);
   const diverged = structuralDiff(base, snapshotBase(template)).filter((d) => !isPlacementExcluded(d.path, excl));
   return diverged.length === 0 ? "up_to_date" : "template_changed";
