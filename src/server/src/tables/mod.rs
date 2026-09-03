@@ -12,7 +12,8 @@ pub(crate) mod draw;
 use uuid::Uuid;
 
 use crate::chat::{
-    self, ActorOwnerRef, Audience, MessageDraft, MessageKind, Segment, SendMessageError,
+    self, ActorOwnerRef, Audience, LinkPreviewDeps, MessageDraft, MessageKind, PendingEnrichment,
+    Segment, SendMessageError,
 };
 use crate::data::command::{Command, Operation, WriteOrigin};
 use crate::data::membership::PermissionContext;
@@ -147,10 +148,20 @@ pub struct DrawTableRequestCtx<'a> {
     pub ctx: &'a PermissionContext,
     /// The per-user chat flood-budget limiter.
     pub rate: &'a PingRateLimiter,
+    /// Link-preview fetch dependencies -- the same bundle
+    /// `MessageRequestCtx` carries, since a table draw's row text runs
+    /// through the identical `link_preview::enrich` stage a chat message's
+    /// body does.
+    pub preview: LinkPreviewDeps<'a>,
     /// The moment of this request.
     pub now: i64,
     /// The per-user-per-minute flood budget (the same one chat sends spend).
     pub budget_per_min: usize,
+    /// Test-only deterministic roll seed, threaded straight into the
+    /// constructed `DrawCtx.seed` -- see that field's doc. Never compiles
+    /// into the release binary.
+    #[cfg(test)]
+    pub seed: Option<u64>,
 }
 
 /// Dispatches one `DrawTable` request: flood-limit, validate channel/
@@ -164,14 +175,17 @@ pub(crate) async fn handle_draw_table(
     count: u32,
     actor_owner: Option<ActorOwnerRef>,
     audience: Audience,
-) -> Result<Command, DrawTableError> {
+) -> Result<(Command, Vec<PendingEnrichment>), DrawTableError> {
     let DrawTableRequestCtx {
         room,
         repo,
         ctx,
         rate,
+        preview,
         now,
         budget_per_min,
+        #[cfg(test)]
+        seed,
     } = req;
 
     if !rate.check(ctx.user_id, now, budget_per_min) {
@@ -207,12 +221,36 @@ pub(crate) async fn handle_draw_table(
         world_id: room.world_id,
         chain: Vec::new(),
         budget: 0,
+        image_urls: Vec::new(),
+        #[cfg(test)]
+        seed,
     };
     let mut content: Vec<Segment> = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let seg = draw::draw_table(&mut cx, table_id, 0).await?;
         content.push(Segment::TableDraw(seg));
     }
+
+    // Route every row's inline markdown images through the SAME
+    // `link_preview::enrich` stage a chat message's body crosses -- see
+    // `body::compose_message`'s identical call. `scan_previews` mirrors
+    // `handle_send_message`'s own gate (`policy.previews_enabled()`); no
+    // top-level segment here is ever `Segment::Html`, so the href-scan half
+    // is inert regardless -- only the accumulated `image_urls` queueing
+    // matters for a table draw.
+    let pending = chat::enrich_link_previews(
+        &mut content,
+        chat::EnrichDeps {
+            repo,
+            fetch: preview,
+        },
+        ctx.user_id,
+        now,
+        std::time::Instant::now(),
+        &cx.image_urls,
+        policy.previews_enabled(),
+    )
+    .await;
 
     let doc = chat::build_message_doc(
         room.world_id,
@@ -235,6 +273,7 @@ pub(crate) async fn handle_draw_table(
         WriteOrigin::Client,
     )
     .await
+    .map(|cmd| (cmd, pending))
     .map_err(DrawTableError::Data)
 }
 

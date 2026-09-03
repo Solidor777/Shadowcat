@@ -111,6 +111,8 @@ async fn base_cx<'a>(
         world_id: world,
         chain: Vec::new(),
         budget: 0,
+        image_urls: Vec::new(),
+        seed: None,
     }
 }
 
@@ -369,16 +371,21 @@ async fn a_missing_asset_row_entry_is_refused() {
     assert!(matches!(err, DrawTableError::MissingAsset));
 }
 
+/// A genuine multi-row `Formula` selection, driven through
+/// `draw_table_with_seed` rather than a degenerate single-row (always-hit)
+/// or wholly-out-of-range (always-miss) fixture: three distinct 2d6 seeds
+/// exercise a low-range hit, a high-range hit, and a real gap-range miss.
 #[tokio::test]
 async fn a_formula_table_hit_and_miss() {
     let (repo, world, gm, _player) = test_world().await;
-    let hit_id = Uuid::new_v4();
+    let table_id = Uuid::new_v4();
     let doc = formula_table_doc(
-        hit_id,
+        table_id,
         world,
         "2d6",
         serde_json::json!([
-            { "weight": 1, "range": { "lo": 2, "hi": 12 }, "label": "always", "results": [] }
+            { "weight": 1, "range": { "lo": 2, "hi": 6 }, "label": "low", "results": [] },
+            { "weight": 1, "range": { "lo": 7, "hi": 9 }, "label": "high", "results": [] }
         ]),
     );
     repo.apply_command(UnsequencedCommand {
@@ -390,33 +397,87 @@ async fn a_formula_table_hit_and_miss() {
     .await
     .unwrap();
     let ctx = gm_ctx(gm);
-    let mut cx = base_cx(&repo, &ctx, world).await;
-    let seg = draw_table(&mut cx, hit_id, 0).await.unwrap();
-    assert!(seg.row.is_some());
 
-    let miss_id = Uuid::new_v4();
-    let doc2 = formula_table_doc(
-        miss_id,
+    // seed=2 -> 2d6 total 4, inside "low"'s [2,6].
+    let mut cx_low = base_cx(&repo, &ctx, world).await;
+    let seg_low = draw_table_with_seed(&mut cx_low, table_id, 0, 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        seg_low.row.as_ref().map(|r| r.label.as_str()),
+        Some("low")
+    );
+
+    // seed=0 -> 2d6 total 7, inside "high"'s [7,9].
+    let mut cx_high = base_cx(&repo, &ctx, world).await;
+    let seg_high = draw_table_with_seed(&mut cx_high, table_id, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        seg_high.row.as_ref().map(|r| r.label.as_str()),
+        Some("high")
+    );
+
+    // seed=8 -> 2d6 total 11, outside both ranges: a real "no matching row" miss.
+    let mut cx_miss = base_cx(&repo, &ctx, world).await;
+    let seg_miss = draw_table_with_seed(&mut cx_miss, table_id, 0, 8)
+        .await
+        .unwrap();
+    assert!(
+        seg_miss.row.is_none(),
+        "a total outside every range draws no row"
+    );
+}
+
+/// A genuine multi-row `Weighted` selection over three rows, driven through
+/// `draw_table_with_seed`: three seeds land in the low/middle/high
+/// cumulative-weight band respectively, so the matched row is asserted by
+/// LABEL rather than inferred from a single-row always-hit fixture.
+#[tokio::test]
+async fn a_weighted_table_selects_the_row_matching_the_seeded_roll() {
+    let (repo, world, gm, _player) = test_world().await;
+    let table_id = Uuid::new_v4();
+    // Cumulative weights: [3, 6, 10] (1d10).
+    let doc = weighted_table_doc(
+        table_id,
         world,
-        "2d6",
         serde_json::json!([
-            { "weight": 1, "range": { "lo": 100, "hi": 200 }, "label": "never", "results": [] }
+            { "weight": 3, "label": "a", "results": [] },
+            { "weight": 3, "label": "b", "results": [] },
+            { "weight": 4, "label": "c", "results": [] }
         ]),
+        DocRole::Observer,
     );
     repo.apply_command(UnsequencedCommand {
         world_id: world,
         author: gm,
         ts: 0,
-        ops: vec![Operation::Create { doc: doc2 }],
+        ops: vec![Operation::Create { doc }],
     })
     .await
     .unwrap();
-    let mut cx2 = base_cx(&repo, &ctx, world).await;
-    let seg2 = draw_table(&mut cx2, miss_id, 0).await.unwrap();
-    assert!(
-        seg2.row.is_none(),
-        "a total outside every range draws no row"
-    );
+    let ctx = gm_ctx(gm);
+
+    // seed=5 -> 1d10 total 1, in row "a"'s cumulative band [1,3].
+    let mut cx_a = base_cx(&repo, &ctx, world).await;
+    let seg_a = draw_table_with_seed(&mut cx_a, table_id, 0, 5)
+        .await
+        .unwrap();
+    assert_eq!(seg_a.row.as_ref().map(|r| r.label.as_str()), Some("a"));
+
+    // seed=3 -> 1d10 total 6, in row "b"'s cumulative band [4,6].
+    let mut cx_b = base_cx(&repo, &ctx, world).await;
+    let seg_b = draw_table_with_seed(&mut cx_b, table_id, 0, 3)
+        .await
+        .unwrap();
+    assert_eq!(seg_b.row.as_ref().map(|r| r.label.as_str()), Some("b"));
+
+    // seed=0 -> 1d10 total 8, in row "c"'s cumulative band [7,10].
+    let mut cx_c = base_cx(&repo, &ctx, world).await;
+    let seg_c = draw_table_with_seed(&mut cx_c, table_id, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(seg_c.row.as_ref().map(|r| r.label.as_str()), Some("c"));
 }
 
 #[tokio::test]

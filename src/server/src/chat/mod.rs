@@ -49,7 +49,7 @@ mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
 pub use link_preview::{
     build_client as build_link_preview_client, enrich as enrich_link_previews, fetch_preview,
-    LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
+    EnrichDeps, LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
 };
 pub use oembed::{
     match_provider as match_oembed_provider, OEmbedProvider, OEmbedResponse, OEmbedSegment,

@@ -700,15 +700,20 @@ async fn handle_socket(
                                     // Same confirm-by-broadcast-echo shape as
                                     // SendMessage/EditMessage/DeleteMessage/RecalcRoll; a
                                     // rejection is surfaced to the sender only via a
-                                    // correlated `ChatError`.
-                                    if let Err(e) = crate::tables::handle_draw_table(
+                                    // correlated `ChatError`. A non-empty pending-enrichment
+                                    // list is run AFTER publish returns, off the request path
+                                    // (same as SendMessage/EditMessage).
+                                    match crate::tables::handle_draw_table(
                                         crate::tables::DrawTableRequestCtx {
                                             room: &room,
                                             repo: repo.as_ref(),
                                             ctx: &ctx,
                                             rate: &message_rate,
+                                            preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                                             now: now_millis(),
                                             budget_per_min: MESSAGE_RATE_PER_MIN,
+                                            #[cfg(test)]
+                                            seed: None,
                                         },
                                         table_id,
                                         channel,
@@ -718,12 +723,34 @@ async fn handle_socket(
                                     )
                                     .await
                                     {
-                                        tracing::debug!(world = %world_id, user = %user_id, ?e, "draw_table rejected");
-                                        if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
-                                            request_id,
-                                            message: e.to_string(),
-                                        }))).await.is_err() {
-                                            break;
+                                        Ok((cmd, pending)) => {
+                                            if !pending.is_empty() {
+                                                if let Some(message_id) = crate::chat::command_message_id(&cmd) {
+                                                    tokio::spawn(crate::chat::run_pending_enrichments(
+                                                        crate::chat::PostPublishDeps {
+                                                            room: room.clone(),
+                                                            repo: repo.clone(),
+                                                            client: preview_client.clone(),
+                                                            assets_root: state.config.assets_path(),
+                                                            retain_originals: state.config.retain_originals,
+                                                            write_barrier: state.write_barrier.clone(),
+                                                            preview_fetch_locks: state.preview_fetch_locks.clone(),
+                                                        },
+                                                        message_id,
+                                                        world_id,
+                                                        pending,
+                                                    ));
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            tracing::debug!(world = %world_id, user = %user_id, ?e, "draw_table rejected");
+                                            if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
+                                                request_id,
+                                                message: e.to_string(),
+                                            }))).await.is_err() {
+                                                break;
+                                            }
                                         }
                                     }
                                 }

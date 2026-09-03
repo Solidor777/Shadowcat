@@ -1,10 +1,11 @@
 use super::*;
 use crate::auth::role::ServerRole;
-use crate::chat::{Audience, Segment};
-use crate::data::command::{Operation, UnsequencedCommand};
+use crate::chat::{Audience, ChatContentPolicy, Segment, CHAT_SETTINGS_DOC_TYPE};
+use crate::data::command::{Operation, UnsequencedCommand, WriteOrigin};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::sqlite::SqliteRepository;
 use crate::ws::room::RoomRegistry;
+use std::collections::BTreeMap;
 
 fn table_doc(id: Uuid, world: Uuid) -> Document {
     Document {
@@ -62,6 +63,84 @@ async fn world_with_table() -> (SqliteRepository, Uuid, Uuid, Uuid, Uuid) {
     (repo, w.id, gm, player, table_id)
 }
 
+/// A three-row weighted table (cumulative weights [3, 6, 10], `1d10`) --
+/// used where a test asserts WHICH row a seeded roll matches, rather than a
+/// single-row always-absorbs-the-roll fixture.
+fn multi_row_table_doc(id: Uuid, world: Uuid) -> Document {
+    Document {
+        id,
+        scope: Scope::World { world_id: world },
+        doc_type: "table".into(),
+        schema_version: 1,
+        name: Some("T".into()),
+        source: None,
+        base: None,
+        owner: None,
+        permissions: PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        embedded: Default::default(),
+        parent_id: None,
+        engine: Some(serde_json::json!({
+            "draw": { "kind": "weighted" },
+            "rows": [
+                { "weight": 3, "label": "a", "results": [] },
+                { "weight": 3, "label": "b", "results": [] },
+                { "weight": 4, "label": "c", "results": [] }
+            ],
+            "description": ""
+        })),
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+async fn world_with_multi_row_table() -> (SqliteRepository, Uuid, Uuid, Uuid, Uuid) {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = repo
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    repo.add_member(w.id, player, WorldRole::Player)
+        .await
+        .unwrap();
+    let table_id = Uuid::new_v4();
+    repo.apply_command(UnsequencedCommand {
+        world_id: w.id,
+        author: gm,
+        ts: 0,
+        ops: vec![Operation::Create {
+            doc: multi_row_table_doc(table_id, w.id),
+        }],
+    })
+    .await
+    .unwrap();
+    (repo, w.id, gm, player, table_id)
+}
+
+/// Extracts the drawn row's label from a `handle_draw_table` command's
+/// single `Segment::TableDraw` content entry.
+fn drawn_row_label(cmd: &crate::data::command::Command) -> Option<String> {
+    let doc = match &cmd.ops[0] {
+        Operation::Create { doc } => doc,
+        other => panic!("expected Create, got {other:?}"),
+    };
+    let sys: crate::chat::MessageEngine =
+        serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+    match &sys.content[0] {
+        Segment::TableDraw(seg) => seg.row.as_ref().map(|r| r.label.clone()),
+        other => panic!("expected TableDraw, got {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn a_draw_posts_a_public_roll_message_with_a_table_draw_segment() {
     let (repo, world, gm, _player, table_id) = world_with_table().await;
@@ -73,14 +152,20 @@ async fn a_draw_posts_a_public_roll_message_with_a_table_draw_segment() {
     let room = reg.get_or_create(&repo, world).await.unwrap().unwrap();
     let rate = crate::ws::PingRateLimiter::new();
 
-    let cmd = handle_draw_table(
+    let (cmd, _pending) = handle_draw_table(
         DrawTableRequestCtx {
             room: &room,
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 30,
+            seed: None,
         },
         table_id,
         "general".into(),
@@ -118,8 +203,14 @@ async fn an_unknown_channel_is_refused() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 30,
+            seed: None,
         },
         table_id,
         "does-not-exist".into(),
@@ -150,8 +241,14 @@ async fn the_flood_budget_refuses_a_draw_over_the_limit() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 1,
+            seed: None,
         },
         table_id,
         "general".into(),
@@ -168,8 +265,14 @@ async fn the_flood_budget_refuses_a_draw_over_the_limit() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 1,
+            seed: None,
         },
         table_id,
         "general".into(),
@@ -199,8 +302,14 @@ async fn a_count_over_max_top_level_draws_is_too_many() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 30,
+            seed: None,
         },
         table_id,
         "general".into(),
@@ -224,14 +333,20 @@ async fn recalc_on_a_table_draws_roll_id_is_roll_not_found() {
     let room = reg.get_or_create(&repo, world).await.unwrap().unwrap();
     let rate = crate::ws::PingRateLimiter::new();
 
-    let cmd = handle_draw_table(
+    let (cmd, _pending) = handle_draw_table(
         DrawTableRequestCtx {
             room: &room,
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 30,
+            seed: None,
         },
         table_id,
         "general".into(),
@@ -273,7 +388,7 @@ async fn recalc_on_a_table_draws_roll_id_is_roll_not_found() {
 
 #[tokio::test]
 async fn a_whisper_draw_reaches_only_its_recipients() {
-    let (repo, world, gm, player, table_id) = world_with_table().await;
+    let (repo, world, gm, player, table_id) = world_with_multi_row_table().await;
     let ctx = PermissionContext {
         user_id: gm,
         world_role: WorldRole::Gm,
@@ -282,14 +397,23 @@ async fn a_whisper_draw_reaches_only_its_recipients() {
     let room = reg.get_or_create(&repo, world).await.unwrap().unwrap();
     let rate = crate::ws::PingRateLimiter::new();
 
-    let cmd = handle_draw_table(
+    let (cmd, _pending) = handle_draw_table(
         DrawTableRequestCtx {
             room: &room,
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 30,
+            // 1d10 total 1 under seed 5 -> row "a" (cumulative band [1,3]),
+            // a genuine multi-row selection rather than a single always-hit
+            // row absorbing whatever the (otherwise unseeded) roll produces.
+            seed: Some(5),
         },
         table_id,
         "general".into(),
@@ -302,6 +426,7 @@ async fn a_whisper_draw_reaches_only_its_recipients() {
     .await
     .unwrap();
 
+    assert_eq!(drawn_row_label(&cmd), Some("a".to_string()));
     let doc = match &cmd.ops[0] {
         Operation::Create { doc } => doc.clone(),
         other => panic!("expected Create, got {other:?}"),
@@ -318,7 +443,7 @@ async fn a_whisper_draw_reaches_only_its_recipients() {
 
 #[tokio::test]
 async fn a_gm_only_draw_reaches_no_player() {
-    let (repo, world, gm, player, table_id) = world_with_table().await;
+    let (repo, world, gm, player, table_id) = world_with_multi_row_table().await;
     let ctx = PermissionContext {
         user_id: gm,
         world_role: WorldRole::Gm,
@@ -327,14 +452,21 @@ async fn a_gm_only_draw_reaches_no_player() {
     let room = reg.get_or_create(&repo, world).await.unwrap().unwrap();
     let rate = crate::ws::PingRateLimiter::new();
 
-    let cmd = handle_draw_table(
+    let (cmd, _pending) = handle_draw_table(
         DrawTableRequestCtx {
             room: &room,
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
             now: 100,
             budget_per_min: 30,
+            // 1d10 total 6 under seed 3 -> row "b" (cumulative band [4,6]).
+            seed: Some(3),
         },
         table_id,
         "general".into(),
@@ -345,6 +477,7 @@ async fn a_gm_only_draw_reaches_no_player() {
     .await
     .unwrap();
 
+    assert_eq!(drawn_row_label(&cmd), Some("b".to_string()));
     let doc = match &cmd.ops[0] {
         Operation::Create { doc } => doc.clone(),
         other => panic!("expected Create, got {other:?}"),
@@ -357,6 +490,112 @@ async fn a_gm_only_draw_reaches_no_player() {
     assert_eq!(doc.permissions.users.get(&gm), Some(&DocRole::Owner));
     assert_eq!(doc.permissions.users.get(&player), None);
     assert_eq!(doc.permissions.users.len(), 1);
+}
+
+/// A table with one row whose `TableEntry::Text` carries a markdown inline
+/// image, in a world whose `chat-settings` enables markdown+images.
+fn table_with_image_row(id: Uuid, world: Uuid) -> Document {
+    let mut doc = table_doc(id, world);
+    doc.engine = Some(serde_json::json!({
+        "draw": { "kind": "weighted" },
+        "rows": [{
+            "weight": 1,
+            "label": "a",
+            "results": [{ "kind": "text", "text": "![a map](https://x.example/a.png)" }],
+        }],
+        "description": ""
+    }));
+    doc
+}
+
+#[tokio::test]
+async fn a_row_text_inline_image_reaches_link_preview_enrichment() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let gm = repo
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = repo.create_world_owned("W", gm, 0).await.unwrap();
+    crate::data::world_seed::seed_test_channel_registry(&repo, w.id, &[]).await;
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    // Enable markdown+images so `chat::sanitize` collects `image_urls` for a
+    // row's `TableEntry::Text` -- mirrors `chat::link_preview_ingest_tests`'
+    // own `Fixture::new` chat-settings seeding.
+    let policy = ChatContentPolicy {
+        markdown: Some(true),
+        images: Some(true),
+        ..Default::default()
+    };
+    let settings_doc = Document {
+        id: Uuid::new_v4(),
+        scope: Scope::World { world_id: w.id },
+        doc_type: CHAT_SETTINGS_DOC_TYPE.to_string(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: Some(gm),
+        permissions: PermissionSet::default(),
+        embedded: BTreeMap::new(),
+        parent_id: None,
+        engine: Some(serde_json::to_value(policy).unwrap()),
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    };
+    let table_id = Uuid::new_v4();
+    repo.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![
+            Operation::Create { doc: settings_doc },
+            Operation::Create {
+                doc: table_with_image_row(table_id, w.id),
+            },
+        ],
+        0,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, w.id).await.unwrap().unwrap();
+    let rate = crate::ws::PingRateLimiter::new();
+
+    let (_cmd, pending) = handle_draw_table(
+        DrawTableRequestCtx {
+            room: &room,
+            repo: &repo,
+            ctx: &gm_ctx,
+            rate: &rate,
+            preview: crate::chat::LinkPreviewDeps {
+                client: &crate::chat::build_link_preview_client(),
+                cache: &crate::chat::LinkPreviewCache::new(),
+                rate: &crate::chat::PreviewRateLimiter::new(),
+            },
+            now: 100,
+            budget_per_min: 30,
+            seed: None,
+        },
+        table_id,
+        "general".into(),
+        1,
+        None,
+        Audience::Public,
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        pending
+            .iter()
+            .any(|p| matches!(p, crate::chat::PendingEnrichment::InlineImage { image_url, .. } if image_url == "https://x.example/a.png")),
+        "expected an InlineImage enrichment job for the row's markdown image, got {pending:?}"
+    );
 }
 
 #[test]

@@ -38,6 +38,22 @@ pub(crate) struct DrawCtx<'a> {
     /// Draws resolved so far across the WHOLE request (top-level plus every
     /// nested draw); `MAX_DRAWS_PER_REQUEST` bounds it regardless of depth.
     pub budget: usize,
+    /// Inline markdown image sources collected from every `TableEntry::Text`
+    /// entry resolved so far, across the WHOLE request (top-level plus every
+    /// nested draw) -- accumulated here so `handle_draw_table` can run ONE
+    /// `link_preview::enrich` call over the whole message, mirroring
+    /// `chat::body::compose_message`'s own collection.
+    pub image_urls: Vec<chat::ImageSource>,
+    /// Test-only deterministic seed for every roll `draw_table` performs
+    /// (including recursive nested draws, which all read the SAME field) --
+    /// never compiles into the release binary. `None` (the only value in
+    /// production, and in most tests) draws fresh OS entropy via
+    /// `chat::rolls::execute_roll`; `Some(seed)` drives
+    /// `chat::rolls::execute_roll_with_seed` instead, for a deterministic
+    /// row-selection assertion. Set via `draw_table_with_seed`, never by
+    /// hand.
+    #[cfg(test)]
+    pub seed: Option<u64>,
 }
 
 /// Resolves one draw from `table_id`: loads and authorizes the table,
@@ -112,6 +128,16 @@ pub(crate) async fn draw_table(
         }
         DrawRule::Formula { notation } => notation.clone(),
     };
+    #[cfg(test)]
+    let (formula, outcome, spec, raw) = match cx.seed {
+        Some(seed) => {
+            chat::rolls::execute_roll_with_seed(&notation, super::TABLE_PARSE_CONTEXT, None, seed)
+                .map_err(DrawTableError::Roll)?
+        }
+        None => chat::rolls::execute_roll(&notation, super::TABLE_PARSE_CONTEXT, None)
+            .map_err(DrawTableError::Roll)?,
+    };
+    #[cfg(not(test))]
     let (formula, outcome, spec, raw) =
         chat::rolls::execute_roll(&notation, super::TABLE_PARSE_CONTEXT, None)
             .map_err(DrawTableError::Roll)?;
@@ -162,6 +188,23 @@ pub(crate) async fn draw_table(
     })
 }
 
+/// Test seam: identical to `draw_table`, but drives every roll it (and any
+/// recursive nested draw) performs through `chat::rolls::execute_roll_with_seed`
+/// via `cx.seed`, so a row-selection test can assert a deterministic matched
+/// row directly instead of relying on a degenerate single-row/weighted
+/// fixture to make the outcome predictable. `#[cfg(test)]`: never compiles
+/// into the release binary.
+#[cfg(test)]
+pub(crate) async fn draw_table_with_seed(
+    cx: &mut DrawCtx<'_>,
+    table_id: Uuid,
+    depth: usize,
+    seed: u64,
+) -> Result<TableDrawSegment, DrawTableError> {
+    cx.seed = Some(seed);
+    draw_table(cx, table_id, depth).await
+}
+
 /// Resolves one matched row's `results` into `(content, nested)`, recursing
 /// into any `TableEntry::Draw` at `depth + 1`.
 async fn resolve_row_results(
@@ -174,7 +217,15 @@ async fn resolve_row_results(
     for entry in &row.results {
         match entry {
             TableEntry::Text { text } => {
-                content.extend(chat::sanitize(text, cx.policy).segments);
+                let sanitized = chat::sanitize(text, cx.policy);
+                // Mirrors `chat::body::compose_message`'s own collection: a
+                // row's inline markdown image must reach `link_preview::enrich`
+                // exactly like a chat message's, or it is silently never
+                // asset-ified. Accumulated on `cx` across the whole draw
+                // tree (top-level and every nested fan-out) so ONE `enrich`
+                // call at `handle_draw_table` covers every row.
+                cx.image_urls.extend(sanitized.image_urls);
+                content.extend(sanitized.segments);
             }
             TableEntry::Doc { target, label } => {
                 content.push(Segment::DocLink {
