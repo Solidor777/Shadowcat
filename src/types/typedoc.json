@@ -8,11 +8,15 @@
     "Audience.__type.kind",
     "ClientMsg.__type.type",
     "CombatantKind.__type.type",
+    "DocLinkTarget.__type.kind",
+    "DrawRule.__type.kind",
     "Operation.__type.op",
     "ResourceBinding.__type.kind",
     "RenderVisual.__type.kind",
     "Scope.__type.kind",
     "ServerMsg.__type.type",
-    "TokenVisual.__type.kind"
+    "TableEntry.__type.kind",
+    "TokenVisual.__type.kind",
+    "TriggerEffect.__type.type"
   ]
 }
