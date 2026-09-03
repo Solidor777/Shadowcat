@@ -11,6 +11,7 @@
   } from "@shadowcat/core";
   import CombatSettings from "./CombatSettings.svelte";
   import CombatSceneOverrides from "./CombatSceneOverrides.svelte";
+  import ResourceRegistryEditor from "./ResourceRegistryEditor.svelte";
 
   const ctx = getAppContext();
 
@@ -485,6 +486,8 @@
       </label>
     </fieldset>
   {/if}
+
+  <ResourceRegistryEditor />
 
   {#if ctx.role === "gm" && scene && ssys}
     <!-- Per-scene overrides: vision, lighting, and grid.distance.
