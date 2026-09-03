@@ -1336,7 +1336,8 @@ export type SettingPath =
   | `scene.${keyof WorldSceneDefaults}`
   | "pathfinding.diagonalRule"
   | `animation.${"speedCellsPerSec" | "easing"}`
-  | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl"}`;
+  | `combat.${"movementResource" | "interpretation" | "enforcement" | "turnControl" | "effectCleanup" | "rewindRestore" | "forwardRestore"}`
+  | `combat.effectLifecycle.${"onCombatEnd" | "onTurnEnd" | "onAdvance"}`;
 
 /** The value/source `resolveSettingProvenance` would report with the scene and world layers
  * excluded entirely (system overlay, else the built-in engine default). The reset control's
@@ -1474,6 +1475,18 @@ export function resolveSettingProvenance(
       return resolvePick(combat?.enforcement, world?.combat?.enforcement, system?.combat?.enforcement, ENGINE_COMBAT_DEFAULTS.enforcement);
     case "combat.turnControl":
       return resolvePick(combat?.turnControl, world?.combat?.turnControl, system?.combat?.turnControl, ENGINE_COMBAT_DEFAULTS.turnControl);
+    case "combat.effectCleanup":
+      return resolvePick(combat?.effectCleanup, world?.combat?.effectCleanup, system?.combat?.effectCleanup, ENGINE_COMBAT_DEFAULTS.effectCleanup);
+    case "combat.rewindRestore":
+      return resolvePick(combat?.rewindRestore, world?.combat?.rewindRestore, system?.combat?.rewindRestore, ENGINE_COMBAT_DEFAULTS.rewindRestore);
+    case "combat.forwardRestore":
+      return resolvePick(combat?.forwardRestore, world?.combat?.forwardRestore, system?.combat?.forwardRestore, ENGINE_COMBAT_DEFAULTS.forwardRestore);
+    case "combat.effectLifecycle.onCombatEnd":
+      return resolvePick(combat?.effectLifecycle?.onCombatEnd, world?.combat?.effectLifecycle?.onCombatEnd, system?.combat?.effectLifecycle?.onCombatEnd, ENGINE_COMBAT_DEFAULTS.effectLifecycle.onCombatEnd);
+    case "combat.effectLifecycle.onTurnEnd":
+      return resolvePick(combat?.effectLifecycle?.onTurnEnd, world?.combat?.effectLifecycle?.onTurnEnd, system?.combat?.effectLifecycle?.onTurnEnd, ENGINE_COMBAT_DEFAULTS.effectLifecycle.onTurnEnd);
+    case "combat.effectLifecycle.onAdvance":
+      return resolvePick(combat?.effectLifecycle?.onAdvance, world?.combat?.effectLifecycle?.onAdvance, system?.combat?.effectLifecycle?.onAdvance, ENGINE_COMBAT_DEFAULTS.effectLifecycle.onAdvance);
     default:
       return path satisfies never;
   }

@@ -15,7 +15,7 @@ import {
 import { readFileSync } from "node:fs";
 import {
   buildSystemDefaultsDoc, resolveSettingProvenance,
-  type SystemDefaultsEngine,
+  type SystemDefaultsEngine, type CombatDefaults, type SettingPath, type SettingSource,
 } from "./scene-docs";
 import { DocumentStore } from "./store";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
@@ -696,5 +696,113 @@ describe("system defaults", () => {
     expect(resolveSettingProvenance(store, scene, "combat.movementResource")).toEqual({
       value: "gold", source: "system", systemOrEngine: { value: "gold", source: "system" },
     });
+  });
+
+  it("resolveSettingProvenance resolves the boolean combat leaves at every tier", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { combat: { effectCleanup: false, rewindRestore: false, forwardRestore: true } });
+    const scene = buildSceneDoc("w1", {}, "s1");
+    const storeSystemOnly = storeWith(sdDoc, scene);
+    expect(resolveSettingProvenance(storeSystemOnly, scene, "combat.effectCleanup")).toEqual({
+      value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+    });
+    expect(resolveSettingProvenance(storeSystemOnly, scene, "combat.rewindRestore")).toEqual({
+      value: false, source: "system", systemOrEngine: { value: false, source: "system" },
+    });
+    expect(resolveSettingProvenance(storeSystemOnly, scene, "combat.forwardRestore")).toEqual({
+      value: true, source: "system", systemOrEngine: { value: true, source: "system" },
+    });
+
+    const ws = buildWorldSettingsDoc("w1", { combat: { effectCleanup: true, rewindRestore: true, forwardRestore: false } }, "ws1");
+    const storeWithWorldLayer = storeWith(sdDoc, ws, scene);
+    expect(resolveSettingProvenance(storeWithWorldLayer, scene, "combat.effectCleanup")).toEqual({
+      value: true, source: "world", systemOrEngine: { value: false, source: "system" },
+    });
+    expect(resolveSettingProvenance(storeWithWorldLayer, scene, "combat.rewindRestore")).toEqual({
+      value: true, source: "world", systemOrEngine: { value: false, source: "system" },
+    });
+    expect(resolveSettingProvenance(storeWithWorldLayer, scene, "combat.forwardRestore")).toEqual({
+      value: false, source: "world", systemOrEngine: { value: true, source: "system" },
+    });
+
+    const overriddenScene = buildSceneDoc("w1", { combat: { effectCleanup: false, rewindRestore: false, forwardRestore: true } }, "s2");
+    const storeWithScene = storeWith(sdDoc, ws, overriddenScene);
+    expect(resolveSettingProvenance(storeWithScene, overriddenScene, "combat.effectCleanup")).toEqual({
+      value: false, source: "scene", systemOrEngine: { value: false, source: "system" },
+    });
+
+    // No system/world doc at all: falls through to the engine defaults.
+    const bareScene = buildSceneDoc("w1", {}, "s3");
+    const storeBare = storeWith(bareScene);
+    expect(resolveSettingProvenance(storeBare, bareScene, "combat.effectCleanup")).toEqual({
+      value: ENGINE_COMBAT_DEFAULTS.effectCleanup, source: "engine",
+      systemOrEngine: { value: ENGINE_COMBAT_DEFAULTS.effectCleanup, source: "engine" },
+    });
+    expect(resolveSettingProvenance(storeBare, bareScene, "combat.rewindRestore")).toEqual({
+      value: ENGINE_COMBAT_DEFAULTS.rewindRestore, source: "engine",
+      systemOrEngine: { value: ENGINE_COMBAT_DEFAULTS.rewindRestore, source: "engine" },
+    });
+    expect(resolveSettingProvenance(storeBare, bareScene, "combat.forwardRestore")).toEqual({
+      value: ENGINE_COMBAT_DEFAULTS.forwardRestore, source: "engine",
+      systemOrEngine: { value: ENGINE_COMBAT_DEFAULTS.forwardRestore, source: "engine" },
+    });
+  });
+
+  it("resolveSettingProvenance resolves the effectLifecycle leaves at every tier, an engine null meaning built-in behaviour", () => {
+    const sdDoc = buildSystemDefaultsDoc("w1", { combat: { effectLifecycle: { onCombatEnd: "1", onTurnEnd: null, onAdvance: null } } });
+    const scene = buildSceneDoc("w1", {}, "s1");
+    const storeSystemOnly = storeWith(sdDoc, scene);
+    // System supplies a value for onCombatEnd...
+    expect(resolveSettingProvenance(storeSystemOnly, scene, "combat.effectLifecycle.onCombatEnd")).toEqual({
+      value: "1", source: "system", systemOrEngine: { value: "1", source: "system" },
+    });
+    // ...but its onTurnEnd/onAdvance leaves are explicitly null, which is NOT the same as
+    // absent: the resolver's `lifecycle_field` reads `Option<Formula>` per leaf, so a present
+    // `effectLifecycle` object with a null leaf still falls through past the system tier because
+    // `and_then(f)` on a `None` leaf yields `None`, not a terminal `Some(None)` value.
+    expect(resolveSettingProvenance(storeSystemOnly, scene, "combat.effectLifecycle.onTurnEnd")).toEqual({
+      value: ENGINE_COMBAT_DEFAULTS.effectLifecycle.onTurnEnd, source: "engine",
+      systemOrEngine: { value: ENGINE_COMBAT_DEFAULTS.effectLifecycle.onTurnEnd, source: "engine" },
+    });
+
+    const worldScene = buildSceneDoc("w1", {}, "s2");
+    const ws = buildWorldSettingsDoc("w1", { combat: { effectLifecycle: { onCombatEnd: null, onTurnEnd: "max(hp, 0)", onAdvance: null } } }, "ws1");
+    const storeWithWorld = storeWith(sdDoc, ws, worldScene);
+    expect(resolveSettingProvenance(storeWithWorld, worldScene, "combat.effectLifecycle.onTurnEnd")).toEqual({
+      value: "max(hp, 0)", source: "world",
+      systemOrEngine: { value: ENGINE_COMBAT_DEFAULTS.effectLifecycle.onTurnEnd, source: "engine" },
+    });
+    // onCombatEnd still falls through the world's null leaf to the system value.
+    expect(resolveSettingProvenance(storeWithWorld, worldScene, "combat.effectLifecycle.onCombatEnd")).toEqual({
+      value: "1", source: "system", systemOrEngine: { value: "1", source: "system" },
+    });
+
+    const overriddenScene = buildSceneDoc("w1", { combat: { effectLifecycle: { onCombatEnd: null, onTurnEnd: null, onAdvance: 2 } } }, "s3");
+    const storeWithScene = storeWith(sdDoc, ws, overriddenScene);
+    expect(resolveSettingProvenance(storeWithScene, overriddenScene, "combat.effectLifecycle.onAdvance")).toEqual({
+      value: 2, source: "scene", systemOrEngine: { value: ENGINE_COMBAT_DEFAULTS.effectLifecycle.onAdvance, source: "engine" },
+    });
+  });
+
+  it("resolveSettingProvenance matches the shared cross-language fixture for every new combat leaf", () => {
+    interface Case {
+      name: string;
+      system?: CombatDefaults;
+      world?: CombatDefaults;
+      scene?: CombatDefaults;
+      path: SettingPath;
+      expect: { value: unknown; source: SettingSource };
+    }
+    const cases: Case[] = JSON.parse(
+      readFileSync(new URL("./__fixtures__/combat-provenance-cases.json", import.meta.url), "utf8"),
+    );
+    for (const c of cases) {
+      const sdDoc = buildSystemDefaultsDoc("w1", { combat: c.system });
+      const ws = buildWorldSettingsDoc("w1", { combat: c.world }, "ws1");
+      const scene = buildSceneDoc("w1", c.scene ? { combat: c.scene } : {}, "s1");
+      const store = storeWith(sdDoc, ws, scene);
+      const r = resolveSettingProvenance(store, scene, c.path);
+      expect(r.value, c.name).toEqual(c.expect.value);
+      expect(r.source, c.name).toBe(c.expect.source);
+    }
   });
 });

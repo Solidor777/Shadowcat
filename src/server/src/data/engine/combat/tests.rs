@@ -414,3 +414,67 @@ fn engine_combat_defaults_matches_the_shared_fixture() {
     .expect("engine-combat-defaults.json parses");
     assert_eq!(client_spelling, fixture);
 }
+
+/// One `combat-provenance-cases.json` fixture case. `source` is deliberately absent —
+/// which resolution layer supplied a value is not observable server-side, so this side
+/// pins only the VALUE `resolve_combat_rules` produces; the Vitest side
+/// (`resolveSettingProvenance matches the shared cross-language fixture for every new
+/// combat leaf`) asserts both value and source over the same case list.
+#[derive(Deserialize)]
+struct ProvenanceCase {
+    #[serde(default)]
+    system: Option<CombatDefaults>,
+    #[serde(default)]
+    world: Option<CombatDefaults>,
+    #[serde(default)]
+    scene: Option<CombatDefaults>,
+    path: String,
+    expect: ProvenanceExpect,
+}
+
+#[derive(Deserialize)]
+struct ProvenanceExpect {
+    value: serde_json::Value,
+}
+
+/// Pins `resolve_combat_rules`'s resolved VALUE for every case in the shared
+/// `combat-provenance-cases.json` fixture against the client's `resolveSettingProvenance`
+/// mirror — the same never-fork discipline as `engine_combat_defaults_matches_the_shared_fixture`,
+/// extended to the six new `combat.*` leaves this milestone adds.
+#[test]
+fn resolve_combat_rules_matches_the_shared_provenance_fixture() {
+    let cases: Vec<ProvenanceCase> = serde_json::from_str(include_str!(
+        "../../../../../client/core/src/__fixtures__/combat-provenance-cases.json"
+    ))
+    .expect("combat-provenance-cases.json parses");
+    for c in cases {
+        let r = resolve_combat_rules(c.system.as_ref(), c.world.as_ref(), c.scene.as_ref());
+        let got = match c.path.as_str() {
+            "combat.effectCleanup" => json!(r.effect_cleanup),
+            "combat.rewindRestore" => json!(r.rewind_restore),
+            "combat.forwardRestore" => json!(r.forward_restore),
+            "combat.effectLifecycle.onCombatEnd" => json!(r.effect_lifecycle.on_combat_end),
+            "combat.effectLifecycle.onTurnEnd" => json!(r.effect_lifecycle.on_turn_end),
+            "combat.effectLifecycle.onAdvance" => json!(r.effect_lifecycle.on_advance),
+            other => panic!("unhandled fixture path: {other}"),
+        };
+        assert!(
+            provenance_values_eq(&got, &c.expect.value),
+            "case path {}: got {got:?}, expected {:?}",
+            c.path,
+            c.expect.value
+        );
+    }
+}
+
+/// Loose numeric equality for a provenance fixture value: a JSON integer literal (`0`) and a
+/// Rust-serialized `f64` (`0.0`) parse into different `serde_json::Number` variants, so plain
+/// `Value` equality would fail on an otherwise-matching case whose expected value is a whole
+/// number — `Formula::Number` is always `f64`, but the fixture is shared with the client side,
+/// which writes whole numbers as plain JSON integers.
+fn provenance_values_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    match (a, b) {
+        (serde_json::Value::Number(x), serde_json::Value::Number(y)) => x.as_f64() == y.as_f64(),
+        _ => a == b,
+    }
+}
