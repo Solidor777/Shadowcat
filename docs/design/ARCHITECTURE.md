@@ -68,9 +68,6 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
 | Asset conversion — audio (`symphonia` + `opus`/`vorbis_rs`); animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (audio, animation). No FFmpeg; all replacements are royalty-free. |
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + `Core.search` for FTS (M21) | Phase 2 (M15b). |
-| Rollable tables | dice engine + document model | Phase 2. |
-| Rich-text notes | document model / `system` body | Phase 2. |
-| Chat media linking (images, YouTube) | chat | Phase 2. YouTube = thumbnail + external link only (no IFrame/Data API), keeping the stack permissive. |
 | Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
 | Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
