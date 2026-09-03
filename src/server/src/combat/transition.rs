@@ -259,9 +259,11 @@ struct Working {
 }
 
 impl Working {
-    /// Builds a working copy from an immutable snapshot.
-    fn from_snapshot(snap: &CombatSnapshot) -> Self {
-        Working {
+    /// Builds a working copy from an immutable snapshot, then heals
+    /// `/engine/order` (`heal_order`) so every subsequent phase walks a
+    /// membership-consistent order — see `heal_order`'s own doc comment.
+    fn from_snapshot(snap: &CombatSnapshot) -> Result<Self, CombatError> {
+        let mut w = Working {
             combat: snap.combat.clone(),
             engine: snap.engine.clone(),
             combatants: snap
@@ -278,7 +280,57 @@ impl Working {
             eval_failures: Vec::new(),
             #[cfg(test)]
             settle_turn_steps: 0,
+        };
+        w.heal_order()?;
+        Ok(w)
+    }
+
+    /// Drops any `/engine/order` entry that no longer names a member of
+    /// `combatants` (freshly queried by `load_snapshot`, so it always
+    /// reflects CURRENT `combat`-document parentage), through
+    /// `drop_departed` — the same "still a member" test `reconcile_membership`
+    /// (used by `rebuild_order`'s explicit resorts) shares rather than
+    /// re-derives. `order` is a second, independently stored statement of
+    /// combat membership: an ordinary document `Move` can re-parent a
+    /// `combatant` OUT of this combat without ever touching `order`, which
+    /// is exactly the never-fork defect class this closes rather than
+    /// re-checks. Left unhealed, a departed combatant's id lingers in
+    /// `order` until a turn walk reaches its slot and `settle_turn`'s
+    /// combatant lookup refuses with `NotFound` — permanently, since the
+    /// walk never advances past the stale entry to self-correct. Routing
+    /// through `drop_departed` here means EVERY transition (`start`/
+    /// `advance` are the only two callers of `from_snapshot`) heals on its
+    /// own next commit, rather than only the transitions that already
+    /// resort `order` for their own reasons (`sort`/`roll`/a restoring
+    /// `rewind`).
+    ///
+    /// Deliberately DROP-ONLY: it never appends a `combatants` entry
+    /// `order` doesn't name. A combatant re-parented INTO this combat (or
+    /// `Create`d as one of its children from the start) without an `order`
+    /// entry is a genuine, permanent design state — a staged/hidden
+    /// combatant a GM adds to the clock only via an explicit `CombatRoll`/
+    /// `CombatSort`, pinned by an end-to-end scenario asserting such a
+    /// combatant "never enters `order`/`turn`" across an entire round. An
+    /// earlier version of this function reused `reconcile_membership`
+    /// wholesale (append included) and broke that scenario: every
+    /// `advance` silently rolled the staged combatant into the clock
+    /// on its own, which is a real regression, not a fix — an ARRIVAL
+    /// is not itself a defect the way a stale departed id is; it is
+    /// indistinguishable, from `order` alone, from a combatant the GM
+    /// deliberately never rolled in, and only an explicit resort may
+    /// resolve that ambiguity.
+    ///
+    /// A no-op (nothing recorded) when the pruned order already matches;
+    /// otherwise stages the correcting `Update` through `commit_combat`,
+    /// which re-derives `self.engine` from the write so the rest of this
+    /// transition observes the healed order immediately.
+    fn heal_order(&mut self) -> Result<(), CombatError> {
+        let healed = drop_departed(&self.combatants, &self.engine.order);
+        if healed != self.engine.order {
+            let change = set_engine(&self.combat, "/engine/order", json!(healed))?;
+            self.commit_combat(vec![change])?;
         }
+        Ok(())
     }
 
     /// A read-only `CombatSnapshot` view of the CURRENT working state, for
@@ -874,7 +926,7 @@ pub fn start(
     world: Uuid,
     author: Uuid,
 ) -> Result<Vec<Operation>, CombatError> {
-    let mut w = Working::from_snapshot(snap);
+    let mut w = Working::from_snapshot(snap)?;
     for other in &snap.other_active {
         let change = set_engine(other, "/engine/active", json!(false))?;
         w.ops.push(Operation::Update {
@@ -970,7 +1022,7 @@ fn advance_impl(
         return Err(CombatError::Empty);
     }
     let current_id = snap.engine.turn.ok_or(CombatError::Empty)?;
-    let mut w = Working::from_snapshot(snap);
+    let mut w = Working::from_snapshot(snap)?;
     let start_idx = w
         .engine
         .order
@@ -1339,21 +1391,45 @@ pub fn sort(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
     }])
 }
 
-/// Stable-sorts `existing`'s ids (any id absent from `combatants` dropped;
-/// any combatant absent from `existing` appended) by initiative descending
-/// (`None` last), then `tiebreak` descending, then — for a full tie —
-/// `existing`'s own relative order (the sort's stability).
-pub fn rebuild_order(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
-    let mut ids: Vec<Uuid> = existing
+/// Ids from `existing` that still name a member of `combatants`, in
+/// `existing`'s own relative order — the "still a member" test both
+/// `reconcile_membership` (below) and `heal_order` share rather than each
+/// re-deriving it, so the two can never disagree about who has departed.
+fn drop_departed(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
+    existing
         .iter()
         .copied()
         .filter(|id| combatants.iter().any(|c| c.doc.id == *id))
-        .collect();
+        .collect()
+}
+
+/// The membership half of `rebuild_order`: `drop_departed`, then any
+/// combatant in `combatants` absent from `existing` is appended, in
+/// `combatants`' own order. Neither list's ORDER among survivors or
+/// arrivals is otherwise touched — sorting by initiative is
+/// `rebuild_order`'s own, separate, explicit-opt-in step. NOT used by
+/// `heal_order`, which drops departures but deliberately never appends an
+/// arrival — see that function's own doc comment for why appending here
+/// would be wrong for the unconditional per-transition healing path.
+fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
+    let mut ids = drop_departed(combatants, existing);
     for c in combatants {
         if !ids.contains(&c.doc.id) {
             ids.push(c.doc.id);
         }
     }
+    ids
+}
+
+/// Reconciles membership (`reconcile_membership`), then stable-sorts by
+/// initiative descending (`None` last), then `tiebreak` descending, then —
+/// for a full tie — the reconciled list's own relative order (the sort's
+/// stability). Every caller of this function is an EXPLICIT resort
+/// (`sort`, `roll` after assigning fresh initiatives, a restoring
+/// `rewind`) — see `heal_order` for the membership-only reconciliation
+/// every transition applies unconditionally.
+pub fn rebuild_order(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
+    let mut ids = reconcile_membership(combatants, existing);
     let lookup = |id: &Uuid| combatants.iter().find(|c| c.doc.id == *id);
     ids.sort_by(|x, y| {
         let (Some(cx), Some(cy)) = (lookup(x), lookup(y)) else {
