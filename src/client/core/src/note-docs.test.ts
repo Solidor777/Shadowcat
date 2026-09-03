@@ -9,7 +9,7 @@ describe("buildNoteDoc", () => {
     expect(doc.name).toBe("Session 1");
     expect(doc.parent_id).toBeNull();
     expect(doc.system).toEqual({});
-    expect(doc.engine).toEqual({ source: "# Hi", body: [], sort: 0n });
+    expect(doc.engine).toEqual({ source: "# Hi", body: [], sort: 0 });
     expect(doc.scope).toEqual({ kind: "world", world_id: "w1" });
   });
 
@@ -28,12 +28,17 @@ describe("buildNoteDoc", () => {
   test("carries parentId and sort into the engine body and envelope", () => {
     const doc = buildNoteDoc("w1", null, "hello", { parentId: "parent-1", sort: 3 });
     expect(doc.parent_id).toBe("parent-1");
-    expect(doc.engine).toEqual({ source: "hello", body: [], sort: 3n });
+    expect(doc.engine).toEqual({ source: "hello", body: [], sort: 3 });
   });
 
   test("uses the explicit id when given", () => {
     const doc = buildNoteDoc("w1", null, "hello", { id: "n1" });
     expect(doc.id).toBe("n1");
+  });
+
+  test("the whole document is JSON.stringify-friendly (no bigint reaches the wire)", () => {
+    const doc = buildNoteDoc("w1", null, "hello", { sort: 5 });
+    expect(() => JSON.stringify(doc)).not.toThrow();
   });
 });
 

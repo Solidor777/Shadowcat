@@ -55,11 +55,18 @@ export function buildNoteDoc(
   source: string,
   opts?: BuildNoteDocOptions,
 ): WireDocument {
-  const engine: NoteEngine = {
+  // `NoteEngine.sort` is typed `bigint` (ts-rs's i64 mapping), but `bigint` is
+  // not JSON-serializable and this object is about to be `JSON.stringify`'d
+  // onto the wire (`WsClient.send`) -- the same scalar gap `wire.ts`'s hand
+  // mirror documents and resolves by using `number` for every i64 field that
+  // actually crosses the wire. The real wire value is a plain JSON number
+  // either way (`serde_json` serializes an i64 as a number), so this cast
+  // states what is actually sent rather than the type ts-rs generated for it.
+  const engine = {
     source,
     body: [],
-    sort: BigInt(opts?.sort ?? 0),
-  };
+    sort: opts?.sort ?? 0,
+  } as unknown as NoteEngine;
   const doc = envelope(worldId, NOTE_DOC_TYPE, opts?.parentId ?? null, {}, opts?.id, engine, name);
   doc.permissions = {
     ...doc.permissions,
