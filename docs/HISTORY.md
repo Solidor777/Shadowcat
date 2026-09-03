@@ -2129,7 +2129,12 @@ world's `chat-settings.images` toggle (Game Settings panel gains that toggle).
 Deviation from plan: Task 6's `enrich`/`handle_send_message`+`handle_edit_message` gating was
 widened from "only when `previews_enabled`" to "when `previews_enabled` OR the composer collected
 inline image sources" — a world can enable images without hyperlinks, and the narrower gate would
-have collected `image_urls` in vain. Task 6's/7's git history landed as two commits rather than
+have collected `image_urls` in vain; `link_preview::enrich` itself now takes an independent
+`scan_previews: bool` parameter for this reason, so `images: true, link_previews: Some(false)`
+stops the href/oEmbed scan while the inline-image queueing loop still runs unconditionally.
+`compose_message` also de-duplicates `image_urls` ACROSS chunks (each `sanitize` call dedups only
+WITHIN its own chunk), so the same image URL repeated before and after an inline roll queues one
+enrichment job / `Segment::Image`, not two. Task 6's/7's git history landed as two commits rather than
 the plan's three (a `git add -p` split staged the edit-path routing alongside the image-urls
 plumbing); a follow-up commit added Task 7's tests with a note pointing at the implementation
 commit. Task 8 kept the pre-existing `MessageCard`/`SegmentList` split tests in place rather than
