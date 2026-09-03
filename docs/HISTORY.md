@@ -2218,9 +2218,15 @@ documented precedent for the same i64/bigint gap.
 Coverage: `chat::body::tests` (`compose_static`'s text/inline/button/doc-link/asset-image/
 malformed-span/over-cap-span cases), `data::engine::note::tests` (markdown→html, labeled/bare roll
 spans, doc/asset spans, malformed-span `BadEngine`, over-cap source, `deny_unknown_fields`, an
-`/engine/source` Update through `apply_intent` re-deriving `body`), `data::sqlite`'s
-`commands_and_intents` (same-world/foreign-world/non-note-parent placement, same-batch parent+
-child, `check_move_acyclic` cycle refusal, parent-delete cascade via the existing FK), a
+`/engine/source` Update through `apply_intent` re-deriving `body`, and — added in fold-in review
+after independent mutation testing showed most of the placement tests below exercised a
+DIFFERENT mechanism than claimed — a Create and an Update whose derived body alone exceeds the
+size cap, pinning that the cap is enforced on the value actually stored, not the client's
+pre-derivation payload), `data::sqlite`'s `commands_and_intents` (same-world Create/Move
+placement under a note parent; `check_note_parent`'s own doc_type and cross-world scope rule,
+genuinely pinned on both the Create and the Move arm; a foreign-world Create instead caught by
+`apply_intent`'s generic parent-world check, not `check_note_parent`; same-batch parent+child;
+`check_move_acyclic` cycle refusal; parent-delete cascade via the existing FK), a
 `note-docs.test.ts` suite (builder shape/defaults, fail-closed parse, a
 `JSON.stringify`-round-trips regression test), and the `note-body.e2e.test.ts` Node↔Rust suite
 (server-derived body over a real wire round-trip, re-derivation on edit, malformed-span and
