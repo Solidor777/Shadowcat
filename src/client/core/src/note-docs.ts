@@ -92,7 +92,10 @@ export function buildNoteDoc(
  */
 export function parseNoteBody(doc: WireDocument): (ChatSegment | UnknownSegment)[] | null {
   if (doc.doc_type !== NOTE_DOC_TYPE) return null;
-  const engine = doc.engine as { body?: unknown } | null | undefined;
+  const engine = doc.engine as {
+    /** The stored `NoteEngine.body`, of unvalidated shape until `SegmentListSchema` parses it. */
+    body?: unknown;
+  } | null | undefined;
   const r = SegmentListSchema.safeParse(engine?.body);
   return r.success ? r.data : null;
 }
