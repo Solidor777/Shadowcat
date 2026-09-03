@@ -143,7 +143,10 @@ fn a_malformed_doc_span_is_a_bad_engine_naming_the_reason() {
 
 #[test]
 fn an_over_cap_source_is_a_bad_engine() {
-    let body = note_body(&"a".repeat(MAX_NOTE_SOURCE_CHARS + 1), serde_json::json!([]));
+    let body = note_body(
+        &"a".repeat(MAX_NOTE_SOURCE_CHARS + 1),
+        serde_json::json!([]),
+    );
     assert!(crate::data::engine::normalize_engine_opt(NOTE_DOC_TYPE, Some(&body)).is_err());
 }
 

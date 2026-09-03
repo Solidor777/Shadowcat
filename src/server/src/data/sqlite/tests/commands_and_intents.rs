@@ -3413,7 +3413,9 @@ async fn a_note_may_be_created_under_another_note_in_the_same_world() {
     r.apply_intent(
         &ctx,
         w,
-        vec![Operation::Create { doc: parent.clone() }],
+        vec![Operation::Create {
+            doc: parent.clone(),
+        }],
         1,
         WriteOrigin::Client,
     )
@@ -3518,7 +3520,9 @@ async fn a_note_under_a_note_in_another_world_is_rejected() {
     r.apply_intent(
         &ctx2,
         w2.id,
-        vec![Operation::Create { doc: foreign.clone() }],
+        vec![Operation::Create {
+            doc: foreign.clone(),
+        }],
         1,
         WriteOrigin::Client,
     )
@@ -3550,7 +3554,9 @@ async fn same_batch_note_parent_and_child_create_succeed() {
         &ctx,
         w,
         vec![
-            Operation::Create { doc: parent.clone() },
+            Operation::Create {
+                doc: parent.clone(),
+            },
             Operation::Create { doc: child.clone() },
         ],
         1,

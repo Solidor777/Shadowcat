@@ -30,6 +30,7 @@ pub use geometry::{
     Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallEngine,
     MAX_TRIGGER_ID_CHARS,
 };
+pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
     ConditionRegistryEngine, DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine, Faction,
@@ -44,7 +45,6 @@ pub use scene::{
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
 };
-pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
