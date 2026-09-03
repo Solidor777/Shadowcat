@@ -138,6 +138,7 @@ export type {
   CombatApi,
   CombatControllerDeps,
   CombatAffordances,
+  CreateCombatOptions,
   NewCombatant,
   NewEvent,
   WorldRole,
