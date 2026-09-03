@@ -58,16 +58,13 @@ gesture restore, keyboard move/resize, a11y resize targets), and M16c (custom th
 with live preview and contrast warnings, module styling modes, external-module stylesheets)
 — delivery notes in [`HISTORY.md`](HISTORY.md)'s M16 entry.
 
-### M17 · Vision, lighting + movement completion
-- Photometric lighting (illumination coupling replacing the flat/edge-projected environment light
-  model), darkvision / tremorsense / height.
-- **Per-actor/faction movement exemptions** (deferred from M10g): flying/incorporeal ignore
-  difficult terrain; needs movement-type tags on actors.
-- **Moving light source mid-walk** (residual of the move-stream live clip): a third-party mover
-  carrying a light that opens a sightline reveals per sample of that move, not at its stop — the
-  observer's vision recomputed per light-carrying sample; cost only on request.
-- Depends on: M14 for anything keyed to the turn owner.
-- Excludes: Web-Worker optimistic vision (stays server-authoritative by design).
+### M17 · Vision, lighting + movement completion ✅
+Complete: M17a (photometric field, carried emitters, light/wall authoring), M17b (vision-mode
+descriptor v2, tremorsense + the perceived channel, elevation), M17c (movement-type tags +
+terrain exemptions) and M17d (moving light source mid-walk: the carried-light timeline on
+`MoveStream`, per-recipient reach admission, the client lighting sweep) — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M17 entries. Web-Worker optimistic vision stays excluded (vision is
+server-authoritative by design).
 
 ### M18 · Token enrichment ✅
 Complete: generated token visuals, trigger regions, the aura/sound/VFX emitter component model,

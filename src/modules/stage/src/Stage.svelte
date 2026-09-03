@@ -130,7 +130,37 @@
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
-        onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
+        onDerivedApplied: (input) => {
+          host.dataset.sceneDerived = "1";
+          host.dataset.visionMode = input.mode;
+          // Read-only observability signal: the applied frame's creature-sense token ids,
+          // id-sorted so the string is order-independent. This is the set `TokenView` raises
+          // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
+          host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
+        },
+        onLightingApplied: (frame, sweeping) => {
+          // Read-only observability signals: the painted lighting overlay's cell count and
+          // whether a carried-light sweep is driving it — an e2e can see a torch light a
+          // corridor mid-walk (the count rises while `data-light-sweep` is "1") without
+          // reading WebGL pixels. Each attribute is written only when its value changes:
+          // the engine paints on every fade tick and sweep step, and a dataset write is a
+          // DOM attribute mutation each time.
+          const litCells = String(frame.cells.length);
+          const lightSweep = sweeping ? "1" : "0";
+          // Axial bounding box of the lit cells ("minI,minJ,maxI,maxJ"; "" when nothing is lit)
+          // — how far along a corridor the glow currently reaches.
+          let minI = Infinity, minJ = Infinity, maxI = -Infinity, maxJ = -Infinity;
+          for (const c of frame.cells) {
+            if (c.i < minI) minI = c.i;
+            if (c.j < minJ) minJ = c.j;
+            if (c.i > maxI) maxI = c.i;
+            if (c.j > maxJ) maxJ = c.j;
+          }
+          const litBbox = frame.cells.length === 0 ? "" : `${minI},${minJ},${maxI},${maxJ}`;
+          if (host.dataset.litCells !== litCells) host.dataset.litCells = litCells;
+          if (host.dataset.lightSweep !== lightSweep) host.dataset.lightSweep = lightSweep;
+          if (host.dataset.litBbox !== litBbox) host.dataset.litBbox = litBbox;
+        },
       });
       const e = engine;
       // setViewport (resize + initial grid) then start (camera + reconcile +
@@ -250,6 +280,16 @@
           documents.query("drawing").length + documents.query("template").length,
         );
         host.dataset.wallCount = String(documents.query("wall").length);
+        // Read-only observability signal: each viewed-scene token's last-projected badge chips
+        // (condition glyphs, then the elevation chip) as `id:chip,chip`, id-sorted — the same
+        // string list `PixiBackend` turns into the canvas's upright Text nodes, so an e2e can
+        // confirm a badge reached the render layer without inspecting WebGL pixels. Reads AFTER
+        // the engine's own store subscription (registered in `start`, before this one) has
+        // reconciled the specs this commit.
+        host.dataset.tokenBadges = sceneTokens
+          .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
+          .sort()
+          .join(";");
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
         // e2e assertion can confirm the authored background reached the render layer

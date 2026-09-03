@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
+  import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -117,6 +117,7 @@
     { id: "ping", label: t("tools.ping"), gmOnly: false },
     { id: "wall", label: t("tools.wall"), gmOnly: true },
     { id: "region", label: t("tools.region"), gmOnly: true },
+    { id: "light", label: t("tools.light"), gmOnly: true },
   ];
   const visibleTools = tools.filter((tool) => isGm || !tool.gmOnly);
   // Speak-as + emote affordance gate: exactly one token selected and the current user may
@@ -205,6 +206,141 @@
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
+
+  // The light/wall editor's target document, resolved live from the shared editing selection
+  // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
+  const editingDoc = $derived.by((): WireDocument | null => {
+    subscribe();
+    const sel = controller.editingEntity;
+    if (!sel) return null;
+    const doc = ctx.documents.get(sel.id);
+    // A deleted/elsewhere-moved doc drops the selection rather than editing a ghost.
+    if (!doc || doc.doc_type !== sel.kind) return null;
+    return doc;
+  });
+  // Keep the controller's selection honest when the target disappears.
+  $effect(() => {
+    if (controller.editingEntity && !editingDoc) controller.editingEntity = null;
+  });
+
+  /** Dispatch one field-level update against the light/wall being edited. `old` MUST be the
+   * RAW stored value at `path` (the server's field-level optimistic-concurrency check compares
+   * against it) — never a resolved/defaulted value. The standing raw-`old` convention.
+   * @param path The engine-band JSON pointer being written.
+   * @param oldRaw The raw stored value currently at `path` (`null` when absent).
+   * @param value The new value to write.
+   * @example
+   * ```
+   * editSelected("/engine/emission/enabled", true, false);
+   * ```
+   */
+  function editSelected(path: string, oldRaw: unknown, value: unknown): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    ctx.dispatchIntent([{ op: "update", doc_id: doc.id, changes: [{ path, old: oldRaw, new: value }] }]);
+  }
+
+  /** Delete the document open in the editor (full pre-image op) and clear the selection.
+   * @example
+   * ```
+   * deleteSelected();
+   * ```
+   */
+  function deleteSelected(): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    ctx.dispatchIntent([{ op: "delete", doc }]);
+    controller.editingEntity = null;
+  }
+
+  /** Parse an elevation input's raw string: empty means "absent" (ground for a light, an
+   * unbounded end for a wall band); a finite number is the value; anything else is ignored
+   * (never dispatch a NaN).
+   * @param raw The input's raw string value.
+   * @returns The parsed elevation, `null` for absent, or `undefined` for "ignore this edit".
+   * @example
+   * ```
+   * parseElevation("");    // null  (absent)
+   * parseElevation("2.5"); // 2.5
+   * parseElevation("abc"); // undefined — no write
+   * ```
+   */
+  function parseElevation(raw: string): number | null | undefined {
+    if (raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  /** Write the edited light's `/engine/elevation`. Ground (`0`/empty) normalizes to `null`
+   * (canonical absent, matching `elevation_or_ground`'s None = 0 read); `old` is the raw
+   * stored value.
+   * @param raw The elevation input's raw string value.
+   * @example
+   * ```
+   * editLightElevation("10"); // a light 10 units above the ground plane
+   * ```
+   */
+  function editLightElevation(raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as LightEngine;
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return;
+    const next = parsed === 0 ? null : parsed;
+    const old = eng.elevation ?? null;
+    if (next === old) return;
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end.
+   * An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field writes
+   * `null` (canonical "occludes every elevation" — an absent band, matching
+   * `wall_occludes`). `old` is the raw stored band object (or `null`).
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * editWallElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * ```
+   */
+  function editWallElevation(end: "bottom" | "top", raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as WallEngine;
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return;
+    const old = eng.elevation ?? null;
+    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
+    const top = end === "top" ? parsed : (old?.top ?? null);
+    const next = bottom === null && top === null ? null : { bottom, top };
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Escape backs out of an open light/wall editor (clears the editing selection). Tool
+   * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
+   * @param event The window keydown event.
+   * @example
+   * ```
+   * onWindowKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+   * ```
+   */
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Escape" || !controller.editingEntity) return;
+    // Only a canvas-context Escape backs out of the editor: a keydown originating inside a
+    // dialog (a floating panel closing on the same keystroke) or a focused form control is not
+    // aimed at the canvas selection.
+    const origin = event.target;
+    if (
+      origin instanceof Element &&
+      (origin.closest('[role="dialog"]') !== null ||
+        origin instanceof HTMLInputElement ||
+        origin instanceof HTMLSelectElement ||
+        origin instanceof HTMLTextAreaElement)
+    )
+      return;
+    controller.editingEntity = null;
+  }
+
   const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
   type TriggerEffectType = RegionTrigger["effect"]["type"];
@@ -258,6 +394,8 @@
     trig.effect.amount = raw.trim() !== "" && Number.isFinite(n) ? n : raw;
   }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
   {#each visibleTools as tool (tool.id)}
@@ -401,6 +539,91 @@
           </div>
         {/each}
         <button type="button" data-testid="region-trigger-add" onclick={addRegionTrigger}>{t("tools.addTrigger")}</button>
+      </div>
+    {/if}
+
+    <!-- The light/wall editors key off the shared editing selection, not the active tool:
+         both the select tool and the light tool can open one. The light editor reuses
+         `LightEmissionEditor` (the same field set every emission surface edits) and commits the
+         WHOLE `/engine/emission` payload with the raw stored emission as `old` — the same
+         whole-payload convention the actor/sheet/token surfaces use. -->
+    {#if editingDoc && controller.editingEntity?.kind === "light"}
+      {@const eng = editingDoc.engine as LightEngine}
+      <div class="controls" data-testid="light-editor">
+        <LightEmissionEditor
+          value={eng.emission}
+          onCommit={(next) => editSelected("/engine/emission", eng.emission, next)}
+        />
+        <!-- The light's own elevation (absent = ground): a raised light shines over any wall
+             whose band ends below it (`wall_occludes`'s source-elevation band test). -->
+        <label>
+          {t("tools.lightElevation")}
+          <input
+            type="number"
+            step="1"
+            data-testid="light-elevation"
+            value={eng.elevation ?? 0}
+            onchange={(e) => editLightElevation(e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="light-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "wall"}
+      <!-- `?? null` on each flag read: `WallEngine`'s flags are optional on the wire, so an
+           absent key reads `undefined` at runtime — and `undefined` is dropped by JSON
+           serialization, which would corrupt the OCC pre-image (the raw-`old` convention). -->
+      {@const eng = editingDoc.engine as WallEngine}
+      <div class="controls" data-testid="wall-editor">
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-sight"
+            checked={eng.blocksSight}
+            onchange={(e) => editSelected("/engine/blocksSight", eng.blocksSight ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksSight")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-move"
+            checked={eng.blocksMove}
+            onchange={(e) => editSelected("/engine/blocksMove", eng.blocksMove ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksMove")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-light"
+            checked={eng.blocksLight}
+            onchange={(e) => editSelected("/engine/blocksLight", eng.blocksLight ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksLight")}
+        </label>
+        <!-- The elevation band the wall's sight/light occlusion applies to; both ends empty =
+             unbounded (stored as an absent band, which occludes every elevation). -->
+        <label>
+          {t("tools.wallElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="wall-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editWallElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.wallElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="wall-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editWallElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
   {/if}

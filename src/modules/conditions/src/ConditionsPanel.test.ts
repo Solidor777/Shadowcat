@@ -13,7 +13,7 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 const actorDoc = (id: string, conditions: string[]) =>
-  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null, aura: null, sound: null, vfx: null }, id);
+  buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions, prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null }, id);
 
 describe("ConditionsPanel", () => {
   it("never dispatches a registry create on GM mount (the server seeds it at world creation/join)", async () => {

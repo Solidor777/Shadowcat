@@ -1,20 +1,23 @@
 import { EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample } from "./types";
+import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
+import { blendLightCells, lightSampleCells, lightSampleCellKeys } from "./light-sweep";
+import { holdLightingCells, unionLightingInputs } from "./lighting";
 import { Camera } from "./camera";
 import { Compositor } from "./compositor";
 import { Grid, type GridSpec } from "./grid";
 import { LayerRegistry } from "./layers";
-import { Lighting } from "./lighting";
+import { Lighting, type LightingFrame, type LitDrawCell } from "./lighting";
 import { SceneReconciler } from "./reconciler";
 import { TokenView } from "./token-view";
 import { DrawingView } from "./drawing-view";
 import { TemplateView } from "./template-view";
 import { WallView } from "./wall-view";
 import { RegionView } from "./region-view";
+import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
 import { EmoteView } from "./emote-view";
 
@@ -87,6 +90,10 @@ export interface RenderEngineOpts {
   /** Called when a derived frame is applied (host observability hook); carries the applied
    * visibility so the host can surface the fog mode. */
   onDerivedApplied?: (input: VisibilityInput) => void;
+  /** Called on every painted lighting frame (host observability hook) with the frame the
+   * backend was handed and whether a carried-light sweep is in flight — so a host can surface
+   * "the lighting overlay changed mid-walk" without reading WebGL pixels. */
+  onLightingApplied?: (frame: LightingFrame, sweeping: boolean) => void;
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
@@ -144,6 +151,8 @@ export class RenderEngine implements SceneToolHost {
   private readonly walls: WallView;
   /** Doc→shape reconciler for `region` docs. */
   private readonly regions: RegionView;
+  /** Doc→shape reconciler for `light` docs (GM authoring markers). */
+  private readonly lights: LightView;
   /** Transient ping-ring state, ticked each frame; drives `DisplayBackend.drawPings`. */
   private readonly pings = new PingView();
   /** Whether ping rings were drawn last frame, so the ticker stops redrawing once idle. */
@@ -191,7 +200,14 @@ export class RenderEngine implements SceneToolHost {
    * older derived frame (latest-wins). */
   private lastAppliedSeq = -1;
   /** The last derived visibility, re-rendered when the GM fog preview toggles. */
-  private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [] };
+  private lastInput: VisibilityInput = { mode: "all", visible: [], explored: [], perceived: [] };
+  /** Ids of tokens the latest applied `vision` frame reports as perceived ONLY through a
+   * creature sense (tremorsense & kin), taken from the scene-filtered `VisibilityInput.perceived`.
+   * Read by `TokenView.toSpec` through the constructor-injected lookup. Written only by
+   * {@link applyDerived} and {@link reapplyViewedScene} — a vision sweep
+   * (`applyVisionSweep`/`tickVisionSweep`) replaces the FOG input only and never touches this
+   * set, so a perceived token stays raised above the fog for the whole sweep. */
+  private perceived: ReadonlySet<string> = new Set();
   /** GM-only client preview: when true a no-fog (`mode:"all"`) frame renders as full fog, so the
    * GM can preview a vision-less player's view. Only ever ADDS fog to the GM's own view, client-only
    * with no server path — it can never reveal more than the frame already carries. */
@@ -218,6 +234,47 @@ export class RenderEngine implements SceneToolHost {
       durationMs: number;
     }
   >();
+  /** Active carried-light sweeps, keyed by token id — the lighting twin of `visionSweeps`.
+   * While non-empty, `Lighting` paints the committed frame unioned with every sweep's chosen
+   * sample (`applyLightSweep`). A committed lighting frame arriving meanwhile APPLIES at once
+   * except for each sweep's `endKeys` — the cells its torch's LAST sample lights — which stay
+   * at their pre-sweep values (`lightingBeforeLightSweep`, `holdLightingCells`) until the
+   * sweep ends: the post-commit rebroadcast already carries the light at its FINAL position,
+   * and painting those cells mid-walk would show the corridor's far end lit before the torch
+   * gets there, while an unrelated change the same frame carries must not wait for the walk.
+   * Any recipient may populate this — the mover, a GM, or an observer whose vision the glow
+   * reached (`MoveStream.mover_light`). */
+  private readonly lightSweeps = new Map<
+    string,
+    {
+      /** The sweep's ordered light samples. */
+      samples: MoveLightSample[];
+      /** Milliseconds elapsed since the sweep started. */
+      elapsed: number;
+      /** The sweep's total duration, in ms: the MoveStream's `durationMs`, extended to the last
+       * admitted light sample's `tMs` — an observer's clipped duration can end before a still-
+       * admitted glow does. */
+      durationMs: number;
+      /** The `"i,j"` keys of the cells the sweep's LAST sample lights (`lightSampleCellKeys`)
+       * — held at their pre-sweep committed values while the sweep plays. */
+      endKeys: ReadonlySet<string>;
+    }
+  >();
+  /** The last parsed lighting input for the viewed scene (`toLighting`), always applied
+   * through `applyCommittedLighting` (which holds a light sweep's end cells, never the whole
+   * frame). `null` = no overlay (GM `mode:"all"`, or no frame yet); a light sweep has no
+   * darkness model to lift then and paints nothing. */
+  private lastLightingInput: LightingInput | null = null;
+  /** The committed lighting in force when the first active light sweep began — the source of
+   * the held `endKeys` cells while any light sweep plays (`holdLightingCells`). Cleared when
+   * the last light sweep ends. */
+  private lightingBeforeLightSweep: LightingInput | null = null;
+  /** The committed lighting in force when the viewer's own vision sweep began (`animateSamples`
+   * with `moverVision`), unioned with every newer committed frame for as long as a vision
+   * sweep plays (`applyCommittedLighting`): the post-move frame lights the cells seen from the
+   * STOP, this one the cells seen from the START, and the sweeping line of sight runs between
+   * them. Cleared when the last vision sweep ends. */
+  private lightingBeforeSweep: LightingInput | null = null;
   /** Resolved viewed scene, falling back to the first scene so single-scene tests/hosts are
    * unaffected. The single definition every view + reconciler + fog filter reads.
    * @returns The viewed scene's document id, or `null` when no scene document exists yet.
@@ -253,14 +310,15 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, opts.selectedTokens);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
     this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
     this.regions = new RegionView(opts.store, opts.backend, this.viewedScene);
+    this.lights = new LightView(opts.store, opts.backend, this.viewedScene);
     this.compositor = new Compositor(opts.backend);
-    this.lighting = new Lighting(opts.backend);
+    this.lighting = new Lighting(opts.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
   }
 
   /** Wires the engine to its backend and store. In order: creates the backend's layer
@@ -294,6 +352,7 @@ export class RenderEngine implements SceneToolHost {
     this.templates.reconcile();
     this.walls.reconcile();
     this.regions.reconcile();
+    this.lights.reconcile();
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
@@ -301,12 +360,14 @@ export class RenderEngine implements SceneToolHost {
       this.templates.reconcile();
       this.walls.reconcile();
       this.regions.reconcile();
+      this.lights.reconcile();
       this.flushPendingDerived();
     });
     this.opts.backend.startTicker((dt) => {
       this.tokens.tick(dt);
       this.lighting.tick(dt);
       this.tickVisionSweep(dt);
+      this.tickLightSweep(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
@@ -393,8 +454,9 @@ export class RenderEngine implements SceneToolHost {
     this.lastRawPayload = frame.payload;
     // Lighting is cosmetic — applied eagerly here (monotonic order already honored by the
     // guards above), NOT held behind the appliedSeq watermark that fog uses for document
-    // consistency. Exactly one setTarget call per non-dropped frame.
-    this.lighting.setTarget(this.toLighting(frame.payload));
+    // consistency. Exactly one retarget per non-dropped frame (a light sweep's end cells are
+    // held, never the frame — see `lightSweeps`).
+    this.retargetLighting(this.toLighting(frame.payload));
     if (this.opts.store.appliedSeq >= frame.computedAtSeq) {
       // Immediate: filter against the CURRENT viewed scene now (toVisibility reads viewedScene()).
       this.applyDerived(this.toVisibility(frame.payload), frame.computedAtSeq);
@@ -447,18 +509,23 @@ export class RenderEngine implements SceneToolHost {
    * outside frame handling, neither a frame application: {@link setViewAsUser} resets
    * `lastAppliedSeq` to `-1` (a view-switch watermark reset) without touching `lastInput`, and
    * {@link reapplyViewedScene} writes `lastInput` directly (a scene-switch re-filter of the
-   * already-cached raw payload) without touching `lastAppliedSeq`.
+   * already-cached raw payload) without touching `lastAppliedSeq`. Also re-projects the
+   * creature-sense `perceived` id set into the token views: a derived frame carries no document
+   * change, so without the reconcile here a perceived add/remove would wait for an unrelated
+   * store commit to reach `PixiBackend.setToken`.
    * @param input The resolved `VisibilityInput` (already scene-filtered by `toVisibility`).
    * @param seq The frame's `computedAtSeq`, recorded as the new watermark.
    * @example
    * ```
    * // private method; not part of the public API
-   * this.applyDerived({ mode: "masked", visible: [], explored: [] }, 7);
+   * this.applyDerived({ mode: "masked", visible: [], explored: [], perceived: [] }, 7);
    * ```
    */
   private applyDerived(input: VisibilityInput, seq: number): void {
     this.lastAppliedSeq = seq;
     this.lastInput = input;
+    this.perceived = new Set(input.perceived);
+    this.tokens.reconcile();
     this.renderVisibility();
   }
 
@@ -477,9 +544,14 @@ export class RenderEngine implements SceneToolHost {
   private renderVisibility(): void {
     const eff: VisibilityInput =
       this.fogPreview && this.lastInput.mode === "all"
-        ? { mode: "masked", visible: [], explored: [] }
+        ? { mode: "masked", visible: [], explored: [], perceived: [] }
         : this.lastInput;
-    if (this.visionSweeps.size === 0) this.compositor.setVisibility(eff);
+    if (this.visionSweeps.size === 0) {
+      this.compositor.setVisibility(eff);
+      // The darkness overlay covers exactly the line of sight the fog clears: an in-sight cell
+      // no lit-mask entry lights renders at the darkest band, never clear.
+      this.lighting.setDarkness(eff.visible);
+    }
     this.opts.onDerivedApplied?.(eff);
   }
 
@@ -519,15 +591,30 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   reapplyViewedScene(): void {
+    // Re-filter the cached raw payload FIRST: `TokenView.toSpec` reads the `perceived` set
+    // through the injected lookup, so it must reflect the newly-viewed scene before the token
+    // reconcile below runs.
+    // A light sweep belongs to a token of the scene being left; it ends here so the newly
+    // viewed scene's committed lighting applies at once rather than after the walk.
+    if (this.lightSweeps.size > 0) {
+      this.lightSweeps.clear();
+      this.lighting.setSweep(null);
+    }
+    this.lightingBeforeLightSweep = null;
+    this.lightingBeforeSweep = null;
+    if (this.lastRawPayload !== undefined) {
+      this.retargetLighting(this.toLighting(this.lastRawPayload));
+      this.lastInput = this.toVisibility(this.lastRawPayload);
+      this.perceived = new Set(this.lastInput.perceived);
+    }
     this.reconciler.reconcile();
     this.tokens.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
     this.regions.reconcile();
+    this.lights.reconcile();
     if (this.lastRawPayload !== undefined) {
-      this.lighting.setTarget(this.toLighting(this.lastRawPayload));
-      this.lastInput = this.toVisibility(this.lastRawPayload);
       this.renderVisibility();
     }
   }
@@ -573,15 +660,18 @@ export class RenderEngine implements SceneToolHost {
    * `{mode:"masked", polygons:[{scene,points:[x,y,…]},…]}` → fog outside those polygons; empty ⇒
    * full fog. Each polygon is filtered to the active scene so a polygon for a token in another
    * scene cannot punch a hole into this scene's fog (scene coordinates are scene-local and reused
-   * across scenes).
+   * across scenes). The `perceived` key (`[{scene, tokens:[id,…]}]`, creature-sense-only token
+   * ids) gets the same active-scene filter and the same fail-closed default: missing or garbled
+   * ⇒ an empty list, never a widened render.
    * @param payload The raw `vision` channel payload — untyped: this layer trusts nothing about
    * its shape and validates every field structurally below.
    * @returns A `VisibilityInput` scene-filtered against {@link viewedScene}; full fog
-   * (`{mode:"masked", visible:[], explored:[]}`) on any missing, garbled, or unknown-mode input.
+   * (`{mode:"masked", visible:[], explored:[], perceived:[]}`) on any missing, garbled, or
+   * unknown-mode input.
    * @example
    * ```
    * // private method; not part of the public API
-   * const input = this.toVisibility({ mode: "all" }); // {mode:"all", visible:[], explored:[]}
+   * const input = this.toVisibility({ mode: "all" }); // {mode:"all", visible:[], explored:[], perceived:[]}
    * ```
    */
   private toVisibility(payload: unknown): VisibilityInput {
@@ -605,12 +695,19 @@ export class RenderEngine implements SceneToolHost {
             /** Flat `[i0,j0,i1,j1,…]` cell-index pairs — see `cellsToRects`. */
             cells?: number[];
           }[];
+          /** Per-scene creature-sense (tremorsense & kin) token-id groups — see the method doc. */
+          perceived?: {
+            /** The scene id this id group belongs to — filtered against the active scene. */
+            scene?: string;
+            /** Token ids perceived only through a creature sense in that scene. */
+            tokens?: unknown[];
+          }[];
         }
       | null
       | undefined;
-    if (p?.mode === "all") return { mode: "all", visible: [], explored: [] };
+    if (p?.mode === "all") return { mode: "all", visible: [], explored: [], perceived: [] };
     // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
-    if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [] };
+    if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [], perceived: [] };
     const activeScene = this.viewedScene();
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
     const visible = polygons
@@ -644,7 +741,22 @@ export class RenderEngine implements SceneToolHost {
           Array.isArray(g.cells),
       )
       .flatMap((g) => cellsToRects(g.cells, this.grid));
-    return { mode: "masked", visible, explored };
+    // `perceived` ids get the same active-scene filter as `visible`/`explored`; missing/garbled
+    // groups → no perceived ids (fail-safe: fewer reveals, never more). Non-string ids are
+    // dropped individually rather than failing the whole group — either way the result only
+    // ever under-collects.
+    const perceivedGroups = Array.isArray(p.perceived) ? p.perceived : [];
+    const perceived = perceivedGroups
+      .filter(
+        (g): g is {
+          /** The scene id this id group belongs to. */
+          scene?: string;
+          /** Token ids perceived only through a creature sense in that scene. */
+          tokens: unknown[];
+        } => !!g && g.scene === activeScene && Array.isArray(g.tokens),
+      )
+      .flatMap((g) => g.tokens.filter((t): t is string => typeof t === "string"));
+    return { mode: "masked", visible, explored, perceived };
   }
 
   /** Parse the `vision` payload's lighting dimension into a LightingInput for the ACTIVE scene, or
@@ -725,6 +837,57 @@ export class RenderEngine implements SceneToolHost {
     return { cell: group.cell, bands, hints, cells };
   }
 
+  /** Records the viewed scene's parsed lighting and applies it through
+   * `applyCommittedLighting`.
+   * @param input The parsed lighting for the viewed scene, or `null` to clear the overlay.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.retargetLighting(null);
+   * ```
+   */
+  private retargetLighting(input: LightingInput | null): void {
+    this.lastLightingInput = input;
+    this.applyCommittedLighting();
+  }
+
+  /** Apply the committed lighting the viewer should see now: the union of the lighting held
+   * when the viewer's own vision sweep began and the newest frame while a vision sweep plays
+   * (`lightingBeforeSweep`), the newest frame alone otherwise — and, while a carried-light
+   * sweep plays, with every active sweep's `endKeys` cells held at their pre-sweep values
+   * (`lightingBeforeLightSweep`, `holdLightingCells` — see `lightSweeps` for why a torch's
+   * end cells must not paint mid-walk while everything else in the frame must). THE one path
+   * that retargets `Lighting` from a committed frame.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.applyCommittedLighting();
+   * ```
+   */
+  private applyCommittedLighting(): void {
+    const li = this.lastLightingInput;
+    const before = this.visionSweeps.size > 0 ? this.lightingBeforeSweep : null;
+    let next = before && li ? unionLightingInputs(before, li) : li;
+    const heldFrom = this.lightSweeps.size > 0 ? this.lightingBeforeLightSweep : null;
+    if (next && heldFrom) next = holdLightingCells(heldFrom, next, this.lightSweepEndKeys());
+    this.lighting.setTarget(next);
+  }
+
+  /** The union of every active light sweep's `endKeys` — the cells `applyCommittedLighting`
+   * holds while the sweeps play.
+   * @returns The held cell keys (empty when no light sweep plays).
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.lightSweepEndKeys();
+   * ```
+   */
+  private lightSweepEndKeys(): Set<string> {
+    const out = new Set<string>();
+    for (const sweep of this.lightSweeps.values()) for (const k of sweep.endKeys) out.add(k);
+    return out;
+  }
+
   /** Test seam: exposes toLighting for unit tests (cosmetic parse has no secrecy implication).
    * @param p A raw `vision` channel payload, exactly as `toLighting` receives it.
    * @returns The active scene's `LightingInput`, or `null` — see `toLighting`.
@@ -737,6 +900,21 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   toLightingForTest(p: unknown): LightingInput | null { return this.toLighting(p); }
+
+  /** The badge chips the token view last projected for `id` (delegates to
+   * `TokenView.badgesForTest`), or `null` when the token is untracked. Read-only observability
+   * seam for the host stage's debug surface and tests.
+   * @param id The token document id to read badges for.
+   * @returns The current badge chip texts, or `null` when the token is untracked.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.badgesForTest("token-1");
+   * ```
+   */
+  badgesForTest(id: string): string[] | null { return this.tokens.badgesForTest(id); }
 
   /** Module-facing shader-filter seam. Forwards to the backend; no engine consumer
    * currently calls it.
@@ -1072,6 +1250,12 @@ export class RenderEngine implements SceneToolHost {
    * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers, because
    * the server's per-recipient egress clip omits it for them); presence starts a fog vision-sweep
    * alongside the position tween.
+   * @param moverLight Per-sample carried-light polygons — present for any recipient the server
+   * admitted at least one sample to; presence starts a lighting sweep (`lightSweeps`) whose
+   * duration extends to the last admitted sample's `tMs` and whose last sample's cells are
+   * held at their current committed values until it ends. A GLOW-ONLY frame (`samples` empty,
+   * `moverLight` present: the light reached this viewer, the token never did) starts the light
+   * sweep alone — no token tween, since there is no position to play.
    * @example
    * ```ts
    * import type { RenderEngine } from "@shadowcat/render";
@@ -1097,13 +1281,113 @@ export class RenderEngine implements SceneToolHost {
     startServerMs: number,
     serverNow?: () => number,
     moverVision?: MoveVisionSample[] | null,
+    moverLight?: MoveLightSample[] | null,
   ): void {
-    this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    if (samples.length > 0) this.tokens.animateSamples(id, samples, durationMs, startServerMs, serverNow);
+    const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
     if (moverVision && moverVision.length > 0) {
-      const initialElapsed = serverNow ? Math.max(0, serverNow() - startServerMs) : 0;
+      // The first sweep captures the lighting in force — the cells lit from the START — so the
+      // post-move frame (lit from the STOP) unions with it for the sweep's duration.
+      if (this.visionSweeps.size === 0) this.lightingBeforeSweep = this.lastLightingInput;
       this.visionSweeps.set(id, { samples: moverVision, elapsed: initialElapsed, durationMs });
       this.applyVisionSweep();
     }
+    if (moverLight && moverLight.length > 0) {
+      // The first light sweep captures the lighting in force — the source of the held end
+      // cells for as long as any light sweep plays.
+      if (this.lightSweeps.size === 0) this.lightingBeforeLightSweep = this.lastLightingInput;
+      const last = moverLight[moverLight.length - 1];
+      this.lightSweeps.set(id, {
+        samples: moverLight,
+        elapsed: initialElapsed,
+        durationMs: Math.max(durationMs, last.tMs),
+        endKeys: lightSampleCellKeys(last, this.grid),
+      });
+      this.applyLightSweep();
+    }
+  }
+
+  /** Advance every in-flight carried-light sweep by `dtMs` (backend ticker, beside
+   * `tickVisionSweep`). Each sweep completes on its own `durationMs`; once ALL have completed
+   * the overlay clears and the committed lighting (`lastLightingInput`, which by then carries
+   * the light at its final position) applies in full through `applyCommittedLighting` — the
+   * held end cells included.
+   * @param dtMs Milliseconds elapsed since the previous tick.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked from the startTicker callback
+   * this.tickLightSweep(16);
+   * ```
+   */
+  private tickLightSweep(dtMs: number): void {
+    if (this.lightSweeps.size === 0) return;
+    for (const [id, sweep] of this.lightSweeps) {
+      sweep.elapsed += dtMs;
+      if (sweep.elapsed >= sweep.durationMs) this.lightSweeps.delete(id);
+    }
+    if (this.lightSweeps.size === 0) {
+      this.lighting.setSweep(null);
+      this.lightingBeforeLightSweep = null;
+      this.applyCommittedLighting();
+      return;
+    }
+    this.applyLightSweep();
+  }
+
+  /** The viewer's current line-of-sight polygons the light sweep intersects with: the union of
+   * every in-flight vision sweep's chosen sample while one plays (the fog being shown), else the
+   * last derived frame's `visible` set.
+   * @returns The polygons currently clear of fog.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.currentLosPolygons();
+   * ```
+   */
+  private currentLosPolygons(): Polygon[] {
+    if (this.visionSweeps.size === 0) return this.lastInput.visible;
+    const out: Polygon[] = [];
+    for (const sweep of this.visionSweeps.values()) out.push(...this.samplePolygons(this.chosenSample(sweep)));
+    return out;
+  }
+
+  /** Drive the lighting overlay from the active light sweep(s): with exactly one sweep and a
+   * next sample to fade toward, cross-fades the two samples' cell sets (`blendLightCells` at the
+   * `computeFogBlendFactor` factor — the same blend clock the fog sweep uses); otherwise unions
+   * every sweep's chosen sample (a hard snap). Cells come from `lightSampleCells` against the
+   * viewer's current line of sight and the active grid; with no darkness model
+   * (`lastLightingInput === null`) the sweep paints nothing.
+   * @example
+   * ```
+   * // private method; not part of the public API
+   * this.applyLightSweep();
+   * ```
+   */
+  private applyLightSweep(): void {
+    if (this.lightSweeps.size === 0) return;
+    const li = this.lastLightingInput;
+    if (!li) {
+      this.lighting.setSweep(null);
+      return;
+    }
+    const los = this.currentLosPolygons();
+    const bandCount = li.bands.length;
+    const cellsOf = (s: MoveLightSample): LitDrawCell[] => lightSampleCells(s, this.grid, los, bandCount);
+    if (this.lightSweeps.size === 1) {
+      const [sweep] = this.lightSweeps.values();
+      const cur = chooseVisionSample(sweep.samples, sweep.elapsed);
+      let next: MoveLightSample | null = null;
+      for (const s of sweep.samples) {
+        if (s.tMs > cur.tMs && (next === null || s.tMs < next.tMs)) next = s;
+      }
+      if (next) {
+        this.lighting.setSweep(blendLightCells(cellsOf(cur), cellsOf(next), computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs)));
+        return;
+      }
+    }
+    const cells: LitDrawCell[] = [];
+    for (const sweep of this.lightSweeps.values()) cells.push(...cellsOf(chooseVisionSample(sweep.samples, sweep.elapsed)));
+    this.lighting.setSweep(cells);
   }
 
   /** Advance every in-flight vision-sweep by `dtMs` (called from the backend ticker alongside
@@ -1129,7 +1413,11 @@ export class RenderEngine implements SceneToolHost {
       }
     }
     if (this.visionSweeps.size === 0) {
-      if (anyCompleted) this.renderVisibility(); // revert to the last derived vision (+ fog-preview override)
+      if (anyCompleted) {
+        this.lightingBeforeSweep = null;
+        this.applyCommittedLighting(); // the newest committed lighting alone, from the STOP
+        this.renderVisibility(); // revert to the last derived vision (+ fog-preview override)
+      }
       return;
     }
     this.applyVisionSweep();
@@ -1174,8 +1462,9 @@ export class RenderEngine implements SceneToolHost {
   /** For a SINGLE in-flight sweep, the `(from, to, factor)` cross-fade triple between the
    * chosen sample and the next one (smallest `tMs` strictly greater than the chosen sample's) —
    * or `null` when there is no next sample (elapsed at/after the last sample: nothing to fade
-   * toward, caller snaps instead). `explored` is carried from the last derived frame in both
-   * endpoints — only `visible` cross-fades.
+   * toward, caller snaps instead). `explored` and `perceived` are carried from the last derived
+   * frame in both endpoints — only `visible` cross-fades, and the creature-sense id set is not
+   * part of the sweep at all.
    * @param sweep The in-flight sweep state.
    * @param sweep.samples The sweep's ordered vision samples.
    * @param sweep.elapsed Milliseconds elapsed since the sweep started.
@@ -1208,8 +1497,8 @@ export class RenderEngine implements SceneToolHost {
     }
     if (!next) return null;
     return {
-      from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored },
-      to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored },
+      from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored, perceived: this.lastInput.perceived },
+      to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored, perceived: this.lastInput.perceived },
       factor: computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs),
     };
   }
@@ -1233,6 +1522,9 @@ export class RenderEngine implements SceneToolHost {
       const blend = this.sweepBlendInputs(sweep);
       if (blend) {
         this.compositor.setVisibilityBlend(blend.from, blend.to, blend.factor);
+        // Both endpoints darken: a cell the cross-fade is clearing must never flash lit before
+        // the darkness reaches it.
+        this.lighting.setDarkness([...blend.from.visible, ...blend.to.visible]);
         return;
       }
     }
@@ -1240,7 +1532,8 @@ export class RenderEngine implements SceneToolHost {
     for (const sweep of this.visionSweeps.values()) {
       visible.push(...this.samplePolygons(this.chosenSample(sweep)));
     }
-    this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored });
+    this.compositor.setVisibility({ mode: "masked", visible, explored: this.lastInput.explored, perceived: this.lastInput.perceived });
+    this.lighting.setDarkness(visible);
   }
 
   /** Routes a DOM pointerdown (screen coords) to the active tool first, falling back to camera

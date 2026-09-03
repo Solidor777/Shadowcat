@@ -224,8 +224,7 @@ pub(crate) fn default_test_engine(doc_type: &str) -> Option<serde_json::Value> {
             "behavior": "terrain", "cost": 1.0, "enabled": true
         })),
         "light" => Some(serde_json::json!({
-            "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+            "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
         })),
         "drawing" => Some(serde_json::json!({
             "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },

@@ -411,6 +411,43 @@ pub struct VisionSample {
     pub polygons: Vec<Vec<[f64; 2]>>,
 }
 
+/// A single carried-light sample in a `MoveStream` timeline, paired with a `PosSample` by
+/// `t_ms`: the mover's resolved carried emission (`SceneEcs::token_light_emission`) raycast at
+/// that instant's position through the SAME `scene::emitters::light_polygon` the committed
+/// illumination field uses. `pos` is the emitter position and `bright`/`dim` its reaches, all
+/// in SCENE units — `dim` is also the per-recipient admission disc
+/// (`ws::move_clip::admit_light_samples`); `color` is the packed `0xRRGGBB` tint;
+/// `intensity`/`falloff` are the emission's photometric fields, carried so the per-recipient
+/// clip can compose this glow into the illumination field at the sample's instant
+/// (`SceneEcs::recipient_sight`) from the frame alone — a frame is self-describing, never
+/// dependent on a registry entry that may have expired. Present only when the mover carries an
+/// enabled emission in an environment-lit scene; per recipient at egress the timeline keeps
+/// only the samples whose disc reaches that recipient's vision, and is nulled when none does.
+/// Within an admitted timeline the polygons are NOT clipped to the recipient's line of sight —
+/// the client intersects them with its own fog, and the glow geometry outside it is the
+/// accepted disclosure bounded by the emission's own reach.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct LightSample {
+    /// Elapsed time in milliseconds — matches the corresponding `PosSample.t_ms`.
+    pub t_ms: f64,
+    /// The emitter's scene-coordinate position (x, y) at this instant.
+    pub pos: [f64; 2],
+    /// Full-brightness reach from `pos`, scene units.
+    pub bright: f64,
+    /// Dim-light outer reach from `pos`, scene units — the admission disc radius.
+    pub dim: f64,
+    /// Peak illumination level within `bright`, `[0, 1]` (`LightEmission.intensity`).
+    pub intensity: f64,
+    /// Taper curve across `(bright, dim]` (`LightEmission.falloff`, linear when unauthored).
+    pub falloff: crate::data::engine::FalloffCurve,
+    /// Packed `0xRRGGBB` light color.
+    pub color: u32,
+    /// The light's `blocksLight`-occluded illumination polygon(s) at this instant (scene
+    /// coords), each an ordered list of [x, y] vertices.
+    pub polygons: Vec<Vec<[f64; 2]>>,
+}
+
 /// Server -> client frames.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
@@ -665,8 +702,11 @@ pub enum ServerMsg {
         seq: i64,
     },
     /// Broadcast to the scene, then clipped per recipient at egress: the mover receives the full
-    /// trajectory and `mover_vision`; observers receive only the position samples their own vision
-    /// admits, with `mover_vision` nulled; a fully-occluded recipient receives nothing.
+    /// trajectory, `mover_vision` and `mover_light`; observers receive only the position samples
+    /// their own vision admits, with `mover_vision` nulled and `mover_light` reduced to the
+    /// samples whose light reaches them. A recipient reached by the glow alone gets a GLOW-ONLY
+    /// frame — `samples` empty, `mover_light` present, `stop`/`duration_ms` at the last admitted
+    /// light sample — and a recipient reached by neither receives nothing.
     MoveStream {
         /// Correlates with the originating `MoveRequest`.
         request_id: Uuid,
@@ -684,12 +724,21 @@ pub enum ServerMsg {
         /// Final resting position (scene coords) after the move completes.
         stop: [f64; 2],
         /// Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
-        /// INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+        /// INVARIANT: at least one of `samples`/`mover_light` is non-empty — the frame as
+        /// broadcast always carries samples (the first at t_ms == 0.0, the starting
+        /// cell-center); a per-recipient clip may empty them and keep only the admitted light
+        /// (the glow-only frame), or suppress the frame outright when both would be empty.
         samples: Vec<PosSample>,
         /// Per-sample vision polygons for the mover only. `None` for observers, who receive
         /// server-clipped position samples and render against their existing authoritative fog;
         /// the client computes no vision. Sending mover vision to observers would leak geometry.
         mover_vision: Option<Vec<VisionSample>>,
+        /// Per-sample carried-light timeline (`LightSample`): the mover's enabled emission
+        /// raycast at each sample position, computed only in an environment-lit scene. Full
+        /// for the mover and a plain GM; every other recipient keeps only the samples whose
+        /// dim-reach disc intersects their own vision at that instant (the same per-instant
+        /// vision the position clip reads), and receives `None` when no sample does.
+        mover_light: Option<Vec<LightSample>>,
         /// Total terrain-weighted movement cost accumulated over the executed move. The
         /// movement-budget gate (`move_exec::MoveGateInputs::budget`) consumes this quantity; it
         /// equals the route preview's cost (`PathResult.cost`) for the same route.

@@ -1,6 +1,6 @@
 use super::*;
 use crate::auth::role::ServerRole;
-use crate::data::document::WorldRole;
+use crate::data::document::{WorldCapDefaults, WorldRole};
 use crate::data::membership::PermissionContext;
 use crate::data::sqlite::SqliteRepository;
 use std::sync::atomic::Ordering;
@@ -693,8 +693,7 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     light.parent_id = Some(scene_id);
     light.owner = Some(gm_ctx.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room.publish(
@@ -707,7 +706,8 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     .await
     .unwrap();
 
-    // A vision source: `visible_cells` requires an owned (or observer-tier) token in the
+    // A vision source: `visible_cells` requires an owned (or, under `observerVision`,
+    // whole-document-READ) token in the
     // scene — without one, `sources` is empty and the mask is unconditionally empty
     // regardless of lighting.
     let mut vision_token = wdoc(world_id, vision_token_id, "token");
@@ -732,7 +732,13 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
     // wrong reason (Forbidden regardless of placement).
     {
         let scene_ecs = room.scene().read().await;
-        let mask = scene_ecs.visible_cells(player_ctx.user_id, scene_id, true);
+        let mask = scene_ecs.visible_cells(
+            player_ctx.user_id,
+            player_ctx.world_role,
+            &WorldCapDefaults::default(),
+            scene_id,
+            true,
+        );
         assert!(
             !mask.is_empty(),
             "fixture's lit corner must produce a non-empty visible mask"
@@ -816,8 +822,7 @@ async fn room_with_gm_and_lit_corner() -> PlaceHandle {
     light.parent_id = Some(scene_id);
     light.owner = Some(gm_ctx.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room.publish(
@@ -999,8 +1004,7 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     light.parent_id = Some(scene_id);
     light.owner = Some(gm_ctx.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 1.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room.publish(
@@ -1013,7 +1017,8 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     .await
     .unwrap();
 
-    // A vision source: `visible_cells` requires an owned (or observer-tier) token in the
+    // A vision source: `visible_cells` requires an owned (or, under `observerVision`,
+    // whole-document-READ) token in the
     // scene — without one, `sources` is empty and the mask is unconditionally empty
     // regardless of lighting.
     let mut vision_token = wdoc(world_id, vision_token_id, "token");
@@ -1038,7 +1043,13 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
     // explored union is doing any work in the tests built on this fixture.
     {
         let scene_ecs = room.scene().read().await;
-        let mask = scene_ecs.visible_cells(player_ctx.user_id, scene_id, true);
+        let mask = scene_ecs.visible_cells(
+            player_ctx.user_id,
+            player_ctx.world_role,
+            &WorldCapDefaults::default(),
+            scene_id,
+            true,
+        );
         assert!(
             !mask.is_empty(),
             "fixture's lit corner must produce a non-empty visible mask"
@@ -1222,27 +1233,10 @@ async fn non_gm_token_create_in_explored_but_unlit_cell_succeeds() {
     // Create, mirroring `execute_move_revealed_union_allows_explored_cell`'s movement-side
     // assertion of the same `visible ∪ explored` contract.
     let h = room_with_player_create_capability_and_revealed_corner().await;
-    let cell = 100.0_f64;
 
     // Target (550,550) = cell (5,5): outside the fixture's lit corner (only (0,0) is lit).
     let mut seed = crate::scene::explored::ExploredSet::new();
-    seed.mark_polygons(
-        &[vec![
-            0.0,
-            0.0,
-            6.0 * cell,
-            0.0,
-            6.0 * cell,
-            6.0 * cell,
-            0.0,
-            6.0 * cell,
-        ]],
-        &crate::scene::grid_shape::SquareGrid {
-            cell,
-            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        },
-        cell,
-    );
+    seed.mark_cells((0..6).flat_map(|i| (0..6).map(move |j| (i, j))));
     h.repo
         .set_explored(
             h.world,
@@ -1381,8 +1375,7 @@ async fn get_or_create_hydrates_config_and_actors_from_db() {
     light.parent_id = Some(scene_id);
     light.owner = Some(gm.user_id);
     light.system = json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
     });
     light.engine = Some(light.system.clone());
     room1
@@ -1413,7 +1406,12 @@ async fn get_or_create_hydrates_config_and_actors_from_db() {
         ecs.world_settings_doc().is_some(),
         "world-settings hydrated from DB by get_or_create"
     );
-    let mask = ecs.player_lit_mask(p);
+    let mask = ecs.player_lit_mask(
+        p,
+        WorldRole::Player,
+        &WorldCapDefaults::default(),
+        &ecs.resolved_bands(),
+    );
     assert!(
         mask.iter().any(|s| !s.cells.is_empty()),
         "player lit mask non-empty after cold-start hydration (config + token + light from DB)"
@@ -1730,8 +1728,7 @@ async fn movement_scene_with_speed(
         light.parent_id = Some(scene_id);
         light.owner = Some(gm.user_id);
         light.system = json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true }
         });
         light.engine = Some(light.system.clone());
         room.publish(
@@ -2043,8 +2040,7 @@ async fn movement_scene_with_second_scene(
         light.parent_id = Some(scene_b);
         light.owner = Some(h.gm.user_id);
         light.system = json!({
-            "x": 250.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 250.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         });
         light.engine = Some(light.system.clone());
         h.room
@@ -2274,12 +2270,13 @@ async fn execute_move_gate_inputs_come_from_the_tokens_own_scene() {
     // A's gate. `far_dark` is outside A's mask, so a mask-skipped walk lands outside it.
     let (cx, cy) = h.committed_pos(h.token_id).await;
     let committed_cell = ((cx / 100.0).floor() as i32, (cy / 100.0).floor() as i32);
-    let mask = h
-        .room
-        .scene()
-        .read()
-        .await
-        .visible_cells(h.player.user_id, h.scene_id, true);
+    let mask = h.room.scene().read().await.visible_cells(
+        h.player.user_id,
+        h.player.world_role,
+        &WorldCapDefaults::default(),
+        h.scene_id,
+        true,
+    );
     assert!(
         mask.contains(&committed_cell),
         "committed cell {committed_cell:?} is not in scene A's visibility mask"
@@ -2755,10 +2752,7 @@ async fn execute_move_returns_a_zero_progress_frame_when_the_first_step_is_block
     };
     assert_eq!(*duration_ms, 0.0);
     assert!(
-        h.room
-            .mover_streams(h.player.user_id, h.scene_id, now)
-            .await
-            .is_empty(),
+        h.room.scene_streams(h.scene_id, now).await.is_empty(),
         "a zero-progress move is never registered in the in-flight registry"
     );
 }
@@ -2807,20 +2801,13 @@ async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_sce
     assert!(mover_vision.is_some());
 
     let now = now_millis();
-    let mine = h
-        .room
-        .mover_streams(h.player.user_id, h.scene_id, now)
-        .await;
-    assert_eq!(mine.len(), 1);
-    assert!(Arc::ptr_eq(&mine[0], &exec.frame));
+    let in_scene = h.room.scene_streams(h.scene_id, now).await;
+    assert_eq!(in_scene.len(), 1);
+    assert_eq!(in_scene[0].0, h.token_id, "keyed by the moving token");
+    assert!(Arc::ptr_eq(&in_scene[0].1, &exec.frame));
     assert!(h
         .room
-        .mover_streams(h.gm.user_id, h.scene_id, now)
-        .await
-        .is_empty());
-    assert!(h
-        .room
-        .mover_streams(h.player.user_id, Uuid::from_u128(0xBAD), now)
+        .scene_streams(Uuid::from_u128(0xBAD), now)
         .await
         .is_empty());
     // concurrent_streams excludes every stream of the named MOVER, not just one token.
@@ -2845,7 +2832,7 @@ async fn execute_move_registers_the_full_frame_and_accessors_filter_by_mover_sce
     // Expiry: a `now` past end_ms hides it.
     assert!(h
         .room
-        .mover_streams(h.player.user_id, h.scene_id, now + 3_600_000)
+        .scene_streams(h.scene_id, now + 3_600_000)
         .await
         .is_empty());
 }
@@ -2983,26 +2970,9 @@ async fn execute_move_revealed_union_allows_explored_cell() {
     // is outside the light radius (not in visible_cells). The explored set is seeded to
     // cover cells (0,0)–(5,5) so visible ∪ explored includes the entire path.
     let h = movement_scene("revealed", /*with_light=*/ true).await;
-    let cell = 100.0_f64;
 
     let mut seed = crate::scene::explored::ExploredSet::new();
-    seed.mark_polygons(
-        &[vec![
-            0.0,
-            0.0,
-            6.0 * cell,
-            0.0,
-            6.0 * cell,
-            6.0 * cell,
-            0.0,
-            6.0 * cell,
-        ]],
-        &crate::scene::grid_shape::SquareGrid {
-            cell,
-            rule: crate::scene::pathfinding::DiagonalRule::Chebyshev,
-        },
-        cell,
-    );
+    seed.mark_cells((0..6).flat_map(|i| (0..6).map(move |j| (i, j))));
     h.repo
         .set_explored(
             h.world_id,
@@ -3151,8 +3121,7 @@ async fn movement_scene_continuous(restriction: &str, with_light: bool) -> Movem
         light.parent_id = Some(scene_id);
         light.owner = Some(gm.user_id);
         light.system = json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.5, "dimRadius": 3.0, "enabled": true }
         });
         light.engine = Some(light.system.clone());
         room.publish(
@@ -3520,4 +3489,7 @@ async fn resync_floors_are_independent_per_user() {
 }
 
 mod movement_budget;
+
+/// `MoveStream.mover_light` computation: presence, sampling, suppression.
+mod mover_light;
 mod region_triggers;

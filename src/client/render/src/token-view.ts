@@ -7,6 +7,11 @@ import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
 import { sceneScopedDocs } from "./scene-scope";
 
+/** The default creature-sense lookup for `TokenView` constructors that take none: no token is
+ * ever perceived-only, so every spec's `perceived` flag resolves `false`. A shared frozen-at-
+ * birth empty set — never mutated, so one instance serves every defaulting view. */
+const NO_PERCEIVED: ReadonlySet<string> = new Set();
+
 /** The empty selection a `TokenView` constructed without a `selectedTokens` source reads —
  * module-level so the default getter shares one frozen instance. */
 const EMPTY_TOKEN_SELECTION: ReadonlySet<string> = new Set();
@@ -93,6 +98,9 @@ export class TokenView {
    * @param footprints Resolves the server's current footprint lookup, read fresh per `toSpec` so a
    * newly-arrived frame is picked up on the next reconcile. Defaults to `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`.
+   * @param perceived Resolves the engine's current creature-sense id set (`VisibilityInput.perceived`),
+   * read fresh per `toSpec` so a perceived add/remove is picked up on the next reconcile. Defaults
+   * to an always-empty set (`NO_PERCEIVED`), under which no token is raised above the fog.
    * @param selectedTokens Resolves the currently-selected token ids (client-local UI state), read
    * fresh per `toSpec`; a selected token's spec gains the selection highlight fx. Defaults to an
    * empty selection (legacy/test callers that never pass one). Selection changes carry no store
@@ -112,6 +120,7 @@ export class TokenView {
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
     private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
+    private readonly perceived: () => ReadonlySet<string> = () => NO_PERCEIVED,
     private readonly selectedTokens: () => ReadonlySet<string> = () => EMPTY_TOKEN_SELECTION,
   ) {}
 
@@ -131,6 +140,26 @@ export class TokenView {
    */
   setDragging(id: string | null): void {
     this.dragging = id;
+  }
+
+  /** The badge chips the last `toSpec` projection produced for `id` (condition glyphs, then the
+   * elevation chip), or `null` when no spec is tracked for it. Read-only observability seam for
+   * the stage's debug surface and tests — the live spec contents, not a recompute.
+   * @param id The token document id to read badges for.
+   * @returns The current badge chip texts, or `null` when the token is untracked.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.badgesForTest("token-1"); // null until reconcile() projects the token
+   * ```
+   */
+  badgesForTest(id: string): string[] | null {
+    const badges = this.specs.get(id)?.badges;
+    return badges ? [...badges] : null;
   }
 
   /** The last resolved `TokenNodeSpec` for `id`, or `undefined` when the token is absent
@@ -398,9 +427,11 @@ export class TokenView {
    * URL-resolved via `resolveArtVisual`/`resolveSource`), the faction border color (via the world
    * `faction-registry` doc; `null` when the effective actor has no faction or the faction has no
    * registered color), condition badges + authored fx (`resolveConditions` — registry fx folded
-   * in condition array order, css colors parsed here so the backend stays parse-free), the
-   * selection highlight (from `selectedTokens`), and the footprint box/shape
-   * (`resolveTokenBox`, reading the server's resolved extent rather than computing one). Fails closed to `null`
+   * in condition array order, css colors parsed here so the backend stays parse-free) followed by
+   * an elevation chip when the token sits off the ground plane, the selection highlight (from
+   * `selectedTokens`), the footprint box/shape (`resolveTokenBox`, reading the server's resolved
+   * extent rather than computing one), and the creature-sense flag (`perceived` set membership —
+   * read fresh per call so a derived-frame reconcile re-projects it immediately). Fails closed to `null`
    * when the doc has no `engine` body or `resolveTokenVisual` cannot resolve a visual; `reconcile`
    * treats a `null` result as "this token is absent" and tears down any tracked state for its id.
    * @param doc The `token` document to project.
@@ -450,6 +481,15 @@ export class TokenView {
     // The selection signifier appends after every condition fx, so the highlight reads on top of
     // condition tints (a selected poisoned token reads as selected first).
     if (this.selectedTokens().has(doc.id)) fx.push({ kind: "highlight", color: SELECTION_HIGHLIGHT_COLOR, strength: SELECTION_HIGHLIGHT_STRENGTH });
+    // Elevation chip: any non-ground elevation shows as an upright badge (`↑n`/`↓n`), mirroring
+    // `elevation_or_ground`'s read — absent and non-finite both mean grounded (no chip). The
+    // displayed number is rounded to two decimals (an authored float prints clean); a value that
+    // ROUNDS to 0 keeps its chip, since the stored elevation is still off-ground.
+    const elev = s.elevation;
+    if (elev != null && Number.isFinite(elev) && elev !== 0) {
+      const shown = Math.round(Math.abs(elev) * 100) / 100;
+      badges.push(elev > 0 ? `↑${shown}` : `↓${shown}`);
+    }
     const box = resolveTokenBox(doc, this.store, this.footprints(), eff);
     // Aura emission (the EffectiveActor projection; null for a raw token): a radial disc under
     // the art. Cells → scene units go through the view's ONE cell-size source
@@ -465,6 +505,7 @@ export class TokenView {
       borderColor,
       badges,
       shape: box.shape,
+      perceived: this.perceived().has(doc.id),
     };
     if (aura) spec.aura = aura;
     if (fx.length > 0) spec.fx = fx;

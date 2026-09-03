@@ -1,7 +1,7 @@
 import { describe, it, expect, test } from "vitest";
 import { DocumentStore, type ReadableDocuments } from "./store";
 import type { WireDocument } from "./wire";
-import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, type ActorEngine, type TokenEngine } from "./scene-docs";
+import { buildActorDoc, buildSceneDoc, buildTokenDoc, buildTokenFromActor, buildConditionRegistryDoc, buildFactionRegistryDoc, type ActorEngine, type TokenEngine } from "./scene-docs";
 import { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
 import type { TokenVisual } from "./scene-docs";
@@ -16,6 +16,8 @@ const eng: ActorEngine = {
   conditions: [],
   prototype: true,
   vision: null,
+  light: null,
+  movement: [],
   aura: null,
   sound: null,
   vfx: null,
@@ -24,7 +26,7 @@ const eng: ActorEngine = {
 /** A raw (actorless) token's full engine body — every generated key is required
  * (though nullable), so every fixture below spells out the shape in full. */
 function rawTokenEngine(over: Partial<TokenEngine> = {}): TokenEngine {
-  return { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, ...over };
+  return { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: null, overrides: null, face: null, elevation: null, ...over };
 }
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
@@ -45,7 +47,7 @@ describe("resolveTokenActor", () => {
   it("applies the per-token override whitelist over the linked actor", () => {
     const actor = buildActorDoc("w1", NAME, eng, "act1");
     const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-    (token.engine as TokenEngine).overrides = { name: "Boss", visual: { kind: "image", asset: "a2" }, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null };
+    (token.engine as TokenEngine).overrides = { name: "Boss", visual: { kind: "image", asset: "a2" }, size: null, shape: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null };
     const eff = resolveTokenActor(token, storeWith(actor));
     expect(eff?.name).toBe("Boss");
     expect(eff?.visual?.kind === "image" && eff.visual.asset).toBe("a2");
@@ -81,7 +83,7 @@ describe("resolveTokenActor", () => {
     expect(inherited?.vfx).toEqual(base.vfx);
     // Present override: replaces the base wholesale (never merged).
     const over = { aura: { color: "#0000ff", opacity: 1, radius: 4, enabled: false }, sound: null, vfx: null };
-    (token.engine as TokenEngine).overrides = { name: null, visual: null, size: null, shape: null, vision: null, ...over };
+    (token.engine as TokenEngine).overrides = { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null, ...over };
     const replaced = resolveTokenActor(token, storeWith(actor));
     expect(replaced?.aura).toEqual(over.aura);
     expect(replaced?.sound).toEqual(base.sound); // null override field = inherit, same as vision
@@ -92,6 +94,39 @@ describe("resolveTokenActor", () => {
     const raw = buildTokenDoc("w1", "scene1", rawTokenEngine({ visual: { kind: "image", asset: "z" } }));
     const eff = resolveTokenActor(raw, new DocumentStore());
     expect(eff).toBeNull(); // a raw token has no EffectiveActor at all — hence no emissions
+  });
+});
+
+describe("resolveTokenActor movement tags", () => {
+  const FACTIONS = { skyborn: { name: "Skyborn", color: "#88c", stance: "neutral" as const, movement: ["flying"] } };
+
+  it("unions the actor's tags with the linked faction record's, deduplicated", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, faction: "skyborn", movement: ["flying", "ethereal-step"] }, "act1");
+    const registry = buildFactionRegistryDoc("w1", FACTIONS, "freg1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(token, storeWith(actor, registry))?.movement).toEqual(["flying", "ethereal-step"]);
+  });
+
+  it("a token override REPLACES the whole resolved set (actor ∪ faction), even with []", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, faction: "skyborn", movement: ["ethereal-step"] }, "act1");
+    const registry = buildFactionRegistryDoc("w1", FACTIONS, "freg1");
+    const grounded = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    (grounded.engine as TokenEngine).overrides = { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null };
+    expect(resolveTokenActor(grounded, storeWith(actor, registry))?.movement).toEqual([]);
+    const burrower = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    (burrower.engine as TokenEngine).overrides = { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: ["burrowing"], aura: null, sound: null, vfx: null };
+    expect(resolveTokenActor(burrower, storeWith(actor, registry))?.movement).toEqual(["burrowing"]);
+  });
+
+  it("a dangling faction link contributes nothing; an instanced token unions through its embedded copy's faction", () => {
+    const dangling = buildActorDoc("w1", NAME, { ...eng, faction: "gone", movement: ["burrowing"] }, "act1");
+    const linked = buildTokenFromActor("w1", "scene1", dangling, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(linked, storeWith(dangling))?.movement).toEqual(["burrowing"]);
+
+    const actor = buildActorDoc("w1", NAME, { ...eng, faction: "skyborn", movement: [] }, "act2");
+    const registry = buildFactionRegistryDoc("w1", FACTIONS, "freg1");
+    const instanced = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(instanced, storeWith(registry))?.movement).toEqual(["flying"]);
   });
 });
 
@@ -178,7 +213,7 @@ function fakeStore(docs: WireDocument[]): ReadableDocuments {
 
 const actorEngine = (over: Partial<ActorEngine> = {}): ActorEngine => ({
   displayName: "Goblin", visual: { kind: "image" as const, asset: "a1" },
-  size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null, ...over,
+  size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null, ...over,
 });
 
 /** A lookup stating `extent` for `tokenId` and nothing else, standing in for a `"footprints"`
@@ -205,7 +240,7 @@ test("resolveTokenBox reads shape from the actor and applies a per-token overrid
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   const fp = footprintsFor("tok1", { w: 400, h: 400 });
   expect(resolveTokenBox(token, fakeStore([scene, actor, token]), fp).shape).toBe("circle");
-  (token.engine as TokenEngine).overrides = { shape: "square", size: { w: 4, h: 4 }, name: null, visual: null, vision: null, aura: null, sound: null, vfx: null };
+  (token.engine as TokenEngine).overrides = { shape: "square", size: { w: 4, h: 4 }, name: null, visual: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null };
   const box = resolveTokenBox(token, fakeStore([scene, actor, token]), fp);
   expect(box.shape).toBe("square");
   expect(box.w).toBe(400);
@@ -257,8 +292,52 @@ it("per-token override replaces actor vision modes", () => {
   const withVision = { ...eng, vision: [{ mode: "darkvision", range: 12 }] };
   const actor = buildActorDoc("w1", NAME, withVision, "act1");
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
-  (token.engine as TokenEngine).overrides = { vision: [{ mode: "darkvision", range: 6 }], name: null, visual: null, size: null, shape: null, aura: null, sound: null, vfx: null };
+  (token.engine as TokenEngine).overrides = { vision: [{ mode: "darkvision", range: 6 }], name: null, visual: null, size: null, shape: null, light: null, movement: null, aura: null, sound: null, vfx: null };
   expect(resolveTokenActor(token, storeWith(actor))?.visionModes).toEqual([{ mode: "darkvision", range: 6 }]);
+});
+
+describe("EffectiveActor.light", () => {
+  const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+
+  it("resolves a linked token's carried light from the actor", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, light: torch }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(token, storeWith(actor))?.light).toEqual(torch);
+  });
+
+  it("resolves an instanced token's carried light from the embedded copy", () => {
+    const actor = buildActorDoc("w1", NAME, { ...eng, light: torch }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "instance", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(token, storeWith())?.light).toEqual(torch);
+  });
+
+  it("defaults to null when neither actor nor override carries an emission", () => {
+    const actor = buildActorDoc("w1", NAME, eng, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    expect(resolveTokenActor(token, storeWith(actor))?.light).toBeNull();
+  });
+
+  it("per-token override replaces the actor's light wholesale", () => {
+    const dim = { ...torch, color: "#0000ff", dimRadius: 3 };
+    const actor = buildActorDoc("w1", NAME, { ...eng, light: torch }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    (token.engine as TokenEngine).overrides = { light: dim, name: null, visual: null, size: null, shape: null, vision: null, movement: null, aura: null, sound: null, vfx: null };
+    expect(resolveTokenActor(token, storeWith(actor))?.light).toEqual(dim);
+  });
+
+  it("an enabled:false override suppresses without falling through to the actor", () => {
+    const suppressed = { ...torch, enabled: false };
+    const actor = buildActorDoc("w1", NAME, { ...eng, light: torch }, "act1");
+    const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 });
+    (token.engine as TokenEngine).overrides = { light: suppressed, name: null, visual: null, size: null, shape: null, vision: null, movement: null, aura: null, sound: null, vfx: null };
+    const eff = resolveTokenActor(token, storeWith(actor));
+    expect(eff?.light).toEqual(suppressed); // the CONSUMER gates on enabled, like the server's emission conversion
+  });
+
+  it("a dangling link resolves no actor at all (emission included)", () => {
+    const token = buildTokenDoc("w1", "scene1", rawTokenEngine({ actor_id: "gone" }), "tok1");
+    expect(resolveTokenActor(token, storeWith())).toBeNull();
+  });
 });
 
 describe("resolveTokenVisual", () => {
@@ -434,6 +513,8 @@ describe("resolveTokenVisual", () => {
       size: null,
       shape: null,
       vision: null,
+      light: null,
+      movement: null,
       aura: null,
       sound: null,
       vfx: null,

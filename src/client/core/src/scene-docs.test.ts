@@ -4,7 +4,7 @@ import {
   buildWorldSettingsDoc, resolveSceneSettings, resolveViewedScene, DEFAULT_WORLD_SETTINGS, DEFAULT_SCENE_BOUNDS,
   type WireDocument, type WorldSettingsEngine,
 } from "./scene-docs";
-import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc } from "./scene-docs";
+import { buildLightGradationDoc, resolveGradation, DEFAULT_GRADATION, buildVisionModesDoc, resolveVisionModes, SEED_VISION_MODES, buildLightDoc, type LightEngine } from "./scene-docs";
 import { buildRegionDoc, setRegionVisibility, type RegionEngine } from "./scene-docs";
 import {
   buildCombatDoc, buildCombatantDoc, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc,
@@ -186,6 +186,8 @@ const actorEngine: ActorEngine = {
   conditions: [],
   prototype: true,
   vision: null,
+  light: null,
+  movement: [],
   aura: null,
   sound: null,
   vfx: null,
@@ -231,7 +233,7 @@ it("buildSceneDoc's combat chain is unset by default and persists an authored ov
 });
 
 test("buildTokenDoc parents to the scene and preserves the token engine body", () => {
-  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null };
+  const eng: TokenEngine = { x: 140, y: 160, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "img-1" }, actor_id: null, overrides: null, face: null, elevation: null };
   const doc = buildTokenDoc("w1", "scene-1", eng);
   expect(doc.doc_type).toBe("token");
   expect(doc.parent_id).toBe("scene-1");
@@ -307,7 +309,7 @@ test("setNameHidden sets and clears the OwnerOrGm override on /name", () => {
 });
 
 test("buildFactionRegistryDoc builds a world-scoped, parentless registry with an id-keyed map", () => {
-  const factions: Record<string, Faction> = { hostile: { name: "Hostile", color: "#f85149", stance: "hostile" } };
+  const factions: Record<string, Faction> = { hostile: { name: "Hostile", color: "#f85149", stance: "hostile", movement: [] } };
   const d = buildFactionRegistryDoc("w1", factions, "reg1");
   expect(d.doc_type).toBe("faction-registry");
   expect(d.parent_id).toBeNull();
@@ -368,10 +370,14 @@ describe("light-gradation registry", () => {
 });
 
 describe("vision-modes registry", () => {
-  it("seeds normal + darkvision with their floors", () => {
+  it("seeds normal + darkvision + tremorsense with their locked values", () => {
     const m = resolveVisionModes(storeWith(buildVisionModesDoc("w1")));
-    expect(m.normal.illuminationFloor).toBe("dim");
-    expect(m.darkvision.illuminationFloor).toBe("dark");
+    expect(Object.keys(m).sort()).toEqual(["darkvision", "normal", "tremorsense"]);
+    expect(m.normal).toEqual({ id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null });
+    expect(m.darkvision).toEqual({ id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" });
+    // A creature sense: perceives tokens, ignores walls (requiresLos false); its
+    // illuminationFloor is inert (creature perception never reads it).
+    expect(m.tremorsense).toEqual({ id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null });
   });
   it("falls back to SEED_VISION_MODES when no doc present", () => {
     expect(resolveVisionModes(storeWith())).toEqual(SEED_VISION_MODES);
@@ -391,10 +397,15 @@ describe("vision-modes registry", () => {
 });
 
 it("builds a light doc parented to its scene", () => {
-  const l = buildLightDoc("w1", "scene1", { x: 10, y: 20, color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true });
+  const l = buildLightDoc("w1", "scene1", {
+    x: 10,
+    y: 20,
+    elevation: null,
+    emission: { color: "#ffd9a0", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
+  });
   expect(l.doc_type).toBe("light");
   expect(l.parent_id).toBe("scene1");
-  expect((l.engine as { brightRadius: number }).brightRadius).toBe(4);
+  expect((l.engine as LightEngine).emission.brightRadius).toBe(4);
   expect(l.system).toEqual({});
 });
 

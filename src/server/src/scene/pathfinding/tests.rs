@@ -1,4 +1,5 @@
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 use crate::scene::vision::Seg;
 use std::collections::BTreeSet;
 
@@ -17,6 +18,7 @@ fn grid<'a>(walls: &'a [Seg], mask: Option<&'a BTreeSet<Cell>>, footprint: f64) 
             regions: None,
             shape,
             budget_cells: None,
+            traits: MoveTraits::default(),
         },
         window: (-100, -100, 100, 100),
     }

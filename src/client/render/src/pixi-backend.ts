@@ -1,6 +1,6 @@
 import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
-import type { LightingFrame } from "./lighting";
+import { MAX_DARK_ALPHA, type LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
 import { fogBlendRtStale } from "./fog-blend";
@@ -32,7 +32,8 @@ interface TokenNode {
   /** Faction-border outline, redrawn by `updateTokenBorder`; cleared (no stroke) when
    * `tokenSpec.borderColor` is `null`. */
   border: Graphics;
-  /** Condition-marker glyph chips, one `Text` per `tokenSpec.badges` entry, in order. */
+  /** Marker chips, one `Text` per `tokenSpec.badges` entry, in order (condition glyphs, then
+   * the elevation chip when the token is off the ground plane). */
   badges: Text[];
   /** `tokenSpec.badges.join("")`, memoized by `updateTokenBadges` to skip a full badge-set rebuild
    * when the badge list is unchanged. */
@@ -200,6 +201,12 @@ export class PixiBackend implements DisplayBackend {
   private readonly measureText = new Text({ text: "", style: { fill: 0xffffff, fontSize: 14, fontFamily: "sans-serif" } });
   /** The ping-ring overlay, redrawn wholesale by `drawPings`. */
   private readonly pingGraphics = new Graphics();
+  /** The darkness sheet: `LightingFrame.darkness` filled at `MAX_DARK_ALPHA`, inverse-masked
+   * by `litHoles` so every lit cell shows through. Parented under the `lighting` container
+   * beneath `lightingGraphics`. */
+  private readonly darknessGraphics = new Graphics();
+  /** Inverse-mask shape cut from `darknessGraphics`: the union of every lit cell's polygon. */
+  private readonly litHoles = new Graphics();
   /** The emote-glyph overlay's parent; its `Text` children are rebuilt wholesale by
    * `drawEmotes` (the glyph set changes every frame while an emote lives). */
   private readonly emoteLayer = new Container();
@@ -210,6 +217,13 @@ export class PixiBackend implements DisplayBackend {
   private readonly shapes = new Map<string, Graphics>();
   /** Token document id → its render node, populated by `createTokenNode`. */
   private readonly tokens = new Map<string, TokenNode>();
+  /** Dedicated container stacked directly ABOVE the `mask` layer (and therefore the `lighting`
+   * layer) but below `overlays`: a token whose spec's `perceived` flag is set is re-parented here
+   * by `setToken` so it renders THROUGH fog and darkness, without touching the fog sheets
+   * themselves (no fog holes — terrain stays covered). Not registered in `this.layers`: it is a
+   * display container, not a named core layer — so a module filter registered on the `tokens`
+   * layer (`addLayerFilter`) does NOT apply to a token for the duration it is perceived. */
+  private readonly perceivedTokens = new Container();
   /** The current background sprite, or `null` before the first `setBackground` call/after a
    * clear. */
   private background: Sprite | null = null;
@@ -240,6 +254,10 @@ export class PixiBackend implements DisplayBackend {
    */
   constructor(private readonly app: Application) {
     this.app.stage.addChild(this.world);
+    this.perceivedTokens.label = "perceived";
+    // Parented immediately so a perceived token pushed before `ensureLayers` still has a home;
+    // `ensureLayers` re-appends it directly after the `mask` layer to fix its z-slot.
+    this.world.addChild(this.perceivedTokens);
     // Screen-space, added directly to the stage (not `world`) so the captured, already
     // camera-transformed fog snapshots display 1:1 without a second transform on top.
     this.fogBlendFrom.visible = false;
@@ -280,6 +298,8 @@ export class PixiBackend implements DisplayBackend {
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
       if (id === "lighting") {
+        c.addChild(this.darknessGraphics);
+        c.addChild(this.litHoles);
         c.addChild(this.lightingGraphics);
         // BlurFilter softens cell-boundary stepping artifacts between gradation bands.
         // TODO: replace with radial gradient fills when PixiJS gradient API stabilises.
@@ -304,10 +324,13 @@ export class PixiBackend implements DisplayBackend {
         c.addChild(this.emoteLayer);
       }
     }
-    // Re-parent in z-order (addChild appends; order array is authoritative).
+    // Re-parent in z-order (addChild appends; order array is authoritative). `perceivedTokens`
+    // rides directly on top of the `mask` layer so a perceived token renders through fog and
+    // lighting while still sitting under `overlays`.
     for (const id of orderedIds) {
       const c = this.layers.get(id);
       if (c) this.world.addChild(c); // moving to top in order yields final stack
+      if (id === "mask") this.world.addChild(this.perceivedTokens);
     }
   }
 
@@ -420,7 +443,7 @@ export class PixiBackend implements DisplayBackend {
    * import { PixiBackend } from "@shadowcat/render";
    *
    * declare const backend: PixiBackend;
-   * backend.setVisibility({ mode: "all", visible: [], explored: [] });
+   * backend.setVisibility({ mode: "all", visible: [], explored: [], perceived: [] });
    * ```
    */
   setVisibility(input: VisibilityInput): void {
@@ -464,8 +487,8 @@ export class PixiBackend implements DisplayBackend {
    *
    * declare const backend: PixiBackend;
    * backend.setVisibilityBlend(
-   *   { mode: "masked", visible: [], explored: [] },
-   *   { mode: "masked", visible: [], explored: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
    *   0.5,
    * );
    * ```
@@ -512,7 +535,7 @@ export class PixiBackend implements DisplayBackend {
    * @example
    * ```
    * // private method; not part of the public API
-   * this.captureFog({ mode: "all", visible: [], explored: [] }, 800, 600, 1, null);
+   * this.captureFog({ mode: "all", visible: [], explored: [], perceived: [] }, 800, 600, 1, null);
    * ```
    */
   private captureFog(input: VisibilityInput, width: number, height: number, resolution: number, existing: RenderTexture | null): RenderTexture {
@@ -537,9 +560,13 @@ export class PixiBackend implements DisplayBackend {
    * `id` is new, then update its transform, visual (image, animated, or generated), border, and
    * badges in
    * place. `visualContainer.angle` rotates the art + border only; `container`'s own position is
-   * the token center and its badge children never rotate (see `TokenNode`'s field doc).
+   * the token center and its badge children never rotate (see `TokenNode`'s field doc). The
+   * `perceived` flag picks the container's parent: the above-`mask` `perceivedTokens` container
+   * when set (the token renders through fog/darkness), the `tokens` layer otherwise — the SAME
+   * node is re-parented, never duplicated, and a flip in either direction takes effect on this
+   * call.
    * @param id The token document id.
-   * @param tokenSpec The resolved token render tokenSpec (transform, size, visual, border, badges, shape).
+   * @param tokenSpec The resolved token render tokenSpec (transform, size, visual, border, badges, shape, perceived).
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
@@ -548,13 +575,15 @@ export class PixiBackend implements DisplayBackend {
    * backend.setToken("00000000-0000-0000-0000-000000000001", {
    *   x: 0, y: 0, w: 70, h: 70, rotation: 0,
    *   visual: { kind: "image", url: "https://example.test/token.png" },
-   *   borderColor: null, badges: [], shape: "square",
+   *   borderColor: null, badges: [], shape: "square", perceived: false,
    * });
    * ```
    */
   setToken(id: string, tokenSpec: TokenNodeSpec): void {
     let node = this.tokens.get(id);
     if (!node) node = this.createTokenNode(id);
+    const parent = tokenSpec.perceived ? this.perceivedTokens : this.layers.get("tokens");
+    if (parent && node.container.parent !== parent) parent.addChild(node.container);
     node.container.position.set(tokenSpec.x, tokenSpec.y);
     node.visualContainer.angle = tokenSpec.rotation; // degrees; rotates art + border, not badges
     this.updateTokenVisual(id, node, tokenSpec);
@@ -804,7 +833,7 @@ export class PixiBackend implements DisplayBackend {
     else node.border.rect(-hw, -hh, tokenSpec.w, tokenSpec.h).stroke({ width: 3, color: tokenSpec.borderColor });
   }
 
-  /** Redraw `node`'s condition-marker badges: emoji glyph chips laid out left-to-right along the
+  /** Redraw `node`'s marker badges: chips laid out left-to-right along the
    * token's top edge, sized to `max(12, min(w,h)*0.28)`px and positioned relative to the
    * non-rotating outer `container`'s own origin (so they stay upright regardless of
    * `visualContainer`'s rotation — see `TokenNode`'s field doc). Guarded by a joined `badgeKey`:
@@ -1114,28 +1143,47 @@ export class PixiBackend implements DisplayBackend {
       this.emoteLayer.addChild(t);
     }
   }
-
-  /** `DisplayBackend.setLighting`: repaint the lighting overlay — clears `lightingGraphics`, then
-   * for each cell draws up to three stacked fills over that cell's polygon (`c.corners`, already
-   * resolved via the active grid — a square rect on a square grid, a hexagon on a hex grid; this
-   * method paints whatever shape it is handed and performs no grid-kind math of its own): a black
-   * darkening fill (`c.alpha`, skipped when `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped
-   * when `0`), and — when `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha)
-   * approximating desaturation for a darkvision-only cell. An empty `frame.cells` clears the
-   * overlay entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
-   * geometry, nothing to fill).
+  /** `DisplayBackend.setLighting`: repaint the lighting overlay. First the darkness sheet:
+   * every `frame.darkness` polygon (the viewer's line of sight) filled black at
+   * `MAX_DARK_ALPHA` — the darkest gradation band — inverse-masked by the union of the lit
+   * cells' polygons (`litHoles`, the same sheet-and-holes technique `paintFogSheets` uses), so
+   * an in-sight cell no entry lights is as dark as the darkest band and a lit cell shows only
+   * its own fills. With NO lit cell (a fully dark room) the sheet paints whole with its mask
+   * cleared — never through an inverse mask over an empty `Graphics`, whose rendering this
+   * code makes no assumption about. Then, clearing `lightingGraphics`, for each cell up to three stacked fills
+   * over that cell's polygon (`c.corners`, already resolved via the active grid — a square rect
+   * on a square grid, a hexagon on a hex grid; this method paints whatever shape it is handed
+   * and performs no grid-kind math of its own): a black darkening fill (`c.alpha`, skipped when
+   * `0`), a tinted fill (`c.tint` at `c.tintAlpha`, skipped when `0`), and — when
+   * `c.desaturate` — a flat neutral-gray wash (`0x808080` at `0.18` alpha) approximating
+   * desaturation for a darkvision-only cell. Empty `darkness` and `cells` clear the overlay
+   * entirely (no lighting effect); a cell with fewer than 3 corners is skipped (degenerate
+   * geometry, nothing to fill), as is a darkness polygon with fewer than 3 vertices.
    * @param frame The resolved per-cell lighting to paint.
    * @example
    * ```ts
    * import { PixiBackend } from "@shadowcat/render";
    *
    * declare const backend: PixiBackend;
-   * backend.setLighting({ cell: 70, cells: [] });
+   * backend.setLighting({ cell: 70, cells: [], darkness: [] });
    * ```
    */
   setLighting(frame: LightingFrame): void {
+    this.darknessGraphics.clear();
+    this.litHoles.clear();
     this.lightingGraphics.clear();
-    // empty cells = no lighting overlay (all-clear)
+    for (const region of frame.darkness) {
+      if (region.points.length >= 6) this.darknessGraphics.poly(region.points).fill({ color: 0x000000, alpha: MAX_DARK_ALPHA });
+    }
+    let anyHole = false;
+    for (const c of frame.cells) {
+      if (c.corners.length < 3) continue;
+      this.litHoles.poly(c.corners.flatMap((p) => [p.x, p.y])).fill({ color: 0xffffff });
+      anyHole = true;
+    }
+    if (anyHole) this.darknessGraphics.setMask({ mask: this.litHoles, inverse: true });
+    else this.darknessGraphics.mask = null; // nothing lit: the whole sheet shows, unmasked
+    // empty cells = no per-cell overlay
     for (const c of frame.cells) {
       if (c.corners.length < 3) continue; // degenerate geometry — nothing to fill
       const poly = c.corners.flatMap((p) => [p.x, p.y]);
@@ -1305,7 +1353,7 @@ function paintShape(g: Graphics, tokenSpec: Omit<ShapeNodeSpec, "layer">): void 
  * // module-private helper; not exported from @shadowcat/render
  * import { Graphics } from "pixi.js";
  * const dark = new Graphics(), dim = new Graphics(), eh = new Graphics(), vh = new Graphics();
- * paintFogSheets(dark, dim, eh, vh, { mode: "all", visible: [], explored: [] });
+ * paintFogSheets(dark, dim, eh, vh, { mode: "all", visible: [], explored: [], perceived: [] });
  * ```
  */
 function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, visibleHoles: Graphics, input: VisibilityInput): void {

@@ -1,5 +1,5 @@
 import type { DisplayBackend } from "./backend";
-import type { LightingInput, Point } from "./types";
+import type { LightingInput, LitCell, Point, Polygon } from "./types";
 
 /** A resolved + interpolated cell ready to draw: alpha = band darkening, tint = packed color,
  * tintAlpha (0 ⇒ no tint), desaturate from the render hint, corners = resolved paint geometry.
@@ -29,6 +29,12 @@ export interface LightingFrame {
   cell: number;
   /** The resolved per-cell paint instructions. */
   cells: LitDrawCell[];
+  /** The regions to paint at the darkest band wherever no `cells` entry lights them: the
+   * viewer's line of sight (`Lighting.setDarkness`). A cell the viewer has line of sight to
+   * but no light on is visible terrain only to a sense that needs no light, so it renders as
+   * dark as the darkest gradation band — never as a clear, lit cell. Empty when no lighting
+   * model applies (`Lighting.setTarget(null)`: a GM's `mode:"all"` frame, or no frame yet). */
+  darkness: Polygon[];
 }
 
 /** Duration, in ms, of the day/night fade `Lighting.setTarget` starts and
@@ -36,9 +42,105 @@ export interface LightingFrame {
  * this layer is purely visual. */
 export const LIGHTING_FADE_MS = 250;
 /** Maximum darkening opacity applied at the darkest gradation band. */
-const MAX_DARK_ALPHA = 0.6;
+export const MAX_DARK_ALPHA = 0.6;
 /** Tint overlay opacity when a packed color is present (tint !== 0). */
-const TINT_ALPHA = 0.25;
+export const TINT_ALPHA = 0.25;
+
+/** The darkening alpha of gradation band `band` under a `bandCount`-band gradation:
+ * `(band / max(1, bandCount - 1)) * MAX_DARK_ALPHA`, so band 0 (brightest) darkens nothing and
+ * the last band darkens fully. THE one band→alpha rule — `resolve` and the light sweep's
+ * `lightSampleCells` both read it.
+ * @param band The gradation band index (0 = brightest).
+ * @param bandCount The gradation's band count.
+ * @returns The darkening fill opacity in `[0, MAX_DARK_ALPHA]`.
+ * @example
+ * ```ts
+ * import { bandAlpha } from "@shadowcat/render";
+ *
+ * bandAlpha(0, 3); // 0
+ * bandAlpha(2, 3); // 0.6
+ * ```
+ */
+export function bandAlpha(band: number, bandCount: number): number {
+  return (band / Math.max(1, bandCount - 1)) * MAX_DARK_ALPHA;
+}
+
+/** Union a light sweep's cells over a base frame: a sweep cell REPLACES the base cell with the
+ * same `"i,j"` key (the glow decides that cell's darkening and tint outright) and a sweep cell
+ * with no base twin is appended. Pure; `Lighting.apply` paints the result while a sweep is set.
+ * @param base The fade-interpolated committed frame.
+ * @param sweep The sweep's cells, or `null` when no light sweep is in flight.
+ * @returns The frame to paint.
+ * @example
+ * ```ts
+ * import { mergeSweepCells } from "@shadowcat/render";
+ *
+ * mergeSweepCells({ cell: 100, cells: [], darkness: [] }, null).cells.length; // 0
+ * ```
+ */
+export function mergeSweepCells(base: LightingFrame, sweep: LitDrawCell[] | null): LightingFrame {
+  if (!sweep || sweep.length === 0) return base;
+  const byKey = new Map(sweep.map((c) => [key(c), c]));
+  const cells: LitDrawCell[] = base.cells.map((c) => byKey.get(key(c)) ?? c);
+  const present = new Set(base.cells.map(key));
+  for (const c of sweep) if (!present.has(key(c))) cells.push(c);
+  return { cell: base.cell, cells, darkness: base.darkness };
+}
+
+/** Union two committed lighting inputs for the same scene: every cell of `prev` that `next`
+ * does not restate is kept beside `next`'s cells, which win on a shared `"i,j"` key; `cell`,
+ * `bands` and `hints` are `next`'s (a `prev` cell's `band`/`hint` index is read against
+ * them). `RenderEngine` paints this while the viewer's own vision sweep plays: the committed
+ * frame that follows a move lights the cells seen from the STOP, and the frame before it the
+ * cells seen from the START — the sweeping line of sight runs between the two, so both sets
+ * stay lit until the sweep ends and `next` alone applies. Pure.
+ * @param prev The lighting in force when the sweep started.
+ * @param next The newest committed lighting.
+ * @returns The unioned input.
+ * @example
+ * ```ts
+ * import { unionLightingInputs } from "@shadowcat/render";
+ *
+ * const a = { cell: 100, bands: [], hints: [], cells: [{ i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [] }] };
+ * const b = { cell: 100, bands: [], hints: [], cells: [{ i: 1, j: 0, band: 0, tint: 0, hint: -1, corners: [] }] };
+ * unionLightingInputs(a, b).cells.length; // 2
+ * ```
+ */
+export function unionLightingInputs(prev: LightingInput, next: LightingInput): LightingInput {
+  const present = new Set(next.cells.map(key));
+  const cells: LitCell[] = [...next.cells];
+  for (const c of prev.cells) if (!present.has(key(c))) cells.push(c);
+  return { cell: next.cell, bands: next.bands, hints: next.hints, cells };
+}
+
+/** Hold a set of cells at their previous committed values while a carried-light sweep plays:
+ * every cell of `next` whose `"i,j"` key is in `held` is replaced by the cell `prev` carries
+ * under that key (or dropped when `prev` has none); every other cell is `next`'s, as are
+ * `cell`, `bands` and `hints` (a `prev` cell's `band`/`hint` index is read against them, as
+ * in `unionLightingInputs`). `RenderEngine` paints this while a light sweep plays, with `held`
+ * the cells the sweeping torch's LAST sample lights: the post-move rebroadcast carries the
+ * light at that final position, and applying those cells mid-walk would light the corridor's
+ * far end before the torch gets there — while every OTHER change a committed frame carries
+ * (another light switched on, a door opened) applies at once. Pure.
+ * @param prev The lighting in force when the light sweep started.
+ * @param next The newest committed lighting.
+ * @param held The `"i,j"` keys to hold at `prev`'s values.
+ * @returns `next` with the held cells taken from `prev`.
+ * @example
+ * ```ts
+ * import { holdLightingCells } from "@shadowcat/render";
+ *
+ * const prev = { cell: 100, bands: [], hints: [], cells: [] };
+ * const next = { cell: 100, bands: [], hints: [], cells: [{ i: 3, j: 0, band: 0, tint: 0, hint: -1, corners: [] }] };
+ * holdLightingCells(prev, next, new Set(["3,0"])).cells.length; // 0 — held at prev, which has no such cell
+ * ```
+ */
+export function holdLightingCells(prev: LightingInput, next: LightingInput, held: ReadonlySet<string>): LightingInput {
+  if (held.size === 0) return next;
+  const cells: LitCell[] = next.cells.filter((c) => !held.has(key(c)));
+  for (const c of prev.cells) if (held.has(key(c))) cells.push(c);
+  return { cell: next.cell, bands: next.bands, hints: next.hints, cells };
+}
 
 /** Cell identity key for matching a cell across `prev`/`target` frames during a fade.
  * @param c A cell's grid coordinates.
@@ -90,22 +192,35 @@ function lerpRgb(a: number, b: number, t: number): number {
 }
 
 /** Owns the lighting layer's data. Resolves the parsed LightingInput to drawable cells
- * (band→alpha, hint→desaturate) and interpolates day/night transitions; the backend
- * just paints LightingFrames. Cosmetic only — fog is the secrecy gate. */
+ * (band→alpha, hint→desaturate), interpolates day/night transitions, and carries the
+ * darkness regions (`setDarkness`) every painted frame darkens where no cell lights them; the
+ * backend just paints LightingFrames. The server's `vision` frame decides what is visible
+ * (the lit set IS the visible set); this layer decides only how a visible cell looks. */
 export class Lighting {
   /** The frame captured at the start of the current fade — the interpolation source. */
-  private prev: LightingFrame = { cell: 0, cells: [] };
+  private prev: LightingFrame = { cell: 0, cells: [], darkness: [] };
   /** The frame this fade is interpolating toward, set by `setTarget`. */
-  private target: LightingFrame = { cell: 0, cells: [] };
+  private target: LightingFrame = { cell: 0, cells: [], darkness: [] };
   /** Elapsed fade time; starts at LIGHTING_FADE_MS so the initial state is settled. */
   private elapsed = LIGHTING_FADE_MS;
   /** Cached result of the last apply(); avoids recomputing on every current() call and
    * eliminates the aliasing hazard of returning this.target by reference when settled. */
-  private _current: LightingFrame = { cell: 0, cells: [] };
+  private _current: LightingFrame = { cell: 0, cells: [], darkness: [] };
+  /** The in-flight light sweep's cells (`setSweep`), unioned over the fade-interpolated frame
+   * at every paint; `null` when no carried-light sweep is playing. */
+  private sweep: LitDrawCell[] | null = null;
+  /** The regions `setDarkness` last set — painted as `LightingFrame.darkness` while a lighting
+   * model is in force (`hasModel`), withheld otherwise. */
+  private darkness: Polygon[] = [];
+  /** Whether the last `setTarget` carried a lighting model (non-`null` input). With no model
+   * there is no darkness to lift, so no darkness is painted either. */
+  private hasModel = false;
 
   /**
    * Constructs the lighting layer bound to a single backend.
    * @param backend The display backend `apply()` paints resolved frames into.
+   * @param onApply Optional observer of every painted frame (the engine's host observability
+   * hook); receives exactly what `backend.setLighting` was handed.
    * @example
    * ```ts
    * import { Lighting, type DisplayBackend } from "@shadowcat/render";
@@ -114,7 +229,53 @@ export class Lighting {
    * const lighting = new Lighting(backend);
    * ```
    */
-  constructor(private readonly backend: DisplayBackend) {}
+  constructor(
+    private readonly backend: DisplayBackend,
+    private readonly onApply?: (frame: LightingFrame) => void,
+  ) {}
+
+  /**
+   * Set (or clear) the carried-light sweep overlay and repaint immediately — no fade: the
+   * sweep is already time-interpolated per tick by `RenderEngine`'s light sweep, and the
+   * committed day/night fade underneath keeps its own clock. `null` removes the overlay.
+   * @param cells The sweep's cells (`lightSampleCells`/`blendLightCells`), or `null`.
+   * @example
+   * ```ts
+   * import { Lighting, type DisplayBackend } from "@shadowcat/render";
+   *
+   * declare const backend: DisplayBackend;
+   * const lighting = new Lighting(backend);
+   * lighting.setSweep([{ i: 0, j: 0, alpha: 0, tint: 0xffcc66, tintAlpha: 0.25, desaturate: false, corners: [] }]);
+   * lighting.setSweep(null);
+   * ```
+   */
+  setSweep(cells: LitDrawCell[] | null): void {
+    this.sweep = cells;
+    this.apply();
+  }
+
+  /**
+   * Set the regions painted at the darkest band wherever no cell lights them — the viewer's
+   * current line of sight (the fog's `visible` polygons, or the vision sweep's chosen sample
+   * while one plays) — and repaint at once. The same reference is a no-op (no repaint); the
+   * regions are carried through fades unchanged (a day/night fade interpolates cells, not
+   * where the viewer can see). Painted only while a lighting model is in force — see
+   * `LightingFrame.darkness`.
+   * @param regions The polygons to darken, in scene coordinates.
+   * @example
+   * ```ts
+   * import { Lighting, type DisplayBackend } from "@shadowcat/render";
+   *
+   * declare const backend: DisplayBackend;
+   * const lighting = new Lighting(backend);
+   * lighting.setDarkness([{ points: [0, 0, 100, 0, 100, 100, 0, 100] }]);
+   * ```
+   */
+  setDarkness(regions: Polygon[]): void {
+    if (regions === this.darkness) return;
+    this.darkness = regions;
+    this.apply();
+  }
 
   /**
    * Set (or clear) the lighting overlay's target and start a {@link LIGHTING_FADE_MS}-ms
@@ -138,7 +299,8 @@ export class Lighting {
   setTarget(input: LightingInput | null): void {
     // Capture whatever is on-screen right now as the interpolation start point.
     this.prev = this.currentInterpolated();
-    this.target = input ? resolve(input) : { cell: this.target.cell, cells: [] };
+    this.target = input ? resolve(input) : { cell: this.target.cell, cells: [], darkness: [] };
+    this.hasModel = input !== null;
     this.elapsed = 0;
     this.apply();
   }
@@ -177,18 +339,22 @@ export class Lighting {
    */
   current(): LightingFrame { return this._current; }
 
-  /** Recompute the interpolated frame and paint it via `backend.setLighting`. Called by both
-   * `setTarget` (new fade start) and `tick` (fade progress) — the sole path that reaches the
-   * backend, so `current()` and the painted frame can never disagree.
+  /** Recompute the interpolated frame, union the light sweep over it (`mergeSweepCells`),
+   * attach the darkness regions (withheld without a model) and paint it via
+   * `backend.setLighting`. Called by `setTarget` (new fade start), `tick` (fade progress),
+   * `setSweep` and `setDarkness` — the sole path that reaches the backend, so `current()` and
+   * the painted frame can never disagree.
    * @example
    * ```
-   * // private method; not part of the public API — invoked internally by setTarget/tick
+   * // private method; not part of the public API — invoked internally by setTarget/tick/setSweep
    * this.apply();
    * ```
    */
   private apply(): void {
-    this._current = this.currentInterpolated();
+    const merged = mergeSweepCells(this.currentInterpolated(), this.sweep);
+    this._current = { cell: merged.cell, cells: merged.cells, darkness: this.hasModel ? this.darkness : [] };
     this.backend.setLighting(this._current);
+    this.onApply?.(this._current);
   }
 
   /** Compute the frame for the fade's current `elapsed`/`prev`/`target` state. At `t>=1`
@@ -229,12 +395,12 @@ export class Lighting {
       // something a day/night fade interpolates.
       return { i: tc.i, j: tc.j, alpha: lerp(pc.alpha, tc.alpha, t), tint, tintAlpha, desaturate: tc.desaturate, corners: tc.corners };
     });
-    return { cell: this.target.cell, cells };
+    return { cell: this.target.cell, cells, darkness: [] };
   }
 }
 
 /** Resolve a parsed LightingInput into a LightingFrame with computed per-cell values.
- * alpha = (band / max(1, bandCount-1)) * MAX_DARK_ALPHA; band 0 (brightest) → 0 darkening.
+ * alpha = `bandAlpha(band, bandCount)`; band 0 (brightest) → 0 darkening.
  * tintAlpha = 0 when tint===0 (no color), else TINT_ALPHA.
  * desaturate = hint index is in-range and names "desaturate" — any OTHER hint string (e.g. a
  * custom vision mode's `renderHint: "outline"`) resolves `desaturate: false`, silently applying
@@ -246,18 +412,17 @@ export class Lighting {
  * // not exported from @shadowcat/render; internal to Lighting.setTarget
  * resolve({ cell: 100, bands: [{ name: "bright", min: 0.67 }, { name: "dark", min: 0 }],
  *   hints: ["desaturate"], cells: [{ i: 0, j: 0, band: 1, tint: 0, hint: 0, corners: [] }] });
- * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true, corners: [] }] }
+ * // { cell: 100, cells: [{ i: 0, j: 0, alpha: 0.6, tint: 0, tintAlpha: 0, desaturate: true, corners: [] }], darkness: [] }
  * ```
  */
 function resolve(input: LightingInput): LightingFrame {
-  const n = Math.max(1, input.bands.length - 1);
   const cells: LitDrawCell[] = input.cells.map((c) => ({
     i: c.i, j: c.j,
-    alpha: (c.band / n) * MAX_DARK_ALPHA,
+    alpha: bandAlpha(c.band, input.bands.length),
     tint: c.tint,
     tintAlpha: c.tint === 0 ? 0 : TINT_ALPHA,
     desaturate: c.hint >= 0 && input.hints[c.hint] === "desaturate",
     corners: c.corners,
   }));
-  return { cell: input.cell, cells };
+  return { cell: input.cell, cells, darkness: [] };
 }

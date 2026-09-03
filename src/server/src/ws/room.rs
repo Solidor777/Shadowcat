@@ -312,6 +312,9 @@ struct WireMoveInputs<'a> {
     samples: &'a [crate::scene::move_stream::PosSamplePt],
     /// Per-sample vision polygons for the mover; `None` for GM movers or a zero-progress move.
     mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>,
+    /// Per-sample carried-light polygons; `None` for a lightless mover, an all-bright scene,
+    /// or a zero-progress move.
+    mover_light: Option<Vec<crate::scene::move_stream::LightSamplePt>>,
     /// Total terrain-weighted movement cost accumulated over the executed move.
     cost: f64,
     /// `true` when the move stopped before the requested goal.
@@ -329,7 +332,7 @@ fn wire_move_stream(
     inputs: WireMoveInputs<'_>,
 ) -> ServerMsg {
     use crate::scene::move_stream::MAX_VISION_POLYGON_VERTS;
-    use crate::ws::protocol::VisionSample;
+    use crate::ws::protocol::{LightSample, VisionSample};
 
     // Map internal VisionSamplePt → wire VisionSample, capping polygon vertex count.
     // Fail-closed: truncation under-reveals (the mover sees less of the fog sweep) but
@@ -339,6 +342,32 @@ fn wire_move_stream(
             .map(|vs| VisionSample {
                 t_ms: vs.t_ms,
                 polygons: vs
+                    .polygons
+                    .into_iter()
+                    .map(|poly| {
+                        poly.into_iter()
+                            .take(MAX_VISION_POLYGON_VERTS)
+                            .map(|(x, y)| [x, y])
+                            .collect()
+                    })
+                    .collect(),
+            })
+            .collect()
+    });
+
+    // Same vertex cap for the carried-light polygons: a truncated light polygon lights less,
+    // never more, and the per-recipient admission reads the disc, not the polygon.
+    let mover_light = inputs.mover_light.map(|mls| {
+        mls.into_iter()
+            .map(|ls| LightSample {
+                t_ms: ls.t_ms,
+                pos: [ls.pos.0, ls.pos.1],
+                bright: ls.bright,
+                dim: ls.dim,
+                intensity: ls.intensity,
+                falloff: crate::scene::emitters::wire_falloff(ls.falloff),
+                color: ls.color,
+                polygons: ls
                     .polygons
                     .into_iter()
                     .map(|poly| {
@@ -369,6 +398,7 @@ fn wire_move_stream(
             })
             .collect(),
         mover_vision,
+        mover_light,
         // Broadcast in-process carries the full authoritative cost; `clip_move_stream`
         // nulls it per recipient at egress for a clipped observer (secrecy: see
         // `ServerMsg::MoveStream.cost` doc).
@@ -696,6 +726,19 @@ impl Room {
             type CellSet = std::collections::BTreeSet<(i32, i32)>;
             let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet, crate::scene::GridKind)> =
                 Vec::new();
+            // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
+            // source admission through `resolve_access_world`, which reads the world's capability
+            // grants — an await, which must not run under the scene read guard below. Fetched
+            // once, ahead of the guard, and only when this batch actually contains a token
+            // Create (the sole op shape that reads the mask); every other batch skips the fetch.
+            let needs_world_defaults = ops.iter().any(
+                |op| matches!(op, Operation::Create { doc } if doc.doc_type == "token" && doc.parent_id.is_some()),
+            );
+            let world_defaults = if needs_world_defaults {
+                Some(repo.world_cap_defaults(self.world_id).await?)
+            } else {
+                None
+            };
             {
                 let scene = self.scene.read().await;
                 // Memoize the visible mask per (scene, leniency) within this publish so a
@@ -746,12 +789,24 @@ impl Room {
                         let target = scene
                             .resolve_grid_shape(scene_id, cell)
                             .cell_of((eng.x, eng.y));
+                        // Guaranteed `Some`: reaching this point means this op is a token Create
+                        // with a parent, which is exactly what `needs_world_defaults` scanned for.
+                        // Fail closed rather than defaulting an authority input.
+                        let Some(wd) = world_defaults.as_ref() else {
+                            return Err(DataError::Forbidden);
+                        };
                         match settings.movement_restriction {
                             crate::scene::MovementRestriction::Unrestricted => {}
                             crate::scene::MovementRestriction::Visible => {
                                 let mask =
                                     visible_cache.entry((scene_id, lenient)).or_insert_with(|| {
-                                        scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
+                                        scene.visible_cells_cached(
+                                            ctx.user_id,
+                                            ctx.world_role,
+                                            wd,
+                                            scene_id,
+                                            lenient,
+                                        )
                                     });
                                 if !mask.contains(&target) {
                                     return Err(DataError::Forbidden);
@@ -761,7 +816,13 @@ impl Room {
                                 let mask = visible_cache
                                     .entry((scene_id, lenient))
                                     .or_insert_with(|| {
-                                        scene.visible_cells_cached(ctx.user_id, scene_id, lenient)
+                                        scene.visible_cells_cached(
+                                            ctx.user_id,
+                                            ctx.world_role,
+                                            wd,
+                                            scene_id,
+                                            lenient,
+                                        )
                                     })
                                     .clone();
                                 // Explored needs an async fetch, which must not run under the
@@ -801,7 +862,7 @@ impl Room {
                     }
                 };
                 // Invariant: `visible` may be corner-sampled (lenient) while `explored` is
-                // center-sampled by construction (`ExploredSet::mark_polygons`). The asymmetry only ever ENLARGES
+                // center-sampled by construction (`ExploredSet::mark_cells` holds the lit mask's own cells). The asymmetry only ever ENLARGES
                 // `visible ∪ explored`, so it is fail-safe — it never over-permits beyond cells
                 // the player currently sees or has genuinely explored.
                 if !move_cells
@@ -1002,7 +1063,9 @@ impl Room {
 
         // --- World capability defaults, resolved before the scene read guard ---
         // An input to the combat gate's whole-document `cap::READ` resolution
-        // (`SceneEcs::combatant_for_token` → `ctx_access` → `resolve_access_world`), which runs
+        // (`SceneEcs::combatant_for_token` → `ctx_access` → `resolve_access_world`) and to the
+        // visibility mask's observer-vision source admission (`visible_cells_cached` →
+        // `gather_vision_sources_in_scene` → `user_access`), both of which run
         // UNDER that guard — and a scene read guard is never held across an await, so the
         // settings read has to happen ahead of it. Fetched unconditionally rather than only when
         // a combat turns out to be running: whether one is is itself only knowable under the
@@ -1022,6 +1085,12 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The mover's resolved locomotion traits (terrain exemption), resolved in the SAME
+        // first guard block as `footprint` and threaded into `MoveGateInputs` — the executor
+        // never re-derives them (that struct's caller-resolves invariant). The tags belong to
+        // the token/actor, so a GM moving a flying token is priced as flying too: the GM
+        // exemption covers the gameplay GATES, never the cost accounting.
+        let move_traits: crate::scene::pathfinding::MoveTraits;
         // The per-turn movement-budget gate, resolved off this same read guard (combat lookup is
         // step 2 below, under the same lock as restriction/cell/visible_cells/start). `None` means
         // no active combat on the token's scene, or the token names no combatant in it — either
@@ -1054,6 +1123,11 @@ impl Room {
                 return Err(DataError::Forbidden);
             };
             footprint = fp;
+            move_traits = crate::scene::pathfinding::MoveTraits {
+                ignore_terrain: crate::scene::movement_tags::ignores_terrain_cost(
+                    &scene.token_movement_tags(token),
+                ),
+            };
 
             let settings = scene.resolve_scene(token_scene);
             // Captured under this same read guard for the same reason `cell` is: the explored
@@ -1096,7 +1170,13 @@ impl Room {
             visible_cells = if matches!(restriction, MovementRestriction::Unrestricted) {
                 std::collections::BTreeSet::new()
             } else {
-                scene.visible_cells_cached(ctx.user_id, token_scene, lenient)
+                scene.visible_cells_cached(
+                    ctx.user_id,
+                    ctx.world_role,
+                    &world_defaults,
+                    token_scene,
+                    lenient,
+                )
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
 
@@ -1165,6 +1245,7 @@ impl Room {
         let duration_ms;
         let samples;
         let mover_vision: Option<Vec<crate::scene::move_stream::VisionSamplePt>>;
+        let mover_light: Option<Vec<crate::scene::move_stream::LightSamplePt>>;
         {
             let scene = self.scene.read().await;
             outcome = move_exec::execute_move(
@@ -1178,6 +1259,7 @@ impl Room {
                     // `budget_gate` (never `Some` for a caller the gate exempts: a GM, or one
                     // the combatant is hidden from — see `BudgetGate::enforced`).
                     budget: move_budget_cells,
+                    traits: move_traits,
                 },
                 token,
                 &path,
@@ -1214,24 +1296,42 @@ impl Room {
 
             // GM mover → None (no fog to sweep), regardless of restriction mode. Non-GM movers
             // get a per-sample vision polygon at each hypothetical position along the
-            // trajectory, including in Unrestricted-mode scenes. The SAME full sight_walls set
-            // is used as for static vision. Hoisting:
-            // player_vision_inputs collects walls + static-token polygons ONCE per move; each
-            // sample calls polygons_at (one moving-token raycast only, no repeated ECS scan).
+            // trajectory, including in Unrestricted-mode scenes. Hoisting: `sight_sources`
+            // resolves the mover's sources and their committed polygons ONCE per move (the
+            // SAME sources + `source_los_poly` the committed `vision` polygons and the egress
+            // clip read); each sample re-raycasts only the moving token (`SightSources::los_at`).
             mover_vision = if is_gm {
                 None
             } else {
-                let vision_inputs = scene.player_vision_inputs(ctx.user_id, token_scene, token);
+                let sight =
+                    scene.sight_sources(ctx.user_id, ctx.world_role, &world_defaults, token_scene);
                 Some(
                     samples
                         .iter()
                         .map(|s| crate::scene::move_stream::VisionSamplePt {
                             t_ms: s.t_ms,
-                            polygons: vision_inputs.polygons_at(s.pos),
+                            polygons: sight
+                                .los_at(&[(token, s.pos)])
+                                .into_iter()
+                                .map(|(_, p)| p.into_owned())
+                                .collect(),
                         })
                         .collect(),
                 )
             };
+            // Carried light: computed only when the mover carries an enabled emission in an
+            // environment-lit scene ("cost only on request") — one raycast per sample against
+            // the light walls at the token's elevation, hoisted once per move. Not gated on
+            // the mover's role: a GM walking a torch-bearer lights the corridor for the
+            // players watching it exactly as a player's own move does.
+            mover_light = scene
+                .mover_light_inputs(token_scene, token, cell)
+                .map(|li| {
+                    samples
+                        .iter()
+                        .map(|s| li.sample_at(s.t_ms, s.pos))
+                        .collect()
+                });
         } // scene read lock dropped — commit_ops_locked awaits safely under publish_guard
 
         // Zero-progress move (stop == start): return immediately without writing.
@@ -1253,6 +1353,7 @@ impl Room {
                     duration_ms: 0.0,
                     samples: &zero_samples,
                     mover_vision: None,
+                    mover_light: None,
                     cost: 0.0,
                     // Not hardcoded false: this branch is reached only when the very first
                     // step was blocked, so the outcome is truncated. Reading it keeps the wire
@@ -1387,6 +1488,7 @@ impl Room {
                 duration_ms,
                 samples: &samples,
                 mover_vision,
+                mover_light,
                 cost: outcome.cost,
                 truncated: outcome.truncated,
             },
@@ -1846,15 +1948,12 @@ impl Room {
         }
     }
 
-    /// Unexpired in-flight frames moved by `mover` in `scene` — the mover's vision timelines
-    /// the egress clip evaluates a concurrent move against. Mutates `moving`: opportunistically
-    /// prunes entries expired as of `now` before reading (see the pruning comment in the body).
-    pub(crate) async fn mover_streams(
-        &self,
-        mover: Uuid,
-        scene: Uuid,
-        now: i64,
-    ) -> Vec<Arc<ServerMsg>> {
+    /// Every unexpired in-flight frame in `scene`, keyed by its moving token — the timelines
+    /// (the movers' viewpoints and carried lights per instant) the egress clip composes a
+    /// recipient's sight from (`ws::move_clip::ClipInputs`). Mutates `moving`:
+    /// opportunistically prunes entries expired as of `now` before reading (see the pruning
+    /// comment in the body).
+    pub(crate) async fn scene_streams(&self, scene: Uuid, now: i64) -> Vec<(Uuid, Arc<ServerMsg>)> {
         let mut moving = self.moving.lock().await;
         // Opportunistic prune alongside the read: reclaims an expired entry as soon as any
         // further move triggers a read here, rather than waiting for that entry's OWN next
@@ -1864,9 +1963,9 @@ impl Room {
         // not because callers here need a snapshot).
         moving.retain(|_, st| now < st.end_ms);
         moving
-            .values()
-            .filter(|st| st.mover == mover && st.scene == scene)
-            .map(|st| st.frame.clone())
+            .iter()
+            .filter(|(_, st)| st.scene == scene)
+            .map(|(token, st)| (*token, st.frame.clone()))
             .collect()
     }
 
@@ -2072,6 +2171,7 @@ impl RoomRegistry {
                     "system-defaults",
                     "resource-registry",
                     "combat",
+                    "faction-registry",
                 ],
             )
             .await?;
@@ -2092,6 +2192,10 @@ impl RoomRegistry {
             .iter()
             .find(|d| d.doc_type == "resource-registry")
             .cloned();
+        let faction_registry = docs
+            .iter()
+            .find(|d| d.doc_type == "faction-registry")
+            .cloned();
         let actors: Vec<Document> = docs
             .iter()
             .filter(|d| d.doc_type == "actor")
@@ -2107,6 +2211,7 @@ impl RoomRegistry {
             vision_modes,
             system_defaults,
             resource_registry,
+            faction_registry,
         );
         scene_ecs.set_actors(actors);
         scene_ecs.set_combats(combats);

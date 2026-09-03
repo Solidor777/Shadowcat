@@ -32,12 +32,18 @@ pub enum Falloff {
     None,
 }
 
-/// A placed light's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
-/// Mirrors the client `LightEngine`.
+/// A light source's photometric inputs. Radii are in GRID CELLS; `color` is packed `0xRRGGBB`.
+/// The value fields mirror `LightEmission` (used by both standalone `LightEngine` docs and
+/// token-carried emissions); `pos` is the source's scene-unit position (the document's `x`/`y`,
+/// or the carrying token's live position); `elevation` is the source's height above the ground
+/// plane (decides which wall elevation bands occlude it — see
+/// `crate::scene::elevation::wall_occludes`; never read by the illumination math itself).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
     /// Position in scene units.
     pub pos: P,
+    /// Elevation above the ground plane (0 = grounded); occlusion-band input only.
+    pub elevation: f64,
     /// Packed `0xRRGGBB` tint contribution.
     pub color: u32,
     /// Peak illumination level within `bright_radius`.
@@ -55,7 +61,10 @@ pub struct Light {
 
 /// Illumination this light contributes at distance `dist_cells` (in CELLS), BEFORE occlusion.
 /// Full `intensity` within `bright_radius`; tapers across `(bright_radius, dim_radius]` by the
-/// curve; 0 beyond `dim_radius`. Disabled / non-finite / non-positive `dim_radius` ⇒ 0.
+/// curve; 0 beyond `dim_radius`. Disabled / non-finite / non-positive `dim_radius` ⇒ 0, and a
+/// non-finite `dist_cells` ⇒ 0 too — without that guard the `Falloff::None` arm (which ignores
+/// the taper parameter) would return a finite, positive level for EVERY cell of a NaN-positioned
+/// light.
 ///
 /// Returns a value in `[0, intensity]`. A caller composing multiple lights clamps the summed
 /// result to `[0, 1]` before band lookup. `intensity` must be finite (the document→`Light` parser
@@ -64,6 +73,7 @@ pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
     if !light.enabled
         || !light.dim_radius.is_finite()
         || light.dim_radius <= 0.0
+        || !dist_cells.is_finite()
         || dist_cells > light.dim_radius
     {
         return 0.0;
@@ -151,14 +161,24 @@ pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
         .unwrap_or_else(|| bands.first().map(|b| b.min_illumination).unwrap_or(1.0))
 }
 
-/// A composed per-cell illumination result: a `[0,1]` `level` and a packed-RGB `tint` (the dominant
-/// contributor's color; `0x000000` when only an unset environment contributes).
+/// A composed per-cell illumination result: a `[0,1]` `level` (the saturated sum of every
+/// contributor's level) and a packed-RGB `tint` (the illuminance-weighted mix of the
+/// contributors' colors; `0x000000` when nothing contributes).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellLight {
-    /// Composed illumination level, `[0, 1]`.
+    /// Composed illumination level, `[0, 1]` — `clamp01(Σ contributor levels)`.
     pub level: f64,
-    /// Dominant contributor's packed `0xRRGGBB` color.
+    /// Illuminance-weighted mix of the contributors' colors, packed `0xRRGGBB`:
+    /// `Σ(levelᵢ × colorᵢ) / Σ(levelᵢ)` per channel over the UNSATURATED sum; `0x000000` when no
+    /// source contributes.
     pub tint: u32,
+}
+
+/// Accumulate one contributor's packed `0xRRGGBB` color into a per-channel running weighted sum.
+fn add_tint(acc: &mut [f64; 3], color: u32, weight: f64) {
+    acc[0] += f64::from((color >> 16) & 0xFF) * weight;
+    acc[1] += f64::from((color >> 8) & 0xFF) * weight;
+    acc[2] += f64::from(color & 0xFF) * weight;
 }
 
 /// Maps arc-length `d` along the perimeter of the envelope `extent` to a boundary point, walking
@@ -249,24 +269,33 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
     !env_polys.is_empty() && env_polys.iter().any(|poly| point_in_poly(poly, center))
 }
 
-/// Compose illumination at a cell center from a boundary-projected environment ambient plus each
-/// light, taking the MAX contributor (no over-brightening); `tint` follows the dominant
-/// contributor.
+/// Compose illumination at a cell center by ADDITIVE SUPERPOSITION with saturation: every
+/// admitted contributor (the boundary-projected environment ambient plus each unoccluded light)
+/// adds its level into one sum, and `level` is that sum clamped to `[0,1]` — two dim lights
+/// genuinely brighten their overlap. `tint` is the illuminance-weighted color mix
+/// (`Σ(levelᵢ × colorᵢ) / Σ(levelᵢ)` per channel, divided by the UNSATURATED sum so saturation
+/// brightens without skewing hue).
 /// `lit_polys[k]` is `lights[k]`'s `blocksLight` visibility polygon — a light contributes only if the
 /// cell center lies inside it (an EMPTY polygon means "no occluder computed" → never occludes).
 /// `env_polys` are the scene-boundary visibility polygons (`env_light_polys`): the environment
 /// ambient reaches this cell only if it is `env_lit` (inside some boundary polygon), so a
-/// `blocksLight`-sealed interior receives no ambient. This is strictly NARROWING: the occluded
-/// environment base is `0 ≤ env_intensity`, so the composed `level` is `≤` the pre-occlusion
-/// flat-floor level at every cell — visibility can only shrink, never widen.
+/// `blocksLight`-sealed interior receives no ambient. Environment occlusion is strictly
+/// NARROWING: an empty `env_polys` or a cell outside every polygon contributes 0, never negative,
+/// so occlusion can only shrink the composed field, never grow it.
 /// `world_units_per_cell` is the world distance one grid step represents
 /// (`GridShape::world_units_per_cell`) — light radii are authored in cells, so distance is
 /// divided by it. It is NOT the cell indexing scale; the two coincide on square and differ on
 /// hex. CALLER PRECONDITION: it must be positive — a non-positive value is a caller error; the
 /// upstream caller guards it (a release-build fallback avoids division-by-zero but the value is wrong).
 /// `env_intensity` must be finite; the document→settings resolver clamps it to `[0,1]`.
-/// Tie-break: ties (equal `level`) keep the earlier contributor — environment beats all lights at
-/// equal level, and a lower-index light beats a higher-index one.
+/// Per-source fail-closed directions are preserved under composition: a disabled/non-finite/
+/// occluded source contributes exactly 0, and a zero-contributor cell is dark with tint
+/// `0x000000`.
+///
+/// Note on the tint channel: the weighted mix means a contributor's hue is visible in every
+/// shared cell even when a brighter source dominates the LEVEL — the per-cell tint in the
+/// `vision` payload is the only place this reaches, and it is display metadata, not a position
+/// or identity disclosure.
 pub fn cell_illumination(
     center: P,
     env_intensity: f64,
@@ -276,43 +305,90 @@ pub fn cell_illumination(
     env_polys: &[Vec<P>],
     world_units_per_cell: f64,
 ) -> CellLight {
+    cell_illumination_from(
+        center,
+        env_intensity,
+        env_color,
+        lights
+            .iter()
+            .enumerate()
+            .map(|(k, l)| (l, lit_polys.get(k).map_or(&[][..], Vec::as_slice))),
+        env_polys,
+        world_units_per_cell,
+    )
+}
+
+/// One source's contribution at `center` BEFORE composition: `0.0` when the source's own
+/// occluder polygon (`occluder`, non-empty) excludes the center, else `light_illumination` at
+/// the center's distance in cells. THE per-source reach rule — `cell_illumination_from` sums
+/// it over every source and the egress clip's `glow_reaches` reads it for a carried-light
+/// sample's own light (`InstantSight::light_reaches`), so "does this light reach this cell" is
+/// answered once. An empty occluder means "no occluder computed" and never occludes. A
+/// non-finite or non-positive level reads as `0.0` (fail-closed per source; a NaN reaching a
+/// running sum would poison the saturation clamp, which panics on NaN).
+pub fn source_level(light: &Light, occluder: &[P], center: P, world_units_per_cell: f64) -> f64 {
+    if !occluder.is_empty() && !point_in_poly(occluder, center) {
+        return 0.0;
+    }
+    let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
+    let dist_cells = if world_units_per_cell > 0.0 {
+        d / world_units_per_cell
+    } else {
+        d
+    };
+    let level = light_illumination(light, dist_cells);
+    if level.is_finite() && level > 0.0 {
+        level
+    } else {
+        0.0
+    }
+}
+
+/// `cell_illumination` over an arbitrary `(light, occluder polygon)` source sequence — THE
+/// composition body; `cell_illumination` is its index-aligned-slices spelling. Exists so a
+/// caller can append sources the scene's committed field does not hold (an in-flight carried
+/// light at its instant position, read by `SceneEcs::recipient_sight`) without restating the
+/// additive-with-saturation rule a second time. An empty occluder polygon means "no occluder
+/// computed" and never occludes (the same reading `cell_illumination` gives an absent entry).
+pub fn cell_illumination_from<'a>(
+    center: P,
+    env_intensity: f64,
+    env_color: u32,
+    sources: impl IntoIterator<Item = (&'a Light, &'a [P])>,
+    env_polys: &[Vec<P>],
+    world_units_per_cell: f64,
+) -> CellLight {
     debug_assert!(
         world_units_per_cell > 0.0,
         "INVARIANT: world_units_per_cell must be positive; light radii are authored in cells"
     );
     debug_assert!(env_intensity.is_finite(), "env_intensity must be finite");
+    let mut total = 0.0_f64;
+    let mut tint_sum = [0.0_f64; 3];
     // Environment ambient is boundary-projected and blocksLight-occluded (see `env_polys`).
-    let env_reaches = env_intensity > 0.0 && env_lit(env_polys, center);
-    let mut best = CellLight {
-        level: if env_reaches {
-            env_intensity.clamp(0.0, 1.0)
-        } else {
-            0.0
-        },
-        tint: env_color,
-    };
-    for (k, light) in lights.iter().enumerate() {
-        // Occlusion: a non-empty polygon that excludes the cell center kills this light's reach here.
-        if let Some(poly) = lit_polys.get(k) {
-            if !poly.is_empty() && !point_in_poly(poly, center) {
-                continue;
-            }
-        }
-        let d = ((center.0 - light.pos.0).powi(2) + (center.1 - light.pos.1).powi(2)).sqrt();
-        let dist_cells = if world_units_per_cell > 0.0 {
-            d / world_units_per_cell
-        } else {
-            d
-        };
-        let level = light_illumination(light, dist_cells);
-        if level > best.level {
-            best = CellLight {
-                level,
-                tint: light.color,
-            };
+    if env_intensity > 0.0 && env_lit(env_polys, center) {
+        let level = env_intensity.clamp(0.0, 1.0);
+        total += level;
+        add_tint(&mut tint_sum, env_color, level);
+    }
+    for (light, poly) in sources {
+        let level = source_level(light, poly, center, world_units_per_cell);
+        if level > 0.0 {
+            total += level;
+            add_tint(&mut tint_sum, light.color, level);
         }
     }
-    best
+    if total <= 0.0 {
+        return CellLight {
+            level: 0.0,
+            tint: 0,
+        };
+    }
+    let channel = |idx: usize| -> u32 { (tint_sum[idx] / total).round().clamp(0.0, 255.0) as u32 };
+    CellLight {
+        level: total.clamp(0.0, 1.0),
+        tint: (channel(0) << 16) | (channel(1) << 8) | channel(2),
+    }
 }
 
 #[cfg(test)]

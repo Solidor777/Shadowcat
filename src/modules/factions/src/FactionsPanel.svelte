@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, MovementTagsEditor } from "@shadowcat/ui-kit";
   import { resolveTokenActor, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
@@ -25,7 +25,7 @@
    * (`apply_intent`) rejects an `Update` whose `old` doesn't match the actual stored value,
    * so a hardcoded `old: null` would only be valid for the field's first write.
    * @param id The faction's registry key.
-   * @param patch The fields to change (name, color, and/or stance).
+   * @param patch The fields to change (name, color, stance, and/or movement).
    * @example
    * ```
    * // private function; not part of the public API — invoked from the GM editor row's
@@ -57,7 +57,7 @@
   function add(): void {
     if (!registry) return;
     const id = crypto.randomUUID();
-    const f: Faction = { name: "New faction", color: "#9e9e9e", stance: "neutral" };
+    const f: Faction = { name: "New faction", color: "#9e9e9e", stance: "neutral", movement: [] };
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}`, old: null, new: f }] }]);
   }
   /** GM registry editor: deletes a faction entry from the registry map.
@@ -107,6 +107,9 @@
             <option value="neutral">{t("factions.neutral")}</option>
             <option value="hostile">{t("factions.hostile")}</option>
           </select>
+          <!-- Per-row movement-tag editor; `update` reads the raw stored list as the OCC
+               pre-image (whole-array write, one op). -->
+          <MovementTagsEditor value={f.movement ?? []} onCommit={(next) => update(id, { movement: next })} />
           <button type="button" onclick={() => remove(id)}>{t("factions.remove")}</button>
           <button type="button" onclick={() => selectTokens(id)}>{t("factions.selectTokens")}</button>
         {:else}

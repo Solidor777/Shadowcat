@@ -4,6 +4,7 @@ import type { CapabilityGrants } from "./CapabilityGrants";
 import type { CapabilityRequirement } from "./CapabilityRequirement";
 import type { Command } from "./Command";
 import type { ContractDeclaration } from "./ContractDeclaration";
+import type { LightSample } from "./LightSample";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
@@ -314,7 +315,10 @@ duration_ms: number,
 stop: [number, number], 
 /**
  * Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
- * INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+ * INVARIANT: at least one of `samples`/`mover_light` is non-empty — the frame as
+ * broadcast always carries samples (the first at t_ms == 0.0, the starting
+ * cell-center); a per-recipient clip may empty them and keep only the admitted light
+ * (the glow-only frame), or suppress the frame outright when both would be empty.
  */
 samples: Array<PosSample>, 
 /**
@@ -323,6 +327,14 @@ samples: Array<PosSample>,
  * the client computes no vision. Sending mover vision to observers would leak geometry.
  */
 mover_vision: Array<VisionSample> | null, 
+/**
+ * Per-sample carried-light timeline (`LightSample`): the mover's enabled emission
+ * raycast at each sample position, computed only in an environment-lit scene. Full
+ * for the mover and a plain GM; every other recipient keeps only the samples whose
+ * dim-reach disc intersects their own vision at that instant (the same per-instant
+ * vision the position clip reads), and receives `None` when no sample does.
+ */
+mover_light: Array<LightSample> | null, 
 /**
  * Total terrain-weighted movement cost accumulated over the executed move. The
  * movement-budget gate (`move_exec::MoveGateInputs::budget`) consumes this quantity; it

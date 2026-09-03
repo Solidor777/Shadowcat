@@ -363,9 +363,10 @@ impl Default for AnimationSettings {
     }
 }
 
-/// A placed light source: position, photometric properties, and an optional
-/// falloff curve (mirrors the client's `LightEngine`). `brightRadius`/
-/// `dimRadius` are in grid cells.
+/// A placed standalone light source: a position plus its emission payload
+/// (mirrors the client's `LightEngine`). The emission shape lives exactly
+/// once, in `LightEmission` — a carried emission is the same payload resolved
+/// at a token's live position.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -374,6 +375,24 @@ pub struct LightEngine {
     pub x: f64,
     /// Position y, scene units.
     pub y: f64,
+    /// Elevation above the scene's ground plane (`None`/absent = 0, grounded);
+    /// decides which walls' elevation bands occlude this light. A carried
+    /// emission takes its token's elevation instead (`TokenEngine::elevation`).
+    #[serde(default)]
+    pub elevation: Option<f64>,
+    /// The light's photometric payload.
+    pub emission: LightEmission,
+}
+
+/// A light emitter's photometric payload — everything about a light except
+/// where it is: shared by standalone `light` documents (`LightEngine.emission`)
+/// and token/actor-carried emissions (`ActorEngine.light`,
+/// `TokenOverrides.light`). `brightRadius`/`dimRadius` are in grid cells.
+/// Every carrier validates it at ingress through `LightEmission::validate`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct LightEmission {
     /// `#rrggbb` light color.
     pub color: String,
     /// Emission strength 0..=1 at the source.
@@ -385,25 +404,116 @@ pub struct LightEngine {
     /// Brightness falloff curve; absent = linear (read-side default).
     #[serde(default)]
     pub falloff: Option<Falloff>,
-    /// GM toggle; a disabled light emits nothing.
+    /// GM toggle; a disabled emission contributes nothing (the suppress path
+    /// for a carried emission, the on/off switch for a standalone light).
     pub enabled: bool,
 }
 
-/// `curve` defaults to "linear" (read-side, unchanged) when absent. Kept a
-/// `String` in v1 (asserted by the battery), matching `"linear" | "quadratic"
-/// | "none"`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+impl LightEmission {
+    /// Ingress validation beyond serde shape, the posture every engine struct
+    /// carries: `intensity` finite (its `0..=1` range is a read-side clamp),
+    /// both radii finite, non-negative and bounded by the shared cell cap
+    /// `scene::pathfinding::MAX_FOOTPRINT_CELLS` — the bound the aura and the
+    /// footprint already share — so no authored glow can reach a scan bound
+    /// the egress clip would otherwise have to fail closed on
+    /// (`ws::move_clip::glow_reaches`).
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// emission.validate()  // Err("dimRadius exceeds 64") past the cap
+    /// ```
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if !self.intensity.is_finite() {
+            return Err("intensity must be finite".to_string());
+        }
+        let cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS;
+        for (name, r) in [
+            ("brightRadius", self.bright_radius),
+            ("dimRadius", self.dim_radius),
+        ] {
+            if !r.is_finite() || r < 0.0 {
+                return Err(format!("{name} must be finite and non-negative"));
+            }
+            if r > cap {
+                return Err(format!("{name} exceeds {cap}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl LightEngine {
+    /// Ingress validation beyond serde shape: position and elevation finite,
+    /// and the emission through `LightEmission::validate`.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (name, v) in [("x", self.x), ("y", self.y)] {
+            if !v.is_finite() {
+                return Err(format!("{name} must be finite"));
+            }
+        }
+        if let Some(e) = self.elevation {
+            if !e.is_finite() {
+                return Err("elevation must be finite".to_string());
+            }
+        }
+        self.emission.validate()
+    }
+}
+
+/// A falloff curve wrapper. `curve` defaults to `FalloffCurve::Linear`
+/// (read-side) when the whole `falloff` key is absent from `LightEmission`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
 pub struct Falloff {
-    /// "linear" | "quadratic" | "none" — kept a `String` in v1.
-    pub curve: String,
+    /// The taper curve across the dim band.
+    pub curve: FalloffCurve,
+}
+
+/// Photometric falloff curve identifier across the dim band
+/// `(brightRadius, dimRadius]`, mirroring `lighting::Falloff`'s variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "camelCase")]
+pub enum FalloffCurve {
+    /// Smooth linear taper from full intensity at the bright edge to 0 at the dim edge.
+    Linear,
+    /// Smooth quadratic taper (faster than linear).
+    Quadratic,
+    /// No gradient: a flat dim-band step (`0.5 × intensity`) — bright/dim radii feed the
+    /// gradation bands directly.
+    None,
+}
+
+/// What a vision mode perceives. Terrain senses (normal sight, darkvision)
+/// see the SCENE: their reach is `LOS ∩ illumination ≥ floor`, range-limited.
+/// Creature senses (tremorsense) perceive TOKENS: grounded tokens within
+/// range, ignoring illumination and — when `VisionMode::requires_los` is
+/// false — walls. The lit-mask pipeline reads terrain senses only; creature
+/// senses feed the `perceived` token list (`SceneEcs::player_perceived_tokens`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(rename_all = "lowercase")]
+pub enum Perception {
+    /// The ordinary LOS ∩ illumination-floor mask.
+    #[default]
+    Terrain,
+    /// Perceives grounded tokens within range, not terrain.
+    Creatures,
+}
+
+/// Serde default for `VisionMode::requires_los` — a mode's reach is
+/// wall-bounded unless it declares otherwise.
+fn default_requires_los() -> bool {
+    true
 }
 
 /// A named vision mode that tokens/actors may possess (mirrors the client's
 /// `VisionMode`). `illuminationFloor`: the lowest gradation band name a token
-/// with this mode can see into. `defaultRange`: effective sight distance in
-/// grid cells (0 = unlimited).
+/// with this mode can see into (inert for creature senses — creature
+/// perception never reads the illumination field). `defaultRange`: effective
+/// sight distance in grid cells (0 = unlimited).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -416,6 +526,15 @@ pub struct VisionMode {
     pub illumination_floor: String,
     /// Default sight distance in grid cells (0 = unlimited).
     pub default_range: f64,
+    /// What the mode perceives; absent = `terrain`, so every mode authored
+    /// before this field existed is unchanged.
+    #[serde(default)]
+    pub perceives: Perception,
+    /// Whether sight walls bound the mode's reach; absent = `true`. Consulted
+    /// by creature senses (tremorsense declares `false`); terrain senses are
+    /// always LOS-gated by the mask pipeline itself.
+    #[serde(default = "default_requires_los")]
+    pub requires_los: bool,
     /// Optional client render treatment tag (e.g. a tint); never interpreted
     /// server-side.
     #[serde(default)]
@@ -432,17 +551,20 @@ pub struct VisionModesEngine {
 }
 
 impl VisionModesEngine {
-    /// Default world seed: `normal` (dim floor, unlimited range) and
-    /// `darkvision` (dark floor, 12 cells, desaturate render hint). The
-    /// engine definition — the client's `SEED_VISION_MODES` mirrors this.
+    /// Default world seed: `normal` (dim floor, unlimited range), `darkvision`
+    /// (dark floor, 12 cells, desaturate render hint), and `tremorsense`
+    /// (creature sense: grounded tokens within 12 cells, ignoring walls and
+    /// illumination; its illumination floor is inert). The engine definition —
+    /// the client's `SEED_VISION_MODES` mirrors this.
     ///
     /// # Examples
     ///
     /// ```
-    /// use shadowcat::data::engine::VisionModesEngine;
+    /// use shadowcat::data::engine::{Perception, VisionModesEngine};
     ///
     /// let s = VisionModesEngine::seed();
     /// assert_eq!(s.modes["darkvision"].default_range, 12.0);
+    /// assert_eq!(s.modes["tremorsense"].perceives, Perception::Creatures);
     /// ```
     pub fn seed() -> Self {
         let mut modes = BTreeMap::new();
@@ -453,6 +575,8 @@ impl VisionModesEngine {
                 name: "Normal".to_string(),
                 illumination_floor: "dim".to_string(),
                 default_range: 0.0,
+                perceives: Perception::Terrain,
+                requires_los: true,
                 render_hint: None,
             },
         );
@@ -463,7 +587,22 @@ impl VisionModesEngine {
                 name: "Darkvision".to_string(),
                 illumination_floor: "dark".to_string(),
                 default_range: 12.0,
+                perceives: Perception::Terrain,
+                requires_los: true,
                 render_hint: Some("desaturate".to_string()),
+            },
+        );
+        modes.insert(
+            "tremorsense".to_string(),
+            VisionMode {
+                id: "tremorsense".to_string(),
+                name: "Tremorsense".to_string(),
+                // Inert: a creature sense never reads the illumination field.
+                illumination_floor: "dark".to_string(),
+                default_range: 12.0,
+                perceives: Perception::Creatures,
+                requires_los: false,
+                render_hint: None,
             },
         );
         Self { modes }

@@ -7,7 +7,7 @@ import type { VisibilityInput } from "./types";
  * backend round-trip. This class has no fog-drawing logic of its own. */
 export class Compositor {
   /** The most recently applied visibility mask — see `current()`. */
-  private last: VisibilityInput = { mode: "all", visible: [], explored: [] };
+  private last: VisibilityInput = { mode: "all", visible: [], explored: [], perceived: [] };
 
   /**
    * Constructs the compositor bound to a single backend.
@@ -32,7 +32,7 @@ export class Compositor {
    *
    * declare const backend: DisplayBackend;
    * const compositor = new Compositor(backend);
-   * compositor.setVisibility({ mode: "all", visible: [], explored: [] });
+   * compositor.setVisibility({ mode: "all", visible: [], explored: [], perceived: [] });
    * ```
    */
   setVisibility(input: VisibilityInput): void {
@@ -54,8 +54,8 @@ export class Compositor {
    * declare const backend: DisplayBackend;
    * const compositor = new Compositor(backend);
    * compositor.setVisibilityBlend(
-   *   { mode: "masked", visible: [], explored: [] },
-   *   { mode: "masked", visible: [], explored: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
+   *   { mode: "masked", visible: [], explored: [], perceived: [] },
    *   0.5,
    * );
    * ```
@@ -79,7 +79,7 @@ export class Compositor {
    *
    * declare const backend: DisplayBackend;
    * const compositor = new Compositor(backend);
-   * compositor.current(); // { mode: "all", visible: [], explored: [] } before any apply
+   * compositor.current(); // { mode: "all", visible: [], explored: [], perceived: [] } before any apply
    * ```
    */
   current(): VisibilityInput {

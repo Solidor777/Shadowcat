@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, SystemTreeEditor, setField } from "@shadowcat/ui-kit";
-  import { getPointer, actorDisplayName, type WireDocument, type ActorEngine, type FactionRegistryEngine } from "@shadowcat/core";
+  import { getAppContext, SystemTreeEditor, setField, LightEmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
+  import { getPointer, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type WireDocument, type ActorEngine, type FactionRegistryEngine, type VisionMode } from "@shadowcat/core";
 
   // Actor sheet: envelope `name` + engine-known fields (displayName, faction, shape, size)
   // as real controls + the opaque `system` body as a tree editor + the embedded-items
@@ -56,6 +56,12 @@
     subscribe();
     const reg = ctx.documents.query("faction-registry")[0]?.engine as FactionRegistryEngine | undefined;
     return Object.entries(reg?.factions ?? {});
+  });
+
+  /** The resolved vision-mode registry entries the assignment editor's mode select offers. */
+  const visionModes = $derived.by((): VisionMode[] => {
+    subscribe();
+    return Object.values(resolveVisionModes(ctx.documents));
   });
 
   // Inventory: only embedded items directly under an actor doc (systemPrefix "/system")
@@ -145,6 +151,32 @@
             if (Number.isNaN(h)) return;
             setEngine("size", { w: engine.size?.w ?? 1, h });
           }} /></label>
+      <!-- Vision assignments are owner-writable like the fields above (self-scoped per the
+           server's write-gate posture — only `light` joins the shared field and carries the
+           GM-only gate). An emptied list commits null, the canonical absent. -->
+      <div class="vision-field">
+        <span>{t("actors.visionModes")}</span>
+        <VisionAssignmentsEditor value={engine.vision ?? []} modes={visionModes} disabled={readOnly}
+          onCommit={(next) => setEngine("vision", next.length > 0 ? next : null)} />
+      </div>
+      <!-- Movement-type tags share vision's owner-writable posture (only `light` carries the
+           GM-only gate). Unlike `vision` the field is a required non-null array, so an emptied
+           list commits as [], never null. `?? []` covers a genuinely absent key — display-only;
+           the write's `old` stays the RAW stored value via `setEngine`. -->
+      <div class="movement-field">
+        <span>{t("actors.movementTags")}</span>
+        <MovementTagsEditor value={engine.movement ?? []} disabled={readOnly}
+          onCommit={(next) => setEngine("movement", next)} />
+      </div>
+      <label><input type="checkbox" aria-label={t("actors.carriedLight")} checked={engine.light != null} disabled={readOnly || ctx.role !== "gm"}
+        onchange={(e) => setEngine("light", (e.currentTarget as HTMLInputElement).checked ? { ...DEFAULT_LIGHT_EMISSION } : null)} />
+        {t("actors.carriedLight")}</label>
+      {#if engine.light}
+        <!-- GM-only like the server's carried-light write gate (`carried_light_touched`):
+             an emission edits the SHARED illumination field, unlike the owner-writable fields
+             above. -->
+        <LightEmissionEditor value={engine.light} disabled={readOnly || ctx.role !== "gm"} onCommit={(next) => setEngine("light", next)} />
+      {/if}
     </div>
 
     {#if inventory.length > 0}
@@ -171,7 +203,7 @@
   .close { min-width: 44px; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); }
   .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .fields { display: flex; flex-direction: column; gap: var(--space-1); }
-  label { display: flex; flex-direction: column; gap: 2px; }
+  label, .vision-field, .movement-field { display: flex; flex-direction: column; gap: 2px; }
   .inventory { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
   .inventory button { min-height: 44px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); }
   .inventory button:focus-visible { outline: 2px solid var(--accent); }

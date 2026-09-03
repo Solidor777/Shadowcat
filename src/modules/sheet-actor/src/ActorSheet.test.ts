@@ -146,3 +146,115 @@ describe("ActorSheet edits", () => {
     ]);
   });
 });
+
+describe("ActorSheet carried light", () => {
+  it("toggling the carried-light checkbox writes /engine/light with the raw stored pre-image", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, light: null });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByLabelText("actors.carriedLight"));
+    expect(calls).toEqual([
+      [
+        {
+          op: "update",
+          doc_id: "a1",
+          changes: [
+            {
+              path: "/engine/light",
+              old: null,
+              new: { color: "#ffd9a0", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+            },
+          ],
+        },
+      ],
+    ]);
+  });
+
+  it("the field editor edits an existing emission through setEngine (whole-payload write)", async () => {
+    const calls: unknown[] = [];
+    const torch = { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 4, falloff: null, enabled: true };
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, light: torch });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.change(getByTestId("emission-bright"), { target: { value: "3" } });
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/light", old: torch, new: { ...torch, brightRadius: 3 } }] }],
+    ]);
+  });
+});
+
+describe("ActorSheet vision assignments", () => {
+  it("the list editor writes /engine/vision with the raw stored list as old", async () => {
+    const calls: unknown[] = [];
+    const stored = [{ mode: "darkvision", range: 12 }];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, vision: stored });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.change(getByTestId("vision-range-0"), { target: { value: "20" } });
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/vision", old: stored, new: [{ mode: "darkvision", range: 20 }] }] }],
+    ]);
+  });
+
+  it("removing the only assignment normalizes the write to null", async () => {
+    const calls: unknown[] = [];
+    const stored = [{ mode: "tremorsense", range: null }];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, vision: stored });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByTestId("vision-remove-0"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/vision", old: stored, new: null }] }],
+    ]);
+  });
+});
+
+describe("ActorSheet movement tags", () => {
+  const goblin = (movement?: string[]) => ({
+    name: "Goblin", displayName: "Creature", faction: null, shape: "square",
+    size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" },
+    ...(movement !== undefined ? { movement } : {}),
+  });
+
+  it("a tag toggle writes /engine/movement with the raw stored list as old", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith(goblin(["flying"]));
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByTestId("movement-toggle-incorporeal"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/movement", old: ["flying"], new: ["flying", "incorporeal"] }] }],
+    ]);
+  });
+
+  it("untoggling the last tag writes [] (a required non-null array — never null)", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith(goblin(["flying"]));
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByTestId("movement-toggle-flying"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/movement", old: ["flying"], new: [] }] }],
+    ]);
+  });
+
+  it("a genuinely absent movement key reads as empty and writes with old: null", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith(goblin());
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    expect(getByTestId("movement-toggle-flying").getAttribute("aria-pressed")).toBe("false");
+    await fireEvent.click(getByTestId("movement-toggle-flying"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/movement", old: null, new: ["flying"] }] }],
+    ]);
+  });
+
+  it("disables the tag controls for a non-editor (canEdit false)", () => {
+    const documents = storeWith(goblin(["flying"]));
+    const context = setAppContextForTest({ documents, canEdit: () => false, role: "player" });
+    const { getByTestId } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    expect((getByTestId("movement-toggle-flying") as HTMLButtonElement).disabled).toBe(true);
+  });
+});

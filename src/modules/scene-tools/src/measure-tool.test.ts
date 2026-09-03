@@ -83,7 +83,7 @@ function setupRoute(over: {
       },
       {
         op: "create",
-        doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1"),
+        doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1"),
       },
     ],
   });
@@ -380,7 +380,7 @@ test("measure tool accumulates multiple waypoints and passes them to pathfind in
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
       { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: { perCell: 5, unit: "ft" } } }, "s1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 50, y: 50, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1") },
     ],
   });
 
@@ -435,7 +435,7 @@ test("commit's fallback pathfind also names the single selected token", async ()
   };
   const { ctx, now } = seedRouteCtx({
     pathfind,
-    moveRequest: async (_s, tokenId, path) => ({ requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false }),
+    moveRequest: async (_s, tokenId, path) => ({ requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false }),
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
   const tool = makeMeasureTool(ctx);
@@ -683,7 +683,7 @@ function seedRouteCtx(over: {
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: over.tokenAt.x, y: over.tokenAt.y, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
         }, over.tokenAt.id),
       },
     ],
@@ -736,7 +736,7 @@ test("double-click commits via moveRequest (animation is broadcast-driven)", asy
   const moves: Array<{ tokenId: string; path: [number,number][] }> = [];
   const moveRequest: ToolContext["moveRequest"] = async (_s, tokenId, path) => {
     moves.push({ tokenId, path });
-    return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
+    return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => ({ path: [[0,0],[100,0],[100,100]] as [number,number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
@@ -759,7 +759,7 @@ test("commitRoute fires via moveRequest in a continuous-movement-model scene", a
   const moves: Array<{ tokenId: string; path: [number, number][] }> = [];
   const moveRequest: ToolContext["moveRequest"] = async (_s, tokenId, path) => {
     moves.push({ tokenId, path });
-    return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
+    return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
   };
   const { ctx, now } = seedRouteCtx({
     pathfind: async () => ({ path: [[0, 0], [100, 0], [100, 100]] as [number, number][], cost: 2, arrested: false, truncated: false, budgetCells: null }),
@@ -781,7 +781,7 @@ test("a single click in route mode does NOT commit", async () => {
     pathfind: async () => ({ path: [[0, 0], [100, 0]] as [number, number][], cost: 1, arrested: false, truncated: false, budgetCells: null }),
     moveRequest: async (_s, tokenId, path) => {
       moves.push({ tokenId, path });
-      return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
+      return { requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
     },
     tokenAt: { id: "tok1", x: 0, y: 0 },
   });
@@ -835,7 +835,7 @@ test("route commit survives its own pointer-up: moveRequest resolves after point
     requestId: "r1", tokenId: "tok1", mover: "u1", scene: "s1",
     startServerMs: 0, durationMs: 500,
     stop: [200, 200] as [number, number],
-    samples: [], moverVision: null, cost: 1, truncated: false,
+    samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
   });
   await drain();
 
@@ -882,7 +882,7 @@ test("cache-hit: commitRoute reuses lastPreviewedPath and does not call pathfind
   const moveRequestReceived: Array<[number, number][]> = [];
   const moveRequest: ToolContext["moveRequest"] = async (_s, _id, path) => {
     moveRequestReceived.push(path);
-    return { requestId: "r1", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false };
+    return { requestId: "r1", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false };
   };
 
   const { ctx, now } = seedRouteCtx({
@@ -965,7 +965,7 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
 
   // A resolves while B is in flight. A is stale (seq_A < pendingSeq).
   // Must not touch committing — B's suppression flag must remain true.
-  resolveA({ requestId: "rA", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [100, 0] as [number, number], samples: [], moverVision: null, cost: 1, truncated: false });
+  resolveA({ requestId: "rA", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [100, 0] as [number, number], samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false });
   await drain();
 
   // A trailing pointer-up must be suppressed by B's still-intact committing flag.
@@ -978,7 +978,7 @@ test("stale commit resolve does not clear a newer commit's suppression flag", as
   const clearsBefore = clearCount;
 
   // B resolves: must find seq === pendingSeq and call finish() → clearRoute().
-  resolveB({ requestId: "rB", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [200, 0] as [number, number], samples: [], moverVision: null, cost: 1, truncated: false });
+  resolveB({ requestId: "rB", tokenId: "tok1", mover: "u1", scene: "s1", startServerMs: 0, durationMs: 300, stop: [200, 0] as [number, number], samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false });
   await drain();
 
   // B's finish() fired: clearRoute() was called, incrementing clearCount.

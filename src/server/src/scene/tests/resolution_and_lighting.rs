@@ -313,8 +313,7 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
         10,
         "light",
         json!({
-            "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
         }),
     );
     let mut ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
@@ -331,7 +330,8 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
         "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
     }));
 
-    let before = ecs.visible_cells_cached(user, scene_id, false);
+    let before =
+        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
 
     // Mutate the scene document's grid kind through apply_op, matching how a real write
     // would reach the ECS.
@@ -345,7 +345,8 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
         }],
     });
 
-    let after = ecs.visible_cells_cached(user, scene_id, false);
+    let after =
+        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
     assert_ne!(
         before, after,
         "a grid-kind change must produce a different mask"
@@ -384,13 +385,17 @@ fn lit_mask_suppresses_hint_when_normal_floor_wins_in_bright_cell() {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
         }),
     );
     let scene_id = Uuid::from_u128(10);
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
-    let mask = ecs.player_lit_mask(player);
+    let mask = ecs.player_lit_mask(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    );
     let lit_cells: Vec<_> = mask.iter().flat_map(|s| s.cells.iter()).collect();
     assert!(
         !lit_cells.is_empty(),
@@ -484,8 +489,7 @@ fn scene_with_boundary_crossing_light() -> (SceneEcs, Uuid, Uuid) {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 0.5, "dimRadius": 1.4, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 0.5, "dimRadius": 1.4, "enabled": true }
         }),
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
@@ -498,9 +502,15 @@ fn visible_cells_strict_equals_player_lit_mask_cells() {
     // egress secrecy mask for the scene. Both paths use the same cell_visible predicate and
     // lighting_inputs, so any divergence is a sampling or illumination bug.
     let (ecs, user, scene) = scene_with_lit_player_token();
-    let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(user, scene, false);
+    let strict: std::collections::BTreeSet<(i32, i32)> =
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     let egress: std::collections::BTreeSet<(i32, i32)> = ecs
-        .player_lit_mask(user)
+        .player_lit_mask(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            &ecs.resolved_bands(),
+        )
         .into_iter()
         .filter(|s| s.scene == scene)
         .flat_map(|s| s.cells.into_iter().map(|(i, j, _b, _t, _h)| (i, j)))
@@ -526,7 +536,7 @@ fn a_square_light_reaches_its_authored_bright_radius_past_the_bound_margin() {
         cells.contains(&(2, 0)),
         "a cell 200 world units from a 300-world-unit bright radius must be lit, got {cells:?}"
     );
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(
         mask.contains(&(2, 0)),
         "the movement-gate mask agrees with the egress mask"
@@ -570,7 +580,7 @@ fn a_square_light_occludes_behind_a_wall_within_its_grown_reach() {
         !cells.contains(&(2, 0)),
         "a blocksLight wall between the lamp and cell (2,0) must occlude it, got {cells:?}"
     );
-    let mask = ecs.visible_cells(user, scene, false);
+    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert!(
         !mask.contains(&(2, 0)),
         "the movement-gate mask agrees with the occluded egress mask"
@@ -982,8 +992,7 @@ fn visible_cells_strict_parity_los_restriction_with_occluding_wall() {
         10,
         "light",
         json!({
-            "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
         }),
     );
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, wall, light], 0);
@@ -1010,8 +1019,8 @@ fn visible_cells_lenient_is_a_superset_of_strict() {
     // dim radius → lenient admits it. This guarantees at least one lenient-only cell, so the
     // corner-sampling path is live and proven, not vacuously skipped.
     let (ecs, user, scene) = scene_with_boundary_crossing_light();
-    let strict = ecs.visible_cells(user, scene, false);
-    let lenient = ecs.visible_cells(user, scene, true);
+    let strict = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let lenient = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, true);
     // Subset invariant: every strict cell is also in lenient.
     assert!(
         strict.iter().all(|c| lenient.contains(c)),
@@ -1034,7 +1043,8 @@ fn visible_cells_empty_when_user_has_no_source_in_scene() {
     let (ecs, _user, scene) = scene_with_lit_player_token();
     let stranger = Uuid::from_u128(999);
     assert!(
-        ecs.visible_cells(stranger, scene, true).is_empty(),
+        ecs.visible_cells(stranger, WorldRole::Player, &no_world_grants(), scene, true)
+            .is_empty(),
         "no sources → empty (fail closed)"
     );
 }
@@ -1065,8 +1075,7 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
         10,
         "light",
         json!({
-            "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 1.0,
-            "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true
+            "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
         }),
     );
     let mut ecs = SceneEcs::from_documents(vec![scene, tok, light], 0);
@@ -1086,7 +1095,8 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
     // Cell (2,0), center (50,10): 40 scene units (2 cells) from the token at (10,10), well
     // within the 160-unit (8-cell) dim radius, and on the token's LOS with no wall present.
     let target_cell = (2, 0);
-    let mask1 = ecs.visible_cells_cached(user, scene_id, false);
+    let mask1 =
+        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
     assert!(
         mask1.contains(&target_cell),
         "cell visible before a blocksSight wall is added: {mask1:?}"
@@ -1103,7 +1113,8 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
     );
     ecs.apply_op(&Operation::Create { doc: wall });
 
-    let mask2 = ecs.visible_cells_cached(user, scene_id, false);
+    let mask2 =
+        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
     assert!(
         !mask2.contains(&target_cell),
         "cache must invalidate on wall mutation, never serve a stale wider mask: {mask2:?}"
@@ -1111,17 +1122,96 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
 }
 
 #[test]
+fn lighting_inputs_are_raycast_once_per_scene_and_exclude_set_and_shared_by_mask_and_clip() {
+    let (mut ecs, user, scene) = scene_with_lit_player_token();
+    let ctx = PermissionContext {
+        user_id: user,
+        world_role: WorldRole::Player,
+    };
+    let sight = |ecs: &SceneEcs, exclude: &[Uuid]| {
+        ecs.recipient_sight(&ctx, &no_world_grants(), scene, exclude, Uuid::nil())
+    };
+    sight(&ecs, &[]);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "cold: one raycast"
+    );
+    sight(&ecs, &[]);
+    sight(&ecs, &[]);
+    assert_eq!(
+        ecs.lighting_inputs_recompute_count(),
+        1,
+        "every further recipient of the same frame shares the first raycast"
+    );
+    // The lit mask and the movement gate read the same memo.
+    ecs.player_lit_mask(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    );
+    ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 1);
+    // A different exclude set is a different field: one more raycast, then shared again.
+    let mover = Uuid::from_u128(11);
+    sight(&ecs, &[mover]);
+    sight(&ecs, &[mover]);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 2);
+    // A new light changes the snapshot: the stale entry is never served.
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            21,
+            10,
+            "light",
+            json!({
+                "x": 350.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": true }
+            }),
+        ),
+    });
+    sight(&ecs, &[]);
+    assert_eq!(ecs.lighting_inputs_recompute_count(), 3);
+    assert!(
+        sight(&ecs, &[]).at(&[]).sees((350.0, 50.0), &[]),
+        "the recomputed field carries the new light"
+    );
+}
+
+#[test]
+fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
+    // The engine default lights the environment at 0.0: `cell_illumination_from` admits no
+    // environment then, so the boundary projection is skipped outright (zero raycasts) and
+    // the field is identical. A positive intensity projects it.
+    let (mut ecs, _, scene) = scene_with_lit_player_token();
+    let settings = ecs.resolve_scene(scene);
+    assert_eq!(settings.env_intensity, 0.0);
+    assert!(ecs
+        .lighting_inputs(scene, &settings, 100.0)
+        .env_polys
+        .is_empty());
+    ecs.set_world_settings_for_test(json!({
+        "scene": { "environment": { "color": "#ffffff", "intensity": 0.5 } }
+    }));
+    let settings = ecs.resolve_scene(scene);
+    assert_eq!(settings.env_intensity, 0.5);
+    assert!(!ecs
+        .lighting_inputs(scene, &settings, 100.0)
+        .env_polys
+        .is_empty());
+}
+
+#[test]
 fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() {
     let (ecs, user, scene) = scene_with_lit_player_token();
 
-    let mask1 = ecs.visible_cells_cached(user, scene, false);
+    let mask1 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert_eq!(
         ecs.visible_cells_recompute_count(),
         1,
         "first call is always a recompute (cold cache)"
     );
 
-    let mask2 = ecs.visible_cells_cached(user, scene, false);
+    let mask2 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
     assert_eq!(mask1, mask2);
     assert_eq!(
         ecs.visible_cells_recompute_count(),
@@ -1130,7 +1220,10 @@ fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() 
     );
 
     // Sanity: `visible_cells` (the uncached primitive `visible_cells_cached` wraps) agrees.
-    assert_eq!(mask1, ecs.visible_cells(user, scene, false));
+    assert_eq!(
+        mask1,
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+    );
 }
 
 /// Build an ECS with one `blocksMove` wall and one non-blocking wall in the same scene.
@@ -1449,10 +1542,32 @@ fn engine_tier_visible_admits_authoritative_and_rejects_a_non_owner_player_on_gm
 fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
     let (ecs, user, _scene) = scene_with_lit_player_token();
     let ghost_scene = Uuid::from_u128(0xDEAD);
-    assert!(ecs.visible_cells(user, ghost_scene, false).is_empty());
-    assert!(ecs.visible_cells(user, ghost_scene, true).is_empty());
     assert!(ecs
-        .visible_cells_cached(user, ghost_scene, false)
+        .visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            ghost_scene,
+            false
+        )
+        .is_empty());
+    assert!(ecs
+        .visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            ghost_scene,
+            true
+        )
+        .is_empty());
+    assert!(ecs
+        .visible_cells_cached(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            ghost_scene,
+            false
+        )
         .is_empty());
 }
 
@@ -1617,5 +1732,797 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
         "changing scene bounds must invalidate the cached navmesh"
+    );
+}
+
+// --- Carried light emissions (`scene::emitters`) ---
+
+/// A torch emission body (`eng::LightEmission` wire shape) for the carried-light fixtures.
+fn torch() -> serde_json::Value {
+    json!({ "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 4.0,
+            "enabled": true })
+}
+
+/// An actor body carrying the given emission (or none), built on the shared actor fixture.
+fn actor_with_light(light: serde_json::Value) -> serde_json::Value {
+    let mut body = actor_body(json!([]));
+    body["light"] = light;
+    body
+}
+
+/// A linked-token fixture at `(x, y)` referencing actor `Uuid::from_u128(actor_id)`.
+fn linked_token(id: u128, actor_id: u128, x: f64, y: f64) -> Document {
+    entity_doc_eng(
+        id,
+        10,
+        "token",
+        json!({ "x": x, "y": y, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                "actor_id": Uuid::from_u128(actor_id).to_string() }),
+    )
+}
+
+#[test]
+fn carried_light_joins_the_emitter_set_and_moves_with_the_token() {
+    let scene = Uuid::from_u128(10);
+    let mut ecs = SceneEcs::from_documents(
+        vec![doc(10, None, "scene"), linked_token(11, 200, 50.0, 50.0)],
+        0,
+    );
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+
+    let lights = ecs.scene_lights(scene);
+    assert_eq!(lights.len(), 1, "the linked actor's emission is carried");
+    assert_eq!(lights[0].pos, (50.0, 50.0));
+    assert_eq!(lights[0].color, 0xFFCC66);
+    assert_eq!(lights[0].dim_radius, 4.0);
+
+    // The emission is resolved at the token's LIVE position: a position write moves the light.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![FieldChange {
+            path: "/engine/x".to_string(),
+            old: json!(50.0),
+            new: json!(450.0),
+            remove: false,
+        }],
+    });
+    let lights = ecs.scene_lights(scene);
+    assert_eq!(lights.len(), 1);
+    assert_eq!(lights[0].pos, (450.0, 50.0), "the carried light moved");
+}
+
+#[test]
+fn carried_light_override_replaces_and_suppresses() {
+    let scene = Uuid::from_u128(10);
+    let mut tok = linked_token(11, 200, 50.0, 50.0);
+    // A per-token override REPLACES the actor's emission wholesale (same precedence as vision).
+    tok.engine.as_mut().unwrap()["overrides"] = json!({ "light": { "color": "#0000ff", "intensity": 0.5, "brightRadius": 1.0,
+                "dimRadius": 3.0, "enabled": true } });
+    let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    let lights = ecs.scene_lights(scene);
+    assert_eq!(lights.len(), 1);
+    assert_eq!(
+        lights[0].color, 0x0000FF,
+        "the override replaces, not merges"
+    );
+    assert_eq!(lights[0].dim_radius, 3.0);
+
+    // `enabled: false` on the override is the suppress path: no contribution at all.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![FieldChange {
+            path: "/engine/overrides/light/enabled".to_string(),
+            old: json!(true),
+            new: json!(false),
+            remove: false,
+        }],
+    });
+    assert!(
+        ecs.scene_lights(scene).is_empty(),
+        "a disabled override suppresses the actor's emission"
+    );
+}
+
+#[test]
+fn carried_light_dangling_link_and_raw_token_emit_nothing() {
+    let scene = Uuid::from_u128(10);
+    let dangling = linked_token(11, 200, 50.0, 50.0); // no such actor in the side table
+    let raw = entity_doc_eng(
+        12,
+        10,
+        "token",
+        json!({ "x": 150.0, "y": 150.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), dangling, raw], 0);
+    assert!(
+        ecs.scene_lights(scene).is_empty(),
+        "a dangling link emits nothing (overrides ignored), a raw token carries no emission"
+    );
+}
+
+#[test]
+fn instanced_token_reads_its_embedded_actor_uncached() {
+    let scene = Uuid::from_u128(10);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.embedded.insert(
+        "actor".into(),
+        vec![{
+            let mut a = doc(99, None, "actor");
+            a.engine = Some(actor_with_light(torch()));
+            a
+        }],
+    );
+    let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+    assert_eq!(
+        ecs.scene_lights(scene).len(),
+        1,
+        "an instanced token emits its embedded actor's light"
+    );
+
+    // The embedded read is deliberately UNCACHED: an `/embedded/actor/0/...` write must be
+    // visible on the very next read (caching under the embedded doc's own id would go stale —
+    // `apply_op` invalidates the token's id, not the child's).
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![FieldChange {
+            path: "/embedded/actor/0/engine/light/enabled".to_string(),
+            old: json!(true),
+            new: json!(false),
+            remove: false,
+        }],
+    });
+    assert!(
+        ecs.scene_lights(scene).is_empty(),
+        "an embedded-actor emission write takes effect immediately"
+    );
+}
+
+#[test]
+fn carried_light_participates_in_the_lit_mask() {
+    // A fully dark scene (env intensity 0, lighting on): with no carried light the owned token
+    // sees nothing; the actor's torch lights the cells around the token's live position.
+    let player = Uuid::from_u128(42);
+    let mut tok = linked_token(11, 200, 50.0, 50.0);
+    tok.owner = Some(player);
+    let mut ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            tok,
+        ],
+        0,
+    );
+    // No world config: the engine default is lighting on, environmentLight, ambient 0 (dark).
+    let scene = Uuid::from_u128(10);
+    assert!(
+        ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false)
+            .is_empty(),
+        "a dark scene with no emitter admits no cells"
+    );
+
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    assert!(
+        !ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false)
+            .is_empty(),
+        "the carried torch lights the token's surroundings"
+    );
+}
+
+#[test]
+fn carried_light_move_invalidates_the_cached_visibility_mask() {
+    // A carried emission flows through `scene_lights`, which IS a member of the cache's
+    // `VisibilityInputsSnapshot` — so a token move must recompute the mask, not serve the
+    // stale one. The light carrier here is NOT the viewer's vision source (a GM's torchbearer
+    // walking away from the player's token), so `sources` is unchanged across the move and only
+    // the `lights` snapshot member can force the recompute — this pins that membership against a
+    // future snapshot edit dropping it.
+    let player = Uuid::from_u128(42);
+    let mut viewer = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    viewer.owner = Some(player);
+    let mut carrier = linked_token(12, 200, 150.0, 50.0); // the GM's torchbearer, one cell over
+    carrier.owner = Some(Uuid::from_u128(7)); // not the player: not the player's vision source
+    let mut ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            viewer,
+            carrier,
+        ],
+        0,
+    );
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    let scene = Uuid::from_u128(10);
+
+    // The torch (bright 2 / dim 4 cells) covers the viewer's cell while the carrier stands by.
+    let mask1 =
+        ecs.visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false);
+    assert!(
+        mask1.contains(&(0, 0)),
+        "the nearby torch lights the viewer's cell"
+    );
+    let recomputes = ecs.visible_cells_recompute_count();
+
+    // The carrier walks to the far side of the scene: the viewer's cell goes dark.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(12),
+        changes: vec![FieldChange {
+            path: "/engine/x".to_string(),
+            old: json!(150.0),
+            new: json!(9050.0),
+            remove: false,
+        }],
+    });
+    let mask2 =
+        ecs.visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false);
+    assert!(
+        ecs.visible_cells_recompute_count() > recomputes,
+        "a non-source carrier's move must recompute the mask (its light is a snapshot input)"
+    );
+    assert!(
+        !mask2.contains(&(0, 0)),
+        "the viewer's cell is dark once the torch leaves"
+    );
+}
+
+#[test]
+fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
+    // Companion to `carried_light_move_invalidates_the_cached_visibility_mask` (which moves the
+    // carrier): here nothing moves — the actor's emission itself is edited — so only the
+    // `lights` snapshot member's value comparison can force the recompute.
+    let player = Uuid::from_u128(42);
+    let mut viewer = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    viewer.owner = Some(player);
+    let mut carrier = linked_token(12, 200, 150.0, 50.0);
+    carrier.owner = Some(Uuid::from_u128(7));
+    let mut ecs = SceneEcs::from_documents(
+        vec![
+            entity_doc_top_eng(
+                10,
+                "scene",
+                json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+            ),
+            viewer,
+            carrier,
+        ],
+        0,
+    );
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(torch()),
+    )]);
+    let scene = Uuid::from_u128(10);
+    assert!(ecs
+        .visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false)
+        .contains(&(0, 0)));
+    let recomputes = ecs.visible_cells_recompute_count();
+
+    // Toggling the actor's emission off (a set_actors write, deliberately NOT apply_op — the
+    // value-comparison cache contract covers this mutation path) darkens the viewer's cell.
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_with_light(
+            json!({ "color": "#ffcc66", "intensity": 1.0, "brightRadius": 2.0,
+                "dimRadius": 4.0, "enabled": false }),
+        ),
+    )]);
+    let mask2 =
+        ecs.visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false);
+    assert!(
+        ecs.visible_cells_recompute_count() > recomputes,
+        "an emission value change must recompute the mask"
+    );
+    assert!(
+        !mask2.contains(&(0, 0)),
+        "the suppressed torch no longer lights the viewer's cell"
+    );
+}
+
+// --- Elevation-aware occlusion (the wall band test) ---
+
+/// LOS-only scene (lighting off ⇒ all-bright, so only the sight-wall raycast gates cells):
+/// grid size 20, the user's token at (10,10), and a vertical blocksSight wall at x=30 whose
+/// elevation band is `band`. The target cell is (2,0) (center (50,10)), straight past the wall.
+fn elevation_los_fixture(
+    band: serde_json::Value,
+    token_elevation: serde_json::Value,
+) -> (SceneEcs, Uuid, Uuid) {
+    use serde_json::json;
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0, "elevation": token_elevation }),
+    );
+    tok.owner = Some(user);
+    let wall = entity_doc_eng(
+        30,
+        10,
+        "wall",
+        json!({ "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 }, "blocksSight": true, "elevation": band }),
+    );
+    let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
+    ecs.set_world_settings_for_test(json!({
+        "scene": {
+            "losRestriction": true, "fog": true,
+            "lightingEnabled": false, "lightMode": "environmentLight",
+            "environment": { "color": "#000000", "intensity": 0.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    }));
+    (ecs, user, scene_id)
+}
+
+#[test]
+fn wall_elevation_band_gates_sight_by_source_elevation() {
+    use serde_json::json;
+    let band = json!({ "bottom": 0, "top": 3 });
+    let target = (2, 0);
+
+    // Grounded viewer against a {0,3} wall: blocked (the pre-elevation behavior).
+    let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(null));
+    assert!(
+        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+            .contains(&target),
+        "a grounded viewer must not see past a wall whose band covers elevation 0"
+    );
+
+    // Above the band: sees over.
+    let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(5.0));
+    assert!(
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+            .contains(&target),
+        "a viewer above the wall's top must see over it"
+    );
+
+    // Below the band: sees under (the bridge-overhead case).
+    let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(-1.0));
+    assert!(
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+            .contains(&target),
+        "a viewer below the wall's bottom must see under it"
+    );
+
+    // Malformed interval (bottom > top) fails CLOSED: occludes at every elevation.
+    let (ecs, user, scene) = elevation_los_fixture(json!({ "bottom": 5, "top": 1 }), json!(7.0));
+    assert!(
+        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+            .contains(&target),
+        "a malformed wall band must block everything, never open a sightline"
+    );
+
+    // An absent band occludes every elevation (unchanged behavior for unmarked walls).
+    let (ecs, user, scene) = elevation_los_fixture(json!(null), json!(50.0));
+    assert!(
+        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+            .contains(&target),
+        "a wall with no elevation band must occlude at any elevation"
+    );
+}
+
+#[test]
+fn light_elevation_band_gates_occlusion_per_light() {
+    use serde_json::json;
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let band = json!({ "bottom": 0, "top": 3 });
+    // blocksLight only: LOS is unobstructed, so the target cell's visibility is decided
+    // purely by whether the light reaches it.
+    let wall = entity_doc_eng(
+        30,
+        10,
+        "wall",
+        json!({ "seg": { "x1": 30, "y1": -400, "x2": 30, "y2": 400 }, "blocksLight": true, "elevation": band }),
+    );
+    // Light at (10,10), bright 5 / dim 8 cells: the target at (50,10) is 2 cells out — full
+    // intensity whenever the wall does not occlude.
+    let light_at = |elevation: serde_json::Value| {
+        entity_doc_eng(
+            20,
+            10,
+            "light",
+            json!({
+                "x": 10.0, "y": 10.0, "elevation": elevation,
+                "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 8.0, "enabled": true }
+            }),
+        )
+    };
+    let target = (2, 0);
+
+    // Grounded light against a {0,3} wall: occluded — the target cell stays dark.
+    let ecs = SceneEcs::from_documents(
+        vec![
+            scene.clone(),
+            tok.clone(),
+            wall.clone(),
+            light_at(json!(null)),
+        ],
+        0,
+    );
+    assert!(
+        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
+            .contains(&target),
+        "a grounded light must not reach past a wall whose band covers elevation 0"
+    );
+
+    // The same light above the band shines over the wall.
+    let ecs = SceneEcs::from_documents(vec![scene, tok, wall, light_at(json!(5.0))], 0);
+    assert!(
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
+            .contains(&target),
+        "a light above the wall's band must shine over it"
+    );
+}
+
+#[test]
+fn env_light_stays_occluded_by_walls_at_any_elevation_band() {
+    use serde_json::json;
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 20 }, "background": null }),
+    );
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 10, "y": 10, "w": 20.0, "h": 20.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    // A high-only band {5,10}: no grounded/raised source inside it would be blocked, but
+    // environment ambient is sky-light and must be shadowed by the FULL wall set regardless.
+    // Four walls enclose the target cell (2,2) (center (50,50)) — env light is projected from
+    // the whole scene perimeter, so only an enclosure fully INSIDE the scene bounds keeps a
+    // cell dark under daylight.
+    let banded_wall = |id: u128, x1: i32, y1: i32, x2: i32, y2: i32| {
+        entity_doc_eng(
+            id,
+            10,
+            "wall",
+            json!({ "seg": { "x1": x1, "y1": y1, "x2": x2, "y2": y2 }, "blocksLight": true, "elevation": { "bottom": 5, "top": 10 } }),
+        )
+    };
+    let room = vec![
+        banded_wall(30, 30, 30, 30, 70),
+        banded_wall(31, 70, 30, 70, 70),
+        banded_wall(32, 30, 30, 70, 30),
+        banded_wall(33, 30, 70, 70, 70),
+    ];
+    let world = json!({
+        "scene": {
+            "losRestriction": false, "fog": true,
+            "lightingEnabled": true, "lightMode": "environmentLight",
+            "environment": { "color": "#ffffff", "intensity": 1.0 },
+            "observerVision": false,
+            "movementRestriction": "visible",
+            "partialCellLeniency": false
+        },
+        "pathfinding": { "diagonalRule": "chebyshev" },
+        "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+    });
+    let target = (2, 2);
+
+    // Anchor: with no wall, bright environment light admits the target cell.
+    let mut ecs = SceneEcs::from_documents(vec![scene.clone(), tok.clone()], 0);
+    ecs.set_world_settings_for_test(world.clone());
+    assert!(
+        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
+            .contains(&target),
+        "anchor: bright environment light must reach the target cell with no wall"
+    );
+
+    // The high-banded walls still shadow sky-light: the enclosed target cell stays dark.
+    let mut docs = vec![scene, tok];
+    docs.extend(room);
+    let mut ecs = SceneEcs::from_documents(docs, 0);
+    ecs.set_world_settings_for_test(world);
+    assert!(
+        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
+            .contains(&target),
+        "environment ambient must stay occluded by the full wall set at any elevation band"
+    );
+}
+
+#[test]
+fn visible_cells_cached_invalidates_on_source_elevation_change() {
+    use serde_json::json;
+    let band = json!({ "bottom": 0, "top": 3 });
+    let (mut ecs, user, scene) = elevation_los_fixture(band, json!(null));
+    let target = (2, 0);
+
+    let mask1 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    assert!(
+        !mask1.contains(&target),
+        "grounded: the wall occludes the target cell"
+    );
+    assert_eq!(ecs.visible_cells_recompute_count(), 1, "cold cache");
+    let again = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    assert_eq!(mask1, again);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        1,
+        "an unchanged call must be served from the cache"
+    );
+
+    // Raise the token above the wall's band: the same walls at a new elevation are a
+    // different mask — the snapshot must disagree and force a recompute.
+    ecs.apply_op(&Operation::Update {
+        doc_id: Uuid::from_u128(11),
+        changes: vec![fc("/engine/elevation", json!(5.0))],
+    });
+    let mask2 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    assert_eq!(
+        ecs.visible_cells_recompute_count(),
+        2,
+        "an elevation change must invalidate the cached mask"
+    );
+    assert!(
+        mask2.contains(&target),
+        "above the band, the same walls no longer occlude the target cell"
+    );
+}
+
+#[test]
+fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites() {
+    // Anti-drift: `player_lit_mask` (egress mask) and `visible_cells` (movement-gate mask) gather
+    // vision sources through the ONE `gather_vision_sources_in_scene`, whose non-owned admission
+    // under `observerVision` is whole-document `cap::READ` via `user_access`
+    // (`resolve_access_world`, the same resolution document egress applies) — never a hand-rolled
+    // `permissions.users`/`permissions.default` role read, which would admit a
+    // `default: DocRole::None` token (None ≤ Observer) to ANY user. This test fails on either
+    // side of a mutation: reverting the predicate to the hand-rolled role read breaks (a);
+    // dropping the `observer_vision` conjunct or the READ requirement breaks (b)/(c).
+    let owner = Uuid::from_u128(8);
+    let stranger = Uuid::from_u128(999);
+    let scene = Uuid::from_u128(10);
+    // The token's own cell: (50, 50) on the fixture's 100-unit square grid.
+    let token_cell = (0, 0);
+
+    // observerVision on, lighting off (every LOS cell bright), no LOS restriction — an admitted
+    // source makes the whole scene visible, so source admission alone decides the masks.
+    let build = |tok: Document| {
+        let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
+        ecs.set_world_settings_for_test(json!({
+            "scene": {
+                "losRestriction": false, "fog": true,
+                "lightingEnabled": false, "lightMode": "environmentLight",
+                "environment": { "color": "#ffffff", "intensity": 1.0 },
+                "observerVision": true,
+                "movementRestriction": "visible",
+                "partialCellLeniency": false
+            },
+            "pathfinding": { "diagonalRule": "chebyshev" },
+            "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
+        }));
+        ecs
+    };
+    let mut base_tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    base_tok.owner = Some(owner);
+    assert_eq!(
+        base_tok.permissions.default,
+        crate::data::document::DocRole::None,
+        "fixture must sit at the diverging input: default role None"
+    );
+    let lit_has_cell = |ecs: &SceneEcs, defaults: &WorldCapDefaults| {
+        ecs.player_lit_mask(stranger, WorldRole::Player, defaults, &ecs.resolved_bands())
+            .into_iter()
+            .filter(|s| s.scene == scene)
+            .flat_map(|s| s.cells)
+            .any(|(i, j, _b, _t, _h)| (i, j) == token_cell)
+    };
+
+    // (a) No grant anywhere: the token is NOT a source for the stranger at either site.
+    let ecs = build(base_tok.clone());
+    assert!(
+        ecs.visible_cells(
+            stranger,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false
+        )
+        .is_empty(),
+        "default: None must not admit the stranger's movement-gate mask"
+    );
+    assert!(
+        !lit_has_cell(&ecs, &no_world_grants()),
+        "default: None must not admit the stranger's egress lit mask"
+    );
+
+    // (b) A `permissions.users` Observer entry grants READ → the token IS a source at both
+    // sites (non-vacuous: the token's own cell becomes visible).
+    let mut granted_tok = base_tok.clone();
+    granted_tok
+        .permissions
+        .users
+        .insert(stranger, crate::data::document::DocRole::Observer);
+    let ecs = build(granted_tok);
+    assert!(
+        ecs.visible_cells(
+            stranger,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false
+        )
+        .contains(&token_cell),
+        "an Observer grant must admit the stranger's movement-gate mask"
+    );
+    assert!(
+        lit_has_cell(&ecs, &no_world_grants()),
+        "an Observer grant must admit the stranger's egress lit mask"
+    );
+
+    // (c) A world-level capability grant of `cap::READ` — invisible to a hand-rolled role read —
+    // admits the token at both sites.
+    let base_tok_polys = base_tok.clone();
+    let ecs = build(base_tok);
+    let mut defaults = no_world_grants();
+    defaults
+        .by_type
+        .entry("token".into())
+        .or_default()
+        .by_user
+        .insert(
+            stranger,
+            [crate::data::permission::cap::READ.to_string()]
+                .into_iter()
+                .collect(),
+        );
+    assert!(
+        ecs.visible_cells(stranger, WorldRole::Player, &defaults, scene, false)
+            .contains(&token_cell),
+        "a world-level READ grant must admit the stranger's movement-gate mask"
+    );
+    assert!(
+        lit_has_cell(&ecs, &defaults),
+        "a world-level READ grant must admit the stranger's egress lit mask"
+    );
+
+    // (d) `player_vision_polygons` (the fog's LOS half) reads the same admission through
+    // `sight_sources`: no polygon without the grant, one with it.
+    let ecs = build(base_tok_polys);
+    assert!(
+        ecs.player_vision_polygons(stranger, WorldRole::Player, &no_world_grants())
+            .is_empty(),
+        "default: None must not admit the stranger's fog polygons"
+    );
+    assert_eq!(
+        ecs.player_vision_polygons(stranger, WorldRole::Player, &defaults)
+            .len(),
+        1,
+        "a world-level READ grant must admit the stranger's fog polygons"
+    );
+}
+
+/// `wire_falloff` is the exact inverse of `field_falloff` over every authored curve, and an
+/// unauthored curve reads as linear — the in-flight carried-light sample tapers by the rule
+/// the authored emission would.
+#[test]
+fn wire_falloff_round_trips_field_falloff() {
+    use crate::data::engine::FalloffCurve;
+    use crate::scene::emitters::{field_falloff, wire_falloff};
+    use crate::scene::lighting::Falloff;
+    for curve in [
+        FalloffCurve::Linear,
+        FalloffCurve::Quadratic,
+        FalloffCurve::None,
+    ] {
+        assert_eq!(wire_falloff(field_falloff(Some(curve))), curve);
+    }
+    assert_eq!(field_falloff(None), Falloff::Linear);
+    for falloff in [Falloff::Linear, Falloff::Quadratic, Falloff::None] {
+        assert_eq!(field_falloff(Some(wire_falloff(falloff))), falloff);
+    }
+}
+
+/// Anti-fork: the egress clip's per-instant predicate (`RecipientSight` → `InstantSight::sees`)
+/// agrees cell for cell with `player_lit_mask` on a dark scene lit by one placed light —
+/// both are `point_qualifies` behind one LOS polygon, so a cell the mask lights is one the clip
+/// admits a sample in, and a cell the mask leaves dark is one the clip drops.
+#[test]
+fn recipient_sight_agrees_with_player_lit_mask_cell_for_cell() {
+    let (ecs, user, scene) = scene_with_lit_player_token();
+    let mask = mask_cells(&ecs, user, scene);
+    let sight = ecs.recipient_sight(
+        &PermissionContext {
+            user_id: user,
+            world_role: WorldRole::Player,
+        },
+        &no_world_grants(),
+        scene,
+        &[],
+        Uuid::nil(),
+    );
+    let instant = sight.at(&[]);
+    let (mut lit, mut dark) = (0, 0);
+    for i in -4..=12 {
+        for j in -4..=12 {
+            let center = (f64::from(i) * 100.0 + 50.0, f64::from(j) * 100.0 + 50.0);
+            let sees = instant.sees(center, &[]);
+            assert_eq!(
+                sees,
+                mask.contains(&(i, j)),
+                "cell ({i},{j}): clip predicate and lit mask disagree"
+            );
+            if sees {
+                lit += 1;
+            } else {
+                dark += 1;
+            }
+        }
+    }
+    assert!(
+        lit > 0 && dark > 0,
+        "non-vacuous: the light reaches some cells, not all"
     );
 }

@@ -6,7 +6,7 @@ import type { ReadableDocuments, WireDocument, FootprintLookup } from "@shadowca
 function fakeStore(docs: WireDocument[]): ReadableDocuments {
   return { get: (id) => docs.find((d) => d.id === id), query: (type) => docs.filter((d) => d.doc_type === type), subscribe: () => () => {}, appliedSeq: 0 } as ReadableDocuments;
 }
-const actorEngine = (over = {}) => ({ displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null, ...over });
+const actorEngine = (over = {}) => ({ displayName: "G", visual: { kind: "image" as const, asset: "a1" }, size: { w: 1, h: 1 }, shape: "square" as const, faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null, ...over });
 
 /** A lookup stating one token's server-resolved extent, standing in for a `"footprints"` frame. */
 function footprintsFor(tokenId: string, w: number, h: number): FootprintLookup {
@@ -59,7 +59,7 @@ test("a hex token the server has stated no extent for is picked over its own aut
 });
 
 test("raw token uses its own box; topmost (last) wins on overlap", () => {
-  const a = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null }, "a");
-  const b = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null }, "b");
+  const a = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null }, "a");
+  const b = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null }, "b");
   expect(topTokenAt([a, b], { x: 0, y: 0 }, fakeStore([a, b]), EMPTY_FOOTPRINTS)).toBe("b");
 });

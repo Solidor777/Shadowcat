@@ -3,13 +3,13 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type CombatApi, type CombatEngine, type RegionTrigger, type RegionEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
-import { topTokenAt } from "./hit-test";
+import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
 
 /** A tool id, keying `ToolController.#tools` and gating `ToolRail`'s per-role visibility. */
-export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region";
+export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region" | "light";
 /** The draw tool's shape mode; `"rect"` here is an axis-aligned two-corner bbox (`shapePath`),
  * distinct from the template tool's rotated-square `"rect"` (`templatePath`). */
 export type DrawMode = "freehand" | "rect" | "ellipse" | "line";
@@ -249,6 +249,18 @@ export class ToolController {
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
+  /** The non-token scene entity currently open for editing (a light or a wall picked with the
+   * select or light tool), or `null`. Cleared on every tool switch (`toggle`) and on a GM's
+   * empty-canvas click with the select tool; `ToolRail` renders the matching editor while it is
+   * set. One shared selection source for both tools, so the editor can never disagree with the
+   * canvas about which entity is being edited. */
+  editingEntity = $state<{
+    /** Which kind of scene entity is being edited. */
+    kind: "light" | "wall";
+    /** The edited document's id. */
+    id: string;
+  } | null>(null);
+
   /** Region-tool authored triggers, deep-copied onto the next region the tool persists (an
    * empty list persists a plain movement-only region). Editing a row in the rail must never
    * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
@@ -267,7 +279,7 @@ export class ToolController {
    */
   constructor(private readonly ctx: ToolContext) {
     this.#tools = {
-      select: makeSelectMoveTool(ctx),
+      select: makeSelectMoveTool(ctx, this),
       place: makePlaceTool(ctx, this),
       draw: makeDrawTool(ctx, this),
       template: makeTemplateTool(ctx, this),
@@ -275,6 +287,7 @@ export class ToolController {
       ping: makePingTool(ctx),
       wall: makeWallTool(ctx),
       region: makeRegionTool(ctx, this),
+      light: makeLightTool(ctx, this),
     };
   }
 
@@ -291,6 +304,7 @@ export class ToolController {
   toggle(id: ToolId): void {
     // Deactivate the outgoing tool before updating `active` so it can still read state.
     if (this.active) this.#tools[this.active].onDeactivate?.();
+    this.editingEntity = null; // an edit selection never survives a tool switch
     this.active = this.active === id ? null : id;
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
   }
@@ -343,7 +357,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: null }),
         },
       ]);
       return true;
@@ -417,12 +431,157 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
               blocksSight: true,
               blocksMove: true,
               blocksLight: true,
+              elevation: null,
             }),
           },
         ]);
       }
       ctx.scene.clearOverlay();
       anchor = null;
+    },
+  };
+}
+
+/** The emission payload a freshly placed light is stamped with — the shared authoring default
+ * (`DEFAULT_LIGHT_EMISSION`), spread-copied per placement (the constant is frozen). */
+const NEW_LIGHT_EMISSION: LightEmission = { ...DEFAULT_LIGHT_EMISSION };
+
+/** Overlay ring stroke for a light's reach preview (amber, distinct from walls/selection). */
+const LIGHT_RING_COLOR = 0xe0b040;
+
+/** Draw the selected/dragged light's reach rings into the tool overlay: one ring at the bright
+ * radius, one at the dim radius, both in the emission's own geometry. Radii are authored in
+ * CELLS; the ring is drawn at the scene's indexing scale (`activeScene`'s `size`) — a cosmetic
+ * editing aid only (on hex the authoritative reach is the server's world-units conversion). A
+ * zero/non-finite radius ring is skipped.
+ * @param ctx The tool context (overlay + active scene).
+ * @param pos The light's position in scene coords.
+ * @param em The emission whose radii to ring.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * declare const em: LightEmission;
+ * drawLightRings(ctx, { x: 50, y: 50 }, em);
+ * ```
+ */
+function drawLightRings(ctx: ToolContext, pos: Point, em: LightEmission): void {
+  const scene = activeScene(ctx);
+  const cell = scene?.size ?? 100;
+  const rings: number[][] = [];
+  for (const cells of [em.brightRadius, em.dimRadius]) {
+    if (Number.isFinite(cells) && cells > 0) rings.push(circlePoints(pos.x, pos.y, cells * cell));
+  }
+  ctx.scene.previewOverlay(
+    rings.map((points) => ({ points, closed: true, stroke: { color: LIGHT_RING_COLOR, width: 2 }, fill: null })),
+  );
+}
+
+/** Click to place a light at the snapped point (stamped with `NEW_LIGHT_EMISSION`); click an
+ * existing light's marker to select it for editing (`ToolController.editingEntity`, which the
+ * rail editor reads); drag a selected light to reposition it (an `/engine/x,y` update on
+ * release, with the RAW stored position as the OCC pre-image). The reach rings preview via the
+ * tool overlay while a light is selected or dragged. The tool rail hides this tool from non-GMs
+ * (`ToolRail`'s `visibleTools` filter) — a UI-only visibility gate, not a permission this
+ * factory itself checks or enforces. No active scene → unhandled.
+ * @param ctx The tool context; reads the active scene, snaps points, dispatches the intents.
+ * @param controller Receives the editing selection (`editingEntity`).
+ * @returns A `SceneTool` implementing the place/select/drag gesture.
+ * @example
+ * ```
+ * declare const ctx: ToolContext;
+ * declare const controller: ToolController;
+ * const tool = makeLightTool(ctx, controller);
+ * ```
+ */
+export function makeLightTool(ctx: ToolContext, controller: ToolController): SceneTool {
+  /** The light being repositioned (its marker was the pointer-down target), or `null`. */
+  let dragId: string | null = null;
+  /** The dragged light's RAW stored position at grab time — the OCC pre-image for the update. */
+  let dragOrigin: Point = { x: 0, y: 0 };
+  /** Whether the pointer moved since the down (a pure click selects without repositioning). */
+  let moved = false;
+
+  /** The light document's position and emission, read RAW from the store, or `null` when the
+   * document is gone or malformed.
+   * @param id The light document id.
+   * @returns The raw stored position + emission, or `null`.
+   * @example
+   * ```
+   * // private helper; read by the drag gesture + ring overlay
+   * declare function readLight(id: string): { pos: Point; em: LightEmission } | null;
+   * declare const id: string;
+   * readLight(id); // { pos, em } | null
+   * ```
+   */
+  const readLight = (id: string): {
+    /** The raw stored position, scene coords. */
+    pos: Point;
+    /** The raw stored emission payload. */
+    em: LightEmission;
+  } | null => {
+    const eng = ctx.documents.get(id)?.engine as LightEngine | undefined;
+    if (!eng || !Number.isFinite(eng.x) || !Number.isFinite(eng.y)) return null;
+    return { pos: { x: eng.x, y: eng.y }, em: eng.emission };
+  };
+
+  return {
+    onPointerDown(p: Point): boolean {
+      const scene = activeScene(ctx);
+      if (!scene) return false;
+      const lights = ctx.documents.query("light").filter((d) => d.parent_id === scene.id);
+      const hit = topLightAt(lights, p);
+      if (hit) {
+        const cur = readLight(hit);
+        if (!cur) return false;
+        controller.editingEntity = { kind: "light", id: hit };
+        dragId = hit;
+        dragOrigin = cur.pos;
+        moved = false;
+        drawLightRings(ctx, cur.pos, cur.em);
+        return true;
+      }
+      const at = ctx.scene.snap(p);
+      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, elevation: null, emission: { ...NEW_LIGHT_EMISSION } });
+      ctx.dispatchIntent([{ op: "create", doc }]);
+      // Placing selects the new light so the rail editor targets it immediately (a second
+      // click would place ANOTHER light, not select this one).
+      controller.editingEntity = { kind: "light", id: doc.id };
+      drawLightRings(ctx, at, NEW_LIGHT_EMISSION);
+      return true;
+    },
+    onPointerMove(p: Point): void {
+      if (!dragId) return;
+      moved = true;
+      const cur = readLight(dragId);
+      if (cur) drawLightRings(ctx, ctx.scene.snap(p), cur.em);
+    },
+    onPointerUp(p: Point): void {
+      if (!dragId) return;
+      if (moved) {
+        const target = ctx.scene.snap(p);
+        // A sub-pixel-jitter "drag" that snaps back to the origin writes nothing.
+        if (target.x !== dragOrigin.x || target.y !== dragOrigin.y) {
+          ctx.dispatchIntent([
+            {
+              op: "update",
+              doc_id: dragId,
+              changes: [
+                { path: "/engine/x", old: dragOrigin.x, new: target.x },
+                { path: "/engine/y", old: dragOrigin.y, new: target.y },
+              ],
+            },
+          ]);
+        }
+        const cur = readLight(dragId);
+        if (cur) drawLightRings(ctx, target, cur.em);
+      }
+      dragId = null;
+      moved = false;
+    },
+    onDeactivate(): void {
+      dragId = null;
+      moved = false;
+      ctx.scene.clearOverlay();
     },
   };
 }
@@ -434,10 +593,10 @@ const REGION_PREVIEW_COLOR = 0xd0a030;
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
  * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
  * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
- * Create-only (no edit UI) — mirrors `makeWallTool`'s precedent, still accurate: `makeWallTool`
- * likewise has no update path, only create-on-release. Editing behavior/cost/visibility on an
- * already-placed region has no dedicated UI; a GM re-authors by delete+recreate, or toggles
- * `enabled` server-side. The tool rail hides this tool from non-GMs (`ToolRail`'s
+ * Create-only (no edit UI) — a GM re-authors an existing region by delete+recreate, or toggles
+ * `enabled` server-side. (Walls and lights, by contrast, are editable after placement: the
+ * select tool picks one into `ToolController.editingEntity` and the rail editor writes it.)
+ * The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
  * @param ctx The tool context; reads the active scene, snaps points, dispatches the create.
@@ -1339,17 +1498,21 @@ const DRAG_THROTTLE_MS = 50;
  * truncation can land the token short of, or not at, where it was released). Empty space clears
  * the selection and yields the gesture to the camera. The selection itself is signified on the
  * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
- * `tokenSelection` state), never by a tool overlay.
+ * `tokenSelection` state), never by a tool overlay. For a GM, an empty-space click additionally
+ * picks a light marker or wall segment into `controller.editingEntity` (the rail editor's
+ * selection source); a token hit clears it.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
+ * @param controller Receives the light/wall editing selection (`editingEntity`).
  * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
  * @example
  * ```
  * declare const ctx: ToolContext;
- * const tool = makeSelectMoveTool(ctx);
+ * declare const controller: ToolController;
+ * const tool = makeSelectMoveTool(ctx, controller);
  * ```
  */
-export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
+export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController): SceneTool {
   const now = ctx.now ?? ((): number => Date.now());
   const sel = ctx.tokenSelection;
   let draggingId: string | null = null;
@@ -1463,10 +1626,30 @@ export function makeSelectMoveTool(ctx: ToolContext): SceneTool {
     onPointerDown(p: Point, ev: PointerEvent): boolean {
       const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents, footprintsOf(ctx));
       if (!id) {
+        // GM-only scene-entity editing: a click that hits no token picks a light marker, then a
+        // wall segment, into the shared editing selection the rail editor reads. Both write
+        // paths are GM-gated (the server rejects a non-GM's document write regardless; this
+        // branch only decides which editor opens, and a player gets no editor affordance).
+        if (ctx.role === "gm") {
+          const scene = activeScene(ctx);
+          const lightHit = scene
+            ? topLightAt(ctx.documents.query("light").filter((d) => d.parent_id === scene.id), p)
+            : null;
+          const wallHit =
+            !lightHit && scene
+              ? topWallAt(ctx.documents.query("wall").filter((d) => d.parent_id === scene.id), p)
+              : null;
+          controller.editingEntity = lightHit
+            ? { kind: "light", id: lightHit }
+            : wallHit
+              ? { kind: "wall", id: wallHit }
+              : null;
+        }
         sel?.clear();
         ctx.scene.clearOverlay();
         return false;
       }
+      controller.editingEntity = null;
       if (sel) {
         if (ev.shiftKey) sel.toggle(id);
         else if (!sel.has(id)) sel.set([id]);

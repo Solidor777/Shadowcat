@@ -40,16 +40,18 @@ interface GraphicsInstructionLog {
   };
 }
 
-/** Extracts the flat point arrays passed to every `poly(...)` draw call recorded on a Graphics'
- * context — the same instruction log `Graphics` builds without a GL context, so this reads what
- * `setLighting` actually drew.
- * @param backend A `PixiBackend`; only its private `lightingGraphics` field is read.
+/** Extracts the flat point arrays passed to every `poly(...)` draw call recorded on one of the
+ * backend's lighting-layer Graphics — the same instruction log `Graphics` builds without a GL
+ * context, so this reads what `setLighting` actually drew.
+ * @param backend A `PixiBackend`; only the named private Graphics field is read.
+ * @param field Which lighting Graphics to read: the per-cell fills, the darkness sheet, or
+ * the lit-cell holes cut from it.
  * @returns One flat `[x0,y0,x1,y1,…]` array per `poly(...)` call, in draw order.
  */
-function polyDraws(backend: PixiBackend): number[][] {
+function polyDraws(backend: PixiBackend, field: "lightingGraphics" | "darknessGraphics" | "litHoles" = "lightingGraphics"): number[][] {
   // Reads a private field to inspect the recorded draw instructions — no public accessor
   // exists, and this test's whole point is pinning what the backend actually draws.
-  const graphics = (backend as unknown as { lightingGraphics: GraphicsInstructionLog }).lightingGraphics;
+  const graphics = (backend as unknown as Record<typeof field, GraphicsInstructionLog>)[field];
   return graphics.context.instructions
     .map((i) => i.data.path.instructions.find((pi) => pi.action === "poly"))
     .filter((pi): pi is { action: string; data: unknown[] } => pi !== undefined)
@@ -57,6 +59,22 @@ function polyDraws(backend: PixiBackend): number[][] {
 }
 
 describe("PixiBackend.setLighting", () => {
+  test("with no lit cell the darkness sheet paints whole and UNMASKED; with one it is inverse-masked by the holes", () => {
+    const backend = headlessBackend();
+    const priv = backend as unknown as { darknessGraphics: Container; litHoles: Container };
+    const dark = { points: [0, 0, 300, 0, 300, 300, 0, 300] };
+    backend.setLighting({ cell: 100, cells: [], darkness: [dark] });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([dark.points]);
+    // Pixi reports a cleared mask as `undefined` (no mask effect attached), never a Graphics.
+    expect(priv.darknessGraphics.mask ?? null).toBeNull();
+    const corners = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }];
+    backend.setLighting({ cell: 100, cells: [{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners }], darkness: [dark] });
+    expect(priv.darknessGraphics.mask).toBe(priv.litHoles);
+    // A degenerate cell cuts no hole, so it counts as "nothing lit" too.
+    backend.setLighting({ cell: 100, cells: [{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: corners.slice(0, 2) }], darkness: [dark] });
+    expect(priv.darknessGraphics.mask ?? null).toBeNull();
+  });
+
   test("draws each cell's own poly geometry from LitDrawCell.corners, not an index*cellSize rect", () => {
     const backend = headlessBackend();
     // i=5, j=3 at cell=70 would rect-anchor at (350,210) under an index*cellSize scheme; these
@@ -66,12 +84,37 @@ describe("PixiBackend.setLighting", () => {
     const frame: LightingFrame = {
       cell: 70,
       cells: [{ i: 5, j: 3, alpha: 0.4, tint: 0x112233, tintAlpha: 0.25, desaturate: false, corners }],
+      darkness: [],
     };
     backend.setLighting(frame);
     const draws = polyDraws(backend);
     expect(draws.length).toBeGreaterThan(0);
     const expected = corners.flatMap((p) => [p.x, p.y]);
     for (const d of draws) expect(d).toEqual(expected);
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([]);
+    expect(polyDraws(backend, "litHoles")).toEqual([expected]);
+  });
+
+  test("paints the darkness regions as a sheet with every lit cell cut out as a hole", () => {
+    const backend = headlessBackend();
+    const corners = [{ x: 0, y: 0 }, { x: 70, y: 0 }, { x: 70, y: 70 }, { x: 0, y: 70 }];
+    const los = [0, 0, 700, 0, 700, 700, 0, 700];
+    backend.setLighting({
+      cell: 70,
+      cells: [
+        { i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners },
+        { i: 9, j: 9, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: [{ x: 1, y: 1 }] }, // degenerate: no hole
+      ],
+      darkness: [{ points: los }, { points: [5, 5, 6, 6] }], // the 2-vertex region is skipped
+    });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([los]);
+    expect(polyDraws(backend, "litHoles")).toEqual([corners.flatMap((p) => [p.x, p.y])]);
+    const sheet = (backend as unknown as { darknessGraphics: { mask: unknown }; litHoles: unknown });
+    expect(sheet.darknessGraphics.mask).toBe(sheet.litHoles);
+    // A later frame with no darkness clears the sheet and the holes.
+    backend.setLighting({ cell: 70, cells: [], darkness: [] });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([]);
+    expect(polyDraws(backend, "litHoles")).toEqual([]);
   });
 });
 
@@ -136,7 +179,7 @@ function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?
 }
 
 describe("PixiBackend.updateTokenGeneratedFrame", () => {
-  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
 
   test("composes background → masked art → ring inside visualContainer, under the faction border", () => {
     const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
@@ -204,7 +247,7 @@ describe("PixiBackend.updateTokenGeneratedFrame", () => {
 });
 
 describe("PixiBackend.updateTokenAura", () => {
-  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
   const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
 
   test("draws the disc as the container's bottom-most child with the given color + opacity", () => {
@@ -254,7 +297,7 @@ describe("PixiBackend.updateTokenAura", () => {
 });
 
 describe("PixiBackend.updateTokenFx", () => {
-  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
   const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
 
   test("composes the fx list into one ColorMatrixFilter on the visualContainer", () => {

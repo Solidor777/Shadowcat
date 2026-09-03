@@ -1,5 +1,6 @@
 //! `SceneEcs` hydration/apply-op, movement-collision geometry, the `footprints` derived channel, and the vision/lighting config-doc resolvers.
 use super::*;
+use crate::scene::pathfinding::MoveTraits;
 
 #[test]
 fn hydrate_counts_scene_entities_only() {
@@ -402,8 +403,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         10,
         "light",
         json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok, light], 0);
 
@@ -511,7 +511,7 @@ fn resolvers_layer_world_then_scene_and_fail_closed() {
             json!({ "color": "#0a0e1a", "intensity": 0.25 }),
         ),
     ]));
-    ecs.set_world_config(Some(ws), None, None, None, None);
+    ecs.set_world_config(Some(ws), None, None, None, None, None);
     let r1 = ecs.resolve_scene(scene_id);
     assert!(!r1.lighting_enabled);
     assert!(matches!(r1.light_mode, LightMode::GlobalIllumination));
@@ -546,7 +546,7 @@ fn vision_modes_doc_is_respected_not_reseeded() {
         "id": "blindsight", "name": "Blindsight",
         "illuminationFloor": "dark", "defaultRange": 4
     } } }));
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     let modes = ecs.resolved_vision_modes();
     assert!(modes.contains_key("blindsight"));
     assert!(
@@ -570,13 +570,18 @@ fn pathfind_refuses_a_scene_with_no_document() {
         RouteRequester {
             user: Uuid::from_u128(7),
             is_gm: true,
+            world_role: WorldRole::Gm,
+            world_defaults: &no_world_grants(),
             explored: None,
         },
         Uuid::from_u128(404),
         (50.0, 50.0),
         &[(450.0, 50.0)],
-        0.1,
-        None,
+        crate::scene::RouteMover {
+            footprint_radius: 0.1,
+            budget_cells: None,
+            traits: MoveTraits::default(),
+        },
     );
     assert!(
         matches!(out, Err(pathfinding::PathFail::Invalid)),
@@ -731,10 +736,13 @@ fn ecs_and_db_agree_on_ownership_after_a_remove_change_carrying_a_non_null_new()
     // The exploitable observable: the injected actor's owner must NOT gain the token
     // as a vision source for a token the write path considers unowned.
     assert!(
-        ecs.player_vision_polygons(q).is_empty(),
+        ecs.player_vision_polygons(q, WorldRole::Player, &no_world_grants())
+            .is_empty(),
         "a removed actor link must not hand the token's vision to the injected `new` owner"
     );
-    assert!(ecs.player_vision_polygons(p).is_empty());
+    assert!(ecs
+        .player_vision_polygons(p, WorldRole::Player, &no_world_grants())
+        .is_empty());
 }
 
 /// Control for `ecs_and_db_agree_when_a_remove_change_unlinks_a_token`: with
@@ -781,8 +789,14 @@ fn ecs_and_db_agree_when_a_set_change_relinks_a_token() {
         Some(q),
         "a plain set DOES re-link, and both paths see it"
     );
-    assert_eq!(ecs.player_vision_polygons(q).len(), 1);
-    assert!(ecs.player_vision_polygons(p).is_empty());
+    assert_eq!(
+        ecs.player_vision_polygons(q, WorldRole::Player, &no_world_grants())
+            .len(),
+        1
+    );
+    assert!(ecs
+        .player_vision_polygons(p, WorldRole::Player, &no_world_grants())
+        .is_empty());
 }
 
 /// The same divergence on the `self.actors` index (`apply_op`'s second
@@ -820,7 +834,9 @@ fn ecs_actor_index_honors_a_remove_change_on_owner() {
     let e = ecs.index[&token.id];
     let ecs_doc = ecs.world.get::<&SceneEntity>(e).unwrap().doc.clone();
     assert_eq!(ecs.token_effective_owner(&ecs_doc), None);
-    assert!(ecs.player_vision_polygons(q).is_empty());
+    assert!(ecs
+        .player_vision_polygons(q, WorldRole::Player, &no_world_grants())
+        .is_empty());
 }
 
 /// Collects the `Level` of every event emitted on the current thread, so a test can
@@ -968,7 +984,7 @@ fn config_singleton_mirror_honors_a_remove_change() {
     };
 
     let mut ecs = SceneEcs::new();
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     ecs.apply_op(&Operation::Update {
         doc_id: vm_id,
         changes: vec![change],
@@ -1115,15 +1131,20 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
 
     // The vision channel agrees: the inheriting player gets exactly the one
     // token they effectively own, and the override holder gets exactly theirs.
-    let polys = ecs.player_vision_polygons(player);
+    let polys = ecs.player_vision_polygons(player, WorldRole::Player, &no_world_grants());
     assert_eq!(
         polys.len(),
         1,
         "only the inherited token is a vision source for its inheriting owner"
     );
-    assert_eq!(ecs.player_vision_polygons(other).len(), 1);
+    assert_eq!(
+        ecs.player_vision_polygons(other, WorldRole::Player, &no_world_grants())
+            .len(),
+        1
+    );
     assert!(
-        ecs.player_vision_polygons(Uuid::from_u128(99)).is_empty(),
+        ecs.player_vision_polygons(Uuid::from_u128(99), WorldRole::Player, &no_world_grants())
+            .is_empty(),
         "a stranger owns nothing"
     );
 
@@ -1136,8 +1157,14 @@ fn token_ownership_resolves_through_the_actor_join_for_vision() {
         Some(other),
         "ownership follows the actor live — nothing is stamped on the token"
     );
-    assert!(ecs.player_vision_polygons(player).is_empty());
-    assert_eq!(ecs.player_vision_polygons(other).len(), 2);
+    assert!(ecs
+        .player_vision_polygons(player, WorldRole::Player, &no_world_grants())
+        .is_empty());
+    assert_eq!(
+        ecs.player_vision_polygons(other, WorldRole::Player, &no_world_grants())
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -1885,16 +1912,14 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
                 10,
                 "light",
                 json!({
-                    "x": 50.0, "y": 50.0, "color": "#ffeeaa", "intensity": 1.0,
-                    "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
+                    "x": 50.0, "y": 50.0, "emission": { "color": "#ffeeaa", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true }
                 }),
             ),
             entity_doc_eng(
                 21,
                 10,
                 "light",
-                json!({ "x": 0.0, "y": 0.0, "color": "#fff",
-                "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": false }),
+                json!({ "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0, "enabled": false } }),
             ),
             entity_doc_eng(
                 22,
@@ -1929,8 +1954,7 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
                 10,
                 "light",
                 json!({
-                    "x": 50.0, "y": 50.0, "color": "#ffeeaa", "intensity": 1.0,
-                    "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true
+                    "x": 50.0, "y": 50.0, "emission": { "color": "#ffeeaa", "intensity": 1.0, "brightRadius": 2.0, "dimRadius": 6.0, "enabled": true }
                 }),
             ),
             entity_doc_eng(
@@ -1945,8 +1969,7 @@ fn light_and_blockslight_wall_accessors_filter_by_scene() {
                 30,
                 "light",
                 json!({
-                    "x": 10.0, "y": 10.0, "color": "#ffffff", "intensity": 0.8,
-                    "brightRadius": 3.0, "dimRadius": 8.0, "enabled": true
+                    "x": 10.0, "y": 10.0, "emission": { "color": "#ffffff", "intensity": 0.8, "brightRadius": 3.0, "dimRadius": 8.0, "enabled": true }
                 }),
             ),
             entity_doc_eng(
@@ -2001,9 +2024,14 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
     tok.owner = Some(player);
     let dark = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone()], 0);
     assert!(
-        dark.player_lit_mask(player)
-            .iter()
-            .all(|s| s.cells.is_empty()),
+        dark.player_lit_mask(
+            player,
+            WorldRole::Player,
+            &no_world_grants(),
+            &dark.resolved_bands()
+        )
+        .iter()
+        .all(|s| s.cells.is_empty()),
         "dark scene + normal vision → empty lit mask"
     );
 
@@ -2013,11 +2041,15 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         10,
         "light",
         json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok.clone(), light], 0);
-    let mask = lit.player_lit_mask(player);
+    let mask = lit.player_lit_mask(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        &lit.resolved_bands(),
+    );
     let s = mask
         .iter()
         .find(|s| s.scene == scene)
@@ -2043,7 +2075,13 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
     );
     ntok.owner = Some(player);
-    let ab = SceneEcs::from_documents(vec![bright_scene, ntok], 0).player_lit_mask(player);
+    let bright_ecs = SceneEcs::from_documents(vec![bright_scene, ntok], 0);
+    let ab = bright_ecs.player_lit_mask(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        &bright_ecs.resolved_bands(),
+    );
     let s = ab.iter().find(|s| s.scene == scene).expect("scene present");
     assert!(
         s.cells
@@ -2070,8 +2108,13 @@ fn lit_mask_gates_los_by_illumination_and_darkvision() {
         )],
     );
     dv.owner = Some(player);
-    let dvmask =
-        SceneEcs::from_documents(vec![doc(10, None, "scene"), dv], 0).player_lit_mask(player);
+    let dv_ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), dv], 0);
+    let dvmask = dv_ecs.player_lit_mask(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        &dv_ecs.resolved_bands(),
+    );
     assert!(
         dvmask.iter().any(|s| !s.cells.is_empty()),
         "darkvision sees in the dark within range"
@@ -2099,7 +2142,12 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         }],
     );
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok], 0);
-    let mask = ecs.player_lit_mask(player);
+    let mask = ecs.player_lit_mask(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    );
     assert_eq!(mask.len(), 1);
     assert!(
         !mask[0].cells.is_empty(),
@@ -2127,11 +2175,15 @@ fn lit_mask_tags_darkvision_only_cells_with_hint() {
         10,
         "light",
         json!({
-        "x": 50.0, "y": 50.0, "color": "#ffffff", "intensity": 1.0,
-        "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }),
+        "x": 50.0, "y": 50.0, "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true } }),
     );
     let lit = SceneEcs::from_documents(vec![doc(10, None, "scene"), tok2, light], 0);
-    let mask2 = lit.player_lit_mask(player2);
+    let mask2 = lit.player_lit_mask(
+        player2,
+        WorldRole::Player,
+        &no_world_grants(),
+        &lit.resolved_bands(),
+    );
     assert!(
         mask2[0].cells.iter().any(|(_, _, _, _, h)| h.is_none()),
         "a normally-lit cell seen by normal vision carries no hint"
@@ -2162,7 +2214,7 @@ fn config_and_actor_side_tables_track_ops() {
     // Seed via setters (the room-hydration path).
     let mut ws = doc(100, None, "world-settings");
     ws.system = json!({ "scene": { "lightingEnabled": false } });
-    ecs.set_world_config(Some(ws), None, None, None, None);
+    ecs.set_world_config(Some(ws), None, None, None, None, None);
     ecs.set_actors(vec![entity_doc_top_eng(
         200,
         "actor",
@@ -2227,7 +2279,7 @@ fn vision_modes_carry_render_hint() {
                        "illuminationFloor": "dim",  "defaultRange": 0 }
     }}));
     let mut ecs = SceneEcs::new();
-    ecs.set_world_config(None, None, Some(vm), None, None);
+    ecs.set_world_config(None, None, Some(vm), None, None, None);
     let m = ecs.resolved_vision_modes();
     assert_eq!(m["truesight"].render_hint.as_deref(), Some("outline"));
     assert_eq!(m["plain"].render_hint, None);

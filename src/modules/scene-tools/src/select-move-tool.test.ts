@@ -1,8 +1,8 @@
 import { test, expect } from "vitest";
-import { DocumentStore, AssetResolver, buildTokenDoc, buildSceneDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildTokenDoc, buildSceneDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation, type MoveStream } from "@shadowcat/core";
 import { SceneInteractionBridge, TokenSelection } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
-import { makeSelectMoveTool, type ToolContext } from "./controller.svelte";
+import { ToolController, makeSelectMoveTool, type ToolContext } from "./controller.svelte";
 
 const ev = {} as PointerEvent;
 const noShift = { shiftKey: false } as PointerEvent;
@@ -16,7 +16,7 @@ function setup() {
   const docs = new DocumentStore();
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
-    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "t1") }],
+    ops: [{ op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "t1") }],
   });
   const drags: (string | null)[] = [];
   const overlays: unknown[][] = [];
@@ -29,7 +29,7 @@ function setup() {
     assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, now: () => t,
     tokenSelection: new TokenSelection(),
   };
-  const tool = makeSelectMoveTool(ctx);
+  const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
   return { tool, sent, drags, overlays, ctx, setTime: (n: number) => { t = n; } };
 }
 
@@ -39,8 +39,8 @@ function setupTwo() {
   docs.applyCommand({
     seq: 1, world_id: "w1", author: "a", ts: 0,
     ops: [
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok1") },
-      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok2") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 100, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok1") },
+      { op: "create", doc: buildTokenDoc("w1", "s1", { x: 300, y: 100, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok2") },
     ],
   });
   const bridge = new SceneInteractionBridge();
@@ -57,7 +57,7 @@ function setupTwo() {
 test("moves all selected tokens together by the snapped delta", () => {
   const { ctx, sent } = setupTwo();
   ctx.tokenSelection!.set(["tok1", "tok2"]);
-  const tool = makeSelectMoveTool(ctx);
+  const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
   tool.onPointerDown({ x: 100, y: 100 }, noShift); // grab tok1
   tool.onPointerMove({ x: 200, y: 100 }, ev); // +100 in x
   tool.onPointerUp({ x: 200, y: 100 }, ev);
@@ -70,7 +70,7 @@ test("moves all selected tokens together by the snapped delta", () => {
 test("clicking an unselected token replaces the selection with just it", () => {
   const { ctx } = setupTwo();
   ctx.tokenSelection!.set(["tok2"]);
-  const tool = makeSelectMoveTool(ctx);
+  const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
   tool.onPointerDown({ x: 100, y: 100 }, noShift); // grab tok1
   expect([...ctx.tokenSelection!.ids]).toEqual(["tok1"]);
 });
@@ -139,7 +139,7 @@ function harness(opts: {
       { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
       ...opts.tokens.map((t) => ({
         op: "create" as const,
-        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, t.id),
+        doc: buildTokenDoc("w1", "s1", { x: t.x, y: t.y, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, t.id),
       })),
     ],
   });
@@ -164,7 +164,7 @@ function harness(opts: {
     if (opts.moveRequestRejects) return Promise.reject(new Error("refused"));
     return Promise.resolve({
       requestId: "r1", tokenId: token, mover: "u1", scene, startServerMs: 0,
-      durationMs: 0, stop: goal, samples: [], moverVision: null, cost: 1, truncated: false,
+      durationMs: 0, stop: goal, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
     });
   };
 
@@ -181,7 +181,7 @@ function harness(opts: {
     pathfind,
     moveRequest,
   };
-  const tool = makeSelectMoveTool(ctx);
+  const tool = makeSelectMoveTool(ctx, new ToolController(ctx));
 
   const originOf = (id: string): { x: number; y: number } => {
     const t = opts.tokens.find((tk) => tk.id === id)!;
@@ -253,4 +253,79 @@ test("a refused player move surfaces feedback rather than failing silently", asy
   expect(h.moveRequests.length).toBeGreaterThan(0); // the request WAS made
   expect(h.previewOverlayCalls.at(-1)).toEqual([]); // preview cleared, not left stale
   expect((h.documents.get("t1")!.engine as { x: number }).x).toBe(0); // never moved locally
+});
+
+test("a GM click on a light marker selects it for editing; a wall click selects the wall", () => {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
+      {
+        op: "create",
+        doc: buildLightDoc("w1", "s1", {
+          x: 500, y: 500,
+          elevation: null,
+          emission: { color: "#fff", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+        }, "light-1"),
+      },
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "wall", {
+          seg: { x1: 0, y1: 700, x2: 400, y2: 700 }, blocksSight: true, blocksMove: true, blocksLight: true,
+        }),
+      },
+    ],
+  });
+  const wallId = docs.query("wall")[0].id;
+  const bridge = new SceneInteractionBridge();
+  bridge.attach(fakeSceneHost({}));
+  const ctx: ToolContext = {
+    scene: bridge, dispatchIntent: () => {}, documents: docs,
+    assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k,
+    tokenSelection: new TokenSelection(),
+  };
+  const controller = new ToolController(ctx);
+  const tool = makeSelectMoveTool(ctx, controller);
+
+  // A click on the light marker opens the light editor selection.
+  expect(tool.onPointerDown({ x: 500, y: 500 }, noShift)).toBe(false); // unhandled: camera may still pan
+  expect(controller.editingEntity).toEqual({ kind: "light", id: "light-1" });
+
+  // A click on the wall segment opens the wall editor selection.
+  tool.onPointerUp({ x: 500, y: 500 }, noShift);
+  expect(tool.onPointerDown({ x: 200, y: 700 }, noShift)).toBe(false);
+  expect(controller.editingEntity).toEqual({ kind: "wall", id: wallId });
+
+  // Empty space clears the editing selection.
+  tool.onPointerUp({ x: 200, y: 700 }, noShift);
+  tool.onPointerDown({ x: 900, y: 900 }, noShift);
+  expect(controller.editingEntity).toBeNull();
+});
+
+test("a non-GM click on a wall or light opens NO editor selection", () => {
+  const docs = new DocumentStore();
+  docs.applyCommand({
+    seq: 1, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", {}, "s1") },
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "wall", {
+          seg: { x1: 0, y1: 700, x2: 400, y2: 700 }, blocksSight: true, blocksMove: true, blocksLight: true,
+        }),
+      },
+    ],
+  });
+  const bridge = new SceneInteractionBridge();
+  bridge.attach(fakeSceneHost({}));
+  const ctx: ToolContext = {
+    scene: bridge, dispatchIntent: () => {}, documents: docs,
+    assets: new AssetResolver(), world: "w1", role: "player", sendPing: () => {}, t: (k) => k,
+    tokenSelection: new TokenSelection(),
+  };
+  const controller = new ToolController(ctx);
+  const tool = makeSelectMoveTool(ctx, controller);
+  expect(tool.onPointerDown({ x: 200, y: 700 }, noShift)).toBe(false);
+  expect(controller.editingEntity).toBeNull();
 });

@@ -314,6 +314,9 @@ describe("parseServerMsg", () => {
       mover_vision: [
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
+      mover_light: [
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      ],
       cost: 3.5,
       truncated: true,
     };
@@ -329,6 +332,10 @@ describe("parseServerMsg", () => {
       expect(m.truncated).toBe(true);
       const vision = m.mover_vision;
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
+      // Same rule for the carried-light timeline: every field is asserted by value.
+      expect(m.mover_light).toEqual([
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      ]);
     }
   });
 
@@ -344,6 +351,8 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      // Nothing of the light reached this recipient: the server nulls the whole timeline.
+      mover_light: null,
       cost: 1.0,
       truncated: false,
     };
@@ -352,6 +361,7 @@ describe("parseServerMsg", () => {
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.mover_vision).toBeNull();
+      expect(m.mover_light).toBeNull();
     }
   });
 
@@ -367,6 +377,7 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      mover_light: null,
       // A clipped observer never learns the authoritative cost — it may reflect
       // secret-region terrain their clipped samples don't reveal.
       cost: null,
@@ -381,6 +392,57 @@ describe("parseServerMsg", () => {
       expect(m.cost).toBeNull();
       expect(m.truncated).toBeNull();
     }
+  });
+
+  it("parses a glow-only move_stream frame (empty samples, admitted light) and keeps the light's photometry", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      // The token never entered this recipient's sight; only its glow did.
+      samples: [],
+      mover_vision: null,
+      mover_light: [
+        { t_ms: 500.0, pos: [100.0, 200.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 0.8, falloff: "quadratic", polygons: [[[-500, -400], [700, -400], [700, 800]]] },
+      ],
+      cost: null,
+      truncated: null,
+    };
+    const m = parseServerMsg(JSON.stringify(frame));
+    expect(m).not.toBeNull();
+    if (m?.type === "move_stream") {
+      expect(m.samples).toEqual([]);
+      // Asserted by value: `z.object` strips an undeclared key silently.
+      expect(m.mover_light).toEqual([
+        { t_ms: 500.0, pos: [100.0, 200.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 0.8, falloff: "quadratic", polygons: [[[-500, -400], [700, -400], [700, 800]]] },
+      ]);
+    }
+  });
+
+  it("rejects a light sample with an unknown falloff spelling", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      samples: [],
+      mover_vision: null,
+      mover_light: [
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "cubic", polygons: [] },
+      ],
+      cost: null,
+      truncated: null,
+    };
+    expect(parseServerMsg(JSON.stringify(frame))).toBeNull();
   });
 
   it("rejects a move_stream frame missing samples", () => {
@@ -509,6 +571,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       stop: [0, 0],
       samples: [{ t_ms: 0, pos: [0, 0] }],
       mover_vision: null,
+      mover_light: null,
       cost: null,
       truncated: null,
     },

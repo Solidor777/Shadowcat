@@ -34,8 +34,7 @@ fn region_minimal_body_is_valid() {
 #[test]
 fn light_minimal_body_is_valid() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
-        "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_ok());
 }
@@ -231,6 +230,56 @@ fn wall_unknown_field_is_rejected() {
 }
 
 #[test]
+fn wall_elevation_absent_defaults_to_none() {
+    // No `elevation` key: the wall occludes every elevation (see `WallEngine::elevation`).
+    let v = json!({ "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 } });
+    let w: WallEngine = serde_json::from_value(v).unwrap();
+    assert_eq!(w.elevation, None);
+}
+
+#[test]
+fn wall_elevation_partial_band_parses_with_open_end() {
+    // An absent end is unbounded: `{"bottom": 2}` occludes elevation >= 2 only.
+    let v = json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
+        "elevation": { "bottom": 2.0 }
+    });
+    let w: WallEngine = serde_json::from_value(v).unwrap();
+    assert_eq!(
+        w.elevation,
+        Some(WallElevation {
+            bottom: Some(2.0),
+            top: None
+        })
+    );
+}
+
+#[test]
+fn wall_elevation_unknown_field_is_rejected() {
+    let v = json!({
+        "seg": { "x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0 },
+        "elevation": { "bottom": 2.0, "bogus": 1 }
+    });
+    assert!(serde_json::from_value::<WallEngine>(v).is_err());
+}
+
+#[test]
+fn token_and_light_elevation_absent_default_to_none() {
+    // No `elevation` key reads as grounded (None = 0) on both carriers.
+    let t: TokenEngine = serde_json::from_value(json!({
+        "x": 1.0, "y": 2.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+    }))
+    .unwrap();
+    assert_eq!(t.elevation, None);
+    let l: LightEngine = serde_json::from_value(json!({
+        "x": 0.0, "y": 0.0,
+        "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
+    }))
+    .unwrap();
+    assert_eq!(l.elevation, None);
+}
+
+#[test]
 fn region_unknown_field_is_rejected() {
     let v = json!({
         "shape": { "kind": "rect", "points": [] },
@@ -242,8 +291,7 @@ fn region_unknown_field_is_rejected() {
 #[test]
 fn light_unknown_field_is_rejected() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "color": "#fff", "intensity": 1.0,
-        "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true, "bogus": 1
+        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }, "bogus": 1
     });
     assert!(validate_engine("light", Some(&v)).is_err());
 }
@@ -308,6 +356,73 @@ fn actor_missing_faction_key_accepted_as_none() {
     assert!(validate_engine("actor", Some(&v)).is_ok());
     let engine: ActorEngine = serde_json::from_value(v).unwrap();
     assert_eq!(engine.faction, None);
+}
+
+#[test]
+fn actor_movement_absent_defaults_to_empty_and_round_trips() {
+    // `movement` is `#[serde(default)]`: a body written before the key existed still decodes.
+    let absent = json!({
+        "displayName": "Goblin", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true
+    });
+    let engine: ActorEngine = serde_json::from_value(absent).unwrap();
+    assert_eq!(engine.movement, Vec::<String>::new());
+
+    // Tags (reserved and unknown alike) are carried verbatim as inert vocabulary.
+    let tagged = json!({
+        "displayName": "Wraith", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "movement": ["incorporeal", "ethereal-step"]
+    });
+    assert!(validate_engine("actor", Some(&tagged)).is_ok());
+    let engine: ActorEngine = serde_json::from_value(tagged).unwrap();
+    assert_eq!(engine.movement, vec!["incorporeal", "ethereal-step"]);
+    // A non-string tag is malformed input — fail closed at ingress.
+    let garbled = json!({
+        "displayName": "Wraith", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "movement": [7]
+    });
+    assert!(validate_engine("actor", Some(&garbled)).is_err());
+}
+
+#[test]
+fn token_overrides_movement_absent_is_none_present_replaces() {
+    // Absent key ⇒ `None` (inherit the actor's resolved set); a present array — even an
+    // EMPTY one — is `Some`, i.e. a wholesale replacement that strips every inherited tag.
+    let plain: TokenEngine = serde_json::from_value(json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0
+    }))
+    .unwrap();
+    assert_eq!(plain.overrides, None);
+
+    let replaced: TokenEngine = serde_json::from_value(json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "overrides": { "movement": ["flying"] }
+    }))
+    .unwrap();
+    assert_eq!(
+        replaced.overrides.and_then(|o| o.movement),
+        Some(vec!["flying".to_string()])
+    );
+}
+
+#[test]
+fn faction_movement_absent_defaults_to_empty() {
+    // A faction body written before `movement` existed still decodes; the seed
+    // factions carry no tags.
+    let f: Faction = serde_json::from_value(json!({
+        "name": "Skyborn", "color": "#88c", "stance": "neutral"
+    }))
+    .unwrap();
+    assert_eq!(f.movement, Vec::<String>::new());
+    assert!(FactionRegistryEngine::seed()
+        .factions
+        .values()
+        .all(|f| f.movement.is_empty()));
 }
 
 #[test]
@@ -408,10 +523,107 @@ fn region_wrong_typed_field_is_rejected() {
 #[test]
 fn light_wrong_typed_intensity_is_rejected() {
     let v = json!({
-        "x": 0.0, "y": 0.0, "color": "#fff", "intensity": "1",
-        "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true
+        "x": 0.0, "y": 0.0, "emission": { "color": "#fff", "intensity": "1", "brightRadius": 5.0, "dimRadius": 10.0, "enabled": true }
     });
     assert!(validate_engine("light", Some(&v)).is_err());
+}
+
+#[test]
+fn light_emission_radii_are_finite_non_negative_and_capped_at_every_carrier() {
+    // The ONE emission payload is validated wherever it enters: a standalone light, an actor's
+    // carried emission, and a token override — radii in cells, bounded by the shared cell cap
+    // `MAX_FOOTPRINT_CELLS`; a negative radius is refused; the cap itself is admitted.
+    let cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS;
+    let emission = |bright: f64, dim: f64| json!({ "color": "#fff", "intensity": 1.0, "brightRadius": bright, "dimRadius": dim, "enabled": true });
+    let light = |e: serde_json::Value| json!({ "x": 0.0, "y": 0.0, "emission": e });
+    let actor = |e: serde_json::Value| {
+        json!({
+            "displayName": "A", "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square", "conditions": [],
+            "prototype": true, "light": e
+        })
+    };
+    let token = |e: serde_json::Value| json!({ "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "rotation": 0.0, "overrides": { "light": e } });
+    assert!(validate_engine("light", Some(&light(emission(cap / 2.0, cap)))).is_ok());
+    assert!(validate_engine("light", Some(&light(emission(1.0, cap + 1.0)))).is_err());
+    assert!(validate_engine("light", Some(&light(emission(-1.0, 2.0)))).is_err());
+    assert!(validate_engine("actor", Some(&actor(emission(1.0, 2.0)))).is_ok());
+    assert!(validate_engine("actor", Some(&actor(emission(1.0, cap + 1.0)))).is_err());
+    assert!(validate_engine("actor", Some(&actor(emission(-1.0, 2.0)))).is_err());
+    assert!(validate_engine("token", Some(&token(emission(1.0, 2.0)))).is_ok());
+    assert!(validate_engine("token", Some(&token(emission(1.0, cap + 1.0)))).is_err());
+    assert!(validate_engine("token", Some(&token(emission(-1.0, 2.0)))).is_err());
+}
+
+#[test]
+fn light_position_and_elevation_must_be_finite() {
+    // JSON cannot carry a non-finite number, so the finiteness guard is exercised through the
+    // struct directly — the same path `normalize_engine`'s "light" arm runs.
+    let ok = LightEngine {
+        x: 0.0,
+        y: 0.0,
+        elevation: Some(1.0),
+        emission: LightEmission {
+            color: "#fff".into(),
+            intensity: 1.0,
+            bright_radius: 1.0,
+            dim_radius: 2.0,
+            falloff: None,
+            enabled: true,
+        },
+    };
+    assert!(ok.validate().is_ok());
+    let mut bad = ok.clone();
+    bad.x = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = ok.clone();
+    bad.elevation = Some(f64::INFINITY);
+    assert!(bad.validate().is_err());
+    let mut bad = ok.clone();
+    bad.emission.intensity = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = ok;
+    bad.emission.dim_radius = f64::INFINITY;
+    assert!(bad.validate().is_err());
+}
+
+#[test]
+fn light_falloff_curve_is_a_closed_enum() {
+    for curve in ["linear", "quadratic", "none"] {
+        let v = json!({
+            "x": 0.0, "y": 0.0,
+            "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+                "falloff": { "curve": curve }, "enabled": true }
+        });
+        assert!(validate_engine("light", Some(&v)).is_ok(), "curve {curve}");
+    }
+    let v = json!({
+        "x": 0.0, "y": 0.0,
+        "emission": { "color": "#fff", "intensity": 1.0, "brightRadius": 5.0, "dimRadius": 10.0,
+            "falloff": { "curve": "cubic" }, "enabled": true }
+    });
+    assert!(validate_engine("light", Some(&v)).is_err());
+}
+
+#[test]
+fn actor_and_token_override_carried_light_bodies_are_valid() {
+    let emission = json!({
+        "color": "#ffeeaa", "intensity": 0.8, "brightRadius": 2.0, "dimRadius": 6.0,
+        "enabled": true
+    });
+    let actor = json!({
+        "displayName": "Torchbearer", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true,
+        "light": emission
+    });
+    assert!(validate_engine("actor", Some(&actor)).is_ok());
+    let token = json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "overrides": { "light": { "color": "#ffeeaa", "intensity": 0.0, "brightRadius": 0.0,
+            "dimRadius": 0.0, "enabled": false } }
+    });
+    assert!(validate_engine("token", Some(&token)).is_ok());
 }
 
 #[test]
@@ -1208,7 +1420,7 @@ fn light_gradation_seed_content() {
 #[test]
 fn vision_modes_seed_content() {
     let s = VisionModesEngine::seed();
-    assert_eq!(s.modes.len(), 2);
+    assert_eq!(s.modes.len(), 3);
     let n = &s.modes["normal"];
     assert_eq!(
         (
@@ -1216,9 +1428,19 @@ fn vision_modes_seed_content() {
             n.name.as_str(),
             n.illumination_floor.as_str(),
             n.default_range,
-            n.render_hint.as_deref()
+            n.render_hint.as_deref(),
+            n.perceives,
+            n.requires_los,
         ),
-        ("normal", "Normal", "dim", 0.0, None)
+        (
+            "normal",
+            "Normal",
+            "dim",
+            0.0,
+            None,
+            Perception::Terrain,
+            true
+        )
     );
     let d = &s.modes["darkvision"];
     assert_eq!(
@@ -1227,12 +1449,67 @@ fn vision_modes_seed_content() {
             d.name.as_str(),
             d.illumination_floor.as_str(),
             d.default_range,
-            d.render_hint.as_deref()
+            d.render_hint.as_deref(),
+            d.perceives,
+            d.requires_los,
         ),
-        ("darkvision", "Darkvision", "dark", 12.0, Some("desaturate"))
+        (
+            "darkvision",
+            "Darkvision",
+            "dark",
+            12.0,
+            Some("desaturate"),
+            Perception::Terrain,
+            true
+        )
+    );
+    let t = &s.modes["tremorsense"];
+    assert_eq!(
+        (
+            t.id.as_str(),
+            t.name.as_str(),
+            t.default_range,
+            t.render_hint.as_deref(),
+            t.perceives,
+            t.requires_los,
+        ),
+        (
+            "tremorsense",
+            "Tremorsense",
+            12.0,
+            None,
+            Perception::Creatures,
+            false
+        )
     );
     let v = serde_json::to_value(&s).unwrap();
     assert!(validate_engine("vision-modes", Some(&v)).is_ok());
+}
+
+#[test]
+fn vision_mode_absent_sense_fields_default_to_terrain_los() {
+    // A mode authored before `perceives`/`requiresLos` existed (no keys at all)
+    // must deserialize unchanged: terrain perception, LOS-gated.
+    let v = json!({
+        "id": "normal", "name": "Normal",
+        "illuminationFloor": "dim", "defaultRange": 0.0
+    });
+    let m: VisionMode = serde_json::from_value(v).unwrap();
+    assert_eq!(m.perceives, Perception::Terrain);
+    assert!(m.requires_los);
+    // Serde wire shape: camelCase field names, lowercase perception values.
+    let w = serde_json::to_value(&m).unwrap();
+    assert_eq!(w["perceives"], json!("terrain"));
+    assert_eq!(w["requiresLos"], json!(true));
+}
+
+#[test]
+fn vision_mode_unknown_field_is_rejected() {
+    let v = json!({
+        "id": "normal", "name": "Normal",
+        "illuminationFloor": "dim", "defaultRange": 0.0, "bogus": 1
+    });
+    assert!(serde_json::from_value::<VisionMode>(v).is_err());
 }
 
 #[test]

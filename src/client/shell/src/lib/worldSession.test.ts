@@ -414,7 +414,7 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
   await session.enter("w1");
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1");
   session.dispatchIntent([{ op: "create", doc }]);
 
   // Prediction: the optimistic view (ctx.client) shows the new doc immediately.
@@ -441,7 +441,7 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
   session.leave(); // tears down the socket → no transport
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-x");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-x");
   expect(session.dispatchIntent([{ op: "create", doc }])).toBe(false);
 
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
@@ -505,7 +505,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 
   // Transport drops but the client stays running → reconnecting.
   handlers.onClose();
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-off");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-off");
   session.dispatchIntent([{ op: "create", doc }]);
   // Predicted immediately, but NOT transmitted while offline.
   expect(capturedClient!.get("tok-off")).toBeTruthy();
@@ -520,7 +520,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 });
 
 function actorWith(perms: Partial<WireDocument["permissions"]>): WireDocument {
-  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null }, "act1");
+  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null }, "act1");
   d.permissions = { ...d.permissions, ...perms };
   return d;
 }
@@ -555,7 +555,7 @@ test("canEdit: effective token ownership (inherited from the linked actor) unloc
   const linked = buildTokenDoc(
     "w1",
     "s1",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null },
     "tok-linked",
   );
   session.dispatchIntent([
@@ -834,9 +834,9 @@ test("the combat subscription is established after Welcome and reflects a delive
 // Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not
 // exported from the ui-kit barrel — this package only needs the one method under test here).
 function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
-  calls: Array<{ id: string; moverVision: unknown }>;
+  calls: Array<{ id: string; moverVision: unknown; moverLight: unknown }>;
 } {
-  const calls: Array<{ id: string; moverVision: unknown }> = [];
+  const calls: Array<{ id: string; moverVision: unknown; moverLight: unknown }> = [];
   return {
     setActiveTool: () => {},
     snap: (p) => p,
@@ -850,7 +850,7 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
     addPing: () => {},
     addEmote: () => {},
     animateAlongPath: () => {},
-    animateSamples: (id, _s, _d, _st, _sn, moverVision) => { calls.push({ id, moverVision }); },
+    animateSamples: (id, _s, _d, _st, _sn, moverVision, moverLight) => { calls.push({ id, moverVision, moverLight }); },
     calls,
   };
 }
@@ -859,6 +859,7 @@ function moveStreamFrame(
   scene: string,
   moverVision: unknown = null,
   truncated: boolean | null = false,
+  moverLight: unknown = null,
 ): Record<string, unknown> {
   return {
     type: "move_stream",
@@ -871,6 +872,7 @@ function moveStreamFrame(
     stop: [100, 0],
     samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
     mover_vision: moverVision,
+    mover_light: moverLight,
     cost: 2,
     truncated,
   };
@@ -891,11 +893,13 @@ test("onMoveStream forwards to sceneInteraction (incl. moverVision) for the acti
   const host = fakeMoveHost();
   session.sceneInteraction.attach(host);
   const moverVision = [{ t_ms: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
-  push(moveStreamFrame(sceneId, moverVision));
+  const moverLight = [{ t_ms: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
+  push(moveStreamFrame(sceneId, moverVision, false, moverLight));
   await vi.waitFor(() => expect(host.calls).toHaveLength(1));
   expect(host.calls[0]).toEqual({
     id: "tok1",
     moverVision: [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+    moverLight: [{ tMs: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
   });
 });
 
@@ -1569,6 +1573,8 @@ test("enter() fetches the snapshot before opening the WS connection, and the ret
       conditions: [],
       prototype: false,
       vision: null,
+      light: null,
+      movement: [],
       aura: null,
       sound: null,
       vfx: null,

@@ -39,7 +39,9 @@ import type {
   VfxAnchor,
   ActorEngine,
   LightEngine,
+  LightEmission,
   Falloff,
+  FalloffCurve,
   RegionShape,
   RegionEngine,
   RegionTrigger,
@@ -55,6 +57,7 @@ import type {
   GradationBand,
   LightGradationEngine,
   VisionMode,
+  Perception,
   VisionModesEngine,
   DrawingEngine,
   DrawingShape,
@@ -131,7 +134,9 @@ export type {
   VfxAnchor,
   ActorEngine,
   LightEngine,
+  LightEmission,
   Falloff,
+  FalloffCurve,
   RegionShape,
   RegionEngine,
   RegionTrigger,
@@ -147,6 +152,7 @@ export type {
   GradationBand,
   LightGradationEngine,
   VisionMode,
+  Perception,
   VisionModesEngine,
   DrawingEngine,
   DrawingShape,
@@ -649,7 +655,7 @@ export function resolveViewedScene(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null, aura: null, sound: null, vfx: null,
+ *   prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * actor.doc_type; // "actor"
@@ -753,7 +759,7 @@ export function buildTokenFromActor(
   // the defect this seam exists to remove.
   const base: TokenEngine = {
     x: pos.x, y: pos.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0,
-    visual: null, actor_id: null, overrides: null, face: null,
+    visual: null, actor_id: null, overrides: null, face: null, elevation: null,
   };
   if (mode === "link") {
     return envelope(worldId, "token", sceneId, {}, id, { ...base, actor_id: actor.id }, null);
@@ -781,7 +787,7 @@ export function buildTokenFromActor(
  * const engine: ActorEngine = {
  *   displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
  *   size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
- *   prototype: false, vision: null, aura: null, sound: null, vfx: null,
+ *   prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null,
  * };
  * const actor = buildActorDoc("world-1", "Goblin", engine);
  * setNameHidden(actor, true);
@@ -808,7 +814,7 @@ export function setNameHidden(doc: WireDocument, hidden: boolean): WireDocument 
  *
  * const engine: TokenEngine = {
  *   x: 50, y: 50, w: 100, h: 100, rotation: 0,
- *   visual: null, actor_id: null, overrides: null, face: null,
+ *   visual: null, actor_id: null, overrides: null, face: null, elevation: null,
  * };
  * const token = buildTokenDoc("world-1", "scene-1", engine);
  * token.doc_type; // "token"
@@ -830,7 +836,7 @@ export function buildTokenDoc(worldId: string, sceneId: string, engine: TokenEng
  * import { buildFactionRegistryDoc } from "@shadowcat/core";
  *
  * const doc = buildFactionRegistryDoc("world-1", {
- *   goblins: { name: "Goblins", color: "#00ff00", stance: "hostile" },
+ *   goblins: { name: "Goblins", color: "#00ff00", stance: "hostile", movement: [] },
  * });
  * doc.doc_type; // "faction-registry"
  * ```
@@ -877,7 +883,7 @@ export function buildConditionRegistryDoc(worldId: string, conditions: Record<st
  *
  * const engine: WallEngine = {
  *   seg: { x1: 0, y1: 0, x2: 10, y2: 0 },
- *   blocksSight: true, blocksLight: true, blocksMove: true,
+ *   blocksSight: true, blocksLight: true, blocksMove: true, elevation: null,
  * };
  * const wall = buildSceneEntityDoc("world-1", "scene-1", "wall", engine);
  * wall.doc_type; // "wall"
@@ -943,12 +949,15 @@ export function resolveGradation(store: ReadableDocuments): GradationBand[] {
 
 // --- Vision-modes registry ---
 
-/** Built-in two-mode seed: normal sight + darkvision — a MIRROR of the server's
- * `VisionModesEngine::seed` definition (the world singleton is server-seeded from it).
+/** Built-in three-mode seed: normal sight, darkvision, and tremorsense (a creature sense:
+ * grounded tokens within 12 cells, ignoring walls and illumination; its illuminationFloor is
+ * inert) — a MIRROR of the server's `VisionModesEngine::seed` definition (the world singleton is
+ * server-seeded from it).
  * Deep-frozen so shared refs returned by resolveVisionModes cannot be mutated by consumers. */
 export const SEED_VISION_MODES: Record<string, VisionMode> = deepFreeze({
-  normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, renderHint: null },
-  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, renderHint: "desaturate" },
+  normal: { id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, perceives: "terrain", requiresLos: true, renderHint: null },
+  darkvision: { id: "darkvision", name: "Darkvision", illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: "desaturate" },
+  tremorsense: { id: "tremorsense", name: "Tremorsense", illuminationFloor: "dark", defaultRange: 12, perceives: "creatures", requiresLos: false, renderHint: null },
 });
 
 /** A top-level (world-scoped, parentless) vision-modes config document.
@@ -995,7 +1004,8 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  * body (no default constant — no aliasing concern). `doc_type: "light"` is engine-defined.
  * @param worldId The owning world's id.
  * @param sceneId The scene document this light is parented to.
- * @param engine The full `LightEngine` body (position, color, intensity, radii, falloff).
+ * @param engine The full `LightEngine` body: the position plus the nested `emission`
+ * (`LightEmission` — the same payload an actor/token-carried light uses).
  * @param id An explicit id, or `undefined` to generate one.
  * @returns A `WireDocument` with `doc_type: "light"`, parented to `sceneId`.
  * @example
@@ -1003,8 +1013,8 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
  * import { buildLightDoc, type LightEngine } from "@shadowcat/core";
  *
  * const engine: LightEngine = {
- *   x: 0, y: 0, color: "#ffcc66", intensity: 1,
- *   brightRadius: 4, dimRadius: 8, falloff: null, enabled: true,
+ *   x: 0, y: 0, elevation: null,
+ *   emission: { color: "#ffcc66", intensity: 1, brightRadius: 4, dimRadius: 8, falloff: null, enabled: true },
  * };
  * const light = buildLightDoc("world-1", "scene-1", engine);
  * light.doc_type; // "light"
@@ -1013,6 +1023,20 @@ export function resolveVisionModes(store: ReadableDocuments): Record<string, Vis
 export function buildLightDoc(worldId: string, sceneId: string, engine: LightEngine, id?: string): WireDocument {
   return envelope(worldId, "light", sceneId, {}, id, engine, null);
 }
+
+/** The authoring default for a newly-enabled light emission (a standalone light placed by the
+ * light tool, an actor's carried light toggled on, a token's custom override): a warm torch —
+ * full intensity, bright 2 / dim 6 cells, no explicit falloff (the read-side default is
+ * linear), enabled. ONE shared default so every authoring surface stamps the same starting
+ * payload. Treat as immutable; spread-copy before mutating. */
+export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
+  color: "#ffd9a0",
+  intensity: 1,
+  brightRadius: 2,
+  dimRadius: 6,
+  falloff: null,
+  enabled: true,
+});
 
 // --- Region doc type ---
 

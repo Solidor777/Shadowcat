@@ -112,6 +112,12 @@ pub struct Faction {
     pub color: String,
     /// Stance toward the party.
     pub stance: FactionStance,
+    /// Movement-type tags unioned into every member actor's resolved set
+    /// (`SceneEcs::token_movement_tags` / `resolveTokenActor`). Same vocabulary and
+    /// engine-reserved semantics as `ActorEngine::movement` — `"flying"`/`"incorporeal"`
+    /// ignore terrain COST only; unknown tags are inert system vocabulary.
+    #[serde(default)]
+    pub movement: Vec<String>,
 }
 
 /// The world's faction registry: a singleton config document. Keyed by
@@ -147,6 +153,7 @@ impl FactionRegistryEngine {
                 name: "Friendly".to_string(),
                 color: "#3fb950".to_string(),
                 stance: FactionStance::Friendly,
+                movement: vec![],
             },
         );
         factions.insert(
@@ -155,6 +162,7 @@ impl FactionRegistryEngine {
                 name: "Neutral".to_string(),
                 color: "#9e9e9e".to_string(),
                 stance: FactionStance::Neutral,
+                movement: vec![],
             },
         );
         factions.insert(
@@ -163,6 +171,7 @@ impl FactionRegistryEngine {
                 name: "Hostile".to_string(),
                 color: "#f85149".to_string(),
                 stance: FactionStance::Hostile,
+                movement: vec![],
             },
         );
         Self { factions }

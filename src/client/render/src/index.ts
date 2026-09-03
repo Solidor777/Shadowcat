@@ -1,6 +1,6 @@
-export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, TokenFx, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample } from "./types";
+export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, TokenFx, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample, MoveLightSample } from "./types";
 export type { LightingInput, LitCell } from "./types";
-export { Lighting, LIGHTING_FADE_MS, type LightingFrame, type LitDrawCell } from "./lighting";
+export { Lighting, LIGHTING_FADE_MS, MAX_DARK_ALPHA, TINT_ALPHA, bandAlpha, mergeSweepCells, unionLightingInputs, holdLightingCells, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
 export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";
@@ -8,6 +8,7 @@ export { DrawingView } from "./drawing-view";
 export { TemplateView } from "./template-view";
 export { WallView } from "./wall-view";
 export { RegionView } from "./region-view";
+export { LightView } from "./light-view";
 export { PingView, type PingRing } from "./ping-view";
 export { EmoteView, type EmoteGlyph } from "./emote-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";

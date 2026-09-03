@@ -222,7 +222,6 @@ pub(crate) fn navmesh_find(
     }
 
     let mut full_path: Vec<crate::scene::vision::P> = vec![start];
-    let mut cost = 0.0_f64;
     let mut leg_start = start;
 
     for &wp in waypoints {
@@ -231,7 +230,6 @@ pub(crate) fn navmesh_find(
         let Some(path) = nav.mesh.path(from, to) else {
             return Err(PathFail::Unreachable);
         };
-        cost += path.length as f64;
 
         for (i, v) in path.path.iter().enumerate() {
             let pt = (v.x as f64, v.y as f64);
@@ -249,6 +247,16 @@ pub(crate) fn navmesh_find(
         }
         leg_start = wp;
     }
+
+    // Price the exact polyline handed out, summed in f64 over its spans — never polyanya's
+    // f32 `path.length`, which rounds each leg before the cast. This cost is OBSERVED: with no
+    // mask and no walls `clip_to_visible_mask` passes the outcome through unrecomputed, so a
+    // GM's wall-less continuous preview would otherwise report a cost the executor (summing the
+    // same spans in f64 over these same points) cannot reproduce.
+    let cost: f64 = full_path
+        .windows(2)
+        .map(|w| ((w[1].0 - w[0].0).powi(2) + (w[1].1 - w[0].1).powi(2)).sqrt())
+        .sum();
 
     Ok(PathOutcome {
         path: full_path,
@@ -398,7 +406,10 @@ pub(crate) fn clip_to_visible_mask(
 /// route's gate/secrecy/cost properties are therefore <= the grid route's. The single grid step
 /// `path[i] -> path[i+1]` is ALWAYS kept unconditionally (it already passed `find`'s per-cell
 /// gate), so progress to the goal is guaranteed and cells adjacent to special terrain stay
-/// grid-stepped.
+/// grid-stepped. For an `MoveTraits::ignore_terrain` mover, condition (e) is dropped — terrain is
+/// plain ground for them — while (c) impassable and (d) arrest still refuse the chord (the
+/// exemption is terrain COST, never solidity or hazard), and the per-span cost recompute prices
+/// every span at multiplier 1.0 through the same `pathfinding::terrain_cost` chokepoint.
 ///
 /// `cost` is recomputed EXACTLY, not carried through unchanged: for every smoothed span (kept
 /// grid step or straightened chord), `world_per_cell` (the authored-distance conversion — never
@@ -423,14 +434,23 @@ pub(crate) fn clip_to_visible_mask(
 /// while smoothing continues over the rest of the path.
 pub(crate) fn los_smooth(
     outcome: crate::scene::pathfinding::PathOutcome,
-    walls: &[crate::scene::vision::Seg],
-    mask: Option<&std::collections::BTreeSet<crate::scene::pathfinding::Cell>>,
-    field: &crate::scene::regions::RegionField,
-    cell: f64,
-    footprint_radius_cells: f64,
-    grid: &dyn crate::scene::grid_shape::GridShape,
+    inputs: &crate::scene::pathfinding::PathInputs<'_>,
 ) -> crate::scene::pathfinding::PathOutcome {
     use crate::scene::pathfinding::Cell;
+    // The SAME bundle `find` searched under: `regions: None` means no region enforcement (no
+    // chord is refused on region grounds and every span prices unweighted through
+    // `terrain_cost`), exactly as it means inside `find`. `budget_cells` is not read here — the
+    // budget cut already landed on the pre-smooth route.
+    let crate::scene::pathfinding::PathInputs {
+        footprint_radius_cells,
+        cell,
+        walls,
+        mask,
+        regions: field,
+        shape: grid,
+        budget_cells: _,
+        traits,
+    } = *inputs;
     if outcome.path.len() < 3
         || !cell.is_finite()
         || cell <= 0.0
@@ -463,10 +483,11 @@ pub(crate) fn los_smooth(
                 None => return false, // degenerate/over-cap span: fail closed (do not straighten)
             }
             for c in &entered {
-                if field.is_impassable(*c)
-                    || field.is_arrest(*c)
-                    || field.terrain_multiplier(*c) > 1.0
-                {
+                if field.is_some_and(|f| {
+                    f.is_impassable(*c)
+                        || f.is_arrest(*c)
+                        || (!traits.ignore_terrain && f.terrain_multiplier(*c) > 1.0)
+                }) {
                     return false;
                 }
                 if let Some(m) = mask {
@@ -513,17 +534,18 @@ pub(crate) fn los_smooth(
     // prices a Continuous transition/tail span with — see that function's own doc comment on why
     // the two must agree bit-for-bit) converts each window's Euclidean length to cells via
     // `world_units_per_cell` (the authored-distance conversion — never `cell`, the indexing
-    // scale); the window is priced at ITS OWN destination cell's terrain multiplier. See this
+    // scale); the window is priced at ITS OWN destination cell's `terrain_cost` read. See this
     // function's doc comment for why a closed form over the (unsampled) window endpoints is exact
-    // for both a straightened chord (every entered cell, destination included, carries multiplier
-    // `<= 1.0` by construction) and a kept single grid step (the one king-move edge `find`
-    // already priced this way).
+    // for both a straightened chord (a non-exempt mover's every entered cell, destination
+    // included, carries multiplier `<= 1.0` by construction; an exempt mover's `terrain_cost`
+    // reads a constant 1.0 over the whole span) and a kept single grid step (the one king-move
+    // edge `find` already priced this way).
     let world_per_cell = grid.world_units_per_cell();
     let cost: f64 = smoothed
         .windows(2)
         .map(|w| {
             crate::scene::grid_shape::euclidean_span_cells(w[0], w[1], world_per_cell)
-                * field.terrain_multiplier(grid.cell_of(w[1]))
+                * crate::scene::pathfinding::terrain_cost(field, grid.cell_of(w[1]), traits)
         })
         .sum();
 

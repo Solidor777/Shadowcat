@@ -3,7 +3,7 @@
 // reconnects with exponential backoff, and tracks the server time offset. It
 // emits in-order commands and rejects to its handlers; wiring to the document
 // store / optimistic engine is the caller's job.
-import type { RejectReason } from "@shadowcat/types";
+import type { FalloffCurve, RejectReason } from "@shadowcat/types";
 import {
   parseServerMsg,
   type ClientMsg,
@@ -65,6 +65,30 @@ export interface MoveVisionSample {
   polygons: [number, number][][];
 }
 
+/** A carried-light sample paired with a MoveSample by tMs: the mover's emission raycast at
+ * that instant. `pos`/`bright`/`dim` are in scene units (`dim` is the server's per-recipient
+ * admission disc); `color` is the packed `0xRRGGBB` tint; the polygons are NOT clipped to the
+ * recipient's line of sight — the client intersects them with its own fog. */
+export interface MoveLightSample {
+  /** Elapsed ms since the move's `startServerMs`; pairs with a `MoveSample` at the same value. */
+  tMs: number;
+  /** The emitter's scene-coordinate `[x, y]` position at this sample. */
+  pos: [number, number];
+  /** Full-brightness reach from `pos`, scene units. */
+  bright: number;
+  /** Dim-light outer reach from `pos`, scene units. */
+  dim: number;
+  /** Packed `0xRRGGBB` light color. */
+  color: number;
+  /** The emission's intensity in `[0, 1]`; with `falloff`, what makes the sample
+   * self-describing for the server's per-recipient clip. */
+  intensity: number;
+  /** The emission's falloff curve across the dim band (`FalloffCurve`). */
+  falloff: FalloffCurve;
+  /** The light's illumination polygon(s) at this sample, as rings of `[x, y]` scene coords. */
+  polygons: [number, number][][];
+}
+
 /** Broadcast animation frame delivered to every scene viewer (mover + observers).
  * Wire snake_case fields are mapped to camelCase. Mover receives the full trajectory +
  * moverVision; observers receive server-clipped position samples, moverVision=null. */
@@ -86,10 +110,17 @@ export interface MoveStream {
   /** Final `[x, y]` scene-coordinate position of the move. */
   stop: [number, number];
   /** Time-tagged position samples driving playback (full trajectory for the mover; clipped
-   * to the recipient's own vision for an observer). */
+   * to the recipient's own vision for an observer). EMPTY for a glow-only frame — a recipient
+   * the mover's carried light reached but the token never did, who gets `moverLight` alone
+   * with `stop`/`durationMs` at the last admitted light sample; at least one of `samples`/
+   * `moverLight` is non-empty in every delivered frame. */
   samples: MoveSample[];
   /** Time-tagged vision-polygon samples for the mover; always `null` for an observer. */
   moverVision: MoveVisionSample[] | null;
+  /** Time-tagged carried-light samples: full for the mover and a plain GM, admitted per
+   * sample for an observer (only where the glow reaches their vision), `null` when the mover
+   * carries no enabled emission, the scene has no light field, or nothing reaches. */
+  moverLight: MoveLightSample[] | null;
   /** Total terrain-weighted movement cost for this move. Informational.
    * Null for a clipped observer (mirrors moverVision) — the authoritative cost may reflect
    * secret-region terrain the observer's clipped samples don't reveal. */
@@ -906,6 +937,18 @@ export class WsClient {
           samples: msg.samples.map((s) => ({ tMs: s.t_ms, pos: s.pos })),
           moverVision: msg.mover_vision
             ? msg.mover_vision.map((v) => ({ tMs: v.t_ms, polygons: v.polygons as [number, number][][] }))
+            : null,
+          moverLight: msg.mover_light
+            ? msg.mover_light.map((l) => ({
+                tMs: l.t_ms,
+                pos: l.pos,
+                bright: l.bright,
+                dim: l.dim,
+                color: l.color,
+                intensity: l.intensity,
+                falloff: l.falloff,
+                polygons: l.polygons as [number, number][][],
+              }))
             : null,
           cost: msg.cost,
           truncated: msg.truncated,
