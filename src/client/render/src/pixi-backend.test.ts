@@ -211,6 +211,31 @@ describe("PixiBackend.setVisibilityBlend", () => {
     // One GPU render-to-texture pass per endpoint (from, to) — never one pair per tick.
     expect(renderCalls.count).toBeLessThan(5);
   });
+
+  test("captures a fresh pair whenever the (from, to) content actually changes — render count scales with DISTINCT pairs, not tick count", () => {
+    // A cache that stops discriminating (e.g. a key collapsed to a constant) would pass the
+    // "holds the same pair" test above and show an even LARGER render-count reduction here,
+    // while silently reusing a stale rasterized texture for content that genuinely changed —
+    // exactly the failure `visibilityInputKey`'s own discrimination tests guard against.
+    const { backend, renderCalls } = headlessBackendWithRenderCounter();
+    const endpoints: VisibilityInput[] = Array.from({ length: 6 }, (_, i) => ({
+      mode: "masked",
+      visible: [{ points: [0, 0, (i + 1) * 10, 0, (i + 1) * 10, (i + 1) * 10, 0, (i + 1) * 10] }],
+      explored: [],
+      perceived: [],
+    }));
+    const ticksPerPair = 6;
+    const pairCount = endpoints.length - 1;
+    for (let pair = 0; pair < pairCount; pair++) {
+      for (let tick = 0; tick < ticksPerPair; tick++) {
+        backend.setVisibilityBlend(endpoints[pair], endpoints[pair + 1], tick / ticksPerPair);
+      }
+    }
+    // Exactly one fresh capture per endpoint (2 per pair transition), never per tick: a
+    // content-blind cache would report far fewer than 2*pairCount; a never-caching one would
+    // report 2*pairCount*ticksPerPair (60).
+    expect(renderCalls.count).toBe(2 * pairCount);
+  });
 });
 
 describe("PixiBackend.updateTokenGeneratedFrame", () => {

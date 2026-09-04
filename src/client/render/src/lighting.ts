@@ -38,17 +38,23 @@ export interface LightingFrame {
 }
 
 /**
- * A content fingerprint of one `LightingFrame`, covering exactly the fields
- * `PixiBackend.setLighting` reads (`cell`, `cells`' `i`/`j`/`alpha`/`tint`/`tintAlpha`/
- * `desaturate`/`corners`, `darkness`'s polygons). Two frames with equal keys paint
- * pixel-identical overlays, so `Lighting.apply` uses this to skip a real `backend.setLighting`
- * repaint when the frame it just resolved is unchanged from the last one actually painted — a
- * carried-light or vision sweep holds the SAME resolved content for many consecutive ticks
- * (only the sweep's blend factor moves between two sample boundaries), and every caller
- * (`setSweep`, `setDarkness`, `tick`) rebuilds its argument as a fresh array/object each call, so
- * a reference-equality check would never catch the repeat.
+ * A content fingerprint of one `LightingFrame`. It is a SUPERSET of the fields
+ * `PixiBackend.setLighting` actually reads: `frame.cell` and each cell's `i`/`j` are included in
+ * the key but never read by `setLighting` itself, which paints only `darkness`'s polygons and
+ * each cell's `alpha`/`tint`/`tintAlpha`/`desaturate`/`corners`. Including the extra fields is
+ * the safe direction, deliberately — it can only ever force an unnecessary repaint (`cell` or a
+ * cell's `i`/`j` changing with no visual difference), never an incorrectly-skipped one, and
+ * narrowing the key to match `setLighting` exactly would risk silently dropping a field some
+ * future backend implementation DOES read. Two frames with equal keys paint pixel-identical
+ * overlays (the converse does not hold), so `Lighting.apply` uses this to skip a real
+ * `backend.setLighting` repaint when the frame it just resolved is unchanged from the last one
+ * actually painted — a carried-light or vision sweep holds the SAME resolved content for many
+ * consecutive ticks (only the sweep's blend factor moves between two sample boundaries), and
+ * every caller (`setSweep`, `setDarkness`, `tick`) rebuilds its argument as a fresh array/object
+ * each call, so a reference-equality check would never catch the repeat.
  * @param frame The resolved lighting frame to fingerprint.
- * @returns A string equal for two frames `backend.setLighting` would paint identically.
+ * @returns A string equal for two frames `backend.setLighting` would paint identically (never
+ * the reverse: two frames that paint identically can still key differently on `cell`/`i`/`j`).
  * @example
  * ```ts
  * import { lightingFrameKey } from "@shadowcat/render";
