@@ -191,7 +191,14 @@
    * `ctx.documents`'s plain-callback reactivity into this `$derived` — without it the table
    * freezes at first render (at world creation, before any combat setting is written) and never
    * reflects a later edit, the same reactivity bug `GameSettingsPanel` itself avoids. */
-  const effectiveRows = $derived.by((): { path: SettingPath; value: unknown; source: string }[] => {
+  const effectiveRows = $derived.by((): {
+    /** The `SettingPath` this row resolves. */
+    path: SettingPath;
+    /** The resolved value at the winning tier. */
+    value: unknown;
+    /** Which tier the value resolved from. */
+    source: string;
+  }[] => {
     subscribe();
     return EFFECTIVE_PATHS.map((path) => {
       const r = resolveSettingProvenance(ctx.documents, scene, path);
