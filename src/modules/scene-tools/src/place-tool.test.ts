@@ -35,7 +35,7 @@ function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperat
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",
-    sendPing: () => {},
+    sendPing: () => {}, t: (k) => k,
     footprints: () => unitFootprints,
   };
   return { ctx, sent };
@@ -98,6 +98,11 @@ const actorEngine = (prototype: boolean) => ({
   conditions: [],
   prototype,
   vision: null,
+  light: null,
+  movement: [],
+  aura: null,
+  sound: null,
+  vfx: null,
 });
 
 function docsWithSceneAndActor(id: string, prototype: boolean): DocumentStore {

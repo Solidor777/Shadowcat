@@ -9,12 +9,15 @@ import {
   DEFAULT_WORLD_SETTINGS,
   SYSTEM_CONTRACT,
   SYSTEM_DEFAULTS_DOC_TYPE,
+  buildCombatDoc,
+  newCombatEngine,
+  COMBAT_SERVICE,
   type Connect,
   type WireDocument,
   type Module,
 } from "@shadowcat/core";
 import { WorldSession } from "./worldSession.svelte";
-import { listWorldMembers } from "@shadowcat/core";
+import { listWorldMembers, CombatClientError } from "@shadowcat/core";
 import { getWorldSnapshot } from "./api";
 
 // The snapshot-bootstrap fetch hits the network on every enter(); stub it (safe default: no
@@ -304,6 +307,32 @@ test("sendPing transmits a scene_ping for the active scene; onPing fires on an i
   expect(got[0].user).toBe("u9");
 });
 
+test("sendEmote transmits an emote for the viewed scene; onEmote fires on an inbound emote", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame); // GM → auto-creates a scene (the emote's scene)
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+
+  session.sendEmote("tok1", "😀");
+  const emote = sent.find((m) => m.type === "emote");
+  expect(emote).toBeTruthy();
+  expect(emote!.token).toBe("tok1");
+  expect(emote!.emote).toBe("😀");
+  expect(typeof emote!.scene).toBe("string");
+
+  const got: Array<{ token: string; user: string }> = [];
+  session.onEmote((m) => got.push(m));
+  const sceneId = (
+    (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id
+  ) as string;
+  push({ type: "emote", scene: sceneId, token: "tok1", user: "u9", emote: "🔥" });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].user).toBe("u9");
+});
+
 test("does not auto-create a scene for a non-GM actor", async () => {
   const sent: Array<Record<string, unknown>> = [];
   const { connect, push } = pushConnect(sent);
@@ -385,7 +414,7 @@ test("dispatchIntent predicts via ctx.client and sends one correlated intent fra
   await session.enter("w1");
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-1");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-1");
   session.dispatchIntent([{ op: "create", doc }]);
 
   // Prediction: the optimistic view (ctx.client) shows the new doc immediately.
@@ -412,12 +441,18 @@ test("dispatchIntent while disconnected drops the action (no orphaned prediction
   await vi.waitFor(() => expect(capturedClient).not.toBeNull());
 
   session.leave(); // tears down the socket → no transport
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-x");
-  session.dispatchIntent([{ op: "create", doc }]);
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-x");
+  expect(session.dispatchIntent([{ op: "create", doc }])).toBe(false);
 
   // Neither predicted (no orphaned pending to mis-correlate) nor transmitted.
   expect(capturedClient!.get("tok-x")).toBeUndefined();
   expect(sent.filter((m) => m.type === "intent")).toHaveLength(0);
+});
+
+test("combat.createCombat before enter() throws not-connected instead of returning an id for a dropped op", () => {
+  const session = new WorldSession({ selfId: "u1", connect: pushConnect([]).connect, modules: [], logger: silentLogger });
+  expect(() => session.combat.createCombat("s1")).toThrow(CombatClientError);
+  expect(() => session.combat.createCombat("s1")).toThrow(expect.objectContaining({ code: "not-connected" }));
 });
 
 test("a GM Welcome populates members in place (stable reference) for see-as labels", async () => {
@@ -470,7 +505,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 
   // Transport drops but the client stays running → reconnecting.
   handlers.onClose();
-  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null }, "tok-off");
+  const doc = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null }, "tok-off");
   session.dispatchIntent([{ op: "create", doc }]);
   // Predicted immediately, but NOT transmitted while offline.
   expect(capturedClient!.get("tok-off")).toBeTruthy();
@@ -485,7 +520,7 @@ test("an intent dispatched while reconnecting is predicted, queued, and flushed 
 });
 
 function actorWith(perms: Partial<WireDocument["permissions"]>): WireDocument {
-  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null }, "act1");
+  const d = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null }, "act1");
   d.permissions = { ...d.permissions, ...perms };
   return d;
 }
@@ -520,7 +555,7 @@ test("canEdit: effective token ownership (inherited from the linked actor) unloc
   const linked = buildTokenDoc(
     "w1",
     "s1",
-    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null },
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: null, actor_id: "act1", overrides: null, face: null, elevation: null },
     "tok-linked",
   );
   session.dispatchIntent([
@@ -658,12 +693,150 @@ test("the session subscribes to footprints itself and publishes each frame's res
   expect(session.footprints.token("tok1")).toBeNull();
 });
 
+test("defineCombatHooks ran: a module's combat:start listener fires on a start command", async () => {
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const startEvents: unknown[] = [];
+  const combatModule: Module = {
+    manifest: { id: "combat-listener", version: "0.1.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.hooks.on("combat:start", (payload) => startEvents.push(payload));
+    },
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub, combatModule],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  push({
+    type: "event",
+    intent_id: null,
+    command: {
+      seq: 1,
+      world_id: "w1",
+      author: "gm",
+      ts: 0,
+      ops: [
+        {
+          op: "create",
+          doc: buildCombatDoc("w1", { ...newCombatEngine("scene-1"), active: true, round: 1, order: ["a"] }),
+        },
+      ],
+    },
+  });
+
+  await vi.waitFor(() => expect(startEvents).toHaveLength(1));
+});
+
+test("no combat hook emission on seedDocuments, applyIntent, or reject", async () => {
+  const connect: Connect = (handlers) => {
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const events: unknown[] = [];
+  const combatModule: Module = {
+    manifest: { id: "combat-listener", version: "0.1.0", dependencies: {} },
+    register: (ctx) => {
+      ctx.hooks.on("combat:start", (p) => events.push(p));
+    },
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub, combatModule],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  // seedDocuments bypasses onCommand entirely (a snapshot LOAD, not an applied command).
+  session.store.seedDocuments([
+    buildCombatDoc("w1", { ...newCombatEngine("scene-1"), active: true, round: 1, order: ["a"] }),
+  ]);
+  // An optimistic predicted create, never applied through onCommand.
+  session.dispatchIntent([
+    { op: "create", doc: buildCombatDoc("w1", { ...newCombatEngine("scene-2"), active: true, round: 1, order: [] }) },
+  ]);
+
+  await new Promise((r) => setTimeout(r, 0));
+  expect(events).toHaveLength(0);
+  session.leave();
+});
+
+test("COMBAT_SERVICE is services.get-able from a module's ModuleContext", async () => {
+  const connect: Connect = (handlers) => {
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  let resolved: unknown;
+  const combatModule: Module = {
+    manifest: { id: "combat-consumer", version: "0.1.0", dependencies: {} },
+    register: (ctx) => {
+      resolved = ctx.services.get(COMBAT_SERVICE);
+    },
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub, combatModule],
+    logger: silentLogger,
+  });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(resolved).toBe(session.combat);
+});
+
+test("the combat subscription is established after Welcome and reflects a delivered frame; leave() resets it", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => push(welcomeFrame));
+    return Promise.resolve({ send: (d) => sent.push(JSON.parse(d)), close: () => handlers.onClose() });
+  };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(session.combat.resolved.combats).toEqual([]);
+
+  const req = await vi.waitFor(() => {
+    const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "combat");
+    expect(m).toBeDefined();
+    return m!;
+  });
+  push({
+    type: "scene_derived",
+    request_id: req.request_id,
+    channel: "combat",
+    computed_at_seq: 0,
+    payload: {
+      combats: [
+        { id: "combat-1", scene_id: "scene-1", combatants: [{ id: "cc-1", resources: null, movement_cells: null }] },
+      ],
+    },
+  });
+  await vi.waitFor(() => expect(session.combat.resolved.combats).toHaveLength(1));
+
+  session.leave();
+  expect(session.combat.resolved.combats).toEqual([]);
+});
+
 // Minimal SceneToolHost fake (mirrors @shadowcat/ui-kit's `fakeSceneHost` fixture, not
 // exported from the ui-kit barrel — this package only needs the one method under test here).
 function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
-  calls: Array<{ id: string; moverVision: unknown }>;
+  calls: Array<{ id: string; moverVision: unknown; moverLight: unknown }>;
 } {
-  const calls: Array<{ id: string; moverVision: unknown }> = [];
+  const calls: Array<{ id: string; moverVision: unknown; moverLight: unknown }> = [];
   return {
     setActiveTool: () => {},
     snap: (p) => p,
@@ -675,8 +848,9 @@ function fakeMoveHost(): import("@shadowcat/render").SceneToolHost & {
     drawMeasure: () => {},
     clearMeasure: () => {},
     addPing: () => {},
+    addEmote: () => {},
     animateAlongPath: () => {},
-    animateSamples: (id, _s, _d, _st, _sn, moverVision) => { calls.push({ id, moverVision }); },
+    animateSamples: (id, _s, _d, _st, _sn, moverVision, moverLight) => { calls.push({ id, moverVision, moverLight }); },
     calls,
   };
 }
@@ -685,6 +859,7 @@ function moveStreamFrame(
   scene: string,
   moverVision: unknown = null,
   truncated: boolean | null = false,
+  moverLight: unknown = null,
 ): Record<string, unknown> {
   return {
     type: "move_stream",
@@ -697,6 +872,7 @@ function moveStreamFrame(
     stop: [100, 0],
     samples: [{ t_ms: 0, pos: [0, 0] }, { t_ms: 500, pos: [100, 0] }],
     mover_vision: moverVision,
+    mover_light: moverLight,
     cost: 2,
     truncated,
   };
@@ -717,11 +893,13 @@ test("onMoveStream forwards to sceneInteraction (incl. moverVision) for the acti
   const host = fakeMoveHost();
   session.sceneInteraction.attach(host);
   const moverVision = [{ t_ms: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
-  push(moveStreamFrame(sceneId, moverVision));
+  const moverLight = [{ t_ms: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]]] }];
+  push(moveStreamFrame(sceneId, moverVision, false, moverLight));
   await vi.waitFor(() => expect(host.calls).toHaveLength(1));
   expect(host.calls[0]).toEqual({
     id: "tok1",
     moverVision: [{ tMs: 0, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
+    moverLight: [{ tMs: 0, pos: [0, 0], bright: 100, dim: 200, color: 0xffcc66, intensity: 1, falloff: "linear" as const, polygons: [[[0, 0], [20, 0], [20, 20]]] }],
   });
 });
 
@@ -990,6 +1168,30 @@ test("onScenePing cross-scene guard: a GM roaming scene B sees own pings for B, 
   expect(got).toHaveLength(0);
 
   push({ type: "scene_ping", scene: "sceneB", x: 3, y: 4, user: "u1" }); // the GM's own viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].scene).toBe("sceneB");
+});
+
+test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, drops an emote for A", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB"); // roaming B while players stay on A
+
+  const got: Array<{ scene: string }> = [];
+  session.onEmote((m) => got.push(m));
+
+  push({ type: "emote", scene: sceneA, token: "tok1", user: "u9", emote: "😀" }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "emote", scene: "sceneB", token: "tok1", user: "u1", emote: "😀" }); // the GM's own viewed scene — accepted
   await vi.waitFor(() => expect(got).toHaveLength(1));
   expect(got[0].scene).toBe("sceneB");
 });
@@ -1371,6 +1573,11 @@ test("enter() fetches the snapshot before opening the WS connection, and the ret
       conditions: [],
       prototype: false,
       vision: null,
+      light: null,
+      movement: [],
+      aura: null,
+      sound: null,
+      vfx: null,
     },
     "snap-actor",
   );
@@ -1405,4 +1612,106 @@ test("a snapshot-fetch failure does not throw out of enter() and does not preven
 
   await expect(session.enter("w1")).resolves.toBeUndefined();
   expect(connectCalled).toBe(true);
+});
+
+// An external module's declared stylesheet (`ModuleManifest.style`) follows
+// the module's activation lifecycle: injected as a <link> once the module has
+// activated, removed when it unloads or the session leaves the world.
+const styledModuleManifest = {
+  id: "mod-one",
+  version: "1.0.0",
+  dependencies: {},
+  style: "style.css",
+};
+
+async function enterWithStyledModule(): Promise<WorldSession> {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+    },
+  ]);
+  const externalModule: Module = {
+    manifest: { ...styledModuleManifest },
+    register: vi.fn(),
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    importModule: vi.fn().mockResolvedValue(externalModule),
+  });
+  await session.enter("w1");
+  await vi.waitFor(() =>
+    expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeTruthy(),
+  );
+  return session;
+}
+
+test("a loaded external module's declared stylesheet is injected, resolved inside its served folder", async () => {
+  const session = await enterWithStyledModule();
+  const link = document.querySelector<HTMLLinkElement>(
+    'link[data-shadowcat-module-style="mod-one"]',
+  )!;
+  expect(link.rel).toBe("stylesheet");
+  expect(link.getAttribute("href")).toBe("/modules/folder-one/style.css");
+  session.leave();
+});
+
+test("leaving the world removes every injected module stylesheet", async () => {
+  const session = await enterWithStyledModule();
+  session.leave();
+  expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+});
+
+test("a reconcile unload removes the module's stylesheet", async () => {
+  const session = await enterWithStyledModule();
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue([]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+    },
+  ]);
+  await session.reconcileInstalledModules();
+  expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+  session.leave();
+});
+
+test("a module whose activation fails gets no stylesheet link", async () => {
+  const core = await import("@shadowcat/core");
+  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.listInstalledModules).mockResolvedValue([
+    {
+      id: "folder-one",
+      manifest: styledModuleManifest,
+      entry_url: "/modules/folder-one/index.js",
+    },
+  ]);
+  // The import succeeds (so the load result lists the module) but activation
+  // throws; `ModuleRegistry.activate` logs and skips rather than rejecting.
+  const brokenModule: Module = {
+    manifest: { ...styledModuleManifest },
+    register: vi.fn().mockRejectedValue(new Error("boom")),
+  };
+  const session = new WorldSession({
+    selfId: "u1",
+    connect: mockConnect(),
+    modules: [coreUiStub],
+    logger: silentLogger,
+    importModule: vi.fn().mockResolvedValue(brokenModule),
+  });
+  await session.enter("w1");
+  // Give the fire-and-forget load pipeline its microtasks, then assert no
+  // link landed.
+  await vi.waitFor(() => expect(core.getEnabledModules).toHaveBeenCalled());
+  await new Promise((r) => setTimeout(r, 0));
+  expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
+  session.leave();
 });

@@ -348,3 +348,43 @@ fn command_round_trips_through_json() {
     let back: Command = serde_json::from_str(&s).unwrap();
     assert_eq!(cmd, back);
 }
+
+#[test]
+fn move_inverts_by_swapping_parents() {
+    let op = Operation::Move {
+        doc_id: Uuid::from_u128(1),
+        parent_id: Some(Uuid::from_u128(2)),
+        old_parent_id: None,
+    };
+    assert_eq!(
+        op.invert(),
+        Operation::Move {
+            doc_id: Uuid::from_u128(1),
+            parent_id: None,
+            old_parent_id: Some(Uuid::from_u128(2)),
+        }
+    );
+    assert_eq!(op.invert().invert(), op);
+}
+
+#[test]
+fn move_round_trips_through_json_with_op_tag() {
+    let op = Operation::Move {
+        doc_id: Uuid::from_u128(1),
+        parent_id: Some(Uuid::from_u128(2)),
+        old_parent_id: None,
+    };
+    let v = serde_json::to_value(&op).expect("serialize");
+    assert_eq!(v["op"], serde_json::json!("move"));
+    assert_eq!(
+        v["doc_id"],
+        serde_json::json!(Uuid::from_u128(1).to_string())
+    );
+    assert_eq!(
+        v["parent_id"],
+        serde_json::json!(Uuid::from_u128(2).to_string())
+    );
+    assert_eq!(v["old_parent_id"], serde_json::Value::Null);
+    let back: Operation = serde_json::from_value(v).expect("deserialize");
+    assert_eq!(back, op);
+}

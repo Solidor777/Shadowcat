@@ -8,15 +8,17 @@
 //! place `n` samples at equal arc-length steps, map each onto the polyline via
 //! linear interpolation, and assign `t_ms = s / L * duration_ms`.
 //!
-//! Coupling: `MAX_VISION_SAMPLES` is the shared cap for both position samples
-//! and vision samples; vision samples are computed by `Room::execute_move` via
-//! `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at`. The cap
-//! prevents a pathologically long path from flooding the broadcast.
+//! Coupling: `MAX_VISION_SAMPLES` is the shared cap for position, vision and
+//! carried-light samples; vision samples are computed by `Room::execute_move` via
+//! `SceneEcs::sight_sources` + `SightSources::los_at`, light samples via
+//! `SceneEcs::mover_light_inputs` + `MoverLightInputs::sample_at`, both over the SAME
+//! position sample list. The cap prevents a pathologically long path from flooding the
+//! broadcast.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-/// Maximum number of samples in a `MoveStream` (position or vision).
+/// Maximum number of samples in a `MoveStream` (position, vision or carried light).
 /// Shared cap across all sample types on a single `MoveStream` frame.
 pub(crate) const MAX_VISION_SAMPLES: usize = 96;
 
@@ -31,8 +33,8 @@ pub(crate) const SAMPLES_PER_CELL: f64 = 3.0;
 
 /// A time-tagged vision sample for the mover's fog-sweep trajectory. `t_ms` matches
 /// the corresponding `PosSamplePt.t_ms`; `polygons` are the visible regions computed
-/// via `SceneEcs::player_vision_inputs` + `VisionMoveInputs::polygons_at` at the sample's
-/// viewpoint, scene-local.
+/// via `SceneEcs::sight_sources` + `SightSources::los_at` at the sample's viewpoint,
+/// scene-local.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct VisionSamplePt {
     /// Elapsed time in milliseconds from the move's `start_server_ms`.
@@ -40,6 +42,32 @@ pub(crate) struct VisionSamplePt {
     /// Visibility polygons (scene coords) visible at this instant. One polygon per owned
     /// token contributing to the union (moving token at its sample viewpoint; other owned
     /// tokens at committed positions).
+    pub polygons: Vec<Vec<crate::scene::vision::P>>,
+}
+
+/// A time-tagged carried-light sample for the mover's light sweep. `t_ms` matches the
+/// corresponding `PosSamplePt.t_ms`; `pos` is the emitter position at that instant, `bright`/
+/// `dim` its reaches in SCENE units (`dim` doubles as the per-recipient admission disc), `color`
+/// the packed `0xRRGGBB` tint, and `polygons` the `blocksLight`-occluded illumination polygon
+/// computed by `MoverLightInputs::sample_at` through the committed field's own
+/// `emitters::light_polygon`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LightSamplePt {
+    /// Elapsed time in milliseconds from the move's `start_server_ms`.
+    pub t_ms: f64,
+    /// Emitter position (scene coords) at this instant.
+    pub pos: (f64, f64),
+    /// Full-brightness reach, scene units.
+    pub bright: f64,
+    /// Dim-light outer reach, scene units.
+    pub dim: f64,
+    /// Peak illumination level within `bright`, `[0, 1]`.
+    pub intensity: f64,
+    /// Taper curve across `(bright, dim]`.
+    pub falloff: crate::scene::lighting::Falloff,
+    /// Packed `0xRRGGBB` light color.
+    pub color: u32,
+    /// Illumination polygon(s) at this instant, scene coords.
     pub polygons: Vec<Vec<crate::scene::vision::P>>,
 }
 

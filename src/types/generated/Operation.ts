@@ -21,4 +21,16 @@ doc_id: string,
 /**
  * Ordered field changes, each with its OCC pre-image.
  */
-changes: Array<FieldChange>, };
+changes: Array<FieldChange>, } | { "op": "move", 
+/**
+ * Target document id.
+ */
+doc_id: string, 
+/**
+ * New parent (`None` = top level).
+ */
+parent_id: string | null, 
+/**
+ * OCC pre-image of the current parent; also what `invert` restores.
+ */
+old_parent_id: string | null, };

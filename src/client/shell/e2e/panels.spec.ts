@@ -26,10 +26,10 @@ test("a panel opened from the launcher docks and survives a full page reload", a
 }) => {
   await enterFreshWorld(page, "Launcher Persistence World", account);
 
-  const uploadInput = page.getByTestId("asset-upload");
+  const uploadInput = page.getByTestId("asset-upload-input");
   // Launcher-closed: assets content is not mounted-visible, and there is no chip.
   await expect(uploadInput).not.toBeVisible();
-  await expect(page.getByTestId("chip-assets:panel")).toHaveCount(0);
+  await expect(page.getByTestId("chip-asset-browser:panel")).toHaveCount(0);
 
   // Open it from the topbar launcher menu.
   await page.getByTestId("launcher-trigger").click();
@@ -41,7 +41,7 @@ test("a panel opened from the launcher docks and survives a full page reload", a
   // an earlier mount-time/registration-sync persist could otherwise satisfy a
   // method+URL-only predicate and let the reload race the real write. A mere
   // includes() check cannot discriminate: EVERY persist body lists
-  // "assets:panel" once in compact.order (launcher-closed panels stay in the
+  // "asset-browser:panel" once in compact.order (launcher-closed panels stay in the
   // compact switcher order). Docking adds the id to the expanded zone groups
   // too, so >=2 occurrences marks the dock-carrying body.
   const persistResponse = page.waitForResponse((r) => {
@@ -53,9 +53,9 @@ test("a panel opened from the launcher docks and survives a full page reload", a
       return false;
     }
     const body = JSON.stringify(r.request().postDataJSON());
-    return body.split('"assets:panel"').length - 1 >= 2;
+    return body.split('"asset-browser:panel"').length - 1 >= 2;
   });
-  await page.getByTestId("launcher-item-assets:panel").click();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
   await expect(uploadInput).toBeVisible();
   await persistResponse;
 
@@ -70,7 +70,7 @@ test("a panel opened from the launcher docks and survives a full page reload", a
   );
 
   // The docked assets panel survives instead of reverting to launcher-closed.
-  await expect(page.getByTestId("asset-upload")).toBeVisible();
+  await expect(page.getByTestId("asset-upload-input")).toBeVisible();
 });
 
 // Toggling the same launcher item again minimizes the (now docked) panel — the
@@ -82,13 +82,13 @@ test("re-toggling a launcher item minimizes the open panel to a dock chip", asyn
   await enterFreshWorld(page, "Launcher Toggle World", account);
 
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
-  await expect(page.getByTestId("asset-upload")).toBeVisible();
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
+  await expect(page.getByTestId("asset-upload-input")).toBeVisible();
 
   await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId("launcher-item-assets:panel").click();
-  await expect(page.getByTestId("asset-upload")).not.toBeVisible();
-  await expect(page.getByTestId("chip-assets:panel")).toHaveCount(1);
+  await page.getByTestId("launcher-item-asset-browser:panel").click();
+  await expect(page.getByTestId("asset-upload-input")).not.toBeVisible();
+  await expect(page.getByTestId("chip-asset-browser:panel")).toHaveCount(1);
 });
 
 // Single breakpoint axis (48rem): a narrow viewport puts the layout into compact

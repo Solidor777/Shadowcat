@@ -779,3 +779,203 @@ async fn get_document_with_created_seq_matches_a_separate_created_seq_read() {
     tx.commit().await.unwrap();
     assert_eq!(Some(created_seq), separate);
 }
+
+#[tokio::test]
+async fn carried_light_authoring_is_gm_only() {
+    use crate::data::command::FieldChange;
+    use crate::data::membership::PermissionContext;
+    let (r, gm, w, p1, _p2) = ownership_fixture().await;
+    let actor = actor_doc_owned_by(w, Some(p1));
+    let token = owned_token_doc(w, Some(actor.id));
+    gm_create(&r, gm, w, vec![actor, token.clone()], 1).await;
+    let player = PermissionContext {
+        user_id: p1,
+        world_role: WorldRole::Player,
+    };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let emission = serde_json::json!({
+        "color": "#ffcc66", "intensity": 1.0, "brightRadius": 1.0, "dimRadius": 2.0,
+        "enabled": true
+    });
+    let write = |ctx: PermissionContext,
+                 path: String,
+                 old: serde_json::Value,
+                 new: serde_json::Value,
+                 ts: i64| {
+        let r = &r;
+        let token = &token;
+        async move {
+            r.apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: token.id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path,
+                        old,
+                        new,
+                    }],
+                }],
+                ts,
+                WriteOrigin::Client,
+            )
+            .await
+        }
+    };
+
+    // The token's owner holds WRITE_FIELDS on it (the Owner floor), but a carried emission
+    // joins the SHARED illumination field every viewer's mask reads — GM-only.
+    let denied = write(
+        player,
+        "/engine/overrides/light".into(),
+        serde_json::json!(null),
+        emission.clone(),
+        2,
+    )
+    .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player's light override must be refused, got {denied:?}"
+    );
+
+    // Non-vacuity: the same owner CAN write the sibling override fields (vision is
+    // self-scoped), so the refusal above is the light rule, not a blanket override ban.
+    let vision = serde_json::json!([{ "mode": "darkvision", "range": 6 }]);
+    write(
+        player,
+        "/engine/overrides/vision".into(),
+        serde_json::json!(null),
+        vision.clone(),
+        3,
+    )
+    .await
+    .expect("a player's vision override stays legal");
+
+    // Ancestor writes are value-aware: a whole-overrides write that leaves `light` absent/null
+    // is legal; one that introduces an emission is refused. The stored pre-image is the
+    // NORMALIZED round-tripped object (every whitelist key materialized), read back raw.
+    let stored = r
+        .get_document(token.id)
+        .await
+        .unwrap()
+        .expect("the token exists");
+    let stored_overrides = stored
+        .engine
+        .as_ref()
+        .unwrap()
+        .pointer("/overrides")
+        .cloned()
+        .unwrap();
+    write(
+        player,
+        "/engine/overrides".into(),
+        stored_overrides.clone(),
+        serde_json::json!({ "vision": vision, "light": null }),
+        4,
+    )
+    .await
+    .expect("an ancestor write not touching the emission stays legal");
+    let stored = r
+        .get_document(token.id)
+        .await
+        .unwrap()
+        .expect("the token exists");
+    let stored_overrides = stored
+        .engine
+        .as_ref()
+        .unwrap()
+        .pointer("/overrides")
+        .cloned()
+        .unwrap();
+    let mut with_light = stored_overrides.clone();
+    with_light["light"] = emission.clone();
+    let denied_ancestor = write(
+        player,
+        "/engine/overrides".into(),
+        stored_overrides,
+        with_light,
+        5,
+    )
+    .await;
+    assert!(
+        matches!(denied_ancestor, Err(DataError::Forbidden)),
+        "an ancestor write introducing an emission must be refused, got {denied_ancestor:?}"
+    );
+
+    // The GM authors the emission.
+    write(
+        gm_ctx,
+        "/engine/overrides/light".into(),
+        serde_json::json!(null),
+        emission.clone(),
+        6,
+    )
+    .await
+    .expect("the GM may author a carried light");
+
+    // Removing the GM-authored override also changes the effective emission (restores
+    // inheritance), so it is gated too.
+    let denied_remove = r
+        .apply_intent(
+            &player,
+            w,
+            vec![Operation::Update {
+                doc_id: token.id,
+                changes: vec![FieldChange {
+                    remove: true,
+                    path: "/engine/overrides/light".into(),
+                    old: emission.clone(),
+                    new: serde_json::Value::Null,
+                }],
+            }],
+            7,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied_remove, Err(DataError::Forbidden)),
+        "a player removing the override must be refused, got {denied_remove:?}"
+    );
+
+    // An actor's own `/engine/light` is the same shared-field rule. Give the player an explicit
+    // WRITE_FIELDS grant on the actor first, so ONLY the light rule can refuse the write.
+    let mut lit_actor = actor_doc_owned_by(w, Some(p1));
+    lit_actor.engine = Some(serde_json::json!({
+        "displayName": "Torch", "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+        "faction": null, "conditions": [], "prototype": true
+    }));
+    // An explicit per-user Owner grant (the only way a player holds WRITE_FIELDS on an actor
+    // doc — the `owner` field itself is provenance-only there), so ONLY the light rule can
+    // refuse the write below.
+    lit_actor
+        .permissions
+        .users
+        .insert(p1, crate::data::document::DocRole::Owner);
+    gm_create(&r, gm, w, vec![lit_actor.clone()], 8).await;
+    let denied_actor = r
+        .apply_intent(
+            &player,
+            w,
+            vec![Operation::Update {
+                doc_id: lit_actor.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/light".into(),
+                    old: serde_json::json!(null),
+                    new: emission,
+                }],
+            }],
+            9,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied_actor, Err(DataError::Forbidden)),
+        "a granted player's actor light write must still be refused, got {denied_actor:?}"
+    );
+}

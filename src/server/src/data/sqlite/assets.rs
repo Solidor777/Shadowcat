@@ -36,16 +36,13 @@ fn split_tags(rows: impl IntoIterator<Item = TagRow>) -> (Vec<String>, Vec<Strin
 }
 
 impl SqliteRepository {
-    /// Enforces the `asset_folder` placement invariant for a Created `doc`
-    /// (a no-op for every other doc_type): `parent_id`, when set, names an
-    /// `asset_folder` in the same scope. `batch` holds the documents this
-    /// same command already Created, consulted before the database so an
-    /// in-batch parent resolves. No cycle walk is needed: `parent_id` is an
-    /// immutable envelope path (`required_cap_for_path` maps it to `None`),
-    /// so a folder's parent is fixed at Create, and a Create can only name a
-    /// parent that already exists — stored (acyclic by induction) or earlier
-    /// in this batch (strictly ordered) — which keeps the tree acyclic by
-    /// construction.
+    /// Enforces the `asset_folder` placement invariant (a no-op for every
+    /// other doc_type): `parent_id`, when set, names an `asset_folder` in the
+    /// same scope. `batch` holds the documents this same command already
+    /// Created, consulted before the database so an in-batch parent resolves.
+    /// Cycle safety is not this helper's job: a Create can only name a parent
+    /// that already exists (stored, or earlier in this batch), and a Move's
+    /// ancestor walk lives in `SqliteRepository::check_move_acyclic`.
     pub(super) async fn check_asset_folder_parent(
         tx: &mut sqlx::SqliteConnection,
         doc: &Document,
@@ -137,13 +134,16 @@ impl SqliteRepository {
         Ok(names)
     }
 
-    /// Ids of every asset filed in `folder` or any folder beneath it.
+    /// Ids of every asset filed in `folder` or any folder beneath it. The
+    /// recursive CTE dedupes (`UNION`, never `UNION ALL`): every write path
+    /// refuses a parent cycle, but a corrupted row set must terminate this
+    /// walk rather than recurse forever.
     pub(crate) async fn assets_in_folder_subtree(
         tx: &mut sqlx::SqliteConnection,
         folder: Uuid,
     ) -> Result<Vec<Uuid>, DataError> {
         let rows = sqlx::query(
-            "WITH RECURSIVE sub(id) AS (SELECT ? UNION ALL SELECT d.id FROM documents d \
+            "WITH RECURSIVE sub(id) AS (SELECT ? UNION SELECT d.id FROM documents d \
              JOIN sub ON d.parent_id = sub.id WHERE d.doc_type = 'asset_folder') \
              SELECT a.id AS id FROM assets a WHERE a.folder_id IN (SELECT id FROM sub) \
              ORDER BY a.created_at, a.id",

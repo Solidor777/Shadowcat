@@ -88,7 +88,7 @@ async fn main() -> anyhow::Result<()> {
             "conditions": [],
             "prototype": true,
             // A whole-number range: `apply_intent`'s OCC pre-image comparison
-            // is numeric-aware (`data::sqlite::values_semantically_eq`)
+            // is numeric-aware (`data::command::values_semantically_eq`)
             // across the serde_json PosInt/Float variant split, so a JS
             // client's whole-number pre-image round-trips correctly here.
             "vision": [{ "mode": "darkvision", "range": 30 }]

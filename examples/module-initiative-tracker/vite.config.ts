@@ -6,7 +6,14 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 export default defineConfig({
   plugins: [svelte()],
   build: {
-    lib: { entry: "src/index.ts", formats: ["es"], fileName: () => "index.js" },
+    lib: {
+      entry: "src/index.ts",
+      formats: ["es"],
+      fileName: () => "index.js",
+      // Pin the stylesheet name the manifest declares (`"style": "style.css"`),
+      // instead of Vite's package-name default.
+      cssFileName: "style",
+    },
     rollupOptions: {
       external: [
         "svelte",

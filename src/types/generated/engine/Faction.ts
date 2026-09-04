@@ -17,4 +17,11 @@ color: string,
 /**
  * Stance toward the party.
  */
-stance: FactionStance, };
+stance: FactionStance, 
+/**
+ * Movement-type tags unioned into every member actor's resolved set
+ * (`SceneEcs::token_movement_tags` / `resolveTokenActor`). Same vocabulary and
+ * engine-reserved semantics as `ActorEngine::movement` — `"flying"`/`"incorporeal"`
+ * ignore terrain COST only; unknown tags are inert system vocabulary.
+ */
+movement: Array<string>, };

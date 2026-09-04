@@ -1,4 +1,4 @@
-import { describe, it, expect, expectTypeOf } from "vitest";
+import { describe, it, expect, expectTypeOf, vi } from "vitest";
 import { z } from "zod";
 import type * as Ts from "@shadowcat/types";
 import {
@@ -12,6 +12,7 @@ import {
   SendMessageSchema,
   PathfindSchema,
   DocumentSchema,
+  OperationSchema,
   SchemaTypeSchema,
   SchemaDeclarationSchema,
   FieldChangeSchema,
@@ -55,6 +56,9 @@ import {
   type WirePushInstanceOutcome,
   type WireMergeOutcome,
   type WireMergeErrorKind,
+  parseCombats,
+  EMPTY_COMBATS,
+  CombatsPayloadSchema,
 } from "./wire";
 
 // Drift guard. Exact field-by-field type equality fights Zod's inference
@@ -304,6 +308,18 @@ describe("parseServerMsg", () => {
     }
   });
 
+  it("parses an inbound emote frame", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "emote", scene: "s1", token: "t1", user: "u1", emote: "😀" }),
+    );
+    expect(m?.type).toBe("emote");
+    if (m?.type === "emote") {
+      expect(m.token).toBe("t1");
+      expect(m.user).toBe("u1");
+      expect(m.emote).toBe("😀");
+    }
+  });
+
   it("parses path_result and path_error server frames", () => {
     const ok = parseServerMsg(
       JSON.stringify({
@@ -313,6 +329,7 @@ describe("parseServerMsg", () => {
         cost: 2,
         arrested: false,
         truncated: false,
+        budget_cells: null,
       }),
     );
     expect(ok?.type).toBe("path_result");
@@ -340,6 +357,9 @@ describe("parseServerMsg", () => {
       mover_vision: [
         { t_ms: 0.0, polygons: [[[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]] },
       ],
+      mover_light: [
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      ],
       cost: 3.5,
       truncated: true,
     };
@@ -355,6 +375,10 @@ describe("parseServerMsg", () => {
       expect(m.truncated).toBe(true);
       const vision = m.mover_vision;
       if (vision) expect(vision[0].polygons[0]).toHaveLength(3);
+      // Same rule for the carried-light timeline: every field is asserted by value.
+      expect(m.mover_light).toEqual([
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "linear" as const, polygons: [[[-600, -600], [600, -600], [600, 600]]] },
+      ]);
     }
   });
 
@@ -370,6 +394,8 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      // Nothing of the light reached this recipient: the server nulls the whole timeline.
+      mover_light: null,
       cost: 1.0,
       truncated: false,
     };
@@ -378,6 +404,7 @@ describe("parseServerMsg", () => {
     expect(m?.type).toBe("move_stream");
     if (m?.type === "move_stream") {
       expect(m.mover_vision).toBeNull();
+      expect(m.mover_light).toBeNull();
     }
   });
 
@@ -393,6 +420,7 @@ describe("parseServerMsg", () => {
       stop: [100.0, 200.0],
       samples: [{ t_ms: 0.0, pos: [0.0, 0.0] }],
       mover_vision: null,
+      mover_light: null,
       // A clipped observer never learns the authoritative cost — it may reflect
       // secret-region terrain their clipped samples don't reveal.
       cost: null,
@@ -407,6 +435,57 @@ describe("parseServerMsg", () => {
       expect(m.cost).toBeNull();
       expect(m.truncated).toBeNull();
     }
+  });
+
+  it("parses a glow-only move_stream frame (empty samples, admitted light) and keeps the light's photometry", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      // The token never entered this recipient's sight; only its glow did.
+      samples: [],
+      mover_vision: null,
+      mover_light: [
+        { t_ms: 500.0, pos: [100.0, 200.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 0.8, falloff: "quadratic", polygons: [[[-500, -400], [700, -400], [700, 800]]] },
+      ],
+      cost: null,
+      truncated: null,
+    };
+    const m = parseServerMsg(JSON.stringify(frame));
+    expect(m).not.toBeNull();
+    if (m?.type === "move_stream") {
+      expect(m.samples).toEqual([]);
+      // Asserted by value: `z.object` strips an undeclared key silently.
+      expect(m.mover_light).toEqual([
+        { t_ms: 500.0, pos: [100.0, 200.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 0.8, falloff: "quadratic", polygons: [[[-500, -400], [700, -400], [700, 800]]] },
+      ]);
+    }
+  });
+
+  it("rejects a light sample with an unknown falloff spelling", () => {
+    const frame = {
+      type: "move_stream",
+      request_id: "00000000-0000-0000-0000-000000000001",
+      token_id: "00000000-0000-0000-0000-000000000002",
+      mover: "00000000-0000-0000-0000-000000000003",
+      scene: "00000000-0000-0000-0000-000000000004",
+      start_server_ms: 1000.0,
+      duration_ms: 500.0,
+      stop: [100.0, 200.0],
+      samples: [],
+      mover_vision: null,
+      mover_light: [
+        { t_ms: 0.0, pos: [0.0, 0.0], bright: 200, dim: 600, color: 0xffd9a0, intensity: 1, falloff: "cubic", polygons: [] },
+      ],
+      cost: null,
+      truncated: null,
+    };
+    expect(parseServerMsg(JSON.stringify(frame))).toBeNull();
   });
 
   it("rejects a move_stream frame missing samples", () => {
@@ -509,11 +588,21 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     scene_error: { type: "scene_error", request_id: "r", message: "x" },
     asset_changed: { type: "asset_changed", uuid: "u", op: "replaced", version: 1 },
     scene_ping: { type: "scene_ping", scene: "s", x: 0, y: 0, user: "u" },
-    path_result: { type: "path_result", request_id: "r", path: [], cost: 0, arrested: false, truncated: false },
+    emote: { type: "emote", scene: "s", token: "t", user: "u", emote: "😀" },
+    path_result: {
+      type: "path_result",
+      request_id: "r",
+      path: [],
+      cost: 0,
+      arrested: false,
+      truncated: false,
+      budget_cells: null,
+    },
     path_error: { type: "path_error", request_id: "r", message: "x" },
     move_error: { type: "move_error", request_id: "r", message: "x" },
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
+    combat_result: { type: "combat_result", request_id: "r", seq: 1 },
     merge_result: {
       type: "merge_result",
       request_id: "r",
@@ -531,6 +620,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       stop: [0, 0],
       samples: [{ t_ms: 0, pos: [0, 0] }],
       mover_vision: null,
+      mover_light: null,
       cost: null,
       truncated: null,
     },
@@ -815,5 +905,83 @@ describe("PathfindSchema", () => {
         token: "not-a-uuid",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("parseCombats", () => {
+  it("parses a well-formed combat channel payload", () => {
+    const view = parseCombats({
+      combats: [
+        {
+          id: "c1",
+          scene_id: "s1",
+          combatants: [
+            {
+              id: "cc1",
+              resources: {
+                movement: { binding: "tracked", current: 30, max: 30, error: null },
+              },
+              movement_cells: 6,
+            },
+            { id: "cc2", resources: null, movement_cells: null },
+          ],
+        },
+      ],
+    });
+    expect(view.combats).toHaveLength(1);
+    expect(view.combats[0].id).toBe("c1");
+    expect(view.combats[0].sceneId).toBe("s1");
+    expect(view.combats[0].combatants[0].resources?.movement.current).toBe(30);
+    expect(view.combats[0].combatants[0].movementCells).toBe(6);
+    expect(view.combats[0].combatants[1].resources).toBeNull();
+  });
+
+  it("fails closed to EMPTY_COMBATS on a malformed payload", () => {
+    expect(parseCombats({ combats: "not-an-array" })).toEqual(EMPTY_COMBATS);
+    expect(parseCombats(null)).toEqual(EMPTY_COMBATS);
+    expect(parseCombats(undefined)).toEqual(EMPTY_COMBATS);
+  });
+
+  it("reports a malformed payload through the given logger, never the console", () => {
+    const warn = vi.fn();
+    const logger = { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() };
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(parseCombats({ combats: "not-an-array" }, logger)).toEqual(EMPTY_COMBATS);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe("parseCombats: malformed combat channel payload");
+      expect(typeof warn.mock.calls[0][1]).toBe("string");
+      expect(consoleWarn).not.toHaveBeenCalled();
+      expect(parseCombats({ combats: [] }, logger).combats).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
+
+  it("CombatsPayloadSchema round-trips the same shape parseCombats accepts", () => {
+    const raw = { combats: [{ id: "c1", scene_id: "s1", combatants: [] }] };
+    expect(CombatsPayloadSchema.safeParse(raw).success).toBe(true);
+  });
+});
+
+describe("OperationSchema move member", () => {
+  // The exact serde wire bytes the server emits: `#[serde(tag = "op",
+  // rename_all = "snake_case")]` with uuid strings and a null Option.
+  const MOVE_WIRE = {
+    op: "move",
+    doc_id: "00000000-0000-0000-0000-000000000001",
+    parent_id: "00000000-0000-0000-0000-000000000002",
+    old_parent_id: null,
+  };
+
+  it("accepts the serde wire shape of a move operation", () => {
+    const parsed = OperationSchema.parse(MOVE_WIRE);
+    expect(parsed).toEqual(MOVE_WIRE);
+  });
+
+  it("rejects a move missing doc_id", () => {
+    const { doc_id: _dropped, ...rest } = MOVE_WIRE;
+    expect(() => OperationSchema.parse(rest)).toThrow();
   });
 });

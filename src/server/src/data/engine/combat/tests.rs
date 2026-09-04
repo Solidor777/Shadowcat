@@ -386,3 +386,31 @@ fn combat_history_records_are_capped_and_cursor_in_range() {
     };
     assert!(h.validate().is_ok());
 }
+
+/// The engine-fallback `ResolvedCombatRules` (`resolve_combat_rules(None, None, None)`),
+/// serialized into the client camelCase `CombatDefaults` spelling, must byte-equal the JSON
+/// fixture the client Vitest suite reads as `ENGINE_COMBAT_DEFAULTS`. Either side drifting
+/// fails one of the two tests reading this single fixture.
+#[test]
+fn engine_combat_defaults_matches_the_shared_fixture() {
+    let r = resolve_combat_rules(None, None, None);
+    let client_spelling = json!({
+        "movementResource": r.movement.resource,
+        "interpretation": r.movement.interpretation,
+        "enforcement": r.movement.enforcement,
+        "turnControl": r.turn_control,
+        "effectCleanup": r.effect_cleanup,
+        "effectLifecycle": {
+            "onCombatEnd": r.effect_lifecycle.on_combat_end,
+            "onTurnEnd": r.effect_lifecycle.on_turn_end,
+            "onAdvance": r.effect_lifecycle.on_advance,
+        },
+        "rewindRestore": r.rewind_restore,
+        "forwardRestore": r.forward_restore,
+    });
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../client/core/src/__fixtures__/engine-combat-defaults.json"
+    ))
+    .expect("engine-combat-defaults.json parses");
+    assert_eq!(client_spelling, fixture);
+}

@@ -47,4 +47,11 @@ overrides: TokenOverrides | null,
  * token-local always (not part of `overrides` — selects INTO the
  * actor's faces map, not an override of actor data).
  */
-face: string | null, };
+face: string | null, 
+/**
+ * Elevation above the scene's ground plane (`None`/absent = 0, grounded).
+ * Token state, not actor state: altitude is per-token. Read through
+ * `scene::elevation::elevation_or_ground`, which clamps a non-finite
+ * stored value to ground.
+ */
+elevation: number | null, };

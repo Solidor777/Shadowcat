@@ -19,6 +19,7 @@
     "RenderVisual.__type.kind",
     "Scope.__type.kind",
     "ServerMsg.__type.type",
-    "TokenVisual.__type.kind"
+    "TokenVisual.__type.kind",
+    "TriggerEffect.__type.type"
   ]
 }

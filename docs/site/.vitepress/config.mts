@@ -40,7 +40,7 @@ export default defineConfig({
             { text: "panels", link: "/modules/panels" },
             { text: "settings", link: "/modules/settings" },
             { text: "game-settings", link: "/modules/game-settings" },
-            { text: "assets", link: "/modules/assets" },
+            { text: "asset-browser", link: "/modules/asset-browser" },
             { text: "scene-browser", link: "/modules/scene-browser" },
             { text: "sheet-fallback", link: "/modules/sheet-fallback" },
           ],

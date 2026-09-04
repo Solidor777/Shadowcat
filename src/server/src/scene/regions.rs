@@ -6,7 +6,11 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+
+use uuid::Uuid;
+
+use crate::data::engine::{RegionTrigger, TriggerEvent};
 
 /// A grid cell `(i, j)` (same convention as `pathfinding::Cell`).
 pub(crate) type Cell = (i32, i32);
@@ -251,17 +255,41 @@ impl RegionField {
         }
     }
 
+    /// True iff any cell composes to `Impassable`. Split from
+    /// `has_terrain_or_impassable` because the continuous router's dispatch predicate reads the
+    /// two halves differently for an `MoveTraits::ignore_terrain` mover: impassable still forces
+    /// the weighted sub-path (the exemption is terrain-COST only — impassable blocks everyone),
+    /// while weighted terrain does not.
+    pub(crate) fn has_impassable(&self) -> bool {
+        self.cells
+            .values()
+            .any(|e| matches!(e, RegionEffect::Impassable))
+    }
+
+    /// True iff any cell is weighted `Terrain` (multiplier > 1.0).
+    pub(crate) fn has_weighted_terrain(&self) -> bool {
+        self.cells
+            .values()
+            .any(|e| matches!(e, RegionEffect::Terrain(m) if *m > 1.0))
+    }
+
     /// True iff any cell is `Impassable` or weighted `Terrain` (multiplier > 1.0). The
     /// dispatch predicate the continuous router uses to decide between the weighted grid
-    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither).
-    /// Arrest is excluded: it neither bends the route nor requires route-around, so an
-    /// arrest-only scene stays on the polyanya path with an arrest post-filter.
+    /// route (terrain/impassable present) and the pure any-angle polyanya route (neither) for
+    /// a NON-exempt mover. Arrest is excluded: it neither bends the route nor requires
+    /// route-around, so an arrest-only scene stays on the polyanya path with an arrest
+    /// post-filter.
     pub(crate) fn has_terrain_or_impassable(&self) -> bool {
-        self.cells.values().any(|e| match e {
-            RegionEffect::Impassable => true,
-            RegionEffect::Terrain(m) => *m > 1.0,
-            RegionEffect::Arrest => false,
-        })
+        self.has_impassable() || self.has_weighted_terrain()
+    }
+
+    /// Read-only iteration over the composed per-cell effects, existing for the parity
+    /// assertion between this field and the `TriggerRegion` identity rows — comparing
+    /// coverage sets is what the single-cell predicates above cannot express; never a
+    /// mutation seam.
+    #[cfg(test)]
+    pub(crate) fn iter_cells(&self) -> impl Iterator<Item = (Cell, RegionEffect)> + '_ {
+        self.cells.iter().map(|(c, e)| (*c, *e))
     }
 }
 
@@ -330,6 +358,53 @@ pub(crate) fn parse_region_shape(shape: &crate::data::engine::RegionShape) -> Op
         }
         _ => None,
     }
+}
+
+/// One trigger-bearing region's identity row: which cells it covers, which
+/// triggers it carries, and whether every world member can see its `/engine`
+/// band. Built by `SceneEcs::trigger_regions` from the SAME `rasterize` the
+/// composed `RegionField` uses — one rasterizer feeds both consumers, so an
+/// identity row and the composed field can never disagree about a region's
+/// coverage (the parity battery pins this).
+pub(crate) struct TriggerRegion {
+    /// The region document's id.
+    pub region_id: Uuid,
+    /// World-default visibility of the region's `/engine` band
+    /// (`engine_geometry_visible_to_world`). `false` forces every
+    /// `ChatNotice` this region fires to `NoticeAudience::GmOnly`, since a
+    /// public notice would name or imply a region some recipients cannot see.
+    pub visible_to_all: bool,
+    /// The region's authored triggers, in engine order.
+    pub triggers: Vec<RegionTrigger>,
+    /// The region's rasterized cells.
+    pub cells: BTreeSet<Cell>,
+}
+
+/// The `(region, trigger)` pairs that fire for one move or placement report,
+/// in region-table order then authored engine order. `entered` is the
+/// deduplicated cell-entry sequence (`MoveOutcome::entered_cells`) or a
+/// placement's footprint cells; `arrest_cell` is `Some` only when the walk
+/// was arrested (`MoveOutcome::arrested`). Each listed trigger fires at most
+/// once per report no matter how many of its region's cells were entered —
+/// the caller applies each returned pair exactly once.
+pub(crate) fn fired_triggers<'a>(
+    regions: &'a [TriggerRegion],
+    entered: &[Cell],
+    arrest_cell: Option<Cell>,
+) -> Vec<(&'a TriggerRegion, &'a RegionTrigger)> {
+    let mut out = Vec::new();
+    for region in regions {
+        for trigger in &region.triggers {
+            let fires = match trigger.on {
+                TriggerEvent::Enter => entered.iter().any(|c| region.cells.contains(c)),
+                TriggerEvent::Arrest => arrest_cell.is_some_and(|c| region.cells.contains(&c)),
+            };
+            if fires {
+                out.push((region, trigger));
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

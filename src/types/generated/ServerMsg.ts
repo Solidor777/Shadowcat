@@ -4,6 +4,7 @@ import type { CapabilityGrants } from "./CapabilityGrants";
 import type { CapabilityRequirement } from "./CapabilityRequirement";
 import type { Command } from "./Command";
 import type { ContractDeclaration } from "./ContractDeclaration";
+import type { LightSample } from "./LightSample";
 import type { MergeErrorKind } from "./MergeErrorKind";
 import type { MergeOutcome } from "./MergeOutcome";
 import type { PosSample } from "./PosSample";
@@ -200,7 +201,23 @@ y: number,
 /**
  * Who pinged (senders receive their own echo).
  */
-user: string, } | { "type": "path_result", 
+user: string, } | { "type": "emote", 
+/**
+ * Scene the token stands on.
+ */
+scene: string, 
+/**
+ * Token the emote plays over.
+ */
+token: string, 
+/**
+ * Who emoted (senders receive their own echo).
+ */
+user: string, 
+/**
+ * The emote glyph(s).
+ */
+emote: string, } | { "type": "path_result", 
 /**
  * The originating pathfind's correlation token.
  */
@@ -221,7 +238,14 @@ arrested: boolean,
  * True when the mover's movement budget truncated the route short of
  * the goal (Hard enforcement; reaches only the requester's own preview).
  */
-truncated: boolean, } | { "type": "path_error", 
+truncated: boolean, 
+/**
+ * The named token's remaining movement budget in cells, present iff the requester can
+ * READ the combat's combatant for that token (`BudgetGate::enforced`) — regardless of
+ * enforcement mode, so a GM or a `Warn`/`None` mover still sees the number. `None` when
+ * the token names no combatant, the caller cannot read it, or no combat is running.
+ */
+budget_cells: number | null, } | { "type": "path_error", 
 /**
  * The failed pathfind's correlation token.
  */
@@ -253,7 +277,15 @@ request_id: string,
 /**
  * Player-presentable failure text.
  */
-message: string, } | { "type": "move_stream", 
+message: string, } | { "type": "combat_result", 
+/**
+ * The confirmed combat intent's correlation token.
+ */
+request_id: string, 
+/**
+ * The committed command's sequence number — matches the broadcast `Event`'s `seq`.
+ */
+seq: bigint, } | { "type": "move_stream", 
 /**
  * Correlates with the originating `MoveRequest`.
  */
@@ -285,7 +317,10 @@ duration_ms: number,
 stop: [number, number], 
 /**
  * Ordered position samples along the route (t=0 is start, t=duration_ms is stop).
- * INVARIANT: non-empty; first sample t_ms == 0.0 is the starting cell-center.
+ * INVARIANT: at least one of `samples`/`mover_light` is non-empty — the frame as
+ * broadcast always carries samples (the first at t_ms == 0.0, the starting
+ * cell-center); a per-recipient clip may empty them and keep only the admitted light
+ * (the glow-only frame), or suppress the frame outright when both would be empty.
  */
 samples: Array<PosSample>, 
 /**
@@ -294,6 +329,14 @@ samples: Array<PosSample>,
  * the client computes no vision. Sending mover vision to observers would leak geometry.
  */
 mover_vision: Array<VisionSample> | null, 
+/**
+ * Per-sample carried-light timeline (`LightSample`): the mover's enabled emission
+ * raycast at each sample position, computed only in an environment-lit scene. Full
+ * for the mover and a plain GM; every other recipient keeps only the samples whose
+ * dim-reach disc intersects their own vision at that instant (the same per-instant
+ * vision the position clip reads), and receives `None` when no sample does.
+ */
+mover_light: Array<LightSample> | null, 
 /**
  * Total terrain-weighted movement cost accumulated over the executed move. The
  * movement-budget gate (`move_exec::MoveGateInputs::budget`) consumes this quantity; it

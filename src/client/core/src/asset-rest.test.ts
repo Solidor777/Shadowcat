@@ -92,3 +92,17 @@ test("reconvertAsset POSTs and originalUrl is a plain path", async () => {
   expect(f.mock.calls[0][0]).toBe("/api/assets/a1/reconvert");
   expect(api.originalUrl("a1")).toBe("/api/assets/a1/original");
 });
+
+test("deleteAssetFolder DELETEs with the assets policy param", async () => {
+  const f = mockFetch(204);
+  await api.deleteAssetFolder("f1", "delete");
+  const [url, init] = f.mock.calls[0];
+  expect(url).toBe("/api/asset-folders/f1?assets=delete");
+  expect((init as RequestInit).method).toBe("DELETE");
+});
+
+test("deleteAssetFolder defaults to reparent and throws on a non-ok status", async () => {
+  const f = mockFetch(403, { error: "forbidden" });
+  await expect(api.deleteAssetFolder("f1")).rejects.toThrow();
+  expect(String(f.mock.calls[0][0])).toBe("/api/asset-folders/f1?assets=reparent");
+});

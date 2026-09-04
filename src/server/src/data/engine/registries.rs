@@ -112,6 +112,12 @@ pub struct Faction {
     pub color: String,
     /// Stance toward the party.
     pub stance: FactionStance,
+    /// Movement-type tags unioned into every member actor's resolved set
+    /// (`SceneEcs::token_movement_tags` / `resolveTokenActor`). Same vocabulary and
+    /// engine-reserved semantics as `ActorEngine::movement` — `"flying"`/`"incorporeal"`
+    /// ignore terrain COST only; unknown tags are inert system vocabulary.
+    #[serde(default)]
+    pub movement: Vec<String>,
 }
 
 /// The world's faction registry: a singleton config document. Keyed by
@@ -147,6 +153,7 @@ impl FactionRegistryEngine {
                 name: "Friendly".to_string(),
                 color: "#3fb950".to_string(),
                 stance: FactionStance::Friendly,
+                movement: vec![],
             },
         );
         factions.insert(
@@ -155,6 +162,7 @@ impl FactionRegistryEngine {
                 name: "Neutral".to_string(),
                 color: "#9e9e9e".to_string(),
                 stance: FactionStance::Neutral,
+                movement: vec![],
             },
         );
         factions.insert(
@@ -163,6 +171,7 @@ impl FactionRegistryEngine {
                 name: "Hostile".to_string(),
                 color: "#f85149".to_string(),
                 stance: FactionStance::Hostile,
+                movement: vec![],
             },
         );
         Self { factions }
@@ -179,6 +188,58 @@ pub struct Condition {
     pub name: String,
     /// Short glyph (emoji) rendered as a token badge.
     pub icon: String,
+    /// Built-in token-art effects applied to tokens carrying this condition
+    /// (folded client-side into the token's render fx, in condition array
+    /// order). Presentational only — the server never reads it. Absent = no
+    /// fx.
+    #[serde(default)]
+    #[ts(optional)]
+    pub fx: Option<ConditionFx>,
+}
+
+impl Condition {
+    /// Ingress validation beyond serde shape: authored fx colors are css
+    /// `#rrggbb` strings.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(fx) = &self.fx {
+            if let Some(tint) = &fx.tint {
+                validate_fx_color(tint)?;
+            }
+            if let Some(highlight) = &fx.highlight {
+                validate_fx_color(highlight)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A condition's built-in token-art effects (css colors), folded by the
+/// client's `TokenView.toSpec` into the token's render fx.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct ConditionFx {
+    /// Channel-tint target color (css `#rrggbb`), or absent for none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tint: Option<String>,
+    /// `true` strips the token art to luminance.
+    #[serde(default)]
+    #[ts(optional)]
+    pub desaturate: Option<bool>,
+    /// Brighten-toward target color (css `#rrggbb`), or absent for none.
+    #[serde(default)]
+    #[ts(optional)]
+    pub highlight: Option<String>,
+}
+
+/// Condition-fx color check: exactly `#` + 6 hex digits (a css `#rrggbb`
+/// string) — same shape rule as `token::validate_emission_color`.
+fn validate_fx_color(color: &str) -> Result<(), String> {
+    match color.strip_prefix('#') {
+        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(()),
+        _ => Err("fx color must be a css #rrggbb string".to_string()),
+    }
 }
 
 /// The world's condition registry: a singleton config document. Keyed by
@@ -193,6 +254,17 @@ pub struct ConditionRegistryEngine {
 }
 
 impl ConditionRegistryEngine {
+    /// Ingress validation beyond serde shape: every entry's own `validate`
+    /// (fx css color shapes), keyed by condition id in the error message.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (id, condition) in &self.conditions {
+            condition
+                .validate()
+                .map_err(|m| format!("conditions.{id}: {m}"))?;
+        }
+        Ok(())
+    }
+
     /// Default nine-condition emoji-glyph world seed. The engine definition —
     /// the client's conditions UI renders whatever the registry holds.
     ///
@@ -224,6 +296,7 @@ impl ConditionRegistryEngine {
                 Condition {
                     name: name.to_string(),
                     icon: icon.to_string(),
+                    fx: None,
                 },
             );
         }

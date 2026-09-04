@@ -211,6 +211,20 @@ pub(crate) struct MoveOutcome {
     /// the same route (see the unified step-price note on `MoveGateInputs::budget`); consumed by
     /// the movement-budget gate (`MoveGateInputs::budget`) and exposed on the wire.
     pub cost: f64,
+    /// The deduplicated sequence of grid cells the mover's CENTER entered during the walk, in
+    /// entry order: one entry per cell-entry transition the step loop committed (gates passed,
+    /// cost accrued), including the arrest cell when the walk was arrested, and excluding both
+    /// the start cell (never itself "entered") and any cell whose entry a gate refused. The
+    /// step loop's own consecutive-sample dedup is the only dedup applied — a cell re-entered
+    /// after leaving appears again; consumers dedup per region themselves. Bounded by
+    /// `MAX_GATE_WALK_SAMPLES` (the walk it derives from is). The executor only REPORTS these;
+    /// what fires on them is the caller's decision (`Room::execute_move`'s region triggers).
+    pub entered_cells: Vec<(i32, i32)>,
+    /// `true` when the walk was stopped by a region-arrest — the mover then rests inside
+    /// `entered_cells.last()`. Distinct from `truncated`, which any gate (wall, mask,
+    /// impassable, budget) can cause; never true for a GM mover, whose `check_regions`
+    /// exemption skips the arrest rule entirely.
+    pub arrested: bool,
 }
 
 /// Reason an `execute_move` call was rejected before any walking.
@@ -275,6 +289,13 @@ pub(crate) struct MoveGateInputs<'a> {
     /// every other `f64` input this function accepts. Cost still accrues for a GM regardless of
     /// this exemption; only the STOP is gated.
     pub budget: Option<f64>,
+    /// The mover's resolved locomotion traits (`pathfinding::MoveTraits`), resolved ONCE by the
+    /// caller (`Room::execute_move`, alongside `footprint`) — never re-derived here; that is
+    /// this struct's documented caller-resolves invariant. An `ignore_terrain` mover's every
+    /// terrain multiplier reads as 1.0 through `pathfinding::terrain_cost` — the SAME symbol the
+    /// router prices with, so preview and execution cannot disagree on what an exempt mover pays.
+    /// Walls, impassable, arrest, and the mask are untouched by the flag.
+    pub traits: crate::scene::pathfinding::MoveTraits,
 }
 
 /// Walk `path` step by step, validating each step against the wall gate (step 1), the
@@ -350,6 +371,7 @@ pub(crate) fn execute_move(
         visible,
         cell,
         budget,
+        traits,
     } = gate;
     // --- Input validation (fail closed on every degenerate input) ---
     if path.len() < 2 {
@@ -454,7 +476,10 @@ pub(crate) fn execute_move(
     // --- Per-step walk over the DENSE gate walk ---
     let mut stop_idx = 0usize; // index into `walk`
     let mut stopped_early = false;
+    let mut arrested = false;
     let mut cost = 0.0;
+    // The cell-entry transition sequence the outcome reports (`MoveOutcome::entered_cells`).
+    let mut entered_cells: Vec<(i32, i32)> = Vec::new();
     // The cell already accounted for by region/cost logic. The START cell is never itself
     // "entered": cost accrual begins at the first cell transition (`i = 1` / `to_cell(next)`).
     let mut last_region_cell = to_cell(walk[0].pos);
@@ -544,7 +569,9 @@ pub(crate) fn execute_move(
             // `GridStepped` scene) falls back to the Euclidean span, mirroring the Continuous
             // rule. Continuous ⇒ the Euclidean span in cells since the last transition, which is
             // what `navmesh::los_smooth` and the polyanya router report for the same geometry.
-            // Terrain multiplies the entered cell in both models. Cost accrues regardless of the
+            // Terrain multiplies the entered cell in both models — through the ONE
+            // `pathfinding::terrain_cost` chokepoint, so an `ignore_terrain` mover is priced
+            // exactly as unweighted here and in the router. Cost accrues regardless of the
             // gameplay exemption; only `budget` can stop the walk on cost.
             let step = match movement_model {
                 MovementModel::GridStepped => grid
@@ -560,7 +587,8 @@ pub(crate) fn execute_move(
                     euclidean_span_cells(last_transition_pos, next, world_per_cell)
                 }
             };
-            let step_cost = step * regions.terrain_multiplier(next_cell);
+            let step_cost =
+                step * crate::scene::pathfinding::terrain_cost(Some(&regions), next_cell, traits);
             if check_budget {
                 if let Some(b) = budget {
                     if !crate::scene::pathfinding::budget_admits_step(cost, step_cost, b) {
@@ -571,6 +599,9 @@ pub(crate) fn execute_move(
             }
             cost += step_cost;
             last_transition_pos = next;
+            // The transition is committed: the mover's center now rests in `next_cell`
+            // (reported on the outcome; an arrest below still counts as entered).
+            entered_cells.push(next_cell);
             // Arrest and terrain stay CENTER-CELL only, mirroring `cell_enterable`'s documented
             // asymmetry: they act on the mover's own position rather
             // than solid geometry it must clear. Footprint-gating arrest here would make the gate
@@ -578,6 +609,7 @@ pub(crate) fn execute_move(
             if check_regions && regions.is_arrest(next_cell) {
                 stop_idx = i;
                 stopped_early = true;
+                arrested = true;
                 break;
             }
             last_region_cell = next_cell;
@@ -590,7 +622,8 @@ pub(crate) fn execute_move(
     // Continuous tail: the loop above prices only full cell-entry transitions, so a Continuous
     // move that halts partway through its final cell (wall/mask/region/budget stop, or simply
     // reaching a goal mid-cell) has not yet been charged for the distance since its last
-    // transition. Priced at the stop cell's own terrain multiplier, mirroring the whole-polyline
+    // transition. Priced at the stop cell's own `terrain_cost` read (1.0 for an
+    // `ignore_terrain` mover), mirroring the whole-polyline
     // integration `navmesh::los_smooth`/the polyanya router apply to the same geometry.
     // GridStepped needs no such tail: its dense samples land exactly on cell transitions, so the
     // per-transition step price above already reflects the router's own exact quantity.
@@ -598,7 +631,7 @@ pub(crate) fn execute_move(
         let stop_pos = walk[stop_idx].pos;
         let stop_cell = to_cell(stop_pos);
         cost += euclidean_span_cells(last_transition_pos, stop_pos, world_per_cell)
-            * regions.terrain_multiplier(stop_cell);
+            * crate::scene::pathfinding::terrain_cost(Some(&regions), stop_cell, traits);
     }
 
     // --- Coarse render_path: authored vertices fully traversed + the exact stop point ---
@@ -630,6 +663,8 @@ pub(crate) fn execute_move(
         render_path,
         truncated,
         cost,
+        entered_cells,
+        arrested,
     })
 }
 

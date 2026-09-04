@@ -1,6 +1,6 @@
 <script lang="ts">
   import { untrack, type Component } from "svelte";
-  import { getAppContext, sizeClass, Surface } from "@shadowcat/ui-kit";
+  import { getAppContext, notifications, sizeClass, Surface } from "@shadowcat/ui-kit";
   import { consoleLogger, type Logger } from "@shadowcat/core";
   import type { EngineAdapter } from "./engine/adapter";
   import { FakeEngine } from "./engine/fake";
@@ -124,7 +124,13 @@
         break;
       }
       default:
-        // resizeZone/resizeGroup/activeTab/compactView: not narrated.
+        // resizeZone/resizeGroup/resizeFloating/updatePopoutGeometry/
+        // activeTab/compactView: geometry and focus churn, never narrated.
+        // popOutInto: deliberately not narrated either, though it is a
+        // placement change — a restore gesture emits one per revived panel
+        // and would spam the live region with duplicates of its own restore
+        // notice, while a drag-into-popout announces itself visually (the
+        // panel appears in the target window).
         return null;
     }
     return t("panels.moved", { panel: label(op.id), where });
@@ -159,8 +165,30 @@
         // the seam a visible toast (e.g. a statusbar live region) hangs off
         // once that surface exists — a no-op until then.
         onReset: () => {},
-        onNotice: (key) => {
-          announce = t(key);
+        onNotice: (key, action) => {
+          // A notice carrying a call-to-action routes to the toast host (the
+          // only surface that can render a clickable action); its own
+          // aria-live="polite" container covers the screen-reader
+          // announcement the text-only live region would otherwise make. The
+          // restore gesture needs the ENGINE (the controller holds no
+          // reference to it), so `run` is assembled here from
+          // `EngineAdapter.restorePopouts` + the controller's full
+          // pre-prune arrangement record. An engine without pop-out support
+          // (`FakeEngine`, which omits `restorePopouts`) degrades the notice
+          // to the plain live-region announce.
+          if (action && eng.restorePopouts) {
+            // The controller delivers an action-carrying notice only once a
+            // restorable window exists (see `flushPendingNotice`), so the
+            // toast is never a dead button. `run` re-reads
+            // `restorablePopouts` at click time so a panel that registered
+            // between delivery and the click is included.
+            notifications.push("info", t(key), {
+              label: t(action.labelKey),
+              run: () => eng.restorePopouts?.(ctrl.restorablePopouts()),
+            });
+          } else {
+            announce = t(key);
+          }
         },
         onOp: (op, prev) => {
           // Wires the reachable `SheetsController.openDocument` ->
@@ -183,11 +211,14 @@
   // Flushes any notice `PanelsController` queued during its own construction
   // (currently only the reload-restore notice — see `flushPendingNotice`'s
   // doc comment for why this can't fire from the constructor's `onNotice`
-  // callback itself). Reads no reactive state, so this `$effect` runs
-  // exactly once, after first mount — the live region below is guaranteed
-  // to have already painted its EMPTY initial value by the time this can
-  // possibly change it, which is what makes the change announced at all.
+  // callback itself). The visibleRegs read makes the effect re-run on every
+  // registration change, so an action-carrying notice withheld at first flush
+  // (its restore gesture had no registered panel yet — registrations trickle
+  // in after the panels module activates) is retried as panels arrive. The
+  // a11y property still holds: the first run is post-mount, so the live region
+  // has already painted its EMPTY initial value before any announcement.
   $effect(() => {
+    void ctrl.visibleRegs;
     ctrl.flushPendingNotice();
   });
 
@@ -393,7 +424,7 @@
   <div class="staging" bind:this={stagingEl}>
     {#each visibleRegs as c (c.id)}
       {@const Comp = c.component as Component<Record<string, unknown>>}
-      <div class="panel-slot" data-panel={c.id} use:registerSlot={c.id}>
+      <div class="panel-slot" class:sc-theme-isolate={c.styling === "isolated"} data-panel={c.id} use:registerSlot={c.id}>
         {#key remountKeys.get(c.id) ?? 0}
           <svelte:boundary onerror={(e) => log.error(`panel "${c.id}" crashed`, e)}>
             <Comp {...(c.props ?? {})} />

@@ -14,6 +14,17 @@ export interface Notification {
   /** The message text, already resolved/interpolated — this channel does not itself do i18n
    * lookup; a caller passes the final string (call `t(key, params)` before `push` if needed). */
   message: string;
+  /** An optional call-to-action button: `label` is pre-resolved like
+   * `message` (this channel does no i18n lookup), and `run` is the callback a
+   * click invokes — e.g. an affordance needing a fresh user gesture (a
+   * browser-blocked window reopen) carries its gesture here. */
+  action?: {
+    /** The button's label text, already resolved/interpolated. */
+    label: string;
+    /** Invoked once when the user clicks the action; the notification
+     * dismisses itself alongside. */
+    run: () => void;
+  };
 }
 
 /** A `subscribe()` callback, invoked with no arguments on any push/dismiss. */
@@ -39,6 +50,8 @@ export class NotificationCenter {
   /** Adds a notification and notifies subscribers.
    * @param level Severity, driving visual treatment.
    * @param message The message text (already resolved/interpolated).
+   * @param action An optional call-to-action (`{ label, run }`, both
+   * pre-resolved) the host renders as a button beside the dismiss control.
    * @returns The new notification's id, usable with `dismiss`.
    * @example
    * ```ts
@@ -46,12 +59,13 @@ export class NotificationCenter {
    *
    * const center = new NotificationCenter();
    * const id = center.push("warning", "Some targets were skipped.");
+   * center.push("info", "Windows can be restored.", { label: "Reopen", run: () => {} });
    * center.dismiss(id);
    * ```
    */
-  push(level: NotificationLevel, message: string): string {
+  push(level: NotificationLevel, message: string, action?: Notification["action"]): string {
     const id = `n${this.#nextId++}`;
-    this.#items.push({ id, level, message });
+    this.#items.push({ id, level, message, ...(action ? { action } : {}) });
     this.#emit();
     return id;
   }

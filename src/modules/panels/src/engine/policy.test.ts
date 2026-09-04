@@ -143,11 +143,7 @@ describe("opForMenuCommand — parity with classifyDrop", () => {
   });
 });
 
-test("opForMenuCommand maps popOut to a popOut op", () => {
-  expect(opForMenuCommand("popOut", "chat")).toEqual({ op: "popOut", id: "chat" });
-});
-
-test("opForMenuCommand vetoes popOut on the stage", () => {
-  const result = opForMenuCommand("popOut", STAGE_ID);
-  expect("veto" in result).toBe(true);
-});
+// "popOut" is deliberately OUT of `opForMenuCommand`'s domain: the op now
+// carries the engine-minted window key, which exists only after the gesture-
+// time `addPopoutGroup` succeeds — `DockviewEngine.#handleMenuCommand`
+// intercepts the command before it ever reaches this function.

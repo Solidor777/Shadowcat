@@ -14,7 +14,7 @@ function setup(withScene = true) {
   const bridge = new SceneInteractionBridge();
   bridge.attach(fakeSceneHost({ previewOverlay: () => { previews++; }, clearOverlay: () => { cleared++; } }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {} };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
   // Construct the controller so region-specific reactive state exists and the tool is wired
   // the same way the rail builds it.
   const controller = new ToolController(ctx);

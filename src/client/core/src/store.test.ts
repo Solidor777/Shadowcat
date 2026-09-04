@@ -276,3 +276,28 @@ describe("getPointer", () => {
     expect(getPointer(undefined, "/system")).toBeUndefined();
   });
 });
+
+  it("applies a move by rewriting parent_id and nothing else", () => {
+    const docs = new Map<string, WireDocument>([["d1", doc("d1", { hp: 3 })]]);
+    const before = structuredClone(docs.get("d1"));
+    applyOperation(docs, {
+      op: "move",
+      doc_id: "d1",
+      parent_id: "scene-9",
+      old_parent_id: null,
+    });
+    const after = docs.get("d1")!;
+    expect(after.parent_id).toBe("scene-9");
+    expect({ ...after, parent_id: before!.parent_id }).toEqual(before);
+  });
+
+  it("ignores a move for an unknown doc id", () => {
+    const docs = new Map<string, WireDocument>();
+    applyOperation(docs, {
+      op: "move",
+      doc_id: "ghost",
+      parent_id: null,
+      old_parent_id: null,
+    });
+    expect(docs.size).toBe(0);
+  });

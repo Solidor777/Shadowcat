@@ -4,7 +4,8 @@
   import {
     DEFAULT_WORLD_SETTINGS,
     resolveSettingProvenance,
-    type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine,
+    resolveGradation,
+    type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type Perception,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
     type SettingPath,
@@ -157,10 +158,17 @@
   const LIGHTMODE = ["environmentLight", "globalIllumination"] as const;
   const DIAGONAL = ["chebyshev", "alternating", "euclidean", "manhattan"] as const;
   const EASING = ["easeInOut", "linear"] as const;
-  // Gradation band illumination floors as strings for the select control.
-  const ILLUMINATION_FLOORS = ["bright", "dim", "dark"] as const;
+  const PERCEPTIONS: Perception[] = ["terrain", "creatures"];
   const DICE_MODE = ["total", "success_count"] as const;
   const DICE_DIRECTION = ["high_wins", "low_wins"] as const;
+
+  // The vision-mode floor dropdown derives from the RESOLVED gradation (the same read the
+  // server's floor resolution applies), never a hardcoded band list — a band add/remove in the
+  // gradation editor below is immediately visible here.
+  const floorOptions = $derived.by((): string[] => {
+    subscribe();
+    return resolveGradation(ctx.documents).map((b) => b.name);
+  });
 
   // Per-scene overrides: scene list + selection + resolved system body.
   // subscribe() is called inside each $derived.by so they re-resolve when the doc store
@@ -219,6 +227,129 @@
   function setBounds(axis: "width" | "height", value: number): void {
     const cur = ssys?.bounds ?? DEFAULT_SCENE_BOUNDS;
     setScene("/engine/bounds", ssys?.bounds ?? null, { ...cur, [axis]: value });
+  }
+
+  /**
+   * Append a gradation band with a unique default name. Whole-array write at `/engine/bands`
+   * (the array is one value; a positional insert would depend on nested-pointer semantics the
+   * whole-array replace sidesteps). `old` is the raw stored (unsorted) band array.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the gradation add button
+   * addBand();
+   * ```
+   */
+  function addBand(): void {
+    if (!lgDoc || !lgsys) return;
+    let n = 1;
+    while (lgsys.bands.some((b) => b.name === `band-${n}`)) n++;
+    set(lgDoc.id, "/engine/bands", lgsys.bands, [...lgsys.bands, { name: `band-${n}`, minIllumination: 0.5 }]);
+  }
+
+  /**
+   * Remove the gradation band at stored-array index `i` (whole-array replace, same rationale
+   * as `addBand`). Band NAMES are the reference key for `VisionMode.illuminationFloor`, so
+   * bands are deliberately not renamable here — a silent rename would strand every mode floor
+   * pointing at the old name; removing a referenced band leaves the floor select showing the
+   * raw stored name (fail-visible, never silently retargeted).
+   * @param i The band's index in the raw stored (unsorted) array.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each band's remove button
+   * removeBand(0);
+   * ```
+   */
+  function removeBand(i: number): void {
+    if (!lgDoc || !lgsys) return;
+    set(lgDoc.id, "/engine/bands", lgsys.bands, lgsys.bands.filter((_, j) => j !== i));
+  }
+
+  /**
+   * Add a vision mode under a fresh `custom-N` id (the map key is the stable id that
+   * `VisionAssignment.mode` references; the display name starts equal to the id and is
+   * editable in the row). The new mode seeds as a terrain sense whose floor is the DARKEST
+   * resolved band (`resolveGradation` sorts brightest-first). Written as a single-key create
+   * at `/engine/modes/<id>` (`old: null`), the same set_pointer map-creation the dice
+   * channel-override editor uses.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the vision-mode add button
+   * addVisionMode();
+   * ```
+   */
+  function addVisionMode(): void {
+    if (!vmDoc || !vmsys) return;
+    let n = 1;
+    while (vmsys.modes[`custom-${n}`]) n++;
+    const id = `custom-${n}`;
+    const mode: VisionMode = {
+      id,
+      name: id,
+      illuminationFloor: floorOptions[floorOptions.length - 1] ?? "dark",
+      defaultRange: 12,
+      perceives: "terrain",
+      requiresLos: true,
+      renderHint: null,
+    };
+    set(vmDoc.id, `/engine/modes/${id}`, null, mode);
+  }
+
+  /**
+   * Remove a vision mode by id: whole-map replace at `/engine/modes` minus the key (the same
+   * removal shape the dice channel-override editor uses — set_pointer has no map-key removal).
+   * Assignments referencing the removed id dangle harmlessly: the sense resolver ignores an
+   * unknown mode id, and the assignment editors show the raw id (fail-visible).
+   * @param id The mode's registry id (its `modes` map key).
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each mode's remove button
+   * removeVisionMode("tremorsense");
+   * ```
+   */
+  function removeVisionMode(id: string): void {
+    if (!vmDoc || !vmsys) return;
+    const next = { ...vmsys.modes };
+    delete next[id];
+    set(vmDoc.id, "/engine/modes", vmsys.modes, next);
+  }
+
+  /**
+   * Commit a mode's display name edit; a blank name is ignored (a nameless row would be
+   * unidentifiable in every select that lists modes by name).
+   * @param id The mode's registry id.
+   * @param raw The name input's raw string value.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each mode's name input
+   * commitModeName("darkvision", "Darkvision (60 ft)");
+   * ```
+   */
+  function commitModeName(id: string, raw: string): void {
+    const mode = vmsys?.modes[id];
+    if (!vmDoc || !mode) return;
+    const name = raw.trim();
+    if (name === "" || name === mode.name) return;
+    set(vmDoc.id, `/engine/modes/${id}/name`, mode.name, name);
+  }
+
+  /**
+   * Commit a mode's render-hint edit; an emptied input writes `null` (the field is
+   * `string | null`, absent = no render treatment).
+   * @param id The mode's registry id.
+   * @param raw The render-hint input's raw string value.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each mode's render-hint input
+   * commitModeRenderHint("darkvision", "desaturate");
+   * ```
+   */
+  function commitModeRenderHint(id: string, raw: string): void {
+    const mode = vmsys?.modes[id];
+    if (!vmDoc || !mode) return;
+    const hint = raw.trim();
+    const next = hint === "" ? null : hint;
+    if (next === mode.renderHint) return;
+    set(vmDoc.id, `/engine/modes/${id}/renderHint`, mode.renderHint ?? null, next);
   }
 </script>
 
@@ -305,32 +436,88 @@
   {/if}
 
   {#if ctx.role === "gm" && lgsys && lgDoc}
-    <!-- Gradation band editors: one numeric threshold input per seeded band.
-         JSON-pointer path: /engine/bands/<i>/minIllumination -->
+    <!-- Gradation band editors: one numeric threshold input + one remove button per band.
+         JSON-pointer paths: /engine/bands/<i>/minIllumination; add/remove write the WHOLE
+         /engine/bands array. Band names are reference keys (VisionMode.illuminationFloor
+         names a band), so they are displayed but never editable here. -->
     <fieldset>
       <legend>{ctx.t("gameSettings.gradation")}</legend>
       {#each lgsys.bands as band, i (band.name)}
-        <label>
-          {band.name}
-          <input
-            type="number" min="0" max="1" step="0.01"
-            aria-label="gameSettings.gradation.{band.name}"
-            value={band.minIllumination}
-            onchange={(e) => set(lgDoc.id, `/engine/bands/${i}/minIllumination`, band.minIllumination, Number((e.currentTarget as HTMLInputElement).value))}
-          />
-        </label>
+        <div class="band-row">
+          <label>
+            {band.name}
+            <input
+              type="number" min="0" max="1" step="0.01"
+              aria-label="gameSettings.gradation.{band.name}"
+              value={band.minIllumination}
+              onchange={(e) => set(lgDoc.id, `/engine/bands/${i}/minIllumination`, band.minIllumination, Number((e.currentTarget as HTMLInputElement).value))}
+            />
+          </label>
+          <button type="button" aria-label="gameSettings.gradationRemove.{band.name}"
+            onclick={() => removeBand(i)}>{ctx.t("gameSettings.gradationRemove")}</button>
+        </div>
       {/each}
+      <button type="button" aria-label="gameSettings.gradationAdd"
+        onclick={addBand}>{ctx.t("gameSettings.gradationAdd")}</button>
     </fieldset>
   {/if}
 
   {#if ctx.role === "gm" && vmsys && vmDoc}
-    <!-- Vision-mode editors: one row per mode — illumination floor select + default range number.
-         JSON-pointer paths: /engine/modes/<id>/illuminationFloor, /engine/modes/<id>/defaultRange -->
+    <!-- Vision-mode editors: one row per mode — name, what it perceives, LOS requirement,
+         render hint, illumination floor (options derive from the resolved gradation), default
+         range, remove. The add button creates a `custom-N` mode.
+         JSON-pointer paths: /engine/modes/<id>/<field>; removal replaces the whole
+         /engine/modes map. The mode id is the map key and never editable (assignments
+         reference it); the display name is. -->
     <fieldset>
       <legend>{ctx.t("gameSettings.visionModes")}</legend>
       {#each Object.values(vmsys.modes) as mode (mode.id)}
-        <div>
-          <span>{mode.name}</span>
+        <div class="mode-row">
+          <label>
+            {ctx.t("gameSettings.visionModeName")}
+            <input
+              type="text"
+              aria-label="gameSettings.visionMode.{mode.id}.name"
+              value={mode.name}
+              onchange={(e) => commitModeName(mode.id, (e.currentTarget as HTMLInputElement).value)}
+            />
+          </label>
+          <label>
+            {ctx.t("gameSettings.visionModePerceives")}
+            <!-- `?? "terrain"`: a mode entry stored before the descriptor gained `perceives`
+                 reads `undefined` at runtime (the generated TS type declares the field
+                 non-optional, so the legacy shape is invisible to the compiler) while the
+                 server resolves it as the `terrain` serde default — display THAT. The write's
+                 `old` still passes the raw stored value (`set` coalesces absent to null). -->
+            <select
+              aria-label="gameSettings.visionMode.{mode.id}.perceives"
+              value={mode.perceives ?? "terrain"}
+              onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/perceives`, mode.perceives, (e.currentTarget as HTMLSelectElement).value)}
+            >
+              {#each PERCEPTIONS as p}<option value={p}>{p === "terrain" ? ctx.t("gameSettings.perceivesTerrain") : ctx.t("gameSettings.perceivesCreatures")}</option>{/each}
+            </select>
+          </label>
+          <label>
+            <!-- `?? true`: same legacy-entry read as `perceives` above — the server resolves an
+                 absent `requiresLos` as `true`, so the checkbox must display checked, not
+                 blank, for a mode entry that predates the field. -->
+            <input
+              type="checkbox"
+              aria-label="gameSettings.visionMode.{mode.id}.requiresLos"
+              checked={mode.requiresLos ?? true}
+              onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/requiresLos`, mode.requiresLos, (e.currentTarget as HTMLInputElement).checked)}
+            />
+            {ctx.t("gameSettings.visionModeRequiresLos")}
+          </label>
+          <label>
+            {ctx.t("gameSettings.visionModeRenderHint")}
+            <input
+              type="text"
+              aria-label="gameSettings.visionMode.{mode.id}.renderHint"
+              value={mode.renderHint ?? ""}
+              onchange={(e) => commitModeRenderHint(mode.id, (e.currentTarget as HTMLInputElement).value)}
+            />
+          </label>
           <label>
             {ctx.t("gameSettings.illuminationFloor")}
             <select
@@ -338,7 +525,12 @@
               value={mode.illuminationFloor}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/illuminationFloor`, mode.illuminationFloor, (e.currentTarget as HTMLSelectElement).value)}
             >
-              {#each ILLUMINATION_FLOORS as f}<option value={f}>{f}</option>{/each}
+              {#each floorOptions as f}<option value={f}>{f}</option>{/each}
+              {#if !floorOptions.includes(mode.illuminationFloor)}
+                <!-- A floor naming a removed/absent band stays visible as its raw stored
+                     value rather than silently displaying a different band. -->
+                <option value={mode.illuminationFloor}>{mode.illuminationFloor}</option>
+              {/if}
             </select>
           </label>
           <label>
@@ -350,8 +542,12 @@
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/defaultRange`, mode.defaultRange, Number((e.currentTarget as HTMLInputElement).value))}
             />
           </label>
+          <button type="button" aria-label="gameSettings.visionModeRemove.{mode.id}"
+            onclick={() => removeVisionMode(mode.id)}>{ctx.t("gameSettings.visionModeRemove")}</button>
         </div>
       {/each}
+      <button type="button" aria-label="gameSettings.visionModeAdd"
+        onclick={addVisionMode}>{ctx.t("gameSettings.visionModeAdd")}</button>
     </fieldset>
   {/if}
 
@@ -721,5 +917,13 @@
     @media (pointer: coarse) {
       min-height: var(--input-height-coarse);
     }
+  }
+  .band-row,
+  .mode-row {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+    align-items: end;
   }
 </style>

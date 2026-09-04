@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -31,12 +31,13 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
-  /** Live engine handle for the GM vision control (set after async init). */
-  let engineRef: RenderEngine | null = null;
+  /** Live engine handle for the GM vision control and the theme-swap recolor
+   * (set after async init; `$state` so the recolor effect below observes it). */
+  let engineRef = $state<RenderEngine | null>(null);
   /** GM vision mode: "all" (no fog), "fog" (client-only full-fog preview), or "as:<userId>"
    * (see-as-player: re-subscribe vision as that user — server-gated to GMs). */
   let gmView = $state("all");
@@ -108,6 +109,7 @@
     let offAsset: (() => void) | null = null;
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
+    let offEmote: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
@@ -127,7 +129,38 @@
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
-        onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
+        selectedTokens: () => ctx.tokenSelection.ids,
+        onDerivedApplied: (input) => {
+          host.dataset.sceneDerived = "1";
+          host.dataset.visionMode = input.mode;
+          // Read-only observability signal: the applied frame's creature-sense token ids,
+          // id-sorted so the string is order-independent. This is the set `TokenView` raises
+          // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
+          host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
+        },
+        onLightingApplied: (frame, sweeping) => {
+          // Read-only observability signals: the painted lighting overlay's cell count and
+          // whether a carried-light sweep is driving it — an e2e can see a torch light a
+          // corridor mid-walk (the count rises while `data-light-sweep` is "1") without
+          // reading WebGL pixels. Each attribute is written only when its value changes:
+          // the engine paints on every fade tick and sweep step, and a dataset write is a
+          // DOM attribute mutation each time.
+          const litCells = String(frame.cells.length);
+          const lightSweep = sweeping ? "1" : "0";
+          // Axial bounding box of the lit cells ("minI,minJ,maxI,maxJ"; "" when nothing is lit)
+          // — how far along a corridor the glow currently reaches.
+          let minI = Infinity, minJ = Infinity, maxI = -Infinity, maxJ = -Infinity;
+          for (const c of frame.cells) {
+            if (c.i < minI) minI = c.i;
+            if (c.j < minJ) minJ = c.j;
+            if (c.i > maxI) maxI = c.i;
+            if (c.j > maxJ) maxJ = c.j;
+          }
+          const litBbox = frame.cells.length === 0 ? "" : `${minI},${minJ},${maxI},${maxJ}`;
+          if (host.dataset.litCells !== litCells) host.dataset.litCells = litCells;
+          if (host.dataset.lightSweep !== lightSweep) host.dataset.lightSweep = lightSweep;
+          if (host.dataset.litBbox !== litBbox) host.dataset.litBbox = litBbox;
+        },
       });
       const e = engine;
       // setViewport (resize + initial grid) then start (camera + reconcile +
@@ -145,6 +178,9 @@
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
+      // Token selection is client-local UI state (no document write either) — same explicit
+      // re-projection so the selection highlight fx tracks the click.
+      let lastSelectionKey = [...ctx.tokenSelection.ids].sort().join(" ");
       const vsSub = createSubscriber((update) => documents.subscribe(update));
       offViewed = $effect.root(() => {
         $effect(() => {
@@ -158,6 +194,12 @@
           if (fp !== lastFootprints) {
             lastFootprints = fp;
             e.reapplyFootprints();
+          }
+          // Iterating the SvelteSet tracks it; a membership change re-projects the tokens.
+          const selKey = [...ctx.tokenSelection.ids].sort().join(" ");
+          if (selKey !== lastSelectionKey) {
+            lastSelectionKey = selKey;
+            e.reapplyTokenSelection();
           }
         });
       });
@@ -225,8 +267,29 @@
           })
           .sort()
           .join(";");
-        host.dataset.shapeCount = String(documents.query("drawing").length + documents.query("template").length);
+        // Read-only observability signal: each viewed-scene token's RESOLVED visual kind
+        // (`resolveTokenVisual` — the same read the render layer draws from) as `id:kind`,
+        // id-sorted like data-token-positions; `none` when the visual fails closed (the token
+        // then also doesn't draw). Lets an assertion confirm an authored visual shape reaches
+        // the render boundary without inspecting WebGL pixels directly.
+        host.dataset.tokenVisuals = sceneTokens
+          .map((t) => `${t.id}:${resolveTokenVisual(t, documents)?.kind ?? "none"}`)
+          .sort()
+          .join(";");
+        host.dataset.shapeCount = String(
+          documents.query("drawing").length + documents.query("template").length,
+        );
         host.dataset.wallCount = String(documents.query("wall").length);
+        // Read-only observability signal: each viewed-scene token's last-projected badge chips
+        // (condition glyphs, then the elevation chip) as `id:chip,chip`, id-sorted — the same
+        // string list `PixiBackend` turns into the canvas's upright Text nodes, so an e2e can
+        // confirm a badge reached the render layer without inspecting WebGL pixels. Reads AFTER
+        // the engine's own store subscription (registered in `start`, before this one) has
+        // reconciled the specs this commit.
+        host.dataset.tokenBadges = sceneTokens
+          .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
+          .sort()
+          .join(";");
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
         // e2e assertion can confirm the authored background reached the render layer
@@ -246,6 +309,11 @@
       offPing = onPing((m) => {
         e.addPing(m.x, m.y);
         host.dataset.lastPing = `${m.x},${m.y}`;
+      });
+      // Relayed emotes (incl. our own echo) spawn a transient glyph over the token.
+      offEmote = onEmote((m) => {
+        e.addEmote(m.token, m.emote);
+        host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
@@ -278,6 +346,7 @@
       detachScene?.();
       offGrid?.();
       offPing?.();
+      offEmote?.();
       offMoveOutcome?.();
       offAsset?.();
       offViewed?.();
@@ -285,6 +354,22 @@
       observer?.disconnect();
       engine?.destroy();
     };
+  });
+
+  /** Theme-swap recolor: `activeTheme()` is the ui-kit theme controller's
+   * `createSubscriber`-backed reactive read, so this effect re-runs on any theme
+   * change and pushes the re-read canvas colors into the live engine via
+   * `RenderEngine.setThemeColors`. The construction-time reads (the backend
+   * factory's `--surface-base`, the `gridColor` opt) remain the initial values;
+   * this effect only handles post-construction swaps. */
+  $effect(() => {
+    activeTheme();
+    const e = engineRef;
+    if (!e) return;
+    e.setThemeColors({
+      background: readColor("--surface-base", 0x101014),
+      gridColor: readColor("--grid-line", 0x363645),
+    });
   });
 
   /** Pointer/wheel gestures → the engine's tool-aware dispatcher (active tool first,
@@ -356,14 +441,14 @@
   }
   .gm-view {
     position: absolute;
-    top: var(--space-2, 0.5rem);
-    right: var(--space-2, 0.5rem);
-    padding: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+    top: var(--space-2);
+    right: var(--space-2);
+    padding: var(--space-1) var(--space-2);
     font-size: 0.8125rem;
-    color: var(--text-on-surface, #e8e8f0);
-    background: var(--surface-raised, #1c1c24);
-    border: 1px solid var(--border-subtle, #363645);
-    border-radius: var(--radius-sm, 0.25rem);
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
     cursor: pointer;
     min-height: 2.25rem; /* touch target (#10) */
   }

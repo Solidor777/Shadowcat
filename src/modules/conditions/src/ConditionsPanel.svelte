@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { conditionTarget, type Condition, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
+  import { conditionTarget, type Condition, type ConditionFx, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -55,6 +55,31 @@
       const old = current?.[k as keyof Condition] ?? null;
       ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}/${k}`, old, new: v }] }]);
     }
+  }
+  /** GM registry editor: sets or clears ONE field of a condition's authored fx, dispatching a
+   * whole-fx `update` op (the fx payload replaces wholesale — writing per-sub-field paths would
+   * strand a cleared sibling key in the stored object). `old` reads the RAW currently-stored fx
+   * (never a resolved/defaulted one), the same OCC convention as `update`. A fully-cleared fx
+   * writes `null` (no effect), keeping the stored payload minimal.
+   * @param id The condition's registry key.
+   * @param key The fx field to change (`tint`/`desaturate`/`highlight`).
+   * @param value The new field value, or `undefined` to clear the field.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the GM editor row's fx inputs
+   * setFx("poisoned", "tint", "#66ff66");
+   * ```
+   */
+  function setFx(id: string, key: keyof ConditionFx, value: string | boolean | undefined): void {
+    if (!registry) return;
+    const eng = registry.engine as ConditionRegistryEngine;
+    const old = eng.conditions[id]?.fx ?? null;
+    const next: ConditionFx = { ...(old ?? {}) };
+    if (value === undefined) delete next[key];
+    else if (key === "desaturate") next.desaturate = value === true;
+    else next[key] = String(value);
+    const empty = !next.tint && !next.desaturate && !next.highlight;
+    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}/fx`, old, new: empty ? null : next }] }]);
   }
   /** GM registry editor: appends a new condition entry under a fresh random id, with a
    * placeholder name/icon for the GM to rename in place.
@@ -169,6 +194,20 @@
           <span class="glyph">{c.icon}</span>
           <input aria-label={t("conditions.name")} value={c.name} onchange={(e) => update(id, { name: e.currentTarget.value })} />
           <input aria-label={t("conditions.icon")} value={c.icon} maxlength="4" onchange={(e) => update(id, { icon: e.currentTarget.value })} />
+          <span class="fx">
+            <input type="color" aria-label={t("conditions.tint")} title={t("conditions.tint")} value={c.fx?.tint ?? "#ff0000"} onchange={(e) => setFx(id, "tint", e.currentTarget.value)} />
+            {#if c.fx?.tint}
+              <button type="button" aria-label={t("conditions.clearTint")} onclick={() => setFx(id, "tint", undefined)}>×</button>
+            {/if}
+            <label class="desaturate">
+              <input type="checkbox" checked={!!c.fx?.desaturate} onchange={(e) => setFx(id, "desaturate", e.currentTarget.checked ? true : undefined)} />
+              {t("conditions.desaturate")}
+            </label>
+            <input type="color" aria-label={t("conditions.highlight")} title={t("conditions.highlight")} value={c.fx?.highlight ?? "#ffffff"} onchange={(e) => setFx(id, "highlight", e.currentTarget.value)} />
+            {#if c.fx?.highlight}
+              <button type="button" aria-label={t("conditions.clearHighlight")} onclick={() => setFx(id, "highlight", undefined)}>×</button>
+            {/if}
+          </span>
           <button type="button" onclick={() => remove(id)}>{t("conditions.remove")}</button>
         </li>
       {/each}
@@ -186,7 +225,7 @@
   }
   .hint {
     margin: 0;
-    color: var(--text-secondary);
+    color: var(--text-muted);
     font-size: 0.85em;
   }
   .palette {
@@ -219,6 +258,24 @@
     display: flex;
     align-items: center;
     gap: var(--space-1);
+    flex-wrap: wrap;
+  }
+  .fx {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+  .fx input[type="color"] {
+    width: 32px;
+    min-width: 32px;
+    padding: 0;
+  }
+  .desaturate {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: 0.85em;
+    color: var(--text-secondary);
   }
   .glyph {
     font-size: 1.1em;

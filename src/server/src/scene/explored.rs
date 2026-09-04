@@ -38,8 +38,8 @@ pub type Cell = (i32, i32);
 
 /// Hard cap on candidate cells scanned per polygon/source. A wall or LOS bbox authored at an
 /// extreme coordinate with a tiny grid size could otherwise span billions of cells and stall the
-/// dispatch path. Every production call site (`mark_polygons`, `accumulate_visible_cells`,
-/// `player_lit_mask`) reaches its scan box through `scan_box_for`, which intersects an over-cap box
+/// dispatch path. Every production call site (`accumulate_visible_cells`, `player_lit_mask`)
+/// reaches its scan box through `scan_box_for`, which intersects an over-cap box
 /// with a bounded window around the source's own focus before any of them enumerate.
 /// `cells_in_bounds` enforces this cap directly and returns `None` — the candidate set is then
 /// skipped, under-reveal — when the box it receives is still over it (a degenerate window) or for
@@ -61,7 +61,7 @@ pub(crate) const SCAN_WINDOW_HALF_CELLS: i64 = 999;
 /// clamp decision is made from; `scan_box_for` always decides from the padded box regardless of
 /// `mode` (see its doc).
 pub(crate) enum ScanMode {
-    /// The source's box as authored, unpadded: `mark_polygons`, `player_lit_mask`'s scan, and
+    /// The source's box as authored, unpadded: `player_lit_mask`'s scan and
     /// `accumulate_visible_cells`'s strict invocation.
     Strict,
     /// The box padded by one cell on every side (corner-sampling headroom):
@@ -80,9 +80,9 @@ pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vis
 /// The ONE symbol that owns scan geometry for a source. Given the grid, the source's own focus
 /// (a viewpoint, or a polygon's bbox centre), its unpadded `bbox`, the cell size and the cap,
 /// returns the box a caller wanting `mode` should scan. No call site computes a pad, a decision
-/// box, a span, or a cap comparison of its own — every production caller (`mark_polygons`,
-/// `player_lit_mask`'s scan, both `accumulate_visible_cells` invocations) calls this and scans
-/// exactly what it returns.
+/// box, a span, or a cap comparison of its own — every production caller (`player_lit_mask`'s
+/// scan, both `accumulate_visible_cells` invocations) calls this and scans exactly what it
+/// returns.
 ///
 /// The clamp DECISION is always made from `pad_box(bbox, cell)` — the one-cell-padded box —
 /// regardless of `mode`: it is the largest box ANY mode would scan for this source, so every
@@ -105,18 +105,9 @@ pub(crate) fn pad_box(bbox: (vision::P, vision::P), pad: f64) -> (vision::P, vis
 /// movement gate's own strict scan for the same source, an under-permissive divergence between
 /// what a player is shown and what they may move through.
 ///
-/// `mark_polygons` has no lenient counterpart at all — its one call always asks for `Strict` with
-/// its own box as `bbox` — so the "largest box any mode would scan" it shares a decision with is
-/// hypothetical, never actually scanned. For it, sharing the decision means: in the band where its
-/// own unpadded box sits at or under the cap but the padded box does not, it clamps and marks a
-/// bounded subset of the cells its own box alone would have covered. This is deliberate — uniform
-/// treatment across all three callers is worth more than the narrow band it costs, and the
-/// direction is under-reveal (fewer cells remembered), the same fail-safe direction every other
-/// clamp outcome in this module takes.
-///
 /// PRECONDITION: `focus` lies inside `bbox` (and therefore inside the padded box, which only grows
-/// it). Every caller satisfies it: a visibility source sits inside its own LOS polygon's bbox, and
-/// `mark_polygons` uses that bbox's own centre. A focus far enough outside `bbox` that the window
+/// it). Every caller satisfies it: a visibility source sits inside its own LOS polygon's bbox. A
+/// focus far enough outside `bbox` that the window
 /// misses the box being scanned returns that box unchanged and lets the callee's own cap decide,
 /// rather than yielding an inverted, enumerates-nothing rectangle — this is the inverted-window
 /// fallback this doc names.
@@ -246,73 +237,18 @@ impl ExploredSet {
         self.cells.iter().copied()
     }
 
-    /// Mark every cell whose center lies inside any polygon in `polys` (flat `[x,y,…]` coords),
-    /// indexed through `grid` at the `cell_size` INDEXING scale — the scalar `GridShape::cell_of`
-    /// and `GridShape::cell_center` index against, never `GridShape::world_units_per_cell`, which
-    /// measures an authored distance and is the larger of the two on hex. Returns the count of
-    /// newly-added cells (0 ⇒ no growth). `grid` supplies both the candidate-cell enumeration
-    /// (`GridShape::cells_in_bounds`) and each candidate's center (`GridShape::cell_center`), so a
-    /// hex scene indexes hex axial cells while a square scene's candidate enumeration and cell-center
-    /// math reduce to exactly `floor(min/cell)..=floor(max/cell)` and `(i+0.5)*cell`.
+    /// Mark `cells` (already indexed in this scene's grid coordinates — the lit mask's own
+    /// `(i, j)` cells, which are center-sampled through the scene's resolved `GridShape`) as
+    /// explored. Returns the count of newly-added cells (0 ⇒ no growth). THE explored writer:
+    /// `ws::conn::enrich_vision_explored` feeds it the recipient's currently-VISIBLE cells (the
+    /// `vision` payload's `lit` set — line of sight ∩ illumination), never a line-of-sight
+    /// polygon on its own, so a player remembers only terrain they could actually see.
     /// Correctness (the `Revealed` gate composes this set with `GridShape::line_traversal`
-    /// move-cells) requires `grid` to be the SAME resolved shape (`resolve_grid_shape`) the gate and
-    /// the vision mask use for this scene. A polygon whose bbox enumerates more than
-    /// `MAX_CELLS_PER_POLYGON` candidate cells is clamped to a `SCAN_WINDOW_HALF_CELLS` window
-    /// around that bbox's centre, marking a bounded subset; a bbox within the cap is enumerated
-    /// whole. A DEGENERATE polygon (`cells_in_bounds` → `None`) is skipped (under-reveal) to bound
-    /// the dispatch-path cost.
-    pub(crate) fn mark_polygons(
-        &mut self,
-        polys: &[Vec<f64>],
-        grid: &dyn GridShape,
-        cell_size: f64,
-    ) -> usize {
-        if cell_size <= 0.0 {
-            return 0;
-        }
+    /// move-cells) requires the cells to be indexed by the SAME resolved shape the gate and the
+    /// vision mask use for this scene, which holding them from the mask guarantees.
+    pub(crate) fn mark_cells(&mut self, cells: impl IntoIterator<Item = Cell>) -> usize {
         let before = self.cells.len();
-        for poly in polys {
-            if poly.len() < 6 {
-                continue; // need ≥3 points for an area
-            }
-            let pts: Vec<(f64, f64)> = poly
-                .as_chunks::<2>()
-                .0
-                .iter()
-                .map(|c| (c[0], c[1]))
-                .collect();
-            let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-            for &(x, y) in &pts {
-                minx = minx.min(x);
-                miny = miny.min(y);
-                maxx = maxx.max(x);
-                maxy = maxy.max(y);
-            }
-            // The polygon's own centre is its focus; a single-mode caller, so `scan_box_for` marks
-            // a bounded SUBSET of the bbox (under-reveal) whenever the bbox itself is over cap.
-            let focus = ((minx + maxx) * 0.5, (miny + maxy) * 0.5);
-            let bbox = ((minx, miny), (maxx, maxy));
-            let (scan_min, scan_max) = scan_box_for(
-                grid,
-                focus,
-                bbox,
-                cell_size,
-                MAX_CELLS_PER_POLYGON,
-                ScanMode::Strict,
-            );
-            let Some(candidates) =
-                grid.cells_in_bounds(scan_min, scan_max, cell_size, MAX_CELLS_PER_POLYGON)
-            else {
-                tracing::warn!("explored cell scan degenerate; skipping polygon");
-                continue;
-            };
-            for c in candidates {
-                let (cx, cy) = grid.cell_center(c);
-                if point_in_poly(&pts, cx, cy) {
-                    self.cells.insert(c);
-                }
-            }
-        }
+        self.cells.extend(cells);
         self.cells.len() - before
     }
 
@@ -353,25 +289,6 @@ impl ExploredSet {
         }
         Self { cells }
     }
-}
-
-/// Even-odd ray-cast point-in-polygon. Source: standard CG (Shimrat 1962; de Berg et al.).
-fn point_in_poly(poly: &[(f64, f64)], px: f64, py: f64) -> bool {
-    let n = poly.len();
-    if n < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let (xi, yi) = poly[i];
-        let (xj, yj) = poly[j];
-        if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
-            inside = !inside;
-        }
-        j = i;
-    }
-    inside
 }
 
 #[cfg(test)]

@@ -3346,3 +3346,61 @@ async fn combatant_create_stamps_resources_owner_or_gm_unless_explicit() {
         "an explicit entry is respected untouched"
     );
 }
+
+#[tokio::test]
+async fn apply_command_replays_a_folder_move_and_refreshes_subtree_tags() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = folder_doc(1, w, "alpha", None);
+    let b = folder_doc(2, w, "beta", Some(a.id));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let asset = crate::data::asset::Asset {
+        id: Uuid::new_v4(),
+        world_id: w,
+        storage_key: format!("{w}/x"),
+        original_name: "map.png".into(),
+        content_type: "image/png".into(),
+        byte_size: 10,
+        created_by: None,
+        created_at: 1,
+        version: 1,
+        folder_id: Some(b.id),
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("image/png", 1),
+    };
+    r.insert_asset(&asset).await.unwrap();
+    r.refresh_derived_tags(asset.id).await.unwrap();
+
+    // Trusted replay of a Move: parent rewritten, subtree tags recomputed.
+    r.apply_command(UnsequencedCommand {
+        world_id: w,
+        author: ctx.user_id,
+        ts: 9,
+        ops: vec![Operation::Move {
+            doc_id: b.id,
+            parent_id: None,
+            old_parent_id: Some(a.id),
+        }],
+    })
+    .await
+    .unwrap();
+
+    let moved = r.get_document(b.id).await.unwrap().unwrap();
+    assert_eq!(moved.parent_id, None);
+    assert_eq!(moved.updated_at, 9);
+    let refreshed = r.get_asset(asset.id).await.unwrap().unwrap();
+    assert!(!refreshed.derived_tags.contains(&"alpha".to_string()));
+    assert!(refreshed.derived_tags.contains(&"beta".to_string()));
+}

@@ -53,7 +53,8 @@ async fn vision_emits_persistent_explored_for_a_player_across_reconnect() {
     let h = spawn().await;
     let (player, cookie) = h.add_player("player1").await;
 
-    // The GM creates a scene + a token owned by the player at the origin.
+    // The GM creates a scene + a token owned by the player at the origin, lit by a placed light
+    // (the seeded scene is pitch dark; an unlit cell is not visible and so never explored).
     let mut gm = h.connect().await;
     let _ = gm.next().await; // Welcome
     gm.send(intent_msg(
@@ -61,6 +62,7 @@ async fn vision_emits_persistent_explored_for_a_player_across_reconnect() {
         serde_json::json!([
             create_doc_op(h.world, 10, None, "scene"),
             create_owned_token_op(h.world, 11, 10, player, 0.0, 0.0),
+            create_light_op(h.world, 20, 10, 0.0, 0.0),
         ]),
     ))
     .await
@@ -100,6 +102,33 @@ fn json_uuid(n: u128) -> serde_json::Value {
     serde_json::Value::String(uuid::Uuid::from_u128(n).to_string())
 }
 
+/// A `create` op for a bright placed light at `(x, y)` in `scene` (brightRadius 3 cells, dim 6).
+/// The seeded scene is pitch dark (lighting on, environment intensity 0) and a player's visible —
+/// and therefore explored — cells are line of sight ∩ illumination, so a fixture that expects a
+/// token-owning player to see anything must light the token's cell.
+fn create_light_op(world: uuid::Uuid, id: u128, scene: u128, x: f64, y: f64) -> serde_json::Value {
+    let body = serde_json::json!({
+        "x": x, "y": y,
+        "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0, "dimRadius": 6.0, "enabled": true }
+    });
+    serde_json::json!({
+        "op": "create",
+        "doc": {
+            "id": json_uuid(id),
+            "scope": { "kind": "world", "world_id": world },
+            "doc_type": "light",
+            "schema_version": 1,
+            "parent_id": json_uuid(scene),
+            // "light" is engine-defined: the typed body rides `engine`; `system` mirrors it as
+            // opaque data.
+            "engine": body,
+            "system": body,
+            "created_at": 0,
+            "updated_at": 0,
+        }
+    })
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn vision_frame_includes_lit_mask_after_room_hydration() {
     // Exercises the apply_op LIVE-UPDATE path: the GM connects first (creating the room via
@@ -132,36 +161,7 @@ async fn vision_frame_includes_lit_mask_after_room_hydration() {
             create_doc_op(h.world, 10, None, "scene"),
             create_owned_token_op(h.world, 11, 10, player, 50.0, 50.0),
             // Bright light at the token's cell: brightRadius 3 covers cell (0,0) fully.
-            {
-                "op": "create",
-                "doc": {
-                    "id": json_uuid(20),
-                    "scope": { "kind": "world", "world_id": h.world },
-                    "doc_type": "light",
-                    "schema_version": 1,
-                    "parent_id": json_uuid(10),
-                    // "light" is engine-defined; see the world-settings
-                    // comment above for why `engine` and `system` diverge.
-                    "engine": {
-                        "x": 50.0, "y": 50.0,
-                        "color": "#ffffff",
-                        "intensity": 1.0,
-                        "brightRadius": 3.0,
-                        "dimRadius": 6.0,
-                        "enabled": true
-                    },
-                    "system": {
-                        "x": 50.0, "y": 50.0,
-                        "color": "#ffffff",
-                        "intensity": 1.0,
-                        "brightRadius": 3.0,
-                        "dimRadius": 6.0,
-                        "enabled": true
-                    },
-                    "created_at": 0,
-                    "updated_at": 0,
-                }
-            },
+            create_light_op(h.world, 20, 10, 50.0, 50.0),
         ]),
     ))
     .await
@@ -214,7 +214,8 @@ async fn gm_can_see_as_player_but_a_player_cannot_see_as_another() {
     let (player, player_cookie) = h.add_player("seen").await;
     let (_other, other_cookie) = h.add_player("snoop").await;
 
-    // The GM creates a scene + a token owned by `player`.
+    // The GM creates a scene + a token owned by `player`, lit by a placed light so the player's
+    // view has visible (explored) cells.
     let mut gm = h.connect().await;
     let _ = gm.next().await; // Welcome
     gm.send(intent_msg(
@@ -222,6 +223,7 @@ async fn gm_can_see_as_player_but_a_player_cannot_see_as_another() {
         serde_json::json!([
             create_doc_op(h.world, 10, None, "scene"),
             create_owned_token_op(h.world, 11, 10, player, 0.0, 0.0),
+            create_light_op(h.world, 20, 10, 0.0, 0.0),
         ]),
     ))
     .await

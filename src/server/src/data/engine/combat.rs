@@ -388,7 +388,9 @@ pub enum Formula {
 
 impl Formula {
     /// Finite when a number; parses (within the formula caps) when text.
-    fn validate(&self, at: &str) -> Result<(), String> {
+    /// `pub(crate)` so every engine type holding a `Formula` (`RegionEngine`'s
+    /// triggers included) ingress-checks it through this one rule.
+    pub(crate) fn validate(&self, at: &str) -> Result<(), String> {
         match self {
             Formula::Number(n) if !n.is_finite() => Err(format!("{at} must be finite")),
             Formula::Number(_) => Ok(()),

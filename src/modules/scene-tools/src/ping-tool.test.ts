@@ -14,6 +14,7 @@ test("clicking with the ping tool broadcasts a ping at the scene point", () => {
     scene: bridge,
     dispatchIntent: () => {},
     documents: new DocumentStore(),
+    t: (k) => k,
     assets: new AssetResolver(),
     world: "w1",
     role: "gm",

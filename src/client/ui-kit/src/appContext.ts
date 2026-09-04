@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -8,6 +8,7 @@ import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
+import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -101,6 +102,10 @@ export interface AppContext {
   /** Optimistic (predicted) document view — the canvas render source, so a placed or
    * dragged document shows immediately. */
   documents: ReadableDocuments;
+  /** The combat seam: reads over the per-recipient optimistic view, server-resolved resource
+   * numbers, the server-owned clock's intents, and the document helpers; see `CombatApi`.
+   * Advisory affordances only — the server authorizes every intent. */
+  combat: CombatApi;
   /** The current world's id. */
   world: string;
   /** The current user's world-scoped role. */
@@ -144,6 +149,18 @@ export interface AppContext {
   t: TFunc;
   /** Resolves asset UUIDs to serve URLs, cache-busting on replace. */
   assets: AssetResolver;
+  /** Pick-mode orchestration (stable ref). The asset-browser overlay renders
+   * `assetPick.pending` and settles it; every other consumer calls `pickAsset`
+   * below instead of touching this directly. */
+  assetPick: AssetPickController;
+  /** Open the asset browser in pick mode for an ordered multi-pick.
+   * @param opts - Filter presets plus the `multiple: true` arity marker.
+   * @returns The picked ids in pick order, or `null` on cancel. */
+  pickAsset(opts: PickAssetMultiple): Promise<string[] | null>;
+  /** Open the asset browser in pick mode for a single pick.
+   * @param opts - Filter presets for the browser.
+   * @returns The picked id, or `null` on cancel. */
+  pickAsset(opts?: PickAssetOptions): Promise<string | null>;
   /** Subscribe to out-of-band asset notices (`created` / `replaced` / `moved` / `deleted`);
    * returns an unsubscribe. `replaced` and `deleted` change what a URL serves (the resolver
    * already reflects them); `created` and `moved` mean a listing is stale.
@@ -209,6 +226,10 @@ export interface AppContext {
   speakAs: SpeakAs;
   /** Broadcast a transient location ping at scene coords on the active scene. */
   sendPing: (x: number, y: number) => void;
+  /** Broadcast a transient emote over `token` on the currently-viewed scene. The server
+   * re-authorizes effective ownership (GM exempt) and drops an over-reaching send
+   * silently, so callers may offer this client-advisory only. */
+  sendEmote: (token: string, emote: string) => void;
   /** Request a grid A* path from `start` through `waypoints` on `scene`. Resolves
    * with the computed path + cost, rejects on unreachable or timeout. Thin
    * transport mirror — no client-side path logic. `token`, when given, names the
@@ -240,6 +261,17 @@ export interface AppContext {
     y: number;
     /** Userid of the pinging user. */
     user: string;
+  }) => void) => () => void;
+  /** Subscribe to relayed emotes (incl. our own echo); returns an unsubscribe. */
+  onEmote: (cb: (msg: {
+    /** Scene the token stands on. */
+    scene: string;
+    /** Token the emote plays over. */
+    token: string;
+    /** Userid of the emoting user. */
+    user: string;
+    /** The emote glyph(s). */
+    emote: string;
   }) => void) => () => void;
   /** Subscribe to THIS client's own `moveRequest` outcomes (executed/truncated/rejected) — a
    * read-only observability signal, not a broadcast of every scene viewer's moves. Returns an

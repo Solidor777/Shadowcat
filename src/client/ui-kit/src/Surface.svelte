@@ -26,5 +26,13 @@
 
 {#each items as item (item.id)}
   {@const Comp = item.component as Component<Record<string, unknown>>}
-  <Comp {...(item.props ?? {})} />
+  {#if item.styling === "isolated"}
+    <!-- Theme-isolated contribution: the wrapper re-declares every theme
+         token at its engine default for this subtree (see
+         `themeIsolationCss`), so the module's own styling applies unaffected
+         by the active user theme. -->
+    <div class="sc-theme-isolate"><Comp {...(item.props ?? {})} /></div>
+  {:else}
+    <Comp {...(item.props ?? {})} />
+  {/if}
 {/each}

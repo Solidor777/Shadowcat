@@ -1,10 +1,13 @@
-// Minimal wiring: imports dockview's base stylesheet, then maps its CSS
-// custom properties onto our design tokens so the docking chrome matches the
-// rest of the app instead of dockview's shipped themes. A full stage-well
-// skin (drop overlays, tab-group chips, floating titlebar) is future work;
-// only the two token systems are wired together here. Imported once, as a
-// side effect, from the `dockview` module — never paid for by `FakeEngine`-only
-// hosts.
+// Skin: imports dockview's base stylesheet, then maps its CSS custom
+// properties onto our design tokens so ALL docking chrome — tab strips, drop
+// overlays, tab-group chips, and the floating titlebar/window frame — follows
+// the active theme instead of dockview's shipped themes. The mapping lives on
+// `.sc-dockview-root` and works only because `DockviewEngine.init` passes a
+// style-free `sc-dockview-theme` class to `createDockview`: dockview's default
+// `dockview-theme-abyss` class re-declares every `--dv-*` variable with dark
+// literals on the shell element, which would override these var() references
+// for the whole subtree. Imported once, as a side effect, from the `dockview`
+// module — never paid for by `FakeEngine`-only hosts.
 // Referenced by relative path (not a bare "pkg/..." specifier) — dart-sass's
 // CLI/Vite compiler resolves plain npm-package specifiers only via the
 // newer Node "pkg:" importer scheme, which is not universally wired through
@@ -27,8 +30,42 @@
   --dv-inactivegroup-hiddenpanel-tab-color: var(--text-muted);
   --dv-separator-border: var(--border);
   --dv-paneview-header-border-color: var(--border);
-  --dv-drag-over-border-color: var(--accent);
+  --dv-paneview-active-outline-color: var(--accent);
   --dv-active-sash-color: var(--accent);
+  --dv-icon-hover-background-color: var(--surface-overlay);
+  --dv-tabs-container-scrollbar-color: var(--border);
+  --dv-scrollbar-background-color: var(--border);
+
+  // Drop overlays: a translucent accent wash (the `--drop-overlay` token)
+  // with accent edge lines (`--dv-drag-over-border-color`).
+  --dv-drag-over-background-color: var(--drop-overlay);
+  --dv-drag-over-border-color: var(--accent);
+
+  // Floating groups (window frame + titlebar): the frame's background comes
+  // from `--dv-group-view-background-color`; here it gains the app's border,
+  // elevated shadow, and a raised-surface titlebar.
+  --dv-floating-border: 1px solid var(--border);
+  --dv-floating-box-shadow: var(--shadow-elevated);
+  --dv-floating-titlebar-background-color: var(--surface-raised);
+  --dv-floating-titlebar-border-bottom: 1px solid var(--border);
+
+  // Tab-group accent chips/underlines: dockview's JS resolves a group's
+  // accent through this palette (`tabGroupAccent`) and sets it inline as
+  // `--dv-tab-group-color`, so mapping the palette skins every chip, swatch,
+  // and underline at once. Colors without a semantic counterpart reuse the
+  // nearest tier-2 token — group accents are a dockview surface we do not
+  // assign today.
+  --dv-tab-group-color-grey: var(--text-muted);
+  --dv-tab-group-color-blue: var(--accent);
+  --dv-tab-group-color-red: var(--danger);
+  --dv-tab-group-color-yellow: var(--warning);
+  --dv-tab-group-color-green: var(--success);
+  --dv-tab-group-color-pink: var(--danger);
+  --dv-tab-group-color-purple: var(--accent);
+  --dv-tab-group-color-cyan: var(--success);
+  --dv-tab-group-color-orange: var(--warning);
+  --dv-tab-group-chip-border-radius: var(--radius-1);
+  --dv-tab-group-chip-font-size: var(--font-size-caption);
 
   height: 100%;
 }
@@ -109,10 +146,121 @@
   z-index: var(--z-popover);
 }
 
-// Floating groups are non-modal dialogs (dockview's own `Overlay` sets
-// `role="dialog"`; see `DockviewEngine.#wireFloatingA11y`) — token-mapped to
-// match the rest of the docked chrome instead of dockview's default theme.
-.dv-resize-container {
-  background: var(--surface-base);
-  border: 1px solid var(--border);
+// Resize hit targets: dockview's own `.dv-resize-handle-*` elements are 4px
+// strips (16px under its own coarse-pointer media query) — below the 24px
+// a11y floor. The handles paint nothing (only `.dv-debug` shows them), so the
+// hit zone grows by enlarging the transparent elements themselves, centered
+// on the window's edge; the visible frame (border + shadow on
+// `.dv-resize-container`) is untouched. Corners stay 24px so the diagonal
+// affordance isn't dwarfed by the long edges. Scoped under `.sc-dockview-root`
+// both for specificity over the vendored rules and to keep the override off
+// any foreign dockview instance. Re-verify the vendored geometry
+// (`.dv-resize-handle-*` in dockview-core's stylesheet) on any dockview-core
+// version bump.
+.sc-dockview-root .dv-resize-container {
+  .dv-resize-handle-top,
+  .dv-resize-handle-bottom {
+    height: 24px;
+    width: calc(100% - 48px);
+  }
+  .dv-resize-handle-top {
+    top: -12px;
+    left: 24px;
+  }
+  .dv-resize-handle-bottom {
+    bottom: -12px;
+    left: 24px;
+  }
+  .dv-resize-handle-left,
+  .dv-resize-handle-right {
+    width: 24px;
+    height: calc(100% - 48px);
+  }
+  .dv-resize-handle-left {
+    left: -12px;
+    top: 24px;
+  }
+  .dv-resize-handle-right {
+    right: -12px;
+    top: 24px;
+  }
+  .dv-resize-handle-topleft,
+  .dv-resize-handle-topright,
+  .dv-resize-handle-bottomleft,
+  .dv-resize-handle-bottomright {
+    width: 24px;
+    height: 24px;
+  }
+  .dv-resize-handle-topleft {
+    top: -12px;
+    left: -12px;
+  }
+  .dv-resize-handle-topright {
+    top: -12px;
+    right: -12px;
+  }
+  .dv-resize-handle-bottomleft {
+    bottom: -12px;
+    left: -12px;
+  }
+  .dv-resize-handle-bottomright {
+    bottom: -12px;
+    right: -12px;
+  }
+}
+
+// Coarse pointers (touch): the 44px target floor, same edge-centered
+// geometry as above.
+@media (pointer: coarse) {
+  .sc-dockview-root .dv-resize-container {
+    .dv-resize-handle-top,
+    .dv-resize-handle-bottom {
+      height: 44px;
+      width: calc(100% - 88px);
+    }
+    .dv-resize-handle-top {
+      top: -22px;
+      left: 44px;
+    }
+    .dv-resize-handle-bottom {
+      bottom: -22px;
+      left: 44px;
+    }
+    .dv-resize-handle-left,
+    .dv-resize-handle-right {
+      width: 44px;
+      height: calc(100% - 88px);
+    }
+    .dv-resize-handle-left {
+      left: -22px;
+      top: 44px;
+    }
+    .dv-resize-handle-right {
+      right: -22px;
+      top: 44px;
+    }
+    .dv-resize-handle-topleft,
+    .dv-resize-handle-topright,
+    .dv-resize-handle-bottomleft,
+    .dv-resize-handle-bottomright {
+      width: 44px;
+      height: 44px;
+    }
+    .dv-resize-handle-topleft {
+      top: -22px;
+      left: -22px;
+    }
+    .dv-resize-handle-topright {
+      top: -22px;
+      right: -22px;
+    }
+    .dv-resize-handle-bottomleft {
+      bottom: -22px;
+      left: -22px;
+    }
+    .dv-resize-handle-bottomright {
+      bottom: -22px;
+      right: -22px;
+    }
+  }
 }

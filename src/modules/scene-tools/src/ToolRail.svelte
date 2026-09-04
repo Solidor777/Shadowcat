@@ -1,12 +1,14 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, sizeClass } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, type WireDocument } from "@shadowcat/core";
-  import { ToolController, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
+  import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
+  import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
   const ctx = getAppContext();
   // The controller is fixed per ToolRail instance; capturing the context once is intended.
+  // `satisfies HostToolContext` makes every AppContext-supplied ToolContext member mandatory
+  // here, so a seam the host has can never be left out of this literal without a type error.
   // svelte-ignore state_referenced_locally
   const controller = new ToolController({
     scene: ctx.scene,
@@ -20,9 +22,11 @@
     sendPing: ctx.sendPing,
     pathfind: ctx.pathfind,
     moveRequest: ctx.moveRequest,
+    combat: ctx.combat,
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
-  });
+    t: ctx.t,
+  } satisfies HostToolContext);
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   // Gating is PER TOOL, not per component: the controller is constructed for every user so
@@ -113,28 +117,30 @@
     { id: "ping", label: t("tools.ping"), gmOnly: false },
     { id: "wall", label: t("tools.wall"), gmOnly: true },
     { id: "region", label: t("tools.region"), gmOnly: true },
+    { id: "light", label: t("tools.light"), gmOnly: true },
   ];
   const visibleTools = tools.filter((tool) => isGm || !tool.gmOnly);
-  // Speak-as-token affordance: shown whenever exactly one token is selected and the current
-  // user may plausibly speak as it (GM, or the effective owner) — advisory only, mirroring the
-  // "Speak as" composer picker's own client-side offer/server-reauthorizes split. Reuses the
-  // subscriber bridge already established above for `activeScene`/`snapToGrid`.
-  const selectedSpeakToken = $derived.by((): WireDocument | null => {
+  // Speak-as + emote affordance gate: exactly one token selected and the current user may
+  // plausibly act as it (GM, or the effective owner) — advisory only, mirroring the
+  // client-side offer/server-reauthorizes split (the server enforces both `SendMessage`'s
+  // `actor_owner` and the emote relay's effective-ownership gate). Reuses the subscriber
+  // bridge already established above for `activeScene`/`snapToGrid`.
+  const selectedSingleToken = $derived.by((): WireDocument | null => {
     subscribe();
     const ids = ctx.tokenSelection.ids;
     if (ids.size !== 1) return null;
     const [id] = ids;
     return ctx.documents.get(id) ?? null;
   });
-  const canSpeakAsSelected = $derived.by((): boolean => {
+  const canActAsSelected = $derived.by((): boolean => {
     subscribe();
-    const tok = selectedSpeakToken;
+    const tok = selectedSingleToken;
     if (!tok) return false;
     return ctx.role === "gm" || ownerFloorApplies(tok, ctx.selfId, ctx.documents);
   });
 
   /** Sets the pending speak-as-token selection from the currently selected token (a no-op if
-   * none is selected, guarded by `canSpeakAsSelected` at the call site).
+   * none is selected, guarded by `canActAsSelected` at the call site).
    * @example
    * ```
    * // internal; wired to the "speak as this token" button
@@ -142,15 +148,254 @@
    * ```
    */
   function speakAsSelectedToken(): void {
-    const tok = selectedSpeakToken;
+    const tok = selectedSingleToken;
     if (tok) ctx.speakAsToken.select(tok.id);
+  }
+
+  /** The palette's stock emote glyphs — every entry well under the server's per-emote byte
+   * cap (16 bytes covers 1–4 emoji graphemes), so a palette click can never silent-drop. */
+  const emoteChoices = ["😀", "😂", "😮", "😢", "😡", "👍", "❤️", "🎉", "🔥", "⚔️"];
+  /** The free-input emote draft, cleared after a successful send. */
+  let emoteDraft = $state("");
+  /** Byte length of `s` (UTF-8) — the unit the server's emote bound is stated in.
+   * @param s The emote draft to measure.
+   * @returns The UTF-8 byte length of `s`.
+   * @example
+   * ```
+   * emoteByteLength("😀"); // 4
+   * ```
+   */
+  function emoteByteLength(s: string): number {
+    return new TextEncoder().encode(s).length;
+  }
+  /** The draft is sendable when it is non-blank and within the server's byte bound —
+   * client-advisory, so an over-long draft can't vanish into the server's silent drop. */
+  const emoteDraftSendable = $derived(emoteDraft.trim() !== "" && emoteByteLength(emoteDraft.trim()) <= 16);
+
+  /** Send an emote over the currently selected token (a no-op without an effectively-owned
+   * selection — `canActAsSelected` guards the call sites). The server relays it back to all
+   * members (incl. us), so the local overlay arrives via the emote listener like any other.
+   * @param emote The emote glyph(s) to send.
+   * @example
+   * ```
+   * // internal; wired to the emote palette buttons
+   * sendEmoteAsSelected("😀");
+   * ```
+   */
+  function sendEmoteAsSelected(emote: string): void {
+    const tok = selectedSingleToken;
+    if (!tok || !canActAsSelected) return;
+    ctx.sendEmote(tok.id, emote);
+  }
+
+  /** Send the free-input draft and clear it (guarded by `emoteDraftSendable`).
+   * @example
+   * ```
+   * // internal; wired to the emote send button
+   * sendEmoteDraft();
+   * ```
+   */
+  function sendEmoteDraft(): void {
+    const draft = emoteDraft.trim();
+    if (!emoteDraftSendable) return;
+    sendEmoteAsSelected(draft);
+    emoteDraft = "";
   }
 
   const drawModes: DrawMode[] = ["freehand", "rect", "ellipse", "line"];
   const templateModes: TemplateMode[] = ["circle", "cone", "rect", "line"];
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
+
+  // The light/wall editor's target document, resolved live from the shared editing selection
+  // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
+  const editingDoc = $derived.by((): WireDocument | null => {
+    subscribe();
+    const sel = controller.editingEntity;
+    if (!sel) return null;
+    const doc = ctx.documents.get(sel.id);
+    // A deleted/elsewhere-moved doc drops the selection rather than editing a ghost.
+    if (!doc || doc.doc_type !== sel.kind) return null;
+    return doc;
+  });
+  // Keep the controller's selection honest when the target disappears.
+  $effect(() => {
+    if (controller.editingEntity && !editingDoc) controller.editingEntity = null;
+  });
+
+  /** Dispatch one field-level update against the light/wall being edited. `old` MUST be the
+   * RAW stored value at `path` (the server's field-level optimistic-concurrency check compares
+   * against it) — never a resolved/defaulted value. The standing raw-`old` convention.
+   * @param path The engine-band JSON pointer being written.
+   * @param oldRaw The raw stored value currently at `path` (`null` when absent).
+   * @param value The new value to write.
+   * @example
+   * ```
+   * editSelected("/engine/emission/enabled", true, false);
+   * ```
+   */
+  function editSelected(path: string, oldRaw: unknown, value: unknown): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    ctx.dispatchIntent([{ op: "update", doc_id: doc.id, changes: [{ path, old: oldRaw, new: value }] }]);
+  }
+
+  /** Delete the document open in the editor (full pre-image op) and clear the selection.
+   * @example
+   * ```
+   * deleteSelected();
+   * ```
+   */
+  function deleteSelected(): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    ctx.dispatchIntent([{ op: "delete", doc }]);
+    controller.editingEntity = null;
+  }
+
+  /** Parse an elevation input's raw string: empty means "absent" (ground for a light, an
+   * unbounded end for a wall band); a finite number is the value; anything else is ignored
+   * (never dispatch a NaN).
+   * @param raw The input's raw string value.
+   * @returns The parsed elevation, `null` for absent, or `undefined` for "ignore this edit".
+   * @example
+   * ```
+   * parseElevation("");    // null  (absent)
+   * parseElevation("2.5"); // 2.5
+   * parseElevation("abc"); // undefined — no write
+   * ```
+   */
+  function parseElevation(raw: string): number | null | undefined {
+    if (raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  }
+
+  /** Write the edited light's `/engine/elevation`. Ground (`0`/empty) normalizes to `null`
+   * (canonical absent, matching `elevation_or_ground`'s None = 0 read); `old` is the raw
+   * stored value.
+   * @param raw The elevation input's raw string value.
+   * @example
+   * ```
+   * editLightElevation("10"); // a light 10 units above the ground plane
+   * ```
+   */
+  function editLightElevation(raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as LightEngine;
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return;
+    const next = parsed === 0 ? null : parsed;
+    const old = eng.elevation ?? null;
+    if (next === old) return;
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end.
+   * An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field writes
+   * `null` (canonical "occludes every elevation" — an absent band, matching
+   * `wall_occludes`). `old` is the raw stored band object (or `null`).
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * editWallElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * ```
+   */
+  function editWallElevation(end: "bottom" | "top", raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as WallEngine;
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return;
+    const old = eng.elevation ?? null;
+    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
+    const top = end === "top" ? parsed : (old?.top ?? null);
+    const next = bottom === null && top === null ? null : { bottom, top };
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Escape backs out of an open light/wall editor (clears the editing selection). Tool
+   * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
+   * @param event The window keydown event.
+   * @example
+   * ```
+   * onWindowKeydown(new KeyboardEvent("keydown", { key: "Escape" }));
+   * ```
+   */
+  function onWindowKeydown(event: KeyboardEvent): void {
+    if (event.key !== "Escape" || !controller.editingEntity) return;
+    // Only a canvas-context Escape backs out of the editor: a keydown originating inside a
+    // dialog (a floating panel closing on the same keystroke) or a focused form control is not
+    // aimed at the canvas selection.
+    const origin = event.target;
+    if (
+      origin instanceof Element &&
+      (origin.closest('[role="dialog"]') !== null ||
+        origin instanceof HTMLInputElement ||
+        origin instanceof HTMLSelectElement ||
+        origin instanceof HTMLTextAreaElement)
+    )
+      return;
+    controller.editingEntity = null;
+  }
+
+  const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
+  /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
+  type TriggerEffectType = RegionTrigger["effect"]["type"];
+  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice"];
+  const noticeAudiences: NoticeAudience[] = ["public", "gm_only", "owner"];
+
+  /** Append a blank trigger row (a `condition_add` on `enter`) to the region tool's authored
+   * list, persisted onto the next region the tool creates.
+   * @example
+   * ```
+   * addRegionTrigger();
+   * ```
+   */
+  function addRegionTrigger(): void {
+    controller.regionTriggers.push({ on: "enter", effect: { type: "condition_add", condition: "" } });
+  }
+
+  /** Re-seat a row's effect when its type select changes. Each effect kind carries disjoint
+   * fields, so a kind switch starts that row's payload fresh rather than carrying stale keys.
+   * @param trig The trigger row being edited.
+   * @param type The newly selected `TriggerEffect` discriminant.
+   * @example
+   * ```
+   * declare const trig: RegionTrigger;
+   * setRegionTriggerEffectType(trig, "chat_notice");
+   * ```
+   */
+  function setRegionTriggerEffectType(trig: RegionTrigger, type: string): void {
+    if (trig.effect.type === type) return;
+    switch (type) {
+      case "condition_remove": trig.effect = { type: "condition_remove", condition: "" }; break;
+      case "resource_delta": trig.effect = { type: "resource_delta", resource: "", amount: 0 }; break;
+      case "chat_notice": trig.effect = { type: "chat_notice", text: "", audience: "gm_only" }; break;
+      default: trig.effect = { type: "condition_add", condition: "" };
+    }
+  }
+
+  /** Parse an amount field into a `Formula`: a finite numeric literal stays a number, anything
+   * else is kept as formula source text (the server parse-checks it at ingress).
+   * @param trig The trigger row being edited (a no-op unless it is a `resource_delta`).
+   * @param raw The raw text the amount input reports.
+   * @example
+   * ```
+   * declare const trig: RegionTrigger;
+   * setRegionTriggerAmount(trig, "1d6");
+   * ```
+   */
+  function setRegionTriggerAmount(trig: RegionTrigger, raw: string): void {
+    if (trig.effect.type !== "resource_delta") return;
+    const n = Number(raw);
+    trig.effect.amount = raw.trim() !== "" && Number.isFinite(n) ? n : raw;
+  }
 </script>
+
+<svelte:window onkeydown={onWindowKeydown} />
 
 <div class="tool-rail" class:compact role="toolbar" aria-label={t("tools.title")}>
   {#each visibleTools as tool (tool.id)}
@@ -181,7 +426,7 @@
     </button>
   {/if}
 
-  {#if canSpeakAsSelected}
+  {#if canActAsSelected}
     <button
       type="button"
       class="tool"
@@ -192,6 +437,41 @@
       {t("tools.speakAsToken")}
     </button>
   {/if}
+
+  <!-- The emote palette is always rendered but disabled without a selection the user
+       effectively owns (client-advisory; the server re-authorizes the relay). -->
+  <div class="controls emote-palette" role="group" aria-label={t("tools.emote")}>
+    {#each emoteChoices as emoji, i (emoji)}
+      <button
+        type="button"
+        class="tool emote"
+        disabled={!canActAsSelected}
+        data-testid="emote-{i}"
+        title={emoji}
+        onclick={() => sendEmoteAsSelected(emoji)}
+      >
+        {emoji}
+      </button>
+    {/each}
+    <input
+      type="text"
+      data-testid="emote-input"
+      aria-label={t("tools.emoteCustom")}
+      placeholder={t("tools.emoteCustom")}
+      disabled={!canActAsSelected}
+      bind:value={emoteDraft}
+    />
+    <button
+      type="button"
+      class="tool"
+      data-testid="emote-send"
+      disabled={!canActAsSelected || !emoteDraftSendable}
+      title={t("tools.emoteSend")}
+      onclick={sendEmoteDraft}
+    >
+      {t("tools.emoteSend")}
+    </button>
+  </div>
 
   <!-- Every mode control below belongs to a gmOnly tool. Gated on `isGm` as well as the
        active tool so the branch cannot render even if an authoring tool somehow became
@@ -226,6 +506,124 @@
           <input type="checkbox" data-testid="region-secret" bind:checked={controller.regionSecret} />
           {t("tools.secret")}
         </label>
+        {#each controller.regionTriggers as trig, i (i)}
+          <div class="trigger-row">
+            <select data-testid="region-trigger-on" aria-label={t("tools.triggerOn")} bind:value={trig.on}>
+              {#each triggerEvents as ev (ev)}<option value={ev}>{ev}</option>{/each}
+            </select>
+            <select
+              data-testid="region-trigger-effect"
+              aria-label={t("tools.triggerEffect")}
+              value={trig.effect.type}
+              onchange={(e) => setRegionTriggerEffectType(trig, e.currentTarget.value)}
+            >
+              {#each triggerEffectTypes as et (et)}<option value={et}>{et}</option>{/each}
+            </select>
+            {#if trig.effect.type === "condition_add" || trig.effect.type === "condition_remove"}
+              <input data-testid="region-trigger-condition" aria-label={t("tools.triggerCondition")} bind:value={trig.effect.condition} />
+            {:else if trig.effect.type === "resource_delta"}
+              <input data-testid="region-trigger-resource" aria-label={t("tools.triggerResource")} bind:value={trig.effect.resource} />
+              <input
+                data-testid="region-trigger-amount"
+                aria-label={t("tools.triggerAmount")}
+                value={String(trig.effect.amount)}
+                onchange={(e) => setRegionTriggerAmount(trig, e.currentTarget.value)}
+              />
+            {:else if trig.effect.type === "chat_notice"}
+              <input data-testid="region-trigger-text" aria-label={t("tools.triggerText")} bind:value={trig.effect.text} />
+              <select data-testid="region-trigger-audience" aria-label={t("tools.triggerAudience")} bind:value={trig.effect.audience}>
+                {#each noticeAudiences as a (a)}<option value={a}>{a}</option>{/each}
+              </select>
+            {/if}
+            <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
+          </div>
+        {/each}
+        <button type="button" data-testid="region-trigger-add" onclick={addRegionTrigger}>{t("tools.addTrigger")}</button>
+      </div>
+    {/if}
+
+    <!-- The light/wall editors key off the shared editing selection, not the active tool:
+         both the select tool and the light tool can open one. The light editor reuses
+         `LightEmissionEditor` (the same field set every emission surface edits) and commits the
+         WHOLE `/engine/emission` payload with the raw stored emission as `old` — the same
+         whole-payload convention the actor/sheet/token surfaces use. -->
+    {#if editingDoc && controller.editingEntity?.kind === "light"}
+      {@const eng = editingDoc.engine as LightEngine}
+      <div class="controls" data-testid="light-editor">
+        <LightEmissionEditor
+          value={eng.emission}
+          onCommit={(next) => editSelected("/engine/emission", eng.emission, next)}
+        />
+        <!-- The light's own elevation (absent = ground): a raised light shines over any wall
+             whose band ends below it (`wall_occludes`'s source-elevation band test). -->
+        <label>
+          {t("tools.lightElevation")}
+          <input
+            type="number"
+            step="1"
+            data-testid="light-elevation"
+            value={eng.elevation ?? 0}
+            onchange={(e) => editLightElevation(e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="light-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "wall"}
+      <!-- `?? null` on each flag read: `WallEngine`'s flags are optional on the wire, so an
+           absent key reads `undefined` at runtime — and `undefined` is dropped by JSON
+           serialization, which would corrupt the OCC pre-image (the raw-`old` convention). -->
+      {@const eng = editingDoc.engine as WallEngine}
+      <div class="controls" data-testid="wall-editor">
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-sight"
+            checked={eng.blocksSight}
+            onchange={(e) => editSelected("/engine/blocksSight", eng.blocksSight ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksSight")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-move"
+            checked={eng.blocksMove}
+            onchange={(e) => editSelected("/engine/blocksMove", eng.blocksMove ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksMove")}
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            data-testid="wall-blocks-light"
+            checked={eng.blocksLight}
+            onchange={(e) => editSelected("/engine/blocksLight", eng.blocksLight ?? null, e.currentTarget.checked)}
+          />
+          {t("tools.blocksLight")}
+        </label>
+        <!-- The elevation band the wall's sight/light occlusion applies to; both ends empty =
+             unbounded (stored as an absent band, which occludes every elevation). -->
+        <label>
+          {t("tools.wallElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="wall-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editWallElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.wallElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="wall-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editWallElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
   {/if}
@@ -239,8 +637,13 @@
     padding: var(--space-1);
   }
   .tool {
-    min-height: 44px; /* touch target (#10) */
-    min-width: 44px;
+    /* Touch target floor (WCAG 2.5.5 / iOS HIG); the rail's own column width
+     * (`Layout.svelte`'s `.layout` grid-template-columns) derives from this same
+     * token so a tool button never gets clipped by its own containing cell. */
+    min-height: var(--input-height-coarse);
+    min-width: var(--input-height-coarse);
+    max-width: 100%;
+    box-sizing: border-box;
     padding: var(--space-1) var(--space-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-1);
@@ -265,10 +668,40 @@
   .controls select,
   .controls input {
     min-height: 32px;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
 
     @media (pointer: coarse) {
-      min-height: 44px;
+      min-height: var(--input-height-coarse);
     }
+  }
+  .trigger-row {
+    display: flex;
+    flex-direction: row;
+    gap: var(--space-1);
+    align-items: center;
+  }
+  .trigger-row input {
+    min-width: 0;
+    flex: 1;
+  }
+
+  /* Emote palette: a wrapping row of glyph buttons plus the free input. */
+  .emote-palette {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .tool.emote {
+    font-size: 1.25rem;
+    padding: var(--space-1);
+  }
+  .emote-palette input {
+    min-width: 0;
+    width: 8rem;
+    max-width: 100%; /* the vertical rail is narrower than 8rem; fit it rather than overflow */
+    box-sizing: border-box;
   }
 
   /* Compact bottom strip: lay tools out horizontally with overflow scroll

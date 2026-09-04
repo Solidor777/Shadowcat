@@ -184,7 +184,7 @@ describe("OptimisticClient", () => {
 
     // Same id, but envelope() stamps created_at/updated_at via Date.now() per call, so the two
     // racers' payloads genuinely differ in content — only the id is guaranteed identical.
-    const seed = { friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" as const } };
+    const seed = { friendly: { name: "Friendly", color: "#3fb950", stance: "friendly" as const, movement: [] } };
     a.act([{ op: "create", doc: buildFactionRegistryDoc(worldId, seed, id) }]);
     b.act([{ op: "create", doc: buildFactionRegistryDoc(worldId, seed, id) }]);
 
@@ -290,5 +290,23 @@ describe("OptimisticClient", () => {
       expect(oc.get("d2")).toBeDefined();
       expect(oc.get("d3")).toBeDefined();
     });
+  });
+
+  it("optimistically applies a move and rolls it back on rejection", async () => {
+    const server = new MockServer({
+      rejectRule: (ctx) => (ctx.ops.some((o) => o.op === "move") ? "forbidden" : null),
+    });
+    const { oc, act } = await connect(server, "u1");
+    act([createOp("d1", 10)]);
+    await waitFor(() => oc.pendingIntents().length === 0);
+    expect(oc.get("d1")!.parent_id).toBeNull();
+
+    act([{ op: "move", doc_id: "d1", parent_id: "scene-9", old_parent_id: null }]);
+    // Optimistic view reflects the predicted parent immediately.
+    expect(oc.get("d1")!.parent_id).toBe("scene-9");
+
+    await waitFor(() => oc.pendingIntents().length === 0);
+    // Rejected → rolled back to the confirmed parent.
+    expect(oc.get("d1")!.parent_id).toBeNull();
   });
 });

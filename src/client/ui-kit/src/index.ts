@@ -22,13 +22,36 @@ export { PanelsBridge } from "./panelsBridge.svelte";
 export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 export { setField } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
+export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
+export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
+export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
 export { SheetsController } from "./sheetsController.svelte";
 export type { SheetsControllerDeps } from "./sheetsController.svelte";
 export { default as MergeConflictModal } from "./MergeConflictModal.svelte";
 export type { ConflictGroup } from "./mergeConflict";
 export { TemplatesController } from "./templatesController.svelte";
 export type { TemplatesControllerDeps, PendingSession } from "./templatesController.svelte";
+export { AssetPickController } from "./assetPickController.svelte";
+export type { PickAssetOptions, PickAssetMultiple, PendingPick } from "./assetPickController.svelte";
 export { default as TemplateModalHost } from "./TemplateModalHost.svelte";
 export type { ChatApi, TemplatesApi } from "./appContext";
 export { default as TemplateControls } from "./TemplateControls.svelte";
 export { default as SheetHost } from "./SheetHost.svelte";
+export {
+  THEME_TOKEN_NAMES,
+  BUILTIN_THEMES,
+  DEFAULT_THEME_ID,
+  CONTRAST_PAIRINGS,
+  THEME_ISOLATION_CLASS,
+  THEME_ISOLATION_SHEET_ID,
+  resolveTheme,
+  sanitizeCustomTheme,
+  sanitizeCustomThemes,
+  colorThemeTokenNames,
+  contrastWarnings,
+  themeIsolationCss,
+  wcagContrast,
+} from "./theme";
+export type { ThemeDefinition, ThemeTokenName, CustomTheme, ContrastPairing } from "./theme";
+export { ThemeController, theme, activeTheme } from "./theme.svelte";
+export type { PersistedTheme, ThemeListener } from "./theme.svelte";

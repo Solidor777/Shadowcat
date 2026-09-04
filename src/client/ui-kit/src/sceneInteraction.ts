@@ -4,7 +4,7 @@
 // mount; before/after attachment every call no-ops (snap is identity) so a tool
 // component never crashes when no canvas is mounted. Render types are type-only imports
 // (zero runtime dependency on @shadowcat/render here).
-import type { SceneTool, SceneToolHost, Point, ShapeNodeSpec, MoveVisionSample } from "@shadowcat/render";
+import type { SceneTool, SceneToolHost, Point, ShapeNodeSpec, MoveVisionSample, MoveLightSample } from "@shadowcat/render";
 
 /** The host-facing seam plus late-attachment. */
 export interface SceneInteraction extends SceneToolHost {
@@ -126,6 +126,15 @@ export class SceneInteractionBridge implements SceneInteraction {
   }
 
   /** Forward to the attached host; a no-op when detached.
+   * @param tokenId - The token id the emote plays over.
+   * @param emote - The emote glyph(s).
+   * @example sceneInteraction.addEmote("tok1", "😀");
+   */
+  addEmote(tokenId: string, emote: string): void {
+    this.#host?.addEmote(tokenId, emote);
+  }
+
+  /** Forward to the attached host; a no-op when detached.
    * @param id - The token id to animate.
    * @param path - The scene-coord waypoints to walk through, in order.
    * @example sceneInteraction.animateAlongPath("tok1", [[0, 0], [5, 5]]);
@@ -141,6 +150,7 @@ export class SceneInteractionBridge implements SceneInteraction {
    * @param startServerMs - The server clock time the move started, for catch-up elapsed.
    * @param serverNow - Optional current-server-time getter for catch-up; omitted means no catch-up.
    * @param moverVision - Mover-only progressive fog-sweep samples; `null`/omitted for observers.
+   * @param moverLight - Carried-light sweep samples admitted to this viewer; `null`/omitted when none.
    * @example sceneInteraction.animateSamples("tok1", samples, 1000, startMs);
    */
   animateSamples(
@@ -155,7 +165,8 @@ export class SceneInteractionBridge implements SceneInteraction {
     startServerMs: number,
     serverNow?: () => number,
     moverVision?: MoveVisionSample[] | null,
+    moverLight?: MoveLightSample[] | null,
   ): void {
-    this.#host?.animateSamples(id, samples, durationMs, startServerMs, serverNow, moverVision);
+    this.#host?.animateSamples(id, samples, durationMs, startServerMs, serverNow, moverVision, moverLight);
   }
 }

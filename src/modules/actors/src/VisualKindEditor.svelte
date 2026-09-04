@@ -1,7 +1,6 @@
 <script lang="ts">
-  import type { Asset } from "@shadowcat/types";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { listAssets, type TokenVisual, type FaceVisual, type AnimatedSource, type Condition } from "@shadowcat/core";
+  import { type TokenVisual, type RenderVisual, type FaceVisual, type AnimatedSource, type Condition, type GeneratedCrop } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -9,6 +8,7 @@
   let {
     conditionOptions,
     onBuild,
+    initial,
   }: {
     /** `[id, Condition]` pairs from the world's condition registry, populating the face-map
      * editor's condition dropdown. */
@@ -16,10 +16,17 @@
     /** Called on every editor-state change with the currently buildable `TokenVisual`, or
      * `null` while the active kind's data is incomplete (see `buildVisual`). */
     onBuild: (visual: TokenVisual | null) => void;
+    /** Post-create editing: when provided, every editor state initializes FROM this visual
+     * (kind plus all per-kind fields, including a `"generated"` arm's art/crop/border/
+     * background) instead of the blank create-time defaults. Read once at mount — a host that
+     * switches edit targets remounts the editor (`{#key}`) rather than updating this prop. */
+    initial?: TokenVisual;
   } = $props();
 
-  let assetId = $state<string | null>(null);
-  let assetList = $state<Asset[]>([]);
+  // Seeds from `initial` once at mount — see the block comment above the other initial-seeded
+  // states below; capturing the initial prop value is the intended semantics.
+  // svelte-ignore state_referenced_locally
+  let assetId = $state<string | null>(initial?.kind === "image" ? initial.asset : null);
 
   /** Editor-local flat state for one `AnimatedSource`; `animSourceToSource` projects it into
    * the wire union, keeping only the fields for the active `sourceType`. */
@@ -44,9 +51,9 @@
   };
   /**
    * Fresh, empty `AnimSourceState` (frames mode, no frames picked). Called once at module init
-   * and by `resetVisualEditor` for the top-level source, and inline for each new face row's own
-   * `anim` — every call returns a distinct object, so no two rows and no row/top-level pair ever
-   * share (alias) the same state.
+   * and by `resetVisualEditor` for the top-level source, and inline for each new face row's and
+   * each generated-art state's own `anim` — every call returns a distinct object, so no two
+   * states ever share (alias) the same object.
    * @returns A new `AnimSourceState` with no frames or sheet asset selected.
    * @example
    * ```
@@ -144,24 +151,164 @@
     return f.kind === "image" ? !!f.asset : animSourceComplete(f.anim);
   }
 
-  let visualKind = $state<"image" | "faces" | "animated">("image");
-  let topAnim = $state<AnimSourceState>(newAnimSourceState());
-  let faceRows = $state<FaceRowState[]>([]);
-  let defaultFace = $state("");
+  /**
+   * The inverse projection of `animSourceToSource`: rebuilds a flat `AnimSourceState` from a wire
+   * `AnimatedSource` (plus the `fps`/`loop` the source itself does not carry), for `initial`-driven
+   * initialization. Unused sibling fields take `newAnimSourceState`'s defaults, so the returned
+   * state is indistinguishable from one the user filled in by hand.
+   * @param source The wire `AnimatedSource` to unfold.
+   * @param fps The playback frames-per-second stored alongside the source.
+   * @param loop Whether playback wraps at the end.
+   * @returns A fresh `AnimSourceState` projecting back onto `source` via `animSourceToSource`.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * animSourceStateFrom({ type: "frames", frames: ["a1"] }, 8, true);
+   * ```
+   */
+  function animSourceStateFrom(source: AnimatedSource, fps: number, loop: boolean): AnimSourceState {
+    return source.type === "frames"
+      ? { sourceType: "frames", frames: [...source.frames], sheetAsset: null, rows: 1, cols: 1, count: null, fps, loop }
+      : { sourceType: "sheet", frames: [], sheetAsset: source.asset, rows: source.rows, cols: source.cols, count: source.count, fps, loop };
+  }
+
+  /**
+   * Unfolds a `"faces"`-kind `initial` visual's `faces` map into one editor row per face, each
+   * with its OWN `anim` state (never shared — the same no-aliasing rule as `newAnimSourceState`).
+   * A face whose visual is neither `"image"` nor `"animated"` — `FaceVisual` is `RenderVisual`,
+   * whose wire type admits a `"generated"` face this editor's per-row image-or-animated machinery
+   * cannot represent — fails closed to an INCOMPLETE placeholder row (no asset), so `buildVisual`
+   * blocks the save rather than silently dropping that face's art.
+   * @param faces The `faces` map of a `"faces"`-kind `initial` visual.
+   * @returns One fresh `FaceRowState` per entry, keyed under the same names.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * faceRowStatesFrom({ front: { kind: "image", asset: "a1" } });
+   * ```
+   */
+  function faceRowStatesFrom(faces: Record<string, FaceVisual>): FaceRowState[] {
+    return Object.entries(faces).map(([name, v]): FaceRowState => {
+      if (v.kind === "image") return { name, kind: "image", asset: v.asset, anim: newAnimSourceState() };
+      if (v.kind === "animated") return { name, kind: "animated", asset: null, anim: animSourceStateFrom(v.source, v.fps, v.loop) };
+      return { name, kind: "image", asset: null, anim: newAnimSourceState() };
+    });
+  }
+
+  /** Editor-local flat state for the `"generated"` kind — the framed art (image-or-animated, the
+   * same shape as one face row's own fields) plus the crop and the optional border/background. */
+  type GeneratedState = {
+    /** Which of the state's own fields (`asset` vs `anim`) `buildVisual` projects into `art`. */
+    artKind: "image" | "animated";
+    /** The picked art asset id (`artKind: "image"` only). */
+    asset: string | null;
+    /** The art's own animated-source editor state (`artKind: "animated"` only). */
+    anim: AnimSourceState;
+    /** The shape the art is cropped to. */
+    crop: GeneratedCrop;
+    /** Whether a decorative border ring is emitted (`buildVisual` reads the color/width only
+     * when this is set). */
+    borderOn: boolean;
+    /** Border ring color, a css `#rrggbb` string (`borderOn` only). */
+    borderColor: string;
+    /** Border ring width, in token-fraction px (`borderOn` only). */
+    borderWidth: number;
+    /** Whether a background fill is emitted (`buildVisual` reads the color only when set). */
+    backgroundOn: boolean;
+    /** Background fill color, a css `#rrggbb` string (`backgroundOn` only). */
+    backgroundColor: string;
+  };
+  /**
+   * Fresh, empty `GeneratedState` (circle crop, no art, border/background off but pre-filled with
+   * sensible defaults so enabling one needs no further input). Every call returns a distinct
+   * object — the same no-aliasing rule as `newAnimSourceState`.
+   * @returns A new `GeneratedState` with no art selected.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * newGeneratedState(); // { artKind: "image", asset: null, ..., crop: "circle", borderOn: false, ... }
+   * ```
+   */
+  function newGeneratedState(): GeneratedState {
+    return { artKind: "image", asset: null, anim: newAnimSourceState(), crop: "circle", borderOn: false, borderColor: "#ff8800", borderWidth: 0.06, backgroundOn: false, backgroundColor: "#102030" };
+  }
+  /**
+   * Unfolds a `"generated"`-kind `initial` visual into its `GeneratedState`, for `initial`-driven
+   * initialization. A garbled nested-`generated` `art` (the wire type cannot forbid it;
+   * `resolveTokenVisual` fails closed on it) unfolds as an `"image"` art with NO asset — an
+   * incomplete state that blocks the save rather than re-emitting a visual the renderer would
+   * reject.
+   * @param v The `"generated"`-kind `initial` visual to unfold.
+   * @returns A fresh `GeneratedState` carrying `v`'s art/crop/border/background.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * generatedStateFrom({ kind: "generated", art: { kind: "image", asset: "a1" }, crop: "circle", border: null, background: null });
+   * ```
+   */
+  function generatedStateFrom(v: Extract<TokenVisual, { /** Narrows `TokenVisual` to its `"generated"` union member. */ kind: "generated" }>): GeneratedState {
+    return {
+      artKind: v.art.kind === "animated" ? "animated" : "image",
+      asset: v.art.kind === "image" ? v.art.asset : null,
+      anim: v.art.kind === "animated" ? animSourceStateFrom(v.art.source, v.art.fps, v.art.loop) : newAnimSourceState(),
+      crop: v.crop,
+      borderOn: v.border !== null,
+      borderColor: v.border?.color ?? "#ff8800",
+      borderWidth: v.border?.width ?? 0.06,
+      backgroundOn: v.background !== null,
+      backgroundColor: v.background?.color ?? "#102030",
+    };
+  }
+  /**
+   * The `"generated"` kind's art completeness check — the editor-side mirror of the acceptance
+   * rule `resolveTokenVisual` enforces at the render boundary (`isValidGeneratedArt`):
+   * an image art needs a picked asset; an animated art needs both a playable source
+   * (`animSourceComplete`) AND a finite positive `fps` (`isValidAnimated`).
+   * @param g The generated-kind editor state to check.
+   * @returns `true` iff `g`'s art builds into a `RenderVisual` the renderer would accept.
+   * @example
+   * ```
+   * // private helper; not part of the public API
+   * generatedArtComplete(newGeneratedState()); // false
+   * ```
+   */
+  function generatedArtComplete(g: GeneratedState): boolean {
+    if (g.artKind === "image") return !!g.asset;
+    return animSourceComplete(g.anim) && Number.isFinite(g.anim.fps) && g.anim.fps > 0;
+  }
+
+  // Every state below seeds from the `initial` prop ONCE at mount — the editor owns its state
+  // afterward (a host switching edit targets remounts via `{#key}` instead), so capturing the
+  // initial prop value is the intended semantics, per the prop's own doc.
+  // svelte-ignore state_referenced_locally
+  let visualKind = $state<"image" | "faces" | "animated" | "generated">(initial?.kind ?? "image");
+  // svelte-ignore state_referenced_locally
+  let topAnim = $state<AnimSourceState>(initial?.kind === "animated" ? animSourceStateFrom(initial.source, initial.fps, initial.loop) : newAnimSourceState());
+  // svelte-ignore state_referenced_locally
+  let faceRows = $state<FaceRowState[]>(initial?.kind === "faces" ? faceRowStatesFrom(initial.faces) : []);
+  // svelte-ignore state_referenced_locally
+  let defaultFace = $state(initial?.kind === "faces" ? initial.default : "");
+  // svelte-ignore state_referenced_locally
   let faceMapRows = $state<{
     /** The condition registry id this row maps from; `""` when unset. */
     conditionId: string;
     /** The face name this row maps to; `""` when unset, or stale if the named face was since
      * renamed/removed (dropped by `buildVisual`, not fatal). */
     faceName: string;
-  }[]>([]);
+  }[]>(
+    initial?.kind === "faces" && initial.faceMap
+      ? Object.entries(initial.faceMap).map(([conditionId, faceName]) => ({ conditionId, faceName }))
+      : [],
+  );
+  // svelte-ignore state_referenced_locally
+  let gen = $state<GeneratedState>(initial?.kind === "generated" ? generatedStateFrom(initial) : newGeneratedState());
 
   /**
    * Builds the `TokenVisual` the host should save (via `onBuild`), or `null` when the current
    * `visualKind`'s data is incomplete — the host's submit button is disabled on `null`, so an
    * incomplete visual is never persisted.
    *
-   * Each of the three branches returns a **fresh object literal carrying only that kind's own
+   * Each per-kind branch returns a **fresh object literal carrying only that kind's own
    * fields**, never a mutated copy of a previous kind's result — so switching `visualKind` (or a
    * face row's own `kind`, via `faceRowToVisual` above) can never leave a stale sibling field from
    * the PREVIOUS kind in the emitted value: an `"image"` result has no `faces`/`source` field to
@@ -178,6 +325,11 @@
    *   `defaultFace` no longer names a current row. A stale `faceMapRows` entry (naming a
    *   since-renamed/removed face) is DROPPED from the built `faceMap` rather than nulling the
    *   whole visual — the one recoverable case among these.
+   * - `"generated"`: the art projected from `gen`'s image-or-animated fields (the face-row
+   *   pattern one level down) plus the crop and the enabled-only border/background; `null` if
+   *   `generatedArtComplete` rejects the art, or an enabled border's width fails the same
+   *   finite-positive rule `resolveTokenVisual` enforces — so an emitted visual always passes the
+   *   renderer's own acceptance.
    * @returns The `TokenVisual` to report to the host, or `null` if the current kind's data is
    * incomplete.
    * @example
@@ -192,6 +344,21 @@
     if (visualKind === "animated") {
       if (!animSourceComplete(topAnim)) return null;
       return { kind: "animated", source: animSourceToSource(topAnim), fps: topAnim.fps, loop: topAnim.loop };
+    }
+    if (visualKind === "generated") {
+      if (!generatedArtComplete(gen)) return null;
+      if (gen.borderOn && (!Number.isFinite(gen.borderWidth) || gen.borderWidth <= 0)) return null;
+      const art: RenderVisual =
+        gen.artKind === "image"
+          ? { kind: "image", asset: gen.asset ?? "" }
+          : { kind: "animated", source: animSourceToSource(gen.anim), fps: gen.anim.fps, loop: gen.anim.loop };
+      return {
+        kind: "generated",
+        art,
+        crop: gen.crop,
+        border: gen.borderOn ? { color: gen.borderColor, width: gen.borderWidth } : null,
+        background: gen.backgroundOn ? { color: gen.backgroundColor } : null,
+      };
     }
     if (faceRows.length === 0 || !defaultFace || faceRows.some((f) => !f.name)) return null;
     const names = faceRows.map((f) => f.name);
@@ -209,8 +376,10 @@
   }
 
   /**
-   * Clears every editor `$state` back to its initial value (kind `"image"`, no asset, no
-   * top-level anim source, no face rows). Called only by the exported `reset()` below.
+   * Clears every editor `$state` back to the blank create-time defaults (kind `"image"`, no
+   * asset, no top-level anim source, no face rows, no generated-art state) — NOT back to the
+   * `initial` prop's value: the only caller is the create form's post-create reset, where no
+   * `initial` is passed. Called only by the exported `reset()` below.
    * @returns Nothing; mutates the component's own `$state` fields.
    * @example
    * ```
@@ -225,6 +394,7 @@
     defaultFace = "";
     faceMapRows = [];
     assetId = null;
+    gen = newGeneratedState();
   }
 
   /**
@@ -242,30 +412,6 @@
     resetVisualEditor();
   }
 
-  /**
-   * Refetches the world's image assets (filtered to `image/*` content types) into `assetList`,
-   * feeding every `assetPicker` snippet instance. Called once at mount and on every
-   * `AssetChanged` broadcast, via the `$effect` below.
-   * @returns Nothing; assigns the component's own `assetList` `$state`.
-   * @example
-   * ```
-   * // private helper; not part of the public API — invoked from the `$effect` below
-   * refreshAssets();
-   * ```
-   */
-  function refreshAssets(): void {
-    void listAssets(ctx.world).then((a) => {
-      assetList = a.filter((x) => x.content_type.startsWith("image/"));
-      // Every record here carries the true, current version — reconciling on each load
-      // self-heals a uuid whose cache-bust state went stale from a missed AssetChanged frame.
-      ctx.assets.reconcile(a);
-    });
-  }
-  $effect(() => {
-    refreshAssets();
-    return ctx.onAssetChanged(refreshAssets);
-  });
-
   // Continuously report the current built visual (or null when incomplete) to the host, which
   // gates its submit button and consumes it at create time. buildVisual reads every editor
   // $state, so this effect re-emits on any change, keeping `onBuild` synced with every field.
@@ -279,16 +425,23 @@
     <option value="image">{t("actors.visualKindImage")}</option>
     <option value="faces">{t("actors.visualKindFaces")}</option>
     <option value="animated">{t("actors.visualKindAnimated")}</option>
+    <option value="generated">{t("actors.visualKindGenerated")}</option>
   </select>
 </label>
 
 {#snippet assetPicker(selected: string | null, onPick: (id: string) => void)}
   <div class="picker">
-    {#each assetList as a (a.id)}
-      <button type="button" class:selected={selected === a.id} title={a.original_name} onclick={() => onPick(a.id)}>
-        <img src={ctx.assets.url(a.id)} alt={a.original_name} />
-      </button>
-    {/each}
+    {#if selected}
+      <img class="current" src={ctx.assets.url(selected)} alt="" />
+    {/if}
+    <button
+      type="button"
+      data-testid="visual-pick"
+      onclick={() =>
+        void ctx.pickAsset({ kind: "image" }).then((id) => {
+          if (id) onPick(id);
+        })}
+    >{t("actors.pickAsset")}</button>
   </div>
 {/snippet}
 
@@ -301,7 +454,14 @@
   </label>
   {#if anim.sourceType === "frames"}
     <p class="hint">{t("actors.animFramesHint")}</p>
-    {@render assetPicker(null, (id: string) => (anim.frames = [...anim.frames, id]))}
+    <button
+      type="button"
+      data-testid="visual-pick-frames"
+      onclick={() =>
+        void ctx.pickAsset({ kind: "image", multiple: true }).then((ids) => {
+          if (ids) anim.frames = ids;
+        })}
+    >{t("actors.pickFrames")}</button>
     <ol class="frame-list">
       {#each anim.frames as f, i (i)}
         <li><img src={ctx.assets.url(f)} alt="" /> <button type="button" onclick={() => (anim.frames = anim.frames.filter((_: string, j: number) => j !== i))}>{t("actors.animRemoveFrame")}</button></li>
@@ -322,6 +482,44 @@
   {@render assetPicker(assetId, (id: string) => (assetId = id))}
 {:else if visualKind === "animated"}
   {@render animatedEditor(topAnim)}
+{:else if visualKind === "generated"}
+  <div class="generated-editor">
+    <!-- The art sub-editor is the face-row pattern one level down: an image-or-animated kind
+         select gating the same `assetPicker`/`animatedEditor` snippets each face row nests. -->
+    <label>{t("actors.genArt")}
+      <select bind:value={gen.artKind} aria-label={t("actors.genArt")}>
+        <option value="image">{t("actors.visualKindImage")}</option>
+        <option value="animated">{t("actors.visualKindAnimated")}</option>
+      </select>
+    </label>
+    {#if gen.artKind === "image"}
+      {@render assetPicker(gen.asset, (id: string) => (gen.asset = id))}
+    {:else}
+      {@render animatedEditor(gen.anim)}
+    {/if}
+    <label>{t("actors.genCrop")}
+      <select bind:value={gen.crop} aria-label={t("actors.genCrop")}>
+        <option value="circle">{t("actors.shapeCircle")}</option>
+        <option value="square">{t("actors.shapeSquare")}</option>
+      </select>
+    </label>
+    <label><input type="checkbox" bind:checked={gen.borderOn} /> {t("actors.genBorder")}</label>
+    {#if gen.borderOn}
+      <label>{t("actors.genBorderColor")}
+        <input type="color" aria-label={t("actors.genBorderColor")} value={gen.borderColor} onchange={(e) => (gen.borderColor = e.currentTarget.value)} oninput={(e) => (gen.borderColor = e.currentTarget.value)} />
+      </label>
+      <!-- value + onchange/oninput (not bind:value): same fireEvent.change test-sync reason as the animated source's numeric inputs above. -->
+      <label>{t("actors.genBorderWidth")}
+        <input type="number" min="0.01" step="0.01" aria-label={t("actors.genBorderWidth")} value={gen.borderWidth} onchange={(e) => (gen.borderWidth = Number(e.currentTarget.value))} oninput={(e) => (gen.borderWidth = Number(e.currentTarget.value))} />
+      </label>
+    {/if}
+    <label><input type="checkbox" bind:checked={gen.backgroundOn} /> {t("actors.genBackground")}</label>
+    {#if gen.backgroundOn}
+      <label>{t("actors.genBackgroundColor")}
+        <input type="color" aria-label={t("actors.genBackgroundColor")} value={gen.backgroundColor} onchange={(e) => (gen.backgroundColor = e.currentTarget.value)} oninput={(e) => (gen.backgroundColor = e.currentTarget.value)} />
+      </label>
+    {/if}
+  </div>
 {:else}
   <div class="faces-editor">
     {#each faceRows as f, i (i)}
@@ -369,7 +567,7 @@
 <style lang="scss">
   .hint {
     margin: 0;
-    color: var(--text-secondary);
+    color: var(--text-muted);
     font-size: 0.85em;
   }
   .picker {
@@ -378,14 +576,8 @@
     gap: var(--space-1);
   }
   .picker button {
-    padding: 0;
-    border: 2px solid transparent;
-    border-radius: var(--radius-1);
-    background: none;
+    min-height: 2rem;
     cursor: pointer;
-  }
-  .picker button.selected {
-    border-color: var(--accent);
   }
   .picker img {
     width: 48px;

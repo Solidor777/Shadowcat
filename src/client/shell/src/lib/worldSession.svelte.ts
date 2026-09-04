@@ -19,6 +19,16 @@ import {
   parseFootprints,
   EMPTY_FOOTPRINTS,
   type FootprintLookup,
+  CombatController,
+  defineCombatHooks,
+  CombatHookEmitter,
+  commandTouchesCombat,
+  deriveCombatHookEvents,
+  COMBAT_SERVICE,
+  COMBAT_HOOK_VERSION,
+  parseCombats,
+  EMPTY_COMBATS,
+  type CombatApi,
   type Connect,
   type Logger,
   type Module,
@@ -88,6 +98,10 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+  /** External-module entry importer. Defaults to a runtime dynamic `import()`;
+   * a seam for unit tests (jsdom cannot import a served module URL), not a
+   * production configuration point. */
+  importModule?: (url: string) => Promise<unknown>;
 }
 
 /** One enabled external module resolved against the installed catalog, as built by
@@ -152,6 +166,19 @@ export class WorldSession {
       user: string;
     }) => void
   >();
+  /** `onEmote` subscriber set. */
+  #emoteListeners = new Set<
+    (msg: {
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token the emote plays over. */
+      token: string;
+      /** The user who emoted. */
+      user: string;
+      /** The emote glyph(s). */
+      emote: string;
+    }) => void
+  >();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
@@ -183,13 +210,16 @@ export class WorldSession {
    * preserves a selection instead of leaking it across scenes or losing it. */
   #tokenSelectionByScene = new Map<string, Set<string>>();
   /** The server's resolved token footprints, replaced wholesale by each `"footprints"` frame.
-   * `$state` so every consumer — canvas reconcile, hit-test, selection ring, the place tool —
+   * `$state` so every consumer — canvas reconcile, hit-test, the place tool —
    * re-reads the same authoritative extents the moment a frame lands. `EMPTY_FOOTPRINTS` until
    * the first frame, under which a token draws at its document's own authored `w`/`h`. */
   #footprints = $state<FootprintLookup>(EMPTY_FOOTPRINTS);
   /** Handle for the session-owned `"footprints"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #footprintsSub: SceneSubscription | null = null;
+  /** Handle for the session-owned `"combat"` subscription; dropped in `leave()` so a second
+   * `enter()` does not stack a duplicate record. */
+  #combatSub: SceneSubscription | null = null;
   /** userId → username for the world's members, fetched on every role's Welcome
    * (chat author/whisper-recipient name resolution; the GM additionally uses it
    * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
@@ -240,7 +270,7 @@ export class WorldSession {
   }
 
   /** The server's resolved token footprints. There is no client-side footprint formula: the extent
-   * the canvas draws, the hit-test picks and the selection ring traces is the one the server's
+   * the canvas draws and the hit-test picks is the one the server's
    * movement gate collides with, read off the `"footprints"` derived channel.
    * @returns The current lookup; `EMPTY_FOOTPRINTS` before the first frame. */
   get footprints(): FootprintLookup {
@@ -347,6 +377,21 @@ export class WorldSession {
   /** Registry of first-party + external modules; `activate()` is called from
    * `#onWelcome`. */
   #modules: ModuleRegistry;
+  /** The shared hook bus every module's `hooks` wrapper delegates to, and the bus
+   * `#combatEmitter` emits `combat:*` events on. Held directly (not read back off
+   * `ModuleRegistry`, which does not expose its `Deps`) so `defineCombatHooks` can declare
+   * against it before any module registers a listener. */
+  #hooks: HookBus;
+  /** The shared service registry every module's `services` wrapper delegates to; also where
+   * `#combat` is provided under `COMBAT_SERVICE` for module lookup. */
+  #services: ServiceRegistry;
+  /** The combat seam controller, exposed to Svelte via `get combat()` and to every module via
+   * `COMBAT_SERVICE`. Constructed once per session (before any world is entered); its `world`/
+   * `role` deps read `this.world`/`this.role` live rather than snapshotting them. */
+  #combat: CombatController;
+  /** Chains `combat:*` hook emissions from `onCommand`'s derived events onto a strict-order
+   * queue; see `CombatHookEmitter`'s own doc. */
+  #combatEmitter: CombatHookEmitter;
   /** Diagnostics sink for this session; `opts.logger` or a console default. */
   #logger: Logger;
   /** In-world bootstrap guards. Modules are ADDED exactly once per session
@@ -376,6 +421,11 @@ export class WorldSession {
    * may legitimately differ (see `#buildEntries`'s own doc), so unloading by the wrong one either
    * throws (module not found) or silently no-ops. */
   #externalModuleIds = new Map<string, string>();
+  /** The `<link>` element carrying each loaded external module's declared
+   * stylesheet (`ModuleManifest.style`), keyed by manifest id. Removed on
+   * unload (reconcile) and in bulk on `leave()` — a link left behind would
+   * keep a previous world's module styles applied app-wide. */
+  #moduleStyleLinks = new Map<string, HTMLLinkElement>();
 
   /** Construct a session bound to one connection factory + default module set; call
    * `enter(worldId)` to open the world connection.
@@ -391,9 +441,29 @@ export class WorldSession {
   constructor(private readonly opts: WorldSessionOpts) {
     this.#logger = opts.logger ?? consoleLogger();
     this.#optimistic = new OptimisticClient(opts.selfId, this.#logger);
+    this.#hooks = new HookBus(this.#logger);
+    defineCombatHooks(this.#hooks);
+    this.#services = new ServiceRegistry();
+    this.#combat = new CombatController({
+      documents: this.#optimistic,
+      dispatchIntent: (ops) => this.dispatchIntent(ops),
+      sendCombat: (m) => (this.#ws ? this.#ws.combat(m) : Promise.reject(new Error("not connected"))),
+      selfId: opts.selfId,
+      role: () => (this.role === "gm" ? "gm" : this.role ? "player" : null),
+      canEdit: (doc, path) => this.canEdit(doc, path),
+      // `enter(worldId)` sets `this.world` before any document mutation can reach this
+      // controller. Before `enter()` (or after `leave()`), `dispatchIntent` is a GUARDED DROP —
+      // it warns and discards, returning `false` — and the controller turns that `false` into a
+      // thrown `CombatClientError`, so an op built against the empty-string fallback is never
+      // transmitted and no fabricated id is ever returned for a discarded op.
+      world: () => this.world ?? "",
+      logger: this.#logger,
+    });
+    this.#combatEmitter = new CombatHookEmitter(this.#hooks, this.#logger);
+    this.#services.provide(COMBAT_SERVICE, this.#combat, { version: COMBAT_HOOK_VERSION });
     this.#modules = new ModuleRegistry({
-      hooks: new HookBus(this.#logger),
-      services: new ServiceRegistry(),
+      hooks: this.#hooks,
+      services: this.#services,
       middleware: new MiddlewareChain(),
       store: this.store,
       client: this.#optimistic,
@@ -401,6 +471,13 @@ export class WorldSession {
       contributions: this.contributions,
       i18n,
     });
+  }
+
+  /** The combat seam: reads over the optimistic view, server-resolved resource numbers, the
+   * server-owned clock's intents, and document helpers. See `CombatApi`'s own doc.
+   * @returns This session's combat controller. */
+  get combat(): CombatApi {
+    return this.#combat;
   }
 
   /** Predict `ops` optimistically and transmit them as one correlated Intent. The
@@ -414,6 +491,9 @@ export class WorldSession {
    * (the optimistic view rebases onto authoritative state first). When stopped, drop
    * without an orphaned pending entry.
    * @param ops The operations to predict + transmit as one intent.
+   * @returns `true` when `ops` were predicted and transmitted or queued; `false` when they were
+   * dropped (no socket, or a stopped one) — the one signal a caller that must not silently lose
+   * a write (`CombatController`) turns into an explicit failure.
    * @example
    * ```
    * declare const session: WorldSession;
@@ -423,22 +503,23 @@ export class WorldSession {
    * ]);
    * ```
    */
-  dispatchIntent(ops: WireOperation[]): void {
+  dispatchIntent(ops: WireOperation[]): boolean {
     const intentId = crypto.randomUUID();
     if (this.#ws?.connected) {
       this.#optimistic.applyIntent(intentId, ops);
       this.#ws.send({ type: "intent", intent_id: intentId, ops });
-      return;
+      return true;
     }
     if (this.#ws?.running) {
       // Reconnecting: predict now (immediate feedback) and queue for FIFO replay.
       this.#optimistic.applyIntent(intentId, ops);
       this.#offlineQueue.push({ intentId, ops });
-      return;
+      return true;
     }
     // Stopped (or no socket): no reconnect is coming, so drop without predicting —
     // an orphaned pending entry would mis-correlate the next live echo.
     this.#logger.warn("dropping intent: world session stopped");
+    return false;
   }
 
   /** Transmit intents queued while offline, in FIFO order. Called after a resync
@@ -503,6 +584,33 @@ export class WorldSession {
     return () => this.#pingListeners.delete(cb);
   }
 
+  /** Subscribe to relayed emotes (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with the scene, token, originating user, and glyph(s) of each emote.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function renderEmote(token: string, emote: string): void;
+   * const off = session.onEmote(({ token, emote }) => renderEmote(token, emote));
+   * off();
+   * ```
+   */
+  onEmote(
+    cb: (msg: {
+      /** The scene the token stands on. */
+      scene: string;
+      /** The token the emote plays over. */
+      token: string;
+      /** The user who emoted. */
+      user: string;
+      /** The emote glyph(s). */
+      emote: string;
+    }) => void,
+  ): () => void {
+    this.#emoteListeners.add(cb);
+    return () => this.#emoteListeners.delete(cb);
+  }
+
   /** Broadcast a transient location ping at scene coords on the currently-viewed scene
    * (`viewedSceneId`: a GM's local roam override, else the followed `activeScene`). No-op when
    * disconnected or no scene exists; the server relays it back to all members (incl. us).
@@ -520,6 +628,25 @@ export class WorldSession {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
     this.#ws?.send({ type: "scene_ping", scene: sceneId, x, y });
+  }
+
+  /** Broadcast a transient emote over `token` on the currently-viewed scene
+   * (`viewedSceneId`, same target `sendPing` uses). No-op when disconnected or no scene
+   * exists; the server relays it back to all members (incl. us) after re-authorizing
+   * effective ownership, so an over-reaching send drops silently.
+   * @param token The token document id to emote over.
+   * @param emote The emote glyph(s); the server bounds this to 1..=16 bytes.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const tokenId: string;
+   * session.sendEmote(tokenId, "😀");
+   * ```
+   */
+  sendEmote(token: string, emote: string): void {
+    const sceneId = this.viewedSceneId;
+    if (!sceneId) return;
+    this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
   }
 
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
@@ -840,14 +967,27 @@ export class WorldSession {
     this.#ws = new WsClient({
       world: worldId,
       connect: this.opts.connect,
-      selfUserId: this.opts.selfId,
       handlers: {
         // Feed both mirrors: the authoritative DocumentStore (exposed via
         // AppContext for document-reading panels) and the optimistic client
         // (base + pending view, given to modules as ctx.client).
         onCommand: (cmd) => {
+          // Pre-scan cheaply: an ordinary token drag never touches a combat/combatant doc or
+          // an embedded effect field, so it skips both the pre-image snapshot and the derive
+          // call below entirely.
+          const touches = commandTouchesCombat(cmd, this.store);
+          const before = new Map<string, WireDocument | undefined>();
+          if (touches) {
+            for (const op of cmd.ops) {
+              const id = op.op === "update" || op.op === "move" ? op.doc_id : op.doc.id;
+              before.set(id, this.store.get(id));
+            }
+          }
           this.store.applyCommand(cmd);
           this.#optimistic.applyCommand(cmd);
+          if (touches) {
+            this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
+          }
         },
         onReject: (id) => this.#optimistic.reject(id),
         onWelcome: (w) => {
@@ -870,6 +1010,13 @@ export class WorldSession {
           // scene filter above.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#pingListeners) cb(msg);
+        },
+        onEmote: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing filter above: an emote
+          // broadcasts room-wide and must render only for recipients currently viewing
+          // that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#emoteListeners) cb(msg);
         },
       },
     });
@@ -896,14 +1043,20 @@ export class WorldSession {
         stream.startServerMs,
         () => ws.serverNow(),
         stream.moverVision,
+        stream.moverLight,
       );
     });
-    // Session-owned, not engine-owned: the resolved footprints feed the canvas, the hit-test, the
-    // selection ring and the place tool, so they belong beside the document view every one of
+    // Session-owned, not engine-owned: the resolved footprints feed the canvas, the hit-test and
+    // the place tool, so they belong beside the document view every one of
     // those reads rather than inside the render engine one of them happens to live in. The first
     // attempt runs before the socket is up and is dropped; `#onWelcome` re-establishes it.
     this.#footprintsSub = this.subscribeScene("footprints", (f) => {
       this.#footprints = parseFootprints(f.payload);
+    });
+    // Same lifecycle as `#footprintsSub`: server-resolved per-recipient combat numbers, never
+    // client-derived.
+    this.#combatSub = this.subscribeScene("combat", (f) => {
+      this.#combat.setResolved(parseCombats(f.payload, this.#logger));
     });
     await this.#ws.start();
     this.state = "open";
@@ -1048,7 +1201,7 @@ export class WorldSession {
       if (resolved.length === 0) return;
       const result = await loadModules({
         entries: resolved.map(({ manifest, entry }) => ({ manifest, entry })),
-        importFn: (url) => import(/* @vite-ignore */ url),
+        importFn: this.opts.importModule ?? ((url) => import(/* @vite-ignore */ url)),
         registry: this.#modules,
         shadowcatVersion: serverVersion,
       });
@@ -1057,6 +1210,17 @@ export class WorldSession {
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
+      // Styles follow activation, never precede it, and only a module that
+      // actually activated gets a link: a per-module activation failure logs
+      // and skips without rejecting (see `ModuleRegistry.activate`), so
+      // `result.loaded` can name a module that never activated.
+      WorldSession.#applyModuleStyles(
+        this.#moduleStyleLinks,
+        resolved,
+        result.loaded.filter((id) =>
+          this.#modules.list().some((m) => m.id === id && m.active),
+        ),
+      );
     } catch (e) {
       this.#logger.warn("external module discovery failed", e);
     }
@@ -1136,6 +1300,63 @@ export class WorldSession {
     }
   }
 
+  /** Injects the declared stylesheet (`ModuleManifest.style`) of every newly
+   * loaded module as a `<link>` into the document head, resolved against the
+   * module's own entry URL (so the href stays inside the module's served
+   * folder). Follows `#recordLoaded`'s manifest-id↔folder-id mapping; per-
+   * module contained like the loader itself — a module whose link cannot be
+   * created never affects the others.
+   * @param into The link map to record into (mutated in place), manifest id →
+   * link element.
+   * @param resolved The same triples passed to `loadModules`.
+   * @param loaded The manifest ids `loadModules` reports as successfully
+   * loaded.
+   * @example
+   * ```
+   * declare const into: Map<string, HTMLLinkElement>;
+   * declare const resolved: ResolvedModuleEntry[];
+   * declare const loaded: string[];
+   * // called from #loadExternalModules and reconcileInstalledModules; not part of the public API
+   * WorldSession.#applyModuleStyles(into, resolved, loaded);
+   * ```
+   */
+  static #applyModuleStyles(
+    into: Map<string, HTMLLinkElement>,
+    resolved: ResolvedModuleEntry[],
+    loaded: string[],
+  ): void {
+    if (typeof document === "undefined") return;
+    const byManifestId = new Map(resolved.map((r) => [r.manifest.id, r]));
+    for (const manifestId of loaded) {
+      const style = byManifestId.get(manifestId)?.manifest.style;
+      const entry = byManifestId.get(manifestId)?.entry;
+      if (!style || !entry || into.has(manifestId)) continue;
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      // The manifest schema already rejects absolute/traversal paths; the
+      // entry URL's own directory is the module's served root.
+      link.href = new URL(style, new URL(entry, document.baseURI)).pathname;
+      link.dataset.shadowcatModuleStyle = manifestId;
+      document.head.appendChild(link);
+      into.set(manifestId, link);
+    }
+  }
+
+  /** Removes one module's injected stylesheet link, if any.
+   * @param manifestId The unloaded module's manifest id.
+   * @example
+   * ```
+   * // private method; not part of the public API — invoked from
+   * // reconcileInstalledModules' unload loop and leave()
+   * declare const session: WorldSession;
+   * session.leave();
+   * ```
+   */
+  #removeModuleStyle(manifestId: string): void {
+    this.#moduleStyleLinks.get(manifestId)?.remove();
+    this.#moduleStyleLinks.delete(manifestId);
+  }
+
   /** Re-fetches this world's enabled external-module set and reconciles the running session
    * against it: unloads (cascade) any currently-loaded external module no longer enabled, and
    * loads + activates any newly-enabled one. First-party modules (`opts.modules`) are never
@@ -1163,6 +1384,7 @@ export class WorldSession {
         try {
           await this.#modules.unload(manifestId, { cascade: true });
           this.#externalModuleIds.delete(folderId);
+          this.#removeModuleStyle(manifestId);
         } catch (e) {
           this.#logger.warn(`external module ${manifestId} failed to unload during reconcile`, e);
         }
@@ -1173,7 +1395,7 @@ export class WorldSession {
       if (resolved.length === 0) return;
       const result = await loadModules({
         entries: resolved.map(({ manifest, entry }) => ({ manifest, entry })),
-        importFn: (url) => import(/* @vite-ignore */ url),
+        importFn: this.opts.importModule ?? ((url) => import(/* @vite-ignore */ url)),
         registry: this.#modules,
         shadowcatVersion: this.#serverVersion,
       });
@@ -1182,6 +1404,17 @@ export class WorldSession {
       }
       WorldSession.#recordLoaded(this.#externalModuleIds, resolved, result.loaded);
       if (result.loaded.length > 0) await this.#modules.activate();
+      // Styles follow activation, never precede it, and only a module that
+      // actually activated gets a link: a per-module activation failure logs
+      // and skips without rejecting (see `ModuleRegistry.activate`), so
+      // `result.loaded` can name a module that never activated.
+      WorldSession.#applyModuleStyles(
+        this.#moduleStyleLinks,
+        resolved,
+        result.loaded.filter((id) =>
+          this.#modules.list().some((m) => m.id === id && m.active),
+        ),
+      );
     } catch (e) {
       this.#logger.warn("external module reconcile failed", e);
     }
@@ -1202,6 +1435,12 @@ export class WorldSession {
     this.#footprintsSub?.unsubscribe();
     this.#footprintsSub = null;
     this.#footprints = EMPTY_FOOTPRINTS;
+    this.#combatSub?.unsubscribe();
+    this.#combatSub = null;
+    this.#combat.setResolved(EMPTY_COMBATS);
+    for (const manifestId of [...this.#moduleStyleLinks.keys()]) {
+      this.#removeModuleStyle(manifestId);
+    }
     this.#ws?.stop();
     this.#ws = null;
     this.state = "closed";

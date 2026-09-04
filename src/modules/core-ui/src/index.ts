@@ -18,6 +18,9 @@ export const coreUi: Module = {
       { contract: "shadowcat.surface:statusbar", cardinality: "singleton" },
       { contract: "shadowcat.surface:toolrail", cardinality: "multi" },
       { contract: "shadowcat.surface:panel-host", cardinality: "singleton" },
+      // App-level overlay layer (modal scrims and similar fixed-position
+      // chrome), rendered outside the region grid.
+      { contract: "shadowcat.surface:overlay", cardinality: "multi" },
     ],
   },
   register(ctx) {

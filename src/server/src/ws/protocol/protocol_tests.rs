@@ -52,6 +52,35 @@ fn scene_ping_round_trips_and_is_out_of_band() {
 }
 
 #[test]
+fn emote_round_trips_and_is_out_of_band() {
+    let c = ClientMsg::Emote {
+        scene: Uuid::from_u128(1),
+        token: Uuid::from_u128(2),
+        emote: "😀".to_string(),
+    };
+    let s = serde_json::to_string(&c).unwrap();
+    assert!(s.contains("\"type\":\"emote\""), "got {s}");
+    let _back: ClientMsg = serde_json::from_str(&s).unwrap();
+
+    let sv = ServerMsg::Emote {
+        scene: Uuid::from_u128(1),
+        token: Uuid::from_u128(2),
+        user: Uuid::from_u128(3),
+        emote: "😀".to_string(),
+    };
+    // Out-of-band: never buffered/resynced.
+    assert_eq!(sv.event_seq(), None);
+    let j = serde_json::to_value(&sv).unwrap();
+    assert_eq!(j["type"], "emote");
+    assert_eq!(
+        j["token"],
+        serde_json::to_value(Uuid::from_u128(2)).unwrap()
+    );
+    assert_eq!(j["emote"], "😀");
+    assert!(j.get("user").is_some());
+}
+
+#[test]
 fn client_hello_round_trips_and_is_tagged() {
     let m = ClientMsg::Hello {
         world: Uuid::from_u128(7),
@@ -172,12 +201,20 @@ fn pathfind_frames_round_trip() {
         cost: 2.0,
         arrested: true,
         truncated: false,
+        budget_cells: Some(6.0),
     };
     let json = serde_json::to_string(&ok).unwrap();
     assert!(json.contains("\"type\":\"path_result\""));
     let back: ServerMsg = serde_json::from_str(&json).unwrap();
     match back {
-        ServerMsg::PathResult { arrested, .. } => assert!(arrested),
+        ServerMsg::PathResult {
+            arrested,
+            budget_cells,
+            ..
+        } => {
+            assert!(arrested);
+            assert_eq!(budget_cells, Some(6.0));
+        }
         _ => panic!("expected PathResult"),
     }
     let err = ServerMsg::PathError {
@@ -243,6 +280,16 @@ fn move_stream_round_trips_and_is_tagged() {
         t_ms: 0.0,
         polygons: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]],
     }]);
+    let in_light = Some(vec![LightSample {
+        t_ms: 0.0,
+        pos: [0.0, 0.0],
+        bright: 200.0,
+        dim: 600.0,
+        intensity: 0.8,
+        falloff: crate::data::engine::FalloffCurve::Quadratic,
+        color: 0xFFD9A0,
+        polygons: vec![vec![[-600.0, -600.0], [600.0, -600.0], [600.0, 600.0]]],
+    }]);
     let msg = ServerMsg::MoveStream {
         request_id: Uuid::from_u128(1),
         token_id: Uuid::from_u128(2),
@@ -253,6 +300,7 @@ fn move_stream_round_trips_and_is_tagged() {
         stop: [100.0, 200.0],
         samples: in_samples.clone(),
         mover_vision: in_vision.clone(),
+        mover_light: in_light.clone(),
         cost: Some(3.5),
         truncated: Some(true),
     };
@@ -272,6 +320,7 @@ fn move_stream_round_trips_and_is_tagged() {
             stop,
             samples,
             mover_vision,
+            mover_light,
             cost,
             truncated,
         } => {
@@ -284,6 +333,10 @@ fn move_stream_round_trips_and_is_tagged() {
             assert_eq!(stop, [100.0, 200.0]);
             assert_eq!(samples, in_samples);
             assert_eq!(mover_vision, in_vision);
+            assert_eq!(
+                mover_light, in_light,
+                "an admitted carried-light timeline survives the round-trip field for field"
+            );
             assert_eq!(cost, Some(3.5), "mover/GM path: cost is disclosed");
             assert_eq!(
                 truncated,
@@ -308,6 +361,7 @@ fn move_stream_round_trips_and_is_tagged() {
         stop: [100.0, 200.0],
         samples: in_samples2,
         mover_vision: None,
+        mover_light: None,
         cost: None,
         truncated: None,
     };
@@ -316,6 +370,7 @@ fn move_stream_round_trips_and_is_tagged() {
     match back2 {
         ServerMsg::MoveStream {
             mover_vision,
+            mover_light,
             cost,
             truncated,
             ..
@@ -323,6 +378,10 @@ fn move_stream_round_trips_and_is_tagged() {
             assert_eq!(
                 mover_vision, None,
                 "observer path: mover_vision must round-trip as None"
+            );
+            assert_eq!(
+                mover_light, None,
+                "a recipient no light sample reaches gets no timeline at all, never an empty one"
             );
             assert_eq!(
                 cost, None,
@@ -480,6 +539,14 @@ fn combat_intents_round_trip_snake_case_tags() {
         message: "combat rejected".into(),
     };
     assert_eq!(serde_json::to_value(&e).unwrap()["type"], "combat_error");
+
+    let r = ServerMsg::CombatResult {
+        request_id: Uuid::nil(),
+        seq: 7,
+    };
+    let v = serde_json::to_value(&r).unwrap();
+    assert_eq!(v["type"], "combat_result");
+    assert_eq!(v["seq"], 7);
 }
 
 #[test]

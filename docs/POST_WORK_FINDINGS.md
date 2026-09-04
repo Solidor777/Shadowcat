@@ -3,6 +3,18 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: vitest worker start-up timeouts under sibling-worktree cargo load. Summary: on
+  the M17c gate run, `pnpm run test:scripts` failed 4 then 2 tests across two runs (each a
+  20s/5s per-test timeout, the failing test moving between runs, incl. the skill-corpus
+  conservation check), and `pnpm --filter @shadowcat/core test:e2e` failed once on the module
+  toolchain spec and once with a `vitest-pool` "Timeout waiting for worker to respond" while
+  starting a different spec — all while another session's cargo build was running on the
+  machine. Every failing file passed in isolation (117/117, 97/97) with zero code change; no
+  assertion failed at any point. Same contention class as the render-ready flakes, but at
+  worker start-up rather than inside a test. Status: Needs Review (if it recurs on a quiet
+  machine, raise the per-test timeout on the corpus-scanning script tests, which read the
+  whole skills checkout).
+
 - Title: ui-e2e hex-movement setup step flaked once on CI. Summary: on the docs
   Phase-1 push (run 30558898300, ubuntu), `hex-movement.spec.ts` "non-GM
   wall-crossing drag rejected" failed at a SETUP assertion — the GM view's
@@ -727,3 +739,49 @@ are observations awaiting triage, not committed work.
   future negative-existence claims in this skill family should scope to the specific
   module/subsystem they were verified against, not the whole binary.
 
+- Title: HTTP throttle tests flaked under machine contention during M14c-6.
+  Summary: `login_throttles_identity_after_budget_spending_no_argon2`,
+  `accept_invite_throttles_by_ip_over_real_transport`, and
+  `login_throttles_by_ip_over_real_transport` intermittently failed timing-window
+  assertions while three other background agents' own `cargo`/`vitest` runs shared
+  the machine concurrently (confirmed via each process's own log identifying its
+  own worktree). Isolated re-runs (no contention) passed. Same class as the
+  pre-existing "shell ui-e2e reuses a foreign server" and render-ready-timeout
+  entries above: real-clock rate-limit windows compete with CPU-bound sibling
+  processes for wall-clock budget. Status: Needs Review — not a regression;
+  flagged for the same audit already pending against the render-ready class.
+
+- Title: `@shadowcat/shell`'s full `vitest run` intermittently timed out 3 of 10
+  worker files (`[vitest-pool-runner]: Timeout waiting for worker to respond` on
+  `bootResolution.test.ts`, `route.test.ts`, `smoke.test.ts`) during M14c-6, while
+  every file passed individually and the same full run with
+  `--no-file-parallelism` passed 10/10 files (115 tests) cleanly. Reproduced
+  twice with other background agents' cargo/vitest processes concurrently active.
+  Status: Needs Review — machine-contention class, not a code regression; a
+  future CI-parity check should confirm the default (parallel) mode is stable
+  when run alone.
+
+- Title: Skill symbol citations reference unbuilt combat-resolution symbols. Summary: the
+  local-only `check-skill-symbol-refs` gate reports 25 broken citations in the
+  `shadowcat-codebase-combat`, `-formula`, and `-scene-rendering` skills (`resolve_budget`,
+  `eval_formula`, `formula_host`, `budget_cells`, `replay_step_costs`, and kin) — symbols the
+  combat-resolution sub-project of M14c describes but has not yet built. Surfaced during the
+  M15b skill-update gate (whose own four skill diffs verify clean); the fix belongs to that
+  sub-project's close-out, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.
+
+- Title: Skill symbol citations run ahead of the code for M14c/M17/M18 symbols.
+  Summary: the local-only `check-skill-symbol-refs` gate reports 59 broken
+  citations against the skills corpus at its HEAD commit (measured via a HEAD
+  extraction through `SHADOWCAT_CODEBASE_SKILLS_DIR`), spread across the
+  actors-tokens, chat, client-shell, combat, dice, documents-permissions,
+  formula, module-toolchain, panels, and scene-rendering skills — symbols the
+  M14c combat-resolution sub-projects, M17 (vision/lighting), and M18 (token
+  enrichment: `ActorEngine.aura`, `sound`, `vfx`, `VfxAnchor`,
+  `TokenNodeSpec.aura`, `updateTokenAura`, `auraKey`, `regionTriggers`, and
+  kin) describe but have not built. Surfaced during the M16 close-out gates;
+  M16's own skill diffs (panels rewrite, client-shell theming bullet) add zero
+  new breakage against that baseline. Same class as the M15b
+  combat-resolution finding above: the fix belongs to those milestones'
+  close-outs, either by building the cited symbols or re-scoping the prose to
+  what exists. Status: Needs Review.

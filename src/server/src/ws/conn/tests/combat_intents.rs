@@ -409,6 +409,21 @@ async fn combat_harness() -> Harness {
     }
 }
 
+/// Whether a `handle_combat_intent` reply is the correlated success frame
+/// `ServerMsg::CombatResult`, in place of the pre-`CombatResult` `is_none()`
+/// success check this module used before a combat intent answered its
+/// originator on success.
+trait CombatIntentSucceeded {
+    /// `true` iff `self` is `Some(ServerMsg::CombatResult { .. })`.
+    fn succeeded(&self) -> bool;
+}
+
+impl CombatIntentSucceeded for Option<ServerMsg> {
+    fn succeeded(&self) -> bool {
+        matches!(self, Some(ServerMsg::CombatResult { .. }))
+    }
+}
+
 /// Drains `rx` until the next `RoomEvent::Event`, returning its `StoredCommand`. Skips any
 /// `RoomEvent::Other` (out-of-band aux frames) in between.
 async fn next_event(
@@ -431,7 +446,7 @@ async fn current_docs(
 }
 
 /// Full GM round trip (`CombatStart` → `CombatAdvance` → `CombatPause` → `CombatEnd`), each call
-/// confirmed by `None` (the broadcast `Event` is the notification). `CombatStart` creates a
+/// confirmed by a correlated `ServerMsg::CombatResult`. `CombatStart` creates a
 /// GM-only `combat-history` record; a player's filtered view of that same broadcast carries no
 /// `combat-history` op, the first WS-layer exercise of the document-level secrecy the combat
 /// history engine enforces. `CombatEnd` deletes the combat; its children cascade.
@@ -452,7 +467,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         &h.rate,
     )
     .await
-    .is_none());
+    .succeeded());
 
     let combat = h.repo.get_document(h.combat).await.unwrap().unwrap();
     let e: CombatEngine = serde_json::from_value(combat.engine.unwrap()).unwrap();
@@ -496,7 +511,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         &h.rate,
     )
     .await
-    .is_none());
+    .succeeded());
     assert!(handle_combat_intent(
         &h.room,
         h.repo.as_ref(),
@@ -509,7 +524,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         &h.rate,
     )
     .await
-    .is_none());
+    .succeeded());
     assert!(handle_combat_intent(
         &h.room,
         h.repo.as_ref(),
@@ -522,7 +537,7 @@ async fn gm_start_advance_pause_end_round_trip_and_players_get_no_history() {
         &h.rate,
     )
     .await
-    .is_none());
+    .succeeded());
     assert!(h.repo.get_document(h.combat).await.unwrap().is_none());
     assert!(
         h.repo.query_children(h.combat).await.unwrap().is_empty(),
@@ -562,7 +577,7 @@ async fn owner_may_end_only_their_own_turn_and_errors_share_one_wording() {
         &h.rate,
     )
     .await;
-    assert!(ok.is_none(), "own turn");
+    assert!(ok.succeeded(), "own turn");
 
     // The hidden NPC auto-resolved (OwnerMayEnd) and it's the player's turn again; switch to
     // GmOnly and let the GM park the turn on the hidden NPC to hold it.
@@ -643,7 +658,7 @@ async fn roll_uses_the_channel_dice_context_and_posts_a_gm_only_message_for_hidd
         &h.rate,
     )
     .await;
-    assert!(ok.is_none());
+    assert!(ok.succeeded());
 
     let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
     assert_eq!(msgs.len(), 1);
@@ -769,7 +784,7 @@ async fn resource_authz_is_gm_or_owner() {
     assert!(
         handle_combat_intent(&h.room, h.repo.as_ref(), &h.player, own, 0, &h.rate)
             .await
-            .is_none()
+            .succeeded()
     );
 
     let other = ClientMsg::CombatResource {
@@ -981,7 +996,7 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
         assert!(
             handle_combat_intent(&h.room, h.repo.as_ref(), &h.gm, msg, 0, &h.rate)
                 .await
-                .is_none(),
+                .succeeded(),
             "step {i} refused"
         );
     }
@@ -1006,7 +1021,7 @@ async fn gm_rewind_recreates_a_deleted_event_combatant_and_rebuilds_the_order() 
                 &h.rate,
             )
             .await
-            .is_none(),
+            .succeeded(),
             "rewind {i} refused"
         );
     }
@@ -1103,7 +1118,7 @@ async fn gm_sort_rewrites_the_order_from_current_initiatives_and_players_are_ref
         &h.rate,
     )
     .await
-    .is_none());
+    .succeeded());
     assert_eq!(
         h.combat_engine().await.order,
         vec![h.hidden_npc, h.player_combatant],
@@ -1208,7 +1223,7 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
             &h.rate,
         )
         .await
-        .is_none(),
+        .succeeded(),
         "the owner of a readable combatant may spend its resources"
     );
     assert_eq!(
@@ -1235,7 +1250,7 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
             &h.rate,
         )
         .await
-        .is_none(),
+        .succeeded(),
         "the owner of a readable combatant may roll its initiative"
     );
 
@@ -1259,7 +1274,7 @@ async fn a_per_user_grant_admits_the_owner_of_a_default_hidden_combatant() {
             &h.rate,
         )
         .await
-        .is_none(),
+        .succeeded(),
         "the owner of a readable combatant may end its own turn"
     );
 }
@@ -1345,7 +1360,7 @@ async fn a_combatant_owner_without_write_capability_may_end_its_turn_but_not_wri
             &h.rate,
         )
         .await
-        .is_none(),
+        .succeeded(),
         "ending your own turn needs ownership and readability, never write capability"
     );
     // `hidden_npc` is hidden and `turn_control` is `OwnerMayEnd`, so `settle_turn` auto-resolves
@@ -1472,7 +1487,7 @@ async fn roll_notation_references_resolve_against_each_combatants_host() {
     )
     .await;
     assert!(
-        ok.is_none(),
+        ok.succeeded(),
         "the player's roll for their own combatant commits"
     );
 
@@ -1595,7 +1610,7 @@ async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
         &h.rate,
     )
     .await;
-    assert!(ok.is_none(), "the roll commits");
+    assert!(ok.succeeded(), "the roll commits");
 
     let doc = h.repo.get_document(combatant_id).await.unwrap().unwrap();
     let engine: CombatantEngine = serde_json::from_value(doc.engine.unwrap()).unwrap();
@@ -1607,4 +1622,73 @@ async fn roll_notation_resolves_against_the_token_embedded_actor_copy() {
     let msgs = h.repo.query_documents(h.world_id, "message").await.unwrap();
     let content = &msgs[0].engine.as_ref().unwrap()["content"];
     assert_eq!(content[0]["outcome"]["labeled_consts"][0]["value"], 9);
+}
+
+/// A GM `CombatStart` yields exactly one `CombatResult` to the originator, whose `seq` equals the
+/// broadcast `Event`'s `seq` — the correlation `WsClient.combat()` resolves on. A second
+/// connected player's subscription to the same room only ever observes the broadcast `Event`,
+/// never a `CombatResult` (which is never broadcast — `handle_combat_intent` returns it only to
+/// the connection that dispatches it).
+#[tokio::test]
+async fn combat_result_reaches_only_the_originator_and_matches_the_broadcast_seq() {
+    let h = combat_harness().await;
+    let (mut gm_rx, _) = h.room.subscribe();
+    let (mut player_rx, _) = h.room.subscribe();
+
+    let reply = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.gm,
+        ClientMsg::CombatStart {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    let Some(ServerMsg::CombatResult { request_id, seq }) = reply else {
+        panic!("expected a CombatResult, got {reply:?}");
+    };
+    assert_eq!(request_id, Uuid::from_u128(1));
+
+    let gm_event = next_event(&mut gm_rx).await;
+    assert_eq!(
+        gm_event.command.seq, seq,
+        "the CombatResult's seq matches the broadcast Event's seq"
+    );
+    let player_event = next_event(&mut player_rx).await;
+    assert_eq!(
+        player_event.command.seq, seq,
+        "the second connection observes the same committed Event"
+    );
+    // Neither connection's channel carries anything but the one `RoomEvent::Event` above —
+    // `CombatResult` is returned to the caller directly and never reaches `Room.tx` at all, so
+    // there is no second frame for either subscriber to drain.
+}
+
+/// A rejected combat intent yields `CombatError` and never a `CombatResult`.
+#[tokio::test]
+async fn a_rejected_combat_intent_never_yields_a_combat_result() {
+    let h = combat_harness().await;
+    let refused = handle_combat_intent(
+        &h.room,
+        h.repo.as_ref(),
+        &h.player,
+        ClientMsg::CombatStart {
+            request_id: Uuid::from_u128(1),
+            combat_id: h.combat,
+        },
+        0,
+        &h.rate,
+    )
+    .await;
+    assert!(
+        matches!(refused, Some(ServerMsg::CombatError { .. })),
+        "CombatStart is GM-only"
+    );
+    assert!(
+        !refused.succeeded(),
+        "a rejection must never be mistaken for a CombatResult"
+    );
 }

@@ -191,6 +191,7 @@ impl Fixture {
         let doc_id = match &cmd.ops[0] {
             Operation::Create { doc } => doc.id,
             Operation::Update { doc_id, .. } => *doc_id,
+            Operation::Move { doc_id, .. } => *doc_id,
             Operation::Delete { doc } => doc.id,
         };
         self.repo

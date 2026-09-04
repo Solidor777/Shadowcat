@@ -1,10 +1,12 @@
-import { test, expect, afterEach } from "vitest";
+import { test, expect, afterEach, vi } from "vitest";
 import { defaultLayout, applyOp, type LayoutOp, type PanelLayoutV1 } from "../layout/tree";
 import { DockviewEngine } from "./dockview";
 import { STAGE_ID } from "./policy";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
+import { i18n, theme } from "@shadowcat/ui-kit";
 import type {
   DockviewApi,
+  DockviewPopoutGroupOptions,
   DockviewWillDropEvent,
   IDockviewGroupPanel,
   IDockviewPanel,
@@ -35,6 +37,8 @@ interface WillDropProbe {
 interface ComponentInternals {
   _onWillDrop: InternalEmitter<WillDropProbe>;
   _bufferOnDidLayoutChange: InternalEmitter<void>;
+  _onDidPopoutGroupSizeChange: InternalEmitter<{ width: number; height: number; group: IDockviewGroupPanel }>;
+  _onDidPopoutGroupPositionChange: InternalEmitter<{ screenX: number; screenY: number; group: IDockviewGroupPanel }>;
 }
 
 /** Group-level internals, reached per group rather than through the component. */
@@ -52,6 +56,43 @@ const modelOf = (group: IDockviewGroupPanel): GroupModelInternals =>
   group.model as unknown as GroupModelInternals;
 const apiOf = (group: IDockviewGroupPanel): GroupApiInternals =>
   group.api as unknown as GroupApiInternals;
+
+/** The structural slice of dockview's `DockviewFloatingGroupPanel` a test
+ * asserts reconcile writes against — mirrors the engine's own private
+ * `FloatingWindowEntry` declaration (the class is not re-exported from
+ * dockview-core's entry point). */
+interface FloatingEntryProbe {
+  group: unknown;
+  overlay: { element: HTMLElement };
+  position(bounds: { left?: number; top?: number; width?: number; height?: number }): void;
+}
+
+/** Finds the live floating-window entry hosting `panelId`'s group, by the same
+ * membership rule (`FloatingGroupService.findByGroup`) the engine uses. */
+function floatingEntryOf(api: DockviewApi, panelId: string): FloatingEntryProbe {
+  const group = api.getPanel(panelId)!.group;
+  const entries = (api as unknown as { component: { floatingGroups: readonly FloatingEntryProbe[] } }).component
+    .floatingGroups;
+  const entry = entries.find((e) => e.group === group || e.overlay.element.contains(group.element));
+  if (!entry) throw new Error(`no floating window entry for panel "${panelId}"`);
+  return entry;
+}
+
+/** A `DOMRect` stub for jsdom (which never runs real layout) — stands in for
+ * the box a real gesture or reconcile would leave on the overlay element. */
+function domRectOf(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
 
 let engine: DockviewEngine | null = null;
 // Hosts appended to `document.body` for focus-management tests (jsdom only
@@ -106,6 +147,23 @@ test("init mounts the stage and apply() adopts a two-panel tree's slot elements"
   expect(host.contains(assetsSlot)).toBe(true);
   // Adoption is real (appendChild of the SAME node), not a copy.
   expect(chatSlot.isSameNode(slotFor("chat"))).toBe(true);
+});
+
+test("init passes a style-free theme class so dockview's default theme literals never override the token bridge", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots([]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  // dockview falls back to `themeAbyss` when no theme option is given, and
+  // its `dockview-theme-abyss` class re-declares every --dv-* variable with
+  // dark literals on the shell element — beating the `.sc-dockview-root`
+  // token mapping (var() references) for the whole subtree under any
+  // non-dark active theme.
+  expect(host.querySelector(".dockview-theme-abyss")).toBeNull();
+  expect(host.querySelector(".sc-dockview-theme")).toBeTruthy();
 });
 
 test("apply() is idempotent: applying the same tree twice adds no duplicate panels", () => {
@@ -686,12 +744,12 @@ test("a live drag/resize of an already-floating panel emits a resizeFloating op 
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  // jsdom never runs real layout, so `boundingBox`'s `getBoundingClientRect`
-  // reads are stubbed directly on the floating group's element to simulate
-  // the box a real drag/resize gesture would leave behind.
-  const groupEl = engine.debugApi!.getPanel("chat")!.group.element;
-  groupEl.getBoundingClientRect = () =>
-    ({ left: 50, top: 60, width: 220, height: 160, right: 270, bottom: 220, x: 50, y: 60, toJSON: () => ({}) }) as DOMRect;
+  // jsdom never runs real layout, so the overlay element's
+  // `getBoundingClientRect` (the box `#handleFloatingLayoutChange` reads — the
+  // floating window's OUTER frame) is stubbed directly to simulate the box a
+  // real drag/resize gesture would leave behind.
+  const overlayEl = floatingEntryOf(engine.debugApi!, "chat").overlay.element;
+  overlayEl.getBoundingClientRect = () => domRectOf(50, 60, 220, 160);
 
   componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   // `onDidLayoutChange` is dockview's `AsapEvent` — listeners run on the next microtask.
@@ -722,15 +780,73 @@ test("a resizeFloating op's own round trip through apply() does not re-emit (sel
   const ops: LayoutOp[] = [];
   engine.onOp((op) => ops.push(op));
 
-  const groupEl = engine.debugApi!.getPanel("chat")!.group.element;
-  groupEl.getBoundingClientRect = () =>
-    ({ left: 10, top: 10, width: 200, height: 150, right: 210, bottom: 160, x: 10, y: 10, toJSON: () => ({}) }) as DOMRect;
+  const overlayEl = floatingEntryOf(engine.debugApi!, "chat").overlay.element;
+  overlayEl.getBoundingClientRect = () => domRectOf(10, 10, 200, 150);
 
   componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
   await Promise.resolve();
   await Promise.resolve();
 
   expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+});
+
+test("apply() repositions an already-floating widget when the tree rect changed from a non-engine source, with no resizeFloating echo", async () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const entry = floatingEntryOf(engine.debugApi!, "chat");
+  const positionSpy = vi.spyOn(entry, "position");
+  // The live widget reads as sitting at the tree's rect (as a real browser
+  // would after creation placed it there).
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(10, 10, 200, 150);
+
+  // The tree rect then changes from a NON-engine source (a keyboard move op,
+  // an arrangement restore, a layout reset — anything reduced through
+  // `applyOp` rather than dragged on the widget).
+  layout = applyOp(layout, { op: "resizeFloating", id: "chat", rect: { x: 42, y: 66, w: 300, h: 200 } });
+  engine.apply(layout.expanded, new Map());
+
+  // The reconcile pushed the tree's rect to the widget's overlay box.
+  expect(positionSpy).toHaveBeenCalledWith({ left: 42, top: 66, width: 300, height: 200 });
+
+  // No echo: once the widget sits at the reconciled rect, a layout-change
+  // pass emits nothing back.
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(42, 66, 300, 200);
+  componentOf(engine.debugApi!)._bufferOnDidLayoutChange.fire();
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+});
+
+test("apply() leaves an already-floating widget untouched when the live box already matches the tree rect", () => {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  engine = new DockviewEngine(silentLogger);
+  engine.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(layout.expanded, new Map());
+
+  const entry = floatingEntryOf(engine.debugApi!, "chat");
+  const positionSpy = vi.spyOn(entry, "position");
+  entry.overlay.element.getBoundingClientRect = () => domRectOf(10, 10, 200, 150);
+
+  engine.apply(layout.expanded, new Map());
+
+  expect(positionSpy).not.toHaveBeenCalled();
 });
 
 test("a genuine engine-side removal (outside apply()) still emits exactly one close op", () => {
@@ -934,7 +1050,7 @@ test("menu 'Float' command: the resulting floating dialog gets aria-label + focu
 
   const dialogEl = attachedHost.querySelector<HTMLElement>('[role="dialog"]');
   expect(dialogEl).toBeTruthy();
-  expect(dialogEl!.getAttribute("aria-label")).toBe("test.chatLabel");
+  expect(dialogEl!.getAttribute("aria-label")).toBe(i18n.t("panels.floatingDialog", { panel: "test.chatLabel" }));
   expect(document.activeElement).toBe(dialogEl);
 
   // Escape (bubbled from anywhere inside the dialog) closes it via the same
@@ -949,6 +1065,86 @@ test("menu 'Float' command: the resulting floating dialog gets aria-label + focu
   layout = applyOp(layout, { op: "close", id: "chat" });
   engine.apply(layout.expanded, meta);
   expect(document.activeElement).not.toBe(dialogEl);
+});
+
+/** Mounts an engine with one panel floating at a known rect, returning the
+ * dialog wrapper + the emitted-op log. Each `press` round-trips the emitted
+ * op through the reducer + `apply()`, exactly as the real controller loop
+ * does, so successive keystrokes accumulate off the updated tree rect. */
+function floatingKeyboardSetup(): {
+  dialogEl: HTMLElement;
+  ops: LayoutOp[];
+  press: (init: KeyboardEventInit & { key: string }) => void;
+} {
+  const host = document.createElement("div");
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+
+  const eng = new DockviewEngine(silentLogger);
+  engine = eng;
+  eng.init(host, slotFor, stageEl);
+
+  let layout = defaultLayout([{ id: "chat" }]);
+  layout = applyOp(layout, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  eng.apply(layout.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  eng.onOp((op) => ops.push(op));
+
+  const dialogEl = host.querySelector<HTMLElement>('[role="dialog"]')!;
+  const press = (init: KeyboardEventInit & { key: string }): void => {
+    const before = ops.length;
+    dialogEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, ...init }));
+    const op = ops.length > before ? ops[ops.length - 1] : null;
+    if (op) {
+      layout = applyOp(layout, op);
+      eng.apply(layout.expanded, new Map());
+    }
+  };
+  return { dialogEl, ops, press };
+}
+
+test("floating dialog keyboard: arrows move 8px (Shift 32px), Ctrl+arrows resize the bottom/right edges (Ctrl+Shift 32px)", () => {
+  const { ops, press } = floatingKeyboardSetup();
+
+  press({ key: "ArrowRight" });
+  expect(ops[0]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 10, w: 200, h: 150 } });
+  press({ key: "ArrowRight" }); // accumulates off the round-tripped tree rect
+  expect(ops[1]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 26, y: 10, w: 200, h: 150 } });
+  press({ key: "ArrowDown", shiftKey: true });
+  expect(ops[2]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 26, y: 42, w: 200, h: 150 } });
+  press({ key: "ArrowLeft" });
+  expect(ops[3]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 200, h: 150 } });
+
+  press({ key: "ArrowRight", ctrlKey: true });
+  expect(ops[4]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 208, h: 150 } });
+  press({ key: "ArrowDown", ctrlKey: true, shiftKey: true });
+  expect(ops[5]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 208, h: 182 } });
+  press({ key: "ArrowUp", ctrlKey: true });
+  expect(ops[6]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 208, h: 174 } });
+  press({ key: "ArrowLeft", ctrlKey: true });
+  expect(ops[7]).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 18, y: 42, w: 200, h: 174 } });
+});
+
+test("floating dialog keyboard: resize clamps at the minimum size instead of reaching zero/negative", () => {
+  const { ops, press } = floatingKeyboardSetup();
+
+  // 200 - 13*8 = 96 would undershoot the 100px floor; the clamp pins at 100.
+  for (let i = 0; i < 15; i++) press({ key: "ArrowLeft", ctrlKey: true });
+  const last = ops[ops.length - 1];
+  expect(last).toEqual({ op: "resizeFloating", id: "chat", rect: { x: 10, y: 10, w: 100, h: 150 } });
+});
+
+test("floating dialog keyboard: a keydown whose target is inside the dialog's content (an input) emits no op", () => {
+  const { dialogEl, ops } = floatingKeyboardSetup();
+
+  const input = document.createElement("input");
+  dialogEl.appendChild(input);
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, ctrlKey: true }));
+
+  expect(ops.filter((o) => o.op === "resizeFloating")).toHaveLength(0);
+  dialogEl.removeChild(input);
 });
 
 test("Tab on a panel-menu item closes the popup but does NOT force focus back to the tab's menu button (APG Menu Button pattern)", async () => {
@@ -1099,7 +1295,7 @@ test("the stage's own tab never renders a .sc-tab-menu-btn — no menu-command a
 /** Mounts an engine on a body-attached host with one docked panel and clicks
  * its tab menu's "Pop out" item, returning the ops emitted. `driver` stands in
  * for `addPopoutGroup` (jsdom has no real `window.open`). */
-async function popOutViaMenu(driver: () => Promise<boolean>): Promise<{ ops: LayoutOp[]; notices: string[] }> {
+async function popOutViaMenu(driver: (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions) => Promise<boolean>): Promise<{ ops: LayoutOp[]; notices: string[] }> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   attachedHost = host;
@@ -1127,9 +1323,9 @@ async function popOutViaMenu(driver: () => Promise<boolean>): Promise<{ ops: Lay
   return { ops, notices };
 }
 
-test("pop-out: a successful driver emits a popOut op (no float, no notice)", async () => {
+test("pop-out: a successful driver emits a popOut op carrying a minted window key (no float, no notice)", async () => {
   const { ops, notices } = await popOutViaMenu(() => Promise.resolve(true));
-  expect(ops).toContainEqual({ op: "popOut", id: "chat" });
+  expect(ops).toContainEqual(expect.objectContaining({ op: "popOut", id: "chat", key: expect.any(String), rect: null }));
   expect(ops.some((o) => o.op === "float")).toBe(false);
   expect(notices).toEqual([]);
 });
@@ -1147,7 +1343,122 @@ test("pop-out rejected: a throwing driver falls back to a float op + a notice", 
   expect(notices).toEqual(["panels.popoutBlocked"]);
 });
 
-test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-removed", () => {
+/** Mounts an engine, docks chat, and starts a pop-out whose driver relocates
+ * the panel SYNCHRONOUSLY (the way `addPopoutGroup` really does) but resolves
+ * only when the test says so — leaving the gesture in flight while the tree
+ * still records the panel's pre-popout location. Returns the pieces a test
+ * needs to apply the stale tree and then settle the gesture. */
+async function popOutInFlight(initial: "docked" | "floating"): Promise<{
+  api: DockviewApi;
+  ops: LayoutOp[];
+  stale: PanelLayoutV1;
+  settle: (ok: boolean) => void;
+}> {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  let settle: (ok: boolean) => void = () => {};
+  const driver = (panel: IDockviewPanel): Promise<boolean> => {
+    const api = engine!.debugApi!;
+    const group = api.addGroup({ id: "sc-inflight-popout", direction: "right" });
+    api.removePanel(panel);
+    api.addPanel({ id: panel.id, component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+    return new Promise<boolean>((res) => {
+      settle = res;
+    });
+  };
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, initial === "docked"
+    ? { op: "dock", id: "chat", zone: "right", group: "new" }
+    : { op: "float", id: "chat", rect: { x: 10, y: 10, w: 300, h: 200 } });
+  const meta = new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]);
+  engine.apply(l.expanded, meta);
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")?.click();
+  document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]')?.click();
+  return { api: engine.debugApi!, ops, stale: l, settle };
+}
+
+test("a stale-tree apply during an in-flight pop-out never relocates a docked-origin panel back", async () => {
+  const { api, ops, stale, settle } = await popOutInFlight("docked");
+  // The driver's synchronous relocation already happened; the tree applied
+  // next is the PRE-popOut tree (the `popOut` op lands only when the driver
+  // settles) — the apply must not drag the panel back into its old group.
+  expect(api.getPanel("chat")?.group.id).toBe("sc-inflight-popout");
+  engine!.apply(stale.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+  expect(api.getPanel("chat")?.group.id).toBe("sc-inflight-popout");
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(ops).toContainEqual(expect.objectContaining({ op: "popOut", id: "chat", key: expect.any(String) }));
+});
+
+test("a stale-tree apply during an in-flight pop-out never re-docks a floating-origin panel", async () => {
+  const { api, stale, settle } = await popOutInFlight("floating");
+  expect(api.getPanel("chat")?.group.api.location.type).not.toBe("floating");
+  engine!.apply(stale.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+  expect(api.getPanel("chat")?.group.id).toBe("sc-inflight-popout");
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+});
+
+test("a close op landing mid-popout-flight skips the popOut op and all bookkeeping when the driver resolves", async () => {
+  const { api, ops, stale, settle } = await popOutInFlight("docked");
+  // The programmatic close lands inside the window.open → re-parent gap: the
+  // tree drops the panel and the apply() reconciling that close removes its
+  // widget via the orphan loop.
+  const closed = applyOp(stale, { op: "close", id: "chat" });
+  engine!.apply(closed.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+  expect(api.getPanel("chat")).toBeUndefined();
+
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // No ghost: the late resolution emits neither the popOut op nor a float
+  // fallback, and records no popout bookkeeping for the closed panel.
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+  expect(ops.some((o) => o.op === "float")).toBe(false);
+  expect(engine!.debugPoppedOutGroupPanels.size).toBe(0);
+  expect(engine!.debugPoppedOutOriginGroups.has("chat")).toBe(false);
+});
+
+test("a close+reopen landing mid-popout-flight still skips the popOut op when the widget was never recreated", async () => {
+  const { api, ops, stale, settle } = await popOutInFlight("docked");
+  const meta = new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]);
+  const closed = applyOp(stale, { op: "close", id: "chat" });
+  engine!.apply(closed.expanded, meta);
+  expect(api.getPanel("chat")).toBeUndefined();
+  // Reopened before the driver settles: the tree lists the panel again, but
+  // apply()'s in-flight guard skips re-creating the widget — only the
+  // widget-gone arm of the late-resolution guard catches this case (the tree
+  // still lists the id, so a tree-only check would wrongly emit the op).
+  const reopened = applyOp(closed, { op: "open", id: "chat" });
+  engine!.apply(reopened.expanded, meta);
+  expect(api.getPanel("chat")).toBeUndefined();
+
+  settle(true);
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // Neither the ghost popOut op nor the blocked-path float fallback fires.
+  expect(ops.some((o) => o.op === "popOut")).toBe(false);
+  expect(ops.some((o) => o.op === "float")).toBe(false);
+  expect(engine!.debugPoppedOutGroupPanels.size).toBe(0);
+});
+
+test("apply seeds seenPanelIds with the tree's popout windows so a live popout is never orphan-removed", () => {
   const host = document.createElement("div");
   const stageEl = document.createElement("div");
   const slotFor = makeSlots(["chat"]);
@@ -1160,7 +1471,7 @@ test("apply seeds seenPanelIds with poppedOut so a live popout is never orphan-r
   engine.apply(l.expanded, new Map());
   expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
 
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   engine.apply(l.expanded, new Map());
   // The panel is NOT torn out of dockview's model by the orphan-removal loop.
   expect(engine.debugApi?.getPanel("chat")).toBeTruthy();
@@ -1235,10 +1546,10 @@ test("a successful pop-out seeds its origin group so the next apply() does not o
   );
   expect(api.getGroup(originGroupId)?.model.panels.length).toBe(0);
 
-  // Reconcile the SAME popped-out tree: chat still marked poppedOut.
+  // Reconcile the SAME popped-out tree: chat still marked popped-out.
   let l = defaultLayout([{ id: "chat" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   engine!.apply(l.expanded, new Map());
 
   // The empty origin group is seeded into seenGroupIds and survives the
@@ -1358,7 +1669,7 @@ test("onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses po
 
   let l = defaultLayout([{ id: "chat" }, { id: "assets" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
-  l = applyOp(l, { op: "popOut", id: "chat" });
+  l = applyOp(l, { op: "popOut", id: "chat", key: "w-chat", rect: null });
   l = applyOp(l, { op: "dock", id: "assets", zone: "bottom", group: "new" });
   engine!.apply(l.expanded, new Map());
 
@@ -1378,9 +1689,17 @@ test("onDidRemovePopoutGroup fired mid-apply() (our own reconcile) suppresses po
  * ORIGINAL zone-managed group (already tracked by `#groupWillDropSubs`). A
  * test exercising `#popoutGroupSubs`'s OWN wiring needs a group that wiring
  * alone reaches — reusing the original group could not tell the two apart.
- * Returns the live api and the popout group itself, for a caller to fire
- * further group-model events against directly. */
-async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: DockviewApi; group: IDockviewGroupPanel }> {
+ * Returns the live api, the popout group itself, and the pre-pop-out tree, for
+ * a caller to fire further group-model events against directly and to feed the
+ * emitted ops back through the reducer.
+ * @param popoutGroupId The dockview group id the driver moves the panel into.
+ * @param opts.dockNotes Also dock the registered "notes" panel into the bottom
+ * zone before the pop-out, so a test has a second LIVE widget to drag into the
+ * window (the default leaves "notes" registered but unplaced — no widget). */
+async function popOutToRealGroup(
+  popoutGroupId: string,
+  opts?: { dockNotes?: boolean },
+): Promise<{ api: DockviewApi; group: IDockviewGroupPanel; ops: LayoutOp[]; layout: PanelLayoutV1 }> {
   const host = document.createElement("div");
   document.body.appendChild(host);
   attachedHost = host;
@@ -1398,9 +1717,18 @@ async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: Dockview
 
   let l = defaultLayout([{ id: "chat" }, { id: "notes" }]);
   l = applyOp(l, { op: "dock", id: "chat", zone: "right", group: "new" });
+  if (opts?.dockNotes) {
+    l = applyOp(l, { op: "dock", id: "notes", zone: "bottom", group: "new" });
+  }
   engine.apply(l.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
 
-  const menuBtn = host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn");
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // Click CHAT's own tab menu button — with a second panel docked
+  // (`opts.dockNotes`), a bare host-wide querySelector would hit whichever tab
+  // renders first instead.
+  const menuBtn = engine.debugApi!.getPanel("chat")!.group.element.querySelector<HTMLButtonElement>(".sc-tab-menu-btn");
   menuBtn?.click();
   const popOutItem = document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]');
   popOutItem?.click();
@@ -1409,7 +1737,7 @@ async function popOutToRealGroup(popoutGroupId: string): Promise<{ api: Dockview
 
   const api = engine.debugApi!;
   const group = api.getGroup(popoutGroupId)!;
-  return { api, group };
+  return { api, group, ops, layout: l };
 }
 
 test("popout veto-bypass closed: a drop targeting an open popout group's own group model is intercepted (defaultPrevented) via the popout group's own onWillDrop wire", async () => {
@@ -1443,13 +1771,133 @@ test("popout veto-bypass closed: a drop targeting an open popout group's own gro
   expect(prevented).toBe(true);
 });
 
-test("popout panel list grows: dragging a second panel into an open popout group's own gridview updates debugPoppedOutGroupPanels to include it", async () => {
+/** Fires a synthetic will-drop through a GROUP's own model emitter — the same
+ * listener path `#groupWillDropSubs`/`#popoutGroupSubs` subscribe — mirroring
+ * `fireWillDrop`'s component-level reach-in. */
+function fireGroupWillDrop(
+  group: IDockviewGroupPanel,
+  overrides: Partial<{
+    kind: DockviewWillDropEvent["kind"];
+    position: DockviewWillDropEvent["position"];
+    panelId: string | null;
+    groupId: string;
+  }>,
+): { defaultPrevented: boolean } {
+  let prevented = false;
+  const event: WillDropProbe = {
+    kind: overrides.kind ?? "content",
+    position: overrides.position ?? "center",
+    panel: undefined,
+    group,
+    getData: () => ({ viewId: "v", groupId: overrides.groupId ?? group.id, panelId: overrides.panelId ?? null }),
+    get defaultPrevented() {
+      return prevented;
+    },
+    preventDefault() {
+      prevented = true;
+    },
+  };
+  modelOf(group)._onWillDrop.fire(event);
+  return event;
+}
+
+/** Reads the window key off the single `popOut` op a pop-out helper emitted. */
+function popOutKeyOf(ops: LayoutOp[]): string {
+  const op = ops.find((o) => o.op === "popOut");
+  if (!op || op.op !== "popOut") throw new Error("expected a popOut op in the recorded ops");
+  return op.key;
+}
+
+test("drag-into-popout: a will-drop targeting an open popout group emits a popOutInto op with the window's key and moves the widget into the popout group", async () => {
+  const { api, group, ops, layout } = await popOutToRealGroup("sc-real-popout-group", { dockNotes: true });
+  const key = popOutKeyOf(ops);
+  ops.length = 0;
+
+  const event = fireGroupWillDrop(group, { panelId: "notes" });
+
+  // Intercepted like every other gesture, and redispatched as a pop-out
+  // placement carrying the window's tree key…
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([{ op: "popOutInto", id: "notes", key }]);
+  // …with the widget re-parented imperatively at gesture time — apply() seeds
+  // popped-out ids into its seen-sets precisely so it never originates this
+  // move.
+  expect(api.getPanel("notes")!.group.id).toBe("sc-real-popout-group");
+  // The group-model add event kept the tracked membership in sync.
+  expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat", "notes"]);
+
+  // The op, fed through the reducer, lists both panels in the window's record.
+  let l = applyOp(layout, { op: "popOut", id: "chat", key, rect: null });
+  l = applyOp(l, { op: "popOutInto", id: "notes", key });
+  expect(l.expanded.popouts.find((w) => w.key === key)?.panels).toEqual(["chat", "notes"]);
+});
+
+test("drag-into-popout: a drop of a panel already living in the window emits popOutInto without moving the widget (a same-window reorder the tree does not model)", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-real-popout-group");
+  const key = popOutKeyOf(ops);
+  ops.length = 0;
+
+  const event = fireGroupWillDrop(group, { panelId: "chat" });
+
+  expect(event.defaultPrevented).toBe(true);
+  // The op still emits — the reducer's popOutInto case no-ops an
+  // already-listed id, so this self-heals a widget/tree disagreement and is
+  // otherwise free — but the widget is not re-parented onto its own group.
+  expect(ops).toEqual([{ op: "popOutInto", id: "chat", key }]);
+  expect(api.getPanel("chat")!.group.id).toBe("sc-real-popout-group");
+});
+
+test("drag-into-popout: a drop whose subject has no live panel is vetoed (preventDefault, no op)", async () => {
+  const { group, ops } = await popOutToRealGroup("sc-real-popout-group");
+  ops.length = 0;
+
+  const event = fireGroupWillDrop(group, { panelId: "ghost" });
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([]);
+});
+
+test("drag-into-popout: a whole-group transfer targeting an open popout group emits one popOutInto per tab and moves every widget", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-real-popout-group", { dockNotes: true });
+  const key = popOutKeyOf(ops);
+  ops.length = 0;
+  // A second tab joins "notes"'s docked group, so the dragged whole group has
+  // two tabs to fan out.
+  api.addPanel({ id: "assets", component: "sc-panel", position: { referenceGroup: "sc-group:notes", direction: "within" } });
+
+  const event = fireGroupWillDrop(group, { panelId: null, groupId: "sc-group:notes" });
+
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([
+    { op: "popOutInto", id: "notes", key },
+    { op: "popOutInto", id: "assets", key },
+  ]);
+  expect(api.getPanel("notes")!.group.id).toBe("sc-real-popout-group");
+  expect(api.getPanel("assets")!.group.id).toBe("sc-real-popout-group");
+});
+
+test("a drop targeting a group outside zone bookkeeping that is NOT an open popout group still classifies as a pseudo-edge dock (regression)", async () => {
+  const { api, ops } = await popOutToRealGroup("sc-real-popout-group", { dockNotes: true });
+  ops.length = 0;
+  const foreign = api.addGroup({ id: "sc-foreign-group", direction: "right" });
+
+  const event = fireWillDrop(engine!, { kind: "content", position: "left", panelId: "notes", group: foreign });
+
+  // The unknown-group fallback in `#toDropSite` is untouched by the pop-out
+  // classification: a group with no popout window key still degrades to an
+  // edge-zone dock resolved from the drop position.
+  expect(event.defaultPrevented).toBe(true);
+  expect(ops).toEqual([{ op: "dock", id: "notes", zone: "left", group: "new" }]);
+});
+
+test("popout panel list grows: a programmatic addPanel into an open popout group keeps debugPoppedOutGroupPanels in sync via the group-model add event", async () => {
   const { api, group } = await popOutToRealGroup("sc-real-popout-group");
 
-  // A real drop of a second panel into the popout group's own nested
-  // gridview — dockview-core natively accepts this drop target and fires the
-  // group model's own `onDidAddPanel`, which `#popoutGroupSubs` now listens
-  // for.
+  // The api-level addPanel path, NOT the drop path (a real drop is
+  // intercepted by the popout group's own onWillDrop wire and redispatched as
+  // a popOutInto op — covered by the drag-into-popout tests): any panel
+  // landing in the group fires the group model's own `onDidAddPanel`, which
+  // `#popoutGroupSubs`'s sync listens to.
   api.addPanel({ id: "notes", component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
 
   expect(engine!.debugPoppedOutGroupPanels.get("sc-real-popout-group")).toEqual(["chat", "notes"]);
@@ -1479,3 +1927,317 @@ test("popout group subscriptions are disposed on window close: a later onDidAddP
 
   expect(engine!.debugPoppedOutGroupPanels.has("sc-real-popout-group")).toBe(false);
 });
+
+/** A `popoutDriver` that stands in for the window-opening half of dockview's
+ * `addPopoutGroup`: like the stub driver `popOutViaMenu` uses elsewhere it
+ * moves nothing, but it fires the options' `onDidOpen` callback the way
+ * dockview's `PopoutWindow.open` does — synchronously after the window opens,
+ * carrying the fresh `Window` — so the engine's pop-out success path sees the
+ * popout `Document` it must register with the ui-kit theme controller. */
+function themePopoutDriver(popoutDoc: Document): (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions) => Promise<boolean> {
+  return (_panel, options) => {
+    options?.onDidOpen?.({ id: "sc-popout-window", window: { document: popoutDoc } as unknown as Window });
+    return Promise.resolve(true);
+  };
+}
+
+/** Spies on the ui-kit `theme` singleton's `registerDocument`, calling through
+ * (so registration really happens and the unregister really detaches) while
+ * counting unregister invocations — both halves of the register/unregister
+ * pairing become assertable. */
+function spyOnThemeRegistration(): { spy: ReturnType<typeof vi.spyOn>; unregisterCount: () => number } {
+  let calls = 0;
+  const original = theme.registerDocument.bind(theme);
+  const spy = vi.spyOn(theme, "registerDocument").mockImplementation((doc: Document) => {
+    const unregister = original(doc);
+    return () => {
+      calls += 1;
+      unregister();
+    };
+  });
+  return { spy, unregisterCount: () => calls };
+}
+
+test("a successful pop-out registers the popout document with the ui-kit theme; window close unregisters it", async () => {
+  const popoutDoc = document.implementation.createHTMLDocument("popout");
+  const { spy, unregisterCount } = spyOnThemeRegistration();
+  try {
+    await popOutViaMenu(themePopoutDriver(popoutDoc));
+
+    // Exactly one registration, for the popout window's own Document, and the
+    // call-through applied the resolved theme inline.
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith(popoutDoc);
+    expect(popoutDoc.documentElement.style.getPropertyValue("--surface-base")).not.toBe("");
+    expect(unregisterCount()).toBe(0);
+
+    const api = engine!.debugApi!;
+    const groupId = "sc-group:chat";
+    fireRemovePopoutGroup(api, groupId, api.getGroup(groupId)!);
+    expect(unregisterCount()).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("destroy() unregisters a pop-out document still open at engine teardown", async () => {
+  const popoutDoc = document.implementation.createHTMLDocument("popout");
+  const { spy, unregisterCount } = spyOnThemeRegistration();
+  try {
+    await popOutViaMenu(themePopoutDriver(popoutDoc));
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    engine!.destroy();
+    expect(unregisterCount()).toBe(1);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("a pop-out whose driver never fires onDidOpen registers no document with the theme", async () => {
+  const spy = vi.spyOn(theme, "registerDocument");
+  try {
+    await popOutViaMenu(() => Promise.resolve(true));
+    expect(spy).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+/** Mounts an engine with one FLOATING panel plus a dormant arrangement record
+ * naming it (the post-reload shape: rehydrated to floating, window retained as
+ * a dormant record), then clicks the tab menu's "Pop out" item. Returns the
+ * emitted ops, the positions the driver saw, and the notices. */
+async function popOutFloatingWithDormantRecord(
+  savedRect: { left: number; top: number; width: number; height: number },
+): Promise<{ ops: LayoutOp[]; positions: unknown[] }> {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const positions: unknown[] = [];
+  const driver = (_panel: IDockviewPanel, options?: DockviewPopoutGroupOptions): Promise<boolean> => {
+    positions.push(options?.position);
+    return Promise.resolve(true);
+  };
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  l = {
+    ...l,
+    expanded: { ...l.expanded, popouts: [{ key: "w-old", panels: ["chat"], rect: savedRect, dormant: true }] },
+  };
+  engine.apply(l.expanded, new Map([["chat", { icon: "c", labelKey: "chat.tab" } as PanelMeta]]));
+
+  host.querySelector<HTMLButtonElement>(".sc-tab-menu-btn")?.click();
+  document.querySelector<HTMLButtonElement>('[data-testid="panel-menu-popOut"]')?.click();
+  await Promise.resolve();
+  await Promise.resolve();
+  return { ops, positions };
+}
+
+test("menu pop-out reuses the panel's saved popout rect from a dormant record (position passed to the driver, rect carried on the op)", async () => {
+  const saved = { left: 100, top: 40, width: 900, height: 700 };
+  const { ops, positions } = await popOutFloatingWithDormantRecord(saved);
+  expect(positions).toEqual([saved]);
+  expect(ops).toContainEqual({ op: "popOut", id: "chat", key: expect.any(String), rect: saved });
+});
+
+/** Stubs `window.screen`'s available-bounds properties (read-only getters in
+ * jsdom, which reports a degenerate all-zero screen) for the duration of a
+ * clamp assertion; returns a restore function. */
+function stubAvailableScreen(width: number, height: number): () => void {
+  const screen = window.screen;
+  const originals: Record<string, PropertyDescriptor | undefined> = {};
+  for (const [key, value] of Object.entries({ availWidth: width, availHeight: height, availLeft: 0, availTop: 0 })) {
+    originals[key] = Object.getOwnPropertyDescriptor(screen, key);
+    Object.defineProperty(screen, key, { value, configurable: true });
+  }
+  return () => {
+    for (const [key, desc] of Object.entries(originals)) {
+      if (desc) Object.defineProperty(screen, key, desc);
+    }
+  };
+}
+
+test("menu pop-out with a saved rect off the current screen clamps the position to the available bounds", async () => {
+  const restoreScreen = stubAvailableScreen(1024, 768);
+  try {
+    // Deliberately outside the stubbed 1024x768 available screen on every axis.
+    const { positions } = await popOutFloatingWithDormantRecord({ left: 5000, top: -80, width: 2000, height: 100 });
+    expect(positions).toEqual([{ left: 0, top: 0, width: 1024, height: 100 }]);
+  } finally {
+    restoreScreen();
+  }
+});
+
+test("restorePopouts re-opens a saved window: first panel pops out at the saved rect, the rest move into the popout group via popOutInto", async () => {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat", "notes"]);
+  const positions: unknown[] = [];
+  // A driver behaving like dockview's real `addPopoutGroup`: relocate the
+  // panel into a genuinely new group (mirrors the `popOutToRealGroup`
+  // helper's approach — the stub-true driver leaves the panel in its
+  // original group, which cannot exercise the move-into-popout half).
+  const driver = (panel: IDockviewPanel, options?: DockviewPopoutGroupOptions): Promise<boolean> => {
+    positions.push(options?.position);
+    const api = engine!.debugApi!;
+    const group = api.addGroup({ id: "sc-restored-popout", direction: "right" });
+    api.removePanel(panel);
+    api.addPanel({ id: panel.id, component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+    return Promise.resolve(true);
+  };
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  let l = defaultLayout([{ id: "chat" }, { id: "notes" }]);
+  l = applyOp(l, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  l = applyOp(l, { op: "float", id: "notes", rect: { x: 38, y: 38, w: 200, h: 150 } });
+  engine.apply(l.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  const rect = { left: 100, top: 40, width: 900, height: 700 };
+  engine.restorePopouts!([{ key: "w1", panels: ["chat", "notes"], rect }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  // One window opened (the first panel only), at the saved rect…
+  expect(positions).toEqual([rect]);
+  // …and the second panel moved INTO that popout group.
+  const api = engine!.debugApi!;
+  expect(api.getPanel("chat")!.group.id).toBe("sc-restored-popout");
+  expect(api.getPanel("notes")!.group.id).toBe("sc-restored-popout");
+  // Ops revive the retained record under its ORIGINAL key, then join the rest.
+  expect(ops).toContainEqual({ op: "popOut", id: "chat", key: "w1", rect });
+  expect(ops).toContainEqual({ op: "popOutInto", id: "notes", key: "w1" });
+  // notes' move out of its floating group is engine-driven — never a close op.
+  // (The driver's own removePanel of "chat" is a test-harness artifact; a real
+  // `addPopoutGroup` moves the panel under dockview's `movingLock`, which
+  // suppresses the component-level removal event.)
+  expect(ops.some((o) => o.op === "close" && o.id === "notes")).toBe(false);
+  // The popout group's tracked membership covers both panels (via the
+  // success-branch record plus the group model's own add event).
+  expect(engine!.debugPoppedOutGroupPanels.get("sc-restored-popout")).toEqual(["chat", "notes"]);
+});
+
+test("restorePopouts tolerates partial records: panels with no live panel or already popped out are skipped, the rest still restore", async () => {
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  attachedHost = host;
+  const stageEl = document.createElement("div");
+  const slotFor = makeSlots(["chat"]);
+  const driver = (panel: IDockviewPanel): Promise<boolean> => {
+    const api = engine!.debugApi!;
+    const group = api.addGroup({ id: "sc-restored-partial", direction: "right" });
+    api.removePanel(panel);
+    api.addPanel({ id: panel.id, component: "sc-panel", position: { referenceGroup: group.id, direction: "within" } });
+    return Promise.resolve(true);
+  };
+  engine = new DockviewEngine(silentLogger, driver);
+  engine.init(host, slotFor, stageEl);
+
+  let l = defaultLayout([{ id: "chat" }]);
+  l = applyOp(l, { op: "float", id: "chat", rect: { x: 10, y: 10, w: 200, h: 150 } });
+  engine.apply(l.expanded, new Map());
+
+  const ops: LayoutOp[] = [];
+  engine.onOp((op) => ops.push(op));
+
+  // "ghost" has no live panel (unregistered/closed since the save); the
+  // restore falls through to "chat" as the window's first panel.
+  engine.restorePopouts!([{ key: "w1", panels: ["ghost", "chat"], rect: null }]);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(ops).toContainEqual({ op: "popOut", id: "chat", key: "w1", rect: null });
+  expect(ops.some((o) => o.op === "popOut" && o.id === "ghost")).toBe(false);
+});
+
+test("restorePopouts on an empty arrangement (or before init) is a no-op", () => {
+  const engineFresh = new DockviewEngine(silentLogger);
+  engineFresh.restorePopouts!([{ key: "w1", panels: ["chat"], rect: null }]); // no init — must not throw
+  engineFresh.destroy();
+});
+
+/** Stubs `DockviewApi.getPopouts` to report one entry for `group` whose live
+ * popup `Window` reports `geometry` — jsdom has no real popup, so the entry's
+ * window carries the values a real one would. Returns the spy's restore
+ * function. */
+function stubPopoutEntry(
+  api: DockviewApi,
+  group: IDockviewGroupPanel,
+  geometry: { screenX: number; screenY: number; innerWidth: number; innerHeight: number },
+): () => void {
+  const popupWindow = geometry as unknown as Window;
+  const spy = vi
+    .spyOn(api, "getPopouts")
+    .mockReturnValue([{ id: group.id, group, window: popupWindow }] as unknown as ReturnType<DockviewApi["getPopouts"]>);
+  return () => spy.mockRestore();
+}
+
+test("popout geometry capture: a window move emits updatePopoutGeometry read from the popout entry's own window, never the event payload", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-move");
+  const restore = stubPopoutEntry(api, group, { screenX: 640, screenY: 220, innerWidth: 900, innerHeight: 700 });
+  try {
+    // The vendored position event's payload is corrupt by construction
+    // (`screenY` populated from `screenX`) — both axes deliberately disagree
+    // with the window's real geometry, so a passing assertion proves the
+    // payload is never read.
+    componentOf(api)._onDidPopoutGroupPositionChange.fire({ screenX: 1, screenY: 1, group });
+    expect(ops).toContainEqual({
+      op: "updatePopoutGeometry",
+      key: expect.any(String),
+      rect: { left: 640, top: 220, width: 900, height: 700 },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("popout geometry capture: a window resize emits updatePopoutGeometry read from the entry's window (payload ignored)", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-resize");
+  const restore = stubPopoutEntry(api, group, { screenX: 10, screenY: 20, innerWidth: 1024, innerHeight: 640 });
+  try {
+    componentOf(api)._onDidPopoutGroupSizeChange.fire({ width: 5, height: 5, group });
+    expect(ops).toContainEqual({
+      op: "updatePopoutGeometry",
+      key: expect.any(String),
+      rect: { left: 10, top: 20, width: 1024, height: 640 },
+    });
+  } finally {
+    restore();
+  }
+});
+
+test("popout geometry capture: an event for a group with no tracked window key emits nothing", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-untracked");
+  const other = api.groups.find((g) => g.id !== group.id)!;
+  componentOf(api)._onDidPopoutGroupPositionChange.fire({ screenX: 1, screenY: 1, group: other });
+  componentOf(api)._onDidPopoutGroupSizeChange.fire({ width: 5, height: 5, group: other });
+  expect(ops.some((o) => o.op === "updatePopoutGeometry")).toBe(false);
+});
+
+test("popout geometry capture: an event whose popout entry is already gone from getPopouts (window closed mid-delivery) emits nothing", async () => {
+  const { api, group, ops } = await popOutToRealGroup("sc-geometry-gone");
+  const spy = vi.spyOn(api, "getPopouts").mockReturnValue([]);
+  try {
+    componentOf(api)._onDidPopoutGroupPositionChange.fire({ screenX: 1, screenY: 1, group });
+    expect(ops.some((o) => o.op === "updatePopoutGeometry")).toBe(false);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
