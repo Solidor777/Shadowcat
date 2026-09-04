@@ -371,14 +371,23 @@ export class Lighting {
 
   /** Recompute the interpolated frame, union the light sweep over it (`mergeSweepCells`),
    * attach the darkness regions (withheld without a model) and paint it via
-   * `backend.setLighting` — unless its `lightingFrameKey` is unchanged from the last frame
-   * actually painted, in which case the repaint (and `onApply`) is skipped: a sweep in flight
-   * calls this every tick while its resolved content stays the same for many consecutive ticks
-   * (see `lightingFrameKey`'s doc), and a per-cell Graphics rebuild is real work worth
-   * skipping under a starved renderer. Called by `setTarget` (new fade start), `tick` (fade
-   * progress), `setSweep` and `setDarkness` — the sole path that reaches the backend, so
-   * `current()` always reflects the latest RESOLVED frame regardless of whether it was
-   * repainted.
+   * `backend.setLighting` — UNLESS its `lightingFrameKey` is unchanged from the last frame
+   * actually painted, in which case the repaint is skipped: a sweep in flight calls this every
+   * tick while its resolved content stays the same for many consecutive ticks (see
+   * `lightingFrameKey`'s doc), and a per-cell Graphics rebuild is real work worth skipping
+   * under a starved renderer. **`onApply` fires UNCONDITIONALLY on every call, dedup or not —
+   * it is a separate observer contract, not gated by the repaint decision.**
+   * `lightingFrameKey` fingerprints only what `backend.setLighting` paints
+   * (`cell`/`cells`/`darkness`); `onApply`'s sole production consumer (`RenderEngine`'s
+   * `onLightingApplied` wiring) closes over `this.lightSweeps.size > 0` at call time — state
+   * outside the key entirely. Gating `onApply` on the same key would silently drop the
+   * observer's notification whenever a sweep's final resolved content happens to equal the
+   * frame already on screen (the ordinary case: the committed lighting at a walk's stop
+   * usually lights the same cells the sweep's last sample did) — the observer would never
+   * learn the sweep ended. Called by `setTarget` (new fade start), `tick` (fade progress),
+   * `setSweep` and `setDarkness` — the sole path that reaches the backend, so `current()`
+   * always reflects the latest RESOLVED frame regardless of whether it was repainted, and
+   * `onApply` always reflects the latest CALL regardless of whether it repainted.
    * @example
    * ```
    * // private method; not part of the public API — invoked internally by setTarget/tick/setSweep
@@ -389,9 +398,10 @@ export class Lighting {
     const merged = mergeSweepCells(this.currentInterpolated(), this.sweep);
     this._current = { cell: merged.cell, cells: merged.cells, darkness: this.hasModel ? this.darkness : [] };
     const key = lightingFrameKey(this._current);
-    if (key === this.lastPaintedKey) return;
-    this.lastPaintedKey = key;
-    this.backend.setLighting(this._current);
+    if (key !== this.lastPaintedKey) {
+      this.lastPaintedKey = key;
+      this.backend.setLighting(this._current);
+    }
     this.onApply?.(this._current);
   }
 
