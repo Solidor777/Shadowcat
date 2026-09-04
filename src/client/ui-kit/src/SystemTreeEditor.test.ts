@@ -149,6 +149,17 @@ describe("SystemTreeEditor", () => {
     expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
   });
 
+  it("addField refuses a key containing the RFC-6901 escape character, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ a: "1" });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldKey"), { target: { value: "hp~1max" } });
+    await fireEvent.click(getByText("sheets.tree.addField"));
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
+  });
+
   it("renameKey dispatches one atomic Update removing the old key and inserting the new one", async () => {
     const calls: unknown[] = [];
     const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
@@ -199,6 +210,16 @@ describe("SystemTreeEditor", () => {
     const d = doc({ hp: 10 });
     const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
     await fireEvent.change(getByLabelText("sheets.tree.renameKey"), { target: { value: "a/b" } });
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
+  });
+
+  it("renameKey refuses a key containing the RFC-6901 escape character, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ hp: 10 });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.renameKey"), { target: { value: "hp~1max" } });
     expect(calls).toEqual([]);
     expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
   });

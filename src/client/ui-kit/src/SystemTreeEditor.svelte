@@ -51,17 +51,23 @@
   }
 
   /**
-   * Validates a candidate object key: non-empty, and free of the JSON-pointer path separator
-   * (a literal `/` in a key needs RFC-6901 `~1` escaping this editor's path concatenation
-   * (`basePath + "/" + key`) does not apply, which would otherwise corrupt the pointer and
-   * silently address a different tree node).
+   * Validates a candidate object key: non-empty, and free of both RFC-6901 pointer
+   * metacharacters — the separator `/` and the escape character `~`. This editor's path
+   * concatenation (`basePath + "/" + key`) applies neither `~1`/`~0` escaping nor unescaping, so
+   * either character in a raw key corrupts the pointer: a literal `/` splits it into an extra
+   * segment, and a literal `~` collides with the two-character escape sequences
+   * (`~1`, `~0`) the server's `pointer_tokens` and this client's mirror unescape on every read —
+   * a key typed as `hp~1max` would be STORED under `hp~1max` but READ BACK as `hp/max`, silently
+   * addressing a different tree node than the one displayed. Refused, never escaped: this editor
+   * refuses both metacharacters rather than escaping either, so "what happens to a pointer
+   * metacharacter" has one answer regardless of which one is typed.
    * @param raw - The candidate key, as typed.
    * @returns The trimmed key, or `null` when invalid.
    * @example validKey("speed"); // "speed"
    */
   function validKey(raw: string): string | null {
     const key = raw.trim();
-    if (key === "" || key.includes("/")) return null;
+    if (key === "" || key.includes("/") || key.includes("~")) return null;
     return key;
   }
 
