@@ -139,10 +139,12 @@ export function isPlacementExcluded(path: string, exclusions: string[]): boolean
 export type { MergeBase, EmbeddedBaseChild } from "@shadowcat/types";
 
 /** Whether an override pointer names a MERGEABLE band — `/name`, `/engine`, `/system`, or a
- * path inside `engine`/`system` — the content a `MergeBase` snapshots and a merge writes. The
- * server's `writes_a_content_band` is the definition; `snapshotBase` records exactly these
- * overrides (a `/base…` override says nothing about the document's own bands), so the client's
- * template snapshot and the server-written stored base agree on the recorded policy.
+ * non-empty path inside `engine`/`system` — the content a `MergeBase` snapshots and a merge
+ * writes. A trailing separator with nothing after it (`/system/`) names no segment and is
+ * refused, matching the server's `writes_a_content_band`, the definition this mirrors;
+ * `snapshotBase` records exactly these overrides (a `/base…` override says nothing about the
+ * document's own bands), so the client's template snapshot and the server-written stored base
+ * agree on the recorded policy.
  * @param pointer The `property_overrides` key to classify.
  * @returns `true` iff the pointer is a mergeable band or a path inside one.
  * @example
@@ -154,7 +156,12 @@ export type { MergeBase, EmbeddedBaseChild } from "@shadowcat/types";
  * ```
  */
 export function isMergeableBandPointer(pointer: string): boolean {
-  return pointer === "/name" || ["/engine", "/system"].some((b) => pointer === b || pointer.startsWith(`${b}/`));
+  return (
+    pointer === "/name" ||
+    ["/engine", "/system"].some(
+      (b) => pointer === b || (pointer.startsWith(`${b}/`) && pointer.length > b.length + 1),
+    )
+  );
 }
 
 /** Whether `obj` carries `key` as an own property (present, possibly `null` — never merely
