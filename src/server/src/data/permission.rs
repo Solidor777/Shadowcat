@@ -15,6 +15,7 @@ use crate::data::document::{
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
+use crate::merge::bands::{EmbeddedBaseChild, MergeBase, StoredBase};
 
 /// Built-in, server-understood capabilities. Modules may grant additional
 /// namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
@@ -379,6 +380,23 @@ pub enum RedactionTarget {
 /// JSON-pointer syntax, different fields on different structures, gated by
 /// different validators — so they are NOT required to agree string-for-string,
 /// and do not (`/system/` is a writable path there and unclassifiable here).
+///
+/// `base`'s interior does NOT get the ordinary "any residual is `Within`" treatment the
+/// other three bands get, because `base`'s content is not an arbitrary untyped tree —
+/// it is a `merge::bands::MergeBase`/`EmbeddedBaseChild`, a shape with its OWN required
+/// structural keys (`embedded`, the recorded policy map, `sourceId` on a record) that
+/// `validation::check_base_node_shape` enforces at every depth. Stripping one of those via
+/// an ordinary object-key removal (`RedactionTarget::Within`'s own terminal step) would
+/// violate the INVARIANT this doc comment opens with — the removed key is required, not
+/// optional/untyped, for the shape a `base` snapshot is supposed to hold. `is_base_content_residual`
+/// is the base-specific residual test: it admits only a path that lands on `name`/`engine`/`system`
+/// content, at the root or recursively through `/embedded/<coll>/<idx>` hops (each hop needs
+/// BOTH segments to keep descending — naming a whole collection or a whole record is
+/// structural, refused same as `embedded`/`propertyOverrides`/`sourceId`/`owner_standing`
+/// themselves). Refusing these at THIS classifier is what closes them at
+/// `validation::validate_property_overrides`, the write-side chokepoint that already calls
+/// this function — no client-writable path can ever store an override that would corrupt a
+/// `base` snapshot's own shape at egress.
 /// # Examples
 ///
 /// ```
@@ -387,6 +405,8 @@ pub enum RedactionTarget {
 /// assert_eq!(redaction_target("/system"), Some(RedactionTarget::Band));
 /// assert_eq!(redaction_target("/system/hp"), Some(RedactionTarget::Within));
 /// assert_eq!(redaction_target("/permissions/default"), None);
+/// assert_eq!(redaction_target("/base/system/hp"), Some(RedactionTarget::Within));
+/// assert_eq!(redaction_target("/base/embedded"), None);
 /// ```
 pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
     let rest = pointer.strip_prefix('/')?;
@@ -397,7 +417,7 @@ pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
         if band_has_interior(band) {
             if let Some(inner) = rest.strip_prefix(band) {
                 if let Some(tail) = inner.strip_prefix('/') {
-                    if !tail.is_empty() {
+                    if !tail.is_empty() && (band != "base" || is_base_content_residual(inner)) {
                         return Some(RedactionTarget::Within);
                     }
                 }
@@ -405,6 +425,31 @@ pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
         }
     }
     None
+}
+
+/// Whether `residual` (a `/base` pointer's trailing path, always starting with `/`) names
+/// CONTENT within a stored base snapshot rather than one of the snapshot's own STRUCTURAL
+/// keys. Strips zero or more `/embedded/<coll>/<idx>` hops — each hop requires BOTH a
+/// collection name and an index segment to keep descending, so naming a whole collection
+/// (`/embedded/item`) or a whole record (`/embedded/item/0`) fails to strip and is refused
+/// by the final check below — then requires what remains to match `writes_a_content_band`
+/// (`/name`, `/engine…`, `/system…`, the same three bands `MergeBase`/`EmbeddedBaseChild`
+/// record as content). Everything else a `check_base_node_shape`-valid node carries at any
+/// depth (`embedded` itself, the record's policy map, `sourceId`, the root's
+/// `owner_standing`) fails this test and is refused, since removing any of them would leave
+/// a shape `check_base_node_shape` itself would reject.
+fn is_base_content_residual(residual: &str) -> bool {
+    let mut rest = residual.to_string();
+    while let Some(after_embedded) = rest.strip_prefix("/embedded/") {
+        let Some((_collection, after_collection)) = after_embedded.split_once('/') else {
+            return false;
+        };
+        let Some((_index, after_index)) = after_collection.split_once('/') else {
+            return false;
+        };
+        rest = format!("/{after_index}");
+    }
+    writes_a_content_band(&rest)
 }
 
 #[cfg(test)]
@@ -962,83 +1007,102 @@ fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionE
     }
     out.push(("/base".to_string(), Visibility::OwnerOrGm));
     if let Some(base) = &doc.base {
-        base_policy(base, "/base", None, &mut out)?;
+        let stored: StoredBase =
+            serde_json::from_value(base.clone()).map_err(|_| RedactionError {
+                pointer: "/base".to_string(),
+            })?;
+        if stored.owner_standing == OwnerStanding::Stranger {
+            out.push(("/base".to_string(), Visibility::GmOnly));
+        }
+        base_policy(&stored.snapshot, "/base", stored.owner_standing, &mut out)?;
     }
     Ok(out)
 }
 
-/// The policy a `base` snapshot node records over its own content: its
-/// `property_overrides` map (`MergeBase`'s spelling at the root,
-/// `EmbeddedBaseChild`'s `propertyOverrides` on a record), each entry emitted
-/// as `{prefix}{pointer}` at the recorded tier related to the recorded owner
-/// standing (`OwnerStanding::relate`), recursing into the records under
-/// `embedded` at their snapshot positions (`{prefix}/embedded/<coll>/<k>`)
-/// under the same standing. `standing` is `None` at the ROOT, where it is
-/// read from the node's `owner_standing` key (`StoredBase`) — a `Stranger`
-/// root first emits the whole band as `GmOnly` — and `Some` on every record
-/// beneath it. Fails closed on a root without a parseable standing, a tier
-/// that does not parse as a `Visibility`, or a pointer that names no
-/// mergeable band (`writes_a_content_band` — every such pointer classifies
-/// `Within` once prefixed, so the strip below can act on it) — the ingest walk
-/// (`validation::validate_engine_tree`) admits none of these, so each means
-/// hand-seeded data. A snapshot node that is not an object records nothing
-/// (the ingest walk rejects that shape too).
+/// The policy a `base` snapshot's ROOT records over its own content
+/// (`MergeBase::property_overrides`), each entry emitted as `{prefix}{pointer}`
+/// at the recorded tier related to `standing` (`OwnerStanding::relate`), then
+/// recursing into the records under `embedded` at their snapshot positions
+/// (`{prefix}/embedded/<coll>/<k>`) via `base_policy_child`, under the same
+/// standing. `standing` is the ROOT's `owner_standing` (`StoredBase`),
+/// resolved by the caller — a `Stranger` root's whole-band `GmOnly` floor is
+/// pushed by the caller before this runs, not here, since it applies to the
+/// WHOLE band regardless of whether the snapshot records any policy at all.
+///
+/// Reads `node` through `MergeBase`, the same typed deserializer
+/// `validation::check_base_node_shape` validates at ingest and `compute_pull`/
+/// `plan_to_update` read at merge time — never raw JSON. Because
+/// `MergeBase`/`EmbeddedBaseChild` carry no field defaults, the CALLER's
+/// `serde_json::from_value::<StoredBase>` step is where every one of
+/// `check_base_node_shape`'s required-key rules is enforced (a node that is
+/// not an object, a policy map or `embedded` map that is absent or malformed,
+/// a tier that does not parse as a `Visibility`) — a coalesced absence there
+/// (reading a missing policy map as "nothing hidden") is silent
+/// under-redaction, not a parse failure the caller ever sees, so this function
+/// itself has no fallible shape step left: the only remaining fail-closed
+/// check is `writes_a_content_band`, since a typed `property_overrides` key is
+/// an arbitrary `String` the deserializer does not constrain to a mergeable
+/// band pointer.
 fn base_policy(
-    node: &serde_json::Value,
+    root: &MergeBase,
     prefix: &str,
-    standing: Option<OwnerStanding>,
+    standing: OwnerStanding,
     out: &mut Vec<(String, Visibility)>,
 ) -> Result<(), RedactionError> {
-    let Some(obj) = node.as_object() else {
-        return Ok(());
-    };
-    let standing = match standing {
-        Some(standing) => standing,
-        None => {
-            let standing: OwnerStanding = obj
-                .get("owner_standing")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .ok_or_else(|| RedactionError {
-                    pointer: format!("{prefix}/owner_standing"),
-                })?;
-            if standing == OwnerStanding::Stranger {
-                out.push((prefix.to_string(), Visibility::GmOnly));
-            }
-            standing
-        }
-    };
-    let key = if prefix == "/base" {
-        "property_overrides"
-    } else {
-        "propertyOverrides"
-    };
-    if let Some(policy) = obj.get(key).and_then(serde_json::Value::as_object) {
-        for (p, tier) in policy {
-            let pointer = format!("{prefix}{p}");
-            let tier: Visibility =
-                serde_json::from_value(tier.clone()).map_err(|_| RedactionError {
-                    pointer: pointer.clone(),
-                })?;
-            if !writes_a_content_band(p) {
-                return Err(RedactionError { pointer });
-            }
-            out.push((pointer, standing.relate(tier)));
+    collect_band_policy(&root.property_overrides, prefix, standing, out)?;
+    for (coll, records) in &root.embedded {
+        for (k, record) in records.iter().enumerate() {
+            base_policy_child(
+                record,
+                &format!("{prefix}/embedded/{coll}/{k}"),
+                standing,
+                out,
+            )?;
         }
     }
-    if let Some(embedded) = obj.get("embedded").and_then(serde_json::Value::as_object) {
-        for (coll, records) in embedded {
-            let Some(records) = records.as_array() else {
-                continue;
-            };
-            for (k, record) in records.iter().enumerate() {
-                base_policy(
-                    record,
-                    &format!("{prefix}/embedded/{coll}/{k}"),
-                    Some(standing),
-                    out,
-                )?;
-            }
+    Ok(())
+}
+
+/// `base_policy`'s recursive step for an `EmbeddedBaseChild` record: the
+/// record's own `propertyOverrides`, then its own `embedded` records at their
+/// snapshot positions, under the SAME standing the root resolved (a record
+/// never carries its own `owner_standing` — that key lives only at the root).
+fn base_policy_child(
+    node: &EmbeddedBaseChild,
+    prefix: &str,
+    standing: OwnerStanding,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    collect_band_policy(&node.property_overrides, prefix, standing, out)?;
+    for (coll, records) in &node.embedded {
+        for (k, record) in records.iter().enumerate() {
+            base_policy_child(
+                record,
+                &format!("{prefix}/embedded/{coll}/{k}"),
+                standing,
+                out,
+            )?;
         }
+    }
+    Ok(())
+}
+
+/// Emit one `({prefix}{pointer}, tier)` pair per entry of a snapshot node's
+/// recorded policy map, fail-closed on a pointer naming no mergeable band —
+/// the one shape `MergeBase`/`EmbeddedBaseChild`'s typed deserializer does not
+/// itself constrain, since a policy map key is an arbitrary `String`.
+fn collect_band_policy(
+    policy: &std::collections::BTreeMap<String, Visibility>,
+    prefix: &str,
+    standing: OwnerStanding,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    for (p, tier) in policy {
+        let pointer = format!("{prefix}{p}");
+        if !writes_a_content_band(p) {
+            return Err(RedactionError { pointer });
+        }
+        out.push((pointer, standing.relate(*tier)));
     }
     Ok(())
 }

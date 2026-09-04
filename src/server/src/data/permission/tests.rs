@@ -656,7 +656,8 @@ fn base_is_hardcoded_owner_or_gm_unconditional_of_overrides() {
     let mut d = doc(PermissionSet::default(), serde_json::json!({ "hp": 10 }));
     d.owner = Some(owner);
     d.base = Some(serde_json::json!({
-        "name": "Goblin", "system": { "hp": 10 }, "owner_standing": "owner",
+        "name": "Goblin", "engine": null, "system": { "hp": 10 }, "embedded": {},
+        "property_overrides": {}, "owner_standing": "owner",
     }));
 
     // Non-owner, non-GM: base is nulled.
@@ -2889,6 +2890,73 @@ fn name_is_a_leaf_band_with_no_interior() {
     assert_eq!(redaction_target("/name/first"), None);
 }
 
+#[test]
+fn redaction_target_refuses_a_base_pointer_naming_the_snapshots_own_structural_keys() {
+    // Every one of `check_base_node_shape`'s required structural keys, at the root and at
+    // a nested record: removing any of them via `RedactionTarget::Within`'s object-key-strip
+    // terminal step would leave a `base` value that no longer parses as a `MergeBase`/
+    // `EmbeddedBaseChild` for the recipient who receives the stripped copy.
+    for pointer in [
+        // The recorded policy map itself, at the root and inside a record.
+        "/base/property_overrides",
+        "/base/embedded/item/0/propertyOverrides",
+        // The root-only standing key.
+        "/base/owner_standing",
+        // A whole embedded collection, or a whole record — naming either strips a required
+        // key one level up (a collection is a required key of its parent node; a record is
+        // a required array element with its own required keys).
+        "/base/embedded",
+        "/base/embedded/item",
+        "/base/embedded/item/0",
+        // A record's own correlation key, and a naked "embedded" segment one level down
+        // that names neither a collection nor an index.
+        "/base/embedded/item/0/sourceId",
+        "/base/embedded/item/0/embedded",
+    ] {
+        assert_eq!(redaction_target(pointer), None, "{pointer}");
+    }
+}
+
+#[test]
+fn redaction_target_admits_base_content_at_any_embedded_depth() {
+    // The three content bands remain ordinary `Within` targets under `/base`, at the root
+    // and recursively through as many `/embedded/<coll>/<idx>` hops as the snapshot nests.
+    for pointer in [
+        "/base/name",
+        "/base/engine",
+        "/base/engine/vision",
+        "/base/system",
+        "/base/system/hp",
+        "/base/embedded/item/0/name",
+        "/base/embedded/item/0/system/hp",
+        "/base/embedded/item/0/embedded/mod/1/system/hp",
+    ] {
+        assert_eq!(
+            redaction_target(pointer),
+            Some(RedactionTarget::Within),
+            "{pointer}"
+        );
+    }
+}
+
+#[test]
+fn validate_property_overrides_refuses_a_structural_base_pointer() {
+    // The write-side chokepoint (`redaction_target`, called by
+    // `validation::validate_property_overrides`) is where this must be refused: a GM with
+    // `cap::EDIT_PERMISSIONS` must never be able to store an override naming a structural
+    // `/base` key, because ingest is the only place this can be refused before the value
+    // ever reaches egress.
+    let mut d = doc(
+        perms_with(&[("/base/embedded", Visibility::GmOnly)]),
+        serde_json::json!({}),
+    );
+    d.base = Some(serde_json::json!({
+        "name": null, "engine": null, "system": {}, "embedded": {},
+        "property_overrides": {}, "owner_standing": "owner"
+    }));
+    assert!(crate::data::validation::validate_property_overrides(&d).is_err());
+}
+
 // -------------------------------------------------------------------
 // Commit-time snapshot redaction — pure `filter_command` unit tests.
 // Hand-built `CommandSnapshot`/`CurrentDoc` inputs; no repository round trip.
@@ -4445,6 +4513,65 @@ fn base_egress_fails_closed_on_a_recorded_policy_it_cannot_act_on() {
         }));
         assert!(filter_properties(&inst, &a_owner).is_err());
     }
+}
+
+#[test]
+fn base_egress_fails_closed_when_the_recorded_policy_map_is_absent_rather_than_leaking_the_field_it_would_have_hidden(
+) {
+    // A template hides `/system/secret` `gm_only`; that tier is recorded onto the
+    // instance's OWN stored `base` snapshot (`merge::bands::recorded_overrides`/
+    // `snapshot_base`) as its `property_overrides` entry. If that map is ever ABSENT
+    // from the stored value — corruption, not a legitimate redacted view, since
+    // `check_base_node_shape` requires the key present at every node — the instance's
+    // non-GM OWNER (who passes `/base`'s hardcoded `OwnerOrGm` gate but is not the GM the
+    // recorded tier hides the field from) must still never see `secret` through `/base`.
+    // A `base_policy` that coalesced the absent map into "nothing hidden" would let
+    // `/base/system/secret` reach this owner unredacted.
+    let owner = Uuid::from_u128(1);
+    let mut inst = doc(PermissionSet::default(), serde_json::json!({}));
+    inst.owner = Some(owner);
+    let a_owner = resolve_access(owner, WorldRole::Player, &inst, inst.owner);
+    inst.base = Some(serde_json::json!({
+        "name": null,
+        "engine": null,
+        "system": { "secret": "S" },
+        "embedded": {},
+        "owner_standing": "owner"
+        // `property_overrides` deliberately absent: this is the shape a corrupted or
+        // pre-validation row could carry despite ingest requiring the key.
+    }));
+    let result = filter_properties(&inst, &a_owner);
+    assert!(
+        result.is_err(),
+        "an absent recorded-policy map must fail the whole read closed, not disclose \
+         `secret` unredacted: {result:?}"
+    );
+}
+
+#[test]
+fn base_egress_fails_closed_when_a_records_embedded_map_is_absent() {
+    // Same class one level down: an `EmbeddedBaseChild` record missing its own required
+    // `embedded` key must fail the read rather than silently skipping recursion into
+    // whatever the record's own recorded policy would otherwise have hidden.
+    let owner = Uuid::from_u128(1);
+    let mut inst = doc(PermissionSet::default(), serde_json::json!({}));
+    inst.owner = Some(owner);
+    let a_owner = resolve_access(owner, WorldRole::Player, &inst, inst.owner);
+    inst.base = Some(serde_json::json!({
+        "name": null, "engine": null, "system": {},
+        "property_overrides": {}, "owner_standing": "owner",
+        "embedded": {
+            "items": [{
+                "sourceId": "tc",
+                "name": null,
+                "engine": null,
+                "system": { "secret": "S" },
+                "propertyOverrides": { "/system/secret": "gm_only" }
+                // `embedded` deliberately absent on this record.
+            }]
+        }
+    }));
+    assert!(filter_properties(&inst, &a_owner).is_err());
 }
 
 #[tokio::test]
