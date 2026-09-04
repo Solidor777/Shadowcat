@@ -3,7 +3,7 @@ import type { DisplayBackend, BackgroundSpec } from "./backend";
 import { MAX_DARK_ALPHA, type LightingFrame } from "./lighting";
 import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
 import { computeAnimatedFrame } from "./token-animation";
-import { fogBlendRtStale } from "./fog-blend";
+import { fogBlendRtStale, visibilityInputKey } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
 
@@ -192,6 +192,18 @@ export class PixiBackend implements DisplayBackend {
   private fogBlendFromRT: RenderTexture | null = null;
   /** `fogBlendTo`'s captured texture — see `fogBlendFromRT`'s doc. */
   private fogBlendToRT: RenderTexture | null = null;
+  /** `visibilityInputKey` of the `VisibilityInput` last rasterized into `fogBlendFromRT` — a
+   * sweep tick reuses the existing texture instead of recapturing when the incoming `from` keys
+   * identically (see `setVisibilityBlend`'s doc). `null` when nothing has been captured yet. */
+  private fogBlendFromKey: string | null = null;
+  /** `visibilityInputKey` of the `VisibilityInput` last rasterized into `fogBlendToRT` — see
+   * `fogBlendFromKey`'s doc. */
+  private fogBlendToKey: string | null = null;
+  /** `{x, y, scale}` of `this.world`'s transform at the time of the last cross-fade capture — a
+   * captured texture is baked at the CURRENT camera transform (`captureFog` copies it onto the
+   * scratch container), so a pan/zoom mid-sweep invalidates both captures regardless of whether
+   * their content key is unchanged. `null` when nothing has been captured yet. */
+  private fogBlendCameraKey: string | null = null;
   /** The `overlays`-layer tool-preview Graphics, redrawn by `drawOverlay`/`clearOverlay`. */
   private readonly toolOverlay = new Graphics();
   /** The measurement segment stroke, redrawn by `drawMeasure`/`clearMeasure`. */
@@ -453,6 +465,8 @@ export class PixiBackend implements DisplayBackend {
     this.fogBlendToRT?.destroy(true);
     this.fogBlendFromRT = null;
     this.fogBlendToRT = null;
+    this.fogBlendFromKey = null;
+    this.fogBlendToKey = null;
     this.fogDark.visible = true;
     this.fogDim.visible = true;
     this.fogDark.clear();
@@ -471,12 +485,17 @@ export class PixiBackend implements DisplayBackend {
    * into a screen-sized `RenderTexture` (a scratch capture of the SAME sheet+hole technique
    * `setVisibility` draws live, positioned/scaled to the current camera transform so the two
    * snapshots line up with what's on screen), then show both as complementary-alpha sprites — an
-   * actual GPU alpha blend between two rasterized states, not a polygon-vertex morph. Recaptured
-   * on every call (a sweep ticks ~60/s), but `fogBlendFromRT`/`fogBlendToRT` themselves are
-   * reused across calls (`captureFog` renders fresh content into the same texture, which the
-   * renderer clears before drawing) — only destroyed and recreated when `fogBlendRtStale` finds
-   * the renderer's current size/resolution no longer matches (first call, a window resize, or a
-   * DPR change), avoiding a GPU alloc/free pair on every one of the ~60 calls/sec a sweep makes.
+   * actual GPU alpha blend between two rasterized states, not a polygon-vertex morph. A sweep
+   * ticks ~60/s but holds the SAME `(from, to)` pair for many consecutive ticks (only `factor`
+   * moves between two sample boundaries): each endpoint is recaptured — the full
+   * `paintFogSheets` draw plus a `RenderTexture` GPU render pass — only when its own
+   * `visibilityInputKey` changes from the last capture into that slot, or the camera transform
+   * has moved since (a captured texture is baked at the transform in force at capture time).
+   * Otherwise the existing texture is reused unchanged and only the two sprites' `alpha` is
+   * updated (cheap, no redraw). `fogBlendFromRT`/`fogBlendToRT` themselves stay allocated across
+   * calls regardless (`captureFog` renders fresh content into the same texture when it does run)
+   * — destroyed and recreated only when `fogBlendRtStale` finds the renderer's current
+   * size/resolution no longer matches (first call, a window resize, or a DPR change).
    * @param from The outgoing sample's visibility mask.
    * @param to The incoming sample's visibility mask.
    * @param factor Blend position in `[0,1]`, clamped: 0 shows `from` fully opaque, 1 shows `to`
@@ -498,14 +517,32 @@ export class PixiBackend implements DisplayBackend {
     const height = Math.max(1, this.app.screen.height);
     const resolution = this.app.renderer.resolution;
     const current = this.fogBlendFromRT ? { width: this.fogBlendFromRT.width, height: this.fogBlendFromRT.height, resolution: this.fogBlendFromRT.source.resolution } : null;
+    const cameraKey = `${this.world.position.x},${this.world.position.y},${this.world.scale.x}`;
     if (fogBlendRtStale(current, width, height, resolution)) {
       this.fogBlendFromRT?.destroy(true);
       this.fogBlendToRT?.destroy(true);
       this.fogBlendFromRT = null;
       this.fogBlendToRT = null;
+      this.fogBlendFromKey = null;
+      this.fogBlendToKey = null;
     }
-    this.fogBlendFromRT = this.captureFog(from, width, height, resolution, this.fogBlendFromRT);
-    this.fogBlendToRT = this.captureFog(to, width, height, resolution, this.fogBlendToRT);
+    if (cameraKey !== this.fogBlendCameraKey) {
+      // The camera moved since the last capture: both textures are baked at the OLD transform
+      // and must be redrawn even if their content key is unchanged.
+      this.fogBlendFromKey = null;
+      this.fogBlendToKey = null;
+      this.fogBlendCameraKey = cameraKey;
+    }
+    const fromKey = visibilityInputKey(from);
+    if (this.fogBlendFromRT === null || fromKey !== this.fogBlendFromKey) {
+      this.fogBlendFromRT = this.captureFog(from, width, height, resolution, this.fogBlendFromRT);
+      this.fogBlendFromKey = fromKey;
+    }
+    const toKey = visibilityInputKey(to);
+    if (this.fogBlendToRT === null || toKey !== this.fogBlendToKey) {
+      this.fogBlendToRT = this.captureFog(to, width, height, resolution, this.fogBlendToRT);
+      this.fogBlendToKey = toKey;
+    }
     this.fogBlendFrom.texture = this.fogBlendFromRT;
     this.fogBlendTo.texture = this.fogBlendToRT;
     const f = Math.min(1, Math.max(0, factor));

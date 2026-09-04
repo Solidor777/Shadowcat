@@ -1,6 +1,6 @@
 export type { Point, LineSeg, Polygon, CameraTransform, VisibilityInput, TokenTransform, TokenNodeSpec, TokenFx, ResolvedArtVisual, ShapeNodeSpec, SceneTool, SceneToolHost, MoveVisionSample, MoveLightSample } from "./types";
 export type { LightingInput, LitCell } from "./types";
-export { Lighting, LIGHTING_FADE_MS, MAX_DARK_ALPHA, TINT_ALPHA, bandAlpha, mergeSweepCells, unionLightingInputs, holdLightingCells, type LightingFrame, type LitDrawCell } from "./lighting";
+export { Lighting, LIGHTING_FADE_MS, MAX_DARK_ALPHA, TINT_ALPHA, bandAlpha, mergeSweepCells, unionLightingInputs, holdLightingCells, lightingFrameKey, type LightingFrame, type LitDrawCell } from "./lighting";
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
 export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";

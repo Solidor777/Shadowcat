@@ -1,5 +1,6 @@
 import { test, expect } from "vitest";
 import { Lighting, MockBackend, mergeSweepCells, bandAlpha, unionLightingInputs, holdLightingCells } from "./index";
+import type { DisplayBackend } from "./backend";
 
 const bands = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }];
 
@@ -116,6 +117,47 @@ test("corners carry through unchanged across a fade — cell geometry is not som
   expect(backend.lighting!.cells[0].corners).toEqual(hexCorners);
 });
 
+test("apply() skips a repaint when the resolved frame is identical to the last one actually painted, even across fresh array/object arguments", () => {
+  // Mirrors RenderEngine.applyVisionSweep's per-tick call shape: a sweep holds the SAME (from,
+  // to) sample pair for many consecutive ticks, so `setDarkness` is called every tick with a
+  // freshly-built `[...blend.from.visible, ...blend.to.visible]` array whose CONTENT is
+  // unchanged for the whole bracket. `Lighting.apply` must not pay a real
+  // `backend.setLighting` repaint for a tick that changes nothing.
+  let paints = 0;
+  const countingBackend = { setLighting: () => { paints++; } } as unknown as DisplayBackend;
+  const l = new Lighting(countingBackend);
+  l.setTarget({ cell: 100, bands, hints: [], cells: [{ i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [] }] });
+  l.tick(1000); // settle the fade
+  paints = 0; // count only the steady-state ticks below
+  for (let i = 0; i < 30; i++) {
+    // A fresh array AND fresh point objects every call — content-identical, reference-distinct.
+    l.setDarkness([{ points: [0, 0, 100, 0, 100, 100, 0, 100] }]);
+  }
+  expect(paints).toBeLessThan(5);
+});
+
+test("onApply fires on EVERY apply() call, even when the resolved content is unchanged from the last repaint — the sweep-active flag onApply's sole production consumer reads is NOT covered by the repaint dedup key", () => {
+  // Mirrors RenderEngine's `onLightingApplied` wiring: the observer's payload carries state
+  // (whether a sweep is in flight) that `lightingFrameKey` cannot see, because it fingerprints
+  // only what `backend.setLighting` paints (cell/cells/darkness). The ordinary case at a walk's
+  // end is that the committed lighting lights the SAME cells the sweep's last sample already
+  // lit — the repaint dedup must not swallow the sweep-off notification in that case.
+  const backend = new MockBackend();
+  let sweeping = false;
+  const observedSweeping: boolean[] = [];
+  const l = new Lighting(backend, () => observedSweeping.push(sweeping));
+  const cell = { i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [] };
+  l.setTarget({ cell: 100, bands, hints: [], cells: [cell] });
+  l.tick(1000); // settle
+  observedSweeping.length = 0; // isolate the transition below from setTarget/tick's own calls
+  // A light sweep starts and ends with content IDENTICAL to what's already painted.
+  sweeping = true;
+  l.setSweep([{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: [] }]);
+  sweeping = false;
+  l.setSweep(null);
+  expect(observedSweeping).toEqual([true, false]); // every call notified, even the two content-identical ones
+});
+
 test("bandAlpha maps band 0 to no darkening and the last band to the maximum", () => {
   expect(bandAlpha(0, 3)).toBe(0);
   expect(bandAlpha(2, 3)).toBeCloseTo(0.6);
@@ -219,5 +261,10 @@ test("setSweep paints the committed frame unioned with the sweep at once, and cl
   expect(l.current()).toBe(backend.lighting);
   l.setSweep(null);
   expect(backend.lighting!.cells.map((c) => [c.i, c.alpha])).toEqual([[0, 0.6]]);
+  // `onApply` fires unconditionally on every `apply()` call — including the settle tick, whose
+  // resolved content is unchanged from the first paint (`setTarget` already snaps the new-only
+  // cell in immediately) and is therefore skipped by `Lighting.apply`'s repaint dedup
+  // (`lightingFrameKey`) but NOT by `onApply`, which has its own observer contract (see
+  // `Lighting.apply`'s doc).
   expect(painted).toEqual([1, 1, 2, 1]); // setTarget, settle tick, sweep on, sweep off
 });

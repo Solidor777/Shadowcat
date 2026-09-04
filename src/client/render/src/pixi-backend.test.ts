@@ -3,7 +3,7 @@ import { Container } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
-import type { TokenNodeSpec } from "./types";
+import type { TokenNodeSpec, VisibilityInput } from "./types";
 
 vi.mock("pixi.js", async (importActual) => {
   const actual = await importActual<typeof import("pixi.js")>();
@@ -32,6 +32,28 @@ vi.mock("pixi.js", async (importActual) => {
 function headlessBackend(): PixiBackend {
   const fakeApp = { stage: new Container() } as unknown as Application;
   return new PixiBackend(fakeApp);
+}
+
+/** A headless backend whose `app.renderer.render` is a counting stub instead of a real GPU
+ * call — enough for `setVisibilityBlend`'s `captureFog` path to run (it only needs
+ * `app.screen`/`app.renderer.resolution`/`app.renderer.render`/`RenderTexture.create`, none of
+ * which need a live GL context) while exposing how many full render-to-texture passes it
+ * performed.
+ * @returns The backend plus a `renderCalls` counter incremented once per `app.renderer.render`.
+ */
+function headlessBackendWithRenderCounter(): { backend: PixiBackend; renderCalls: { count: number } } {
+  const renderCalls = { count: 0 };
+  const fakeApp = {
+    stage: new Container(),
+    screen: { width: 800, height: 600 },
+    renderer: {
+      resolution: 1,
+      render: () => {
+        renderCalls.count++;
+      },
+    },
+  } as unknown as Application;
+  return { backend: new PixiBackend(fakeApp), renderCalls };
 }
 
 interface GraphicsInstructionLog {
@@ -177,6 +199,44 @@ function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?
   const instr = g.context.instructions.find((i) => (i as unknown as { action?: string }).action === action);
   return instr ? (instr.data as unknown as { style: { width?: number; color?: number; alpha?: number } }).style : null;
 }
+
+describe("PixiBackend.setVisibilityBlend", () => {
+  test("reuses both captured RenderTextures across many ticks holding the same (from, to) sample pair — only the blend factor moves", () => {
+    // Mirrors RenderEngine.applyVisionSweep's per-tick call shape: a sweep holds the same
+    // (from, to) sample pair for many consecutive ticks, only `factor` advancing.
+    const { backend, renderCalls } = headlessBackendWithRenderCounter();
+    const from: VisibilityInput = { mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10, 0, 10] }], explored: [], perceived: [] };
+    const to: VisibilityInput = { mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20, 0, 20] }], explored: [], perceived: [] };
+    for (let i = 0; i < 30; i++) backend.setVisibilityBlend(from, to, i / 30);
+    // One GPU render-to-texture pass per endpoint (from, to) — never one pair per tick.
+    expect(renderCalls.count).toBeLessThan(5);
+  });
+
+  test("captures a fresh pair whenever the (from, to) content actually changes — render count scales with DISTINCT pairs, not tick count", () => {
+    // A cache that stops discriminating (e.g. a key collapsed to a constant) would pass the
+    // "holds the same pair" test above and show an even LARGER render-count reduction here,
+    // while silently reusing a stale rasterized texture for content that genuinely changed —
+    // exactly the failure `visibilityInputKey`'s own discrimination tests guard against.
+    const { backend, renderCalls } = headlessBackendWithRenderCounter();
+    const endpoints: VisibilityInput[] = Array.from({ length: 6 }, (_, i) => ({
+      mode: "masked",
+      visible: [{ points: [0, 0, (i + 1) * 10, 0, (i + 1) * 10, (i + 1) * 10, 0, (i + 1) * 10] }],
+      explored: [],
+      perceived: [],
+    }));
+    const ticksPerPair = 6;
+    const pairCount = endpoints.length - 1;
+    for (let pair = 0; pair < pairCount; pair++) {
+      for (let tick = 0; tick < ticksPerPair; tick++) {
+        backend.setVisibilityBlend(endpoints[pair], endpoints[pair + 1], tick / ticksPerPair);
+      }
+    }
+    // Exactly one fresh capture per endpoint (2 per pair transition), never per tick: a
+    // content-blind cache would report far fewer than 2*pairCount; a never-caching one would
+    // report 2*pairCount*ticksPerPair (60).
+    expect(renderCalls.count).toBe(2 * pairCount);
+  });
+});
 
 describe("PixiBackend.updateTokenGeneratedFrame", () => {
   const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
