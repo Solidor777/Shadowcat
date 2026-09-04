@@ -4,6 +4,7 @@
   import { resolveSettingProvenance, type WireDocument, type WorldSettingsEngine, type CombatDefaults, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
   import { parseFormula } from "@shadowcat/formula";
 
+  /** CombatSettings props. */
   interface Props {
     /** The world-settings document, when it exists. */
     ws: WireDocument | undefined;
@@ -12,7 +13,12 @@
     /** The panel's single-field JSON-pointer write helper. */
     set: (docId: string, path: string, old: unknown, value: unknown) => void;
     /** The panel's world-defaults provenance resolver (scene always `undefined`). */
-    prov: (path: SettingPath) => { value: unknown; source: "engine" | "system" | "world" | "scene" };
+    prov: (path: SettingPath) => {
+      /** The resolved value at the winning tier. */
+      value: unknown;
+      /** Which tier the value resolved from. */
+      source: "engine" | "system" | "world" | "scene";
+    };
     /** The scene currently selected in the per-scene section, for the effective-rules summary. */
     scene: WireDocument | undefined;
   }
@@ -38,7 +44,13 @@
   /** Writes the WHOLE `/engine/combat` object: `set_pointer` cannot create a missing `/engine/
    * combat` from a leaf sub-path, so every combat-leaf write replaces the object outright, with
    * the RAW stored object (or `null`) as the OCC pre-image.
-   * @param next The replacement `CombatDefaults` object, or `null` to clear it entirely. */
+   * @param next The replacement `CombatDefaults` object, or `null` to clear it entirely.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from every leaf write below
+   * writeCombat({ enforcement: "warn" });
+   * ```
+   */
   function writeCombat(next: CombatDefaults | null): void {
     if (!ws) return;
     set(ws.id, "/engine/combat", wsys?.combat ?? null, next);
@@ -48,27 +60,69 @@
    * collapsed to nothing is written as `null`, never an empty object, so provenance correctly
    * reports the layer beneath falling through.
    * @param next The candidate object.
-   * @returns Whether it is empty. */
+   * @returns Whether it is empty.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from leafRemove
+   * isEmptyCombat({});
+   * ```
+   */
   function isEmptyCombat(next: CombatDefaults): boolean {
     return Object.keys(next).length === 0;
   }
 
+  /** Sets one `CombatDefaults` leaf, preserving every other authored override.
+   * @param key The leaf being set.
+   * @param value The leaf's new value.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from every scalar leaf control
+   * leafSet("enforcement", "warn");
+   * ```
+   */
   function leafSet<K extends keyof CombatDefaults>(key: K, value: CombatDefaults[K]): void {
     const next: CombatDefaults = { ...(wsys?.combat ?? {}), [key]: value };
     writeCombat(next);
   }
 
+  /** Clears one `CombatDefaults` leaf (falls through to system/engine), collapsing the whole
+   * object to `null` when nothing is left overridden.
+   * @param key The leaf being cleared.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from every "Inherit" reset
+   * leafRemove("enforcement");
+   * ```
+   */
   function leafRemove(key: keyof CombatDefaults): void {
     const next: CombatDefaults = { ...(wsys?.combat ?? {}) };
     delete next[key];
     writeCombat(isEmptyCombat(next) ? null : next);
   }
 
+  /** Sets one `effectLifecycle` sub-leaf, preserving every other authored lifecycle leaf.
+   * @param leaf Which lifecycle field is being set.
+   * @param value The leaf's new value (a numeric literal or a formula string).
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from onLifecycleInput
+   * lifecycleSet("onCombatEnd", 1);
+   * ```
+   */
   function lifecycleSet(leaf: (typeof LIFECYCLE_LEAVES)[number], value: number | string): void {
     const lifecycle = { ...(wsys?.combat?.effectLifecycle ?? {}), [leaf]: value };
     leafSet("effectLifecycle", lifecycle);
   }
 
+  /** Clears one `effectLifecycle` sub-leaf, removing the whole `effectLifecycle` object when no
+   * sub-leaf is left overridden.
+   * @param leaf Which lifecycle field is being cleared.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from onLifecycleInput on blank text
+   * lifecycleRemove("onCombatEnd");
+   * ```
+   */
   function lifecycleRemove(leaf: (typeof LIFECYCLE_LEAVES)[number]): void {
     const lifecycle = { ...(wsys?.combat?.effectLifecycle ?? {}) };
     delete lifecycle[leaf];
@@ -80,7 +134,13 @@
    * formula writes the trimmed string, else the inline error is shown and nothing is written.
    * Blank input removes the leaf (inherit).
    * @param leaf Which lifecycle field the input edits.
-   * @param text The raw input value. */
+   * @param text The raw input value.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from a lifecycle input's onchange
+   * onLifecycleInput("onCombatEnd", "1");
+   * ```
+   */
   function onLifecycleInput(leaf: (typeof LIFECYCLE_LEAVES)[number], text: string): void {
     const trimmed = text.trim();
     if (trimmed === "") {
@@ -105,6 +165,15 @@
 
   let lifecycleErrors = $state<Record<string, string | null>>({ onCombatEnd: null, onTurnEnd: null, onAdvance: null });
 
+  /** Writes the world-tier `movementResource` selection: `"__inherit"` clears the override,
+   * `"__none"` explicitly clears the inherited resource, else the chosen registry key is set.
+   * @param value The `<select>`'s chosen option value.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the movement-resource select
+   * onMovementResourceChange("movement");
+   * ```
+   */
   function onMovementResourceChange(value: string): void {
     if (value === "__inherit") leafRemove("movementResource");
     else if (value === "__none") leafSet("movementResource", null);

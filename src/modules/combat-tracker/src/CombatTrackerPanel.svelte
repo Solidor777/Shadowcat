@@ -10,12 +10,24 @@
   import CombatantRow from "./CombatantRow.svelte";
   import AddCombatants from "./AddCombatants.svelte";
 
+  /** CombatTrackerPanel props. */
   interface Props {
     /** The badge instance bound on mount — passed as a contribution prop so the same instance
      * the panel-tab chrome reads is the one this panel binds identity to. */
     badge: TurnBadge;
   }
   const { badge }: Props = $props();
+
+  /** Shape of `CombatEngine`'s `order` field, narrowed for the reorder helpers. */
+  type CombatOrderShape = {
+    /** The combat's turn-order sequence of combatant document ids. */
+    order: string[];
+  };
+  /** Shape of `CombatEngine`'s `turn` field, narrowed for the current-row highlight. */
+  type CombatTurnShape = {
+    /** The combatant id whose turn is current, or `null` outside an active turn. */
+    turn: string | null;
+  };
 
   const ctx = getAppContext();
 
@@ -66,7 +78,14 @@
 
   /** Runs `fn` under the panel's busy flag, surfacing a rejection through `ctx.notify`. Passed
    * down to the header/rows so every intent call shares one busy gate.
-   * @param fn The async intent call to run. */
+   * @param fn The async intent call to run.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from every intent-dispatching
+   * // control this panel and its children own
+   * void run(async () => {});
+   * ```
+   */
   async function run(fn: () => Promise<void>): Promise<void> {
     busy = true;
     try {
@@ -78,6 +97,14 @@
     }
   }
 
+  /**
+   * Creates a combat on the currently viewed scene. A no-op when no scene is viewed.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the "Create" button
+   * create();
+   * ```
+   */
   function create(): void {
     const sceneId = ctx.viewedSceneId;
     if (!sceneId) return;
@@ -95,19 +122,52 @@
   /** `use:` action registering `node` under `id` for the reorder drag's geometry lookup.
    * @param node The row's root element.
    * @param id The row's combatant document id.
-   * @returns A teardown removing the registration on unmount. */
-  function trackRow(node: HTMLElement, id: string): { destroy: () => void } {
+   * @returns A teardown removing the registration on unmount.
+   * @example
+   * ```svelte
+   * <div use:trackRow={row.doc.id}></div>
+   * ```
+   */
+  function trackRow(node: HTMLElement, id: string): {
+    /** Removes `id`'s registration on unmount. */
+    destroy: () => void;
+  } {
     rowEls.set(id, node);
     return { destroy: () => rowEls.delete(id) };
   }
   const reorder = createReorder(() => rows.map((r) => rowEls.get(r.doc.id)?.getBoundingClientRect() ?? new DOMRect()));
 
+  /**
+   * Computes the reordered turn sequence via `moveInOrder` and dispatches the one `reorder`
+   * intent both the pointer-drag and keyboard paths share. A no-op with no selected combat or
+   * without edit capability.
+   * @param from The row's index before the move.
+   * @param to The row's index after the move.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from onDragStart/onRowKeydown
+   * dispatchReorder(0, 2);
+   * ```
+   */
   function dispatchReorder(from: number, to: number): void {
     if (!selectedCombat || !can?.edit) return;
-    const engine = selectedCombat.engine as { order: string[] };
+    const engine = selectedCombat.engine as CombatOrderShape;
     ctx.combat.reorder(selectedCombat.id, moveInOrder(engine.order, from, to));
   }
 
+  /**
+   * Begins a pointer-drag reorder on the row at `index`, tracking pointer move/up on `window`
+   * until release, at which point the computed move (if any) dispatches via
+   * {@link dispatchReorder}. A no-op without edit capability.
+   * @param index The dragged row's index.
+   * @param ev The originating `pointerdown` event.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from a row's pointerdown handler
+   * declare const event: PointerEvent;
+   * onDragStart(0, event);
+   * ```
+   */
   function onDragStart(index: number, ev: PointerEvent): void {
     if (!can?.edit) return;
     reorder.beginDrag(index, ev);
@@ -122,6 +182,19 @@
     window.addEventListener("pointerup", onUp);
   }
 
+  /**
+   * Alt+ArrowUp/Down keyboard reorder on the row at `index`, dispatching the same
+   * {@link dispatchReorder} the pointer-drag path uses. A no-op without edit capability, without
+   * the Alt modifier, or at either end of the order.
+   * @param index The focused row's index.
+   * @param ev The originating `keydown` event.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from a row's keydown handler
+   * declare const event: KeyboardEvent;
+   * onRowKeydown(0, event);
+   * ```
+   */
   function onRowKeydown(index: number, ev: KeyboardEvent): void {
     if (!can?.edit || !ev.altKey) return;
     if (ev.key === "ArrowUp" && index > 0) {
@@ -155,7 +228,7 @@
     <div class="rows" class:compact>
       {#each rows as row, i (row.doc.id)}
         <div class="row-wrap" class:stacked={compact} use:trackRow={row.doc.id} onkeydown={(e) => onRowKeydown(i, e)} role="presentation">
-          <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as { turn: string | null }).turn === row.doc.id} {can} {busy} {run} {notation} {onDragStart} index={i} {compact} />
+          <CombatantRow {row} combatId={selectedCombat.id} {registry} isTurn={(selectedCombat.engine as CombatTurnShape).turn === row.doc.id} {can} {busy} {run} {notation} {onDragStart} index={i} {compact} />
         </div>
       {/each}
     </div>

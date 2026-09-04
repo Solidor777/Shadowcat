@@ -3,6 +3,19 @@
   import type { CombatantEngine } from "@shadowcat/core";
   import type { Row } from "./model";
 
+  /** Shape of an `Actor`-kind combatant's `engine.kind` narrowed cast, read for its
+   * `token_id`. */
+  type ActorKindShape = CombatantEngine & {
+    /** The narrowed `CombatantKind` discriminant. */
+    kind: {
+      /** The kind's own discriminant literal. */
+      type: "actor";
+      /** The token this combatant tracks, when the row names one. */
+      token_id: string | null;
+    };
+  };
+
+  /** AddCombatants props. */
   interface Props {
     /** The combat to add combatants/events to. */
     combatId: string;
@@ -17,7 +30,7 @@
     const ids = new Set<string>();
     for (const r of rows) {
       if (r.kind === "actor") {
-        const tokenId = (r.doc.engine as CombatantEngine & { kind: { type: "actor" } }).kind.token_id;
+        const tokenId = (r.doc.engine as ActorKindShape).kind.token_id;
         if (tokenId) ids.add(tokenId);
       }
     }
@@ -28,6 +41,15 @@
 
   let hiddenOnAdd = $state(false);
 
+  /**
+   * Adds every currently-selected, not-yet-added token as a combatant of `combatId`, each
+   * hidden per the `hiddenOnAdd` toggle.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the "add selected" button
+   * addSelected();
+   * ```
+   */
   function addSelected(): void {
     ctx.combat.addCombatants(
       combatId,
@@ -41,6 +63,16 @@
   let eventMessage = $state("");
   let eventHidden = $state(false);
 
+  /**
+   * Authors a one-off `Event` combatant from the form fields, then resets the form and hides
+   * it. A blank name is refused (no-op); a blank/non-finite lifespan or message is authored as
+   * `null` rather than a stray empty string.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the event form's submit
+   * addEvent();
+   * ```
+   */
   function addEvent(): void {
     const name = eventName.trim();
     if (!name) return;

@@ -20,7 +20,12 @@
    * valid formula string is kept trimmed, else `null` (the caller shows the inline error and
    * skips the write). Mirrors `CombatSettings.onLifecycleInput`'s coercion rule.
    * @param text The raw input value.
-   * @returns The coerced `Formula`, or `null` when `text` is neither a number nor a valid formula. */
+   * @returns The coerced `Formula`, or `null` when `text` is neither a number nor a valid formula.
+   * @example
+   * ```
+   * coerceFormula("2"); // 2
+   * ```
+   */
   function coerceFormula(text: string): Formula | null {
     const trimmed = text.trim();
     const n = Number(trimmed);
@@ -37,12 +42,31 @@
    * @param key The resource's registry key.
    * @param path The field's JSON-pointer path suffix under `/engine/resources/<key>`.
    * @param old The field's real current stored value.
-   * @param value The new value to write. */
+   * @param value The new value to write.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from every field control below
+   * writeField("movement", "/name", "movement", "Movement");
+   * ```
+   */
   function writeField(key: string, path: string, old: unknown, value: unknown): void {
     if (!registry) return;
     ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/resources/${key}${path}`, old: old ?? null, new: value }] }]);
   }
 
+  /** Coerces a formula-bearing input's text and writes it, or surfaces the inline error for
+   * `errKey` and skips the write when the text is neither a number nor a valid formula.
+   * @param key The resource's registry key.
+   * @param errKey The `errors` map key this field's inline error is tracked under.
+   * @param path The field's JSON-pointer path suffix under `/engine/resources/<key>`.
+   * @param old The field's real current stored value.
+   * @param text The raw input value.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from every formula input's onchange
+   * onFormulaInput("movement", "movement:max", "/binding/max", 0, "speed");
+   * ```
+   */
   function onFormulaInput(key: string, errKey: string, path: string, old: unknown, text: string): void {
     const coerced = coerceFormula(text);
     if (coerced === null) {
@@ -58,7 +82,13 @@
    * paths, not inside the binding object being replaced.
    * @param key The resource's registry key.
    * @param oldBinding The raw currently-stored binding (the OCC pre-image).
-   * @param kind The newly-selected binding kind. */
+   * @param kind The newly-selected binding kind.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the kind select's onchange
+   * switchKind("movement", { kind: "mirror", value: 0 }, "tracked");
+   * ```
+   */
   function switchKind(key: string, oldBinding: ResourceBinding, kind: ResourceBinding["kind"]): void {
     const next: ResourceBinding =
       kind === "mirror"

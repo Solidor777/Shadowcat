@@ -3,6 +3,7 @@
   import type { WireDocument, CombatEngine } from "@shadowcat/core";
   import { rollTargets, firstChannel, type Row } from "./model";
 
+  /** CombatHeader props. */
   interface Props {
     /** The combat document this header controls. */
     combat: WireDocument;
@@ -31,6 +32,15 @@
   let confirming = $state(false);
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
 
+  /**
+   * Two-click End: the first click arms the confirm window ({@link CONFIRM_WINDOW_MS}); a
+   * second click while armed dispatches the actual `CombatEnd` intent.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the End button
+   * clickEnd();
+   * ```
+   */
   function clickEnd(): void {
     if (!confirming) {
       confirming = true;
@@ -42,6 +52,16 @@
     void run(() => ctx.combat.end(combat.id));
   }
 
+  /**
+   * Rolls the shared notation for every roll-eligible row (a GM rolls every combatant; a
+   * player rolls only their own), posted to the first channel {@link firstChannel} resolves.
+   * A no-op with a warning notice when no channel exists, or silently when no row is eligible.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the "Roll all" button
+   * rollAll();
+   * ```
+   */
   function rollAll(): void {
     const channel = firstChannel(ctx.documents);
     if (!channel) {

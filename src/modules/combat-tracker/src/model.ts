@@ -11,6 +11,12 @@ import type {
   WorldRole,
 } from "@shadowcat/core";
 
+/** Shape of `ChannelRegistryEngine`'s `channels` field, narrowed for `firstChannel`. */
+type ChannelRegistryShape = {
+  /** The registered channel keys, in map insertion order. */
+  channels?: Record<string, unknown>;
+};
+
 /** One rendered tracker row: a combatant document joined with its resolved numbers. */
 export interface Row {
   /** The combatant document. */
@@ -24,7 +30,12 @@ export interface Row {
   /** Display name; `null` for a redacted or unnamed document. */
   name: string | null;
   /** Art source: the combatant's token and/or actor id, for face-asset resolution. */
-  art: { tokenId?: string; actorId?: string };
+  art: {
+    /** The combatant's own token id, when it names one. */
+    tokenId?: string;
+    /** The combatant's linked actor id, when it names one. */
+    actorId?: string;
+  };
 }
 
 /** Joins `combat`'s combatant documents with their resolved `"combat"`-channel numbers, in the
@@ -32,6 +43,13 @@ export interface Row {
  * @param combatants The combatant documents, in the order to render them.
  * @param resolved The latest `"combat"` derived-channel frame.
  * @returns One `Row` per combatant document.
+ * @example
+ * ```
+ * import type { CombatApi } from "@shadowcat/core";
+ *
+ * declare const combatApi: CombatApi;
+ * rowsFor(combatApi.combatants("c1"), combatApi.resolved);
+ * ```
  */
 export function rowsFor(combatants: WireDocument[], resolved: CombatsView): Row[] {
   const views = new Map<string, CombatantView>();
@@ -58,6 +76,10 @@ export function rowsFor(combatants: WireDocument[], resolved: CombatsView): Row[
  * @returns A new array with the element relocated; the SAME array reference is never returned
  * even when `from === to` (a no-op still produces a fresh, equal array).
  * @throws {RangeError} When `from` or `to` is out of `order`'s bounds.
+ * @example
+ * ```
+ * moveInOrder(["a", "b", "c"], 0, 2); // ["b", "c", "a"]
+ * ```
  */
 export function moveInOrder(order: string[], from: number, to: number): string[] {
   if (from < 0 || from >= order.length || to < 0 || to >= order.length) {
@@ -75,6 +97,11 @@ export function moveInOrder(order: string[], from: number, to: number): string[]
  * @param role The caller's world role.
  * @param selfId The caller's own user id.
  * @returns The target combatant ids, in row order.
+ * @example
+ * ```
+ * declare const rows: Row[];
+ * rollTargets(rows, "player", "u1");
+ * ```
  */
 export function rollTargets(rows: Row[], role: WorldRole, selfId: string): string[] {
   return rows
@@ -87,10 +114,15 @@ export function rollTargets(rows: Row[], role: WorldRole, selfId: string): strin
  * rolls always post to.
  * @param documents The document view to query the singleton `channel-registry` from.
  * @returns The first channel key, or `null` when the registry is absent or empty.
+ * @example
+ * ```
+ * declare const documents: ReadableDocuments;
+ * firstChannel(documents); // "general"
+ * ```
  */
 export function firstChannel(documents: ReadableDocuments): string | null {
   const doc = documents.query("channel-registry")[0];
-  const channels = (doc?.engine as { channels?: Record<string, unknown> } | undefined)?.channels;
+  const channels = (doc?.engine as ChannelRegistryShape | undefined)?.channels;
   if (!channels) return null;
   const keys = Object.keys(channels);
   return keys.length > 0 ? keys[0] : null;
@@ -101,6 +133,10 @@ export function firstChannel(documents: ReadableDocuments): string | null {
  * (a `resources: null` cell, or a registry key absent from the resolved frame).
  * @returns `"12 / 12"` for a tracked resource, its current value alone for a mirror, `"⚠"` on an
  * evaluation error, and `"—"` when `view` is `undefined`.
+ * @example
+ * ```
+ * formatResource({ binding: "tracked", current: 2, max: 2, error: null }); // "2 / 2"
+ * ```
  */
 export function formatResource(view: ResolvedResourceView | undefined): string {
   if (!view) return "—";

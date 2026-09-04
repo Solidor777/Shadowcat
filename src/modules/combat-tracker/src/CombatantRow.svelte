@@ -3,6 +3,7 @@
   import { resolveConditions, type CombatAffordances, type CombatantEngine, type Resource } from "@shadowcat/core";
   import { formatResource, firstChannel, type Row } from "./model";
 
+  /** CombatantRow props. */
   interface Props {
     /** The row to render. */
     row: Row;
@@ -43,16 +44,44 @@
     return token ? resolveConditions(token, ctx.documents) : [];
   });
 
+  /**
+   * Opens the row's own sheet: the token it names, else its linked actor. A no-op event row
+   * (no token/actor) leaves the click without effect.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the row's name button
+   * openSheet();
+   * ```
+   */
   function openSheet(): void {
     if (row.art.tokenId) ctx.openDocument({ tokenId: row.art.tokenId });
     else if (row.art.actorId) ctx.openDocument({ docId: row.art.actorId });
   }
 
+  /**
+   * Writes this row's initiative from the input's text, clearing it (`null`) on a blank or
+   * non-finite value.
+   * @param value The initiative input's raw text.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the initiative input
+   * setInitiative("14");
+   * ```
+   */
   function setInitiative(value: string): void {
     const n = value === "" ? null : Number(value);
     ctx.combat.setInitiative(row.doc.id, Number.isFinite(n) ? n : null);
   }
 
+  /**
+   * Rolls this row's own initiative notation, posted to the first channel {@link firstChannel}
+   * resolves. A no-op with a warning notice when no channel exists.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the row's roll button
+   * rollOne();
+   * ```
+   */
   function rollOne(): void {
     const channel = firstChannel(ctx.documents);
     if (!channel) {
@@ -62,20 +91,56 @@
     void run(() => ctx.combat.roll(combatId, channel, [{ combatant_id: row.doc.id, notation }]));
   }
 
+  /**
+   * Toggles this row's hidden state (`permissions.default` between `none` and readable).
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the row's hide/reveal button
+   * toggleHidden();
+   * ```
+   */
   function toggleHidden(): void {
     ctx.combat.setHidden(row.doc.id, row.doc.permissions.default !== "none");
   }
 
+  /**
+   * Removes this row's combatant from the combat.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from the row's remove button
+   * remove();
+   * ```
+   */
   function remove(): void {
     void run(async () => {
       ctx.combat.removeCombatant(combatId, row.doc.id);
     });
   }
 
+  /**
+   * Applies a relative change to one of this row's resources.
+   * @param key The resource-registry key being adjusted.
+   * @param amount The signed delta to apply.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from a resource's +/− buttons
+   * resourceDelta("movement", -1);
+   * ```
+   */
   function resourceDelta(key: string, amount: number): void {
     void run(() => ctx.combat.modifyResource(combatId, row.doc.id, key, { kind: "delta", amount }));
   }
 
+  /**
+   * Sets one of this row's resources to an absolute value.
+   * @param key The resource-registry key being set.
+   * @param value The new absolute value.
+   * @example
+   * ```
+   * // private function; not part of the public API — invoked from a resource's number input
+   * resourceSet("movement", 2);
+   * ```
+   */
   function resourceSet(key: string, value: number): void {
     void run(() => ctx.combat.modifyResource(combatId, row.doc.id, key, { kind: "set", value }));
   }

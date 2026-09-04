@@ -48,6 +48,11 @@ export function createReorder(rects: () => DOMRect[]): {
    * crossing exactly one row's midpoint moves the target by exactly one step.
    * @param y The pointer's current `clientY`.
    * @returns The target index.
+   * @example
+   * ```
+   * // private function, closed over `createReorder`'s own `rects`/`from` state — not callable
+   * // outside that closure; invoked from move() with the pointer's current clientY
+   * ```
    */
   function targetFor(y: number): number {
     const rs = rects();
