@@ -2587,6 +2587,16 @@ Deviation from plan: `DrawTableError` gained a `TooLong` variant not in the plan
 list, needed because the reused `chat::validate_audience` can legitimately return
 `SendMessageError::TooLong` for an oversized whisper-recipient list — mapping it silently to
 `Forbidden` would have been a worse choice than a small, clearly-documented additional variant.
+A second deviation, fixed forward after this entry was first written: both the design and this
+plan specify `RowRange{lo: i64, hi: i64}`; the shipped field width is `i32`. A row range bounds a
+dice roll's total, already well within the narrower width via `MAX_DIE_SIDES`/`MAX_ROLL_DICE`,
+and `i64` forces ts-rs to emit a `bigint` on a type client authoring code (`buildTableDoc`
+callers) constructs directly — `JSON.stringify` (`WsClient.send`) cannot serialize a `bigint`, so
+any typed `Formula`-table author would fail before the write reached the wire, the identical trap
+that hit the note engine's `sort` field. Caught by `table-docs.test.ts` constructing a real
+`Formula` table through `buildTableDoc` and round-tripping it through `JSON.stringify`; pinned by
+a mutation control (reverting to `i64`/`bigint` fails `tsc --noEmit` on the new test's literal row
+ranges).
 Coverage: unit tests across `data::engine::table` (validation, including a mutation-style
 positive+negative control pinning the weighted-sum/`MAX_DIE_SIDES` boundary), `chat::mod`
 (GM-only redaction at every draw depth, `filter_properties` integration), `tables`/`tables::draw`
