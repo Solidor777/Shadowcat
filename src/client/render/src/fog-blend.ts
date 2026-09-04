@@ -4,6 +4,8 @@
 // A `//` header, not a `/** */` block: a doc block preceding another doc block rather
 // than a declaration binds to nothing, since every consumer takes the NEAREST one.
 
+import type { Polygon, VisibilityInput } from "./types";
+
 /**
  * Blend factor for cross-fading between two consecutive vision samples' rasterized fog
  * textures: 0 at `tCur` (fully the outgoing/"from" texture), 1 at `tNext` (fully the
@@ -60,6 +62,28 @@ export function fogBlendRtStale(existing: {
 } | null, width: number, height: number, resolution: number): boolean {
   if (!existing) return true;
   return existing.width !== width || existing.height !== height || existing.resolution !== resolution;
+}
+
+/**
+ * A content fingerprint of one `VisibilityInput`, covering exactly the fields `paintFogSheets`
+ * reads (`mode`, `visible`, `explored` — never `perceived`, which that function never touches).
+ * Two inputs with equal keys paint pixel-identical fog, so `PixiBackend.setVisibilityBlend` uses
+ * this to skip re-rasterizing a cross-fade endpoint whose content is unchanged from the previous
+ * tick: a sweep holds the same `(from, to)` pair for many consecutive ticks (only the blend
+ * `factor` moves), so recapturing on every tick redoes the SAME `paintFogSheets` draw + GPU
+ * render-to-texture pass for content that has not changed since the prior call.
+ * @param input The visibility sample to fingerprint.
+ * @returns A string equal for two inputs `paintFogSheets` would draw identically.
+ * @example
+ * ```
+ * // not exported from @shadowcat/render; internal to PixiBackend.setVisibilityBlend
+ * visibilityInputKey({ mode: "all", visible: [], explored: [], perceived: [] }); // "all"
+ * ```
+ */
+export function visibilityInputKey(input: VisibilityInput): string {
+  if (input.mode !== "masked") return input.mode;
+  const ring = (p: Polygon): string => p.points.join(",");
+  return `masked|${input.visible.map(ring).join(";")}|${input.explored.map(ring).join(";")}`;
 }
 
 /** The sweep sample that should be showing at `elapsed` ms: the one with the greatest

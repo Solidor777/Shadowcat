@@ -37,6 +37,32 @@ export interface LightingFrame {
   darkness: Polygon[];
 }
 
+/**
+ * A content fingerprint of one `LightingFrame`, covering exactly the fields
+ * `PixiBackend.setLighting` reads (`cell`, `cells`' `i`/`j`/`alpha`/`tint`/`tintAlpha`/
+ * `desaturate`/`corners`, `darkness`'s polygons). Two frames with equal keys paint
+ * pixel-identical overlays, so `Lighting.apply` uses this to skip a real `backend.setLighting`
+ * repaint when the frame it just resolved is unchanged from the last one actually painted — a
+ * carried-light or vision sweep holds the SAME resolved content for many consecutive ticks
+ * (only the sweep's blend factor moves between two sample boundaries), and every caller
+ * (`setSweep`, `setDarkness`, `tick`) rebuilds its argument as a fresh array/object each call, so
+ * a reference-equality check would never catch the repeat.
+ * @param frame The resolved lighting frame to fingerprint.
+ * @returns A string equal for two frames `backend.setLighting` would paint identically.
+ * @example
+ * ```ts
+ * import { lightingFrameKey } from "@shadowcat/render";
+ *
+ * lightingFrameKey({ cell: 100, cells: [], darkness: [] }); // "100||"
+ * ```
+ */
+export function lightingFrameKey(frame: LightingFrame): string {
+  const poly = (p: Polygon): string => p.points.join(",");
+  const cell = (c: LitDrawCell): string =>
+    `${c.i},${c.j},${c.alpha},${c.tint},${c.tintAlpha},${c.desaturate ? 1 : 0},${c.corners.map((pt) => `${pt.x}:${pt.y}`).join(",")}`;
+  return `${frame.cell}|${frame.darkness.map(poly).join(";")}|${frame.cells.map(cell).join(";")}`;
+}
+
 /** Duration, in ms, of the day/night fade `Lighting.setTarget` starts and
  * `Lighting.tick` advances. Cosmetic only — fog/lit-mask is the secrecy gate;
  * this layer is purely visual. */
@@ -215,6 +241,10 @@ export class Lighting {
   /** Whether the last `setTarget` carried a lighting model (non-`null` input). With no model
    * there is no darkness to lift, so no darkness is painted either. */
   private hasModel = false;
+  /** `lightingFrameKey` of the frame last actually handed to `backend.setLighting` — `null`
+   * before the first paint. `apply()` compares against this to skip a repaint whose resolved
+   * content is unchanged (see `lightingFrameKey`'s doc). */
+  private lastPaintedKey: string | null = null;
 
   /**
    * Constructs the lighting layer bound to a single backend.
@@ -341,9 +371,14 @@ export class Lighting {
 
   /** Recompute the interpolated frame, union the light sweep over it (`mergeSweepCells`),
    * attach the darkness regions (withheld without a model) and paint it via
-   * `backend.setLighting`. Called by `setTarget` (new fade start), `tick` (fade progress),
-   * `setSweep` and `setDarkness` — the sole path that reaches the backend, so `current()` and
-   * the painted frame can never disagree.
+   * `backend.setLighting` — unless its `lightingFrameKey` is unchanged from the last frame
+   * actually painted, in which case the repaint (and `onApply`) is skipped: a sweep in flight
+   * calls this every tick while its resolved content stays the same for many consecutive ticks
+   * (see `lightingFrameKey`'s doc), and a per-cell Graphics rebuild is real work worth
+   * skipping under a starved renderer. Called by `setTarget` (new fade start), `tick` (fade
+   * progress), `setSweep` and `setDarkness` — the sole path that reaches the backend, so
+   * `current()` always reflects the latest RESOLVED frame regardless of whether it was
+   * repainted.
    * @example
    * ```
    * // private method; not part of the public API — invoked internally by setTarget/tick/setSweep
@@ -353,6 +388,9 @@ export class Lighting {
   private apply(): void {
     const merged = mergeSweepCells(this.currentInterpolated(), this.sweep);
     this._current = { cell: merged.cell, cells: merged.cells, darkness: this.hasModel ? this.darkness : [] };
+    const key = lightingFrameKey(this._current);
+    if (key === this.lastPaintedKey) return;
+    this.lastPaintedKey = key;
     this.backend.setLighting(this._current);
     this.onApply?.(this._current);
   }

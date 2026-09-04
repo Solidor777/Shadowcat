@@ -1,5 +1,6 @@
 import { test, expect } from "vitest";
 import { Lighting, MockBackend, mergeSweepCells, bandAlpha, unionLightingInputs, holdLightingCells } from "./index";
+import type { DisplayBackend } from "./backend";
 
 const bands = [{ name: "bright", min: 0.67 }, { name: "dim", min: 0.34 }, { name: "dark", min: 0 }];
 
@@ -116,6 +117,25 @@ test("corners carry through unchanged across a fade — cell geometry is not som
   expect(backend.lighting!.cells[0].corners).toEqual(hexCorners);
 });
 
+test("apply() skips a repaint when the resolved frame is identical to the last one actually painted, even across fresh array/object arguments", () => {
+  // Mirrors RenderEngine.applyVisionSweep's per-tick call shape: a sweep holds the SAME (from,
+  // to) sample pair for many consecutive ticks, so `setDarkness` is called every tick with a
+  // freshly-built `[...blend.from.visible, ...blend.to.visible]` array whose CONTENT is
+  // unchanged for the whole bracket. `Lighting.apply` must not pay a real
+  // `backend.setLighting` repaint for a tick that changes nothing.
+  let paints = 0;
+  const countingBackend = { setLighting: () => { paints++; } } as unknown as DisplayBackend;
+  const l = new Lighting(countingBackend);
+  l.setTarget({ cell: 100, bands, hints: [], cells: [{ i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [] }] });
+  l.tick(1000); // settle the fade
+  paints = 0; // count only the steady-state ticks below
+  for (let i = 0; i < 30; i++) {
+    // A fresh array AND fresh point objects every call — content-identical, reference-distinct.
+    l.setDarkness([{ points: [0, 0, 100, 0, 100, 100, 0, 100] }]);
+  }
+  expect(paints).toBeLessThan(5);
+});
+
 test("bandAlpha maps band 0 to no darkening and the last band to the maximum", () => {
   expect(bandAlpha(0, 3)).toBe(0);
   expect(bandAlpha(2, 3)).toBeCloseTo(0.6);
@@ -219,5 +239,8 @@ test("setSweep paints the committed frame unioned with the sweep at once, and cl
   expect(l.current()).toBe(backend.lighting);
   l.setSweep(null);
   expect(backend.lighting!.cells.map((c) => [c.i, c.alpha])).toEqual([[0, 0.6]]);
-  expect(painted).toEqual([1, 1, 2, 1]); // setTarget, settle tick, sweep on, sweep off
+  // setTarget snaps the new-only cell in immediately (no matching `prev` cell to fade from), so
+  // the settle tick's resolved content is unchanged from that first paint and is skipped —
+  // `Lighting.apply`'s content dedup (`lightingFrameKey`).
+  expect(painted).toEqual([1, 2, 1]); // setTarget (already settled content), sweep on, sweep off
 });
