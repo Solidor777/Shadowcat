@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { tick } from "svelte";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildWorldSettingsDoc, buildResourceRegistryDoc, buildSceneDoc, type CombatDefaults, type WireDocument } from "@shadowcat/core";
@@ -102,10 +103,38 @@ describe("CombatSettings (world chain editor)", () => {
     expect(screen.getByTestId("provenance:combat.interpretation").textContent).toBe("gameSettings.source.engine");
   });
 
+  it("the effective-rules summary includes the three effectLifecycle leaves", () => {
+    const scene = buildSceneDoc("w1", {}, "s1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(ws({ effectLifecycle: { onCombatEnd: 1, onTurnEnd: 2, onAdvance: 3 } }), scene), dispatchIntent: vi.fn() }) });
+    expect(screen.getByTestId("gameSettings:combat-effective-combat.effectLifecycle.onCombatEnd").textContent).toBe("1");
+    expect(screen.getByTestId("gameSettings:combat-effective-combat.effectLifecycle.onTurnEnd").textContent).toBe("2");
+    expect(screen.getByTestId("gameSettings:combat-effective-combat.effectLifecycle.onAdvance").textContent).toBe("3");
+  });
+
   it("the effective-rules summary shows every combat leaf resolved for the selected scene", () => {
     const scene = buildSceneDoc("w1", { combat: { enforcement: "warn" } }, "s1");
     render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(ws(), scene), dispatchIntent: vi.fn() }) });
     const cell = screen.getByTestId("gameSettings:combat-effective-combat.enforcement");
     expect(cell.textContent).toBe('"warn"');
+  });
+
+  it("the effective-rules summary updates through the shared store, reflecting a change made after mount", async () => {
+    // Mounted with NO scene override, so the table starts at the system-or-engine baseline —
+    // then a world-settings write (the shape a server confirmation applies through the store)
+    // lands after mount, and the table must follow it without a remount.
+    const scene = buildSceneDoc("w1", {}, "s1");
+    const store = storeWith(ws(), scene);
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent: vi.fn() }) });
+    const cell = screen.getByTestId("gameSettings:combat-effective-combat.enforcement");
+    expect(cell.textContent).not.toBe('"hard"');
+
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: "ws1", changes: [{ path: "/engine/combat", old: null, new: { enforcement: "hard" } }] }],
+    });
+    await tick();
+
+    expect(cell.textContent).toBe('"hard"');
+    expect(screen.getByTestId("provenance:combat.enforcement").textContent).toBe("gameSettings.source.world");
   });
 });

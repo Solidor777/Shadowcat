@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { tick } from "svelte";
 import { render, fireEvent, cleanup } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildCombatantDoc, buildChannelRegistryDoc, type CombatantEngine, type CombatAffordances, type Resource } from "@shadowcat/core";
+import { DocumentStore, buildCombatantDoc, buildChannelRegistryDoc, buildActorDoc, buildTokenDoc, buildConditionRegistryDoc, type CombatantEngine, type ActorEngine, type TokenEngine, type CombatAffordances, type Resource } from "@shadowcat/core";
 import CombatantRow from "./CombatantRow.svelte";
 import { fakeCombatApi } from "./__fixtures__/fakeCombatApi";
 import type { Row } from "./model";
@@ -101,6 +102,41 @@ describe("CombatantRow", () => {
     });
     await fireEvent.click(getByTestId("combat-tracker:roll-a"));
     expect(combat.calls.roll).toEqual([["combat-1", "general", [{ combatant_id: "a", notation: "1d20" }]]]);
+  });
+
+  it("condition glyphs update through the shared store after a condition is applied post-mount", async () => {
+    const actorEngine: ActorEngine = {
+      displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
+      size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
+      prototype: false, vision: null, aura: null, sound: null, vfx: null,
+    };
+    const actor = buildActorDoc("w1", "Goblin", actorEngine, "actor-1");
+    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null };
+    const token = buildTokenDoc("w1", "scene-1", tokenEngine, "token-1");
+    const registry = buildConditionRegistryDoc("w1", { prone: { name: "Prone", icon: "🔻", fx: null } });
+    const store = new DocumentStore();
+    store.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [actor, token, registry].map((doc) => ({ op: "create", doc })) });
+    const combat = fakeCombatApi(store);
+    const row = actorRow("a");
+    row.art = { tokenId: "token-1" };
+    const { queryByTitle } = render(CombatantRow, {
+      props: {
+        row, combatId: "combat-1", registry: [],
+        isTurn: false, can: FULL_CAN, busy: false,
+        run: async (fn: () => Promise<void>) => fn(),
+        notation: "1d20", onDragStart: () => {}, index: 0,
+      },
+      context: setAppContextForTest({ store, documents: store, combat }),
+    });
+    expect(queryByTitle("Prone")).toBeNull();
+
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: "actor-1", changes: [{ path: "/engine/conditions", old: [], new: ["prone"] }] }],
+    });
+    await tick();
+
+    expect(queryByTitle("Prone")).toBeTruthy();
   });
 
   it("stepper and direct entry dispatch modifyResource with the delta/set shapes", async () => {

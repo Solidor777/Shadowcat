@@ -183,7 +183,21 @@
   const EFFECTIVE_PATHS: SettingPath[] = [
     "combat.movementResource", "combat.interpretation", "combat.enforcement", "combat.turnControl",
     "combat.effectCleanup", "combat.rewindRestore", "combat.forwardRestore",
+    "combat.effectLifecycle.onCombatEnd", "combat.effectLifecycle.onTurnEnd", "combat.effectLifecycle.onAdvance",
   ];
+
+  /** The effective-rules table's rows: one `resolveSettingProvenance` resolution per
+   * `EFFECTIVE_PATHS` entry, re-derived whenever `ctx.documents` changes. `subscribe()` bridges
+   * `ctx.documents`'s plain-callback reactivity into this `$derived` — without it the table
+   * freezes at first render (at world creation, before any combat setting is written) and never
+   * reflects a later edit, the same reactivity bug `GameSettingsPanel` itself avoids. */
+  const effectiveRows = $derived.by((): { path: SettingPath; value: unknown; source: string }[] => {
+    subscribe();
+    return EFFECTIVE_PATHS.map((path) => {
+      const r = resolveSettingProvenance(ctx.documents, scene, path);
+      return { path, value: r.value, source: r.source };
+    });
+  });
 </script>
 
 <fieldset>
@@ -294,11 +308,10 @@
   <table data-testid="combat-tracker-effective-rules">
     <caption>{ctx.t("gameSettings.combat.effective")}</caption>
     <tbody>
-      {#each EFFECTIVE_PATHS as path (path)}
-        {@const r = resolveSettingProvenance(ctx.documents, scene, path)}
+      {#each effectiveRows as r (r.path)}
         <tr>
-          <td>{path}</td>
-          <td data-testid={"gameSettings:combat-effective-" + path}>{JSON.stringify(r.value)}</td>
+          <td>{r.path}</td>
+          <td data-testid={"gameSettings:combat-effective-" + r.path}>{JSON.stringify(r.value)}</td>
           <td>{ctx.t("gameSettings.source." + r.source)}</td>
         </tr>
       {/each}

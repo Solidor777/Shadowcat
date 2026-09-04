@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { resolveSettingProvenance, type WireDocument, type SceneEngine, type CombatDefaults, type SettingPath, type ResourceRegistryEngine } from "@shadowcat/core";
   import { parseFormula } from "@shadowcat/formula";
@@ -15,8 +16,13 @@
   const { scene, ssys, setScene }: Props = $props();
 
   const ctx = getAppContext();
+  // Reactive bridge: `ctx.documents` is a plain-callback store (see the sheets skill's own
+  // invariant), so every direct read below calls subscribe() first, matching
+  // `GameSettingsPanel.prov`'s established pattern.
+  const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
 
   const registryKeys = $derived.by((): string[] => {
+    subscribe();
     const doc = ctx.documents.query("resource-registry")[0];
     const eng = doc?.engine as ResourceRegistryEngine | undefined;
     return Object.keys(eng?.resources ?? {});
@@ -44,6 +50,7 @@
     /** Which tier the value resolved from. */
     source: "engine" | "system" | "world" | "scene";
   } {
+    subscribe();
     return resolveSettingProvenance(ctx.documents, scene, path);
   }
 

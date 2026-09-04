@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { tick } from "svelte";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildWorldSettingsDoc, buildSceneDoc, buildResourceRegistryDoc, type CombatDefaults, type WireDocument } from "@shadowcat/core";
@@ -84,5 +85,43 @@ describe("CombatSceneOverrides (per-scene chain editor)", () => {
     expect(screen.getByTestId("provenance:combat.scene.enforcement").textContent).toBe("gameSettings.source.scene");
     const cell = screen.getByTestId("gameSettings:combat-effective-combat.enforcement");
     expect(cell.textContent).toBe('"hard"');
+  });
+
+  it("the provenance hint and the effective-rules summary react to a scene override written after mount", async () => {
+    // Mounted with NO scene override — both readouts must move once the override lands through
+    // the shared store, not only reflect whatever was present at first render.
+    const store = storeWith(ws(), scene());
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent: vi.fn() }) });
+    expect(screen.getByTestId("provenance:combat.scene.enforcement").textContent).not.toBe("gameSettings.source.scene");
+    const cell = screen.getByTestId("gameSettings:combat-effective-combat.enforcement");
+    expect(cell.textContent).not.toBe('"hard"');
+
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: "s1", changes: [{ path: "/engine/combat", old: null, new: { enforcement: "hard" } }] }],
+    });
+    await tick();
+
+    expect(screen.getByTestId("provenance:combat.scene.enforcement").textContent).toBe("gameSettings.source.scene");
+    expect(cell.textContent).toBe('"hard"');
+  });
+
+  it("CombatSceneOverrides' own provenance hint reacts to a WORLD-tier write with no scene override at all", async () => {
+    // Isolates `prov`'s OWN `ctx.documents` subscription from the scene document's identity
+    // change: the scene document here is never touched, so a reactivity path that only follows
+    // the `scene` prop (as a scene-tier edit incidentally does, via `GameSettingsPanel`'s own
+    // reactive `scene` derived re-deriving a fresh reference) would NOT catch a missing
+    // subscription here — only `prov`'s own `subscribe()` call does.
+    const store = storeWith(ws(), scene());
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent: vi.fn() }) });
+    expect(screen.getByTestId("provenance:combat.scene.enforcement").textContent).toBe("gameSettings.source.engine");
+
+    store.applyCommand({
+      seq: 2, world_id: "w1", author: "a", ts: 1,
+      ops: [{ op: "update", doc_id: "ws1", changes: [{ path: "/engine/combat", old: null, new: { enforcement: "warn" } }] }],
+    });
+    await tick();
+
+    expect(screen.getByTestId("provenance:combat.scene.enforcement").textContent).toBe("gameSettings.source.world");
   });
 });

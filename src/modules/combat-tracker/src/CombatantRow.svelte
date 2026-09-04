@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { resolveConditions, type CombatAffordances, type CombatantEngine, type Resource } from "@shadowcat/core";
   import { formatResource, firstChannel, type Row } from "./model";
@@ -33,12 +34,17 @@
   const { row, combatId, registry, isTurn, can, busy, run, notation, onDragStart, index, compact = false }: Props = $props();
 
   const ctx = getAppContext();
+  // Reactive bridge: `ctx.documents` is a plain-callback store, not a Svelte rune (mirrors
+  // CombatTrackerPanel's own `subscribeDocs`) — without it a condition applied/removed during
+  // play never updates this row's glyphs.
+  const subscribeDocs = createSubscriber((update) => ctx.documents.subscribe(update));
 
   const engine = $derived(row.doc.engine as CombatantEngine);
   const mayRoll = $derived(can.roll(row.doc.id));
   const mayEditResource = $derived(can.resource(row.doc.id));
 
   const conditions = $derived.by(() => {
+    subscribeDocs();
     if (!row.art.tokenId) return [];
     const token = ctx.documents.get(row.art.tokenId);
     return token ? resolveConditions(token, ctx.documents) : [];
