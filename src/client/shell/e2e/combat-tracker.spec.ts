@@ -134,10 +134,14 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
 
     await openTracker(player);
 
-    // Roll all with 1d20 — both actor rows gain an initiative value.
+    // Roll all with 1d20 — both actor rows gain an initiative value, and the two rolls
+    // (the event never rolls) each post a roll card to chat — combat intents reach chat, not
+    // just the tracker's own state.
     await gm.getByLabel("combatTracker.notation").fill("1d20");
     await gm.getByTestId("combat-tracker:roll-all").click();
     await expect(gm.getByLabel("combatTracker.initiative").first()).not.toHaveValue("", { timeout: 15_000 });
+    await expect(gm.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
+    await expect(player.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
 
     // Start the combat — round 1, the first row is aria-current on BOTH browsers.
     await gm.getByRole("button", { name: "combatTracker.start" }).click();
@@ -168,6 +172,11 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await expect(gm.getByText("Trap trigger")).toHaveCount(0, { timeout: 15_000 });
     await expect(player.getByText("Trap trigger")).toHaveCount(0, { timeout: 15_000 });
 
+    // The event's own turn posted its authored message to chat (a public "combat" channel
+    // notice, `resolve_event`'s own message doc) — visible to both browsers.
+    await expect(gm.getByText("The floor gives way!")).toBeVisible({ timeout: 15_000 });
+    await expect(player.getByText("The floor gives way!")).toBeVisible({ timeout: 15_000 });
+
     // Hide the NPC (unassigned) row — it vanishes from the player's tracker live; reveal returns.
     const npcHideButton = gm.locator('[data-testid^="combat-tracker:hide-"]').last();
     const npcRowTestId = await npcHideButton.evaluate((el) =>
@@ -191,9 +200,11 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await expect(gm.getByText("combatTracker.noCombat")).toBeVisible({ timeout: 15_000 });
     await expect(player.getByText("combatTracker.noCombatPlayer")).toBeVisible({ timeout: 15_000 });
 
-    // Compact viewport smoke, reusing the player context: the panel opens, the header wraps,
-    // End my turn (absent here since combat ended) is not asserted — instead the create/no-combat
-    // affordance's touch target is checked at ≥ 44 px, pinning the compact reflow itself.
+    // Compact viewport smoke, reusing the player context: the panel reflows into its compact
+    // layout (this end-to-end assertion is a class check only). The ≥44px coarse-pointer touch
+    // floor on every compact-branch button/input is pinned at the unit level, against each
+    // component's own styles: `CombatTrackerPanel.touch.test.ts`'s "every button/input carries
+    // the 44px coarse-target rule" case, covering CombatTrackerPanel/CombatHeader/CombatantRow.
     await player.setViewportSize({ width: 390, height: 844 });
     await expect(player.locator(".combat-tracker")).toHaveClass(/\bcompact\b/, { timeout: 15_000 });
 

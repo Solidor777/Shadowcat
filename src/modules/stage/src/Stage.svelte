@@ -131,6 +131,10 @@
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
         onDerivedApplied: (input) => { host.dataset.sceneDerived = "1"; host.dataset.visionMode = input.mode; },
+        // Mirrors a scene tool's route-preview label (a combat movement-budget overage/stop
+        // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
+        // content with no other DOM presence.
+        onMeasureDrawn: (label) => { host.dataset.measureLabel = label; },
       });
       const e = engine;
       // setViewport (resize + initial grid) then start (camera + reconcile +

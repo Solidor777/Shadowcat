@@ -51,6 +51,41 @@ async function dragScene(
   await page.mouse.up();
 }
 
+/** Same drag gesture as {@link dragScene}, but pauses AFTER the move (before releasing) to
+ * assert the route-preview label the drag's own hover produces — a Warn overage or Hard stop
+ * suffix, mirrored onto the stage host by `RenderEngine`'s `onMeasureDrawn` hook (the label
+ * otherwise exists only as canvas-drawn content with no other DOM presence). This is the one
+ * end-to-end proof that the resolved combat movement enforcement, read from the REAL
+ * scene/world-settings documents through the real server round trip, reaches this label — the
+ * label's own text/color logic is otherwise covered only at the unit level
+ * (`measure-tool.test.ts`/`ToolRail.test.ts`).
+ * @param page The dragging browser page.
+ * @param from The drag's start point, in stage-canvas-local pixels.
+ * @param to The drag's end point, in stage-canvas-local pixels.
+ * @param labelSubstring The substring the route-preview label must contain before release.
+ * @example
+ * ```
+ * declare function dragSceneExpectingLabel(page: Page, from: { x: number; y: number }, to: { x: number; y: number }, labelSubstring: string): Promise<void>;
+ * dragSceneExpectingLabel(page, { x: 0, y: 0 }, { x: 10, y: 0 }, "stops at budget");
+ * ```
+ */
+async function dragSceneExpectingLabel(
+  page: Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  labelSubstring: string,
+): Promise<void> {
+  const box = await page.getByTestId("stage-canvas").boundingBox();
+  expect(box).not.toBeNull();
+  await page.mouse.move(box!.x + from.x, box!.y + from.y);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + to.x, box!.y + to.y);
+  await expect
+    .poll(async () => (await stageHost(page).getAttribute("data-measure-label")) ?? "", { timeout: 15_000 })
+    .toContain(labelSubstring);
+  await page.mouse.up();
+}
+
 test("the resource registry and combat chain editors drive a real movement-budget gate", async ({
   page,
   browser,
@@ -211,8 +246,9 @@ test("the resource registry and combat chain editors drive a real movement-budge
 
     // --- Gate proof, hard enforcement: a drag spanning 3 cells against a 2-cell budget
     // truncates at the 2-cell mark. `Stage`'s `data-last-move-outcome` mirrors the server's own
-    // move-resolution outcome directly, independent of any canvas-rendered preview text.
-    await dragScene(player, { x: HANDOFF_X, y: TOKEN_Y }, { x: TARGET_X, y: TOKEN_Y });
+    // move-resolution outcome directly — checked independently of the route-preview label, which
+    // `dragSceneExpectingLabel` also confirms shows the Hard stop marker mid-drag.
+    await dragSceneExpectingLabel(player, { x: HANDOFF_X, y: TOKEN_Y }, { x: TARGET_X, y: TOKEN_Y }, "stops at budget");
     await expect(stageHost(player)).toHaveAttribute("data-last-move-outcome", "truncated", { timeout: 20_000 });
     await expect
       .poll(async () => (await stageHost(gm).getAttribute("data-token-positions")) ?? "", { timeout: 20_000 })
@@ -238,7 +274,8 @@ test("the resource registry and combat chain editors drive a real movement-budge
       await gm.getByTestId("combat-tracker:advance").click();
     }
 
-    await dragScene(player, { x: TRUNCATED_X, y: TOKEN_Y }, { x: TRUNCATED_X + 300, y: TOKEN_Y });
+    // Warn enforcement's route preview shows the overage instead of a hard stop.
+    await dragSceneExpectingLabel(player, { x: TRUNCATED_X, y: TOKEN_Y }, { x: TRUNCATED_X + 300, y: TOKEN_Y }, "over budget");
     await expect(stageHost(player)).toHaveAttribute("data-last-move-outcome", "executed", { timeout: 20_000 });
   } finally {
     await playerCtx.close();

@@ -87,6 +87,11 @@ export interface RenderEngineOpts {
   /** Called when a derived frame is applied (host observability hook); carries the applied
    * visibility so the host can surface the fog mode. */
   onDerivedApplied?: (input: VisibilityInput) => void;
+  /** Called on every `drawMeasure` (host observability hook), carrying the drawn label
+   * verbatim — the ONLY way a route-preview label (a combat movement-budget overage/stop
+   * suffix, or a plain distance) reaches anything outside the canvas, since the label itself
+   * renders only as `DisplayBackend`-drawn canvas content with no other DOM presence. */
+  onMeasureDrawn?: (label: string) => void;
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
@@ -913,6 +918,7 @@ export class RenderEngine implements SceneToolHost {
    */
   drawMeasure(from: Point, to: Point, label: string): void {
     this.opts.backend.drawMeasure(from, to, label);
+    this.opts.onMeasureDrawn?.(label);
   }
 
   /** `SceneToolHost.clearMeasure`: clear the measurement overlay. Forwards verbatim to
