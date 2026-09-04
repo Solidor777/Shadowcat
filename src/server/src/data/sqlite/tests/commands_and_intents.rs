@@ -1304,6 +1304,83 @@ async fn apply_intent_whole_band_replacement_removal_still_works() {
     assert_eq!(sys["baz"], serde_json::json!(1));
 }
 
+/// Pins the rename shape's atomicity against `apply_intent`'s generic pre-existing
+/// machinery: ONE `Update` batching a remove of an old key alongside an insert of a new
+/// key whose precondition is `null`, where the new key ALREADY EXISTS. The whole `Update`
+/// must be rejected, and — this is the load-bearing assertion — the old key must still be
+/// present afterwards, proving the remove was never applied. Every field-path precondition
+/// in a single `changes` vec is checked against the SAME pre-transaction `whole` snapshot
+/// (see `values_semantically_eq`'s caller in the Update arm), so a later change's stale
+/// pre-image rejects the whole batch before any of it reaches storage.
+#[tokio::test]
+async fn apply_intent_update_batching_a_rename_rejects_wholesale_on_a_colliding_target_key() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let doc = world_doc(1, w.id, serde_json::json!({ "hp": 10, "speed": 5 }));
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: doc.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    // A rename of "hp" -> "speed", where "speed" already exists: the insert's precondition
+    // (`old: null`, the wire shape for a genuinely-absent key) is stale against the real
+    // stored value, so the whole batch — remove included — must be rejected.
+    let err = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: doc.id,
+                changes: vec![
+                    FieldChange {
+                        remove: true,
+                        path: "/system/hp".into(),
+                        old: serde_json::json!(10),
+                        new: serde_json::Value::Null,
+                    },
+                    FieldChange {
+                        remove: false,
+                        path: "/system/speed".into(),
+                        old: serde_json::Value::Null,
+                        new: serde_json::json!(10),
+                    },
+                ],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)));
+
+    let stored = r.get_document(doc.id).await.unwrap().unwrap();
+    let sys = stored.system.as_object().unwrap();
+    assert_eq!(
+        sys["hp"],
+        serde_json::json!(10),
+        "the remove must not have been applied — the old key is still present"
+    );
+    assert_eq!(
+        sys["speed"],
+        serde_json::json!(5),
+        "the pre-existing target key is untouched"
+    );
+}
+
 /// Regression pin: a single intent batching `[Create(token), Update(token,
 /// /engine/x=...)]` must be rejected wholesale, never partially committed. The `Update`
 /// validation branch loads the CURRENT stored document (`Self::load_document`) before any
