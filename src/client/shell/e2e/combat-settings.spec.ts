@@ -96,19 +96,57 @@ test("the resource registry and combat chain editors drive a real movement-budge
     await gm.getByRole("button", { name: new RegExp(worldName) }).click();
     await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
+    // --- Seat the player's actor first: image art, a named `system.speed` leaf authored
+    // through the actor sheet's `SystemTreeEditor`, then a LINKED token stamped from the
+    // selected actor. `gameSettings.resources.max`/`turnStart` below reference it by name
+    // ("speed") rather than a numeric literal, exercising the real movement-budget gate
+    // (Resource -> CombatDefaults -> execute_move) through `crate::formula`'s
+    // `SystemLeafResolver`, not a stand-in.
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-asset-browser:panel").click();
+    await gm.getByTestId("asset-upload-input").setInputFiles({ name: "tok.png", mimeType: "image/png", buffer: PNG_1X1 });
+    await expect(gm.getByTestId("asset-tile")).toHaveCount(1);
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-asset-browser:panel").click();
+
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-actors:panel").click();
+    const actorsPanel = gm.locator(".actors");
+    await actorsPanel.getByPlaceholder("Name", { exact: true }).fill("PlayerChar");
+    await actorsPanel.getByTestId("visual-pick").click();
+    const pickDialog = gm.getByTestId("asset-pick-dialog");
+    await expect(pickDialog).toBeVisible();
+    await pickDialog.getByTestId("asset-tile").first().click();
+    await actorsPanel.getByRole("button", { name: "Create actor" }).click();
+
+    await actorsPanel.getByRole("button", { name: "Open sheet" }).click();
+    const sheet = gm.getByRole("dialog", { name: "Sheet" });
+    await expect(sheet).toBeVisible();
+    await sheet.getByText("All data").click();
+    await sheet.getByLabel("New field key").fill("speed");
+    await sheet.getByLabel("New field value").fill("2");
+    await sheet.getByRole("button", { name: "Add field" }).click();
+    await expect(sheet.getByLabel("speed")).toHaveValue("2");
+    await sheet.getByRole("button", { name: "Close" }).click();
+
+    await actorsPanel.getByRole("button", { name: "PlayerChar" }).click();
+    await gm.getByTestId("tool-place").click();
+    let box = await gm.getByTestId("stage-canvas").boundingBox();
+    expect(box).not.toBeNull();
+    await gm.mouse.click(box!.x + PLACE_X, box!.y + TOKEN_Y);
+    await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-actors:panel").click();
+
     await openGameSettings(gm);
 
-    // --- Resources editor: add a Tracked "movement" resource. `max`/`turnStart` carry a plain
-    // numeric-literal formula rather than a system-leaf reference — `SystemTreeEditor` has no
-    // key-rename affordance (an added field's key is a random opaque id with no rename
-    // control), so authoring a NAMED `system.speed` leaf through that editor is not achievable
-    // today; the numeric literal exercises the identical movement-budget gate
-    // (Resource -> CombatDefaults -> execute_move) without depending on that unrelated gap.
+    // --- Resources editor: add a Tracked "movement" resource. `max`/`turnStart` reference the
+    // actor's own named `system.speed` leaf authored above.
     await gm.getByLabel("gameSettings.resources.key").fill("movement");
     await gm.getByRole("button", { name: "gameSettings.resources.add" }).click();
     await gm.getByLabel("gameSettings.resources.kind-movement").selectOption("tracked");
-    await gm.getByLabel("gameSettings.resources.max-movement").fill("2");
-    await gm.getByLabel("gameSettings.resources.turnStart-movement").fill("2");
+    await gm.getByLabel("gameSettings.resources.max-movement").fill("speed");
+    await gm.getByLabel("gameSettings.resources.turnStart-movement").fill("speed");
 
     // --- Chain editor (world tier): movementResource = movement, interpretation = per_cell,
     // enforcement = hard.
@@ -136,20 +174,8 @@ test("the resource registry and combat chain editors drive a real movement-budge
     await gm.getByLabel("gameSettings.combat.enforcement").selectOption("hard");
     await closeGameSettings(gm);
 
-    // --- Seat the player's token: art, placement, ownership.
-    await gm.getByTestId("launcher-trigger").click();
-    await gm.getByTestId("launcher-item-asset-browser:panel").click();
-    await gm.getByTestId("asset-upload-input").setInputFiles({ name: "tok.png", mimeType: "image/png", buffer: PNG_1X1 });
-    await expect(gm.getByTestId("asset-tile")).toHaveCount(1);
-    await gm.getByTestId("tool-place").click();
-    await gm.getByTestId("picker-asset").first().click();
-    let box = await gm.getByTestId("stage-canvas").boundingBox();
-    expect(box).not.toBeNull();
-    await gm.mouse.click(box!.x + PLACE_X, box!.y + TOKEN_Y);
-    await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
-    await gm.getByTestId("launcher-trigger").click();
-    await gm.getByTestId("launcher-item-asset-browser:panel").click();
-
+    // --- Assign the seated token's ownership (the actor + linked token were placed above,
+    // before the game-settings edits).
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
     await gm.getByTestId("tool-select").click();
