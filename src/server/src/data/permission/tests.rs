@@ -4515,6 +4515,48 @@ fn base_egress_fails_closed_on_a_recorded_policy_it_cannot_act_on() {
     }
 }
 
+/// A coalescing variant of `own_overrides`'s `/base` half: it treats an absent
+/// `property_overrides` key as empty ("nothing hidden") instead of the real
+/// function's fail-closed `serde_json::from_value::<StoredBase>` error. Exists ONLY
+/// so a test can observe the exact disclosure the real fail-closed check prevents —
+/// never called from production, and deliberately duplicated rather than
+/// parameterized, since a shared toggle would risk the bug leaking back into the
+/// real function.
+fn legacy_coalescing_base_overrides(doc: &Document) -> Vec<(String, Visibility)> {
+    let mut out = vec![("/base".to_string(), Visibility::OwnerOrGm)];
+    let base = doc.base.as_ref().expect("test base is present");
+    let obj = base.as_object().expect("test base is an object");
+    let owner_standing: OwnerStanding = obj
+        .get("owner_standing")
+        .cloned()
+        .map(|v| serde_json::from_value(v).expect("test owner_standing parses"))
+        .unwrap_or(OwnerStanding::Owner);
+    if owner_standing == OwnerStanding::Stranger {
+        out.push(("/base".to_string(), Visibility::GmOnly));
+    }
+    let snapshot = MergeBase {
+        name: obj.get("name").and_then(|v| v.as_str()).map(str::to_string),
+        engine: obj
+            .get("engine")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        system: obj
+            .get("system")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+        embedded: Default::default(),
+        // THE BUG under test: a missing `property_overrides` key coalesces to "no
+        // policy recorded" instead of failing the read closed.
+        property_overrides: obj
+            .get("property_overrides")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
+    };
+    base_policy(&snapshot, "/base", owner_standing, &mut out)
+        .expect("test snapshot is well-formed");
+    out
+}
+
 #[test]
 fn base_egress_fails_closed_when_the_recorded_policy_map_is_absent_rather_than_leaking_the_field_it_would_have_hidden(
 ) {
@@ -4545,6 +4587,18 @@ fn base_egress_fails_closed_when_the_recorded_policy_map_is_absent_rather_than_l
         result.is_err(),
         "an absent recorded-policy map must fail the whole read closed, not disclose \
          `secret` unredacted: {result:?}"
+    );
+
+    // Demonstrate the disclosure this closes, rather than asserting only that the
+    // real path errors: drive the SAME document through the coalescing read path
+    // and confirm `secret` actually reaches the non-GM owner unredacted there.
+    let legacy_overrides = legacy_coalescing_base_overrides(&inst);
+    let legacy_hidden = hidden_from_overrides(&legacy_overrides, &a_owner);
+    let mut whole = serde_json::to_value(&inst).expect("test document serializes");
+    redact_pointers(&mut whole, &legacy_hidden).expect("legacy hidden set classifies");
+    assert_eq!(
+        whole["base"]["system"]["secret"], "S",
+        "the coalescing read path discloses `secret` to the non-GM owner: {whole}"
     );
 }
 
@@ -4713,4 +4767,18 @@ fn writes_a_content_band_agrees_with_the_clients_ismergeablebandpointer_on_every
             case.pointer
         );
     }
+}
+
+#[test]
+fn an_empty_trailing_segment_is_refused_at_both_the_write_and_egress_classifiers() {
+    // `writes_a_content_band` names no segment past a bare trailing separator, so
+    // `/system/` is refused there directly; the sibling top-level classifier
+    // `redaction_target` refuses `/system/` itself via its own `!tail.is_empty()`
+    // guard, and — because `is_base_content_residual` is derived from
+    // `writes_a_content_band` — a `/base/system/` pointer now agrees with it
+    // rather than disagreeing on the same malformed shape.
+    assert!(!writes_a_content_band("/system/"));
+    assert!(!writes_a_content_band("/engine/"));
+    assert_eq!(redaction_target("/system/"), None);
+    assert_eq!(redaction_target("/base/system/"), None);
 }

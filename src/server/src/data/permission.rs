@@ -293,10 +293,12 @@ fn band_has_interior(band: &str) -> bool {
 /// capability and is rejected for every client origin. Only the leaf rule
 /// (`band_has_interior`) remains shared with `redaction_target`; the band set is
 /// not, and must not be — the redactable set legitimately contains one more band
-/// than the writable set. The residual-segment rule is likewise unshared: an
-/// empty residual (`/system/`) is a writable path here and an unclassifiable
-/// override key there, because a `FieldChange` path and a `property_overrides`
-/// key are different fields on different structures with different validators.
+/// than the writable set. The residual-segment rule, by contrast, IS shared in
+/// effect (though not by symbol): a residual of bare `/` names no segment at
+/// all, so `/system/` is refused here exactly as `redaction_target` refuses it —
+/// a `FieldChange` path and a `property_overrides` key are different fields on
+/// different structures with different validators, but neither treats an empty
+/// trailing segment as naming a path.
 pub(crate) fn writes_a_content_band(path: &str) -> bool {
     let Some(rest) = path.strip_prefix('/') else {
         return false;
@@ -306,7 +308,7 @@ pub(crate) fn writes_a_content_band(path: &str) -> bool {
             || (band_has_interior(band)
                 && rest
                     .strip_prefix(*band)
-                    .is_some_and(|tail| tail.starts_with('/')))
+                    .is_some_and(|tail| tail.starts_with('/') && tail.len() > 1))
     })
 }
 
@@ -378,8 +380,8 @@ pub enum RedactionTarget {
 /// different input domains: `required_cap_for_path` classifies a `FieldChange`
 /// path, `redaction_target` classifies a `property_overrides` map key. Same
 /// JSON-pointer syntax, different fields on different structures, gated by
-/// different validators — so they are NOT required to agree string-for-string,
-/// and do not (`/system/` is a writable path there and unclassifiable here).
+/// different validators — so they are NOT required to agree string-for-string
+/// in general, though on an empty trailing segment (`/system/`) both refuse it.
 ///
 /// `base`'s interior does NOT get the ordinary "any residual is `Within`" treatment the
 /// other three bands get, because `base`'s content is not an arbitrary untyped tree —
