@@ -75,16 +75,22 @@ fn blocks_every_named_ipv4_range() {
 #[test]
 fn blocks_every_named_ipv6_range() {
     let cases: &[&str] = &[
-        "::",                // unspecified
-        "::1",               // loopback
-        "::ffff:10.0.0.1",   // IPv4-mapped private
-        "64:ff9b::10.0.0.1", // NAT64-mapped private
-        "::127.0.0.1",       // ::/96 IPv4-compatible embedding loopback
+        "::",                                   // unspecified
+        "::1",                                  // loopback
+        "::ffff:10.0.0.1",                      // IPv4-mapped private
+        "64:ff9b::10.0.0.1",                    // NAT64-mapped private
+        "::127.0.0.1",                          // ::/96 IPv4-compatible embedding loopback
         "::7f00:1",          // ::/96 IPv4-compatible embedding loopback (packed form)
         "2002:c0a8:0101::1", // 2002::/16 6to4 encapsulating 192.168.1.1
         "2002::1",           // 2002::/16 6to4 (blocked wholesale)
         "100::1",            // discard
         "2001:db8::1",       // documentation
+        "2001:1::1",         // PCP Anycast
+        "2001:1::2",         // TURN Anycast
+        "2001:20::1",        // ORCHIDv2
+        "2001:2f::1",        // ORCHIDv2 (upper end of the /28)
+        "2001::1",           // Teredo
+        "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo, real client-form address
         "fc00::1",           // unique-local
         "fd12:3456::1",      // unique-local (fd00::/8 subset)
         "fe80::1",           // link-local
@@ -105,6 +111,22 @@ fn allows_known_public_addresses() {
     // A public IPv4-mapped v6 must also unwrap and be allowed.
     let mapped: IpAddr = "::ffff:93.184.216.34".parse().unwrap();
     assert!(!is_blocked_ip(mapped));
+}
+
+#[test]
+fn allows_addresses_just_outside_the_new_ipv6_special_purpose_arms() {
+    // Negative control pinning each new arm's exact boundary: one step outside
+    // 2001:1::1/128, 2001:1::2/128, 2001:20::/28 and 2001::/32 must stay public.
+    let cases: &[&str] = &[
+        "2001:1::3",   // one past the PCP/TURN anycast pair
+        "2001:1f::1",  // one below the ORCHIDv2 /28
+        "2001:30::1",  // one above the ORCHIDv2 /28
+        "2001:1::1:0", // outside 2001::/32 (s[1] != 0)
+    ];
+    for &ip in cases {
+        let addr: IpAddr = ip.parse().unwrap();
+        assert!(!is_blocked_ip(addr), "{ip} should NOT be blocked");
+    }
 }
 
 // -- extract_preview: pure unit tests -----------------------------------

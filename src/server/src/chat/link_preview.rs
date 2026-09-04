@@ -597,6 +597,31 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     if s[0] == 0x2001 && s[1] == 0x0db8 {
         return true; // 2001:db8::/32 documentation, RFC 3849
     }
+    if s[0] == 0x2001
+        && s[1] == 0x0001
+        && s[2] == 0
+        && s[3] == 0
+        && s[4] == 0
+        && s[5] == 0
+        && s[6] == 0
+        && (s[7] == 1 || s[7] == 2)
+    {
+        return true; // 2001:1::1/128 PCP Anycast (RFC 7723), 2001:1::2/128 TURN
+                     // Anycast (RFC 8155) — routable anycast addresses, not host-owned
+    }
+    if s[0] == 0x2001 && (s[1] & 0xfff0) == 0x0020 {
+        return true; // 2001:20::/28 ORCHIDv2, RFC 7343 — cryptographic hash
+                     // identifiers, never a real routable next hop for a fetch
+    }
+    if s[0] == 0x2001 && s[1] == 0 {
+        return true; // 2001::/32 Teredo, RFC 4380 — an IPv4-in-IPv6 tunneling
+                     // scheme; the embedded client address is NOT re-unwrapped and
+                     // re-checked (unlike the ::ffff:0:0/96 and 64:ff9b::/96 arms
+                     // above) because a Teredo address also encodes the sending
+                     // NAT's public IPv4 obfuscated by XOR against a fixed
+                     // constant, not a plain embedded address — blocking the whole
+                     // prefix is the only sound option without a dedicated decoder
+    }
     if (s[0] & 0xfe00) == 0xfc00 {
         return true; // fc00::/7 unique-local, RFC 4193
     }
