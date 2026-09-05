@@ -62,7 +62,7 @@
   const templates = new TemplatesController({
     store: session.store,
     documents: session.documents,
-    dispatchIntent: (ops) => session.dispatchIntent(ops),
+    sendMergeIntent: (msg, opts) => session.mergeIntent(msg, opts),
     role: session.role!,
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),

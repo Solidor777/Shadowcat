@@ -1,0 +1,177 @@
+# Merge conformance corpus — generation transcript (equivalence evidence for the server port)
+#
+# What this is: the captured stdout+stderr of running the TS-engine corpus generator
+# (`MERGE_CORPUS_GENERATE=1` over `src/client/core/src/mergeConformance.test.ts`, a file that
+# no longer exists on this branch — it was deleted with the TS merge engine) in a temporary
+# detached git worktree of each commit that carried the generator, followed by an
+# assertion-mode re-run and a byte comparison of the fixture it produced against the
+# committed `src/client/core/src/__fixtures__/merge-conformance.json`.
+#
+# Result: at BOTH generator commits the regenerated fixture is byte-identical to the fixture
+# committed at that commit (`git diff --exit-code` exit 0), and the fixture produced at
+# 07436f6f (the last commit carrying the generator; the TS engine is deleted in b84da1fe)
+# is byte-identical to the fixture on this branch (cmp exit 0; sha256
+# 3521af308a71efa0524a6c85982bb68d5f14ecea98b401e3bd61fb1fd78a1c51 on both sides).
+#
+# Runs:
+#   1. 029c705c — the commit that added the generator + harness (39 cases at that commit).
+#   2. 07436f6f — the corpus-blind-spots fold-in (51 harness tests over the 48-case fixture).
+#
+# Worktree: C:/Dev/sc-corpus-gen (created with `git worktree add --detach`, removed with
+# `git worktree remove` after capture). Node deps installed from the local pnpm store with
+# `pnpm install --frozen-lockfile`.
+#
+# Merge conformance corpus — generation transcript
+# worktree: /c/Dev/sc-corpus-gen (temporary detached worktree of commit 029c705cf62104a044466538d119abf511ad3fd8)
+# command: pnpm install --frozen-lockfile && MERGE_CORPUS_GENERATE=1 pnpm --filter @shadowcat/core exec vitest run src/mergeConformance.test.ts
+# started: 2026-09-02T16:27:58Z
+
+$ pnpm install --frozen-lockfile
+Scope: all 29 workspace projects
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +463
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 463, reused 458, downloaded 0, added 1
+
+   ╭───────────────────────────────────────────────────────────────────╮
+   │                                                                   │
+   │                Update available! 9.15.9 → 11.25.0.                │
+   │   Changelog: https://github.com/pnpm/pnpm/releases/tag/v11.25.0   │
+   │                 Run "pnpm add -g pnpm" to update.                 │
+   │                                                                   │
+   ╰───────────────────────────────────────────────────────────────────╯
+
+Progress: resolved 463, reused 458, downloaded 0, added 157
+Progress: resolved 463, reused 458, downloaded 0, added 232
+Progress: resolved 463, reused 458, downloaded 0, added 255
+Progress: resolved 463, reused 459, downloaded 0, added 297
+Progress: resolved 463, reused 459, downloaded 0, added 358
+Progress: resolved 463, reused 459, downloaded 0, added 395
+Progress: resolved 463, reused 459, downloaded 0, added 429
+Progress: resolved 463, reused 459, downloaded 0, added 449
+Progress: resolved 463, reused 459, downloaded 0, added 456
+Progress: resolved 463, reused 459, downloaded 0, added 457
+Progress: resolved 463, reused 459, downloaded 0, added 460
+Progress: resolved 463, reused 459, downloaded 0, added 462
+Progress: resolved 463, reused 459, downloaded 0, added 463
+Progress: resolved 463, reused 459, downloaded 0, added 463, done
+
+devDependencies:
++ @eslint/js 9.39.4
++ @sveltejs/vite-plugin-svelte 7.1.2
++ eslint 9.39.4
++ eslint-plugin-jsdoc 63.3.2
++ prettier 3.8.4
++ svelte 5.56.3
++ svelte-check 4.6.0
++ svelte-eslint-parser 1.8.0
++ trash 9.0.0
++ typedoc 0.28.20
++ typescript 5.9.3
++ typescript-eslint 8.61.1
++ vite 8.0.16
++ vitepress 1.6.4
++ vitest 4.1.9
+
+Done in 25.1s using pnpm v9.15.9
+exit=0
+
+$ MERGE_CORPUS_GENERATE=1 pnpm --filter @shadowcat/core exec vitest run src/mergeConformance.test.ts
+
+ RUN  v4.1.9 C:/Dev/sc-corpus-gen/src/client/core
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  09:28:24
+   Duration  402ms (transform 70ms, setup 0ms, import 115ms, tests 11ms, environment 0ms)
+
+exit=0
+
+$ pnpm --filter @shadowcat/core exec vitest run src/mergeConformance.test.ts  (assertion mode re-run)
+
+ RUN  v4.1.9 C:/Dev/sc-corpus-gen/src/client/core
+
+
+ Test Files  1 passed (1)
+      Tests  39 passed (39)
+   Start at  09:28:26
+   Duration  417ms (transform 72ms, setup 0ms, import 118ms, tests 13ms, environment 0ms)
+
+exit=0
+
+$ git status --short src/client/core/src/__fixtures__/
+$ git diff --exit-code --stat src/client/core/src/__fixtures__/merge-conformance.json
+exit=0
+
+# ---- second run: last commit carrying the generator (the TS engine is deleted in the next commit, b84da1fe) ----
+# worktree: /c/Dev/sc-corpus-gen (detached at 07436f6fc454cfdabd0903a3b9c99faec7066273)
+# command: pnpm install --frozen-lockfile && MERGE_CORPUS_GENERATE=1 pnpm --filter @shadowcat/core exec vitest run src/mergeConformance.test.ts
+# started: 2026-09-02T16:31:16Z
+
+$ pnpm install --frozen-lockfile
+Already up to date
+
+Done in 1.1s using pnpm v9.15.9
+exit=0
+
+$ MERGE_CORPUS_GENERATE=1 pnpm --filter @shadowcat/core exec vitest run src/mergeConformance.test.ts
+
+ RUN  v4.1.9 C:/Dev/sc-corpus-gen/src/client/core
+
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  09:31:19
+   Duration  442ms (transform 77ms, setup 0ms, import 128ms, tests 14ms, environment 0ms)
+
+exit=0
+
+$ pnpm --filter @shadowcat/core exec vitest run src/mergeConformance.test.ts  (assertion mode re-run)
+
+ RUN  v4.1.9 C:/Dev/sc-corpus-gen/src/client/core
+
+
+ Test Files  1 passed (1)
+      Tests  51 passed (51)
+   Start at  09:31:21
+   Duration  539ms (transform 72ms, setup 0ms, import 125ms, tests 22ms, environment 0ms)
+
+exit=0
+
+$ git status --short src/client/core/src/__fixtures__/
+$ git diff --exit-code --stat src/client/core/src/__fixtures__/merge-conformance.json
+exit=0
+
+$ cmp src/client/core/src/__fixtures__/merge-conformance.json /c/Dev/Shadowcat-m14c5/src/client/core/src/__fixtures__/merge-conformance.json  (byte comparison against the branch HEAD bc30b82f fixture)
+exit=0
+$ sha256sum (both)
+3521af308a71efa0524a6c85982bb68d5f14ecea98b401e3bd61fb1fd78a1c51 *src/client/core/src/__fixtures__/merge-conformance.json
+3521af308a71efa0524a6c85982bb68d5f14ecea98b401e3bd61fb1fd78a1c51 */c/Dev/Shadowcat-m14c5/src/client/core/src/__fixtures__/merge-conformance.json
+
+# ---- post-generation amendment (by hand, after the runs above) ----
+# The server engine emits the `/base` refresh only when it differs (deep, key-order-independent
+# equality) from the stored value; the generator's engine emitted it unconditionally. Four revert
+# cases whose expected update carried a `/base` change with old == new were amended to drop that
+# change, and one was renamed:
+#   revert-bands-take-template       — `/base` change removed
+#   revert-restores-locally-deleted  — `/base` change removed
+#   revert-nested-embedded           — `/base` change removed
+#   revert-no-op-still-emits-base    — `/base` change removed; renamed revert-no-op-emits-no-changes
+# The fixture also gained a top-level `amendments` key stating the same. Every other byte of the
+# fixture is the generator's output above.
+
+# ---- second post-generation amendment (by hand) ----
+# The server's `MergeBase` records the content-band policy of the document it snapshots
+# (`property_overrides` on the root, `propertyOverrides` on every embedded record) alongside the
+# bands, and the ingest walk requires the key; the generator's engine emitted no such key. Every
+# `/base` change's NEW value in `expect.update.changes` gained the key, empty (no corpus document
+# carries an override), in these 11 cases:
+#   resolve-takes-template, resolve-keeps-mine, resolve-embedded-deletion-takes-template,
+#   plan-absent-collection-old-null, plan-empty-collection-skipped, plan-changed-bands-only,
+#   resolve-ancestor-delete-takes-template, resolve-parent-delete-takes-template,
+#   resolve-escaped-keys-take-template, plan-multi-collection-order, revert-drops-local-additions
+# Inputs (`base`, and every `/base` change's OLD value) are untouched: the engine parses an absent
+# policy as empty on read and echoes the stored pre-image verbatim. The fixture's `amendments` key
+# gained a second entry stating the same. Every other byte is the generator's output above.

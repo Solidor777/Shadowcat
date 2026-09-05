@@ -85,6 +85,8 @@ Every `ServerMsg` variant:
 | `move_stream` | Broadcast move animation: timed position samples (empty for a glow-only recipient), per-recipient-clipped mover vision, per-recipient-admitted carried-light timeline, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
 | `combat_result` | A `combat_*` intent from you was accepted; carries the committed `seq` your correlated wait resolves on |
 | `combat_error` | A `combat_*` intent from you was refused; carries the player-presentable reason |
+| `merge_result` | Outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`: applied, or the conflict set to resolve |
+| `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown/unresolvable resolutions carrying the fresh outcome) |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
@@ -116,6 +118,9 @@ Every `ClientMsg` variant:
 | `combat_sort` | Rebuild the turn order from current initiatives |
 | `combat_roll` | Roll initiative for named combatants, posting the result to a chat channel |
 | `combat_resource` | Adjust one combatant's tracked resource (delta or set) |
+| `merge_pull` | Merge an instance's template into it — the server computes the 3-way merge and, when conflict-free, commits it |
+| `merge_push` | Merge a template into every same-world instance visible to the sender |
+| `merge_revert` | Reset an instance's mergeable bands to its template's current state (never conflicts) |
 
 Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
 attributes.str` — never a client-substituted string. The server rewrites each
@@ -126,6 +131,50 @@ combatant's formula host. A referencing roll with no binding fails with an
 `unknown-ref` system notice. The same raw-template rule applies to the
 `notation` of every combat-roll entry, and a combat roll's `channel` is
 validated against the channel registry the same way a message's is.
+
+## Template merge intents
+
+The server computes every template 3-way merge (pull/push/revert) — the client only sends the
+intent and renders whatever conflict set comes back. Each intent is a stateless two-call flow:
+
+1. **Compute-only call** (no `resolutions`): the server merges from live documents. Conflict-free
+   applies immediately and commits under the same `event` broadcast every other write uses;
+   conflicted answers `merge_result` with the conflict set (per instance for `merge_push`) and
+   writes nothing.
+2. **Resolution call** (`resolutions`: the conflict paths whose template side to take — per
+   instance for `merge_push`, keyed by instance id): the server RECOMPUTES the merge from live
+   documents and rejects with `merge_error` (`stale_resolutions`/`unknown_resolution`/
+   `unresolvable`, each carrying the freshly recomputed outcome) unless every submitted path is
+   a current conflict whose template side the current merged shape can take — `unresolvable`
+   is the ancestor/descendant case, where the instance replaced a container the template
+   edited inside, so the template's leaf has nowhere to land and the user picks the instance's
+   side instead — there is no server-side session between the two calls.
+
+`merge_push` reports each same-world instance individually: `applied`, `conflicts`, or `excluded`
+(visible to the pusher but not writable by them). An instance the pusher cannot see at all is
+omitted from the reply entirely, matching redaction's own existence-hiding. A push commits its
+instances one by one, each under its own `event`, and is not atomic across them: every submitted
+resolution is validated before the first commit, so a resolutions rejection precedes any write,
+but a rejection raised by a commit itself (`stale_resolutions` from an OCC pre-image that no
+longer holds, `forbidden`, `internal`) leaves the instances committed before it in place with
+their `event`s already broadcast. The fresh outcome a `stale_resolutions` carries is recomputed
+from live documents, so an already-committed instance reads as `applied` there and the remainder
+carry their current conflicts; re-sending the intent commits what remains. Every conflict set is
+filtered to the paths the requester can see in both documents before it reaches the wire; a
+hidden conflict resolves to the instance's own (child) value automatically.
+
+**Visibility.** The merge runs over the requester's view of the template and of the stored
+`base` snapshot (both reduced by the same per-recipient classifier that redacts documents), so a
+value the requester cannot see never moves into an instance's content in either direction. The
+stored `base` itself is one canonical value — the full template snapshot with its
+`property_overrides` recorded (`propertyOverrides` on each embedded record), written by the server
+alone — and every merge write carries the template's overrides onto the instance additively
+(an `owner_or_gm` tier of a template with a different owner lands as `gm_only`), so a value a GM
+pushes into a player's instance arrives hidden from that player. Each recipient receives `base`
+cut by the policy it records, on top of the whole-band owner-or-GM floor: the instance owner sees
+the snapshot minus what the template hid, a GM sees it whole, and nobody else receives it. A
+client's "template changed" badge therefore compares its own view of the snapshot with its own
+view of the template, and reads in sync for every seat after any seat's merge.
 
 ## Scene channels
 

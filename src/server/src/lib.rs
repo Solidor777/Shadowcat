@@ -25,6 +25,9 @@ pub mod formula;
 pub mod health;
 /// Axum router: REST surface, asset serving, module serving, embedded client.
 pub mod http;
+/// The server-owned template merge engine: the exact behavioural twin of the
+/// client `@shadowcat/core` 3-way merge, corpus-pinned against it.
+pub mod merge;
 /// Installed community-module discovery + the engine-compat semver gate.
 pub mod modules;
 pub mod scene;

@@ -1,4 +1,4 @@
-import type { Conflict } from "@shadowcat/core";
+import type { WireMergeConflict } from "@shadowcat/core";
 
 /** One conflicted document/instance in the merge modal: its opaque group key
  * (document/instance UUID), display label, and the field-level conflicts the
@@ -12,5 +12,5 @@ export type ConflictGroup = {
    * (single-group pull sessions omit it). */
   label: string | null;
   /** The field-level conflicts within this document/instance the user resolves mine-vs-theirs. */
-  conflicts: Conflict[];
+  conflicts: WireMergeConflict[];
 };

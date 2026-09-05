@@ -1,0 +1,20 @@
+{
+  "cases": [
+    { "pointer": "/name", "mergeable": true },
+    { "pointer": "/name/first", "mergeable": false },
+    { "pointer": "/engine", "mergeable": true },
+    { "pointer": "/engine/hp", "mergeable": true },
+    { "pointer": "/engine/nested/deep", "mergeable": true },
+    { "pointer": "/system", "mergeable": true },
+    { "pointer": "/system/secret", "mergeable": true },
+    { "pointer": "/system/", "mergeable": false },
+    { "pointer": "/engine/", "mergeable": false },
+    { "pointer": "/base", "mergeable": false },
+    { "pointer": "/base/system/hp", "mergeable": false },
+    { "pointer": "/owner", "mergeable": false },
+    { "pointer": "/permissions/default", "mergeable": false },
+    { "pointer": "/embedded/items/0", "mergeable": false },
+    { "pointer": "/enginesomething", "mergeable": false },
+    { "pointer": "/systemx/hp", "mergeable": false }
+  ]
+}

@@ -12,8 +12,8 @@ use crate::data::command::{
     apply_field_change, Command, FieldChange, Operation, UnsequencedCommand, WriteOrigin,
 };
 use crate::data::document::{
-    CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope, World,
-    WorldCapDefaults, WorldRole,
+    world_of, CapabilityRequirement, ContractDeclaration, Document, SchemaDeclaration, Scope,
+    World, WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
     CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
@@ -1827,10 +1827,24 @@ impl SqliteRepository {
         world_id: Uuid,
         user_id: Uuid,
     ) -> Result<Option<WorldRole>, DataError> {
+        Self::load_member_role(&self.pool, world_id, user_id).await
+    }
+
+    /// `member_role` over any executor, for a caller already inside a
+    /// transaction (the single-writer pool holds one connection, so a pool
+    /// query mid-transaction would deadlock).
+    async fn load_member_role<'e, E>(
+        executor: E,
+        world_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<Option<WorldRole>, DataError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+    {
         let row = sqlx::query("SELECT role FROM world_members WHERE world_id = ? AND user_id = ?")
             .bind(world_id.to_string())
             .bind(user_id.to_string())
-            .fetch_optional(&self.pool)
+            .fetch_optional(executor)
             .await?;
         match row {
             Some(r) => {
@@ -3237,6 +3251,26 @@ impl Repository for SqliteRepository {
         // captured", its `None` value means "captured, no owner".
         let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
             std::collections::HashMap::new();
+        // A stamp whose template is CREATED in this same batch cannot load it
+        // from the store yet (nothing is written before the loop below), so
+        // the batch's own Creates are consulted first, by id — only the ones
+        // some other Create in the batch names as its `source`.
+        let batch_sources: std::collections::HashSet<Uuid> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Operation::Create { doc } => doc.source.as_ref().map(|s| s.id),
+                _ => None,
+            })
+            .collect();
+        let batch_templates: std::collections::HashMap<Uuid, Document> = ops
+            .iter()
+            .filter_map(|op| match op {
+                Operation::Create { doc } if batch_sources.contains(&doc.id) => {
+                    Some((doc.id, doc.clone()))
+                }
+                _ => None,
+            })
+            .collect();
         for op in &mut ops {
             match op {
                 Operation::Move {
@@ -3315,6 +3349,56 @@ impl Repository for SqliteRepository {
                 }
                 Operation::Create { doc } => {
                     check_command_scope(doc, world_id)?;
+                    // `base` is server-owned: derive it from the document's
+                    // OWN bands BEFORE any validation runs, so the derived
+                    // value is what gets validated, normalized, stored,
+                    // broadcast and logged — a stamped instance (`source`
+                    // set) snapshots itself, any other document stores no
+                    // base, and embedded children never carry one. Any
+                    // client-supplied `base` is discarded here. The
+                    // template is loaded so its content-band policy lands
+                    // on the new instance first (`propagate_overrides`,
+                    // inside `derive_create_base`); a template in another
+                    // world is treated exactly as a missing one, the same
+                    // reading `merge_intents::load_pull_docs` gives it.
+                    // `apply_command` (the trusted undo/replay substrate)
+                    // deliberately does NOT re-derive: it applies the
+                    // already-derived logged op verbatim, and every
+                    // production Create reaches storage through this arm.
+                    let template = match &doc.source {
+                        Some(source) => match batch_templates.get(&source.id) {
+                            Some(t) => Some(t.clone()),
+                            None => Self::load_document(&mut *tx, source.id)
+                                .await?
+                                .filter(|t| world_of(t).is_none_or(|w| w == world_id)),
+                        },
+                        None => None,
+                    };
+                    // The instance owner's standing on the template, under
+                    // which egress evaluates the derived snapshot's recorded
+                    // policy: both effective owners through the one
+                    // linked-actor join (`load_effective_owner`) and the
+                    // owner's membership role, resolved by the one
+                    // `permission::owner_standing` the merge writers use.
+                    let owner_standing = match &template {
+                        Some(t) => {
+                            let owner = match Self::load_effective_owner(&mut *tx, doc).await? {
+                                Some(user) => Self::load_member_role(&mut *tx, world_id, user)
+                                    .await?
+                                    .map(|role| (user, role)),
+                                None => None,
+                            };
+                            let template_owner = Self::load_effective_owner(&mut *tx, t).await?;
+                            crate::data::permission::owner_standing(
+                                owner,
+                                t,
+                                &world_defaults.grants_for(&t.doc_type),
+                                template_owner,
+                            )
+                        }
+                        None => crate::data::document::OwnerStanding::Stranger,
+                    };
+                    crate::merge::bands::derive_create_base(doc, template.as_ref(), owner_standing);
                     // A combatant's stored resource numbers derive from actor
                     // formulas that may read hidden leaves, so their egress
                     // defaults to the trusted tier: stamp the override when
@@ -3678,41 +3762,61 @@ impl Repository for SqliteRepository {
                         // (`permission::required_cap_for_path`): an
                         // immutable envelope field (id, scope, source, ...) maps
                         // to no capability and is rejected for everyone.
-                        // /system, /engine, /name, /base -> write_fields;
+                        // /system, /engine, /name -> write_fields;
                         // /embedded -> manage_embedded; /permissions AND /owner
                         // -> edit_permissions. /owner is NOT immutable — it is
                         // an access-control field, writable by a GM (or an
                         // explicit edit_permissions grant) but never by an owner,
                         // since the DocRole::Owner floor excludes that cap.
-                        let need = required_cap_for_path(&ch.path).ok_or(DataError::Forbidden)?;
+                        // `/base` maps to no capability too: it is server-owned
+                        // (`permission::WRITABLE_BANDS`), derived at Create and
+                        // refreshed by server merge writes only.
+                        let need = required_cap_for_path(&ch.path);
+                        // The one server-owned field write through this gate: a
+                        // merge handler's whole-band `/base` refresh under
+                        // `WriteOrigin::TemplateMerge`. The handler already
+                        // derived authorization against the computed Update, so
+                        // the capability mapping does not apply to it — OCC and
+                        // every structural check below still run. `/base/...`
+                        // sub-paths stay rejected for every origin: merge
+                        // emission is whole-band only
+                        // (`merge::plan::plan_to_update`).
+                        let merge_base_refresh = need.is_none()
+                            && origin == WriteOrigin::TemplateMerge
+                            && ch.path == "/base";
                         // A capability-skipping origin (`WriteOrigin::
                         // skips_capability_gates`) skips only the
                         // actor-holds-`need` test below, never
-                        // `required_cap_for_path`'s mapping above: an immutable
-                        // envelope path (`None`) is still rejected for every
-                        // origin, those included.
-                        if !origin.skips_capability_gates() && !access.has(need) {
-                            // A `ServerMessageRevision` write to a message doc may
-                            // ALSO write exactly `/permissions/property_overrides`
-                            // (never any other `/permissions` subpath) without
-                            // holding `cap::EDIT_PERMISSIONS` -- `handle_recalc_roll`
-                            // needs this to register a freshly-appended
-                            // `RecalcEntry`'s gm_only override pointer. Granting
-                            // `EDIT_PERMISSIONS` to this origin instead would ALSO
-                            // authorize rewriting `default`/`gm_role`/`users` -- the
-                            // message's own audience-enforcement fields -- which
-                            // this origin's `all: false` scoping deliberately
-                            // excludes (see the `ServerMessageRevision` access-grant
-                            // construction above). This exact-path admission widens
-                            // nothing for any other doc_type/origin/path.
-                            let is_recalc_override_write = is_server_message_revision
-                                && ch.path == "/permissions/property_overrides";
-                            if !is_recalc_override_write {
-                                tracing::debug!(
-                                    user = %ctx.user_id, path = %ch.path, capability = need,
-                                    "intent denied: missing capability"
-                                );
-                                return Err(DataError::Forbidden);
+                        // `required_cap_for_path`'s mapping: an immutable
+                        // envelope path (`None`, the merge refresh excepted) is
+                        // still rejected for every origin, those included.
+                        if need.is_none() && !merge_base_refresh {
+                            return Err(DataError::Forbidden);
+                        }
+                        if let Some(need) = need {
+                            if !origin.skips_capability_gates() && !access.has(need) {
+                                // A `ServerMessageRevision` write to a message doc may
+                                // ALSO write exactly `/permissions/property_overrides`
+                                // (never any other `/permissions` subpath) without
+                                // holding `cap::EDIT_PERMISSIONS` -- `handle_recalc_roll`
+                                // needs this to register a freshly-appended
+                                // `RecalcEntry`'s gm_only override pointer. Granting
+                                // `EDIT_PERMISSIONS` to this origin instead would ALSO
+                                // authorize rewriting `default`/`gm_role`/`users` -- the
+                                // message's own audience-enforcement fields -- which
+                                // this origin's `all: false` scoping deliberately
+                                // excludes (see the `ServerMessageRevision` access-grant
+                                // construction above). This exact-path admission widens
+                                // nothing for any other doc_type/origin/path.
+                                let is_recalc_override_write = is_server_message_revision
+                                    && ch.path == "/permissions/property_overrides";
+                                if !is_recalc_override_write {
+                                    tracing::debug!(
+                                        user = %ctx.user_id, path = %ch.path, capability = need,
+                                        "intent denied: missing capability"
+                                    );
+                                    return Err(DataError::Forbidden);
+                                }
                             }
                         }
                         // Declarative requirements are additive: a module/world
@@ -3989,6 +4093,24 @@ impl Repository for SqliteRepository {
                         ));
                     }
                     check_command_scope(&doc, world_id)?;
+                    // Embedded children NEVER carry `base` (the Create arm's
+                    // `derive_create_base` strips it recursively), but a
+                    // client-origin Update can still land one on the
+                    // post-image — a `/embedded/<coll>/<i>/base` leaf write or
+                    // a whole-collection replacement carrying base-bearing
+                    // children — so the merged post-image is checked here,
+                    // fail-closed, BEFORE the shape/engine walks below (the
+                    // invariant is simpler than anything they check). Server-
+                    // authored origins skip it: `WriteOrigin::TemplateMerge`'s
+                    // whole-collection rewrites carry restamped/merged
+                    // children, which never carry `base` by construction
+                    // (`merge::plan::plan_to_update`), as do the other trusted
+                    // origins' embedded writes.
+                    if !origin.is_server_authored()
+                        && crate::merge::bands::embedded_carries_base(&doc)
+                    {
+                        return Err(DataError::Forbidden);
+                    }
                     // Body cap re-checked post-merge: the merged result, not the
                     // pre-image, is what gets stored.
                     validation::validate_system_size(&doc)?;
@@ -4236,6 +4358,24 @@ impl Repository for SqliteRepository {
                 .await?
             }
         };
+        rows.into_iter()
+            .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
+            .collect()
+    }
+
+    async fn instances_of(
+        &self,
+        world_id: Uuid,
+        template_id: Uuid,
+    ) -> Result<Vec<Document>, DataError> {
+        let rows = sqlx::query(
+            "SELECT json FROM documents WHERE world_id = ? \
+             AND source_pack IS NULL AND source_id = ? ORDER BY id",
+        )
+        .bind(world_id.to_string())
+        .bind(template_id.to_string())
+        .fetch_all(&self.pool)
+        .await?;
         rows.into_iter()
             .map(|r| Ok(serde_json::from_str(r.get::<String, _>("json").as_str())?))
             .collect()

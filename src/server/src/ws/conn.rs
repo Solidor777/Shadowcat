@@ -722,6 +722,32 @@ async fn handle_socket(
                                         }
                                     }
                                 }
+                                Ok(
+                                    m @ ClientMsg::MergePull { .. }
+                                    | m @ ClientMsg::MergePush { .. }
+                                    | m @ ClientMsg::MergeRevert { .. },
+                                ) => {
+                                    // Plan computation, authorization derivation against the
+                                    // computed Update, and the `WriteOrigin::TemplateMerge`
+                                    // commit all live in `conn::merge_intents`. Unlike the
+                                    // combat arm, a merge intent ALWAYS replies to the
+                                    // originator (`MergeResult`/`MergeError`): the outcome
+                                    // carries conflict sets the broadcast `Event` echo cannot
+                                    // represent.
+                                    if let Some(f) = merge_intents::handle_merge_intent(
+                                        &room,
+                                        repo.as_ref(),
+                                        &ctx,
+                                        m,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        if etx.send(Egress::Frame(Arc::new(f))).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
                                 Ok(ClientMsg::Pathfind { request_id, scene, start, waypoints, footprint_radius, token }) => {
                                     // One-shot pathfinding: resolve GM status, fetch explored off the lock for
                                     // non-GM Revealed, call SceneEcs::pathfind, reply to this connection only.
@@ -2082,3 +2108,5 @@ pub(crate) async fn reseed_world_config(
 
 #[cfg(test)]
 mod tests;
+
+mod merge_intents;

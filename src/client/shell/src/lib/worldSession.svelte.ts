@@ -44,6 +44,9 @@ import {
   type MoveStream,
   type SubscriptionHandle,
   type WireSearchHit,
+  type ClientMsg,
+  type WireMergeOutcome,
+  type WsTimeoutOptions,
   loadModules,
   type ModuleManifest,
   listInstalledModules,
@@ -827,6 +830,34 @@ export class WorldSession {
   recalcRoll(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void> {
     if (!this.#ws) return Promise.reject(new Error("not connected"));
     return this.#ws.recalcRoll(messageId, rollId, ops);
+  }
+
+  /** Send a merge intent (`merge_pull`/`merge_push`/`merge_revert`). Thin delegate to
+   * `WsClient.merge`; rejects immediately when there is no live transport.
+   * @param msg The merge frame to send, already carrying its own `request_id`.
+   * @param opts Request options; `timeoutMs` bounds the wait for the correlated reply (the
+   * caller sizes it to the request — a push commits instance-by-instance before replying).
+   * @returns The correlated `WireMergeOutcome`; rejects with a `MergeIntentError` on a
+   * correlated `merge_error`, or a plain `Error` on timeout/disconnect.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const childId: string;
+   * await session.mergeIntent({ type: "merge_revert", request_id: crypto.randomUUID(), child_id: childId });
+   * ```
+   */
+  mergeIntent(
+    msg: Extract<
+      ClientMsg,
+      {
+        /** Merge frame discriminant literal (`merge_pull`/`merge_push`/`merge_revert`). */
+        type: "merge_pull" | "merge_push" | "merge_revert";
+      }
+    >,
+    opts: WsTimeoutOptions = {},
+  ): Promise<WireMergeOutcome> {
+    if (!this.#ws) return Promise.reject(new Error("not connected"));
+    return this.#ws.merge(msg, opts);
   }
 
   /** Subscribe to a SceneDerived channel. Returns a synchronous handle; the

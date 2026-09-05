@@ -45,10 +45,11 @@ export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
 export { NotificationCenter } from "./notifications";
 export type { NotificationLevel, Notification, NotificationListener } from "./notifications";
 export { OptimisticClient } from "./optimistic";
-export { WsClient } from "./ws-client";
+export { WsClient, MergeIntentError } from "./ws-client";
 export type {
   WsClientOptions,
   WsClientHandlers,
+  WsTimeoutOptions,
   WireWelcome,
   SearchPage,
   PathResult,
@@ -100,6 +101,12 @@ export type {
   CombatView,
   CombatantView,
   ResolvedResourceView,
+  WireMergeConflict,
+  WireMergePullStatus,
+  WirePushInstanceStatus,
+  WirePushInstanceOutcome,
+  WireMergeOutcome,
+  WireMergeErrorKind,
 } from "./wire";
 export { AssetResolver } from "./assets";
 export type {
@@ -155,7 +162,7 @@ export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveD
 export type { SheetRef, SheetTarget } from "./sheets";
 export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, DocLinkTargetSchema, ChatSegmentSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
 export type { MessageKind, DieRecord, RollOutcome, DocLinkTarget, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine, ConstTerm, WireDieKind, WireRawRoll, RecalcHistoryEntry } from "./chat-docs";
-export { structuralDiff, deletePointer, deepEqual, merge3Tree, takeTemplate, isPlacementExcluded, merge3, restampSubtree, placementExclusions } from "./merge";
-export type { Diff, Conflict, MergeBands, MergeBase, EmbeddedBaseChild, MergePlan } from "./merge";
-export { snapshotBase, stampInstance, computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState } from "./templates";
+export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placementExclusions, isMergeableBandPointer, normalizeBase } from "./merge";
+export type { Diff, MergeBase, EmbeddedBaseChild } from "./merge";
+export { snapshotBase, stampInstance, findInstances, syncState } from "./templates";
 export type { StampOpts, SyncState } from "./templates";

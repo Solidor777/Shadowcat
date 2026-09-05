@@ -1,10 +1,7 @@
 import { describe, it, expect } from "vitest";
-import {
-  snapshotBase, stampInstance, type StampOpts,
-  computePull, computeRevert, planToUpdate, applyResolutions, findInstances, syncState,
-} from "./templates";
+import { snapshotBase, stampInstance, type StampOpts, findInstances, syncState } from "./templates";
 import type { WireDocument } from "./wire";
-import type { MergeBase, MergeBands, Conflict } from "./merge";
+import { normalizeBase, type MergeBase } from "./merge";
 
 function doc(over: Partial<WireDocument> & { id: string }): WireDocument {
   return {
@@ -36,8 +33,26 @@ describe("snapshotBase", () => {
       name: "Inst",
       engine: { hp: 9 },
       system: { a: 1 },
-      embedded: { items: [{ sourceId: "tc", name: "Kid", engine: null, system: { hp: 3 }, embedded: {} }] },
+      embedded: { items: [{ sourceId: "tc", name: "Kid", engine: null, system: { hp: 3 }, embedded: {}, propertyOverrides: {} }] },
+      property_overrides: {},
     });
+  });
+
+  it("records the mergeable-band policy at every depth, never a /base policy", () => {
+    const child = doc({
+      id: "ic", source: { id: "tc", pack: null, version: 1 },
+      permissions: { default: "none", users: {}, property_overrides: { "/engine/hp": "owner_or_gm" }, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
+    });
+    const d = doc({
+      id: "C", embedded: { items: [child] },
+      permissions: {
+        default: "none", users: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null,
+        property_overrides: { "/system/secret": "gm_only", "/name": "owner_or_gm", "/base/system/x": "gm_only" },
+      },
+    });
+    const snap = snapshotBase(d);
+    expect(snap.property_overrides).toEqual({ "/system/secret": "gm_only", "/name": "owner_or_gm" });
+    expect(snap.embedded.items[0].propertyOverrides).toEqual({ "/engine/hp": "owner_or_gm" });
   });
 
   it("deep-clones so the snapshot does not alias the document", () => {
@@ -141,145 +156,6 @@ describe("stampInstance", () => {
   });
 });
 
-describe("computePull + planToUpdate", () => {
-  it("emits whole-band FieldChanges with REAL child pre-images + a /base refresh", () => {
-    const tmpl = doc({ id: "T", name: "Preset-v1", system: { hp: 5 } });
-    const child = doc({ id: "C", name: "Custom-Name", source: { id: "T", pack: null, version: 1 }, system: { hp: 1, note: "mine" } });
-    // Base name matches the template's name at stamp time ("Preset-v1", unchanged since); the child's
-    // OWN local rename to "Custom-Name" has no competing parent diff, so it merges through untouched.
-    child.base = { name: "Preset-v1", engine: null, system: { hp: 1 }, embedded: {} };
-    // Template changed hp 1→5 (child's base hp was 1); "note" is absent from base, so it's a
-    // child-local addition since sync (not a template deletion) and merge3 keeps it untouched.
-    const plan = computePull(child, tmpl);
-    expect(plan.conflicts).toEqual([]);
-    const op = planToUpdate(child, tmpl, plan.mergedBands);
-    expect(op.op).toBe("update");
-    if (op.op !== "update") return;
-    const system = op.changes.find((c) => c.path === "/system")!;
-    expect(system.old).toEqual({ hp: 1, note: "mine" }); // real pre-image
-    expect(system.new).toEqual({ hp: 5, note: "mine" });  // merged
-    const baseChange = op.changes.find((c) => c.path === "/base")!;
-    expect(baseChange.old).toEqual(child.base);
-    expect(baseChange.new).toEqual({ name: "Preset-v1", engine: null, system: { hp: 5 }, embedded: {} });
-    // /name unchanged on the merged bands → no /name change emitted.
-    expect(op.changes.some((c) => c.path === "/name")).toBe(false);
-    // REGRESSION (leaf-removal wire capability): the merge engine reconciles subtrees by
-    // WHOLE-BAND replacement, never per-leaf `remove` ops. No emitted change may carry the
-    // `remove` flag — key deletion inside a band happens by the new band value omitting the
-    // key (see `system.new` above dropping nothing here; a real deletion would just not
-    // include the key), NOT by a `remove: true` FieldChange.
-    expect(op.changes.every((c) => c.remove === undefined || c.remove === false)).toBe(true);
-  });
-
-  it("emits a whole /embedded/<coll> array change when a child was added by the template", () => {
-    const tmpl = doc({ id: "T", embedded: { items: [doc({ id: "tc", system: { k: 1 } })] } });
-    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [] } });
-    child.base = { name: null, engine: null, system: {}, embedded: { items: [] } };
-    const plan = computePull(child, tmpl);
-    const op = planToUpdate(child, tmpl, plan.mergedBands);
-    if (op.op !== "update") throw new Error("expected update");
-    const emb = op.changes.find((c) => c.path === "/embedded/items")!;
-    expect(emb.old).toEqual([]);
-    expect((emb.new as WireDocument[])).toHaveLength(1);
-  });
-
-  it("emits old:null (not []) when the child has no key at all for a collection the template gained", () => {
-    // `child.embedded` has NO "items" key whatsoever — distinct from `{ items: [] }`. The server
-    // reads a genuinely-absent JSON pointer as `Value::Null`; the emitted pre-image must match.
-    const tmpl = doc({ id: "T", embedded: { items: [doc({ id: "tc", system: { k: 1 } })] } });
-    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: {} });
-    child.base = { name: null, engine: null, system: {}, embedded: {} };
-    const plan = computePull(child, tmpl);
-    const op = planToUpdate(child, tmpl, plan.mergedBands);
-    if (op.op !== "update") throw new Error("expected update");
-    const emb = op.changes.find((c) => c.path === "/embedded/items")!;
-    expect(emb.old).toBeNull();
-    expect((emb.new as WireDocument[])).toHaveLength(1);
-  });
-
-  it("emits no /embedded/<coll> change when both sides have no items (absent vs. empty is not a real change)", () => {
-    const tmpl = doc({ id: "T", embedded: { items: [] } });
-    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: {} });
-    child.base = { name: null, engine: null, system: {}, embedded: {} };
-    const plan = computePull(child, tmpl);
-    const op = planToUpdate(child, tmpl, plan.mergedBands);
-    if (op.op !== "update") throw new Error("expected update");
-    expect(op.changes.some((c) => c.path === "/embedded/items")).toBe(false);
-  });
-
-  it("token placement never merges (child x/y/rotation kept even when template moved)", () => {
-    const tmpl = doc({ id: "T", doc_type: "token", engine: { x: 99, y: 99, rotation: 90, hp: 5 } });
-    const child = doc({ id: "C", doc_type: "token", source: { id: "T", pack: null, version: 1 }, engine: { x: 3, y: 4, rotation: 0, hp: 1 } });
-    child.base = { name: null, engine: { x: 3, y: 4, rotation: 0, hp: 1 }, system: {}, embedded: {} };
-    const plan = computePull(child, tmpl);
-    expect((plan.mergedBands.engine as { x: number; y: number; rotation: number; hp: number })).toEqual({ x: 3, y: 4, rotation: 0, hp: 5 });
-  });
-});
-
-describe("applyResolutions", () => {
-  it("takes the template value only for conflicts chosen 'theirs'", () => {
-    const bands: MergeBands = { name: null, engine: null, system: { a: "mine", b: "mine" }, embedded: {} };
-    const conflicts: Conflict[] = [
-      { path: "/system/a", base: "x", parent: "theirs", child: "mine", parentKind: "set" },
-      { path: "/system/b", base: "x", parent: "theirs", child: "mine", parentKind: "set" },
-    ];
-    const resolved = applyResolutions(bands, conflicts, new Set(["/system/a"]));
-    expect(resolved.system).toEqual({ a: "theirs", b: "mine" });
-    // input not mutated
-    expect(bands.system).toEqual({ a: "mine", b: "mine" });
-  });
-});
-
-describe("computeRevert", () => {
-  it("discards child diffs on merged bands (template wins) but keeps placement + refreshes base", () => {
-    const tmpl = doc({ id: "T", doc_type: "token", name: "T", engine: { x: 99, hp: 5 }, system: { s: 1 } });
-    const child = doc({ id: "C", doc_type: "token", source: { id: "T", pack: null, version: 1 }, name: "C", engine: { x: 3, hp: 8 }, system: { s: 2, extra: true } });
-    child.base = { name: "T", engine: { x: 99, hp: 5 }, system: { s: 1 }, embedded: {} };
-    const op = computeRevert(child, tmpl);
-    if (op.op !== "update") throw new Error("expected update");
-    const engine = op.changes.find((c) => c.path === "/engine")!;
-    expect(engine.new).toEqual({ x: 3, hp: 5 }); // template hp, child placement x
-    const system = op.changes.find((c) => c.path === "/system")!;
-    expect(system.new).toEqual({ s: 1 }); // child 'extra' discarded
-    expect(op.changes.some((c) => c.path === "/base")).toBe(true);
-  });
-
-  it("drops child-added embedded children and restores template-deleted ones", () => {
-    const tmpl = doc({ id: "T", embedded: { items: [doc({ id: "tc", system: { k: 1 } })] } });
-    const localChild = doc({ id: "local", system: { own: 1 } });
-    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [localChild] } });
-    child.base = snapshotBaseForTest(child);
-    const op = computeRevert(child, tmpl);
-    if (op.op !== "update") throw new Error("expected update");
-    const emb = op.changes.find((c) => c.path === "/embedded/items")!;
-    const kids = emb.new as WireDocument[];
-    expect(kids).toHaveLength(1);
-    expect(kids[0].source).toEqual({ id: "tc", pack: null, version: 1 }); // template child stamped
-    expect(kids.some((k) => k.id === "local")).toBe(false); // child-added dropped
-  });
-
-  it("does not alias the correlated embedded child's envelope objects into the reverted output (purity)", () => {
-    const tmplChild = doc({ id: "tc", system: { k: 1 } });
-    const tmpl = doc({ id: "T", embedded: { items: [tmplChild] } });
-    const instChild = doc({ id: "ic", source: { id: "tc", pack: null, version: 1 }, system: { k: 2 } });
-    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, embedded: { items: [instChild] } });
-    child.base = snapshotBaseForTest(child);
-    const op = computeRevert(child, tmpl);
-    if (op.op !== "update") throw new Error("expected update");
-    const emb = op.changes.find((c) => c.path === "/embedded/items")!;
-    const kids = emb.new as WireDocument[];
-    const reverted = kids.find((k) => k.source?.id === "tc")!;
-    expect(reverted.permissions).not.toBe(instChild.permissions);
-    instChild.permissions.default = "observer";
-    expect(reverted.permissions.default).toBe("none");
-  });
-});
-
-// local helper: base snapshot for the revert test above
-function snapshotBaseForTest(d: WireDocument): MergeBase {
-  return snapshotBase(d);
-}
-
 describe("findInstances", () => {
   it("returns only docs whose source.id is the template id", () => {
     const a = doc({ id: "a", source: { id: "T", pack: null, version: 1 } });
@@ -299,17 +175,207 @@ describe("syncState", () => {
   it("up_to_date when base equals the template's current snapshot", () => {
     const tmpl = doc({ id: "T", name: "T", system: { hp: 1 } });
     const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
-    child.base = { name: "T", engine: null, system: { hp: 1 }, embedded: {} };
+    child.base = { name: "T", engine: null, system: { hp: 1 }, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("up_to_date");
+  });
+
+  // The server's egress of a stored base to each seat, pinned as explicit fixtures: the stored
+  // snapshot is the FULL template (`{ hp, gm_secret, owner_note }`, the template's policy recorded
+  // verbatim); a player who owns the instance but not the template receives it minus the recorded
+  // `gm_only` and `owner_or_gm` paths, and receives the template minus the same paths under its own
+  // policy; a GM receives both whole. The policy maps themselves are never redacted.
+  const fullTemplate = () =>
+    doc({
+      id: "T", name: "T", system: { hp: 11, gm_secret: "S2", owner_note: "N2" },
+      permissions: {
+        default: "observer", users: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null,
+        property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "owner_or_gm" },
+      },
+    });
+  const playerTemplateView = () => {
+    const t = fullTemplate();
+    t.system = { hp: 11 };
+    return t;
+  };
+  const playerBaseView = (): MergeBase => ({
+    name: "T",
+    engine: null,
+    system: { hp: 11 },
+    embedded: {},
+    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "owner_or_gm" },
+  });
+  const gmBaseView = (): MergeBase => ({
+    name: "T",
+    engine: null,
+    system: { hp: 11, gm_secret: "S2", owner_note: "N2" },
+    embedded: {},
+    property_overrides: { "/system/gm_secret": "gm_only", "/system/owner_note": "owner_or_gm" },
+  });
+
+  it("parity: a player's redacted base against their redacted template reads up_to_date", () => {
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    child.base = playerBaseView();
+    expect(syncState(child, playerTemplateView())).toBe("up_to_date");
+  });
+
+  it("parity: a GM's full base against the full template reads up_to_date", () => {
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    child.base = gmBaseView();
+    expect(syncState(child, fullTemplate())).toBe("up_to_date");
+  });
+
+  it("parity: a genuine template edit still flips both seats", () => {
+    const edited = fullTemplate();
+    edited.system = { hp: 12, gm_secret: "S2", owner_note: "N2" };
+    const gmChild = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    gmChild.base = gmBaseView();
+    expect(syncState(gmChild, edited)).toBe("template_changed");
+    const playerEdited = playerTemplateView();
+    playerEdited.system = { hp: 12 };
+    const playerChild = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    playerChild.base = playerBaseView();
+    expect(syncState(playerChild, playerEdited)).toBe("template_changed");
+  });
+
+  it("parity: a stripped snapshot key and a nulled template band read as one value", () => {
+    // `/name` hidden: egress NULLS the template's band but REMOVES the key from the snapshot.
+    const tmpl = doc({ id: "T", name: null, system: { hp: 1 } });
+    tmpl.permissions.property_overrides = { "/name": "gm_only" };
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    child.base = { engine: null, system: { hp: 1 }, embedded: {}, property_overrides: { "/name": "gm_only" } };
+    expect(syncState(child, tmpl)).toBe("up_to_date");
+  });
+
+  it("a template policy change reads template_changed on every seat; the merge that propagates it clears it", () => {
+    // The stored policy is the template's policy at last sync, verbatim, so hiding one more path
+    // on the template is a template change for the GM and the player alike — until a merge writes
+    // the snapshot with the new policy recorded.
+    const hidden = fullTemplate();
+    hidden.permissions.property_overrides["/system/hp"] = "owner_or_gm";
+    const gmChild = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    gmChild.base = gmBaseView();
+    expect(syncState(gmChild, hidden)).toBe("template_changed");
+    const playerHidden = playerTemplateView();
+    playerHidden.permissions.property_overrides["/system/hp"] = "owner_or_gm";
+    const playerChild = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    playerChild.base = playerBaseView();
+    expect(syncState(playerChild, playerHidden)).toBe("template_changed");
+
+    const refreshed = gmBaseView();
+    refreshed.property_overrides["/system/hp"] = "owner_or_gm";
+    gmChild.base = refreshed;
+    expect(syncState(gmChild, hidden)).toBe("up_to_date");
+    const playerRefreshed = playerBaseView();
+    playerRefreshed.property_overrides["/system/hp"] = "owner_or_gm";
+    playerChild.base = playerRefreshed;
+    expect(syncState(playerChild, playerHidden)).toBe("up_to_date");
+  });
+
+  it("a malformed stored base never reads up_to_date — it falls back exactly as an absent base does", () => {
+    // `child.base` is present but missing the STRUCTURAL `property_overrides` key (never subject
+    // to redaction, so its absence is not a legitimate wire shape), and its `name`/`system` happen
+    // to already match the template's current snapshot. A coalescing reader would default the
+    // missing key and read this as caught up; the server itself never accepts such a value as a
+    // legitimate snapshot (`check_base_node_shape`), so the client must not either — it falls back
+    // to the child's own current bands, the same treatment `syncState` already gives a genuinely
+    // absent `base`.
+    const tmpl = doc({ id: "T", name: "T", system: { hp: 5 } });
+    const child = doc({ id: "C", source: { id: "T", pack: null, version: 1 }, name: "T", system: { hp: 999 } });
+    child.base = { name: "T", engine: null, system: { hp: 5 }, embedded: {} };
+    expect(syncState(child, tmpl)).toBe("template_changed");
   });
 
   it("template_changed when the template diverged from base (ignoring placement)", () => {
     const tmpl = doc({ id: "T", doc_type: "token", name: "T", engine: { x: 5, hp: 9 }, system: {} });
     const child = doc({ id: "C", doc_type: "token", source: { id: "T", pack: null, version: 1 } });
     // base engine hp:1; template hp:9 → changed. But an x-only move must NOT count.
-    child.base = { name: "T", engine: { x: 0, hp: 1 }, system: {}, embedded: {} };
+    child.base = { name: "T", engine: { x: 0, hp: 1 }, system: {}, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("template_changed");
-    child.base = { name: "T", engine: { x: 0, hp: 9 }, system: {}, embedded: {} };
+    child.base = { name: "T", engine: { x: 0, hp: 9 }, system: {}, embedded: {}, property_overrides: {} };
     expect(syncState(child, tmpl)).toBe("up_to_date"); // only x differs → excluded
+  });
+
+  it("parity: an embedded record's recorded policy reads up_to_date on every seat", () => {
+    // A record-level override (`/engine/hp` hidden from non-GMs) is recorded on the EMBEDDED
+    // CHILD's own snapshot position (`EmbeddedBaseChild.propertyOverrides`), not the root.
+    // `structuralDiff` treats the whole `/embedded/<coll>` array as one opaque leaf, so the base
+    // and the template's current snapshot must agree on the record's content AND its recorded
+    // policy for the array to structurally match — pinning the ordinary happy path once the
+    // (unreachable) per-record policy exclusion is gone.
+    const itemChild = doc({
+      id: "tc", source: { id: "tc", pack: null, version: 1 }, engine: { hp: 5 },
+      permissions: {
+        default: "observer", users: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null,
+        property_overrides: { "/engine/hp": "gm_only" },
+      },
+    });
+    const fullTmpl = doc({ id: "T", name: "T", system: {}, embedded: { items: [itemChild] } });
+    const gmChild = doc({ id: "C", source: { id: "T", pack: null, version: 1 } });
+    gmChild.base = snapshotBase(fullTmpl);
+    expect(syncState(gmChild, fullTmpl)).toBe("up_to_date");
+
+    // The player's view of both the template and the stored base has the record's hidden leaf
+    // stripped (the record's own tier is unaffected — it is recorded verbatim, not re-expressed).
+    const playerTmpl = doc({
+      id: "T", name: "T", system: {},
+      embedded: { items: [{ ...itemChild, engine: null }] },
+    });
+    const playerBase = snapshotBase(playerTmpl);
+    playerBase.embedded.items[0].propertyOverrides = { "/engine/hp": "gm_only" };
+    const playerChild = doc({ id: "C2", source: { id: "T", pack: null, version: 1 } });
+    playerChild.base = playerBase;
+    expect(syncState(playerChild, playerTmpl)).toBe("up_to_date");
+  });
+});
+
+describe("normalizeBase", () => {
+  it("parses a snapshot carrying every required key, recursively", () => {
+    expect(
+      normalizeBase({
+        name: null,
+        engine: null,
+        system: { hp: 1 },
+        property_overrides: {},
+        embedded: { items: [{ sourceId: "t", name: null, engine: null, system: null, embedded: {}, propertyOverrides: {} }] },
+      }),
+    ).toEqual<MergeBase>({
+      name: null,
+      engine: null,
+      system: { hp: 1 },
+      embedded: { items: [{ sourceId: "t", name: null, engine: null, system: null, embedded: {}, propertyOverrides: {} }] },
+      property_overrides: {},
+    });
+  });
+
+  it("reads an absent content band (name/engine/system) as null — a redacted band is legitimately missing", () => {
+    // The server's egress REMOVES a hidden `/base/<band>` key wholesale (`redaction_target`
+    // classifies it `Within`), so a recipient's redacted copy misses any of these three keys with
+    // nothing wrong; reading the gap as `null` is what matches the live template's own hidden band
+    // (nulled in place there, per `redaction_target::Band`).
+    expect(normalizeBase({ system: { hp: 1 }, embedded: {}, property_overrides: {} })).toEqual<MergeBase>({
+      name: null,
+      engine: null,
+      system: { hp: 1 },
+      embedded: {},
+      property_overrides: {},
+    });
+  });
+
+  it("rejects a root missing a structural key (never subject to redaction)", () => {
+    // `embedded` and `property_overrides` are never named by a recorded policy entry
+    // (`writes_a_content_band` admits only `/name`/`/engine…`/`/system…`), so their absence is
+    // not a legitimate redacted shape — it can only be corrupted/foreign data.
+    expect(normalizeBase({ name: "T", engine: null, system: null, property_overrides: {} })).toBeNull();
+    expect(normalizeBase({ name: "T", engine: null, system: null, embedded: {} })).toBeNull();
+  });
+
+  it("rejects an embedded record missing a structural key", () => {
+    expect(normalizeBase({ embedded: { items: [{ sourceId: "t", embedded: {} }] }, property_overrides: {} })).toBeNull();
+    expect(normalizeBase({ embedded: { items: [{ embedded: {}, propertyOverrides: {} }] }, property_overrides: {} })).toBeNull();
+  });
+
+  it("rejects a non-object", () => {
+    expect(normalizeBase(undefined)).toBeNull();
+    expect(normalizeBase(42)).toBeNull();
   });
 });

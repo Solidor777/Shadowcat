@@ -2136,6 +2136,89 @@ Pre-existing findings surfaced (not fixed here): 25 broken skill symbol citation
 combat/formula/scene-rendering skills naming not-yet-built combat-resolution symbols — logged in
 `POST_WORK_FINDINGS.md`.
 
+#### M14c-5 — Templates merge server-side ✅
+**COMPLETE.** Branch `m14c-5-templates-merge`, executed mainline (Kimi) from
+[`superpowers/specs/2026-09-01-m14c-5-templates-merge-server-side-design.md`](superpowers/specs/2026-09-01-m14c-5-templates-merge-server-side-design.md)
+and its plan; two buddy-check checkpoints (both converged) plus a final full-branch two-reviewer
+review whose findings were folded in on the branch (spec §11, the post-review decision log).
+Fifth of six.
+
+The server now owns the entire template 3-way merge. `merge::plan::merge3`/`compute_pull`/
+`compute_revert`/`plan_to_update`/`apply_resolutions` (with `merge::tree`/`merge::embedded`/
+`merge::bands` beneath them) replace the retired TS engine, pinned by a 48-case conformance
+corpus GENERATED from the TS engine's own live output before its deletion — the generation
+transcript (`scripts/merge-corpus-generation.log`) is the equivalence evidence for the port, and
+the one deliberate delta (the `/base` refresh emitted only when it changed) is recorded in the
+fixture's own `amendments` key. Three intents
+(`MergePull`/`MergePush`/`MergeRevert`) ride the `CombatRoll` reply pattern
+(`ServerMsg::MergeResult`/`MergeError`): a compute-only first call applies a conflict-free merge
+immediately or returns the conflict set; a resolutions call recomputes from live documents and
+rejects (`StaleResolutions`/`UnknownResolution`/`Unresolvable`, each carrying the fresh outcome)
+unless every submitted path is still a current conflict whose template side the current merged
+shape can take — no server-side session state between calls. A push commits its instances one by
+one (not atomically); every resolution is folded before the first commit, and a mid-loop commit
+failure leaves the earlier instances committed, the fresh outcome reading them as `Applied`.
+Authorization is derived against the ACTUAL computed `Update` (owner-or-GM plus every
+capability the change paths require, the same `required_cap_for_path` predicate `apply_intent`
+uses), never a guessed band list; authorized writes commit under a new
+`WriteOrigin::TemplateMerge`, mirroring `CombatTransition`/`ConfigSeed`. `MergePush` reports each
+same-world instance individually (`Applied`/`Conflicts`/`Excluded`); an instance invisible to the
+pusher is omitted from the reply entirely (existence-hiding), and an unreadable template is
+`NotFound` for pull/revert too. **Visibility ruling (spec §11 D1/D9/D10):** the merge's three
+inputs are viewed through the requester's access by ONE classifier — the PARENT side is the
+requester-VISIBLE template (`filter_properties` under the requester's access, the same classifier
+egress uses), the BASE side is the stored snapshot reduced by the same template-side hidden set
+(`permission::redact_pointers` inside `merge3`, at every embedded depth), the child side stays
+unredacted — and a template-hidden path is excluded from the parent diff, so a value the requester
+cannot see never moves into an instance's content; a child-hidden conflict is withheld from the
+wire with the child-wins default standing. The stored `/base` is ONE canonical value, never
+requester-relative: `snapshot_for_instance` of the FULL template, bands plus the template's
+mergeable-band policy re-expressed for the instance (`relate_tier`: an `OwnerOrGm` tier of another
+owner's template becomes `GmOnly`), so consecutive merges by a GM and a player never rewrite each
+other's snapshot. Template overrides PROPAGATE onto instances additively (`propagate_overrides`,
+at Create and on every merge write, embedded children by `source.id`), which closes the recipient
+direction — a GM's push of a `gm_only` value lands hidden on a player-owned instance — and `/base`
+egress is cut per recipient by the policy the snapshot records (`own_overrides`, the single source
+`filter_properties`/`redact_change` and the merge oracle read), so the owner receives `/base` minus
+exactly what the template hid with no template lookup at egress; the client's `syncState` reads
+the stored base through `normalizeBase` and excludes the recorded policy maps from its diff, and
+is consistent per seat. Visibility resolves by document identity at every embedded depth
+(`MergeVisibility`), never by array index. `instances_of` reads the `source_id`/`source_pack`
+columns over `idx_documents_source` rather than the spec's `json_extract`.
+
+**The base-ownership fork:** `Document.base` — previously a fully opaque, client-writable blob —
+becomes server-owned: `/base` leaves the client-writable field set entirely (no capability maps to
+it, the same posture as `/source`), a `Create` derives it fresh from the document's own validated
+bands (discarding any client-supplied value), and `validate_engine_tree` now walks it (shape-check
++ per-doc_type engine normalization, embedded children correlated by `sourceId`) instead of
+skipping it outright. This was the necessary precondition for server-side merging at all: once
+server logic reads `base` to compute a merge, a forged or stale client-written `base` stops being
+a self-contained badge and becomes a channel for silent data loss in a future merge — the same
+reasoning invariant 6's server-authority principle already applies to every other computed value.
+A legacy stale-schema `base` on an since-deleted template leaves that document write-locked with
+no merge rescue; this is accepted as symmetric with the pre-existing behavior of a live `engine`
+band under an unrelated module-schema change, not a new defect class.
+
+Client: `TemplatesController` is now an intent sender — `pull`/`push`/`revert` call
+`WsClient.merge` (a one-shot correlated request/reply, the same shape as `pathfind`/`search`) via
+a new `WorldSession.mergeIntent` seam, and a conflicted reply opens the existing conflict modal
+exactly as before; `StaleResolutions`/`UnknownResolution`/`Unresolvable` reopen it with the
+server's fresh conflict set with no extra round trip, a rejection whose fresh outcome no longer
+conflicts is re-sent once compute-only (the rejected call wrote nothing), re-entry per
+child/template id is guarded while a reply is pending, and the push timeout scales with the
+visible instance count. `canPull`'s advisory gate drops the `/base` capability leg (the server
+writes `/base` itself now, so gating on it would hide pull/revert from users the server
+authorizes). `@shadowcat/core`'s `merge3`/`merge3Tree`/`takeTemplate`/`computePull`/
+`computeRevert`/`planToUpdate`/`applyResolutions`/`deletePointer`/`tokenize` and the hand-written
+`Conflict`/`MergePlan`/`MergeBands`/`MergeBase`/`EmbeddedBaseChild` types are deleted — evidenced
+by `pnpm -r typecheck`/`pnpm -r test` passing with zero remaining references repo-wide — leaving
+only the stamp/display surface (`structuralDiff`/`deepEqual`, `restampSubtree`/`snapshotBase`/
+`stampInstance`, `findInstances`, `syncState`); `MergeBase`/`EmbeddedBaseChild` reach those
+functions as ts-rs exports through `@shadowcat/types`, and the conflict modal renders the
+ts-rs-generated `MergeConflict` in place of the hand-written type. Skills updated in the plugin
+checkout (templates, documents-permissions; realtime-sync's correlated-request bullet) through the
+reviewed skill-update gate.
+
 ### M15a · Asset pipeline ✅
 Branch `m15a-asset-pipeline`, executed mainline (Fable) from the approved design
 `docs/superpowers/specs/2026-08-30-m15-asset-pipeline-browser-design.md` and plan

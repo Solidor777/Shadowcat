@@ -29,6 +29,12 @@ import {
   operationSchemaImpl,
   commandSchemaImpl,
   searchHitSchemaImpl,
+  mergeConflictSchemaImpl,
+  mergePullStatusSchemaImpl,
+  pushInstanceStatusSchemaImpl,
+  pushInstanceOutcomeSchemaImpl,
+  mergeOutcomeSchemaImpl,
+  mergeErrorKindSchemaImpl,
   serverMsgSchemaImpl,
   type ServerMsg,
   type ClientMsg,
@@ -44,6 +50,12 @@ import {
   type WireFieldChange,
   type WireCommand,
   type WireSearchHit,
+  type WireMergeConflict,
+  type WireMergePullStatus,
+  type WirePushInstanceStatus,
+  type WirePushInstanceOutcome,
+  type WireMergeOutcome,
+  type WireMergeErrorKind,
   parseCombats,
   EMPTY_COMBATS,
   CombatsPayloadSchema,
@@ -174,6 +186,37 @@ describe("wire drift guard — non-vacuous schema/type assertions", () => {
   });
   it("SearchHit", () => {
     expectTypeOf<z.infer<typeof searchHitSchemaImpl>>().toEqualTypeOf<WireSearchHit>();
+  });
+  it("MergeConflict", () => {
+    expectTypeOf<z.infer<typeof mergeConflictSchemaImpl>>().toEqualTypeOf<WireMergeConflict>();
+    expectTypeOf<WireMergeConflict>().toEqualTypeOf<Ts.MergeConflict>();
+    expectTypeOf<WireMergeConflict["parentKind"]>().toEqualTypeOf<Ts.ParentKind>();
+  });
+  it("MergeErrorKind / MergePullStatus / PushInstanceStatus / MergeOutcome match ts-rs", () => {
+    expectTypeOf<WireMergeErrorKind>().toEqualTypeOf<Ts.MergeErrorKind>();
+    expectTypeOf<WireMergePullStatus>().toEqualTypeOf<Ts.MergePullStatus>();
+    expectTypeOf<WirePushInstanceStatus>().toEqualTypeOf<Ts.PushInstanceStatus>();
+    expectTypeOf<WirePushInstanceOutcome>().toEqualTypeOf<Ts.PushInstanceOutcome>();
+    expectTypeOf<WireMergeOutcome>().toEqualTypeOf<Ts.MergeOutcome>();
+  });
+  it("MergePullStatus", () => {
+    expectTypeOf<z.infer<typeof mergePullStatusSchemaImpl>>().toEqualTypeOf<WireMergePullStatus>();
+  });
+  it("PushInstanceStatus", () => {
+    expectTypeOf<
+      z.infer<typeof pushInstanceStatusSchemaImpl>
+    >().toEqualTypeOf<WirePushInstanceStatus>();
+  });
+  it("PushInstanceOutcome", () => {
+    expectTypeOf<
+      z.infer<typeof pushInstanceOutcomeSchemaImpl>
+    >().toEqualTypeOf<WirePushInstanceOutcome>();
+  });
+  it("MergeOutcome", () => {
+    expectTypeOf<z.infer<typeof mergeOutcomeSchemaImpl>>().toEqualTypeOf<WireMergeOutcome>();
+  });
+  it("MergeErrorKind", () => {
+    expectTypeOf<z.infer<typeof mergeErrorKindSchemaImpl>>().toEqualTypeOf<WireMergeErrorKind>();
   });
   // The finding's worked example: this is the one whose non-vacuity was hand-verified by
   // temporarily deleting the "reject" arm from `serverMsgSchemaImpl` and confirming this
@@ -560,6 +603,12 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     chat_error: { type: "chat_error", request_id: "r", message: "x" },
     combat_error: { type: "combat_error", request_id: "r", message: "x" },
     combat_result: { type: "combat_result", request_id: "r", seq: 1 },
+    merge_result: {
+      type: "merge_result",
+      request_id: "r",
+      outcome: { kind: "pull", child_id: "c", status: "applied" },
+    },
+    merge_error: { type: "merge_error", request_id: "r", reason: "forbidden" },
     move_stream: {
       type: "move_stream",
       request_id: "r",
@@ -585,6 +634,55 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       expect(m?.type).toBe(type);
     });
   }
+});
+
+describe("parseServerMsg — merge frames with realistic payloads", () => {
+  // A full `MergeConflict` entry: camelCase `parentKind`, `base` ABSENT (not null) —
+  // the snapshot never held a value at the conflict path.
+  const conflict = { path: "/system/hp", parent: 12, child: 11, parentKind: "set" };
+  const pullOutcome = {
+    kind: "pull",
+    child_id: "00000000-0000-0000-0000-0000000000c1",
+    status: { conflicts: [conflict] },
+  };
+
+  it("parses a merge_result carrying a conflict set", () => {
+    const m = parseServerMsg(
+      JSON.stringify({ type: "merge_result", request_id: "r", outcome: pullOutcome }),
+    );
+    expect(m?.type).toBe("merge_result");
+    if (m?.type !== "merge_result") return;
+    expect(m.outcome.kind).toBe("pull");
+    if (m.outcome.kind !== "pull" || m.outcome.status === "applied") return;
+    expect(m.outcome.status.conflicts).toHaveLength(1);
+    const c = m.outcome.status.conflicts[0];
+    expect(c.parentKind).toBe("set");
+    expect(c.parent).toBe(12);
+    expect(c.child).toBe(11);
+    expect("base" in c).toBe(false);
+  });
+
+  it("parses stale_resolutions and unknown_resolution error frames carrying the fresh outcome", () => {
+    for (const key of ["stale_resolutions", "unknown_resolution"] as const) {
+      const m = parseServerMsg(
+        JSON.stringify({
+          type: "merge_error",
+          request_id: "r",
+          reason: { [key]: pullOutcome },
+        }),
+      );
+      expect(m?.type).toBe("merge_error");
+      if (m?.type !== "merge_error") continue;
+      const reason = m.reason;
+      expect(typeof reason).toBe("object");
+      if (typeof reason !== "object") continue;
+      const carried =
+        typeof reason === "object" && key in reason
+          ? (reason as Record<string, unknown>)[key]
+          : undefined;
+      expect(carried).toEqual(pullOutcome);
+    }
+  });
 });
 
 describe("DocumentSchema — envelope name + engine band", () => {

@@ -44,6 +44,19 @@ export type { SchemaType } from "./generated/SchemaType";
 export type { Schema } from "./generated/Schema";
 export type { SchemaDeclaration } from "./generated/SchemaDeclaration";
 
+// Template merge (merge/*.rs + ws/protocol.rs) — the server-owned merge's snapshot shape and
+// the merge intents' reply vocabulary.
+export type { MergeBase } from "./generated/MergeBase";
+export type { EmbeddedBaseChild } from "./generated/EmbeddedBaseChild";
+export type { MergeConflict } from "./generated/MergeConflict";
+export type { ParentKind } from "./generated/ParentKind";
+export type { MergeOutcome } from "./generated/MergeOutcome";
+export type { MergePullStatus } from "./generated/MergePullStatus";
+export type { MergeRevertStatus } from "./generated/MergeRevertStatus";
+export type { PushInstanceOutcome } from "./generated/PushInstanceOutcome";
+export type { PushInstanceStatus } from "./generated/PushInstanceStatus";
+export type { MergeErrorKind } from "./generated/MergeErrorKind";
+
 // HTTP API DTOs
 export type { ServerConfig } from "./generated/ServerConfig";
 export type { WorldEntry } from "./generated/WorldEntry";

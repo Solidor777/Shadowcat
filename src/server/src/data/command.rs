@@ -262,6 +262,11 @@ impl Command {
 /// `Update`-ing one, same as `Client`. `ConfigSeed` — set ONLY by the server's
 /// world-config seed/refresh path — skips the same capability gates and is the
 /// ONLY origin permitted to author the `system-defaults` singleton.
+/// `TemplateMerge` — set ONLY by the server-side template-merge intent
+/// handlers, never derivable from any wire frame — skips the same per-op
+/// capability gates (the handler already derived authorization against the
+/// actual computed Update) and is the ONLY origin permitted to write the
+/// server-owned `/base` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOrigin {
     /// Any wire-derived write (WS intent or HTTP).
@@ -281,6 +286,14 @@ pub enum WriteOrigin {
     /// run; never derivable from a wire frame. The ONLY origin permitted to
     /// Create, Update or Delete a `system-defaults` doc.
     ConfigSeed,
+    /// Server-authored template-merge write: per-op capability gates are
+    /// skipped (the merge intent handler derived authorization against the
+    /// actual computed Update before committing it); scope, size, engine,
+    /// containment, singleton, schema and OCC checks all run; never derivable
+    /// from a wire frame. The ONLY origin permitted to write `/base` — the
+    /// server-owned merge snapshot, refreshed whole-band to the template's
+    /// current snapshot (`merge::plan::plan_to_update`'s emission contract).
+    TemplateMerge,
 }
 
 impl WriteOrigin {
@@ -294,6 +307,7 @@ impl WriteOrigin {
     ///
     /// assert!(!WriteOrigin::Client.is_server_authored());
     /// assert!(WriteOrigin::CombatTransition.is_server_authored());
+    /// assert!(WriteOrigin::TemplateMerge.is_server_authored());
     /// ```
     pub fn is_server_authored(&self) -> bool {
         matches!(
@@ -301,6 +315,7 @@ impl WriteOrigin {
             WriteOrigin::ServerMessageRevision
                 | WriteOrigin::CombatTransition
                 | WriteOrigin::ConfigSeed
+                | WriteOrigin::TemplateMerge
         )
     }
 
@@ -320,12 +335,13 @@ impl WriteOrigin {
     ///
     /// assert!(WriteOrigin::CombatTransition.skips_capability_gates());
     /// assert!(WriteOrigin::ConfigSeed.skips_capability_gates());
+    /// assert!(WriteOrigin::TemplateMerge.skips_capability_gates());
     /// assert!(!WriteOrigin::ServerMessageRevision.skips_capability_gates());
     /// ```
     pub fn skips_capability_gates(&self) -> bool {
         matches!(
             self,
-            WriteOrigin::CombatTransition | WriteOrigin::ConfigSeed
+            WriteOrigin::CombatTransition | WriteOrigin::ConfigSeed | WriteOrigin::TemplateMerge
         )
     }
 }

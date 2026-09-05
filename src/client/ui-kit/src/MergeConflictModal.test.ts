@@ -2,9 +2,9 @@ import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
 import MergeConflictModal from "./MergeConflictModal.svelte";
 import { setAppContextForTest } from "./__fixtures__/appContextTest";
-import type { Conflict } from "@shadowcat/core";
+import type { WireMergeConflict } from "@shadowcat/core";
 
-const conflicts: Conflict[] = [
+const conflicts: WireMergeConflict[] = [
   { path: "/system/hp", base: 1, parent: 5, child: 9, parentKind: "set" },
   { path: "/system/name", base: "x", parent: "y", child: "z", parentKind: "set" },
 ];

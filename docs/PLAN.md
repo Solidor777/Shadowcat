@@ -30,8 +30,7 @@ further at design time. Numbering continues from Phase 1.
   - **M14c-2 — combat resolution server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-3 — world-config authority** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-5 — templates merge server-side**: `MergePull`/`MergePush`/`MergeRevert` intents;
-    conflict set returned for human review; `Document.base` under engine-tree validation.
+  - **M14c-5 — templates merge server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
   - **M14c-6 — combat client seams** — DONE (see [`HISTORY.md`](HISTORY.md)).
 - **M14d — tracker module + settings editors** (panel + settings-editor conventions to follow
   the M15b asset-browser module, which landed first): the default tracker UI

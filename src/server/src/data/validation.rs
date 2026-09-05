@@ -4,7 +4,8 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::data::document::{
-    AdditionalProperties, Document, Schema, SchemaDeclaration, SchemaType,
+    AdditionalProperties, Document, OwnerStanding, Schema, SchemaDeclaration, SchemaType,
+    Visibility,
 };
 use crate::data::engine;
 use crate::data::DataError;
@@ -72,14 +73,216 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// `None`, and the persisted/broadcast form must store that as an explicit
 /// `null` to match the client's `T | null` contract, not silently omit the key.
 ///
-/// `doc.base` is NEVER walked here: it is a historical opaque snapshot that
-/// may hold an engine shape invalid under the doc's CURRENT schema, and must
-/// still store as-is (size-capped separately by `validate_system_size`).
+/// `doc.base` IS walked here: it is server-owned (derived at Create by
+/// `merge::bands::derive_create_base`, refreshed whole-band by server merge
+/// writes, never client-writable), so it is shape-checked as a
+/// `merge::bands::MergeBase` recursively and each `engine` band inside it is
+/// normalized via the SAME `normalize_engine_opt` — the root's under the
+/// document's own `doc_type`, an embedded base child's under the `doc_type`
+/// of the LIVE embedded child its `sourceId` correlates to (mirroring
+/// `snapshot_base`'s keying; a record with no live counterpart is
+/// historical, so it is shape-checked only, never normalized). A legacy row
+/// predating this walk still READS — validation is ingest-time only, as
+/// everywhere else — and is re-validated only when rewritten.
 pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     doc.engine = engine::normalize_engine_opt(&doc.doc_type, doc.engine.as_ref())?;
+    if let Some(mut base) = doc.base.take() {
+        // `doc.base` is detached for the walk so the live tree can be read
+        // for embedded-child correlation while the snapshot is mutated.
+        validate_base_node(&mut base, "/base", Some(doc), false)?;
+        doc.base = Some(base);
+    }
     for children in doc.embedded.values_mut() {
         for child in children {
             validate_engine_tree(child)?;
+        }
+    }
+    Ok(())
+}
+
+/// The band keys every `MergeBase`-shaped node must carry exactly; an
+/// embedded child record additionally carries `sourceId`, the root
+/// additionally `BASE_STANDING_KEY`. The recorded policy key is required
+/// too, under the node's own spelling (`base_policy_key`).
+const BASE_BAND_KEYS: [&str; 4] = ["name", "engine", "system", "embedded"];
+
+/// The key the ROOT of a stored base records the instance owner's standing
+/// on the template under (`merge::bands::StoredBase::owner_standing`).
+/// Required at the root — an absent standing would leave egress with no rule
+/// for the whole snapshot, the fail-open direction — and rejected on a
+/// record, where the root's standing applies.
+const BASE_STANDING_KEY: &str = "owner_standing";
+
+/// The key a `MergeBase`-shaped node records its content-band policy under:
+/// `MergeBase` spells it `property_overrides`, an `EmbeddedBaseChild` record
+/// `propertyOverrides` (the record's other keys are camelCase). Required at
+/// ingest — an absent map would read as "nothing hidden", the fail-open
+/// direction for the egress redaction that reads it.
+fn base_policy_key(is_child: bool) -> &'static str {
+    if is_child {
+        "propertyOverrides"
+    } else {
+        "property_overrides"
+    }
+}
+
+/// Shape-check one `MergeBase`-shaped node (`is_child` selects the
+/// `EmbeddedBaseChild` key set): an object carrying every required key and
+/// no others, `name` a string or null, `embedded` an object of arrays, the
+/// recorded policy an object whose keys name a mergeable band
+/// (`writes_a_content_band` — the only pointers `snapshot_base` records, and
+/// the only ones the egress reader `permission`'s `base_policy` acts on) and
+/// whose values parse as `Visibility`, for the root an `owner_standing` that
+/// parses as `OwnerStanding`, and — for a child record — `sourceId` a
+/// string. Reads nothing but shape.
+fn check_base_node_shape(
+    node: &serde_json::Value,
+    pointer: &str,
+    is_child: bool,
+) -> Result<(), DataError> {
+    let shape_err = |reason: String| DataError::SchemaViolation {
+        pointer: pointer.to_string(),
+        reason,
+    };
+    let Some(obj) = node.as_object() else {
+        return Err(shape_err(format!(
+            "expected object, got {}",
+            json_type_name(node)
+        )));
+    };
+    let policy_key = base_policy_key(is_child);
+    for key in BASE_BAND_KEYS.iter().chain(std::iter::once(&policy_key)) {
+        if !obj.contains_key(*key) {
+            return Err(shape_err(format!("missing required key '{key}'")));
+        }
+    }
+    if is_child && !obj.contains_key("sourceId") {
+        return Err(shape_err("missing required key 'sourceId'".to_string()));
+    }
+    if !is_child && !obj.contains_key(BASE_STANDING_KEY) {
+        return Err(shape_err(format!(
+            "missing required key '{BASE_STANDING_KEY}'"
+        )));
+    }
+    for key in obj.keys() {
+        if BASE_BAND_KEYS.contains(&key.as_str())
+            || key == policy_key
+            || (is_child && key == "sourceId")
+            || (!is_child && key == BASE_STANDING_KEY)
+        {
+            continue;
+        }
+        return Err(shape_err(format!(
+            "unknown key '{key}' not permitted in a merge base"
+        )));
+    }
+    let Some(policy) = obj[policy_key].as_object() else {
+        return Err(shape_err(format!(
+            "expected object at '{policy_key}', got {}",
+            json_type_name(&obj[policy_key])
+        )));
+    };
+    for (p, tier) in policy {
+        if !crate::data::permission::writes_a_content_band(p) {
+            return Err(shape_err(format!(
+                "pointer '{p}' in '{policy_key}' names no mergeable band"
+            )));
+        }
+        if serde_json::from_value::<Visibility>(tier.clone()).is_err() {
+            return Err(shape_err(format!(
+                "expected a visibility tier at '{policy_key}/{}', got {}",
+                escape_token(p),
+                json_type_name(tier)
+            )));
+        }
+    }
+    if !is_child && serde_json::from_value::<OwnerStanding>(obj[BASE_STANDING_KEY].clone()).is_err()
+    {
+        return Err(shape_err(format!(
+            "expected an owner standing at '{BASE_STANDING_KEY}', got {}",
+            json_type_name(&obj[BASE_STANDING_KEY])
+        )));
+    }
+    let name = &obj["name"];
+    if !(name.is_string() || name.is_null()) {
+        return Err(shape_err(format!(
+            "expected string or null at 'name', got {}",
+            json_type_name(name)
+        )));
+    }
+    if is_child && !obj["sourceId"].is_string() {
+        return Err(shape_err(format!(
+            "expected string at 'sourceId', got {}",
+            json_type_name(&obj["sourceId"])
+        )));
+    }
+    let Some(embedded) = obj["embedded"].as_object() else {
+        return Err(shape_err(format!(
+            "expected object at 'embedded', got {}",
+            json_type_name(&obj["embedded"])
+        )));
+    };
+    for (coll, records) in embedded {
+        if !records.is_array() {
+            return Err(shape_err(format!(
+                "expected array at 'embedded/{}', got {}",
+                escape_token(coll),
+                json_type_name(records)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The live embedded child a base record correlates to: the child whose
+/// `source.id` (== its template child's id) matches `source_id`, falling
+/// back to the child's own id — the same keying `snapshot_base` writes.
+fn live_base_counterpart<'a>(
+    live: &'a Document,
+    collection: &str,
+    source_id: &str,
+) -> Option<&'a Document> {
+    let kids = live.embedded.get(collection)?;
+    kids.iter()
+        .find(|k| {
+            k.source
+                .as_ref()
+                .is_some_and(|s| s.id.to_string() == source_id)
+        })
+        .or_else(|| kids.iter().find(|k| k.id.to_string() == source_id))
+}
+
+/// Shape-check `node` (a `MergeBase` root when `is_child` is false, an
+/// `EmbeddedBaseChild` record otherwise) and normalize its `engine` band in
+/// place via `normalize_engine_opt` under `live`'s `doc_type`, recursing
+/// into the `embedded` records with each record correlated to its live
+/// counterpart (`live_base_counterpart`). `live: None` means the record is
+/// historical (no live counterpart): shape-check only, no normalization.
+fn validate_base_node(
+    node: &mut serde_json::Value,
+    pointer: &str,
+    live: Option<&Document>,
+    is_child: bool,
+) -> Result<(), DataError> {
+    check_base_node_shape(node, pointer, is_child)?;
+    if let Some(live_doc) = live {
+        let engine_band = &node["engine"];
+        let engine_ref = (!engine_band.is_null()).then_some(engine_band);
+        let normalized = engine::normalize_engine_opt(&live_doc.doc_type, engine_ref)?;
+        node["engine"] = normalized.unwrap_or(serde_json::Value::Null);
+    }
+    let embedded = node["embedded"]
+        .as_object_mut()
+        .expect("check_base_node_shape requires 'embedded' to be an object");
+    for (coll, records) in embedded {
+        let records = records
+            .as_array_mut()
+            .expect("check_base_node_shape requires embedded values to be arrays");
+        for (i, record) in records.iter_mut().enumerate() {
+            let child_pointer = format!("{pointer}/embedded/{}/{}", escape_token(coll), i);
+            let child_live = live
+                .and_then(|l| live_base_counterpart(l, coll, record.get("sourceId")?.as_str()?));
+            validate_base_node(record, &child_pointer, child_live, true)?;
         }
     }
     Ok(())

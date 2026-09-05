@@ -5,6 +5,8 @@ import type { CapabilityRequirement } from "./CapabilityRequirement";
 import type { Command } from "./Command";
 import type { ContractDeclaration } from "./ContractDeclaration";
 import type { LightSample } from "./LightSample";
+import type { MergeErrorKind } from "./MergeErrorKind";
+import type { MergeOutcome } from "./MergeOutcome";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
@@ -358,4 +360,20 @@ cost: number | null,
  * disclose whether anything blocked the token BEYOND their vision, revealing the
  * presence of a wall or a `gm_only` region they cannot see.
  */
-truncated: boolean | null, };
+truncated: boolean | null, } | { "type": "merge_result", 
+/**
+ * The originating intent's correlation token.
+ */
+request_id: string, 
+/**
+ * What the merge did (or, for a conflicted first call, would need resolved).
+ */
+outcome: MergeOutcome, } | { "type": "merge_error", 
+/**
+ * The refused intent's correlation token.
+ */
+request_id: string, 
+/**
+ * Why it was refused.
+ */
+reason: MergeErrorKind, };

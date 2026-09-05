@@ -9,12 +9,13 @@ use uuid::Uuid;
 
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
-    CapabilityGrants, CapabilityRequirement, DocRole, Document, PermissionSet, Visibility,
-    WorldCapDefaults, WorldRole,
+    CapabilityGrants, CapabilityRequirement, DocRole, Document, OwnerStanding, PermissionSet,
+    Visibility, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
+use crate::merge::bands::{EmbeddedBaseChild, MergeBase, StoredBase};
 
 /// Built-in, server-understood capabilities. Modules may grant additional
 /// namespaced capabilities (`<ns>:<verb>`); the server treats those as opaque
@@ -22,7 +23,7 @@ use crate::data::snapshot::{CommandSnapshot, OpSnapshot};
 pub mod cap {
     /// See the document at all (whole-doc egress gate).
     pub const READ: &str = "core:read";
-    /// Write `/name`, `/engine/…`, `/system/…`, `/base` field paths.
+    /// Write `/name`, `/engine/…`, `/system/…` field paths.
     pub const WRITE_FIELDS: &str = "core:write_fields";
     /// Add/remove/replace embedded child documents.
     pub const MANAGE_EMBEDDED: &str = "core:manage_embedded";
@@ -39,10 +40,11 @@ pub mod cap {
 pub const TOKEN_DOC_TYPE: &str = "token";
 
 /// The actor document a token LINKS to (`engine.actor_id`), or `None` for a raw
-/// or INSTANCED token. Mirrors the client's `resolveTokenActor`: only
-/// `engine.actor_id` is a link — an instanced token's `embedded.actor[0]` is a
-/// frozen placement-time copy and is deliberately NOT a link, so it can never
-/// re-derive ownership from stale embedded state.
+/// or INSTANCED token. THE definition of the link rule, which the client's
+/// `resolveTokenActor` mirrors as a preview: only `engine.actor_id` is a link —
+/// an instanced token's `embedded.actor[0]` is a frozen placement-time copy and
+/// is deliberately NOT a link, so it can never re-derive ownership from stale
+/// embedded state.
 /// # Examples
 ///
 /// ```
@@ -256,10 +258,21 @@ pub fn mirror_current_snapshot<'a>(
 /// The four CONTENT bands of a `Document`. Redaction operates on these and never on
 /// the structural envelope (`id`, `scope`, `doc_type`, `schema_version`, `source`,
 /// `owner`, `permissions`, `parent_id`, `embedded`, `created_at`, `updated_at`), whose
-/// fields are either required or carry access-control meaning. Exactly the set
-/// `required_cap_for_path` maps to `cap::WRITE_FIELDS` — which reads THIS array rather
-/// than re-spelling it, so the writable set and the redactable set cannot drift apart.
+/// fields are either required or carry access-control meaning. This is the
+/// EGRESS-side set; the client-writable subset is `WRITABLE_BANDS`. `base` is
+/// redactable (a snapshot may echo content hidden elsewhere in the document) but
+/// server-owned, so it is deliberately NOT in the write-side set.
 pub const REDACTABLE_BANDS: [&str; 4] = ["name", "engine", "system", "base"];
+
+/// The CLIENT-writable content bands: exactly the set `required_cap_for_path`
+/// maps to `cap::WRITE_FIELDS`. A strict subset of `REDACTABLE_BANDS` — `base`
+/// is server-owned (derived at Create by `merge::bands::derive_create_base`;
+/// refreshed whole-band by server merge writes under
+/// `WriteOrigin::TemplateMerge`) and therefore absent here: `/base` maps to
+/// no capability, the same posture as `/source`. The two lists are stated
+/// separately so that asymmetry is a deliberate, visible decision rather than
+/// a shared constant both sides read for different meanings.
+const WRITABLE_BANDS: [&str; 3] = ["name", "engine", "system"];
 
 /// Whether a content band is a CONTAINER, i.e. has an interior a JSON pointer can descend
 /// into. `name` is a display string — a leaf — so `/name/...` names nothing at all. Both
@@ -270,25 +283,34 @@ fn band_has_interior(band: &str) -> bool {
     band != "name"
 }
 
-/// Whether `path` writes a content band whole, or writes into one.
+/// Whether `path` writes a CLIENT-writable content band whole, or writes into one.
+/// The same set is the MERGEABLE surface: `merge::bands::recorded_overrides` keeps
+/// exactly the overrides this admits as a snapshot's recorded policy and as the
+/// policy `propagate_overrides` carries onto an instance, and the ingest walk
+/// (`validation::check_base_node_shape`) and the egress reader (`base_policy`)
+/// admit no other recorded pointer.
 ///
-/// Derived from `REDACTABLE_BANDS`: the band SET is stated once, so adding a fifth band
-/// cannot make a path redactable without also making it writable under `cap::WRITE_FIELDS`.
-/// Only the set and the leaf rule are shared with `redaction_target`; the residual-segment
-/// rule is not, and must not be — an empty residual (`/system/`) is a writable path here and
-/// an unclassifiable override key there, because a `FieldChange` path and a
-/// `property_overrides` key are different fields on different structures with different
-/// validators.
-fn writes_a_content_band(path: &str) -> bool {
+/// Derived from `WRITABLE_BANDS`, the write-side band list: `base` is absent by
+/// design — redactable at egress but server-owned, so a `/base` path maps to no
+/// capability and is rejected for every client origin. Only the leaf rule
+/// (`band_has_interior`) remains shared with `redaction_target`; the band set is
+/// not, and must not be — the redactable set legitimately contains one more band
+/// than the writable set. The residual-segment rule, by contrast, IS shared in
+/// effect (though not by symbol): a residual of bare `/` names no segment at
+/// all, so `/system/` is refused here exactly as `redaction_target` refuses it —
+/// a `FieldChange` path and a `property_overrides` key are different fields on
+/// different structures with different validators, but neither treats an empty
+/// trailing segment as naming a path.
+pub(crate) fn writes_a_content_band(path: &str) -> bool {
     let Some(rest) = path.strip_prefix('/') else {
         return false;
     };
-    REDACTABLE_BANDS.iter().any(|band| {
+    WRITABLE_BANDS.iter().any(|band| {
         rest == *band
             || (band_has_interior(band)
                 && rest
                     .strip_prefix(*band)
-                    .is_some_and(|tail| tail.starts_with('/')))
+                    .is_some_and(|tail| tail.starts_with('/') && tail.len() > 1))
     })
 }
 
@@ -302,6 +324,7 @@ fn writes_a_content_band(path: &str) -> bool {
 /// assert_eq!(required_cap_for_path("/system/hp"), Some(cap::WRITE_FIELDS));
 /// assert_eq!(required_cap_for_path("/permissions/default"), Some(cap::EDIT_PERMISSIONS));
 /// assert_eq!(required_cap_for_path("/source"), None); // immutable: no cap reaches it
+/// assert_eq!(required_cap_for_path("/base"), None); // server-owned: no cap reaches it
 /// ```
 pub fn required_cap_for_path(path: &str) -> Option<&'static str> {
     if writes_a_content_band(path) {
@@ -484,15 +507,34 @@ pub enum RedactionTarget {
 /// can silently diverge on an input neither author checked, and reading one shared
 /// function is what prevents that.
 ///
-/// Two things are shared with `required_cap_for_path` as symbols rather than by
-/// inspection: the band set (`REDACTABLE_BANDS`) and the leaf rule (`band_has_interior`,
-/// which is why `/name/...` classifies as `None`). Everything else is deliberately
-/// unshared, because the two classify different input domains: `required_cap_for_path`
-/// classifies a `FieldChange` path, `redaction_target` classifies a `property_overrides`
-/// map key. Same JSON-pointer syntax, different fields on different structures, gated by
-/// different validators — so they are NOT required to agree string-for-string, and do not
-/// (`/system/` is a writable path there and unclassifiable here). Only the band set and
-/// the leaf rule must agree, and those are single symbols.
+/// One thing is shared with `required_cap_for_path` as a symbol rather than by
+/// inspection: the leaf rule (`band_has_interior`, which is why `/name/...`
+/// classifies as `None`). The band set is deliberately NOT shared: redaction
+/// reads `REDACTABLE_BANDS` (egress), the write side reads `WRITABLE_BANDS` —
+/// `base` is redactable but server-owned, so it is in the former and not the
+/// latter. Everything else is deliberately unshared, because the two classify
+/// different input domains: `required_cap_for_path` classifies a `FieldChange`
+/// path, `redaction_target` classifies a `property_overrides` map key. Same
+/// JSON-pointer syntax, different fields on different structures, gated by
+/// different validators — so they are NOT required to agree string-for-string
+/// in general, though on an empty trailing segment (`/system/`) both refuse it.
+///
+/// `base`'s interior does NOT get the ordinary "any residual is `Within`" treatment the
+/// other three bands get, because `base`'s content is not an arbitrary untyped tree —
+/// it is a `merge::bands::MergeBase`/`EmbeddedBaseChild`, a shape with its OWN required
+/// structural keys (`embedded`, the recorded policy map, `sourceId` on a record) that
+/// `validation::check_base_node_shape` enforces at every depth. Stripping one of those via
+/// an ordinary object-key removal (`RedactionTarget::Within`'s own terminal step) would
+/// violate the INVARIANT this doc comment opens with — the removed key is required, not
+/// optional/untyped, for the shape a `base` snapshot is supposed to hold. `is_base_content_residual`
+/// is the base-specific residual test: it admits only a path that lands on `name`/`engine`/`system`
+/// content, at the root or recursively through `/embedded/<coll>/<idx>` hops (each hop needs
+/// BOTH segments to keep descending — naming a whole collection or a whole record is
+/// structural, refused same as `embedded`/`propertyOverrides`/`sourceId`/`owner_standing`
+/// themselves). Refusing these at THIS classifier is what closes them at
+/// `validation::validate_property_overrides`, the write-side chokepoint that already calls
+/// this function — no client-writable path can ever store an override that would corrupt a
+/// `base` snapshot's own shape at egress.
 /// # Examples
 ///
 /// ```
@@ -501,6 +543,8 @@ pub enum RedactionTarget {
 /// assert_eq!(redaction_target("/system"), Some(RedactionTarget::Band));
 /// assert_eq!(redaction_target("/system/hp"), Some(RedactionTarget::Within));
 /// assert_eq!(redaction_target("/permissions/default"), None);
+/// assert_eq!(redaction_target("/base/system/hp"), Some(RedactionTarget::Within));
+/// assert_eq!(redaction_target("/base/embedded"), None);
 /// ```
 pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
     let rest = pointer.strip_prefix('/')?;
@@ -511,7 +555,7 @@ pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
         if band_has_interior(band) {
             if let Some(inner) = rest.strip_prefix(band) {
                 if let Some(tail) = inner.strip_prefix('/') {
-                    if !tail.is_empty() {
+                    if !tail.is_empty() && (band != "base" || is_base_content_residual(inner)) {
                         return Some(RedactionTarget::Within);
                     }
                 }
@@ -519,6 +563,31 @@ pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
         }
     }
     None
+}
+
+/// Whether `residual` (a `/base` pointer's trailing path, always starting with `/`) names
+/// CONTENT within a stored base snapshot rather than one of the snapshot's own STRUCTURAL
+/// keys. Strips zero or more `/embedded/<coll>/<idx>` hops — each hop requires BOTH a
+/// collection name and an index segment to keep descending, so naming a whole collection
+/// (`/embedded/item`) or a whole record (`/embedded/item/0`) fails to strip and is refused
+/// by the final check below — then requires what remains to match `writes_a_content_band`
+/// (`/name`, `/engine…`, `/system…`, the same three bands `MergeBase`/`EmbeddedBaseChild`
+/// record as content). Everything else a `check_base_node_shape`-valid node carries at any
+/// depth (`embedded` itself, the record's policy map, `sourceId`, the root's
+/// `owner_standing`) fails this test and is refused, since removing any of them would leave
+/// a shape `check_base_node_shape` itself would reject.
+fn is_base_content_residual(residual: &str) -> bool {
+    let mut rest = residual.to_string();
+    while let Some(after_embedded) = rest.strip_prefix("/embedded/") {
+        let Some((_collection, after_collection)) = after_embedded.split_once('/') else {
+            return false;
+        };
+        let Some((_index, after_index)) = after_collection.split_once('/') else {
+            return false;
+        };
+        rest = format!("/{after_index}");
+    }
+    writes_a_content_band(&rest)
 }
 
 #[cfg(test)]
@@ -993,70 +1062,251 @@ pub fn filter_properties(doc: &Document, access: &Access) -> Result<Document, Re
             Ok((k, children))
         })
         .collect::<Result<_, _>>()?;
-    let mut hidden: Vec<String> = doc
-        .permissions
-        .property_overrides
-        .iter()
-        .filter(|(_, v)| !access.can_see(**v))
-        .map(|(p, _)| p.clone())
-        .collect();
-    // `base` is a historical snapshot of this doc's own (possibly hidden) bands — it is
-    // hardcoded `OwnerOrGm` visibility, unconditional and non-overridable, independent
-    // of `property_overrides`. Only the document's owner or a GM ever needs it to compute a
-    // pull/push/revert; no other recipient should receive the raw snapshot.
-    if !access.can_see(Visibility::OwnerOrGm) {
-        hidden.push("/base".to_string());
-    }
+    let hidden = hidden_own_pointers(doc, access)?;
     let mut whole = serde_json::to_value(&out).expect("document serializes");
-    for pointer in hidden {
-        match redaction_target(&pointer) {
-            Some(RedactionTarget::Band) => {
-                if let Some(f) = whole.get_mut(&pointer[1..]) {
-                    *f = serde_json::Value::Null;
-                }
-            }
-            Some(RedactionTarget::Within) => strip_pointer(&mut whole, &pointer),
-            None => return Err(RedactionError { pointer }),
-        }
-    }
+    redact_pointers(&mut whole, &hidden)?;
     serde_json::from_value(whole).map_err(|_| RedactionError {
         pointer: "<document>".to_string(),
     })
 }
 
+/// Remove every `hidden` pointer from `whole`, a serialized document-shaped
+/// tree, the one way egress removes a hidden value: a `RedactionTarget::Band`
+/// pointer nulls the band in place, a `Within` pointer strips the value
+/// (`strip_pointer`), an unclassifiable pointer fails closed. THE single
+/// redaction step: `filter_properties` applies it to a whole document under
+/// the recipient's hidden set, and `merge::plan::merge3` applies it to a
+/// stored `base` snapshot's band tree under the TEMPLATE's hidden set, so
+/// the base and parent sides of a merge are reduced by one procedure and
+/// agree on what the requester may see.
+pub(crate) fn redact_pointers(
+    whole: &mut serde_json::Value,
+    hidden: &[String],
+) -> Result<(), RedactionError> {
+    for pointer in hidden {
+        match redaction_target(pointer) {
+            Some(RedactionTarget::Band) => {
+                if let Some(f) = whole.get_mut(&pointer[1..]) {
+                    *f = serde_json::Value::Null;
+                }
+            }
+            Some(RedactionTarget::Within) => strip_pointer(whole, pointer),
+            None => {
+                return Err(RedactionError {
+                    pointer: pointer.clone(),
+                })
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Every `(pointer, tier)` pair of `doc`'s OWN redaction policy at THIS level, pointers
+/// relative to `doc`'s own root: its `property_overrides`, each classified via
+/// `redaction_target` (fail closed on an unclassifiable pointer), the hardcoded `/base`
+/// entry, and the `/base` snapshot's RECORDED policy (`base_policy`). No embedded recursion
+/// through the live children — this is the one per-document statement of "what this
+/// document hides", which `collect_overrides` walks positionally through embedded descendants
+/// and `filter_properties`/`hidden_own_pointers` read at a single level.
+///
+/// `base` is a snapshot of the TEMPLATE's bands (full, unredacted — `merge::bands::snapshot_base`
+/// of the template at the last merge write; the stamped document's own bands at Create). Three
+/// rules govern its egress, all from this function: (1) the whole band is hardcoded
+/// `OwnerOrGm`, unconditional and non-overridable, so no recipient outside the owner-or-GM
+/// pair ever receives the raw snapshot; (2) the whole band is `GmOnly` when the snapshot
+/// records that the instance's owner held no READ on the template
+/// (`StoredBase::owner_standing` is `OwnerStanding::Stranger`), so the owner receives no
+/// template content through `/base` at all; (3) inside it, every pointer the snapshot's own
+/// recorded `property_overrides` name is hidden at the recorded tier — the policy the
+/// TEMPLATE carried over that content, verbatim, stored WITH the content by `snapshot_base`
+/// (`MergeBase::property_overrides`, `EmbeddedBaseChild::property_overrides`, the embedded
+/// records addressed at their positions in the snapshot) — evaluated under the recorded
+/// standing (`OwnerStanding::relate`): a recorded `OwnerOrGm` is the template owner's tier,
+/// so it admits the instance's owner only when that owner is the template's owner too. The
+/// owner therefore receives `/base` minus exactly what the template hid FROM THEM, with no
+/// template lookup on the egress path. The synthetic `/base` entries are never classified
+/// (they are hardcoded, not user-supplied); a recorded entry is classified as
+/// `/base{pointer}`, which is what egress strips.
+///
+/// Classifies every REAL override pointer via `redaction_target` eagerly (not only the hidden
+/// ones): safe because every document reaching this function has already passed
+/// `validation::validate_property_overrides` at its OWN write time (both `apply_command` and
+/// `apply_intent` call it on the full post-image, recursing into every embedded descendant,
+/// before any document reaches storage) — an unclassifiable REAL override pointer cannot exist
+/// in persisted data. Still returns `Result` to fail closed on pre-validation legacy/hand-seeded
+/// data.
+fn own_overrides(doc: &Document) -> Result<Vec<(String, Visibility)>, RedactionError> {
+    let mut out = Vec::with_capacity(doc.permissions.property_overrides.len() + 1);
+    for (p, v) in &doc.permissions.property_overrides {
+        if redaction_target(p).is_none() {
+            return Err(RedactionError { pointer: p.clone() });
+        }
+        out.push((p.clone(), *v));
+    }
+    out.push(("/base".to_string(), Visibility::OwnerOrGm));
+    if let Some(base) = &doc.base {
+        let stored: StoredBase =
+            serde_json::from_value(base.clone()).map_err(|_| RedactionError {
+                pointer: "/base".to_string(),
+            })?;
+        if stored.owner_standing == OwnerStanding::Stranger {
+            out.push(("/base".to_string(), Visibility::GmOnly));
+        }
+        base_policy(&stored.snapshot, "/base", stored.owner_standing, &mut out)?;
+    }
+    Ok(out)
+}
+
+/// The policy a `base` snapshot's ROOT records over its own content
+/// (`MergeBase::property_overrides`), each entry emitted as `{prefix}{pointer}`
+/// at the recorded tier related to `standing` (`OwnerStanding::relate`), then
+/// recursing into the records under `embedded` at their snapshot positions
+/// (`{prefix}/embedded/<coll>/<k>`) via `base_policy_child`, under the same
+/// standing. `standing` is the ROOT's `owner_standing` (`StoredBase`),
+/// resolved by the caller — a `Stranger` root's whole-band `GmOnly` floor is
+/// pushed by the caller before this runs, not here, since it applies to the
+/// WHOLE band regardless of whether the snapshot records any policy at all.
+///
+/// Reads `node` through `MergeBase`, the same typed deserializer
+/// `validation::check_base_node_shape` validates at ingest and `compute_pull`/
+/// `plan_to_update` read at merge time — never raw JSON. Because
+/// `MergeBase`/`EmbeddedBaseChild` carry no field defaults, the CALLER's
+/// `serde_json::from_value::<StoredBase>` step is where every one of
+/// `check_base_node_shape`'s required-key rules is enforced (a node that is
+/// not an object, a policy map or `embedded` map that is absent or malformed,
+/// a tier that does not parse as a `Visibility`) — a coalesced absence there
+/// (reading a missing policy map as "nothing hidden") is silent
+/// under-redaction, not a parse failure the caller ever sees, so this function
+/// itself has no fallible shape step left: the only remaining fail-closed
+/// check is `writes_a_content_band`, since a typed `property_overrides` key is
+/// an arbitrary `String` the deserializer does not constrain to a mergeable
+/// band pointer.
+fn base_policy(
+    root: &MergeBase,
+    prefix: &str,
+    standing: OwnerStanding,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    collect_band_policy(&root.property_overrides, prefix, standing, out)?;
+    for (coll, records) in &root.embedded {
+        for (k, record) in records.iter().enumerate() {
+            base_policy_child(
+                record,
+                &format!("{prefix}/embedded/{coll}/{k}"),
+                standing,
+                out,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// `base_policy`'s recursive step for an `EmbeddedBaseChild` record: the
+/// record's own `propertyOverrides`, then its own `embedded` records at their
+/// snapshot positions, under the SAME standing the root resolved (a record
+/// never carries its own `owner_standing` — that key lives only at the root).
+fn base_policy_child(
+    node: &EmbeddedBaseChild,
+    prefix: &str,
+    standing: OwnerStanding,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    collect_band_policy(&node.property_overrides, prefix, standing, out)?;
+    for (coll, records) in &node.embedded {
+        for (k, record) in records.iter().enumerate() {
+            base_policy_child(
+                record,
+                &format!("{prefix}/embedded/{coll}/{k}"),
+                standing,
+                out,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Emit one `({prefix}{pointer}, tier)` pair per entry of a snapshot node's
+/// recorded policy map, fail-closed on a pointer naming no mergeable band —
+/// the one shape `MergeBase`/`EmbeddedBaseChild`'s typed deserializer does not
+/// itself constrain, since a policy map key is an arbitrary `String`.
+fn collect_band_policy(
+    policy: &std::collections::BTreeMap<String, Visibility>,
+    prefix: &str,
+    standing: OwnerStanding,
+    out: &mut Vec<(String, Visibility)>,
+) -> Result<(), RedactionError> {
+    for (p, tier) in policy {
+        let pointer = format!("{prefix}{p}");
+        if !writes_a_content_band(p) {
+            return Err(RedactionError { pointer });
+        }
+        out.push((pointer, standing.relate(*tier)));
+    }
+    Ok(())
+}
+
+/// The `OwnerStanding` of an instance's effective owner on the instance's
+/// template: `resolve_access_world` for that user on the template — the same
+/// resolution every egress site performs, never a literal `owner`
+/// comparison — then `Owner` when the access holds `cap::READ` and
+/// `is_owner`, `Reader` with `READ` alone, `Stranger` otherwise. `owner` is
+/// `None` for an instance with no effective owner or an owner with no world
+/// membership (no `WorldRole` to resolve under), which is `Stranger`: fail
+/// closed — `/base` for such an instance reaches a GM alone either way, and
+/// an owner assigned later is re-resolved by the next merge write. Both
+/// writers of a stored base call this — `apply_intent`'s Create arm and
+/// `ws::conn::merge_intents` — so the standing is decided in one place.
+pub fn owner_standing(
+    owner: Option<(Uuid, WorldRole)>,
+    template: &Document,
+    world_grants: &CapabilityGrants,
+    template_owner: Option<Uuid>,
+) -> OwnerStanding {
+    let Some((user, role)) = owner else {
+        return OwnerStanding::Stranger;
+    };
+    let access = resolve_access_world(user, role, template, world_grants, template_owner);
+    if !access.has(cap::READ) {
+        OwnerStanding::Stranger
+    } else if access.is_owner {
+        OwnerStanding::Owner
+    } else {
+        OwnerStanding::Reader
+    }
+}
+
+/// The pointers of `doc`'s OWN properties (this level only, relative to `doc`'s root) that
+/// `access` may NOT see — `own_overrides` filtered through `Access::can_see`. The per-document
+/// visibility primitive `filter_properties` strips by and the merge engine's per-document
+/// visibility oracle (`merge::visibility::RequesterView`) consults by document IDENTITY at every
+/// embedded depth, so egress and the merge answer "what does this recipient not see here" from
+/// one function rather than two same-shaped copies.
+pub(crate) fn hidden_own_pointers(
+    doc: &Document,
+    access: &Access,
+) -> Result<Vec<String>, RedactionError> {
+    Ok(hidden_from_overrides(&own_overrides(doc)?, access))
+}
+
 /// Collect every `(absolute_pointer, tier)` pair in `doc`'s own `property_overrides`, plus the
-/// hardcoded `/base` `OwnerOrGm` entry (see `filter_properties`'s doc comment), recursing into
+/// hardcoded `/base` `OwnerOrGm` entry (`own_overrides` at each level), recursing into
 /// embedded descendants (parent-absolute addressing: a child at `embedded[key][i]` contributes
 /// `/embedded/<key>/<i>{pointer}` — the SAME positional addressing `filter_properties`'s own
 /// recursion uses). Access-independent: every override regardless of tier, so ONE traversal
 /// feeds BOTH the live redaction path (`collect_hidden`, via `hidden_from_overrides`) and
 /// commit-time snapshot construction (`OpSnapshot::overrides_at_commit`) — they cannot diverge
-/// on how an embedded index is addressed because they share this one walk.
-///
-/// Classifies every REAL override pointer via `redaction_target` at traversal time (not lazily,
-/// unlike a per-recipient filter would): safe because every document reaching this function has
-/// already passed `validation::validate_property_overrides` at its OWN write time (both
-/// `apply_command` and `apply_intent` call it on the full post-image, recursing into every
-/// embedded descendant, before any document reaches storage) — an unclassifiable REAL override
-/// pointer cannot exist in persisted data. Still returns `Result` to fail closed on
-/// pre-validation legacy/hand-seeded data. The synthetic `/base` entry is never classified (it
-/// is hardcoded, not user-supplied — mirrors the un-classified unconditional `/base` push this
-/// function replaces).
+/// on how an embedded index is addressed because they share this one walk. Positional
+/// addressing is the LIVE document's index space: a consumer whose paths live in another
+/// index space (the merge's OUTPUT-indexed conflict paths) must not compare against it — it
+/// reads `hidden_own_pointers` per correlated document instead.
 pub(crate) fn collect_overrides(
     doc: &Document,
     prefix: &str,
     out: &mut Vec<(String, Visibility)>,
 ) -> Result<(), RedactionError> {
-    for (p, v) in &doc.permissions.property_overrides {
-        if redaction_target(p).is_none() {
-            return Err(RedactionError { pointer: p.clone() });
-        }
-        out.push((format!("{prefix}{p}"), *v));
+    for (p, v) in own_overrides(doc)? {
+        out.push((format!("{prefix}{p}"), v));
     }
-    // Mirrors `filter_properties`' hardcoded `OwnerOrGm` policy for `/base` — see that
-    // function's comment. Fires at every embedded depth too (each recursive call gets its own
-    // `prefix`), covering an embedded child's own `base` the same way.
-    out.push((format!("{prefix}/base"), Visibility::OwnerOrGm));
     for (key, children) in &doc.embedded {
         for (idx, child) in children.iter().enumerate() {
             collect_overrides(child, &format!("{prefix}/embedded/{key}/{idx}"), out)?;

@@ -174,6 +174,18 @@ pub trait Repository: Send + Sync {
         source_id: Uuid,
     ) -> Result<Vec<Document>, DataError>;
 
+    /// All instances OF A WORLD TEMPLATE in one world: documents in `world_id`
+    /// whose `source` names `template_id` with no compendium pack. The
+    /// `ClientMsg::MergePush` audience query — same-world and pack-less by design
+    /// (compendium/cross-world push is out of scope), so a template id that
+    /// resolves here is one the caller's world genuinely stamped from. Ordered by
+    /// id for determinism.
+    async fn instances_of(
+        &self,
+        world_id: Uuid,
+        template_id: Uuid,
+    ) -> Result<Vec<Document>, DataError>;
+
     /// The world's committed commands with sequence strictly greater than
     /// `seq`, in order — the reconnect/resync replay source.
     ///

@@ -100,6 +100,48 @@ pub enum Visibility {
     OwnerOrGm,
 }
 
+/// The standing an instance's effective owner held on the instance's
+/// TEMPLATE at the write that stored the instance's `base` snapshot
+/// (`merge::bands::StoredBase::owner_standing`), resolved by
+/// `permission::owner_standing` from that owner's `Access` on the template.
+/// `/base` reaches the instance's owner or a GM and nobody else, and its
+/// content is the TEMPLATE's, so the policy recorded inside it is evaluated
+/// under this standing rather than under the instance's own ownership
+/// (`relate`): a recorded `OwnerOrGm` names the template's owner, not the
+/// instance's. Recorded as of the write; the next merge write re-resolves it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerStanding {
+    /// The owner holds no whole-document `READ` on the template — or the
+    /// instance has no effective owner, or its owner is not a world member:
+    /// the whole snapshot is `GmOnly`, so the owner receives no template
+    /// content through `/base` at all.
+    Stranger,
+    /// The owner reads the template but is not its effective owner: the
+    /// snapshot minus the recorded `GmOnly` AND `OwnerOrGm` entries.
+    Reader,
+    /// The owner is the template's effective owner too: the snapshot minus
+    /// the recorded `GmOnly` entries only.
+    Owner,
+}
+
+impl OwnerStanding {
+    /// A recorded tier as the instance's `/base` egress evaluates it:
+    /// `OwnerOrGm` is the TEMPLATE owner's tier, so it stands only under
+    /// `Owner` and is `GmOnly` otherwise; every other tier names no owner
+    /// and is unchanged. A `Stranger` hides the whole snapshot before any
+    /// entry is read (`permission`'s `base_policy`), so the per-entry
+    /// relation only ever matters for a `Reader` or an `Owner`.
+    pub fn relate(self, tier: Visibility) -> Visibility {
+        match (self, tier) {
+            (OwnerStanding::Owner, tier) => tier,
+            (_, Visibility::OwnerOrGm) => Visibility::GmOnly,
+            (_, tier) => tier,
+        }
+    }
+}
+
 /// Per-world membership role (orthogonal to the server admin/user tier).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
@@ -471,13 +513,18 @@ pub struct Document {
     /// path can re-target a document at a different template.
     #[serde(default)]
     pub source: Option<Source>,
-    /// Opaque snapshot of this child's mergeable content (`name`/`engine`/`system`/
-    /// `embedded`) at last sync (stamp or a successful pull/push/revert). Present only
-    /// on stamped children. The server NEVER interprets it: exempt from
-    /// `validate_engine_tree` (the tree walker only ever visits `engine`); will be
-    /// size-capped by `validate_system_size` and writable at `/base` under
-    /// `cap::WRITE_FIELDS` (see follow-up task). Client-owned shape (`MergeBase`,
-    /// `@shadowcat/core`).
+    /// Server-owned merge snapshot of this document's mergeable content
+    /// (`name`/`engine`/`system`/`embedded`) at last sync (stamp, or a
+    /// successful pull/push/revert). Present only on stamped instances
+    /// (`source` set); embedded children never carry one. Derived by the
+    /// server at Create (`merge::bands::derive_create_base` — any
+    /// client-supplied value is discarded) and refreshed whole-band by server
+    /// merge writes under `WriteOrigin::TemplateMerge`; NOT client-writable —
+    /// `required_cap_for_path` maps `/base` to no capability, the same
+    /// posture as `/source`. Shape-checked as a `merge::bands::MergeBase`
+    /// (mirrored in generated TS) and engine-normalized at ingest by
+    /// `validate_engine_tree`; size-capped by `validate_system_size`; egress
+    /// is hardcoded `OwnerOrGm` (`filter_properties`).
     #[serde(default)]
     #[ts(type = "unknown")]
     pub base: Option<serde_json::Value>,

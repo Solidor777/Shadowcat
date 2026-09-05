@@ -73,6 +73,17 @@ test("canWritePath gates an ancestor write that covers a protected subtree", () 
   expect(canWritePath("/system/hp", caps, false, reqs)).toBe(true);
 });
 
+test("canWritePath maps /base to no capability (server-owned), boundary neighbor included", () => {
+  const caps = new Set([
+    "core:read",
+    "core:write_fields",
+    "core:manage_embedded",
+    "core:edit_permissions",
+  ]);
+  expect(canWritePath("/base", caps, false, [])).toBe(false); // server-owned — same posture as /source
+  expect(canWritePath("/based", caps, false, [])).toBe(false); // boundary neighbor, not a match
+});
+
 test("GM bypasses all checks", () => {
   expect(
     canWritePath("/system/vision", new Set(), true, [
