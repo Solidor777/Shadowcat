@@ -4440,7 +4440,6 @@ async fn two_updates_to_the_same_doc_in_one_command_synthesize_exactly_one_trans
 }
 
 #[test]
-#[test]
 fn base_egress_is_cut_by_the_policy_the_snapshot_records() {
     // The stored base is the FULL template snapshot; the owner receives it
     // minus every pointer the snapshot's own recorded policy hides from them
@@ -4784,6 +4783,7 @@ fn an_empty_trailing_segment_is_refused_at_both_the_write_and_egress_classifiers
     assert_eq!(redaction_target("/system/"), None);
     assert_eq!(redaction_target("/base/system/"), None);
 }
+
 #[test]
 fn carried_light_ancestor_echo_with_shifted_number_variant_is_not_a_touch() {
     // Stored emission carries whole-number `f64` radii (Float variant); a JS client's
