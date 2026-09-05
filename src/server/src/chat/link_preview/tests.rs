@@ -100,10 +100,10 @@ fn every_v6_range_matches_its_declared_disposition() {
 
 #[test]
 fn blocks_representative_addresses_within_each_v6_range() {
-    // One non-network-address representative per range, distinct from
-    // `every_v6_range_matches_its_declared_disposition`'s check of the bare
-    // network address itself — pins that the mask covers the WHOLE range,
-    // not just its first address.
+    // One non-network-address representative per BLOCKED/UnwrapV4 range,
+    // distinct from `every_v6_range_matches_its_declared_disposition`'s
+    // check of the bare network address itself — pins that the mask covers
+    // the WHOLE range, not just its first address.
     let cases: &[(&str, &str)] = &[
         ("::ffff:10.0.0.1", "IPv4-mapped, private"),
         ("64:ff9b::10.0.0.1", "NAT64 well-known, private"),
@@ -113,19 +113,47 @@ fn blocks_representative_addresses_within_each_v6_range() {
             "::7f00:1",
             "IPv4-compatible embedding loopback, packed form",
         ),
-        ("2002:c0a8:0101::1", "6to4 encapsulating 192.168.1.1"),
-        ("2001:2::ffff", "benchmarking"),
-        ("2001:2f::1", "ORCHIDv2, upper end of the /28"),
+        ("100:0:0:1::ffff", "Dummy IPv6 Prefix"),
+        (
+            "2001:100::1",
+            "IETF Protocol Assignments, unclaimed sub-range",
+        ),
         (
             "2001:0:4136:e378:8000:63bf:3fff:fdd2",
             "Teredo, real client-form address",
         ),
+        ("2001:2::ffff", "benchmarking"),
+        ("2001:1f::1", "Deprecated ex-ORCHID, upper end of the /28"),
+        ("2001:db8:1234::1", "documentation, 2001:db8::/32"),
+        ("2002:c0a8:0101::1", "6to4 encapsulating 192.168.1.1"),
+        ("3fff:800::1", "IPv6 documentation, 3fff::/20"),
+        ("5f00:1234::1", "SRv6 SIDs"),
         ("fd12:3456::1", "unique-local, fd00::/8 subset"),
         ("ff02::1", "multicast, link-local scope"),
     ];
     for &(ip, label) in cases {
         let addr: IpAddr = ip.parse().unwrap();
         assert!(is_blocked_ip(addr), "{ip} ({label}) should be blocked");
+    }
+}
+
+#[test]
+fn allows_representative_addresses_within_each_excluded_v6_range() {
+    // The Excluded counterpart to `blocks_representative_addresses_...`:
+    // one non-network-address representative per globally-routable range
+    // wider than a single /128 (a /128 has no address distinct from its own
+    // network address) — pins that an Excluded mask doesn't UNDER-cover its
+    // own range either.
+    let cases: &[(&str, &str)] = &[
+        ("2001:3::ffff", "AMT"),
+        ("2001:4:112::ffff", "AS112-v6"),
+        ("2001:2f::1", "ORCHIDv2, upper end of the /28"),
+        ("2001:3f::1", "Drone Remote ID, upper end of the /28"),
+        ("2620:4f:8000::ffff", "Direct Delegation AS112 Service"),
+    ];
+    for &(ip, label) in cases {
+        let addr: IpAddr = ip.parse().unwrap();
+        assert!(!is_blocked_ip(addr), "{ip} ({label}) should NOT be blocked");
     }
 }
 
@@ -143,20 +171,61 @@ fn allows_known_public_addresses() {
 #[test]
 fn allows_addresses_one_step_outside_each_narrow_v6_special_purpose_range() {
     // Negative control pinning each narrow arm's exact boundary: one address
-    // step outside the range must stay public. Catches an over-broad mask a
-    // positive control cannot.
-    let cases: &[&str] = &[
-        "2001:1::3",    // one past the PCP/TURN anycast pair
-        "2001:1f::1",   // one below the ORCHIDv2 /28
-        "2001:30::1",   // one above the ORCHIDv2 /28 (lands in Drone Remote ID, Excluded)
-        "2001:1::1:0",  // outside 2001::/32 Teredo (s[1] != 0)
-        "2001:3::1",    // one past benchmarking 2001:2::/48 (lands in AMT, Excluded)
-        "64:ff9b:2::1", // one past NAT64 local-use 64:ff9b:1::/48
+    // step outside the range must stay public (or fall through to a
+    // less-specific Blocked parent, per the case's own comment). Catches an
+    // over-broad mask a positive control cannot.
+    let cases: &[(&str, bool)] = &[
+        // one past the PCP/TURN/DNS-SD-SRP anycast trio; unclaimed within
+        // the 2001::/23 parent, so it falls through to that Blocked parent
+        // rather than staying public — proves the trio's /128 masks don't
+        // over-reach into the parent's own territory.
+        ("2001:1::4", true),
+        // outside 2001::/23 entirely (segment 1 == 0x0200 > the parent's
+        // 0x01ff ceiling) — genuinely public, and pins the PARENT's own
+        // mask doesn't over-reach past its declared /23.
+        ("2001:200::1", false),
+        // one past benchmarking 2001:2::/48 — lands on AMT's own network
+        // address (Excluded), proving benchmarking doesn't over-reach.
+        ("2001:3::1", false),
+        // one past ORCHIDv2 2001:20::/28 — lands on Drone Remote ID's own
+        // network address (Excluded), proving ORCHIDv2 doesn't over-reach.
+        ("2001:30::1", false),
+        // outside 2001::/32 Teredo (s[6] != 0, not the anycast trio either)
+        // — unclaimed within the parent, falls through to Blocked.
+        ("2001:1::1:0", true),
+        // one past NAT64 local-use 64:ff9b:1::/48 — outside 2001::/23
+        // entirely, genuinely public.
+        ("64:ff9b:2::1", false),
+        // one past the Dummy IPv6 Prefix 100:0:0:1::/64 — genuinely public.
+        ("100:0:0:2::1", false),
+        // one past IPv6 Documentation 3fff::/20 — genuinely public.
+        ("3fff:1000::1", false),
+        // one past Segment Routing (SRv6) SIDs 5f00::/16 — genuinely public.
+        ("5f01::1", false),
     ];
-    for &ip in cases {
+    for &(ip, expect_blocked) in cases {
         let addr: IpAddr = ip.parse().unwrap();
-        assert!(!is_blocked_ip(addr), "{ip} should NOT be blocked");
+        assert_eq!(
+            is_blocked_ip(addr),
+            expect_blocked,
+            "{ip} blocked-state mismatch"
+        );
     }
+}
+
+#[test]
+fn a_routable_child_inside_a_non_routable_parent_is_not_blocked() {
+    // THE REGISTRY NESTS: 2001::/23 (IETF Protocol Assignments, Blocked)
+    // contains 2001:20::/28 (ORCHIDv2, Excluded). Most-specific-match must
+    // pick ORCHIDv2's longer /28 prefix over the parent's /23, so its own
+    // network address — squarely inside BOTH ranges — must NOT be blocked.
+    let addr: IpAddr = "2001:20::".parse().unwrap();
+    assert!(
+        !is_blocked_ip(addr),
+        "ORCHIDv2's network address, nested inside the Blocked \
+         2001::/23 parent, must resolve via its own more-specific \
+         Excluded entry"
+    );
 }
 
 // -- extract_preview: pure unit tests -----------------------------------

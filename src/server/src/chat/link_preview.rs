@@ -529,14 +529,34 @@ impl std::error::Error for DnsFailureError {}
 // "excluded" bookkeeping, since the IANA IPv4 Special-Purpose Address
 // Registry has no globally-routable entries this guard would need to record
 // as deliberately skipped. `V6_RANGES` below is the same rule applied to the
-// IANA IPv6 Special-Purpose Address Registry, but ALSO records every
-// registry entry the rule excludes (globally routable) with its routability
-// reason, via `V6Disposition::Excluded` — so a registry entry this guard
-// does not block is either present as `Excluded` (considered and kept
-// public on purpose) or genuinely absent (a gap to fix), and the two never
-// look identical. `is_blocked_ipv6` and its test suite both read this one
-// table; a future registry change is a visible row to add here, never a
-// discrepancy between the guard and its own tests.
+// IANA IPv6 Special-Purpose Address Registry (plus `ff00::/8` multicast,
+// which is tracked in the separate IANA IPv6 Multicast Address Space
+// Registry rather than the special-purpose unicast one, and the historical
+// IPv4-compatible `::/96` form, RFC 4291 §2.5.5.1, which the live registry no
+// longer carries as its own row but which Rust's `Ipv6Addr` parser still
+// accepts and which is retained here for defense-in-depth rather than
+// dropped for the sake of a stricter transcription). SOURCE: the table below
+// is a transcription of the IANA IPv6 Special-Purpose Address Registry as
+// fetched and supplied for this guard's construction — re-diff `V6_RANGES`
+// against that registry directly rather than re-deriving this rule's intent
+// from memory. A registry entry marked "Globally Reachable: N/A" (Teredo,
+// 6to4, and the deprecated former-ORCHID range) is treated as non-routable
+// for this guard's purposes, the same as an entry marked `False` — a
+// transition/tunneling mechanism or a withdrawn assignment is never a
+// legitimate stable link-preview target regardless of how the registry
+// classifies its reachability. `V6_RANGES` ALSO records every registry entry
+// the rule excludes (globally routable, `V6Disposition::Excluded`) with its
+// routability reason, so a registry entry this guard does not block is
+// either present as `Excluded` (considered and kept public on purpose) or
+// genuinely absent (a gap to fix), and the two never look identical.
+// `is_blocked_ipv6` and its test suite both read this one table; a future
+// registry change is a visible row to add here, never a discrepancy between
+// the guard and its own tests. THE REGISTRY NESTS — `2001::/23` (IETF
+// Protocol Assignments, non-routable) contains several more specific
+// entries the registry marks globally routable (the PCP/TURN/DNS-SD-SRP
+// anycast addresses, AMT, AS112-v6, ORCHIDv2, Drone Remote ID) — so
+// `is_blocked_ipv6` matches MOST-SPECIFIC-FIRST (longest `prefix_len` wins),
+// the registry's own semantics, never first-match or any-match.
 // ---------------------------------------------------------------------------
 
 /// `(network, prefix_len)` pairs, each cited to the RFC that reserves it.
@@ -609,18 +629,10 @@ struct V6Range {
 }
 
 /// The IANA IPv6 Special-Purpose Address Registry, as it bears on this
-/// guard. Believed exhaustive against that registry under the INCLUSION
-/// RULE stated above `V4_BLOCKED`: every entry the rule requires to route
-/// publicly is present below with `V6Disposition::Excluded` and its
-/// routability reason, rather than left absent.
+/// guard. See the SOURCE note above `V4_BLOCKED` for what this table is a
+/// transcription of, and the THE REGISTRY NESTS note for why matching is
+/// most-specific-first rather than first-match.
 const V6_RANGES: &[V6Range] = &[
-    V6Range {
-        network: [0, 0, 0, 0, 0, 0, 0, 0],
-        prefix_len: 128,
-        rfc: "RFC 4291",
-        reason: "unspecified address",
-        disposition: V6Disposition::Blocked,
-    },
     V6Range {
         network: [0, 0, 0, 0, 0, 0, 0, 1],
         prefix_len: 128,
@@ -629,9 +641,16 @@ const V6_RANGES: &[V6Range] = &[
         disposition: V6Disposition::Blocked,
     },
     V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 128,
+        rfc: "RFC 4291",
+        reason: "unspecified address",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
         network: [0, 0, 0, 0, 0, 0xffff, 0, 0],
         prefix_len: 96,
-        rfc: "RFC 4291 §2.5.5.2",
+        rfc: "RFC 4291",
         reason: "IPv4-mapped",
         disposition: V6Disposition::UnwrapV4,
     },
@@ -639,116 +658,100 @@ const V6_RANGES: &[V6Range] = &[
         network: [0, 0, 0, 0, 0, 0, 0, 0],
         prefix_len: 96,
         rfc: "RFC 4291 §2.5.5.1",
-        reason: "IPv4-compatible (deprecated)",
+        reason: "IPv4-compatible (deprecated) — not its own row in the live \
+                  registry; retained per the defense-in-depth note above \
+                  V4_BLOCKED",
         disposition: V6Disposition::UnwrapV4,
     },
     V6Range {
         network: [0x0064, 0xff9b, 0, 0, 0, 0, 0, 0],
         prefix_len: 96,
         rfc: "RFC 6052",
-        reason: "NAT64 well-known prefix",
+        reason: "IPv4-IPv6 Translat. (well-known prefix) — the PREFIX is \
+                  globally reachable as a translation mechanism, which is \
+                  orthogonal to whether the v4 address it embeds is itself \
+                  routable, so this stays UnwrapV4 rather than Excluded",
         disposition: V6Disposition::UnwrapV4,
     },
     V6Range {
         network: [0x0064, 0xff9b, 1, 0, 0, 0, 0, 0],
         prefix_len: 48,
         rfc: "RFC 8215",
-        reason: "NAT64 local-use prefix — blocked wholesale rather than \
-                  unwrapped: RFC 6052's embedding position shifts with the \
-                  operator-chosen prefix length, so a partial decode here \
-                  risks the same off-by-one class this guard exists to \
-                  prevent, and the range is non-globally-routable regardless \
-                  of what it carries",
-        disposition: V6Disposition::Blocked,
-    },
-    V6Range {
-        network: [0x2002, 0, 0, 0, 0, 0, 0, 0],
-        prefix_len: 16,
-        rfc: "RFC 7526",
-        reason: "6to4 (deprecated) — an arbitrary v4 is encapsulated in bits \
-                  16-48, so the whole prefix is blocked rather than unwrapped",
+        reason: "IPv4-IPv6 Translat. (local-use prefix) — blocked wholesale \
+                  rather than unwrapped: RFC 6052's embedding position \
+                  shifts with the operator-chosen prefix length, so a \
+                  partial decode here risks the same off-by-one class this \
+                  guard exists to prevent, and the range is \
+                  non-globally-routable regardless of what it carries",
         disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x0100, 0, 0, 0, 0, 0, 0, 0],
         prefix_len: 64,
         rfc: "RFC 6666",
-        reason: "discard-only",
+        reason: "Discard-Only",
         disposition: V6Disposition::Blocked,
     },
     V6Range {
-        network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
+        network: [0x0100, 0, 0, 1, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "RFC 9780",
+        reason: "Dummy IPv6 Prefix",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 23,
+        rfc: "RFC 2928",
+        reason: "IETF Protocol Assignments — the parent pool several more \
+                  specific, globally-routable entries below carve out of; \
+                  most-specific-match makes those children win here",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0, 0, 0, 0, 0, 0, 0],
         prefix_len: 32,
-        rfc: "RFC 3849",
-        reason: "documentation",
+        rfc: "RFC 4380, RFC 8190",
+        reason: "TEREDO — an IPv4-in-IPv6 tunneling scheme; the embedded \
+                  client address is NOT unwrapped and re-checked the way the \
+                  IPv4-mapped/NAT64 entries above are, because a Teredo \
+                  address XOR-obfuscates the sending NAT's public IPv4 \
+                  against a fixed constant rather than embedding it plainly \
+                  — blocking the whole prefix is the only sound option \
+                  without a dedicated decoder. Globally Reachable: N/A, \
+                  treated as non-routable per the SOURCE note above",
         disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 1, 0, 0, 0, 0, 0, 1],
         prefix_len: 128,
         rfc: "RFC 7723",
-        reason: "PCP Anycast",
-        disposition: V6Disposition::Blocked,
+        reason: "PCP Anycast — globally routable",
+        disposition: V6Disposition::Excluded,
     },
     V6Range {
         network: [0x2001, 1, 0, 0, 0, 0, 0, 2],
         prefix_len: 128,
         rfc: "RFC 8155",
-        reason: "TURN Anycast",
-        disposition: V6Disposition::Blocked,
+        reason: "TURN Anycast — globally routable",
+        disposition: V6Disposition::Excluded,
+    },
+    V6Range {
+        network: [0x2001, 1, 0, 0, 0, 0, 0, 3],
+        prefix_len: 128,
+        rfc: "RFC 9665",
+        reason: "DNS-SD Service Registration Protocol Anycast — globally \
+                  routable",
+        disposition: V6Disposition::Excluded,
     },
     V6Range {
         network: [0x2001, 2, 0, 0, 0, 0, 0, 0],
         prefix_len: 48,
-        rfc: "RFC 5180 / RFC 9637",
-        reason: "benchmarking — the IPv6 analog of V4_BLOCKED's 198.18/15; \
+        rfc: "RFC 5180",
+        reason: "Benchmarking — the IPv6 analog of V4_BLOCKED's 198.18/15; \
                   routable in principle, never a legitimate fetch target",
         disposition: V6Disposition::Blocked,
     },
-    V6Range {
-        network: [0x2001, 0x0020, 0, 0, 0, 0, 0, 0],
-        prefix_len: 28,
-        rfc: "RFC 7343",
-        reason: "ORCHIDv2 — cryptographic hash identifiers, never a real \
-                  routable next hop for a fetch",
-        disposition: V6Disposition::Blocked,
-    },
-    V6Range {
-        network: [0x2001, 0, 0, 0, 0, 0, 0, 0],
-        prefix_len: 32,
-        rfc: "RFC 4380",
-        reason: "Teredo — an IPv4-in-IPv6 tunneling scheme; the embedded \
-                  client address is NOT unwrapped and re-checked the way the \
-                  IPv4-mapped/NAT64 entries above are, because a Teredo \
-                  address XOR-obfuscates the sending NAT's public IPv4 \
-                  against a fixed constant rather than embedding it plainly \
-                  — blocking the whole prefix is the only sound option \
-                  without a dedicated decoder",
-        disposition: V6Disposition::Blocked,
-    },
-    V6Range {
-        network: [0xfc00, 0, 0, 0, 0, 0, 0, 0],
-        prefix_len: 7,
-        rfc: "RFC 4193",
-        reason: "unique-local",
-        disposition: V6Disposition::Blocked,
-    },
-    V6Range {
-        network: [0xfe80, 0, 0, 0, 0, 0, 0, 0],
-        prefix_len: 10,
-        rfc: "RFC 4291",
-        reason: "link-local",
-        disposition: V6Disposition::Blocked,
-    },
-    V6Range {
-        network: [0xff00, 0, 0, 0, 0, 0, 0, 0],
-        prefix_len: 8,
-        rfc: "RFC 4291",
-        reason: "multicast",
-        disposition: V6Disposition::Blocked,
-    },
-    // -- Deliberately EXCLUDED: globally routable, so NOT blocked. Recorded
-    // here rather than left absent, per the INCLUSION RULE above.
     V6Range {
         network: [0x2001, 3, 0, 0, 0, 0, 0, 0],
         prefix_len: 32,
@@ -764,6 +767,46 @@ const V6_RANGES: &[V6Range] = &[
         disposition: V6Disposition::Excluded,
     },
     V6Range {
+        network: [0x2001, 0x0010, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 4843",
+        reason: "Deprecated (previously ORCHID). Globally Reachable: N/A, \
+                  treated as non-routable per the SOURCE note above",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0020, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 7343",
+        reason: "ORCHIDv2 — globally routable",
+        disposition: V6Disposition::Excluded,
+    },
+    V6Range {
+        network: [0x2001, 0x0030, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 9374",
+        reason: "Drone Remote ID Protocol Entity Tags (DETs) — globally \
+                  routable",
+        disposition: V6Disposition::Excluded,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 3849",
+        reason: "Documentation",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2002, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 16,
+        rfc: "RFC 3056",
+        reason: "6to4 — an arbitrary v4 is encapsulated in bits 16-48, so \
+                  the whole prefix is blocked rather than unwrapped. \
+                  Globally Reachable: N/A, treated as non-routable per the \
+                  SOURCE note above",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
         network: [0x2620, 0x004f, 0x8000, 0, 0, 0, 0, 0],
         prefix_len: 48,
         rfc: "RFC 7534",
@@ -771,11 +814,42 @@ const V6_RANGES: &[V6Range] = &[
         disposition: V6Disposition::Excluded,
     },
     V6Range {
-        network: [0x2001, 0x0030, 0, 0, 0, 0, 0, 0],
-        prefix_len: 28,
-        rfc: "RFC 9374",
-        reason: "Drone Remote ID Protocol Entity Tags — globally routable",
-        disposition: V6Disposition::Excluded,
+        network: [0x3fff, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 20,
+        rfc: "RFC 9637",
+        reason: "Documentation",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x5f00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 16,
+        rfc: "RFC 9602",
+        reason: "Segment Routing (SRv6) SIDs",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xfc00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 7,
+        rfc: "RFC 4193, RFC 8190",
+        reason: "Unique-Local",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xfe80, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 10,
+        rfc: "RFC 4291",
+        reason: "Link-Local Unicast",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xff00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 8,
+        rfc: "RFC 4291",
+        reason: "multicast — tracked in the separate IANA IPv6 Multicast \
+                  Address Space Registry, not the special-purpose one; \
+                  included here for the same reason the IPv4-compatible \
+                  ::/96 form is (see the SOURCE note above)",
+        disposition: V6Disposition::Blocked,
     },
 ];
 
@@ -802,25 +876,30 @@ fn ipv6_in_cidr(ip: [u16; 8], network: [u16; 8], prefix_len: u32) -> bool {
     true
 }
 
-/// Whether `ip` is in a blocked (or explicitly excluded) `V6_RANGES` entry;
-/// `V6Disposition::UnwrapV4` forms re-check the embedded v4 through the v4
-/// table.
+/// Whether `ip` is in a blocked (or explicitly excluded) `V6_RANGES` entry.
+/// Matches MOST-SPECIFIC-FIRST (the entry with the longest `prefix_len`
+/// among every entry that contains `ip`) — the registry nests (see THE
+/// REGISTRY NESTS note above `V4_BLOCKED`), so a first-match or any-match
+/// scan would give the wrong disposition for a globally-routable child
+/// carved out of a non-routable parent pool. `V6Disposition::UnwrapV4` forms
+/// re-check the embedded v4 through the v4 table.
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
-    for r in V6_RANGES {
-        if !ipv6_in_cidr(s, r.network, r.prefix_len) {
-            continue;
-        }
-        // Cites the matched registry entry so a rejected/allowed preview
-        // fetch is auditable from logs alone, not just from this table.
-        tracing::trace!(%ip, rfc = r.rfc, reason = r.reason, "matched V6_RANGES entry");
-        return match r.disposition {
-            V6Disposition::Blocked => true,
-            V6Disposition::UnwrapV4 => is_blocked_ipv4(embedded_v4(s)),
-            V6Disposition::Excluded => false,
-        };
+    let most_specific = V6_RANGES
+        .iter()
+        .filter(|r| ipv6_in_cidr(s, r.network, r.prefix_len))
+        .max_by_key(|r| r.prefix_len);
+    let Some(r) = most_specific else {
+        return false;
+    };
+    // Cites the matched registry entry so a rejected/allowed preview fetch
+    // is auditable from logs alone, not just from this table.
+    tracing::trace!(%ip, rfc = r.rfc, reason = r.reason, "matched V6_RANGES entry");
+    match r.disposition {
+        V6Disposition::Blocked => true,
+        V6Disposition::UnwrapV4 => is_blocked_ipv4(embedded_v4(s)),
+        V6Disposition::Excluded => false,
     }
-    false
 }
 
 /// Extracts the embedded IPv4 address from the low 32 bits of a `/96`-mapped
