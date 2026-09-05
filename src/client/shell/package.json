@@ -19,6 +19,7 @@
     "@shadowcat/module-chat-composer": "workspace:*",
     "@shadowcat/module-chat-card": "workspace:*",
     "@shadowcat/module-conditions": "workspace:*",
+    "@shadowcat/module-combat-tracker": "workspace:*",
     "@shadowcat/module-factions": "workspace:*",
     "@shadowcat/module-game-settings": "workspace:*",
     "@shadowcat/module-scene-browser": "workspace:*",

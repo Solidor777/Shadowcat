@@ -104,17 +104,131 @@ describe("SystemTreeEditor", () => {
     ]);
   });
 
-  it("addField on an object dispatches old: null for the new key's own path", async () => {
+  it("addField takes the author's own key and dispatches old: null for it", async () => {
     const calls: unknown[] = [];
     const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
     const d = doc({ a: "1" });
-    const { getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldKey"), { target: { value: "speed" } });
     await fireEvent.click(getByText("sheets.tree.addField"));
-    expect(calls.length).toBe(1);
+    expect(calls).toEqual([[{ op: "update", doc_id: "d1", changes: [{ path: "/system/speed", old: null, new: "" }] }]]);
+  });
+
+  it("addField seeds a finite numeric initial value as a JSON number, not a string", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ a: "1" });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldKey"), { target: { value: "speed" } });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldValue"), { target: { value: "2" } });
+    await fireEvent.click(getByText("sheets.tree.addField"));
     const change = (calls[0] as { changes: { path: string; old: unknown; new: unknown }[] }[])[0].changes[0];
-    expect(change.path).toMatch(/^\/system\/[0-9a-f-]{8}$/);
-    expect(change.old).toBeNull();
-    expect(change.new).toBe("");
+    expect(change.new).toBe(2);
+    expect(typeof change.new).toBe("number");
+  });
+
+  it("addField refuses a key already present in root, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ a: "1" });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldKey"), { target: { value: "a" } });
+    await fireEvent.click(getByText("sheets.tree.addField"));
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyTaken")).toBeTruthy();
+  });
+
+  it("addField refuses a key containing the JSON-pointer path separator, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ a: "1" });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldKey"), { target: { value: "a/b" } });
+    await fireEvent.click(getByText("sheets.tree.addField"));
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
+  });
+
+  it("addField refuses a key containing the RFC-6901 escape character, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ a: "1" });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.newFieldKey"), { target: { value: "hp~1max" } });
+    await fireEvent.click(getByText("sheets.tree.addField"));
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
+  });
+
+  it("renameKey dispatches one atomic Update removing the old key and inserting the new one", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ hp: 10 });
+    const { getByLabelText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.renameKey"), { target: { value: "speed" } });
+    expect(calls).toEqual([
+      [{
+        op: "update", doc_id: "d1",
+        changes: [
+          { path: "/system/hp", old: 10, new: null, remove: true },
+          { path: "/system/speed", old: null, new: 10 },
+        ],
+      }],
+    ]);
+  });
+
+  it("renameKey round-trips through the real store: the value moves to the new key", async () => {
+    const ops: WireCommand["ops"][] = [];
+    const context = setAppContextForTest({ dispatchIntent: (o) => ops.push(o), canEdit: () => true });
+    const d = doc({ hp: 10 });
+    const store = new DocumentStore();
+    store.applyCommand({ seq: 1, world_id: "w1", author: "t", ts: 0, ops: [{ op: "create", doc: d }] });
+    const { getByLabelText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.renameKey"), { target: { value: "speed" } });
+    store.applyCommand({ seq: 2, world_id: "w1", author: "t", ts: 0, ops: ops[0] });
+    const system = store.get("d1")!.system as Record<string, unknown>;
+    expect("hp" in system).toBe(false);
+    expect(system.speed).toBe(10);
+  });
+
+  it("renameKey refuses a same-render collision against an existing sibling key, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ a: "1", b: "2" });
+    const { getAllByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    // The identity-echo test `t` (`t: (k) => k`) drops interpolation params, so both rows share
+    // the literal aria-label "sheets.tree.renameKey" — index 0 is the `a` row (entries preserve
+    // `Object.entries` order).
+    await fireEvent.change(getAllByLabelText("sheets.tree.renameKey")[0], { target: { value: "b" } });
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyTaken")).toBeTruthy();
+  });
+
+  it("renameKey refuses a key containing the JSON-pointer path separator, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ hp: 10 });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.renameKey"), { target: { value: "a/b" } });
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
+  });
+
+  it("renameKey refuses a key containing the RFC-6901 escape character, dispatching nothing", async () => {
+    const calls: unknown[] = [];
+    const context = setAppContextForTest({ dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const d = doc({ hp: 10 });
+    const { getByLabelText, getByText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system", root: d.system, readOnly: false }, context });
+    await fireEvent.change(getByLabelText("sheets.tree.renameKey"), { target: { value: "hp~1max" } });
+    expect(calls).toEqual([]);
+    expect(getByText("sheets.tree.keyInvalid")).toBeTruthy();
+  });
+
+  it("array elements render a plain key span, never a rename input", () => {
+    const context = setAppContextForTest({ dispatchIntent: () => {}, canEdit: () => true });
+    const d = doc({ arr: ["x"] });
+    const { queryByLabelText } = render(SystemTreeEditor, { props: { doc: d, basePath: "/system/arr", root: (d.system as { arr: unknown[] }).arr, readOnly: false }, context });
+    expect(queryByLabelText(/^sheets\.tree\.renameKey/)).toBeNull();
   });
 
   it("recursion: editing a leaf at depth 2 dispatches against its own full path and pre-image", async () => {

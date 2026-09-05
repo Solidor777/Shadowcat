@@ -10,6 +10,9 @@
     type ChatSettingsEngine, type ChannelRegistryEngine,
     type SettingPath,
   } from "@shadowcat/core";
+  import CombatSettings from "./CombatSettings.svelte";
+  import CombatSceneOverrides from "./CombatSceneOverrides.svelte";
+  import ResourceRegistryEditor from "./ResourceRegistryEditor.svelte";
 
   const ctx = getAppContext();
 
@@ -433,6 +436,8 @@
       </select>
     </label>
     {@render provControl("animation.easing", wsys.animation?.easing)}
+
+    <CombatSettings {ws} {wsys} {set} {prov} {scene} />
   {/if}
 
   {#if ctx.role === "gm" && lgsys && lgDoc}
@@ -678,6 +683,8 @@
     </fieldset>
   {/if}
 
+  <ResourceRegistryEditor />
+
   {#if ctx.role === "gm" && scene && ssys}
     <!-- Per-scene overrides: vision, lighting, and grid.distance.
          Writing null to a field is equivalent to "inherit": resolveSceneSettings reads each
@@ -893,6 +900,8 @@
             unit: (e.currentTarget as HTMLInputElement).value,
           })} />
       </label>
+
+      <CombatSceneOverrides {scene} {ssys} {setScene} />
 
       <!-- Scene bounds: per-scene only, fixed default (not an inherit-from-world tri-state). -->
       <label>

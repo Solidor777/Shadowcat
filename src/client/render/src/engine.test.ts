@@ -585,6 +585,19 @@ test("gridDistance delegates to the grid; drawMeasure/clearMeasure forward", () 
   expect(backend.measure).toBeNull();
 });
 
+test("drawMeasure calls the onMeasureDrawn observability hook with the drawn label", () => {
+  const store = new DocumentStore();
+  const assets = new AssetResolver();
+  const backend = new MockBackend();
+  const labels: string[] = [];
+  const engine = new RenderEngine({
+    store, assets, backend, grid: { kind: "square", size: 100 },
+    onMeasureDrawn: (label) => labels.push(label),
+  });
+  engine.drawMeasure({ x: 0, y: 0 }, { x: 10, y: 0 }, "10 ft over budget");
+  expect(labels).toEqual(["10 ft over budget"]);
+});
+
 test("setActiveTool discards an in-progress preview overlay (mid-gesture tool swap)", () => {
   const { backend, engine } = makeEngine();
   engine.previewOverlay([{ points: [0, 0, 5, 5], closed: false, stroke: null, fill: null }]);

@@ -1,0 +1,83 @@
+[
+  {
+    "name": "effectCleanup engine fallback with no layers at all",
+    "path": "combat.effectCleanup",
+    "expect": { "value": true, "source": "engine" }
+  },
+  {
+    "name": "effectCleanup supplied by the system layer",
+    "system": { "effectCleanup": false },
+    "path": "combat.effectCleanup",
+    "expect": { "value": false, "source": "system" }
+  },
+  {
+    "name": "effectCleanup overridden by the world layer over a system value",
+    "system": { "effectCleanup": false },
+    "world": { "effectCleanup": true },
+    "path": "combat.effectCleanup",
+    "expect": { "value": true, "source": "world" }
+  },
+  {
+    "name": "effectCleanup overridden by the scene layer over world and system",
+    "system": { "effectCleanup": false },
+    "world": { "effectCleanup": true },
+    "scene": { "effectCleanup": false },
+    "path": "combat.effectCleanup",
+    "expect": { "value": false, "source": "scene" }
+  },
+  {
+    "name": "rewindRestore engine fallback",
+    "path": "combat.rewindRestore",
+    "expect": { "value": true, "source": "engine" }
+  },
+  {
+    "name": "rewindRestore overridden by the world layer",
+    "world": { "rewindRestore": false },
+    "path": "combat.rewindRestore",
+    "expect": { "value": false, "source": "world" }
+  },
+  {
+    "name": "forwardRestore engine fallback",
+    "path": "combat.forwardRestore",
+    "expect": { "value": false, "source": "engine" }
+  },
+  {
+    "name": "forwardRestore overridden by the scene layer over an unset world layer",
+    "system": { "forwardRestore": false },
+    "scene": { "forwardRestore": true },
+    "path": "combat.forwardRestore",
+    "expect": { "value": true, "source": "scene" }
+  },
+  {
+    "name": "effectLifecycle.onCombatEnd engine fallback (null means built-in behaviour)",
+    "path": "combat.effectLifecycle.onCombatEnd",
+    "expect": { "value": null, "source": "engine" }
+  },
+  {
+    "name": "effectLifecycle.onCombatEnd supplied by the system layer as a formula string",
+    "system": { "effectLifecycle": { "onCombatEnd": "max(hp, 0)" } },
+    "path": "combat.effectLifecycle.onCombatEnd",
+    "expect": { "value": "max(hp, 0)", "source": "system" }
+  },
+  {
+    "name": "effectLifecycle.onTurnEnd overridden by the world layer as a number",
+    "system": { "effectLifecycle": { "onTurnEnd": "1" } },
+    "world": { "effectLifecycle": { "onTurnEnd": 0 } },
+    "path": "combat.effectLifecycle.onTurnEnd",
+    "expect": { "value": 0, "source": "world" }
+  },
+  {
+    "name": "effectLifecycle.onAdvance overridden by the scene layer",
+    "world": { "effectLifecycle": { "onAdvance": "1" } },
+    "scene": { "effectLifecycle": { "onAdvance": "2" } },
+    "path": "combat.effectLifecycle.onAdvance",
+    "expect": { "value": "2", "source": "scene" }
+  },
+  {
+    "name": "a present effectLifecycle object with a null leaf falls through past that tier",
+    "system": { "effectLifecycle": { "onCombatEnd": "1" } },
+    "world": { "effectLifecycle": { "onCombatEnd": null, "onTurnEnd": "2" } },
+    "path": "combat.effectLifecycle.onCombatEnd",
+    "expect": { "value": "1", "source": "system" }
+  }
+]

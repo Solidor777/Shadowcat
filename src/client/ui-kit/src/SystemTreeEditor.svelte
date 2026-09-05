@@ -28,6 +28,49 @@
   const ctx = getAppContext();
   const t = ctx.t;
 
+  let draftKey = $state("");
+  let draftValue = $state("");
+  let addError = $state<string | null>(null);
+  let renameErrors = $state<Record<string, string | null>>({});
+
+  /**
+   * Coerces the author's typed initial-value text into a leaf value: a finite numeric literal
+   * becomes a JSON number (so the new field is immediately usable as a formula reference target
+   * — `crate::formula`'s `SystemLeafResolver` reads a leaf through `Value::as_f64`, which a
+   * JSON string never satisfies), blank text becomes an empty string (the prior unconditional
+   * seed, preserved as the default), and anything else is kept as the raw string.
+   * @param raw - The typed initial-value text.
+   * @returns The leaf value to seed the new field with.
+   * @example seedValue("2"); // 2 (a number, not the string "2")
+   */
+  function seedValue(raw: string): unknown {
+    const trimmed = raw.trim();
+    if (trimmed === "") return "";
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : trimmed;
+  }
+
+  /**
+   * Validates a candidate object key: non-empty, and free of both RFC-6901 pointer
+   * metacharacters — the separator `/` and the escape character `~`. This editor's path
+   * concatenation (`basePath + "/" + key`) applies neither `~1`/`~0` escaping nor unescaping, so
+   * either character in a raw key corrupts the pointer: a literal `/` splits it into an extra
+   * segment, and a literal `~` collides with the two-character escape sequences
+   * (`~1`, `~0`) the server's `pointer_tokens` and this client's mirror unescape on every read —
+   * a key typed as `hp~1max` would be STORED under `hp~1max` but READ BACK as `hp/max`, silently
+   * addressing a different tree node than the one displayed. Refused, never escaped: this editor
+   * refuses both metacharacters rather than escaping either, so "what happens to a pointer
+   * metacharacter" has one answer regardless of which one is typed.
+   * @param raw - The candidate key, as typed.
+   * @returns The trimmed key, or `null` when invalid.
+   * @example validKey("speed"); // "speed"
+   */
+  function validKey(raw: string): string | null {
+    const key = raw.trim();
+    if (key === "" || key.includes("/") || key.includes("~")) return null;
+    return key;
+  }
+
   const entries = $derived.by((): [string, unknown][] => {
     if (Array.isArray(root)) return root.map((v, i) => [String(i), v]);
     if (root !== null && typeof root === "object") return Object.entries(root as Record<string, unknown>);
@@ -66,17 +109,75 @@
   }
 
   /**
-   * Add a new object field seeded as an empty string. Array grow is not supported here
-   * (`set_pointer` cannot extend arrays — the sheet writes the WHOLE array to grow it,
-   * see {@link addArrayItem}). Generates a random key, retrying until it does not already
-   * exist in `root` — always terminates in practice since `root` has finitely many keys.
+   * Add a new object field under the author-supplied key held in `draftKey`, seeded from the
+   * author-supplied initial value held in `draftValue` ({@link seedValue}). Array grow is not
+   * supported here (`set_pointer` cannot extend arrays — the sheet writes the WHOLE array to
+   * grow it, see {@link addArrayItem}). Refuses (surfacing `addError`, dispatching nothing) an
+   * invalid key ({@link validKey}) or one already present in `root` — a collision is never
+   * silently merged into the existing field.
    * @example addField();
    */
   function addField(): void {
     const existing = root !== null && typeof root === "object" && !Array.isArray(root) ? (root as Record<string, unknown>) : {};
-    let key = crypto.randomUUID().slice(0, 8);
-    while (key in existing) key = crypto.randomUUID().slice(0, 8);
-    editLeaf(key, "");
+    const key = validKey(draftKey);
+    if (key === null) {
+      addError = t("sheets.tree.keyInvalid");
+      return;
+    }
+    if (key in existing) {
+      addError = t("sheets.tree.keyTaken");
+      return;
+    }
+    addError = null;
+    const seed = seedValue(draftValue);
+    draftKey = "";
+    draftValue = "";
+    editLeaf(key, seed);
+  }
+
+  /**
+   * Renames an existing object key in place, preserving its value (including any nested
+   * subtree) under the new key at the same parent. Dispatched as ONE atomic Update carrying
+   * both the removing and the inserting `FieldChange` — either both apply or neither does, so
+   * the field is never observably absent from both keys at once. The insert's OCC pre-image
+   * is the wire `null` a genuinely-absent key reads as: a same-batch collision (the new key
+   * created concurrently) fails that pre-image check and the whole rename is rejected and
+   * rolled back, never silently merged into whatever now occupies the new key. A same-render
+   * collision against the CURRENTLY known `root` is refused up front instead, surfacing
+   * `renameErrors` and dispatching nothing.
+   * @param oldKey - The key being renamed.
+   * @param raw - The new key, as typed.
+   * @example renameKey("hp", "speed");
+   */
+  function renameKey(oldKey: string, raw: string): void {
+    const newKey = validKey(raw);
+    if (newKey === null) {
+      renameErrors[oldKey] = t("sheets.tree.keyInvalid");
+      return;
+    }
+    if (newKey === oldKey) {
+      renameErrors[oldKey] = null;
+      return;
+    }
+    const existing = root as Record<string, unknown>;
+    if (newKey in existing) {
+      renameErrors[oldKey] = t("sheets.tree.keyTaken");
+      return;
+    }
+    renameErrors[oldKey] = null;
+    const oldPath = `${basePath}/${oldKey}`;
+    const newPath = `${basePath}/${newKey}`;
+    const value = existing[oldKey];
+    ctx.dispatchIntent([
+      {
+        op: "update",
+        doc_id: doc.id,
+        changes: [
+          { path: oldPath, old: getPointer(doc, oldPath) ?? null, new: null, remove: true },
+          { path: newPath, old: null, new: value },
+        ],
+      },
+    ]);
   }
 
   /**
@@ -119,7 +220,13 @@
 <ul class="tree">
   {#each entries as [key, value] (key)}
     <li class="node">
-      <span class="key">{key}</span>
+      {#if !readOnly && !Array.isArray(root)}
+        <input class="key" aria-label={t("sheets.tree.renameKey", { key })} value={key}
+          onchange={(e) => renameKey(key, (e.currentTarget as HTMLInputElement).value)} />
+        {#if renameErrors[key]}<p class="error">{renameErrors[key]}</p>{/if}
+      {:else}
+        <span class="key">{key}</span>
+      {/if}
       {#if kindOf(value) === "string"}
         <input aria-label={key} value={value as string} disabled={readOnly}
           onchange={(e) => editLeaf(key, (e.currentTarget as HTMLInputElement).value)} />
@@ -145,7 +252,12 @@
       {#if Array.isArray(root)}
         <button type="button" onclick={addArrayItem}>{t("sheets.tree.addItem")}</button>
       {:else}
+        <input aria-label={t("sheets.tree.newFieldKey")} value={draftKey}
+          onchange={(e) => (draftKey = (e.currentTarget as HTMLInputElement).value)} />
+        <input aria-label={t("sheets.tree.newFieldValue")} value={draftValue}
+          onchange={(e) => (draftValue = (e.currentTarget as HTMLInputElement).value)} />
         <button type="button" onclick={addField}>{t("sheets.tree.addField")}</button>
+        {#if addError}<p class="error">{addError}</p>{/if}
       {/if}
     </li>
   {/if}
@@ -155,7 +267,9 @@
   .tree { list-style: none; margin: 0; padding-left: var(--space-2); display: flex; flex-direction: column; gap: var(--space-1); }
   .node { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
   .key { font-family: monospace; opacity: 0.8; }
+  input.key { max-width: 12ch; }
   .null { opacity: 0.6; font-style: italic; }
+  .error { color: var(--danger); width: 100%; margin: 0; }
   input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .remove { min-width: 24px; min-height: 24px; border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); }
   @media (pointer: coarse) { .remove, .add button { min-height: 44px; min-width: 44px; } }

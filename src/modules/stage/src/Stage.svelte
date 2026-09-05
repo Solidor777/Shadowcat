@@ -138,6 +138,10 @@
           // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
           host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
         },
+        // Mirrors a scene tool's route-preview label (a combat movement-budget overage/stop
+        // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
+        // content with no other DOM presence.
+        onMeasureDrawn: (label) => { host.dataset.measureLabel = label; },
         onLightingApplied: (frame, sweeping) => {
           // Read-only observability signals: the painted lighting overlay's cell count and
           // whether a carried-light sweep is driving it — an e2e can see a torch light a

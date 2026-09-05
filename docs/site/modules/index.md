@@ -28,6 +28,7 @@ Community modules follow the same model — see
 | [actors](/modules/actors) | Actor browser panel (live search, open sheet) |
 | [factions](/modules/factions) | Faction registry panel |
 | [conditions](/modules/conditions) | Condition registry panel |
+| [combat-tracker](/modules/combat-tracker) | Default combat tracker panel |
 | [chat](/modules/chat) | Chat panel: channels, messages, rolls |
 | [chat-composer](/modules/chat-composer) | Message composer contribution |
 | [chat-card](/modules/chat-card) | Message rendering contribution |

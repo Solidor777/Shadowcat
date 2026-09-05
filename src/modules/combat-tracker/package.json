@@ -1,5 +1,5 @@
 {
-  "name": "@shadowcat/module-game-settings",
+  "name": "@shadowcat/module-combat-tracker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,6 @@
   "dependencies": {
     "@shadowcat/core": "workspace:*",
     "@shadowcat/ui-kit": "workspace:*",
-    "@shadowcat/formula": "workspace:*",
     "@shadowcat/types": "workspace:^"
   },
   "devDependencies": {

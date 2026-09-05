@@ -2001,6 +2001,53 @@ returning an id for a discarded op. `parseCombats` reports a malformed frame thr
 session logger, never `console.warn`. The core e2e asserts the GM's exact nine-event list
 (the event's turn pair included) against the player's seven-event subset.
 
+#### M14d — Tracker module + settings editors ✅
+**COMPLETE.** Branch `m14d-tracker`, executed mainline from
+[`superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md`](superpowers/specs/2026-09-02-m14d-tracker-module-settings-editors-design.md)
+and its plan. M14c-5 (templates merge server-side) remains open, so the overall M14 milestone
+does not close with this entry.
+
+`@shadowcat/module-combat-tracker`: the default combat tracker panel (order 2, launcher-closed,
+`⚔️`), composed from `CombatHeader` (clock controls gated by `CombatAffordances`, the two-click
+End confirm, "Roll all"), `CombatantRow` (name/conditions/initiative/per-resource cells, GM-only
+hide/remove/drag), and `AddCombatants` (adds the current token selection, authors one-off
+events). `model.ts`'s pure helpers (`rowsFor`, `moveInOrder`, `rollTargets`, `firstChannel`,
+`formatResource`) and `reorder.ts`'s pointer-drag state machine back the panel; `TurnBadge`
+lights the launcher item on the viewer's own turn only. `resolveSettingProvenance`'s
+`SettingPath` gained the six remaining `CombatDefaults` leaves (`effectCleanup`/
+`rewindRestore`/`forwardRestore`/the three `effectLifecycle` leaves), pinned against
+`resolve_combat_rules` by the shared JSON fixture pattern.
+
+`@shadowcat/module-game-settings` gained three editors: `CombatSettings` (world-tier chain
+editor — one control per `CombatDefaults` leaf, each with a provenance hint and reset, plus an
+effective-rules summary for the selected scene), `CombatSceneOverrides` (the same eight controls
+scoped to the selected scene, Inherit falling through to world), and `ResourceRegistryEditor`
+(add/remove entries, per-kind formula fields — Mirror `value`; Tracked `max` + four recovery
+boundaries — each coercing a number-or-formula string via `parseFormula` with an inline error on
+failure). Every combat-leaf write replaces the whole `/engine/combat` object (`set_pointer`
+cannot create a missing parent from a leaf sub-path), collapsing to `null` when empty.
+
+`SystemTreeEditor` gained the affordances a `system` leaf author needs: `addField` takes the key
+(and an optional initial value, coerced to a JSON number when it parses as one) from the author
+instead of seeding a random opaque id, and every object key renders as a rename `<input>` that
+dispatches one atomic Update (remove-plus-insert against `setField`'s OCC edit path, preserving
+the field's position under its parent) rather than a fixed span — a same-render or a same-batch
+collision against the target key is refused, never silently merged.
+
+Playwright: `combat-tracker.spec.ts` (full turn cycle across a GM and invited player — create/
+add/roll-all/start, turn advance, an exhausting event, hide/reveal, rewind, end, a compact
+smoke) and `combat-settings.spec.ts` (the resources + chain editors driving a real
+movement-budget gate — `data-last-move-outcome` truncated under `hard`, executed under `warn`).
+`combat-settings.spec.ts` authors a `PlayerChar` actor with a named `system.speed` leaf through
+the actor sheet's `SystemTreeEditor`, then references it by name (`"speed"`) from the movement
+resource's `max`/`turnStart` formulas — the design's actual scenario, evaluated through
+`crate::formula`'s `SystemLeafResolver` against the linked actor, not a numeric-literal stand-in.
+
+Docs-site: new `modules/combat-tracker.md` page + index row; `modules/game-settings.md` gained
+the three combat editors. Skills: `shadowcat-codebase-combat`, `shadowcat-codebase-client-shell`
+and `shadowcat-codebase-sheets` updated in the plugin checkout for the new UI layer over
+already-built seams.
+
 ### M16 · Layout + theming completion ✅
 Branch `m16-layout-theming`, executed mainline (Kimi) from the approved design
 `docs/superpowers/specs/2026-08-31-m16-layout-theming-completion-design.md`; plans
