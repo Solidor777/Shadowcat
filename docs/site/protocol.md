@@ -107,9 +107,10 @@ Every `ClientMsg` variant:
 | `scene_ping` | Broadcast a location ping at scene coords |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
-| `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding |
+| `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |
 | `edit_message` | Chat: edit own message |
 | `delete_message` | Chat: delete own message |
+| `draw_table` | Draw one or more rows from a rollable `table` document, posted as one `MessageKind::Roll` message — see [Rollable tables](#rollable-tables) |
 | `combat_start` | Activate a combat |
 | `combat_pause` | Deactivate a combat, preserving its clock position |
 | `combat_end` | End a combat (deletes it; children cascade) |
@@ -131,6 +132,54 @@ combatant's formula host. A referencing roll with no binding fails with an
 `unknown-ref` system notice. The same raw-template rule applies to the
 `notation` of every combat-roll entry, and a combat roll's `channel` is
 validated against the channel registry the same way a message's is.
+
+Images are asset-served, never hotlinked: a `[[asset:<uuid>|alt]]` span
+references an existing in-world asset directly, and a Markdown/HTML image URL
+in a `markdown`/`html`-enabled message is fetched by the server (the same
+SSRF-guarded pipeline link previews use) and asset-ified in the background
+before the resulting `image` segment is appended to the stored message — the
+client never fetches an external image URL itself. A YouTube/Vimeo link
+similarly becomes an oEmbed card (thumbnail + link, structured fields only,
+never the provider's own embed HTML) rather than a raw hotlink.
+
+## Rollable tables
+
+A `table` document (`TableEngine`: `draw` rule, `rows`, plain-text
+`description`) is drawn from with `draw_table` (`table_id`, `channel`,
+`count`, optional actor attribution/audience). `DrawRule::Weighted` rolls a
+`1d<sum-of-weights>` and matches the row whose cumulative weight reaches the
+total; `DrawRule::Formula` rolls its own notation and matches the row whose
+inclusive range contains the total (no match leaves the draw's `row` `null`).
+A matched row's `results` resolve into `content` (`text`/`doc`/`image`
+entries, same segment shapes chat itself uses) and `nested` — one
+`table_draw` segment per `TableEntry::Draw` entry, recursing up to a fixed
+depth and per-request draw budget with cycle detection (a table naming
+itself, directly or through a chain of nested draws, is refused). Every
+resolved draw becomes one `table_draw` chat segment, redacted exactly like a
+`roll_embed`: `spec`/`raw` are GM-only at every depth, never sent to a
+player. `draw_table` follows the same channel/audience/actor-attribution
+validation as `send_message`, and the same asymmetric confirm-by-broadcast
+protocol — a refusal (unknown table, no READ, cycle, too many/deep draws) is
+a correlated `chat_error`, never a hard `reject`.
+
+## Notes
+
+A `note` document (`NoteEngine`: author `source` markdown, a server-derived
+`body`, sibling `sort`) is authored/edited like any other document — plain
+`Create`/`Update` through the generic engine-ingress gate, no dedicated wire
+frame. `body` is unconditionally overwritten on every Create/Update
+post-image: the server renders `source` through the same span grammar and
+sanitizer boundary chat messages use, under a policy fixed to the note
+subsystem rather than the world's own chat settings, so notes stay rich even
+in a plain-text-chat world. `[[roll:...]]`/bare `[[...]]` spans become
+`roll_button` segments (never executed — a note save must never roll dice as
+a side effect), `[[doc:...]]`/`[[token:...]]` spans become `doc_link`
+segments, and `[[asset:...]]` spans become `image` segments; there is no
+outbound fetch on this write path, so a Markdown image URL in a note's
+source renders only as its alt text. Notes form a `parent_id` tree of notes
+(a note's parent must be another note in the same world; a note is never
+embedded); private to its author by default (`permissions.default: "none"`,
+the author granted `Owner`) until shared.
 
 ## Template merge intents
 

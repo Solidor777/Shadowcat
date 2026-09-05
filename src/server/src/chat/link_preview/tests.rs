@@ -46,8 +46,33 @@ fn ignores_anchor_tag_with_no_href_attribute() {
 
 // -- is_blocked_ip: table-driven, one representative per named range ----
 
+// The v4 guard's own enumeration IS `V4_BLOCKED` (`link_preview::V4_BLOCKED`)
+// — `every_v4_range_is_blocked` reads that one table, so a future registry
+// row is covered the moment it is transcribed, never a discrepancy between
+// the guard and its tests.
+
+#[test]
+fn every_v4_range_is_blocked() {
+    // Every V4_BLOCKED entry is refused for outbound fetch, regardless of its
+    // own registry-listed reachability (see the INCLUSION RULE comment
+    // above V4_BLOCKED for why nothing there is ever left excluded).
+    for r in V4_BLOCKED {
+        let addr = IpAddr::V4(r.network);
+        assert!(
+            is_blocked_ip(addr),
+            "{addr}/{} ({}, {}) must be blocked",
+            r.prefix_len,
+            r.rfc,
+            r.reason
+        );
+    }
+}
+
 #[test]
 fn blocks_every_named_ipv4_range() {
+    // One non-network-address representative per range, distinct from
+    // `every_v4_range_is_blocked`'s check of the bare network address —
+    // pins that the mask covers the WHOLE range, not just its first address.
     let cases: &[&str] = &[
         "0.1.2.3",         // 0.0.0.0/8
         "10.1.2.3",        // 10/8
@@ -55,10 +80,15 @@ fn blocks_every_named_ipv4_range() {
         "127.0.0.1",       // 127/8
         "169.254.1.1",     // 169.254/16
         "172.16.5.5",      // 172.16/12
-        "192.0.0.5",       // 192.0.0/24
+        "192.0.0.5",       // 192.0.0/24, inside the /29 service-continuity row
+        "192.0.0.9",       // PCP Anycast — Globally Reachable: True, blocked anyway
+        "192.0.0.200",     // 192.0.0/24, outside every nested row
         "192.0.2.5",       // TEST-NET-1
+        "192.31.196.5",    // AS112-v4 — Globally Reachable: True, blocked anyway
+        "192.52.193.5",    // AMT — Globally Reachable: True, blocked anyway
         "192.88.99.5",     // 6to4 relay
         "192.168.1.1",     // 192.168/16
+        "192.175.48.5",    // Direct Delegation AS112 — Globally Reachable: True, blocked anyway
         "198.18.0.5",      // benchmark
         "198.51.100.5",    // TEST-NET-2
         "203.0.113.5",     // TEST-NET-3
@@ -73,26 +103,124 @@ fn blocks_every_named_ipv4_range() {
 }
 
 #[test]
-fn blocks_every_named_ipv6_range() {
-    let cases: &[&str] = &[
-        "::",                // unspecified
-        "::1",               // loopback
-        "::ffff:10.0.0.1",   // IPv4-mapped private
-        "64:ff9b::10.0.0.1", // NAT64-mapped private
-        "::127.0.0.1",       // ::/96 IPv4-compatible embedding loopback
-        "::7f00:1",          // ::/96 IPv4-compatible embedding loopback (packed form)
-        "2002:c0a8:0101::1", // 2002::/16 6to4 encapsulating 192.168.1.1
-        "2002::1",           // 2002::/16 6to4 (blocked wholesale)
-        "100::1",            // discard
-        "2001:db8::1",       // documentation
-        "fc00::1",           // unique-local
-        "fd12:3456::1",      // unique-local (fd00::/8 subset)
-        "fe80::1",           // link-local
-        "ff02::1",           // multicast
+fn allows_addresses_one_step_outside_each_narrow_v4_special_purpose_range() {
+    // Negative control pinning each /24-or-narrower arm's exact boundary:
+    // one address step outside the range must stay public (or fall through
+    // to a less-specific blocked parent, per the case's own comment).
+    // Catches an over-broad mask a positive control cannot.
+    let cases: &[(&str, bool)] = &[
+        // one past IETF Protocol Assignments 192.0.0.0/24 — public.
+        ("192.0.1.1", false),
+        // one past TURN Anycast 192.0.0.10/32 — unclaimed within the
+        // 192.0.0.0/24 parent, so it falls through to that blocked parent.
+        ("192.0.0.11", true),
+        // one past TEST-NET-1 192.0.2.0/24 — public.
+        ("192.0.3.1", false),
+        // either side of AS112-v4 192.31.196.0/24 — public.
+        ("192.31.195.255", false),
+        ("192.31.197.0", false),
+        // either side of AMT 192.52.193.0/24 — public.
+        ("192.52.192.255", false),
+        ("192.52.194.0", false),
+        // one past the 6to4 relay 192.88.99.0/24 — public.
+        ("192.88.100.1", false),
+        // either side of Direct Delegation AS112 192.175.48.0/24 — public.
+        ("192.175.47.255", false),
+        ("192.175.49.0", false),
+        // one past TEST-NET-2 / TEST-NET-3 — public.
+        ("198.51.101.1", false),
+        ("203.0.114.1", false),
     ];
-    for &ip in cases {
+    for &(ip, expect_blocked) in cases {
         let addr: IpAddr = ip.parse().unwrap();
-        assert!(is_blocked_ip(addr), "{ip} should be blocked");
+        assert_eq!(
+            is_blocked_ip(addr),
+            expect_blocked,
+            "{ip} blocked-state mismatch"
+        );
+    }
+}
+
+// The v6 guard's own enumeration IS `V6_RANGES` (`link_preview::V6_RANGES`)
+// — every case below reads its expected outcome from that one table rather
+// than restating ranges here, so a future registry gap is a hole in the
+// table, never a discrepancy between the guard and its tests.
+
+#[test]
+fn every_v6_range_matches_its_declared_disposition() {
+    // Every V6_RANGES entry is refused for outbound fetch, regardless of its
+    // own registry-listed reachability (see the INCLUSION RULE comment
+    // above V4_BLOCKED for why nothing here is ever left excluded).
+    for r in V6_RANGES {
+        let addr = IpAddr::V6(Ipv6Addr::from(r.network));
+        assert!(
+            is_blocked_ip(addr),
+            "{addr} ({}, {}) must be blocked",
+            r.rfc,
+            r.reason
+        );
+    }
+}
+
+#[test]
+fn blocks_representative_addresses_within_each_v6_range() {
+    // One non-network-address representative per BLOCKED/UnwrapV4 range,
+    // distinct from `every_v6_range_matches_its_declared_disposition`'s
+    // check of the bare network address itself — pins that the mask covers
+    // the WHOLE range, not just its first address.
+    let cases: &[(&str, &str)] = &[
+        ("::ffff:10.0.0.1", "IPv4-mapped, private"),
+        ("64:ff9b::10.0.0.1", "NAT64 well-known, private"),
+        ("64:ff9b:1::1", "NAT64 local-use"),
+        ("::127.0.0.1", "IPv4-compatible embedding loopback"),
+        (
+            "::7f00:1",
+            "IPv4-compatible embedding loopback, packed form",
+        ),
+        ("100:0:0:1::ffff", "Dummy IPv6 Prefix"),
+        (
+            "2001:100::1",
+            "IETF Protocol Assignments, unclaimed sub-range",
+        ),
+        (
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "Teredo, real client-form address",
+        ),
+        ("2001:2::ffff", "benchmarking"),
+        (
+            "2001:3::ffff",
+            "AMT — Globally Reachable: True, Blocked anyway",
+        ),
+        (
+            "2001:4:112::ffff",
+            "AS112-v6 — Globally Reachable: True, Blocked anyway",
+        ),
+        ("2001:1f::1", "Deprecated ex-ORCHID, upper end of the /28"),
+        (
+            "2001:2f::1",
+            "ORCHIDv2, upper end of the /28 — Globally Reachable: True, \
+             Blocked anyway",
+        ),
+        (
+            "2001:3f::1",
+            "Drone Remote ID, upper end of the /28 — Globally Reachable: \
+             True, Blocked anyway",
+        ),
+        ("2001:db8:1234::1", "documentation, 2001:db8::/32"),
+        ("2002:c0a8:0101::1", "6to4 encapsulating 192.168.1.1"),
+        (
+            "2620:4f:8000::ffff",
+            "Direct Delegation AS112 Service — Globally Reachable: True, \
+             Blocked anyway",
+        ),
+        ("3fff:800::1", "IPv6 documentation, 3fff::/20"),
+        ("5f00:1234::1", "SRv6 SIDs"),
+        ("fd12:3456::1", "unique-local, fd00::/8 subset"),
+        ("ff02::1", "multicast, link-local scope"),
+    ];
+    for &(ip, label) in cases {
+        let addr: IpAddr = ip.parse().unwrap();
+        assert!(is_blocked_ip(addr), "{ip} ({label}) should be blocked");
     }
 }
 
@@ -105,6 +233,182 @@ fn allows_known_public_addresses() {
     // A public IPv4-mapped v6 must also unwrap and be allowed.
     let mapped: IpAddr = "::ffff:93.184.216.34".parse().unwrap();
     assert!(!is_blocked_ip(mapped));
+    // Same through the NAT64 well-known prefix (RFC 6052, UnwrapV4): the
+    // prefix is a translation mechanism, so a public embedded destination
+    // is allowed and only what it embeds decides.
+    let nat64: IpAddr = "64:ff9b::93.184.216.34".parse().unwrap();
+    assert!(!is_blocked_ip(nat64));
+}
+
+#[test]
+fn allows_addresses_one_step_outside_each_narrow_v6_special_purpose_range() {
+    // Negative control pinning each narrow arm's exact boundary: one address
+    // step outside the range must stay public (or fall through to a
+    // less-specific Blocked parent, per the case's own comment). Catches an
+    // over-broad mask a positive control cannot.
+    let cases: &[(&str, bool)] = &[
+        // one past the PCP/TURN/DNS-SD-SRP anycast trio; unclaimed within
+        // the 2001::/23 parent, so it falls through to that Blocked parent
+        // rather than staying public — proves the trio's /128 masks don't
+        // over-reach into the parent's own territory.
+        ("2001:1::4", true),
+        // outside 2001::/23 entirely (segment 1 == 0x0200 > the parent's
+        // 0x01ff ceiling) — genuinely public, and pins the PARENT's own
+        // mask doesn't over-reach past its declared /23.
+        ("2001:200::1", false),
+        // one past benchmarking 2001:2::/48 — lands squarely inside AMT's
+        // own /32 (2001:3::/32 covers this address directly, not just its
+        // network address); AMT is Blocked (every registry entry is refused
+        // regardless of reachability) — proves benchmarking's own /48 mask
+        // doesn't over-reach into the next range while the overall verdict
+        // stays blocked either way.
+        ("2001:3::1", true),
+        // one past ORCHIDv2 2001:20::/28 — lands squarely inside Drone
+        // Remote ID's own /28 (2001:30::/28), which is likewise Blocked —
+        // proves ORCHIDv2's own /28 mask doesn't over-reach.
+        ("2001:30::1", true),
+        // outside 2001::/32 Teredo (s[6] != 0, not the anycast trio either)
+        // — unclaimed within the parent, falls through to Blocked.
+        ("2001:1::1:0", true),
+        // one past NAT64 local-use 64:ff9b:1::/48 — outside 2001::/23
+        // entirely, genuinely public.
+        ("64:ff9b:2::1", false),
+        // one past the Dummy IPv6 Prefix 100:0:0:1::/64 — genuinely public.
+        ("100:0:0:2::1", false),
+        // one past IPv6 Documentation 3fff::/20 — genuinely public.
+        ("3fff:1000::1", false),
+        // one past Segment Routing (SRv6) SIDs 5f00::/16 — genuinely public.
+        ("5f01::1", false),
+        // one past Direct Delegation AS112 Service's own /48
+        // (2620:4f:8000::/48) — outside 2001::/23 entirely (different top
+        // segment) and outside every other declared range, genuinely
+        // public — proves its own /48 mask doesn't over-reach.
+        ("2620:4f:8001::1", false),
+    ];
+    for &(ip, expect_blocked) in cases {
+        let addr: IpAddr = ip.parse().unwrap();
+        assert_eq!(
+            is_blocked_ip(addr),
+            expect_blocked,
+            "{ip} blocked-state mismatch"
+        );
+    }
+}
+
+#[test]
+fn an_unwrapv4_entry_resolves_via_its_own_disposition_not_a_blanket_block() {
+    // Every V6_RANGES entry is Blocked except the three UnwrapV4 entries
+    // (IPv4-mapped, IPv4-compatible, NAT64 well-known): an UnwrapV4 entry
+    // must resolve via its OWN
+    // disposition (recheck the embedded v4) rather than any coarser rule
+    // that would refuse it outright without inspecting what it embeds. A
+    // public embedded address proves the recheck ran: an unconditional
+    // Blocked resolution would fail this assertion.
+    let addr: IpAddr = "::93.184.216.34".parse().unwrap();
+    assert!(
+        !is_blocked_ip(addr),
+        "an IPv4-compatible address (RFC 4291 §2.5.5.1, UnwrapV4) embedding \
+         a public v4 destination must resolve via the embedded-address \
+         recheck, not a blanket refusal"
+    );
+}
+
+// A synthetic table nesting the two dispositions BOTH ways — a narrow
+// Blocked entry inside a broad UnwrapV4 one, and a narrow UnwrapV4 entry
+// inside a broad Blocked one — which the real registry never does (every
+// V6_RANGES nesting is Blocked inside Blocked, so no real address can tell
+// most-specific-match from first-match, last-match or any-match). Entry
+// order is deliberately mixed so that first-match and last-match each pick
+// a wrong entry for at least one address below. Every embedded v4 is
+// public, so an UnwrapV4 selection reads as allowed and a Blocked one as
+// refused — the verdict itself, not just the selected entry, is observable.
+const NESTED_DISPOSITION_FIXTURE: &[V6Range] = &[
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "fixture",
+        reason: "broad UnwrapV4, listed BEFORE its narrow Blocked child",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 1, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "fixture",
+        reason: "narrow Blocked, inside the broad UnwrapV4 above",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 1, 1, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "fixture",
+        reason: "narrow UnwrapV4, listed BEFORE its broad Blocked parent",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 1, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "fixture",
+        reason: "broad Blocked, containing the narrow UnwrapV4 above",
+        disposition: V6Disposition::Blocked,
+    },
+];
+
+#[test]
+fn select_v6_range_picks_the_most_specific_entry_regardless_of_table_order() {
+    let table = NESTED_DISPOSITION_FIXTURE;
+    // (address, index of the entry that must govern it, expected verdict)
+    let cases: &[(&str, usize, bool)] = &[
+        // Inside the /32 UnwrapV4 AND the /64 Blocked child listed after
+        // it: first-match and shortest-prefix both pick the /32 and let
+        // the public embedded address through.
+        ("2001:db8:0:1::93.184.216.34", 1, true),
+        // Inside the /32 UnwrapV4, the /64 UnwrapV4 AND the /48 Blocked
+        // listed LAST: last-match picks the /48 and refuses a public
+        // embedded address the governing /64 unwraps and allows.
+        ("2001:db8:1:1::93.184.216.34", 2, false),
+        // Inside the /32 UnwrapV4 and the /48 Blocked but not the /64:
+        // the /48 governs and refuses.
+        ("2001:db8:1:2::93.184.216.34", 3, true),
+        // Only the /32 UnwrapV4 contains it: unwrapped, public, allowed.
+        ("2001:db8:2::93.184.216.34", 0, false),
+    ];
+    for &(ip, expect_index, expect_blocked) in cases {
+        let addr: Ipv6Addr = ip.parse().unwrap();
+        let selected = select_v6_range(addr.segments(), table)
+            .unwrap_or_else(|| panic!("{ip} must select an entry"));
+        assert!(
+            std::ptr::eq(selected, &table[expect_index]),
+            "{ip} selected entry {:?} ({}), expected index {expect_index}",
+            selected.network,
+            selected.reason
+        );
+        assert_eq!(
+            is_blocked_ipv6_in(addr, table),
+            expect_blocked,
+            "{ip} verdict must follow the most specific entry's disposition"
+        );
+    }
+    // An address in no entry selects nothing and is allowed.
+    let outside: Ipv6Addr = "2001:db9::1".parse().unwrap();
+    assert!(select_v6_range(outside.segments(), table).is_none());
+    assert!(!is_blocked_ipv6_in(outside, table));
+}
+
+#[test]
+fn select_v6_range_picks_the_registry_leaf_inside_nested_v6_ranges() {
+    // The real table nests Blocked inside Blocked, so the VERDICT cannot
+    // distinguish selection orders there — but the selected ENTRY can:
+    // PCP Anycast's /128 sits inside Teredo's /32 inside IETF Protocol
+    // Assignments' /23, all listed parent-first.
+    let pcp: Ipv6Addr = "2001:1::1".parse().unwrap();
+    let selected = select_v6_range(pcp.segments(), V6_RANGES).unwrap();
+    assert_eq!(selected.prefix_len, 128, "selected {}", selected.reason);
+    assert_eq!(selected.rfc, "RFC 7723");
+    // An unclaimed address inside the /23 selects the /23 itself, not a
+    // sibling leaf.
+    let unclaimed: Ipv6Addr = "2001:100::1".parse().unwrap();
+    let selected = select_v6_range(unclaimed.segments(), V6_RANGES).unwrap();
+    assert_eq!(selected.prefix_len, 23, "selected {}", selected.reason);
 }
 
 // -- extract_preview: pure unit tests -----------------------------------
@@ -338,6 +642,7 @@ async fn fetch_image_bytes_succeeds_with_correct_content_type() {
         &client,
         &format!("http://stub.test:{port}/"),
         Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
     )
     .await
     .unwrap();
@@ -363,6 +668,7 @@ async fn fetch_image_bytes_rejects_wrong_content_type() {
         &client,
         &format!("http://stub.test:{port}/"),
         Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
     )
     .await
     .unwrap_err();
@@ -385,6 +691,7 @@ async fn fetch_image_bytes_rejects_oversized_body() {
         &client,
         &format!("http://stub.test:{port}/"),
         Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
     )
     .await
     .unwrap_err();
@@ -397,9 +704,14 @@ async fn fetch_image_bytes_rejects_literal_blocked_ip_hosts() {
     // re-run against `fetch_image_bytes` directly: the SSRF guard applies
     // identically to every `guarded_get` consumer.
     let client = build_client_allow_loopback();
-    let err = fetch_image_bytes(&client, "http://169.254.169.254/", Duration::from_secs(5))
-        .await
-        .unwrap_err();
+    let err = fetch_image_bytes(
+        &client,
+        "http://169.254.169.254/",
+        Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, PreviewError::BlockedAddress);
 }
 
@@ -408,9 +720,14 @@ async fn fetch_image_bytes_rejects_a_host_that_resolves_to_a_blocked_address() {
     let mut hosts = HashMap::new();
     hosts.insert("blocked.test", vec!["10.0.0.5".parse().unwrap()]);
     let client = client_with_hosts(hosts);
-    let err = fetch_image_bytes(&client, "http://blocked.test/", Duration::from_secs(5))
-        .await
-        .unwrap_err();
+    let err = fetch_image_bytes(
+        &client,
+        "http://blocked.test/",
+        Duration::from_secs(5),
+        MAX_IMAGE_BYTES,
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, PreviewError::BlockedAddress);
 }
 
@@ -847,6 +1164,8 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
         Uuid::new_v4(),
         1_000,
         now,
+        &[],
+        true,
     )
     .await;
 
@@ -858,6 +1177,157 @@ async fn enrich_fresh_fetch_writes_through_both_tiers() {
         .expect("persisted tier not written");
     assert_eq!(row.title.as_deref(), Some("Fresh Title"));
     assert_eq!(row.description.as_deref(), Some("Fresh Description"));
+}
+
+// -- enrich: inline chat image queueing -----------------------------------
+
+#[tokio::test]
+async fn enrich_queues_an_inline_image_job_for_a_valid_image_source() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = Vec::new();
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &[ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }],
+        true,
+    )
+    .await;
+    assert_eq!(pending.len(), 1);
+    match &pending[0] {
+        PendingEnrichment::InlineImage { image_url, alt } => {
+            assert_eq!(image_url, "https://x.example/a.png");
+            assert_eq!(alt, "a map");
+        }
+        other => panic!("expected InlineImage, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn enrich_skips_an_inline_image_source_with_a_blocked_url() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = Vec::new();
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &[ImageSource {
+            url: "http://169.254.169.254/x.png".to_string(),
+            alt: "blocked".to_string(),
+        }],
+        true,
+    )
+    .await;
+    assert!(
+        pending.is_empty(),
+        "a blocked-address image source must never be queued"
+    );
+}
+
+#[tokio::test]
+async fn enrich_caps_inline_image_jobs_at_max_inline_images() {
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = Vec::new();
+    let sources: Vec<ImageSource> = (0..MAX_INLINE_IMAGES + 3)
+        .map(|i| ImageSource {
+            url: format!("https://x.example/{i}.png"),
+            alt: String::new(),
+        })
+        .collect();
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &sources,
+        true,
+    )
+    .await;
+    assert_eq!(pending.len(), MAX_INLINE_IMAGES);
+}
+
+// -- enrich: previews and images are independently gated -------------------
+
+#[tokio::test]
+async fn enrich_with_scan_previews_false_queues_the_image_but_skips_the_hyperlink() {
+    // Reproduces a world with `hyperlinks: true`, `link_previews: Some(false)`,
+    // `images: true`: `previews_enabled()` is false, so the composer's
+    // `image_urls` alone triggers the call into `enrich`, but the href/oEmbed
+    // scan over the message's own `Html` run must NOT run -- previews and
+    // images are independent toggles.
+    let repo = crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap();
+    let mut segments = vec![Segment::Html {
+        sanitized_html: r#"<a href="https://example.com/page">a link</a>"#.to_string(),
+    }];
+    let pending = enrich(
+        &mut segments,
+        EnrichDeps {
+            repo: &repo,
+            fetch: LinkPreviewDeps {
+                client: &build_client_allow_loopback(),
+                cache: &LinkPreviewCache::new(),
+                rate: &PreviewRateLimiter::new(),
+            },
+        },
+        Uuid::new_v4(),
+        1_000,
+        Instant::now(),
+        &[ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }],
+        false,
+    )
+    .await;
+    assert_eq!(pending.len(), 1, "the image job must still be queued");
+    assert!(
+        matches!(pending[0], PendingEnrichment::InlineImage { .. }),
+        "expected only the inline-image job, got {:?}",
+        pending[0]
+    );
+    assert!(
+        !segments
+            .iter()
+            .any(|s| matches!(s, Segment::LinkPreview { .. })),
+        "no LinkPreview segment must be appended when scan_previews is false"
+    );
 }
 
 // -- link_preview_cache repository methods -------------------------------

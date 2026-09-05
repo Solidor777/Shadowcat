@@ -302,4 +302,11 @@ pub trait Repository: Send + Sync {
         url: &str,
         image_asset_id: Uuid,
     ) -> Result<(), DataError>;
+
+    /// Fetch one asset row by id, or `None` if it does not exist. Unredacted:
+    /// assets carry no per-recipient permission set of their own (mutation
+    /// routes are GM-only; reads are member-visible with no finer-grained
+    /// redaction), so a caller resolving a chat `[[asset:...]]` span must
+    /// independently check `Asset.world_id` against the sending room's world.
+    async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError>;
 }

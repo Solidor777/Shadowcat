@@ -1,4 +1,4 @@
-use crate::chat::{sanitize, ChatContentPolicy, Segment};
+use crate::chat::{sanitize, ChatContentPolicy, ImageSource, Segment};
 
 fn off() -> ChatContentPolicy {
     ChatContentPolicy::default()
@@ -34,6 +34,14 @@ fn images_on() -> ChatContentPolicy {
     }
 }
 
+fn markdown_images_on() -> ChatContentPolicy {
+    ChatContentPolicy {
+        markdown: Some(true),
+        images: Some(true),
+        ..off()
+    }
+}
+
 /// Concatenates a `&[Segment]` into a single string (Text verbatim, Html's
 /// `sanitized_html`) so assertions can read uniformly regardless of which
 /// segment variant `sanitize` produced.
@@ -43,16 +51,20 @@ fn render(segs: &[Segment]) -> String {
             Segment::Text { text } => text.clone(),
             Segment::Html { sanitized_html } => sanitized_html.clone(),
             // `sanitize()` (the function under test) never produces a
-            // roll, link-preview, oembed, or doc-link segment -- those are
-            // `chat::rolls`'s, `chat::link_preview::enrich`'s, and
-            // `chat::post_publish`'s own producers.
+            // roll, link-preview, oembed, doc-link, image, or table-draw
+            // segment -- those are `chat::rolls`'s, `chat::link_preview::
+            // enrich`'s, `chat::post_publish`'s, and `crate::tables::draw`'s
+            // own producers.
             Segment::RollEmbed { .. }
             | Segment::RollButton { .. }
             | Segment::LinkPreview { .. }
             | Segment::OEmbed(_)
-            | Segment::DocLink { .. } => {
+            | Segment::DocLink { .. }
+            | Segment::Image { .. }
+            | Segment::TableDraw(_) => {
                 unreachable!(
-                    "sanitize() never produces roll, preview, oembed, or doc-link segments"
+                    "sanitize() never produces roll, preview, oembed, doc-link, image, or \
+                     table-draw segments"
                 )
             }
         })
@@ -66,27 +78,30 @@ fn sanitize_replaces_shortcodes_in_plain_text_mode() {
     let policy = ChatContentPolicy::default(); // everything off
     let out = sanitize("gg :heart:", &policy);
     assert_eq!(
-        out,
+        out.segments,
         vec![Segment::Text {
             text: "gg ❤️".into()
         }]
     );
+    assert!(out.image_urls.is_empty());
 }
 
 #[test]
 fn all_off_is_plain_text() {
+    let out = sanitize("**bold** <b>x</b>", &off());
     assert_eq!(
-        sanitize("**bold** <b>x</b>", &off()),
+        out.segments,
         vec![Segment::Text {
             text: "**bold** <b>x</b>".into()
         }],
     );
+    assert!(out.image_urls.is_empty());
 }
 
 #[test]
 fn markdown_renders_to_sanitized_html_run() {
-    let segs = sanitize("**bold**", &md());
-    match segs.as_slice() {
+    let out = sanitize("**bold**", &md());
+    match out.segments.as_slice() {
         [Segment::Html { sanitized_html }] => {
             assert!(
                 sanitized_html.contains("<strong>bold</strong>"),
@@ -100,7 +115,7 @@ fn markdown_renders_to_sanitized_html_run() {
 #[test]
 fn script_tag_is_neutralized() {
     for policy in [md(), html_on()] {
-        let out = render(&sanitize("<script>alert(1)</script>hi", &policy));
+        let out = render(&sanitize("<script>alert(1)</script>hi", &policy).segments);
         assert!(
             !out.contains("<script"),
             "script survived under {policy:?}: {out}"
@@ -114,20 +129,26 @@ fn script_tag_is_neutralized() {
 
 #[test]
 fn event_handler_and_js_url_stripped() {
-    let out = render(&sanitize(
-        r#"<a href="javascript:alert(1)" onclick="evil()">x</a>"#,
-        &html_on(),
-    ));
+    let out = render(
+        &sanitize(
+            r#"<a href="javascript:alert(1)" onclick="evil()">x</a>"#,
+            &html_on(),
+        )
+        .segments,
+    );
     assert!(!out.contains("javascript:"), "js url survived: {out}");
     assert!(!out.contains("onclick"), "event handler survived: {out}");
 }
 
 #[test]
 fn css_is_always_stripped_even_when_html_on() {
-    let out = render(&sanitize(
-        r#"<b style="expression(x)">x</b><style>*{}</style>"#,
-        &html_on(),
-    ));
+    let out = render(
+        &sanitize(
+            r#"<b style="expression(x)">x</b><style>*{}</style>"#,
+            &html_on(),
+        )
+        .segments,
+    );
     assert!(!out.contains("style"), "style survived: {out}");
     assert!(!out.contains("expression"), "css survived: {out}");
 }
@@ -135,7 +156,7 @@ fn css_is_always_stripped_even_when_html_on() {
 #[test]
 fn raw_html_in_markdown_escaped_when_html_off() {
     // markdown ON, html OFF: the author's raw <b> must NOT become a live tag.
-    let out = render(&sanitize("hi <b>x</b>", &md()));
+    let out = render(&sanitize("hi <b>x</b>", &md()).segments);
     assert!(
         !out.contains("<b>"),
         "raw html leaked through markdown-only: {out}"
@@ -182,30 +203,37 @@ fn appears_in_live_tag(html: &str, needle: &str) -> bool {
 /// `rm_tags("a")` to remove the whole carrier tag.
 #[test]
 fn surviving_anchor_strips_js_scheme_and_event_handler() {
-    let out = render(&sanitize(
-        r#"<a href="javascript:alert(1)" onclick="evil()">x</a>"#,
-        &hyperlinks_on(),
-    ));
+    let out = render(
+        &sanitize(
+            r#"<a href="javascript:alert(1)" onclick="evil()">x</a>"#,
+            &hyperlinks_on(),
+        )
+        .segments,
+    );
     assert!(out.contains("x"), "anchor text content lost: {out}");
     assert!(out.contains("<a"), "anchor tag did not survive: {out}");
     assert!(!out.contains("javascript:"), "js url survived: {out}");
     assert!(!out.contains("onclick"), "event handler survived: {out}");
 }
 
-/// Same proof for `<img>`: `images: true` lets the tag survive, so the
-/// `javascript:`/`data:text/html` scheme rejection is what must do the
-/// work, not tag removal.
+/// An `<img>` element NEVER survives `sanitize`, even when `images` is on —
+/// images travel only as structured `Segment::Image` references. A
+/// `javascript:`/`data:` src is additionally never even collected into
+/// `image_urls` (ammonia's own scheme gate refuses it before the
+/// attribute_filter callback runs).
 #[test]
-fn surviving_img_strips_dangerous_schemes() {
+fn img_never_survives_and_dangerous_schemes_are_never_collected() {
     for src in [
         "javascript:alert(1)",
         "data:text/html,<script>alert(1)</script>",
     ] {
-        let out = render(&sanitize(&format!(r#"<img src="{src}">"#), &images_on()));
-        assert!(!out.contains("javascript:"), "js url survived: {out}");
+        let out = sanitize(&format!(r#"<img src="{src}">"#), &images_on());
+        let rendered = render(&out.segments);
+        assert!(!rendered.contains("<img"), "img survived: {rendered}");
         assert!(
-            !out.contains("data:text/html"),
-            "data:text/html url survived: {out}"
+            out.image_urls.is_empty(),
+            "dangerous scheme collected: {:?}",
+            out.image_urls
         );
     }
 }
@@ -215,7 +243,7 @@ fn surviving_img_strips_dangerous_schemes() {
 /// under `html_on()`, so it survives; `onclick` must still be stripped.
 #[test]
 fn surviving_bold_tag_strips_event_handler() {
-    let out = render(&sanitize(r#"<b onclick="alert(1)">bold</b>"#, &html_on()));
+    let out = render(&sanitize(r#"<b onclick="alert(1)">bold</b>"#, &html_on()).segments);
     assert!(out.contains("bold"), "bold text content lost: {out}");
     assert!(!out.contains("onclick"), "event handler survived: {out}");
 }
@@ -226,111 +254,97 @@ fn surviving_bold_tag_strips_event_handler() {
 /// through unchanged). `ammonia_for` must set `UrlRelative::Deny` or a
 /// smuggled `<img src="//evil.example/pixel.gif">` in a whispered/
 /// GM-only message becomes a tracking pixel that fires for every
-/// recipient. Assert the relative URL does not survive (either the
-/// attribute or the whole tag is dropped — assert what ammonia actually
-/// does, not an assumption).
+/// recipient. Assert the relative URL is neither collected nor rendered.
 #[test]
 fn protocol_relative_url_is_denied() {
-    let out = render(&sanitize(
-        r#"<img src="//evil.example/pixel.gif">"#,
+    let out = sanitize(r#"<img src="//evil.example/pixel.gif">"#, &images_on());
+    assert!(
+        !render(&out.segments).contains("//evil.example"),
+        "protocol-relative url survived in output"
+    );
+    assert!(
+        out.image_urls.is_empty(),
+        "protocol-relative url collected: {:?}",
+        out.image_urls
+    );
+
+    let out = render(&sanitize(r#"<a href="//evil.example">x</a>"#, &hyperlinks_on()).segments);
+    assert!(
+        !out.contains("//evil.example"),
+        "protocol-relative url survived: {out}"
+    );
+}
+
+/// `images: false`: no `<img>` in the output and no `image_urls` collected,
+/// but the alt text is preserved as literal display text (the markdown
+/// Image event is rewritten to a Text event unconditionally, regardless of
+/// the `images` toggle — see `sanitize::rewrite_markdown_images`).
+#[test]
+fn images_off_strips_img_but_preserves_alt_text() {
+    let out = sanitize("![a map](https://x.example/a.png)", &md());
+    let rendered = render(&out.segments);
+    assert!(!rendered.contains("<img"), "img survived: {rendered}");
+    assert!(rendered.contains("a map"), "alt text lost: {rendered}");
+    assert!(out.image_urls.is_empty());
+}
+
+/// `images: true`: the Markdown image's `dest_url` is collected into
+/// `image_urls`, no `<img>` reaches the output, and the alt text still
+/// renders as plain text.
+#[test]
+fn images_on_collects_markdown_image_url_and_strips_the_tag() {
+    let out = sanitize("![a map](https://x.example/a.png)", &markdown_images_on());
+    let rendered = render(&out.segments);
+    assert!(!rendered.contains("<img"), "img survived: {rendered}");
+    assert!(rendered.contains("a map"), "alt text lost: {rendered}");
+    assert_eq!(
+        out.image_urls,
+        vec![ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: "a map".to_string(),
+        }]
+    );
+}
+
+/// A raw HTML `<img src=... alt=...>` (not Markdown `![]()` syntax) is
+/// collected the same way, via ammonia's `attribute_filter` — alt text is
+/// NOT correlated for this path (see `ImageSource`'s doc).
+#[test]
+fn images_on_collects_raw_html_image_url_and_strips_the_tag() {
+    let out = sanitize(
+        r#"<img src="https://x.example/a.png" alt="a map">"#,
         &images_on(),
-    ));
-    assert!(
-        !out.contains("//evil.example"),
-        "protocol-relative url survived: {out}"
     );
-
-    let out = render(&sanitize(
-        r#"<a href="//evil.example">x</a>"#,
-        &hyperlinks_on(),
-    ));
-    assert!(
-        !out.contains("//evil.example"),
-        "protocol-relative url survived: {out}"
+    let rendered = render(&out.segments);
+    assert!(!rendered.contains("<img"), "img survived: {rendered}");
+    assert_eq!(
+        out.image_urls,
+        vec![ImageSource {
+            url: "https://x.example/a.png".to_string(),
+            alt: String::new(),
+        }]
     );
 }
 
-/// `images: false` (the `md()` default) must strip `<img>` entirely, not
-/// just leave a src-less tag — proves the tag-level `rm_tags` gate (not
-/// the content-type filter, which only runs when `images` is true).
+/// Multiple images in one body are deduped in first-seen order.
 #[test]
-fn images_off_strips_img() {
-    let out = render(&sanitize("![a](https://x.example/a.png)", &md()));
-    assert!(!out.contains("<img"), "img survived with images off: {out}");
-}
-
-/// Image `src` must be an allowlisted raster extension: an `https` `.png`
-/// survives with its `src` intact, but a non-image extension (`.exe`) is
-/// rejected — either the whole `<img>` is dropped or `src` is stripped,
-/// so this asserts on the URL's absence rather than a specific shape.
-#[test]
-fn images_on_allows_https_png_only() {
-    let p = ChatContentPolicy {
-        markdown: Some(true),
-        images: Some(true),
-        ..Default::default()
-    };
-    let ok = render(&sanitize("![a](https://x.example/a.png)", &p));
-    assert!(ok.contains("<img"), "png image dropped: {ok}");
-    assert!(
-        ok.contains("x.example/a.png"),
-        "png src not preserved: {ok}"
+fn images_on_dedupes_repeated_urls_in_first_seen_order() {
+    let out = sanitize(
+        "![a](https://x.example/a.png) ![b](https://x.example/b.png) ![c](https://x.example/a.png)",
+        &markdown_images_on(),
     );
-    let bad = render(&sanitize("![a](https://x.example/a.exe)", &p));
-    assert!(
-        !bad.contains("x.example/a.exe"),
-        "non-image src survived: {bad}"
-    );
-}
-
-/// Case variation in the extension must not bypass the filter — the
-/// filter lowercases before matching.
-#[test]
-fn images_on_extension_match_is_case_insensitive() {
-    let p = ChatContentPolicy {
-        markdown: Some(true),
-        images: Some(true),
-        ..Default::default()
-    };
-    let ok = render(&sanitize("![a](https://x.example/a.PNG)", &p));
-    assert!(ok.contains("<img"), "uppercase PNG dropped: {ok}");
-    assert!(
-        ok.contains("x.example/a.PNG"),
-        "uppercase PNG src not preserved: {ok}"
-    );
-}
-
-/// A query string or fragment appended after a disallowed extension must
-/// not smuggle a fake image extension earlier in the URL past the
-/// filter — the filter strips `?`/`#` suffixes before checking the
-/// extension, so `a.exe?x=.png` is still rejected as `.exe`.
-#[test]
-fn images_on_rejects_extension_smuggled_via_query_string() {
-    let p = ChatContentPolicy {
-        markdown: Some(true),
-        images: Some(true),
-        ..Default::default()
-    };
-    let bad = render(&sanitize("![a](https://x.example/a.exe?x=.png)", &p));
-    assert!(
-        !bad.contains("x.example/a.exe"),
-        "smuggled extension bypassed filter: {bad}"
-    );
-}
-
-/// A URL with no extension at all (or no path) must be rejected, not
-/// default-allowed.
-#[test]
-fn images_on_rejects_missing_extension() {
-    let p = ChatContentPolicy {
-        markdown: Some(true),
-        images: Some(true),
-        ..Default::default()
-    };
-    let bad = render(&sanitize("![a](https://x.example/a)", &p));
-    assert!(
-        !bad.contains("x.example/a\""),
-        "extensionless src survived: {bad}"
+    assert_eq!(
+        out.image_urls,
+        vec![
+            ImageSource {
+                url: "https://x.example/a.png".to_string(),
+                alt: "a".to_string(),
+            },
+            ImageSource {
+                url: "https://x.example/b.png".to_string(),
+                alt: "b".to_string(),
+            },
+        ]
     );
 }
 
@@ -338,7 +352,7 @@ fn images_on_rejects_missing_extension() {
 /// preserved, tag gone) rather than leaving a dead `<a>` around.
 #[test]
 fn hyperlinks_off_unwraps_anchor_to_text() {
-    let out = render(&sanitize("[label](https://x.example)", &md()));
+    let out = render(&sanitize("[label](https://x.example)", &md()).segments);
     assert!(
         !out.contains("<a "),
         "anchor survived with hyperlinks off: {out}"
@@ -355,14 +369,20 @@ fn emails_toggle_gates_mailto() {
         hyperlinks: Some(true),
         ..Default::default()
     };
-    assert!(!render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &off)).contains("mailto:"));
+    assert!(
+        !render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &off).segments)
+            .contains("mailto:")
+    );
     let on = ChatContentPolicy {
         html: Some(true),
         hyperlinks: Some(true),
         emails: Some(true),
         ..Default::default()
     };
-    assert!(render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &on)).contains("mailto:"));
+    assert!(
+        render(&sanitize(r#"<a href="mailto:a@b.example">m</a>"#, &on).segments)
+            .contains("mailto:")
+    );
 }
 
 /// Known XSS vectors, each asserted neutral under BOTH `md()` and
@@ -385,7 +405,7 @@ fn xss_corpus_neutralized() {
     ];
     for policy in [md(), html_on()] {
         for v in vectors {
-            let out = render(&sanitize(v, &policy));
+            let out = render(&sanitize(v, &policy).segments);
             let low = out.to_lowercase();
             for needle in ["onerror", "onload", "onclick"] {
                 assert!(

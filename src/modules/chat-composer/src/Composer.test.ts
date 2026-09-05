@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import type { AppContext } from "@shadowcat/ui-kit";
 import { SpeakAsToken } from "@shadowcat/ui-kit";
-import { DocumentStore, buildActorDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildChatSettingsDoc, MAX_MESSAGE_CHARS, type WireAudience, type WireCommand, type WireDocument } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import Composer from "./Composer.svelte";
 
@@ -32,19 +32,42 @@ function renderComposer(
     selfId?: string;
     searchDocuments?: AppContext["searchDocuments"];
     speakAsToken?: SpeakAsToken;
+    pickAsset?: AppContext["pickAsset"];
   } = {},
 ) {
   const send = opts.send ?? vi.fn<(o: unknown) => Promise<void>>(async () => {});
   const context = setAppContextForTest({
-    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}), recalc: vi.fn(async () => {}) },
+    chat: { send, edit: vi.fn(async () => {}), delete: vi.fn(async () => {}), recalc: vi.fn(async () => {}), drawTable: vi.fn(async () => {}) },
     documents: opts.documents ?? new DocumentStore(),
     role: opts.role ?? "player",
     selfId: opts.selfId ?? "u-self",
     searchDocuments: opts.searchDocuments,
     speakAsToken: opts.speakAsToken,
+    pickAsset: opts.pickAsset,
   });
   render(Composer, { props: { channel: "general", audience: opts.audience ?? publicAudience, placeholderName: "Alice" }, context });
   return { send };
+}
+
+/** A world store seeded with a `chat-settings` singleton whose `images` toggle
+ * is set to `enabled`. */
+function storeWithImagesToggle(enabled: boolean): DocumentStore {
+  const s = new DocumentStore();
+  s.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "a",
+    ts: 0,
+    ops: [{
+      op: "create",
+      doc: buildChatSettingsDoc(
+        "w1",
+        { markdown: null, html: null, images: enabled, hyperlinks: null, emails: null, link_previews: null },
+        "chat1",
+      ),
+    }],
+  });
+  return s;
 }
 
 describe("Composer — sending", () => {
@@ -346,6 +369,36 @@ describe("Composer — @doc link insertion", () => {
     await fireEvent.click(await screen.findByText("Foo [Bar"));
     const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
     expect(textarea.value).toBe("[[doc:doc1|Foo Bar]]");
+  });
+});
+
+describe("Composer — image insertion", () => {
+  it("hides the button when the world's chat-settings images toggle is off", () => {
+    renderComposer({ documents: storeWithImagesToggle(false) });
+    expect(screen.queryByTestId("image-insert")).toBeNull();
+  });
+
+  it("hides the button when no chat-settings doc exists at all (fail-closed default)", () => {
+    renderComposer({ documents: new DocumentStore() });
+    expect(screen.queryByTestId("image-insert")).toBeNull();
+  });
+
+  it("shows the button and inserts a [[asset:id|label]] span at the cursor when the pick resolves", async () => {
+    const pickAsset = vi.fn(async () => "00000000-0000-0000-0000-000000000001") as unknown as AppContext["pickAsset"];
+    renderComposer({ documents: storeWithImagesToggle(true), pickAsset });
+    const btn = screen.getByTestId("image-insert");
+    await fireEvent.click(btn);
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "image" });
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("[[asset:00000000-0000-0000-0000-000000000001|00000000]]");
+  });
+
+  it("a cancelled pick (null) inserts nothing", async () => {
+    const pickAsset = vi.fn(async () => null) as unknown as AppContext["pickAsset"];
+    renderComposer({ documents: storeWithImagesToggle(true), pickAsset });
+    await fireEvent.click(screen.getByTestId("image-insert"));
+    const textarea = screen.getByRole("textbox") as HTMLTextAreaElement;
+    expect(textarea.value).toBe("");
   });
 });
 

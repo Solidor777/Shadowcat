@@ -77,6 +77,18 @@ fn svg_subtype_drops_the_xml_suffix_and_empty_folder_names_are_skipped() {
 }
 
 #[test]
+fn chat_image_provenance_derives_its_tag() {
+    let m = meta(Some(10), Some(10), false, false);
+    let tags = derive(DeriveInput {
+        content_type: "image/png",
+        meta: &m,
+        folder_names: &[],
+        provenance: Provenance::ChatImage,
+    });
+    assert_eq!(tags, vec!["chat-image", "image", "png", "square"]);
+}
+
+#[test]
 fn provenance_round_trips_through_the_derived_set() {
     assert_eq!(
         provenance_of(&["image".into(), "link-preview".into()]),
@@ -85,6 +97,10 @@ fn provenance_round_trips_through_the_derived_set() {
     assert_eq!(
         provenance_of(&["image".into(), "uploaded".into()]),
         Provenance::Uploaded
+    );
+    assert_eq!(
+        provenance_of(&["image".into(), "chat-image".into()]),
+        Provenance::ChatImage
     );
     assert_eq!(provenance_of(&[]), Provenance::Uploaded);
 }

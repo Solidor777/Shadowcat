@@ -2638,6 +2638,157 @@ egress transform and client chain) and `-actors-tokens` (carried light, elevatio
 descriptor authoring). Gate note: the shell Playwright suite was NOT run in this session (the
 dispatcher serializes it across worktrees); every other gate ran.
 
+### M19a · Chat media ✅
+Branch `m19`, executed from the approved plan
+`docs/superpowers/plans/2026-09-02-m19a-chat-media.md` (design:
+`docs/superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`), as 11 sequential
+tasks. Delivered: `chat::body::compose_message`, the shared chunk→segment composer extracted from
+`handle_send_message`'s Normal/Emote arm and reused (under `ScanMode::NoExecute`) by
+`handle_edit_message`, so an edit's `[[doc:...]]`/`[[asset:...]]`/`[[roll:...]]` spans resolve
+exactly like a send while an inline `[[formula]]` roll stays refused (`RollImmutable`);
+`Segment::Image { asset_id, alt }` from an author-placed `[[asset:<uuid>|alt]]` span (in-world,
+`policy.images()`-gated, alt capped at `MAX_IMAGE_ALT_CHARS`) and from a Markdown/HTML image URL
+the sanitizer collects (`Sanitized.image_urls: Vec<ImageSource>`) — the sanitizer rewrites every
+Markdown image to inert alt text and unconditionally strips any raw `<img>` post-clean, so an
+`<img>` carrying a `src` never survives `sanitize` regardless of the `images` toggle;
+`link_preview::enrich` queues the collected sources as `PendingEnrichment::InlineImage` behind the
+same SSRF guard/per-URL lock/rate limiter the link-preview image pipeline already uses, and
+`post_publish::resolve_inline_image` asset-ifies the fetch with `Provenance::ChatImage`; the
+client mirror (`chat-docs.ts`'s `image` segment kind) and the segment renderer extracted from
+`MessageCard` into ui-kit's `SegmentList` (alongside `RollTooltip`), now the client's single
+`{@html}` sink; a composer "Insert image" button over the M15b `ctx.pickAsset` seam, gated on the
+world's `chat-settings.images` toggle (Game Settings panel gains that toggle).
+Deviation from plan: Task 6's `enrich`/`handle_send_message`+`handle_edit_message` gating was
+widened from "only when `previews_enabled`" to "when `previews_enabled` OR the composer collected
+inline image sources" — a world can enable images without hyperlinks, and the narrower gate would
+have collected `image_urls` in vain; `link_preview::enrich` itself now takes an independent
+`scan_previews: bool` parameter for this reason, so `images: true, link_previews: Some(false)`
+stops the href/oEmbed scan while the inline-image queueing loop still runs unconditionally.
+`compose_message` also de-duplicates `image_urls` ACROSS chunks (each `sanitize` call dedups only
+WITHIN its own chunk), so the same image URL repeated before and after an inline roll queues one
+enrichment job / `Segment::Image`, not two. Task 6's/7's git history landed as two commits rather than
+the plan's three (a `git add -p` split staged the edit-path routing alongside the image-urls
+plumbing); a follow-up commit added Task 7's tests with a note pointing at the implementation
+commit. Task 8 kept the pre-existing `MessageCard`/`SegmentList` split tests in place rather than
+physically relocating ~700 lines (they already exercise the delegated render path unchanged) and
+added a fresh `SegmentList.test.ts` covering every segment kind including the new `image` arm.
+`SegmentList`'s `messageId` prop from the plan's literal signature was dropped — nothing in the
+extracted renderer logic reads it. The client-side asset-picker label always falls back to the
+picked id's first 8 characters (no asset-name-listing surface exists on `AppContext`, contra the
+plan's "name from `ctx.assets`' listing if available"). Task 10 delivers the
+`chat-image.e2e.test.ts` WS-level suite and the Playwright `chat-media.spec.ts` browser spec
+(composer image button gated on the chat-settings toggle, single-select pick overlay confirm, a
+sent image rendering as an `<img>` in the card).
+Coverage: 292 server `chat::` unit/integration tests (server-side pipeline, sanitizer,
+link-preview/inline-image enrichment, post-publish resolution), 45 `chat-docs.test.ts` cases, a
+new `SegmentList.test.ts` (23 tests) + the untouched `MessageCard`/`RollTooltip` suites (82 + moved
+tests, all green through the delegation), `Composer.test.ts` + `chat-settings.test.ts` additions
+for the insert-image button and toggle, the `chat-image.e2e.test.ts` Node↔Rust suite (image
+segment delivery to every recipient; an unknown-asset span refused as a whisper-to-sender System
+notice, never a hard `ChatError`), and the `chat-media.spec.ts` browser Playwright spec. Full
+repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint) green at every commit.
+
+### M19b · Rollable tables ✅
+Branch `m19`, executed from the approved plan
+`docs/superpowers/plans/2026-09-02-m19b-rollable-tables.md` (design:
+`docs/superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`), as 8 sequential
+tasks. Delivered: the `table` engine doc type (`TableEngine{draw, rows, description}`,
+`DrawRule::Weighted | Formula{notation}`, `TableRow{weight, range, label, results}`,
+`TableEntry::{Text, Doc, Image, Draw}`, `TableEngine::validate` — row/weight/length caps, a
+`Weighted` table's row-weight sum bounded by `chat::rolls::MAX_DIE_SIDES`, a `Formula` table's
+row ranges non-overlapping and notation-validated via the new
+`chat::rolls::validate_table_formula`/`TABLE_PARSE_CONTEXT`); the `Segment::TableDraw`/
+`TableDrawSegment`/`DrawnRow` chat-segment family, GM-only `spec`/`raw` redaction recursing
+through every nested draw (`chat::roll_property_overrides`, renamed from
+`roll_embed_property_overrides` to cover both segment kinds); the `tables` server module
+(`tables::handle_draw_table` reusing chat's own channel/audience/actor-attribution chokepoints,
+`tables::draw::draw_table`'s cycle-safe DFS resolution with a push-map-pop discipline that
+survives an error mid-recursion, depth/budget caps, weighted/ranged row selection) publishing
+exactly one `MessageKind::Roll` message per request via the existing `build_message_doc`/
+`Room::publish` chokepoint; the `draw_table` `ClientMsg` wire frame and its
+`ServerMsg::ChatError` correlated-rejection path (same asymmetric confirm-by-broadcast-echo
+protocol as `SendMessage`/`RecalcRoll`); the client mirrors (`table-docs.ts`'s ts-rs re-exports +
+`buildTableDoc`, `chat-docs.ts`'s `TableDrawSegment`/`DrawnRow` as their own named types unioned
+in via a separate lazy Zod schema rather than inside the discriminated union, which cannot host a
+recursive lazy member) and `WsClient.drawTable`/`ChatApi.drawTable`; `SegmentList`'s recursive
+`table_draw` render branch (a self-import replacing the deprecated `<svelte:self>`) plus a Draw
+button on a `doc_link` segment resolving to a table.
+Deviation from plan: `DrawTableError` gained a `TooLong` variant not in the plan's enumerated
+list, needed because the reused `chat::validate_audience` can legitimately return
+`SendMessageError::TooLong` for an oversized whisper-recipient list — mapping it silently to
+`Forbidden` would have been a worse choice than a small, clearly-documented additional variant.
+A second deviation, fixed forward after this entry was first written: both the design and this
+plan specify `RowRange{lo: i64, hi: i64}`; the shipped field width is `i32`. A row range bounds a
+dice roll's total, already well within the narrower width via `MAX_DIE_SIDES`/`MAX_ROLL_DICE`,
+and `i64` forces ts-rs to emit a `bigint` on a type client authoring code (`buildTableDoc`
+callers) constructs directly — `JSON.stringify` (`WsClient.send`) cannot serialize a `bigint`, so
+any typed `Formula`-table author would fail before the write reached the wire, the identical trap
+that hit the note engine's `sort` field. Caught by `table-docs.test.ts` constructing a real
+`Formula` table through `buildTableDoc` and round-tripping it through `JSON.stringify`; pinned by
+a mutation control (reverting to `i64`/`bigint` fails `tsc --noEmit` on the new test's literal row
+ranges).
+Coverage: unit tests across `data::engine::table` (validation, including a mutation-style
+positive+negative control pinning the weighted-sum/`MAX_DIE_SIDES` boundary), `chat::mod`
+(GM-only redaction at every draw depth, `filter_properties` integration), `tables`/`tables::draw`
+(cycle/depth/budget refusals, row selection, permission denial), `ws::protocol` (frame
+parse/default), client `table-docs`/`chat-docs`/`ws-client`/`SegmentList` suites, and a
+`table-draw.e2e.test.ts` Node↔Rust suite (nested-draw redaction over a real wire round-trip,
+a hidden table's generic refusal, a self-referencing cycle refusal, a `Formula` table's outcome
+landing in its matched row's range) — all green. Full repo gates (`cargo test`/`clippy`/`fmt`,
+`pnpm -r test`, typecheck, lint, `lint:comments`) green at every commit.
+
+### M19c · Notes ✅
+Branch `m19`, executed from the approved plan
+`docs/superpowers/plans/2026-09-02-m19c-notes.md` (design:
+`docs/superpowers/specs/2026-09-02-m19-tables-notes-chat-media-design.md`), as 6 sequential
+tasks. Delivered: `chat::body::compose_static`, a synchronous, no-repository/no-network sibling of
+`compose_message` sharing `scan_body_capped`'s chunk grammar but never executing an inline roll
+(always a `RollButton`) and never checking asset existence, plus `chat::NOTE_CONTENT_POLICY` (the
+fixed policy every note body derives under — markdown/links/images on, html/emails/link-previews
+off, independent of the world's own `chat-settings`); the `note` engine doc type
+(`NoteEngine{source, body, sort}`, `NOTE_DOC_TYPE`/`MAX_NOTE_SOURCE_CHARS`/`MAX_NOTE_SPANS`,
+registered in `is_engine_doc_type`/`normalize_engine` — the `"note"` arm derives `body` from
+`source` via `compose_static` on every Create/Update post-image, unconditionally discarding
+whatever `body` a client sent); `data::sqlite::notes::check_note_parent` (mirrors
+`check_asset_folder_parent`'s batch-then-database resolution, wired into the shared
+`check_parent_placement`/`batch_folders` machinery Create and Move both already thread) plus
+`validate_containment`'s `note` arm (never embedded); the client `note-docs.ts`
+(`buildNoteDoc` — private-by-default permissions, the author granted `Owner` when passed —
+and the fail-closed `parseNoteBody`, both re-exported from `@shadowcat/core`) and a
+`note-body.e2e.test.ts` Node↔Rust suite.
+Deviation from plan: none in scope, one fix-forward mid-task — `buildNoteDoc`'s initial
+implementation constructed `NoteEngine.sort` via `BigInt()` (matching the ts-rs `bigint` mapping
+for `i64`), which is not `JSON.stringify`-serializable and broke every `Create` containing a note
+at `WsClient.send`; caught by the e2e spec (not the unit tests, which never serialize the object)
+and fixed to build a plain `number` at that one construction site, following `wire.ts`'s own
+documented precedent for the same i64/bigint gap.
+Coverage: `chat::body::tests` (`compose_static`'s text/inline/button/doc-link/asset-image/
+malformed-span/over-cap-span cases), `data::engine::note::tests` (markdown→html, labeled/bare roll
+spans, doc/asset spans, malformed-span `BadEngine`, over-cap source, `deny_unknown_fields`, an
+`/engine/source` Update through `apply_intent` re-deriving `body`, and — added in fold-in review
+after independent mutation testing showed most of the placement tests below exercised a
+DIFFERENT mechanism than claimed — a Create and an Update whose derived body alone exceeds the
+size cap, pinning that the cap is enforced on the value actually stored, not the client's
+pre-derivation payload), `data::sqlite`'s `commands_and_intents` (same-world Create/Move
+placement under a note parent; `check_note_parent`'s own doc_type and cross-world scope rule,
+genuinely pinned on both the Create and the Move arm; a foreign-world Create instead caught by
+`apply_intent`'s generic parent-world check, not `check_note_parent`; same-batch parent+child;
+`check_move_acyclic` cycle refusal; parent-delete cascade via the existing FK), a
+`note-docs.test.ts` suite (builder shape/defaults, fail-closed parse, a
+`JSON.stringify`-round-trips regression test), and the `note-body.e2e.test.ts` Node↔Rust suite
+(server-derived body over a real wire round-trip, re-derivation on edit, malformed-span and
+non-note-parent rejections, a player watcher receiving no create for the private-by-default note
+at all). Full repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint,
+`lint:comments`) green at every commit; `pnpm --filter @shadowcat/core test:e2e` run alone (10
+files / 15 tests) green.
+
+**M19 · Tables, notes + chat media — CLOSED.** All three sub-projects (M19a chat media, M19b
+rollable tables, M19c notes) merged to `main` in build order. Delivered: server-fetched/asset-ified
+chat images (never hotlinked), rollable `table` documents drawn server-side into GM-redacted chat
+segments, and server-derived `note` documents — plus the shared seams M20's table/notes sheets
+build on (`SegmentList` moved into `@shadowcat/ui-kit`, `buildTableDoc`/`buildNoteDoc`,
+`ChatApi.drawTable`).
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

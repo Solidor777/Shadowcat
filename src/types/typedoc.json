@@ -13,12 +13,15 @@
     "MergeErrorKind.__type.unresolvable",
     "MergeOutcome.__type.kind",
     "MergePullStatus.__type.conflicts",
+    "DocLinkTarget.__type.kind",
+    "DrawRule.__type.kind",
     "Operation.__type.op",
     "PushInstanceStatus.__type.conflicts",
     "ResourceBinding.__type.kind",
     "RenderVisual.__type.kind",
     "Scope.__type.kind",
     "ServerMsg.__type.type",
+    "TableEntry.__type.kind",
     "TokenVisual.__type.kind",
     "TriggerEffect.__type.type"
   ]

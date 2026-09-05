@@ -17,7 +17,10 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use uuid::Uuid;
 
-use super::link_preview::{clean_text, fetch_image_bytes, fetch_json_bytes, MAX_TITLE_CHARS};
+use super::link_preview::{
+    clean_text, fetch_image_bytes, fetch_json_bytes, MAX_IMAGE_BYTES, MAX_INLINE_IMAGE_BYTES,
+    MAX_TITLE_CHARS,
+};
 use super::oembed::{OEmbedProvider, OEmbedResponse, OEmbedSegment};
 use super::{MessageEngine, Segment, MESSAGE_DOC_TYPE};
 use crate::data::asset::{create_asset_from_bytes, NewAssetBytes};
@@ -122,6 +125,17 @@ pub enum PendingEnrichment {
         /// The allowlisted provider this URL matched.
         provider: OEmbedProvider,
     },
+    /// A Markdown/HTML image source `sanitize` collected into
+    /// `Sanitized.image_urls` (already gated on `policy.images()` -- see
+    /// `link_preview::enrich`'s doc). Resolves to a brand-new
+    /// `Segment::Image`, never patching an existing segment.
+    InlineImage {
+        /// The image URL to fetch, exactly as `sanitize` recorded it.
+        image_url: String,
+        /// The image's alt text, stored verbatim on the resulting
+        /// `Segment::Image`.
+        alt: String,
+    },
 }
 
 /// What one resolved `PendingEnrichment` does to a message's stored `content`.
@@ -138,6 +152,9 @@ enum ResolvedEnrichment {
     /// Append a brand-new `Segment::OEmbed` to `content` -- never patches an
     /// existing segment (see `PendingEnrichment::OEmbed`'s doc).
     NewOEmbedSegment(Segment),
+    /// Append a brand-new `Segment::Image` to `content` -- never patches an
+    /// existing segment (see `PendingEnrichment::InlineImage`'s doc).
+    NewImageSegment(Segment),
 }
 
 /// Grouped dependencies for `run_pending_enrichments` -- grouped instead of
@@ -273,6 +290,10 @@ async fn publish_resolved(
                 sys.content.push(segment);
                 changed = true;
             }
+            ResolvedEnrichment::NewImageSegment(segment) => {
+                sys.content.push(segment);
+                changed = true;
+            }
         }
     }
     if !changed {
@@ -359,6 +380,9 @@ async fn resolve_job(
         PendingEnrichment::OEmbed { post_url, provider } => {
             resolve_oembed(deps, world_id, post_url, provider).await
         }
+        PendingEnrichment::InlineImage { image_url, alt } => {
+            resolve_inline_image(deps, world_id, image_url, alt).await
+        }
     }
 }
 
@@ -410,9 +434,10 @@ async fn resolve_preview_image(
                 });
             }
         }
-        let (content_type, bytes) = fetch_image_bytes(&client, &image_url, Duration::from_secs(5))
-            .await
-            .ok()?;
+        let (content_type, bytes) =
+            fetch_image_bytes(&client, &image_url, Duration::from_secs(5), MAX_IMAGE_BYTES)
+                .await
+                .ok()?;
         let now = crate::ws::time::now_millis();
         let asset = {
             let _read_permit = write_barrier.read().await;
@@ -440,6 +465,116 @@ async fn resolve_preview_image(
             preview_url,
             asset_id: asset.id,
         })
+    })
+    .await
+}
+
+/// De-dup-then-fetch for one `InlineImage` job: checks the persisted
+/// `link_preview_cache` row for `image_url` FIRST (same table, keyed here by
+/// the chat image's own URL rather than a previewed page's URL) and reuses an
+/// existing `image_asset_id` verbatim on a hit -- never re-fetching or
+/// re-creating an asset for a URL some other message already imaged. On a
+/// miss, fetches `image_url` through the SAME SSRF-guarded client
+/// (`fetch_image_bytes`, capped at `MAX_INLINE_IMAGE_BYTES` -- larger than
+/// `resolve_preview_image`'s `MAX_IMAGE_BYTES` since this is full-size
+/// message content, not a thumbnail), asset-ifies it via
+/// `create_asset_from_bytes` with `Provenance::ChatImage` (`created_by: None`,
+/// same generalization as `resolve_preview_image`), and records the result
+/// for future hits. Holds `write_barrier`'s read side around the asset
+/// commit and runs the whole check-then-fetch-then-set sequence under
+/// `preview_fetch_locks`' per-`image_url` lock, identically to
+/// `resolve_preview_image` -- see that function's doc for the full
+/// concurrency argument.
+async fn resolve_inline_image(
+    deps: FetchDeps,
+    world_id: Uuid,
+    image_url: String,
+    alt: String,
+) -> Option<ResolvedEnrichment> {
+    // `MAX_IMAGE_ALT_CHARS` is a REFUSAL cap (see its own doc), never a
+    // truncation -- a Markdown/HTML `alt` this long has no ingest-time
+    // rejection point (unlike a `[[asset:...]]` span's `AltTooLong`), so this
+    // background job drops silently, same posture as every other failure
+    // this pipeline already degrades on (a blocked host, a fetch error).
+    if alt.chars().count() > super::MAX_IMAGE_ALT_CHARS {
+        return None;
+    }
+    let FetchDeps {
+        repo,
+        client,
+        assets_root,
+        retain_originals,
+        write_barrier,
+        preview_fetch_locks,
+    } = deps;
+    let lock_key = image_url.clone();
+    with_preview_url_lock(&preview_fetch_locks, &lock_key, move || async move {
+        if let Ok(Some(row)) = repo.get_link_preview_cache(&image_url).await {
+            if let Some(asset_id) = row.image_asset_id {
+                return Some(ResolvedEnrichment::NewImageSegment(Segment::Image {
+                    asset_id,
+                    alt,
+                }));
+            }
+        }
+        let (content_type, bytes) = fetch_image_bytes(
+            &client,
+            &image_url,
+            Duration::from_secs(5),
+            MAX_INLINE_IMAGE_BYTES,
+        )
+        .await
+        .ok()?;
+        let now = crate::ws::time::now_millis();
+        // The URL's own last path segment, when present and non-empty, gives
+        // a more useful stored file name than a fixed literal (unlike
+        // `resolve_preview_image`/`resolve_thumbnail_asset`'s thumbnails,
+        // an inline chat image is the message's own primary content and may
+        // later be browsed/downloaded through the asset library by that
+        // name).
+        let original_name = url::Url::parse(&image_url)
+            .ok()
+            .and_then(|u| {
+                u.path_segments()
+                    .and_then(|mut segs| segs.next_back().map(str::to_string))
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "image".to_string());
+        let asset = {
+            let _read_permit = write_barrier.read().await;
+            create_asset_from_bytes(
+                &repo,
+                &assets_root,
+                world_id,
+                NewAssetBytes {
+                    bytes: &bytes,
+                    content_type: &content_type,
+                    original_name: &original_name,
+                    created_by: None,
+                    provenance: crate::data::asset::Provenance::ChatImage,
+                    retain_originals,
+                },
+                now,
+            )
+            .await
+            .ok()?
+        };
+        // No prior `upsert_link_preview_cache` call exists for `image_url`
+        // (unlike `resolve_preview_image`'s target, which the synchronous
+        // href-preview scrape already upserted) -- an inline chat image URL
+        // never went through that stage, so a row must be created here
+        // before `set_link_preview_cache_image` can attach an asset id to
+        // it. Same two-call shape as `resolve_thumbnail_asset`.
+        let _ = repo
+            .upsert_link_preview_cache(&image_url, None, None, now)
+            .await;
+        let _ = repo
+            .set_link_preview_cache_image(&image_url, asset.id)
+            .await;
+        Some(ResolvedEnrichment::NewImageSegment(Segment::Image {
+            asset_id: asset.id,
+            alt,
+        }))
     })
     .await
 }
@@ -524,10 +659,14 @@ async fn resolve_thumbnail_asset(
                 return Some(asset_id);
             }
         }
-        let (content_type, bytes) =
-            fetch_image_bytes(&client, &thumbnail_url, Duration::from_secs(5))
-                .await
-                .ok()?;
+        let (content_type, bytes) = fetch_image_bytes(
+            &client,
+            &thumbnail_url,
+            Duration::from_secs(5),
+            MAX_IMAGE_BYTES,
+        )
+        .await
+        .ok()?;
         let now = crate::ws::time::now_millis();
         let asset = {
             let _read_permit = write_barrier.read().await;

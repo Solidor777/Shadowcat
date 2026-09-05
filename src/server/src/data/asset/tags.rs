@@ -14,6 +14,9 @@ pub const LARGE_AXIS_PX: u32 = 2048;
 pub const LINK_PREVIEW_TAG: &str = "link-preview";
 /// Derived tag for a GM upload.
 pub const UPLOADED_TAG: &str = "uploaded";
+/// Derived tag reserved for a server-fetched external chat image
+/// (`Provenance::ChatImage`); same recovery role as `LINK_PREVIEW_TAG`.
+pub const CHAT_IMAGE_TAG: &str = "chat-image";
 
 /// Longest accepted explicit tag, in chars.
 pub const MAX_TAG_CHARS: usize = 64;
@@ -60,6 +63,8 @@ pub struct DeriveInput<'a> {
 pub fn provenance_of(derived: &[String]) -> Provenance {
     if derived.iter().any(|t| t == LINK_PREVIEW_TAG) {
         Provenance::LinkPreview
+    } else if derived.iter().any(|t| t == CHAT_IMAGE_TAG) {
+        Provenance::ChatImage
     } else {
         Provenance::Uploaded
     }
@@ -109,6 +114,7 @@ pub fn derive(input: DeriveInput<'_>) -> Vec<String> {
         match input.provenance {
             Provenance::Uploaded => UPLOADED_TAG,
             Provenance::LinkPreview => LINK_PREVIEW_TAG,
+            Provenance::ChatImage => CHAT_IMAGE_TAG,
         }
         .into(),
     );

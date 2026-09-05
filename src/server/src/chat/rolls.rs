@@ -17,8 +17,8 @@
 //! seeding, or chat settings;
 //! those are transport policy that belongs here, not in `dice/`.
 //!
-//! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body` are called from
-//! `handle_send_message`'s roll stage — the sole ingest path
+//! `execute_roll`/`validate_formula`/`BodyChunk`/`scan_body_capped` are called
+//! from `handle_send_message`'s roll stage — the sole ingest path
 //! that may execute untrusted dice notation.
 
 #![deny(missing_docs)]
@@ -56,8 +56,8 @@ pub(crate) const MAX_EXPERTISE: u32 = 100;
 /// construction -- they saturate at `i64::MAX`/`MIN` on overflow instead of
 /// panicking or wrapping (see `eval::sum`'s `*_saturating` helpers).
 pub(crate) const MAX_DIE_SIDES: i64 = 10_000;
-/// Cap on non-text chunks (`Inline`/`Button`/`DocLink`) `scan_body` may extract from one
-/// message body.
+/// Cap on non-text chunks (`Inline`/`Button`/`DocLink`/`Image`) `scan_body_capped` may extract
+/// from one message body.
 pub(crate) const MAX_INLINE_ROLLS: usize = 8;
 
 /// One scanned chunk of a message body: literal text between spans, an
@@ -87,6 +87,16 @@ pub(crate) enum BodyChunk<'a> {
         /// empty (an empty/absent label is a `RollError::MalformedDocLink`).
         label: &'a str,
     },
+    /// A `[[asset:<uuid>[|<alt>]]]` span: an author-inserted image reference.
+    /// `alt` is `None` when the span carries no `|<alt>` suffix, or when the
+    /// suffix is empty/all-whitespace after trimming.
+    Image {
+        /// The referenced asset's id (world/policy checks happen in
+        /// `chat::body::compose_message`, not here).
+        asset_id: Uuid,
+        /// Trimmed alt text, or `None`.
+        alt: Option<&'a str>,
+    },
 }
 
 /// Balanced span scanner. A span opens at `[[` and closes at the first `]]`
@@ -104,8 +114,14 @@ pub(crate) enum BodyChunk<'a> {
 /// opened but never closed by a balanced `]]` (`RollError::Unterminated`);
 /// more than `MAX_INLINE_ROLLS` non-text chunks (`RollError::TooManyInline`);
 /// a `doc:`/`token:`-prefixed span with an unparseable id or a missing/empty
-/// `|<label>` suffix (`RollError::MalformedDocLink`).
-pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
+/// `|<label>` suffix (`RollError::MalformedDocLink`). Parameterized on the
+/// non-text-chunk cap so a caller other than the ordinary ingest path
+/// (`body::compose_message`, which always passes `MAX_INLINE_ROLLS`) could
+/// apply a different bound.
+pub(crate) fn scan_body_capped(
+    body: &str,
+    max_spans: usize,
+) -> Result<Vec<BodyChunk<'_>>, RollError> {
     let mut chunks = Vec::new();
     let mut non_text = 0usize;
     let mut text_start = 0usize;
@@ -155,12 +171,12 @@ pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
 
         let content = &body[content_start..content_end];
         non_text += 1;
-        if non_text > MAX_INLINE_ROLLS {
+        if non_text > max_spans {
             return Err(RollError::TooManyInline(non_text));
         }
-        match parse_doc_link(content) {
+        match parse_ref_span(content) {
             Ok(Some(chunk)) => chunks.push(chunk),
-            Err(()) => return Err(RollError::MalformedDocLink),
+            Err(e) => return Err(e),
             Ok(None) => {
                 if let Some(rest) = content.strip_prefix("roll:") {
                     let (formula, label) = match rest.split_once('|') {
@@ -184,27 +200,30 @@ pub(crate) fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
     Ok(chunks)
 }
 
-/// Parses `content` as a `doc:`/`token:`-prefixed span. `Ok(None)` when `content` carries
-/// neither prefix (the caller falls through to `roll:`/`Inline` handling); `Err(())` when the
-/// prefix is recognized but the id/label grammar is malformed (the caller returns
-/// `RollError::MalformedDocLink`); `Ok(Some(chunk))` on success. Grammar:
-/// `doc:<uuid>[/<embedded_path>]|<label>` or `token:<uuid>|<label>` — the id/path is
-/// everything before the FIRST `|`, split from an optional `/<embedded_path>` at the first `/`
-/// after the `doc:`/`token:` prefix; the label is everything after that `|`, trimmed, and must
-/// be non-empty (`Segment::DocLink.label` is a required field, unlike `Button`'s optional
-/// label).
-fn parse_doc_link(content: &str) -> Result<Option<BodyChunk<'_>>, ()> {
+/// Parses `content` as a `doc:`/`token:`/`asset:`-prefixed span. `Ok(None)` when `content`
+/// carries none of the three prefixes (the caller falls through to `roll:`/`Inline` handling);
+/// `Err(RollError::MalformedDocLink)`/`Err(RollError::MalformedAssetSpan)` when a recognized
+/// prefix's id/label grammar is malformed; `Ok(Some(chunk))` on success. Grammar:
+/// `doc:<uuid>[/<embedded_path>]|<label>`, `token:<uuid>|<label>`, or
+/// `asset:<uuid>[|<alt>]` — for `doc:`/`token:`, the id/path is everything before the FIRST
+/// `|`, split from an optional `/<embedded_path>` at the first `/` after the `doc:`/`token:`
+/// prefix, and the label is everything after that `|`, trimmed, required non-empty
+/// (`Segment::DocLink.label` is a required field, unlike `Button`'s optional label); for
+/// `asset:`, the `|<alt>` suffix is OPTIONAL and, when present, trimmed to `None` if empty
+/// (`Segment::Image.alt` renders as an empty string either way — see
+/// `chat::body::compose_message`'s `Image` arm).
+fn parse_ref_span(content: &str) -> Result<Option<BodyChunk<'_>>, RollError> {
     if let Some(rest) = content.strip_prefix("doc:") {
-        let (id_and_path, label) = rest.split_once('|').ok_or(())?;
+        let (id_and_path, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
         let label = label.trim();
         if label.is_empty() {
-            return Err(());
+            return Err(RollError::MalformedDocLink);
         }
         let (id_part, embedded_path) = match id_and_path.split_once('/') {
             Some((id, p)) => (id, Some(format!("/{p}"))),
             None => (id_and_path, None),
         };
-        let doc_id = Uuid::parse_str(id_part).map_err(|_| ())?;
+        let doc_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedDocLink)?;
         return Ok(Some(BodyChunk::DocLink {
             target: DocLinkTarget::Doc {
                 doc_id,
@@ -214,16 +233,27 @@ fn parse_doc_link(content: &str) -> Result<Option<BodyChunk<'_>>, ()> {
         }));
     }
     if let Some(rest) = content.strip_prefix("token:") {
-        let (id_part, label) = rest.split_once('|').ok_or(())?;
+        let (id_part, label) = rest.split_once('|').ok_or(RollError::MalformedDocLink)?;
         let label = label.trim();
         if label.is_empty() {
-            return Err(());
+            return Err(RollError::MalformedDocLink);
         }
-        let token_id = Uuid::parse_str(id_part).map_err(|_| ())?;
+        let token_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedDocLink)?;
         return Ok(Some(BodyChunk::DocLink {
             target: DocLinkTarget::Token { token_id },
             label,
         }));
+    }
+    if let Some(rest) = content.strip_prefix("asset:") {
+        let (id_part, alt) = match rest.split_once('|') {
+            Some((id, a)) => {
+                let a = a.trim();
+                (id, if a.is_empty() { None } else { Some(a) })
+            }
+            None => (rest, None),
+        };
+        let asset_id = Uuid::parse_str(id_part).map_err(|_| RollError::MalformedAssetSpan)?;
+        return Ok(Some(BodyChunk::Image { asset_id, alt }));
     }
     Ok(None)
 }
@@ -272,6 +302,25 @@ pub enum RollError {
     /// non-integer value, or a scan error from the template grammar itself.
     /// Carries the formula engine's error; its `detail` is player-presentable.
     Reference(crate::formula::FormulaError),
+    /// A `[[asset:...]]` span recognized by its prefix but carrying an
+    /// unparseable id.
+    MalformedAssetSpan,
+    /// A `[[asset:<uuid>...]]` span's id does not resolve to an asset in the
+    /// sending room's world — either the asset does not exist at all, or it
+    /// belongs to a different world (world-pinned, same policy as
+    /// `Segment::DocLink`'s attribution checks).
+    UnknownAsset,
+    /// A `[[asset:...]]` span was posted while the world's `chat-settings`
+    /// `images` toggle is off.
+    ImagesDisabled,
+    /// A `[[asset:<uuid>|alt]]` span's `alt` text exceeds
+    /// `super::MAX_IMAGE_ALT_CHARS` -- refused rather than silently
+    /// truncated.
+    AltTooLong,
+    /// A `DrawRule::Formula` table's notation resolved to `Mode::SuccessCount`
+    /// -- a table needs a single Total value to range-match against, not a
+    /// success count.
+    TableNeedsTotal,
 }
 
 /// Player-presentable. `Parse` reuses `ParseError`'s own `Display`; every
@@ -316,6 +365,24 @@ impl std::fmt::Display for RollError {
                 write!(f, "that document/token link is malformed")
             }
             RollError::Reference(e) => write!(f, "{}", e.detail),
+            RollError::MalformedAssetSpan => {
+                write!(f, "that image link is malformed")
+            }
+            RollError::UnknownAsset => {
+                write!(f, "that image could not be found")
+            }
+            RollError::ImagesDisabled => {
+                write!(f, "images are disabled in this world")
+            }
+            RollError::AltTooLong => {
+                write!(f, "that image's alt text is too long")
+            }
+            RollError::TableNeedsTotal => {
+                write!(
+                    f,
+                    "a table's formula must resolve to a single total, not a success count"
+                )
+            }
         }
     }
 }
@@ -437,6 +504,34 @@ pub(crate) fn validate_formula(formula: &str, ctx: ParseContext) -> Result<(), R
         .map_err(RollError::Reference)?;
     let spec = notation::parse(&notation, ctx).map_err(RollError::Parse)?;
     validate_pre_roll(&spec)
+}
+
+/// Ambient parse context for a table's `DrawRule::Formula` notation: always
+/// Total mode (a table matches one total against a row's range, never a
+/// success count) and `HighWins` (a table has no notion of a "low wins"
+/// convention of its own -- the direction only matters for `t<N>`'s
+/// comparator resolution, which a table's notation never uses).
+pub(crate) const TABLE_PARSE_CONTEXT: ParseContext = ParseContext {
+    mode: notation::ModeKind::Total,
+    direction: crate::dice::spec::Direction::HighWins,
+};
+
+/// Validates a `DrawRule::Formula` table's notation at ingress: reference-
+/// free (any `[[...]]`-style template reference is refused via
+/// `NoHostResolver`, since a table's notation is authored once and drawn by
+/// many different actors with no single host to resolve against), parses
+/// under `TABLE_PARSE_CONTEXT`, passes the same `validate_pre_roll` cap walk
+/// every other roll does, and refuses `Mode::SuccessCount` (`TableNeedsTotal`)
+/// -- a table needs a single total to range-match, not a pass/fail count.
+pub(crate) fn validate_table_formula(notation_str: &str) -> Result<(), RollError> {
+    let resolved = crate::formula::resolve_notation_template(notation_str, &NoHostResolver)
+        .map_err(RollError::Reference)?;
+    let spec = notation::parse(&resolved, TABLE_PARSE_CONTEXT).map_err(RollError::Parse)?;
+    validate_pre_roll(&spec)?;
+    if matches!(spec.mode, Mode::SuccessCount(_)) {
+        return Err(RollError::TableNeedsTotal);
+    }
+    Ok(())
 }
 
 /// Test seam: identical to `execute_roll` but takes an explicit seed instead

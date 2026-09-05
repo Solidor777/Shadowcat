@@ -28,6 +28,7 @@ use uuid::Uuid;
 use super::preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, NEGATIVE_TTL, POSITIVE_TTL, PREVIEW_FETCH_PER_MIN,
 };
+use super::sanitize::ImageSource;
 use super::{PendingEnrichment, Segment};
 
 /// A server-fetched preview. Stored verbatim by the ingest stage (a later
@@ -62,6 +63,18 @@ pub struct LinkPreview {
 /// order, applied to the DEDUPED candidate list — a message pasting the same
 /// link four times still counts it once toward this cap.
 pub const MAX_PREVIEWS_PER_MESSAGE: usize = 3;
+
+/// Cap on distinct inline chat images (Markdown/HTML image sources
+/// `sanitize` collected) queued for background asset-ification per message,
+/// independent of `MAX_PREVIEWS_PER_MESSAGE` — an inline image is the
+/// message's own primary content, not a linked page's preview.
+pub const MAX_INLINE_IMAGES: usize = 4;
+/// Byte cap for one inline chat image fetch
+/// (`post_publish::resolve_inline_image`): larger than `MAX_IMAGE_BYTES`
+/// (a link-preview `og:image` thumbnail) since an inline chat image is
+/// full-size message content, not a small thumbnail; smaller than
+/// `MAX_PREVIEW_BYTES` (a page's whole HTML document).
+pub const MAX_INLINE_IMAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Bounded scan for the `href` attribute of a genuine `<a ...>` tag opener
 /// across an already ammonia-sanitized HTML run — NOT a raw `href="..."`
@@ -216,15 +229,26 @@ async fn cached_or_fetch(
 ///
 /// Returns any `PendingEnrichment` jobs the caller must run AFTER its own
 /// synchronous publish returns -- an extracted `og:image` candidate not yet
-/// fetched -- for the background image pipeline
+/// fetched, or an inline chat image (`image_urls`, from `Sanitized.image_urls`)
+/// not yet fetched -- for the background image pipeline
 /// (`chat::post_publish::run_pending_enrichments`), never run on this
-/// request path.
+/// request path. `image_urls` is queued independently of the href-preview
+/// scan above, gated by the caller-supplied `scan_previews` (the world's
+/// `previews_enabled()`) rather than a shared toggle: it carries Markdown/HTML
+/// image sources `sanitize` already gated on `policy.images()`, so no further
+/// policy check applies here -- only the same URL-validation and per-user
+/// rate-limit guard every other outbound fetch candidate in this function
+/// passes through. A world may enable images while previews are off (or vice
+/// versa); `scan_previews` is what keeps the href/oEmbed scan from running
+/// in the former case.
 pub async fn enrich(
     segments: &mut Vec<Segment>,
     deps: EnrichDeps<'_>,
     user: Uuid,
     now_ms: i64,
     now: Instant,
+    image_urls: &[ImageSource],
+    scan_previews: bool,
 ) -> Vec<PendingEnrichment> {
     let EnrichDeps {
         repo,
@@ -236,26 +260,31 @@ pub async fn enrich(
     } = deps;
     let mut urls: Vec<String> = Vec::new();
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    'outer: for seg in segments.iter() {
-        if let Segment::Html { sanitized_html } = seg {
-            for url in extract_href_urls(sanitized_html) {
-                if urls.contains(&url)
-                    || pending.iter().any(
-                        |p| matches!(p, PendingEnrichment::OEmbed { post_url, .. } if post_url == &url),
-                    )
-                {
-                    continue;
-                }
-                if let Some(provider) = crate::chat::match_oembed_provider(&url) {
-                    pending.push(PendingEnrichment::OEmbed {
-                        post_url: url,
-                        provider,
-                    });
-                } else {
-                    urls.push(url);
-                }
-                if urls.len() + pending.len() >= MAX_PREVIEWS_PER_MESSAGE {
-                    break 'outer;
+    // Gated independently of `image_urls` below: a world can have hyperlink
+    // previews off while images are on (or vice versa), and the two concerns
+    // must not couple through one shared caller-side gate.
+    if scan_previews {
+        'outer: for seg in segments.iter() {
+            if let Segment::Html { sanitized_html } = seg {
+                for url in extract_href_urls(sanitized_html) {
+                    if urls.contains(&url)
+                        || pending.iter().any(
+                            |p| matches!(p, PendingEnrichment::OEmbed { post_url, .. } if post_url == &url),
+                        )
+                    {
+                        continue;
+                    }
+                    if let Some(provider) = crate::chat::match_oembed_provider(&url) {
+                        pending.push(PendingEnrichment::OEmbed {
+                            post_url: url,
+                            provider,
+                        });
+                    } else {
+                        urls.push(url);
+                    }
+                    if urls.len() + pending.len() >= MAX_PREVIEWS_PER_MESSAGE {
+                        break 'outer;
+                    }
                 }
             }
         }
@@ -346,6 +375,35 @@ pub async fn enrich(
             });
         }
     }
+
+    // Inline chat images: `image_urls` already passed `policy.images()` inside
+    // `sanitize` (only populated when the toggle is on), so the remaining
+    // gates here are the same ones every other outbound fetch candidate in
+    // this function passes through -- URL validation and the per-user rate
+    // limit -- never a second policy check. Capped at `MAX_INLINE_IMAGES`
+    // SUCCESSFULLY queued jobs, first-seen order; a rejected/rate-limited
+    // candidate does not consume a slot.
+    let mut queued = 0usize;
+    for src in image_urls {
+        if queued >= MAX_INLINE_IMAGES {
+            break;
+        }
+        let Ok(parsed) = Url::parse(&src.url) else {
+            continue;
+        };
+        if validate_url(&parsed).is_err() {
+            continue;
+        }
+        if !rate.check(user, now_ms, PREVIEW_FETCH_PER_MIN) {
+            continue;
+        }
+        pending.push(PendingEnrichment::InlineImage {
+            image_url: src.url.clone(),
+            alt: src.alt.clone(),
+        });
+        queued += 1;
+    }
+
     pending
 }
 
@@ -462,26 +520,260 @@ impl std::error::Error for DnsFailureError {}
 // Address guard: explicit, clean-room, RFC-cited blocked ranges. Deliberately
 // NOT `Ipv4Addr::is_global` (unstable, and its semantics have drifted across
 // nightlies) — every range here is a named, cited constant, table-tested.
+//
+// INCLUSION RULE: an address is refused if it falls ANYWHERE in the IANA
+// IPv4 or IPv6 Special-Purpose Address Registry, regardless of that entry's
+// "Globally Reachable" value. "Globally routable" is a ROUTING property, and
+// this guard's actual job is narrower and stricter: refuse anything that
+// lets a requester reach a destination it could not otherwise reach, or that
+// is not a real public web host. For several registry entries those two
+// properties come apart — an anycast service address (PCP/TURN/DNS-SD-SRP,
+// AMT, AS112 in either family, Direct Delegation AS112) is globally
+// routable YET resolves to the NEAREST responder, typically a device on the
+// requester's own
+// network or its provider's edge: exactly the internal-reachability vector
+// this guard exists to close. ORCHIDv2 and Drone Remote ID DETs are
+// cryptographic IDENTIFIER space, not host addresses, and never serve web
+// content either way. Nothing in special-purpose space is ever a legitimate
+// link-preview target, so blocking the entire registry costs nothing, while
+// allowing any routable-but-unsafe entry through is a live SSRF surface.
+// Both tables below apply this rule to their registry in full: every
+// registry row is present, and a row the registry marks "Globally
+// Reachable: True" or "N/A" carries that fact in its own `reason` string
+// alongside WHY it is refused anyway (anycast nearest-responder resolution,
+// or identifier space rather than a host) — an entry blocked against its
+// own registry flag needs that reasoning visible, or the next reader sees a
+// contradiction and "corrects" it back. The IPv4 registry marks five rows
+// True (PCP Anycast, TURN Anycast, AS112-v4, AMT, Direct Delegation AS112
+// — all anycast) and one N/A (the deprecated 6to4 relay); the IPv6
+// registry marks its anycast trio, AMT, both AS112 entries, ORCHIDv2 and
+// Drone Remote ID True, and Teredo, ex-ORCHID and 6to4 N/A.
+// `is_blocked_ipv4`/`is_blocked_ipv6` and their test suites each read their
+// one table, so a future registry change is a visible row to add here,
+// never a discrepancy between the guard and its own tests.
 // ---------------------------------------------------------------------------
 
-/// `(network, prefix_len)` pairs, each cited to the RFC that reserves it.
-const V4_BLOCKED: &[(Ipv4Addr, u32)] = &[
-    (Ipv4Addr::new(0, 0, 0, 0), 8),          // RFC 791 "this network"
-    (Ipv4Addr::new(10, 0, 0, 0), 8),         // RFC 1918 private-use
-    (Ipv4Addr::new(100, 64, 0, 0), 10),      // RFC 6598 shared address space (CGNAT)
-    (Ipv4Addr::new(127, 0, 0, 0), 8),        // RFC 1122 loopback
-    (Ipv4Addr::new(169, 254, 0, 0), 16),     // RFC 3927 link-local
-    (Ipv4Addr::new(172, 16, 0, 0), 12),      // RFC 1918 private-use
-    (Ipv4Addr::new(192, 0, 0, 0), 24),       // RFC 6890 IETF protocol assignments
-    (Ipv4Addr::new(192, 0, 2, 0), 24),       // RFC 5737 TEST-NET-1
-    (Ipv4Addr::new(192, 88, 99, 0), 24),     // RFC 7526 6to4 relay anycast
-    (Ipv4Addr::new(192, 168, 0, 0), 16),     // RFC 1918 private-use
-    (Ipv4Addr::new(198, 18, 0, 0), 15),      // RFC 2544 benchmarking
-    (Ipv4Addr::new(198, 51, 100, 0), 24),    // RFC 5737 TEST-NET-2
-    (Ipv4Addr::new(203, 0, 113, 0), 24),     // RFC 5737 TEST-NET-3
-    (Ipv4Addr::new(224, 0, 0, 0), 4),        // RFC 5771 multicast
-    (Ipv4Addr::new(240, 0, 0, 0), 4),        // RFC 1112 reserved
-    (Ipv4Addr::new(255, 255, 255, 255), 32), // RFC 919 limited broadcast
+/// One entry of the IANA IPv4 Special-Purpose Address Registry, RFC-cited.
+/// Every entry is blocked outright — the IPv4 registry has no translation
+/// prefix embedding another address, so there is no IPv4 analogue of
+/// `V6Disposition` and `is_blocked_ipv4`'s verdict is a plain any-match.
+struct V4Range {
+    /// Network address; bits beyond `prefix_len` are ignored and
+    /// conventionally zero here.
+    network: Ipv4Addr,
+    /// CIDR prefix length, 0..=32.
+    prefix_len: u32,
+    /// RFC (or registry source) that reserves this range.
+    rfc: &'static str,
+    /// One-line reason, matched to the registry's own designation.
+    reason: &'static str,
+}
+
+/// The IANA IPv4 Special-Purpose Address Registry, plus `224.0.0.0/4`
+/// multicast. SOURCE: this table is a transcription of the IANA IPv4
+/// Special-Purpose Address Registry as fetched and supplied for this guard's
+/// construction — re-diff `V4_BLOCKED` against that registry directly rather
+/// than re-deriving it from memory; the INCLUSION RULE comment above says
+/// why every row is refused regardless of its reachability column. THE
+/// REGISTRY NESTS here too (`192.0.0.0/24` contains six more specific rows,
+/// `0.0.0.0/8` and `192.88.99.0/24` one each); the nested rows are
+/// transcribed as their own entries so a re-diff is row-for-row, and since
+/// every entry is blocked the nesting has no bearing on the verdict —
+/// unlike `V6_RANGES`, whose `UnwrapV4` rows make most-specific matching
+/// load-bearing. `224.0.0.0/4` is the one deliberate addition from outside
+/// the special-purpose registry (it lives in the IANA IPv4 Multicast Address
+/// Space Registry), mirroring `ff00::/8` in `V6_RANGES`.
+const V4_BLOCKED: &[V4Range] = &[
+    V4Range {
+        network: Ipv4Addr::new(0, 0, 0, 0),
+        prefix_len: 8,
+        rfc: "RFC 791 §3.2",
+        reason: "\"This network\"",
+    },
+    V4Range {
+        network: Ipv4Addr::new(0, 0, 0, 0),
+        prefix_len: 32,
+        rfc: "RFC 1122 §3.2.1.3",
+        reason: "\"This host on this network\"",
+    },
+    V4Range {
+        network: Ipv4Addr::new(10, 0, 0, 0),
+        prefix_len: 8,
+        rfc: "RFC 1918",
+        reason: "Private-Use",
+    },
+    V4Range {
+        network: Ipv4Addr::new(100, 64, 0, 0),
+        prefix_len: 10,
+        rfc: "RFC 6598",
+        reason: "Shared Address Space (CGNAT)",
+    },
+    V4Range {
+        network: Ipv4Addr::new(127, 0, 0, 0),
+        prefix_len: 8,
+        rfc: "RFC 1122 §3.2.1.3",
+        reason: "Loopback",
+    },
+    V4Range {
+        network: Ipv4Addr::new(169, 254, 0, 0),
+        prefix_len: 16,
+        rfc: "RFC 3927",
+        reason: "Link Local",
+    },
+    V4Range {
+        network: Ipv4Addr::new(172, 16, 0, 0),
+        prefix_len: 12,
+        rfc: "RFC 1918",
+        reason: "Private-Use",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 0),
+        prefix_len: 24,
+        rfc: "RFC 6890 §2.1",
+        reason: "IETF Protocol Assignments — the parent pool the six more \
+                  specific rows below carve out of; every one of those \
+                  children is blocked in its own right, so this parent \
+                  exists to catch whatever the registry has not yet carved \
+                  a named entry out of",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 0),
+        prefix_len: 29,
+        rfc: "RFC 7335",
+        reason: "IPv4 Service Continuity Prefix",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 8),
+        prefix_len: 32,
+        rfc: "RFC 7600",
+        reason: "IPv4 dummy address",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 9),
+        prefix_len: 32,
+        rfc: "RFC 7723",
+        reason: "Port Control Protocol Anycast. Globally Reachable: True \
+                  per the registry, but an anycast address resolves to the \
+                  NEAREST responder — typically a device on the requester's \
+                  own network or its provider's edge, the exact \
+                  internal-reachability vector this guard exists to close — \
+                  so it is blocked despite the registry's reachability flag",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 10),
+        prefix_len: 32,
+        rfc: "RFC 8155",
+        reason: "Traversal Using Relays around NAT Anycast. Globally \
+                  Reachable: True per the registry, but see Port Control \
+                  Protocol Anycast's reason above — anycast resolution to \
+                  the nearest responder is the same guard-defeating \
+                  property regardless of the protocol",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 170),
+        prefix_len: 32,
+        rfc: "RFC 8880, RFC 7050 §2.2",
+        reason: "NAT64/DNS64 Discovery (one registry row lists both this \
+                  address and 192.0.0.171)",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 0, 171),
+        prefix_len: 32,
+        rfc: "RFC 8880, RFC 7050 §2.2",
+        reason: "NAT64/DNS64 Discovery (one registry row lists both this \
+                  address and 192.0.0.170)",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 0, 2, 0),
+        prefix_len: 24,
+        rfc: "RFC 5737",
+        reason: "Documentation (TEST-NET-1)",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 31, 196, 0),
+        prefix_len: 24,
+        rfc: "RFC 7535",
+        reason: "AS112-v4 anycast sink. Globally Reachable: True per the \
+                  registry, but see Port Control Protocol Anycast's reason \
+                  above — anycast resolution to the nearest responder is \
+                  blocked here too",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 52, 193, 0),
+        prefix_len: 24,
+        rfc: "RFC 7450",
+        reason: "AMT relay/gateway addressing. Globally Reachable: True per \
+                  the registry, but AMT relays are anycast — see Port \
+                  Control Protocol Anycast's reason above for why that is \
+                  blocked anyway",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 88, 99, 0),
+        prefix_len: 24,
+        rfc: "RFC 7526",
+        reason: "Deprecated (6to4 Relay Anycast). Globally Reachable: N/A, \
+                  treated as non-routable per the INCLUSION RULE comment \
+                  above",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 88, 99, 2),
+        prefix_len: 32,
+        rfc: "RFC 6751",
+        reason: "6a44-relay anycast address",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 168, 0, 0),
+        prefix_len: 16,
+        rfc: "RFC 1918",
+        reason: "Private-Use",
+    },
+    V4Range {
+        network: Ipv4Addr::new(192, 175, 48, 0),
+        prefix_len: 24,
+        rfc: "RFC 7534",
+        reason: "Direct Delegation AS112 Service. Globally Reachable: True \
+                  per the registry, but see Port Control Protocol Anycast's \
+                  reason above — an AS112 delegation is anycast, blocked \
+                  here too",
+    },
+    V4Range {
+        network: Ipv4Addr::new(198, 18, 0, 0),
+        prefix_len: 15,
+        rfc: "RFC 2544",
+        reason: "Benchmarking",
+    },
+    V4Range {
+        network: Ipv4Addr::new(198, 51, 100, 0),
+        prefix_len: 24,
+        rfc: "RFC 5737",
+        reason: "Documentation (TEST-NET-2)",
+    },
+    V4Range {
+        network: Ipv4Addr::new(203, 0, 113, 0),
+        prefix_len: 24,
+        rfc: "RFC 5737",
+        reason: "Documentation (TEST-NET-3)",
+    },
+    V4Range {
+        network: Ipv4Addr::new(224, 0, 0, 0),
+        prefix_len: 4,
+        rfc: "RFC 5771",
+        reason: "multicast — tracked in the separate IANA IPv4 Multicast \
+                  Address Space Registry, not the special-purpose one; \
+                  included for the same reason ff00::/8 is in V6_RANGES",
+    },
+    V4Range {
+        network: Ipv4Addr::new(240, 0, 0, 0),
+        prefix_len: 4,
+        rfc: "RFC 1112 §4",
+        reason: "Reserved",
+    },
+    V4Range {
+        network: Ipv4Addr::new(255, 255, 255, 255),
+        prefix_len: 32,
+        rfc: "RFC 8190, RFC 919 §7",
+        reason: "Limited Broadcast",
+    },
 ];
 
 /// Whether `ip` falls inside `network/prefix` (`prefix == 0` matches all).
@@ -493,62 +785,399 @@ fn ipv4_in_cidr(ip: u32, network: u32, prefix: u32) -> bool {
     (ip & mask) == (network & mask)
 }
 
-/// Whether `ip` is in any `V4_BLOCKED` range.
+/// Whether `ip` is in any `V4_BLOCKED` range. Every entry is blocked, so
+/// the verdict is "any containing entry"; the most specific one is the
+/// entry logged, so a hit inside a nested row (PCP Anycast rather than its
+/// IETF Protocol Assignments parent) is auditable by its own name.
+///
+/// INVARIANT: the most-specific selection here is LOG-ONLY and cannot change
+/// the verdict, which is why it may spell the rule `select_v6_range` also
+/// spells rather than sharing it. Giving `V4Range` a disposition would make
+/// this selection verdict-bearing and turn the two spellings into one
+/// decision resolved in two places — unify them before adding one.
 fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
     let n = u32::from(ip);
-    V4_BLOCKED
+    let Some(r) = V4_BLOCKED
         .iter()
-        .any(|&(network, prefix)| ipv4_in_cidr(n, u32::from(network), prefix))
+        .filter(|r| ipv4_in_cidr(n, u32::from(r.network), r.prefix_len))
+        .max_by_key(|r| r.prefix_len)
+    else {
+        return false;
+    };
+    // Cites the matched registry entry so a rejected preview fetch is
+    // auditable from logs alone, not just from this table.
+    tracing::trace!(%ip, rfc = r.rfc, reason = r.reason, "matched V4_BLOCKED entry");
+    true
 }
 
-/// Whether `ip` is in a blocked v6 range; v4-mapped and NAT64 forms are
-/// unwrapped and re-checked through the v4 table.
-fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
-    let s = ip.segments();
+/// How a `V6_RANGES` entry participates in `is_blocked_ipv6`. Every entry is
+/// `Blocked` except the three `UnwrapV4` entries (IPv4-mapped `::ffff:0:0/96`,
+/// IPv4-compatible `::/96`, NAT64 well-known `64:ff9b::/96`): see the
+/// INCLUSION RULE comment above `V4_BLOCKED` for why NOTHING in
+/// special-purpose space is ever excluded, regardless of its
+/// registry-listed reachability.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum V6Disposition {
+    /// The whole range is blocked outright.
+    Blocked,
+    /// Blocked by unwrapping the low 32 bits as an embedded IPv4 address and
+    /// re-checking it through `V4_BLOCKED` — a mapped or translated
+    /// destination must inherit the v4 guard, not bypass it.
+    UnwrapV4,
+}
 
-    // ::ffff:0:0/96 — IPv4-mapped (RFC 4291 §2.5.5.2). Unwrap and re-check
-    // through the v4 rules; a mapped-private address must stay blocked.
-    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0xffff {
-        return is_blocked_ipv4(embedded_v4(s));
+/// One entry of the IANA IPv6 Special-Purpose Address Registry (RFC-cited)
+/// relevant to the SSRF guard. See `V6Disposition` for what determines an
+/// entry's `disposition`.
+struct V6Range {
+    /// Network address, in `Ipv6Addr::segments()` order; bits beyond
+    /// `prefix_len` are ignored and conventionally zero here.
+    network: [u16; 8],
+    /// CIDR prefix length, 0..=128.
+    prefix_len: u32,
+    /// RFC (or registry source) that reserves this range.
+    rfc: &'static str,
+    /// One-line reason, matched to the registry's own designation.
+    reason: &'static str,
+    /// Whether a fetch target inside this range is blocked outright or
+    /// unwrapped and re-checked as IPv4.
+    disposition: V6Disposition,
+}
+
+/// The IANA IPv6 Special-Purpose Address Registry, plus `ff00::/8` multicast
+/// (tracked in the separate IANA IPv6 Multicast Address Space Registry, not
+/// the special-purpose one) and the historical IPv4-compatible `::/96` form
+/// (RFC 4291 §2.5.5.1, which the live registry does not carry as its own row
+/// but which Rust's `Ipv6Addr` parser still accepts and which is retained
+/// here for defense-in-depth rather than dropped for the sake of a stricter
+/// transcription). SOURCE: this table is a transcription of the IANA IPv6
+/// Special-Purpose Address Registry as fetched and supplied for this guard's
+/// construction — re-diff `V6_RANGES` against that registry directly rather
+/// than re-deriving it from memory; the INCLUSION RULE comment above
+/// `V4_BLOCKED` says why every row is refused regardless of its
+/// reachability column. THE REGISTRY NESTS — `2001::/23` (IETF Protocol
+/// Assignments) contains several more specific entries (the
+/// PCP/TURN/DNS-SD-SRP anycast addresses, Benchmarking, AMT, AS112-v6, the
+/// deprecated ex-ORCHID range, ORCHIDv2, Drone Remote ID) — so
+/// `select_v6_range` matches MOST-SPECIFIC-FIRST (longest `prefix_len`
+/// wins), the registry's own semantics, never first-match or any-match.
+/// Every entry in this table is `Blocked` except the three
+/// `V6Disposition::UnwrapV4` entries (IPv4-mapped `::ffff:0:0/96`,
+/// IPv4-compatible `::/96`, NAT64 well-known `64:ff9b::/96`), which still
+/// need most-specific-match to resolve to their OWN disposition rather than
+/// a covering `Blocked` parent's — the embedded-address recheck only runs
+/// if the more specific `UnwrapV4` entry, not the parent, wins the match.
+const V6_RANGES: &[V6Range] = &[
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 1],
+        prefix_len: 128,
+        rfc: "RFC 4291",
+        reason: "loopback",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 128,
+        rfc: "RFC 4291",
+        reason: "unspecified address",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0xffff, 0, 0],
+        prefix_len: 96,
+        rfc: "RFC 4291",
+        reason: "IPv4-mapped",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 96,
+        rfc: "RFC 4291 §2.5.5.1",
+        reason: "IPv4-compatible (deprecated) — not its own row in the live \
+                  registry; retained per the defense-in-depth note on \
+                  V6_RANGES",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x0064, 0xff9b, 0, 0, 0, 0, 0, 0],
+        prefix_len: 96,
+        rfc: "RFC 6052",
+        reason: "IPv4-IPv6 Translat. (well-known prefix) — the PREFIX is \
+                  globally reachable as a translation mechanism, which is \
+                  orthogonal to whether the v4 address it embeds is itself \
+                  routable, so this stays UnwrapV4 to recheck the embedded \
+                  address rather than being blocked wholesale",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x0064, 0xff9b, 1, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 8215",
+        reason: "IPv4-IPv6 Translat. (local-use prefix) — blocked wholesale \
+                  rather than unwrapped: RFC 6052's embedding position \
+                  shifts with the operator-chosen prefix length, so a \
+                  partial decode here risks the same off-by-one class this \
+                  guard exists to prevent, and the range is \
+                  non-globally-routable regardless of what it carries",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x0100, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "RFC 6666",
+        reason: "Discard-Only",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x0100, 0, 0, 1, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "RFC 9780",
+        reason: "Dummy IPv6 Prefix",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 23,
+        rfc: "RFC 2928",
+        reason: "IETF Protocol Assignments — the parent pool several more \
+                  specific, registry-globally-routable entries below carve \
+                  out of; every one of those children is ALSO Blocked here \
+                  (see each entry's own reason for why), so this parent \
+                  exists to catch whatever the registry has not yet carved \
+                  a named entry out of",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 4380, RFC 8190",
+        reason: "TEREDO — an IPv4-in-IPv6 tunneling scheme; the embedded \
+                  client address is NOT unwrapped and re-checked the way the \
+                  IPv4-mapped/NAT64 entries above are, because a Teredo \
+                  address XOR-obfuscates the sending NAT's public IPv4 \
+                  against a fixed constant rather than embedding it plainly \
+                  — blocking the whole prefix is the only sound option \
+                  without a dedicated decoder. Globally Reachable: N/A, \
+                  treated as non-routable per the INCLUSION RULE comment \
+                  above V4_BLOCKED",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 1, 0, 0, 0, 0, 0, 1],
+        prefix_len: 128,
+        rfc: "RFC 7723",
+        reason: "PCP Anycast. Globally Reachable: True per the registry, \
+                  but an anycast address resolves to the NEAREST responder \
+                  — typically a device on the requester's own network or \
+                  its provider's edge, the exact internal-reachability \
+                  vector this guard exists to close — so it is Blocked \
+                  despite the registry's reachability flag",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 1, 0, 0, 0, 0, 0, 2],
+        prefix_len: 128,
+        rfc: "RFC 8155",
+        reason: "TURN Anycast. Globally Reachable: True per the registry, \
+                  but see PCP Anycast's reason above — anycast resolution \
+                  to the nearest responder is the same guard-defeating \
+                  property regardless of the protocol",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 1, 0, 0, 0, 0, 0, 3],
+        prefix_len: 128,
+        rfc: "RFC 9665",
+        reason: "DNS-SD Service Registration Protocol Anycast. Globally \
+                  Reachable: True per the registry; see PCP Anycast's \
+                  reason above for why an anycast entry is Blocked anyway",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 2, 0, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 5180",
+        reason: "Benchmarking — the IPv6 analog of V4_BLOCKED's 198.18/15; \
+                  routable in principle, never a legitimate fetch target",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 3, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 7450",
+        reason: "AMT relay/gateway addressing. Globally Reachable: True per \
+                  the registry, but AMT relays are anycast — see PCP \
+                  Anycast's reason above for why that is Blocked anyway",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 4, 0x0112, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 7535",
+        reason: "AS112-v6 anycast sink. Globally Reachable: True per the \
+                  registry, but see PCP Anycast's reason above — anycast \
+                  resolution to the nearest responder is Blocked here too",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0010, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 4843",
+        reason: "Deprecated (previously ORCHID). Globally Reachable: N/A, \
+                  treated as non-routable per the INCLUSION RULE comment \
+                  above V4_BLOCKED",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0020, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 7343",
+        reason: "ORCHIDv2. Globally Reachable: True per the registry, but \
+                  this is cryptographic IDENTIFIER space, not a host \
+                  address — nothing here ever serves web content, so it is \
+                  Blocked despite the registry's reachability flag",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0030, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 9374",
+        reason: "Drone Remote ID Protocol Entity Tags (DETs). Globally \
+                  Reachable: True per the registry; see ORCHIDv2's reason \
+                  above — identifier space, not a host, Blocked anyway",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 3849",
+        reason: "Documentation",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2002, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 16,
+        rfc: "RFC 3056",
+        reason: "6to4 — an arbitrary v4 is encapsulated in bits 16-48, so \
+                  the whole prefix is blocked rather than unwrapped. \
+                  Globally Reachable: N/A, treated as non-routable per the \
+                  INCLUSION RULE comment above V4_BLOCKED",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2620, 0x004f, 0x8000, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 7534",
+        reason: "Direct Delegation AS112 Service. Globally Reachable: True \
+                  per the registry, but see PCP Anycast's reason above — \
+                  an AS112 delegation is anycast, Blocked here too",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x3fff, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 20,
+        rfc: "RFC 9637",
+        reason: "Documentation",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x5f00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 16,
+        rfc: "RFC 9602",
+        reason: "Segment Routing (SRv6) SIDs",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xfc00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 7,
+        rfc: "RFC 4193, RFC 8190",
+        reason: "Unique-Local",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xfe80, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 10,
+        rfc: "RFC 4291",
+        reason: "Link-Local Unicast",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xff00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 8,
+        rfc: "RFC 4291",
+        reason: "multicast — tracked in the separate IANA IPv6 Multicast \
+                  Address Space Registry, not the special-purpose one; \
+                  included here for the same reason the IPv4-compatible \
+                  ::/96 form is (see the SOURCE note on V6_RANGES)",
+        disposition: V6Disposition::Blocked,
+    },
+];
+
+/// Whether `ip`'s segments fall inside `network`/`prefix_len` (0..=128),
+/// comparing 16 bits at a time so a prefix that splits unevenly across a
+/// segment boundary (e.g. a `/28`) still masks correctly.
+fn ipv6_in_cidr(ip: [u16; 8], network: [u16; 8], prefix_len: u32) -> bool {
+    let mut remaining = prefix_len;
+    for i in 0..8 {
+        if remaining == 0 {
+            return true;
+        }
+        let seg_bits = remaining.min(16);
+        let mask: u16 = if seg_bits == 16 {
+            0xffff
+        } else {
+            !(0xffffu16 >> seg_bits)
+        };
+        if (ip[i] & mask) != (network[i] & mask) {
+            return false;
+        }
+        remaining -= seg_bits;
     }
-    // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052). Same unwrap-and-recheck.
-    if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
-        return is_blocked_ipv4(embedded_v4(s));
+    true
+}
+
+/// Selects the `ranges` entry that governs `segments`: the MOST SPECIFIC
+/// containing entry (the longest `prefix_len` among every entry that
+/// contains the address), the registry's own semantics. The registry nests
+/// (see the SOURCE note on `V6_RANGES`), so a first-match or any-match scan
+/// could resolve a `V6Disposition::UnwrapV4` entry to its covering
+/// `Blocked` parent's disposition instead of its own, skipping the
+/// embedded-address recheck entirely — or, with the nesting the other way
+/// round, resolve a narrow `Blocked` entry to its covering `UnwrapV4`
+/// parent and let a public embedded address through. The table is a
+/// parameter so this rule is testable against a fixture that nests the two
+/// dispositions both ways, which the real registry never does: every
+/// `V6_RANGES` nesting is `Blocked` inside `Blocked`, where any selection
+/// order gives the same verdict.
+fn select_v6_range(segments: [u16; 8], ranges: &[V6Range]) -> Option<&V6Range> {
+    ranges
+        .iter()
+        .filter(|r| ipv6_in_cidr(segments, r.network, r.prefix_len))
+        .max_by_key(|r| r.prefix_len)
+}
+
+/// Whether `ip` is refused under `ranges`, per the disposition of the entry
+/// `select_v6_range` picks for it; an address in no entry is allowed.
+fn is_blocked_ipv6_in(ip: Ipv6Addr, ranges: &[V6Range]) -> bool {
+    let s = ip.segments();
+    let Some(r) = select_v6_range(s, ranges) else {
+        return false;
+    };
+    // Cites the matched registry entry so a rejected preview fetch is
+    // auditable from logs alone, not just from this table.
+    tracing::trace!(%ip, rfc = r.rfc, reason = r.reason, "matched V6_RANGES entry");
+    match r.disposition {
+        V6Disposition::Blocked => true,
+        V6Disposition::UnwrapV4 => is_blocked_ipv4(embedded_v4(s)),
     }
-    if ip.is_unspecified() {
-        return true; // ::/128, RFC 4291
-    }
-    if ip.is_loopback() {
-        return true; // ::1/128, RFC 4291
-    }
-    // ::/96 IPv4-compatible (deprecated, RFC 4291 §2.5.5.1). `::` and `::1` are
-    // already returned above; any remaining address with an all-zero high 96
-    // bits embeds a v4 in segments 6-7 — unwrap and re-check through the v4
-    // rules, mirroring the ::ffff:0:0/96 mapped-address handling above (e.g.
-    // ::127.0.0.1 must stay blocked).
-    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
-        return is_blocked_ipv4(embedded_v4(s));
-    }
-    if s[0] == 0x2002 {
-        return true; // 2002::/16 6to4 (deprecated, RFC 7526) — an arbitrary v4
-                     // is encapsulated in bits 16-48, so block the prefix wholesale
-    }
-    if s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
-        return true; // 100::/64 discard-only, RFC 6666
-    }
-    if s[0] == 0x2001 && s[1] == 0x0db8 {
-        return true; // 2001:db8::/32 documentation, RFC 3849
-    }
-    if (s[0] & 0xfe00) == 0xfc00 {
-        return true; // fc00::/7 unique-local, RFC 4193
-    }
-    if (s[0] & 0xffc0) == 0xfe80 {
-        return true; // fe80::/10 link-local, RFC 4291
-    }
-    if (s[0] & 0xff00) == 0xff00 {
-        return true; // ff00::/8 multicast, RFC 4291
-    }
-    false
+}
+
+/// Whether `ip` is in a `V6_RANGES` entry — `is_blocked_ipv6_in` over the
+/// registry table. Every entry there is `Blocked` (see the INCLUSION RULE
+/// comment above `V4_BLOCKED` for why nothing is ever excluded) except the
+/// three `V6Disposition::UnwrapV4` translation entries.
+fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    is_blocked_ipv6_in(ip, V6_RANGES)
 }
 
 /// Extracts the embedded IPv4 address from the low 32 bits of a `/96`-mapped
@@ -563,8 +1192,9 @@ fn embedded_v4(segments: [u16; 8]) -> Ipv4Addr {
 }
 
 /// True if `ip` must never be connected to by the preview fetcher. See the
-/// module-level `V4_BLOCKED` table and `is_blocked_ipv6` for the exact,
-/// RFC-cited ranges.
+/// module-level `V4_BLOCKED` and `V6_RANGES` tables for the exact, RFC-cited
+/// ranges and the INCLUSION RULE comment above `V4_BLOCKED` for what
+/// determines membership.
 pub fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(v4),
@@ -904,17 +1534,22 @@ async fn fetch_preview_inner(
 }
 
 /// Fetches `raw_url` through the SAME SSRF-guarded pipeline `fetch_preview`
-/// uses (`guarded_get`), gated on an `image/*` Content-Type. Used by the
-/// post-publish image background pipeline (`post_publish`) -- never on the
-/// synchronous send/edit request path.
+/// uses (`guarded_get`), gated on an `image/*` Content-Type and `max_bytes`.
+/// Used by the post-publish image background pipeline (`post_publish`) --
+/// never on the synchronous send/edit request path. Callers pass
+/// `MAX_IMAGE_BYTES` for a link-preview/oEmbed thumbnail or
+/// `MAX_INLINE_IMAGE_BYTES` for a full-size inline chat image -- the two
+/// pipelines share this one guarded fetch but differ on how large a "small
+/// thumbnail" vs. "message's own content" is allowed to be.
 pub async fn fetch_image_bytes(
     client: &reqwest::Client,
     raw_url: &str,
     deadline: Duration,
+    max_bytes: usize,
 ) -> Result<(String, Vec<u8>), PreviewError> {
     match tokio::time::timeout(
         deadline,
-        guarded_get(client, raw_url, ExpectedContentType::Image, MAX_IMAGE_BYTES),
+        guarded_get(client, raw_url, ExpectedContentType::Image, max_bytes),
     )
     .await
     {

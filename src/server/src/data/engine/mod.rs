@@ -11,9 +11,11 @@
 pub mod asset_folder;
 pub mod combat;
 pub mod geometry;
+pub mod note;
 pub mod registries;
 pub mod scene;
 pub mod system_defaults;
+pub mod table;
 pub mod token;
 
 pub use combat::{
@@ -28,6 +30,7 @@ pub use geometry::{
     Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallElevation,
     WallEngine, MAX_TRIGGER_ID_CHARS,
 };
+pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
     ConditionRegistryEngine, DiceDirectionSetting, DiceModeSetting, DiceSettingsEngine, Faction,
@@ -43,6 +46,7 @@ pub use scene::{
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
 };
+pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
     Size, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
@@ -122,6 +126,8 @@ pub fn is_engine_doc_type(doc_type: &str) -> bool {
             | "system-defaults"
             | "combat-history"
             | "asset_folder"
+            | "table"
+            | "note"
     )
 }
 
@@ -329,6 +335,25 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
             Ok(serde_json::to_value(typed)?)
         }
         "asset_folder" => round_trip::<asset_folder::AssetFolderEngine>(v, "asset_folder"),
+        "table" => {
+            let typed: TableEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("table: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("table: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "note" => {
+            let mut typed: NoteEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("note: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("note: {m}")))?;
+            typed
+                .derive_body()
+                .map_err(|m| DataError::BadEngine(format!("note: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
     }
 }
@@ -349,7 +374,7 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
 /// let doc: Document = serde_json::from_value(serde_json::json!({
 ///     "id": "00000000-0000-0000-0000-000000000001",
 ///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
-///     "doc_type": "note",
+///     "doc_type": "item",
 ///     "schema_version": 1,
 ///     "system": {},
 ///     "created_at": 0,

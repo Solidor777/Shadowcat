@@ -291,6 +291,20 @@ export interface ChatSendOptions {
   audience?: WireAudience;
 }
 
+/** Options for `WsClient.drawTable`. */
+export interface DrawTableOptions {
+  /** The table document to draw from. */
+  tableId: string;
+  /** The chat channel to post the resulting message into. */
+  channel: string;
+  /** Number of top-level draws; defaults to 1 server-side when omitted. */
+  count?: number;
+  /** Optional actor attribution; sent as `null` when omitted. */
+  actorOwner?: WireActorOwnerRef | null;
+  /** Recipient scoping; defaults to `{ kind: "public" }`. */
+  audience?: WireAudience;
+}
+
 /** The handler set a `WsClient` dispatches inbound frames to; every member is a callback the
  * client invokes, never one it calls itself. */
 export interface WsClientHandlers {
@@ -1586,6 +1600,39 @@ export class WsClient {
     const request_id = crypto.randomUUID();
     const p = this.trackChatOp(request_id);
     this.send({ type: "recalc_roll", request_id, message_id: messageId, roll_id: rollId, ops });
+    return p;
+  }
+
+  /** Draw one or more rows from a `table` document, posted as one chat message.
+   * Resolves/rejects like `sendChatMessage`; a refusal (unknown table, no READ,
+   * cycle, etc.) rejects via a correlated `chat_error`.
+   * @param opts Draw options.
+   * @returns Resolves (void) once the draw is accepted; rejects with the
+   * server's player-presentable reason otherwise.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * await client.drawTable({ tableId: "t1", channel: "general" });
+   * ```
+   */
+  drawTable(opts: DrawTableOptions): Promise<void> {
+    const request_id = crypto.randomUUID();
+    const p = this.trackChatOp(request_id);
+    this.send({
+      type: "draw_table",
+      request_id,
+      table_id: opts.tableId,
+      channel: opts.channel,
+      count: opts.count ?? 1,
+      actor_owner: opts.actorOwner ?? null,
+      audience: opts.audience ?? { kind: "public" },
+    });
     return p;
   }
 

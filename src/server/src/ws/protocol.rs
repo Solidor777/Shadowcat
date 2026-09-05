@@ -20,6 +20,11 @@ use crate::data::command::{Command, Operation};
 use crate::data::search::SearchHit;
 use crate::merge::MergeConflict;
 
+/// Default `ClientMsg::DrawTable.count` when the field is omitted on the wire.
+fn default_draw_count() -> u32 {
+    1
+}
+
 /// Client -> server frames.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
@@ -220,6 +225,28 @@ pub enum ClientMsg {
         roll_id: Uuid,
         /// The targeted mutation(s) to apply.
         ops: Vec<WireRecalcOp>,
+    },
+    /// Draw one or more rows from a `table` document, posted as ONE
+    /// `MessageKind::Roll` message (`Segment::TableDraw`, recursive through
+    /// any nested draws). Same asymmetric reply protocol as `SendMessage`;
+    /// a refusal (unknown table, no READ, cycle, etc.) is a correlated
+    /// `ChatError` to the sender only. See `tables::handle_draw_table`.
+    DrawTable {
+        /// Correlation token for a `ChatError` rejection.
+        request_id: Uuid,
+        /// The table to draw from.
+        table_id: Uuid,
+        /// Target channel id.
+        channel: String,
+        /// Number of top-level draws (`1..=tables::MAX_TOP_LEVEL_DRAWS`).
+        #[serde(default = "default_draw_count")]
+        count: u32,
+        /// Optional in-character attribution (authz-checked server-side).
+        #[serde(default)]
+        actor_owner: Option<ActorOwnerRef>,
+        /// Visibility policy (public / gm-only / whisper).
+        #[serde(default)]
+        audience: Audience,
     },
     /// Activate a combat: pauses any other active combat on its scene in the same command;
     /// a combat with `turn == None` initializes (round 1, first turn), one with a turn resumes.

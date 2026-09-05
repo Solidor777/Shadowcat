@@ -2324,13 +2324,15 @@ impl SqliteRepository {
     /// covering the checks that need the database or the batch bookkeeping:
     /// a stored parent must belong to this command's world
     /// (`check_command_scope`), a `combatant`/`combat-history` parent must be
-    /// a combat (batch-aware), and an `asset_folder` parent must be a
-    /// same-scope folder (`check_asset_folder_parent`, batch-aware). A parent
-    /// this same batch Creates is not in the database yet — it resolves
-    /// through the batch maps, and its own Create was scope-checked; a parent
-    /// that exists nowhere yet is left to the self-FK at apply time, so
-    /// batched parent+child creates still pass. `validate_containment` (pure
-    /// placement shape) runs separately at every caller.
+    /// a combat (batch-aware), an `asset_folder` parent must be a
+    /// same-scope folder (`check_asset_folder_parent`, batch-aware), and a
+    /// `note` parent must be a same-scope note (`check_note_parent`,
+    /// batch-aware). A parent this same batch Creates is not in the database
+    /// yet — it resolves through the batch maps, and its own Create was
+    /// scope-checked; a parent that exists nowhere yet is left to the
+    /// self-FK at apply time, so batched parent+child creates still pass.
+    /// `validate_containment` (pure placement shape) runs separately at
+    /// every caller.
     async fn check_parent_placement(
         tx: &mut sqlx::SqliteConnection,
         world_id: Uuid,
@@ -2370,6 +2372,7 @@ impl SqliteRepository {
             }
         }
         Self::check_asset_folder_parent(&mut *tx, doc, batch_folders).await?;
+        Self::check_note_parent(&mut *tx, doc, batch_folders).await?;
         Ok(())
     }
 
@@ -3123,9 +3126,13 @@ impl Repository for SqliteRepository {
         // the combatant-parentage check without a DB round trip that would
         // see nothing yet inserted.
         let mut batch_combats: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-        // `batch_folders` plays the same role for `asset_folder` documents: a
-        // folder Created earlier in this batch is a valid parent for a later
-        // one, and `check_asset_folder_parent` walks through it for cycles.
+        // `batch_folders` plays the same role for `asset_folder` AND `note`
+        // documents (a mixed-doc_type map keyed by id, since ids are unique
+        // regardless of type): a folder/note Created earlier in this batch is
+        // a valid parent for a later one, and `check_asset_folder_parent`/
+        // `check_note_parent` — plus `check_move_acyclic`'s cycle walk, shared
+        // across every doc_type that supports a parent tree — resolve through
+        // it before falling back to the database.
         let mut batch_folders: std::collections::HashMap<Uuid, Document> =
             std::collections::HashMap::new();
         // `batch_moves` records the PROSPECTIVE parent of each Move already
@@ -3416,6 +3423,16 @@ impl Repository for SqliteRepository {
                     validation::validate_system_size(doc)?;
                     validation::validate_property_overrides(doc)?;
                     validation::validate_engine_tree(doc)?;
+                    // Re-checked AFTER `validate_engine_tree`: for a `note`
+                    // document that call replaces `doc.engine` with the
+                    // SERVER-DERIVED body (`NoteEngine::derive_body`), and the
+                    // cap above ran against the client's pre-derivation
+                    // payload (an empty `body: []`), not the value that is
+                    // actually about to be stored, written to `world_events`,
+                    // and broadcast. Reusing `validate_system_size` (rather
+                    // than a second size rule) keeps ONE cap statement that
+                    // now covers both the submitted and the derived shape.
+                    validation::validate_system_size(doc)?;
                     validation::validate_containment(doc)?;
                     Self::check_parent_placement(
                         &mut tx,
@@ -3425,7 +3442,9 @@ impl Repository for SqliteRepository {
                         &batch_combats,
                     )
                     .await?;
-                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE {
+                    if doc.doc_type == crate::data::engine::ASSET_FOLDER_DOC_TYPE
+                        || doc.doc_type == crate::data::engine::NOTE_DOC_TYPE
+                    {
                         batch_folders.insert(doc.id, doc.clone());
                     }
                     if doc.doc_type == COMBAT_DOC_TYPE {
@@ -4119,6 +4138,15 @@ impl Repository for SqliteRepository {
                     // `doc.engine` in place to the re-serialized validated
                     // struct — see `validate_engine_tree`'s doc comment).
                     validation::validate_engine_tree(&mut doc)?;
+                    // Re-checked AFTER `validate_engine_tree`: for a `note`
+                    // document that call replaces `doc.engine` with the
+                    // SERVER-DERIVED body (`NoteEngine::derive_body`), so the
+                    // cap above ran against the merged pre-derivation
+                    // payload, not the value about to be stored, written to
+                    // `world_events`, and broadcast. Reusing
+                    // `validate_system_size` keeps ONE cap statement that now
+                    // covers both the merged and the derived shape.
+                    validation::validate_system_size(&doc)?;
                     validation::validate_containment(&doc)?;
                     // One-active-combat-per-scene is validated ONLY in Phase
                     // 1 (see `apply_intent`'s Update arm there, and the
@@ -4644,6 +4672,10 @@ impl Repository for SqliteRepository {
     ) -> Result<(), DataError> {
         SqliteRepository::set_link_preview_cache_image(self, url, image_asset_id).await
     }
+
+    async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
+        SqliteRepository::get_asset(self, id).await
+    }
 }
 
 /// Settings key holding a world's default capability grants (JSON).
@@ -4686,6 +4718,7 @@ fn world_settings_keys(world: Uuid) -> [String; 5] {
 }
 
 mod assets;
+mod notes;
 
 #[cfg(test)]
 mod tests;

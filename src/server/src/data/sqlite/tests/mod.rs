@@ -171,6 +171,15 @@ pub(super) fn folder_doc(id: u128, world: Uuid, name: &str, parent: Option<Uuid>
     d
 }
 
+/// A `note` document with `source` under `parent`.
+pub(super) fn note_doc(id: u128, world: Uuid, source: &str, parent: Option<Uuid>) -> Document {
+    let mut d = world_doc(id, world, serde_json::json!({}));
+    d.doc_type = "note".into();
+    d.parent_id = parent;
+    d.engine = Some(serde_json::json!({ "source": source, "body": [], "sort": 0 }));
+    d
+}
+
 /// A GM-owned world plus its GM `PermissionContext`.
 pub(super) async fn gm_world(
     repo: &SqliteRepository,

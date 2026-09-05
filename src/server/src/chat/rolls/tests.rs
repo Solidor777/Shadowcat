@@ -2,6 +2,12 @@ use super::*;
 use crate::dice::notation::ModeKind;
 use crate::dice::spec::Direction;
 
+/// Test-only convenience: `scan_body_capped` at the production cap, mirroring
+/// the sole production call site (`body::compose_message`).
+fn scan_body(body: &str) -> Result<Vec<BodyChunk<'_>>, RollError> {
+    scan_body_capped(body, MAX_INLINE_ROLLS)
+}
+
 fn total_ctx() -> ParseContext {
     ParseContext {
         mode: ModeKind::Total,
@@ -462,10 +468,15 @@ fn roll_error_display_has_no_debug_artifacts() {
             crate::formula::FormulaErrorKind::UnknownRef,
             "unknown reference 'stats.str'",
         )),
+        RollError::MalformedAssetSpan,
+        RollError::UnknownAsset,
+        RollError::ImagesDisabled,
+        RollError::AltTooLong,
+        RollError::TableNeedsTotal,
     ];
     assert_eq!(
         variants.len(),
-        10,
+        15,
         "update this test if a RollError variant is added or removed"
     );
     for v in variants {

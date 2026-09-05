@@ -349,7 +349,7 @@ export const docLinkTargetSchemaImpl = z.discriminatedUnion("kind", [
 /** Validator for a `DocLinkTarget`. */
 export const DocLinkTargetSchema: z.ZodType<DocLinkTarget> = docLinkTargetSchemaImpl;
 
-/** One piece of a message's sanitized content model — one of the seven known segment
+/** One piece of a message's sanitized content model — one of the nine known segment
  * kinds. Mirrors `chat::Segment`. `html.sanitized_html` is innerHTML-safe ONLY because
  * the server's `chat::sanitize` (ammonia) produced it — no client code may construct one.
  * `roll_embed.outcome` is a completed, immutable roll's full deterministic result;
@@ -457,12 +457,91 @@ export type ChatSegment =
       target: DocLinkTarget;
       /** Display text captured at authoring time. */
       label: string;
-    };
+    }
+  | {
+      /** An image: a `[[asset:<uuid>|alt]]` span the author placed, or a
+       * Markdown/HTML image URL the server fetched and asset-ified. The
+       * client never receives a raw external URL for this segment kind —
+       * it renders via `ctx.assets.url(asset_id, ...)`, the server's own
+       * asset endpoint, exactly like `link_preview.image_asset_id`. */
+      kind: "image";
+      /** The asset id to render, resolved server-side. */
+      asset_id: string;
+      /** Alt text, plain data (never markup) — may be empty. */
+      alt: string;
+    }
+  | TableDrawSegment;
+
+/** One executed table draw, recursive through any nested draws it fanned
+ * out. Produced only by a server-side `draw_table` frame. `spec`/`raw` are
+ * GM-only at every depth, same redaction as `roll_embed`. Declared as its
+ * own named type (rather than a `ChatSegment` union member inline) so
+ * `DrawnRow.nested` can reference it directly — a `ChatSegment` narrowed
+ * back out via `Extract<...>` cannot be documented by TypeDoc. */
+export type TableDrawSegment = {
+  /** Discriminant. */
+  kind: "table_draw";
+  /** The table drawn from. */
+  table_id: string;
+  /** The table's envelope name at draw time (`""` when the table has none). */
+  table_name: string;
+  /** Stable identity for this draw (mirrors `roll_embed.roll_id`'s role) —
+   * NOT a recalc target. */
+  roll_id: string;
+  /** The notation actually rolled. */
+  formula: string;
+  /** The full deterministic outcome of the roll that selected a row. */
+  outcome: RollOutcome;
+  /** GM-visible only: the parsed spec the row-selecting roll was scored from. */
+  spec?: unknown;
+  /** GM-visible only: the natural-face log the row-selecting roll was evaluated from. */
+  raw?: WireRawRoll | null;
+  /** The matched row, or `null`/absent when a Formula total matched no range. */
+  row?: DrawnRow | null;
+};
+
+/** The row a table draw matched, and everything it yielded. Mirrors
+ * `chat::DrawnRow`. Recursive through `nested` (each nested draw's own `row`
+ * can itself carry further nested draws). */
+export type DrawnRow = {
+  /** The matched row's index into the table's `rows` at draw time. */
+  index: number;
+  /** The matched row's label at draw time. */
+  label: string;
+  /** The row's `results` rendered to segments (recursive: may itself contain
+   * `table_draw` segments only via `nested`, never inline — a `Draw` entry's
+   * fan-out always lands in `nested`, not `content`). */
+  content: (ChatSegment | UnknownSegment)[];
+  /** One entry per nested draw this row's `Draw` entries triggered, in
+   * `results` order then `count` order. */
+  nested: TableDrawSegment[];
+};
 
 // Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
 // The union-narrowing case this pattern guards against is exactly what a segment-kind arm
 // removal or a `kind: z.literal(...)` narrowing inside one would be.
-export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
+/** Validator for a `TableDrawSegment`; `z.lazy` since it recurses (via
+ * `row.nested`) back into itself. Declared ahead of `chatSegmentSchemaImpl`
+ * so the discriminated union can reference it directly. */
+const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unknown> = z.lazy(() =>
+  z.object({
+    kind: z.literal("table_draw"),
+    table_id: z.string(),
+    table_name: z.string(),
+    roll_id: z.string(),
+    formula: z.string(),
+    outcome: RollOutcomeSchema,
+    spec: z.unknown().optional(),
+    raw: WireRawRollSchema.nullish(),
+    row: drawnRowSchemaImpl.nullish(),
+  }),
+);
+
+// `z.discriminatedUnion` requires every member to be a `ZodObject`; the
+// recursive `table_draw` arm is a `z.lazy(...)` `ZodType` and cannot join
+// that union directly, so it is unioned in separately over the
+// discriminated union of the other eight (non-recursive) kinds.
+const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
   z.object({
@@ -491,15 +570,31 @@ export const chatSegmentSchemaImpl = z.discriminatedUnion("kind", [
     thumbnail_asset_id: z.string().nullish(),
   }),
   z.object({ kind: z.literal("doc_link"), target: DocLinkTargetSchema, label: z.string() }),
+  z.object({ kind: z.literal("image"), asset_id: z.string(), alt: z.string() }),
+]);
+export const chatSegmentSchemaImpl = z.union([
+  nonRecursiveChatSegmentSchemaImpl,
+  tableDrawSegmentSchemaImpl,
 ]);
 /** Validator for a `ChatSegment`. Input type is widened to `unknown` because the
  * `roll_embed` arm's `outcome: RollOutcomeSchema` inherits `RollOutcomeSchema`'s
  * own widened input (see that schema's doc). */
 export const ChatSegmentSchema: z.ZodType<ChatSegment, z.ZodTypeDef, unknown> = chatSegmentSchemaImpl;
+
+/** Validator for a `DrawnRow`; `z.lazy` since it recurses through
+ * `nested: TableDrawSegment[]` back into itself via `tableDrawSegmentSchemaImpl`. */
+export const drawnRowSchemaImpl: z.ZodType<DrawnRow, z.ZodTypeDef, unknown> = z.lazy(() =>
+  z.object({
+    index: z.number(),
+    label: z.string(),
+    content: SegmentListSchema,
+    nested: z.array(tableDrawSegmentSchemaImpl),
+  }),
+);
 /** Forward-compat: a segment kind this client doesn't know (e.g. a future server-added kind)
  * parses as opaque and renders as nothing — the message still shows.
  * INVARIANT: refuses every KNOWN kind — without this, a malformed
- * text/html/roll_embed/roll_button/link_preview/oembed/doc_link segment (missing/wrong-typed
+ * text/html/roll_embed/roll_button/link_preview/oembed/doc_link/image/table_draw segment (missing/wrong-typed
  * payload) would be rescued by this fallback and then misclassified as
  * trustworthy by isKnownSegment, breaking fail-closed. */
 const UnknownSegmentSchema = z
@@ -513,18 +608,24 @@ const UnknownSegmentSchema = z
       s.kind !== "roll_button" &&
       s.kind !== "link_preview" &&
       s.kind !== "oembed" &&
-      s.kind !== "doc_link",
+      s.kind !== "doc_link" &&
+      s.kind !== "image" &&
+      s.kind !== "table_draw",
   );
 /** The inferred TS shape of `UnknownSegmentSchema` — a forward-compat, not-yet-known segment kind. */
 export type UnknownSegment = z.infer<typeof UnknownSegmentSchema>;
-const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
+/** A segment list under the same known-or-forward-compat-opaque rule `ChatMessageEngine.content`
+ * uses. Exported so another document body composed of the same segment grammar (e.g. a note's
+ * `body`, see `note-docs.ts`'s `parseNoteBody`) validates against the identical shape rather than
+ * a re-spelled copy. */
+export const SegmentListSchema = z.array(z.union([ChatSegmentSchema, UnknownSegmentSchema]));
 
 /** Narrows a parsed segment to a known `ChatSegment` kind. See the type guard's
  * companion `UnknownSegmentSchema` note: this fallback deliberately refuses
  * every known `kind` string, so a malformed known-kind segment fails the
  * whole message rather than being misclassified as trustworthy here.
  * @param s The parsed segment (known or opaque forward-compat).
- * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`.
+ * @returns `true` if `s.kind` is one of `text`/`html`/`roll_embed`/`roll_button`/`link_preview`/`oembed`/`doc_link`/`image`/`table_draw`.
  * @example
  * ```ts
  * import { isKnownSegment } from "@shadowcat/core";
@@ -540,7 +641,9 @@ export function isKnownSegment(s: ChatSegment | UnknownSegment): s is ChatSegmen
     s.kind === "roll_button" ||
     s.kind === "link_preview" ||
     s.kind === "oembed" ||
-    s.kind === "doc_link"
+    s.kind === "doc_link" ||
+    s.kind === "image" ||
+    s.kind === "table_draw"
   );
 }
 

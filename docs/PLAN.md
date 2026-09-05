@@ -62,17 +62,16 @@ per-token built-in fx (condition-driven + selection highlight), emote overlays, 
 tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX PLAYBACK remains
 Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
-### M19 · Tables, notes + chat media
-- Rollable tables on the dice engine + document model (weighted rows, nested draws, results to
-  chat as roll embeds).
-- Rich-text notes on the document model (journal-style documents; reuse the chat sanitizer
-  boundary and `Segment::DocLink` for cross-references).
-- Chat media linking: images; YouTube as thumbnail + external link only — no IFrame / Data API.
-
 ### M20 · Full default module suite
 - Every table-facing default module the dogfood alpha lacks, shipped as `src/modules/*` packages
   over the M14–M19 seams (combat tracker UI, asset browser UI, table/notes sheets, emitter
   editors), each independently replaceable.
+- Table and notes sheets build on the seams M19 shipped: `@shadowcat/ui-kit`'s `SegmentList` (the
+  recursive segment renderer, moved out of `module-chat-card`, that a note sheet reuses to render
+  `parseNoteBody`'s output and a table sheet reuses for row previews), `@shadowcat/core`'s
+  `buildTableDoc`/`buildNoteDoc` document builders, and `ChatApi.drawTable` for the table sheet's
+  draw affordance — none of M19's own e2e exercises the sheets themselves (M19's e2e is the
+  WS-level suite; the sheet-driven UI flows are this milestone's).
 - The suite is the second internal-module exercise of the API surface toward the Phase-4 freeze
   gate.
 

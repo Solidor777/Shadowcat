@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+mod body;
 mod commands;
 mod host;
 mod link_preview;
@@ -48,7 +49,7 @@ mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
 pub use link_preview::{
     build_client as build_link_preview_client, enrich as enrich_link_previews, fetch_preview,
-    LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
+    EnrichDeps, LinkPreview, LinkPreviewDeps, PreviewError, MAX_PREVIEWS_PER_MESSAGE,
 };
 pub use oembed::{
     match_provider as match_oembed_provider, OEmbedProvider, OEmbedResponse, OEmbedSegment,
@@ -60,11 +61,13 @@ pub use preview_cache::{
     LinkPreviewCache, PreviewRateLimiter, MAX_CACHE_ENTRIES, NEGATIVE_TTL, POSITIVE_TTL,
     PREVIEW_FETCH_PER_MIN,
 };
-pub use sanitize::sanitize;
+pub use sanitize::{sanitize, ImageSource, Sanitized};
 pub use settings::{
     channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
-    CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE,
+    CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, NOTE_CONTENT_POLICY,
 };
+
+pub(crate) use body::compose_static;
 
 use crate::data::command::{Command, FieldChange, Operation, WriteOrigin};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, Visibility, WorldRole};
@@ -249,7 +252,7 @@ pub enum Segment {
         /// recalculate it. `None` for any roll embedded before this field existed
         /// -- `handle_recalc_roll` refuses `NoStoredState` on `None`, never
         /// guesses a spec back from `outcome`. GM-visible only (see
-        /// `roll_embed_property_overrides`). Boxed: `RollSpec` is large enough
+        /// `roll_property_overrides`). Boxed: `RollSpec` is large enough
         /// that an unboxed `Option<RollSpec>` here would make `RollEmbed` the
         /// dominant variant of `Segment` by a wide margin
         /// (`clippy::large_enum_variant`); `Box` keeps the wire shape identical
@@ -316,7 +319,7 @@ pub enum Segment {
     /// display label at authoring time (`label` is never re-resolved at render — only the
     /// fail-closed existence/visibility gate below re-checks `target`). Distinct from the
     /// actor-name header link, which is driven by `actor_owner` attribution, not body content.
-    /// Produced by `chat::rolls::scan_body`'s `doc:`/`token:` prefix branch — reuses the SAME
+    /// Produced by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix branch — reuses the SAME
     /// balanced `[[...]]` span mechanism as `RollEmbed`/`RollButton`, not a new one. No
     /// existence/visibility check runs against `target` at ingest: the CLIENT fails closed at
     /// render by checking `ctx.documents` presence for the target id (already redacted
@@ -329,14 +332,92 @@ pub enum Segment {
         /// Rendering never re-resolves a live name lookup for this field.
         label: String,
     },
+    /// An image served exclusively through THIS server's own asset endpoint —
+    /// the sanitizer never emits an `<img>` carrying a raw `src` (see
+    /// `chat::sanitize`'s module doc), so this is the only way an image ever
+    /// reaches chat: authored via a `[[asset:<uuid>|alt]]` span (this
+    /// variant, `chat::rolls::parse_ref_span`'s `asset:` arm), or fetched
+    /// server-side from an external URL and asset-ified post-publish
+    /// (`chat::post_publish::resolve_inline_image`, which appends a fresh
+    /// one of these). Produced ONLY by `chat::body::compose_message`'s
+    /// `Image` arm and `resolve_inline_image` — never by the sanitizer.
+    Image {
+        /// The asset this segment renders, world-pinned at authoring time
+        /// (`asset_id`'s `Asset.world_id` must equal the sending room's
+        /// world -- `RollError::UnknownAsset` otherwise).
+        asset_id: Uuid,
+        /// Alt text captured at authoring time (plain data, never markup).
+        /// Empty when the span carried no `|alt` suffix.
+        alt: String,
+    },
+    /// One executed table draw, recursive through any nested draws it fanned
+    /// out. Produced ONLY by `crate::tables::draw::draw_table`. `spec`/`raw`
+    /// are GM-only at every depth (see `roll_property_overrides`'s
+    /// `push_draw_overrides`), mirroring `RollEmbed`'s own GM-only fields.
+    TableDraw(TableDrawSegment),
 }
+
+/// One executed table draw. See `Segment::TableDraw`'s doc for the recursion
+/// and visibility rules.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TableDrawSegment {
+    /// The table drawn from.
+    pub table_id: Uuid,
+    /// The table's envelope `name` at draw time (`""` when the table has
+    /// none); never re-resolved after the draw.
+    pub table_name: String,
+    /// Stable identity for this draw, mirroring `RollEmbed.roll_id`'s role --
+    /// NOT a `handle_recalc_roll` target (a table draw is not recalculable).
+    pub roll_id: Uuid,
+    /// The notation actually rolled: `1d<sum>` for `DrawRule::Weighted`, or
+    /// the table's own notation for `DrawRule::Formula`.
+    pub formula: String,
+    /// The full deterministic outcome of the roll that selected a row.
+    pub outcome: RollOutcome,
+    /// The parsed spec the row-selecting roll was scored from. GM-visible only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spec: Option<Box<RollSpec>>,
+    /// The natural-face roll log the row-selecting roll was evaluated from.
+    /// GM-visible only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw: Option<Box<RawRoll>>,
+    /// The matched row, or `None` when a `DrawRule::Formula` total matched no
+    /// row's range (rendered "no matching row").
+    pub row: Option<DrawnRow>,
+}
+
+/// The row a table draw matched, and everything it yielded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DrawnRow {
+    /// The matched row's index into `TableEngine.rows` at draw time.
+    pub index: usize,
+    /// The matched row's `label` at draw time.
+    pub label: String,
+    /// The row's `results` rendered to segments (`TableEntry::Text` ->
+    /// sanitized under the world's chat policy, `Doc` -> `Segment::DocLink`,
+    /// `Image` -> `Segment::Image`; a `Draw` entry contributes its fan-out to
+    /// `nested` below rather than to `content`).
+    pub content: Vec<Segment>,
+    /// One entry per nested draw this row's `TableEntry::Draw` results
+    /// triggered, in `results` order then `count` order.
+    pub nested: Vec<TableDrawSegment>,
+}
+
+/// Max characters accepted for a `Segment::Image.alt` string -- an
+/// over-length span is REFUSED (`RollError::AltTooLong`), never silently
+/// truncated (a truncated alt would misrepresent what the author wrote).
+pub const MAX_IMAGE_ALT_CHARS: usize = 200;
 
 /// What a `Segment::DocLink` points at — mirrors the client's `SheetRef` shape (the
 /// established "one anonymous cross-file-shared shape gets one name" precedent), given a
 /// server-side equivalent since `SheetRef` itself is client-only TS. Carried inside
-/// `Segment::DocLink`; parsed in full by `chat::rolls::scan_body`'s `doc:`/`token:` prefix
-/// branch — `handle_send_message`'s ingest arm does no further parsing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `Segment::DocLink`; parsed in full by `chat::rolls::scan_body_capped`'s `doc:`/`token:` prefix
+/// branch — `handle_send_message`'s ingest arm does no further parsing. Also reused, unmodified,
+/// as `data::engine::table::TableEntry::Doc`'s target — the ts-rs export lives here (this type
+/// itself, not `Segment`/`MessageEngine`, which stay opaque and unexported) since the table
+/// engine body crosses the wire boundary and needs a generated mirror.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DocLinkTarget {
     /// A top-level document, optionally one level into an embedded child.
@@ -386,41 +467,70 @@ pub struct RecalcEntry {
 
 /// Computes the `gm_only` `permissions.property_overrides` entries a
 /// message's roll content requires: `spec`/`raw` on every `RollEmbed`, plus
-/// `previous_raw` on every one of its `recalc_history` entries. Applied
-/// uniformly to every `RollSpec`/`RawRoll`-shaped value under a `RollEmbed`
-/// -- `outcome`/`previous_outcome`/`recalc_history` itself stay visible to
-/// every recipient. Recomputed from scratch against the CURRENT `content`
-/// (never incrementally patched), so a message's override set always matches
-/// what it actually carries; called from `build_message_doc` at Create time
-/// and from `handle_recalc_roll` after every recalculation.
-pub(crate) fn roll_embed_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
+/// `previous_raw` on every one of its `recalc_history` entries; and, walking
+/// every `TableDraw` RECURSIVELY through nested draws, `spec`/`raw` at every
+/// depth (a table draw carries no recalc history — it is not recalculable).
+/// Applied uniformly to every `RollSpec`/`RawRoll`-shaped value under a
+/// `RollEmbed`/`TableDraw` -- `outcome`/`previous_outcome`/`recalc_history`/
+/// `row` themselves stay visible to every recipient. Recomputed from scratch
+/// against the CURRENT `content` (never incrementally patched), so a
+/// message's override set always matches what it actually carries; called
+/// from `build_message_doc` at Create time and from `handle_recalc_roll`
+/// after every recalculation.
+pub(crate) fn roll_property_overrides(content: &[Segment]) -> BTreeMap<String, Visibility> {
     let mut out = BTreeMap::new();
     for (i, seg) in content.iter().enumerate() {
-        let Segment::RollEmbed {
-            spec,
-            raw,
-            recalc_history,
-            ..
-        } = seg
-        else {
-            continue;
-        };
-        if spec.is_some() {
-            out.insert(format!("/engine/content/{i}/spec"), Visibility::GmOnly);
-        }
-        if raw.is_some() {
-            out.insert(format!("/engine/content/{i}/raw"), Visibility::GmOnly);
-        }
-        if let Some(history) = recalc_history {
-            for j in 0..history.len() {
-                out.insert(
-                    format!("/engine/content/{i}/recalc_history/{j}/previous_raw"),
-                    Visibility::GmOnly,
-                );
+        match seg {
+            Segment::RollEmbed {
+                spec,
+                raw,
+                recalc_history,
+                ..
+            } => {
+                if spec.is_some() {
+                    out.insert(format!("/engine/content/{i}/spec"), Visibility::GmOnly);
+                }
+                if raw.is_some() {
+                    out.insert(format!("/engine/content/{i}/raw"), Visibility::GmOnly);
+                }
+                if let Some(history) = recalc_history {
+                    for j in 0..history.len() {
+                        out.insert(
+                            format!("/engine/content/{i}/recalc_history/{j}/previous_raw"),
+                            Visibility::GmOnly,
+                        );
+                    }
+                }
             }
+            Segment::TableDraw(draw) => {
+                push_draw_overrides(&format!("/engine/content/{i}"), draw, &mut out);
+            }
+            _ => {}
         }
     }
     out
+}
+
+/// Recursive helper for `roll_property_overrides`'s `TableDraw` arm: emits
+/// `{prefix}/spec`/`{prefix}/raw` for this draw, then recurses into every
+/// nested draw its matched row fanned out (`{prefix}/row/nested/{j}`),
+/// mirroring the draw's own recursive shape (`Segment::TableDraw`'s doc).
+fn push_draw_overrides(
+    prefix: &str,
+    seg: &TableDrawSegment,
+    out: &mut BTreeMap<String, Visibility>,
+) {
+    if seg.spec.is_some() {
+        out.insert(format!("{prefix}/spec"), Visibility::GmOnly);
+    }
+    if seg.raw.is_some() {
+        out.insert(format!("{prefix}/raw"), Visibility::GmOnly);
+    }
+    if let Some(row) = &seg.row {
+        for (j, nested) in row.nested.iter().enumerate() {
+            push_draw_overrides(&format!("{prefix}/row/nested/{j}"), nested, out);
+        }
+    }
 }
 
 /// The plain-text producer: wraps raw input as a single literal-text segment.
@@ -573,7 +683,7 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
             default,
             users,
             gm_role,
-            property_overrides: roll_embed_property_overrides(&engine.content),
+            property_overrides: roll_property_overrides(&engine.content),
             ..Default::default()
         },
         embedded: BTreeMap::new(),
@@ -667,11 +777,16 @@ pub enum SendMessageError {
     Forbidden,
     /// An edit attempted to change audience (a `/w` inside an edit). Frozen.
     AudienceLocked,
-    /// A roll formula failed to parse, exceeded a wire-boundary cap, or a
-    /// message body's inline-roll scan failed. Never returned to the caller
-    /// as a hard error — `handle_send_message` catches this and authors a
-    /// `MessageKind::System` notice instead (see `build_roll_error_notice`);
-    /// kept as a variant for completeness/testability of the mapping.
+    /// A roll formula failed to parse, exceeded a wire-boundary cap, a
+    /// message body's inline-roll scan failed, or an image span was refused
+    /// (`ImagesDisabled`/`UnknownAsset`/`AltTooLong`/`MalformedAssetSpan`).
+    /// The two call sites diverge on how this surfaces: `handle_send_message`
+    /// catches it and authors a whispered `MessageKind::System` notice instead
+    /// (see `build_roll_error_notice`) — a send is never rejected as a hard
+    /// error — while `handle_edit_message` returns it DIRECTLY as this
+    /// `SendMessageError` variant, since an edit's rejected-intent path is
+    /// already the caller-visible `ChatError` frame and has no notice-authoring
+    /// step to route through.
     Roll(rolls::RollError),
     /// A roll's outcome is immutable once sent: editing a message whose
     /// STORED `kind == Roll`, or editing content that itself parses to
@@ -733,8 +848,9 @@ impl std::fmt::Display for SendMessageError {
             SendMessageError::Data(_) => {
                 f.write_str("The message could not be delivered. Please try again.")
             }
-            // Never surfaced here (caught upstream, authored as a System notice); kept
-            // total + player-safe via RollError's own presentable Display.
+            // From `handle_send_message`, caught upstream and authored as a System notice
+            // instead; from `handle_edit_message`, returned directly as this `ChatError`'s
+            // message — either way player-safe via `RollError`'s own presentable Display.
             SendMessageError::Roll(e) => write!(f, "{e}"),
         }
     }
@@ -785,6 +901,99 @@ impl std::fmt::Display for RecalcRollError {
             }
         }
     }
+}
+
+/// Re-validates an EFFECTIVE `Audience` (whisper cap + membership) — the
+/// single chokepoint covering BOTH the `SendMessage` frame's own `audience`
+/// field and a content-level `/w` command, so neither front-door can bypass
+/// `MAX_WHISPER_RECIPIENTS` or the fail-closed unknown-recipient rejection.
+/// `_sender` is unused today (kept on the signature for parity with the
+/// call site's other request-scoped parameters); a `Public`/`GmOnly`
+/// audience is a no-op.
+pub(crate) async fn validate_audience(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    _sender: Uuid,
+    audience: &Audience,
+) -> Result<(), SendMessageError> {
+    if let Audience::Whisper { recipients } = audience {
+        if recipients.len() > MAX_WHISPER_RECIPIENTS {
+            return Err(SendMessageError::TooLong);
+        }
+        for &r in recipients {
+            let is_member = repo
+                .member_role(world_id, r)
+                .await
+                .map_err(SendMessageError::Data)?
+                .is_some();
+            if !is_member {
+                return Err(SendMessageError::UnknownRecipient);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The world-pinned `Actor`/`TokenInstance` attribution gate: `actor_owner`
+/// is client-supplied and otherwise stored verbatim — without this check any
+/// world member could attribute a message to ANY actor doc, spoofing its
+/// display name to every recipient who can read the message. A GM may
+/// attribute as any actor/token doc IN THIS WORLD; a Player only as one they
+/// own (a token's ownership resolves through `Repository::effective_owner_of`).
+/// A cross-world ref is refused, same as any other invalid ref — an actor
+/// doc's ownership grant does not cross world scope.
+pub(crate) async fn validate_actor_owner(
+    repo: &dyn Repository,
+    room: &Room,
+    ctx: &PermissionContext,
+    owner: &ActorOwnerRef,
+) -> Result<(), SendMessageError> {
+    match owner {
+        ActorOwnerRef::Actor { actor_id } => {
+            let actor_doc = repo
+                .get_document(*actor_id)
+                .await
+                .map_err(SendMessageError::Data)?;
+            let is_gm = ctx.world_role == WorldRole::Gm;
+            let allowed = match &actor_doc {
+                Some(d)
+                    if d.doc_type == "actor"
+                        && crate::data::document::world_of(d) == Some(room.world_id) =>
+                {
+                    is_gm || d.owner == Some(ctx.user_id)
+                }
+                _ => false,
+            };
+            if !allowed {
+                return Err(SendMessageError::ActorNotSpeakable);
+            }
+        }
+        ActorOwnerRef::TokenInstance { token_id } => {
+            let token_doc = repo
+                .get_document(*token_id)
+                .await
+                .map_err(SendMessageError::Data)?;
+            let is_gm = ctx.world_role == WorldRole::Gm;
+            let allowed = match &token_doc {
+                Some(d)
+                    if d.doc_type == crate::data::permission::TOKEN_DOC_TYPE
+                        && crate::data::document::world_of(d) == Some(room.world_id) =>
+                {
+                    is_gm
+                        || repo
+                            .effective_owner_of(d)
+                            .await
+                            .map_err(SendMessageError::Data)?
+                            == Some(ctx.user_id)
+                }
+                _ => false,
+            };
+            if !allowed {
+                return Err(SendMessageError::ActorNotSpeakable);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Shared request-scoped dependencies for `handle_send_message`/
@@ -852,71 +1061,15 @@ pub async fn handle_send_message(
     {
         return Err(SendMessageError::UnknownChannel);
     }
-    // Attribution ownership gate: `actor_owner` is client-supplied
-    // and otherwise stored verbatim — without this check any world member
-    // could attribute a message to ANY actor doc, spoofing its display name
-    // to every recipient who can read the message. Fail-closed, whole-send:
-    // an invalid ref rejects BEFORE any content parsing/sanitization/roll
-    // execution runs, exactly like the whisper-recipient validation below.
-    // `handle_edit_message` copies `actor_owner` verbatim from the STORED
-    // doc, never from the edit request, so this ingest-time gate is the
-    // ONLY place attribution is ever chosen — no separate edit-time check
-    // is needed.
+    // Attribution ownership gate: see `validate_actor_owner`'s doc comment.
+    // Fail-closed, whole-send: an invalid ref rejects BEFORE any content
+    // parsing/sanitization/roll execution runs, exactly like the
+    // whisper-recipient validation below. `handle_edit_message` copies
+    // `actor_owner` verbatim from the STORED doc, never from the edit
+    // request, so this ingest-time gate is the ONLY place attribution is
+    // ever chosen — no separate edit-time check is needed.
     if let Some(owner_ref) = &actor_owner {
-        match owner_ref {
-            ActorOwnerRef::Actor { actor_id } => {
-                let actor_doc = repo
-                    .get_document(*actor_id)
-                    .await
-                    .map_err(SendMessageError::Data)?;
-                let is_gm = ctx.world_role == WorldRole::Gm;
-                let allowed = match &actor_doc {
-                    // GM may attribute as any actor doc IN THIS WORLD; a
-                    // Player only as one they own. A cross-world actor ref is
-                    // refused at ingest, same as any other invalid ref — an
-                    // actor doc's ownership grant does not cross world scope.
-                    Some(d)
-                        if d.doc_type == "actor"
-                            && crate::data::document::world_of(d) == Some(room.world_id) =>
-                    {
-                        is_gm || d.owner == Some(ctx.user_id)
-                    }
-                    _ => false,
-                };
-                if !allowed {
-                    return Err(SendMessageError::ActorNotSpeakable);
-                }
-            }
-            ActorOwnerRef::TokenInstance { token_id } => {
-                let token_doc = repo
-                    .get_document(*token_id)
-                    .await
-                    .map_err(SendMessageError::Data)?;
-                let is_gm = ctx.world_role == WorldRole::Gm;
-                let allowed = match &token_doc {
-                    // Same world-pinning + GM-bypass shape as the `Actor` arm above.
-                    // Ownership itself resolves through `effective_owner_of` — the
-                    // repo-level chokepoint wrapping `permission::effective_owner` (a
-                    // token's own `owner` override wins, else it inherits its linked
-                    // actor's owner) — never reimplemented here.
-                    Some(d)
-                        if d.doc_type == crate::data::permission::TOKEN_DOC_TYPE
-                            && crate::data::document::world_of(d) == Some(room.world_id) =>
-                    {
-                        is_gm
-                            || repo
-                                .effective_owner_of(d)
-                                .await
-                                .map_err(SendMessageError::Data)?
-                                == Some(ctx.user_id)
-                    }
-                    _ => false,
-                };
-                if !allowed {
-                    return Err(SendMessageError::ActorNotSpeakable);
-                }
-            }
-        }
+        validate_actor_owner(repo, room, ctx, owner_ref).await?;
     }
     // Parse leading command (server-authoritative kind; /w whisper targets).
     let parsed = parse_command(&content);
@@ -951,28 +1104,12 @@ pub async fn handle_send_message(
     } else {
         audience
     };
-    // Re-validate the EFFECTIVE audience (whisper cap + membership) — the
-    // single chokepoint covering BOTH the frame's `audience` field and a
-    // content-level `/w` command, so neither front-door can bypass the cap
-    // or the fail-closed unknown-recipient rejection. The cap is ALSO checked
-    // above (pre-resolution) for the content-`/w` path specifically; this
-    // second check is what actually guards the frame's `audience` argument
-    // (which never runs the pre-check above) and stays authoritative for both.
-    if let Audience::Whisper { recipients } = &audience {
-        if recipients.len() > MAX_WHISPER_RECIPIENTS {
-            return Err(SendMessageError::TooLong);
-        }
-        for &r in recipients {
-            let is_member = repo
-                .member_role(room.world_id, r)
-                .await
-                .map_err(SendMessageError::Data)?
-                .is_some();
-            if !is_member {
-                return Err(SendMessageError::UnknownRecipient);
-            }
-        }
-    }
+    // Re-validate the EFFECTIVE audience (whisper cap + membership) — see
+    // `validate_audience`'s doc comment. The cap is ALSO checked above
+    // (pre-resolution) for the content-`/w` path specifically; this second
+    // check is what actually guards the frame's `audience` argument (which
+    // never runs the pre-check above) and stays authoritative for both.
+    validate_audience(repo, room.world_id, ctx.user_id, &audience).await?;
     // A command that leaves no message body (e.g. `/w @alice` with no
     // trailing text) must be rejected the same way empty raw content is —
     // the top-level `content.trim().is_empty()` check above only guards the
@@ -997,7 +1134,7 @@ pub async fn handle_send_message(
     // sanitize call and the enrich gate, both of which run regardless of
     // whether this attempt turns out to be a roll.
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let mut content_segments = if parsed.kind == MessageKind::Roll {
+    let (mut content_segments, image_urls) = if parsed.kind == MessageKind::Roll {
         let dice_ctx = resolve_dice_context(repo, room.world_id, &channel).await;
         // The roll's actor binding: the send's validated `actor_owner` —
         // references resolve against that document's `system` band, or fail
@@ -1009,14 +1146,17 @@ pub async fn handle_send_message(
             None => None,
         };
         match rolls::execute_roll(&parsed.body, dice_ctx, host.as_ref()) {
-            Ok((formula, outcome, spec, raw)) => vec![Segment::RollEmbed {
-                formula,
-                outcome,
-                roll_id: Uuid::new_v4(),
-                spec: Some(Box::new(spec)),
-                raw: Some(Box::new(raw)),
-                recalc_history: None,
-            }],
+            Ok((formula, outcome, spec, raw)) => (
+                vec![Segment::RollEmbed {
+                    formula,
+                    outcome,
+                    roll_id: Uuid::new_v4(),
+                    spec: Some(Box::new(spec)),
+                    raw: Some(Box::new(raw)),
+                    recalc_history: None,
+                }],
+                Vec::new(),
+            ),
             Err(e) => {
                 let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
                 return room
@@ -1033,101 +1173,25 @@ pub async fn handle_send_message(
             }
         }
     } else {
-        // Normal/Emote: scan for inline rolls/buttons. The all-Text case is
-        // the byte-identical fast path over the whole body (unchanged from
-        // before this checkpoint); a mixed body sanitizes each Text chunk
-        // independently and interleaves roll segments in scan order.
-        let chunks = match rolls::scan_body(&parsed.body) {
-            Ok(c) => c,
-            Err(e) => {
-                let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
-                return room
-                    .publish(
-                        repo,
-                        ctx,
-                        vec![Operation::Create { doc: notice }],
-                        now,
-                        WriteOrigin::Client,
-                    )
-                    .await
-                    .map(|cmd| (cmd, Vec::new()))
-                    .map_err(SendMessageError::Data);
-            }
+        // Normal/Emote: delegate to the shared chunk->segment composer. A
+        // roll/scan failure authors a whispered System notice instead of the
+        // intended message (see the enclosing match's `kind == Roll` arm for
+        // the identical pattern); `ComposeError::Inline` cannot occur here
+        // (`ScanMode::Execute`).
+        let compose_deps = body::ComposeDeps {
+            repo,
+            world_id: room.world_id,
+            channel: &channel,
+            actor_owner: actor_owner.as_ref(),
+            policy: &policy,
         };
-        if let [rolls::BodyChunk::Text(_)] = chunks.as_slice() {
-            sanitize(&parsed.body, &policy)
-        } else {
-            // Ambient dice context is resolved at most once, lazily, only when
-            // a roll/button chunk actually appears in this body. The roll's
-            // host (the send's actor binding) resolves just as lazily.
-            let mut dice_ctx: Option<crate::dice::ParseContext> = None;
-            let mut roll_host: Option<Option<Document>> = None;
-            let mut segments = Vec::with_capacity(chunks.len());
-            let mut roll_err = None;
-            for chunk in chunks {
-                match chunk {
-                    rolls::BodyChunk::Text(t) => segments.extend(sanitize(t, &policy)),
-                    rolls::BodyChunk::Inline(formula) => {
-                        if dice_ctx.is_none() {
-                            dice_ctx =
-                                Some(resolve_dice_context(repo, room.world_id, &channel).await);
-                        }
-                        if roll_host.is_none() {
-                            roll_host = Some(match &actor_owner {
-                                Some(owner_ref) => host::host_for_actor_owner(repo, owner_ref)
-                                    .await
-                                    .map_err(SendMessageError::Data)?,
-                                None => None,
-                            });
-                        }
-                        let host_ref = roll_host.as_ref().expect("roll host computed").as_ref();
-                        match rolls::execute_roll(formula, dice_ctx.unwrap(), host_ref) {
-                            Ok((formula, outcome, spec, raw)) => {
-                                segments.push(Segment::RollEmbed {
-                                    formula,
-                                    outcome,
-                                    roll_id: Uuid::new_v4(),
-                                    spec: Some(Box::new(spec)),
-                                    raw: Some(Box::new(raw)),
-                                    recalc_history: None,
-                                })
-                            }
-                            Err(e) => {
-                                roll_err = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    rolls::BodyChunk::Button { formula, label } => {
-                        if dice_ctx.is_none() {
-                            dice_ctx =
-                                Some(resolve_dice_context(repo, room.world_id, &channel).await);
-                        }
-                        // Stored/validated formula is trimmed — the `roll:`/`|`
-                        // split leaves incidental whitespace (e.g.
-                        // "[[roll: 1d20|Attack]]") that must not survive into
-                        // the button's stored formula or the click-to-send text.
-                        let formula = formula.trim();
-                        match rolls::validate_formula(formula, dice_ctx.unwrap()) {
-                            Ok(()) => segments.push(Segment::RollButton {
-                                formula: formula.to_string(),
-                                label: label.map(|s| s.to_string()),
-                            }),
-                            Err(e) => {
-                                roll_err = Some(e);
-                                break;
-                            }
-                        }
-                    }
-                    rolls::BodyChunk::DocLink { target, label } => {
-                        segments.push(Segment::DocLink {
-                            target,
-                            label: label.to_string(),
-                        });
-                    }
-                }
+        match body::compose_message(&parsed.body, compose_deps, body::ScanMode::Execute).await {
+            Ok((segments, image_urls)) => (segments, image_urls),
+            Err(body::ComposeError::Data(e)) => return Err(SendMessageError::Data(e)),
+            Err(body::ComposeError::Inline) => {
+                unreachable!("ComposeError::Inline cannot occur under ScanMode::Execute")
             }
-            if let Some(e) = roll_err {
+            Err(body::ComposeError::Roll(e)) => {
                 let notice = build_roll_error_notice(room.world_id, ctx.user_id, channel, &e, now);
                 return room
                     .publish(
@@ -1141,20 +1205,27 @@ pub async fn handle_send_message(
                     .map(|cmd| (cmd, Vec::new()))
                     .map_err(SendMessageError::Data);
             }
-            segments
         }
     };
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    // Link-preview enrich stage: only for hyperlink-carrying, non-Roll bodies.
-    // The `kind != Roll` guard is EXPLICIT, not incidental: a
-    // successful roll falls through here with `content_segments == [RollEmbed]`
-    // (only the roll-EXECUTION-FAILURE arm returns early), so without this
-    // guard a `/roll` on a preview-enabled world would enter `enrich` — a no-op
-    // today only because `enrich` scans `Segment::Html` runs (none in a
-    // RollEmbed), but a latent path to attaching outbound-fetched previews to a
-    // roll message if that ever changes. Synchronous, before publish — no
-    // spawned task, no post-publish revision, no message-deleted-mid-fetch race.
-    if parsed.kind != MessageKind::Roll && policy.previews_enabled() {
+    // Link-preview / inline-image enrich stage: only for non-Roll bodies. The
+    // `kind != Roll` guard is EXPLICIT, not incidental: a successful roll
+    // falls through here with `content_segments == [RollEmbed]` (only the
+    // roll-EXECUTION-FAILURE arm returns early), so without this guard a
+    // `/roll` on a preview/image-enabled world would enter `enrich` — a
+    // no-op today only because `enrich` scans `Segment::Html` runs and
+    // `image_urls` (never populated for a roll body), but a latent path to
+    // attaching outbound-fetched content to a roll message if that ever
+    // changes. Runs when EITHER href-preview scanning is enabled
+    // (`previews_enabled`, which requires `hyperlinks`) OR the composer
+    // already collected inline image sources (`image_urls`, gated
+    // independently on `policy.images()` inside `sanitize` -- a world can
+    // enable images without hyperlinks) -- otherwise a body with
+    // hyperlinks off but images on would collect `image_urls` in vain,
+    // since only `enrich` turns them into `PendingEnrichment::InlineImage`
+    // jobs. Synchronous, before publish — no spawned task, no post-publish
+    // revision, no message-deleted-mid-fetch race.
+    if parsed.kind != MessageKind::Roll && (policy.previews_enabled() || !image_urls.is_empty()) {
         pending = link_preview::enrich(
             &mut content_segments,
             link_preview::EnrichDeps {
@@ -1164,6 +1235,8 @@ pub async fn handle_send_message(
             ctx.user_id,
             now,
             std::time::Instant::now(),
+            &image_urls,
+            policy.previews_enabled(),
         )
         .await;
     }
@@ -1323,9 +1396,11 @@ pub async fn handle_edit_message(
         }
         // Roll immutability: editing content INTO a roll (e.g. a plain message
         // edited to "/roll 1d6") is rejected the same as editing a message
-        // that already IS one — no editing-in-to a roll either. Edits also
-        // never call `scan_body`: an edit's `[[...]]` spans stay literal text
-        // through the ordinary sanitize path below (never re-executed).
+        // that already IS one — no editing-in-to a roll either. An edit's
+        // body IS scanned below (`body::compose_message`, `ScanMode::NoExecute`)
+        // for `[[...]]` spans -- `[[doc:...]]`/`[[asset:...]]`/`[[roll:...]]`
+        // resolve exactly like a send, but an inline `[[formula]]` roll span
+        // is refused rather than executed (`ComposeError::Inline`).
         if parsed.kind == MessageKind::Roll {
             return Err(SendMessageError::RollImmutable);
         }
@@ -1336,13 +1411,40 @@ pub async fn handle_edit_message(
     }
 
     let policy = resolve_content_policy(repo, room.world_id).await;
-    let mut segments = sanitize(&body, &policy);
-    // A preview is derived, not authored — re-derive on every edit so the
-    // card always reflects the CURRENT edited content (never a stale link
-    // preview from before the edit). The roll-immutability checks above
-    // already guarantee `kind != Roll` here.
+    // Routed through the SAME chunk->segment composer `handle_send_message`
+    // uses, under `ScanMode::NoExecute` -- an edit's `[[...]]`/`[[roll:...]]`
+    // spans are recognized (so a `[[doc:...]]`/`[[asset:...]]` link/image span
+    // authored in an edit resolves exactly like one authored at send time),
+    // but an inline `[[formula]]` roll span is REFUSED (`ComposeError::Inline`
+    // -> `RollImmutable` below) rather than executed: a roll's outcome is
+    // immutable once sent, and this is the one difference from the send
+    // path's `ScanMode::Execute`.
+    let compose_deps = body::ComposeDeps {
+        repo,
+        world_id: room.world_id,
+        channel: &sys.channel,
+        actor_owner: sys.actor_owner.as_ref(),
+        policy: &policy,
+    };
+    let (mut segments, image_urls) =
+        match body::compose_message(&body, compose_deps, body::ScanMode::NoExecute).await {
+            Ok((segments, image_urls)) => (segments, image_urls),
+            Err(body::ComposeError::Data(e)) => return Err(SendMessageError::Data(e)),
+            Err(body::ComposeError::Inline) => return Err(SendMessageError::RollImmutable),
+            // Edits never author a whispered System error notice the way
+            // `handle_send_message` does on a scan/roll failure -- an edit's
+            // malformed span is reported to the editor directly as a
+            // rejected request, not published as a new message.
+            Err(body::ComposeError::Roll(e)) => return Err(SendMessageError::Roll(e)),
+        };
+    // A preview/inline-image is derived, not authored — re-derive on every
+    // edit so the card always reflects the CURRENT edited content (never a
+    // stale link preview or inline image from before the edit). The
+    // roll-immutability checks above already guarantee `kind != Roll` here.
+    // See `handle_send_message`'s identical gate for why `image_urls` alone
+    // (independent of `previews_enabled`) also triggers this stage.
     let mut pending: Vec<PendingEnrichment> = Vec::new();
-    if policy.previews_enabled() {
+    if policy.previews_enabled() || !image_urls.is_empty() {
         pending = link_preview::enrich(
             &mut segments,
             link_preview::EnrichDeps {
@@ -1352,6 +1454,8 @@ pub async fn handle_edit_message(
             ctx.user_id,
             now,
             std::time::Instant::now(),
+            &image_urls,
+            policy.previews_enabled(),
         )
         .await;
     }
@@ -1569,7 +1673,7 @@ pub async fn handle_recalc_roll(
         *outcome = new_outcome;
     }
 
-    let overrides = roll_embed_property_overrides(&sys.content);
+    let overrides = roll_property_overrides(&sys.content);
     let new_engine = serde_json::to_value(&sys)
         .map_err(|e| RecalcRollError::Data(DataError::OpFailed(e.to_string())))?;
     let new_overrides_json = serde_json::to_value(&overrides)

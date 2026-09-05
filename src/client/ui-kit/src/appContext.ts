@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -52,6 +52,12 @@ export interface ChatApi {
    * @returns Resolves once the recalc is accepted; rejects on a non-GM sender
    * or server refusal. */
   recalc(messageId: string, rollId: string, ops: WireRecalcOp[]): Promise<void>;
+  /** Draw one or more rows from a `table` document, posted as one chat message.
+   * Same correlated-rejection contract as `send`/`edit`/`delete`/`recalc`.
+   * @param opts - Draw options.
+   * @returns Resolves once the draw is accepted; rejects with the server's
+   * player-presentable reason otherwise. */
+  drawTable(opts: DrawTableOptions): Promise<void>;
 }
 
 /** Template pull/push/revert/stamp seam. Thin orchestration over `store`/`documents` +

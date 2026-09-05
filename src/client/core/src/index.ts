@@ -61,6 +61,7 @@ export type {
   SceneFrame,
   SceneSubscription,
   ChatSendOptions,
+  DrawTableOptions,
 } from "./ws-client";
 export { webSocketConnect } from "./transport";
 export type { Transport, TransportHandlers, Connect } from "./transport";
@@ -161,8 +162,12 @@ export {
 export type { CombatHookEvent, CombatTurnEvent } from "./combat-hooks";
 export { SHEET_CONTRACT_PREFIX, SHEET_FALLBACK_CONTRACT, sheetContract, resolveDocRef, pickSheet, isDiceNotation } from "./sheets";
 export type { SheetRef, SheetTarget } from "./sheets";
-export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, DocLinkTargetSchema, ChatSegmentSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
-export type { MessageKind, DieRecord, RollOutcome, DocLinkTarget, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine, ConstTerm, WireDieKind, WireRawRoll, RecalcHistoryEntry } from "./chat-docs";
+export { MESSAGE_DOC_TYPE, CHANNEL_REGISTRY_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, CHAT_SETTINGS_DOC_TYPE, MAX_MESSAGE_CHARS, MessageKindSchema, DieRecordSchema, RollOutcomeSchema, DocLinkTargetSchema, ChatSegmentSchema, SegmentListSchema, ChatMessageEngineSchema, WireDieKindSchema, WireRawRollSchema, RecalcHistoryEntrySchema, parseMessageEngine, isKnownSegment, baseRollDice, numericBounds, buildChannelRegistryDoc, buildDiceSettingsDoc, buildChatSettingsDoc } from "./chat-docs";
+export type { MessageKind, DieRecord, RollOutcome, DocLinkTarget, ChatSegment, UnknownSegment, ChatMessageEngine, ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine, ConstTerm, WireDieKind, WireRawRoll, RecalcHistoryEntry, TableDrawSegment, DrawnRow } from "./chat-docs";
+export { TABLE_DOC_TYPE, buildTableDoc } from "./table-docs";
+export type { TableEngine, DrawRule, TableRow, RowRange, TableEntry } from "./table-docs";
+export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody } from "./note-docs";
+export type { NoteEngine, BuildNoteDocOptions } from "./note-docs";
 export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placementExclusions, isMergeableBandPointer, normalizeBase } from "./merge";
 export type { Diff, MergeBase, EmbeddedBaseChild } from "./merge";
 export { snapshotBase, stampInstance, findInstances, syncState } from "./templates";

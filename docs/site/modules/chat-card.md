@@ -3,10 +3,12 @@
 ## Purpose
 
 The default message-card renderer filling chat's singleton `chat.message`
-surface. Contains the client's **sole `{@html}` boundary** for chat content:
-the fail-closed body parse and sanitized-HTML rendering of message segments,
-including roll embeds and link previews. Replaceable by a game-system module
-via the same contract.
+surface. Card chrome (header, roll block, GM recalc menu, edit/delete
+affordances) lives here; segment-body rendering — including the client's
+**sole `{@html}` boundary** for chat content — is delegated to ui-kit's
+`SegmentList`, which every segment kind (text, html, roll embeds, roll
+buttons, link previews, oembed cards, doc links, images, table draws)
+renders through. Replaceable by a game-system module via the same contract.
 
 ## Contributions
 
@@ -16,15 +18,26 @@ via the same contract.
 
 ## Components
 
-- `MessageCard.svelte` — segment rendering (text, roll embeds, roll buttons,
-  link previews, system notices), edit/delete affordances.
-- `RollTooltip.svelte` — per-die breakdown tooltip for roll embeds.
+- `MessageCard.svelte` — header/roll-block/GM-recalc chrome, edit/delete
+  affordances; delegates its segment body to ui-kit's `SegmentList`.
+
+`RollTooltip.svelte` (per-die breakdown tooltip for roll embeds) and
+`SegmentList.svelte` (the segment-body renderer and sole `{@html}` sink) now
+live in `@shadowcat/ui-kit` — see that package's own docs.
 
 ## Contracts & seams
 
 - **Requires** `shadowcat.surface:chat.message` (declared by chat).
-- Renders the server-produced message body mirror (`chat-docs.ts`); rolls are
-  immutable server artifacts — the card renders them, never recomputes them.
+- Renders the server-produced message body mirror (`chat-docs.ts`) through
+  ui-kit's `SegmentList`; rolls are immutable server artifacts — the card
+  renders them, never recomputes them. An `image` segment renders via
+  `ctx.assets.url(asset_id, "preview")`, the server's own asset endpoint —
+  never a raw external URL. A `table_draw` segment renders recursively
+  (`row.content` and each `row.nested` entry render through `SegmentList`
+  itself); `spec`/`raw` are GM-only server-side and never read by the card. A
+  `doc_link` whose target resolves (in the recipient's optimistic store) to a
+  `table` document also renders a Draw button, calling `ctx.chat.drawTable`
+  on the message's own channel.
 
 ## Pointers
 

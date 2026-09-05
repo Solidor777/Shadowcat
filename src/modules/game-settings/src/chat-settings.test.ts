@@ -51,6 +51,41 @@ describe("chat settings editor", () => {
     expect(cb.checked).toBe(true);
   });
 
+  it("toggling images dispatches a JSON-pointer update with the real pre-image", async () => {
+    const dispatchIntent = vi.fn();
+    const chat = buildChatSettingsDoc("w1", chatEngine({ images: false }), "chat1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(chat), dispatchIntent }) });
+
+    const cb = screen.getByLabelText("gameSettings.chat.images") as HTMLInputElement;
+    await fireEvent.change(cb, { target: { checked: true } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "chat1", changes: [{ path: "/engine/images", old: false, new: true }] },
+    ]);
+  });
+
+  it("toggling images from a null stored value dispatches old: null, not old: false", async () => {
+    const dispatchIntent = vi.fn();
+    const chat = buildChatSettingsDoc("w1", chatEngine({ images: null }), "chat1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(chat), dispatchIntent }) });
+
+    const cb = screen.getByLabelText("gameSettings.chat.images") as HTMLInputElement;
+    await fireEvent.change(cb, { target: { checked: true } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "chat1", changes: [{ path: "/engine/images", old: null, new: true }] },
+    ]);
+  });
+
+  it("images checkbox reflects the stored value", () => {
+    const dispatchIntent = vi.fn();
+    const chat = buildChatSettingsDoc("w1", chatEngine({ images: true }), "chat1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(chat), dispatchIntent }) });
+
+    const cb = screen.getByLabelText("gameSettings.chat.images") as HTMLInputElement;
+    expect(cb.checked).toBe(true);
+  });
+
   it("selecting 'Enabled' on link previews dispatches an explicit true with real pre-image null", async () => {
     const dispatchIntent = vi.fn();
     const chat = buildChatSettingsDoc("w1", chatEngine({ hyperlinks: true }), "chat1");

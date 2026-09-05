@@ -37,6 +37,10 @@ resource registry editor.
 - Reads/writes engine config-docs (world-settings, vision, lighting); the
   scene-browser's "Configure" deep-links into this panel's per-scene section
   via `ctx.sceneSelection`.
+- Also edits the world's `chat-settings` singleton: `hyperlinks`,
+  `link_previews`, and `images` ("Images: asset links and server-fetched
+  copies of linked images; never hotlinked" — reflects that an image segment
+  is always server-resolved, never a raw hotlinked external URL).
 
 ## Pointers
 

@@ -50,13 +50,20 @@ impl AssetMeta {
     }
 }
 
-/// Who authored an asset — feeds the `uploaded` / `link-preview` derived tag.
+/// Who authored an asset — feeds the `uploaded` / `link-preview` /
+/// `chat-image` derived tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
     /// A GM upload (single-shot or chunked).
     Uploaded,
     /// A server-fetched link-preview/oEmbed image (`chat::post_publish`).
     LinkPreview,
+    /// A server-fetched external chat image, asset-ified by
+    /// `chat::post_publish::resolve_inline_image` — distinct from
+    /// `LinkPreview` (a link-card thumbnail) even though both are
+    /// server-fetched, since a chat image is the message's own primary
+    /// content rather than a preview of a linked page.
+    ChatImage,
 }
 
 /// Metadata for one stored asset. Bytes live on disk at `storage_key`

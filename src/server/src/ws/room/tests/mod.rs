@@ -215,6 +215,9 @@ impl Repository for DeleteMidHydration<'_> {
             .set_link_preview_cache_image(url, image_asset_id)
             .await
     }
+    async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
+        self.inner.get_asset(id).await
+    }
 }
 
 #[tokio::test]

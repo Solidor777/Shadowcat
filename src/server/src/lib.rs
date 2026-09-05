@@ -31,6 +31,9 @@ pub mod merge;
 /// Installed community-module discovery + the engine-compat semver gate.
 pub mod modules;
 pub mod scene;
+/// Server-side rollable-table draws (`ClientMsg::DrawTable` -> a posted
+/// `Segment::TableDraw` chat message).
+pub mod tables;
 /// Per-world export/import: builds/reads the `.tar` bundle format (see
 /// `data::world_bundle` for the row/manifest types, `http::world_bundle` for
 /// the HTTP routes).

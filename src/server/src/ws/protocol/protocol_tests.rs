@@ -482,6 +482,40 @@ fn recalc_roll_frame_parses() {
 }
 
 #[test]
+fn draw_table_frame_parses() {
+    let raw = r#"{"type":"draw_table","request_id":"00000000-0000-0000-0000-0000000000ae","table_id":"00000000-0000-0000-0000-000000000003","channel":"general","count":2,"actor_owner":null,"audience":{"kind":"public"}}"#;
+    let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+    match msg {
+        ClientMsg::DrawTable {
+            request_id,
+            table_id,
+            channel,
+            count,
+            actor_owner,
+            audience,
+        } => {
+            assert_eq!(request_id, Uuid::from_u128(0xae));
+            assert_eq!(table_id, Uuid::from_u128(3));
+            assert_eq!(channel, "general");
+            assert_eq!(count, 2);
+            assert!(actor_owner.is_none());
+            assert!(matches!(audience, crate::chat::Audience::Public));
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn draw_table_frame_defaults_count_to_one_when_omitted() {
+    let raw = r#"{"type":"draw_table","request_id":"00000000-0000-0000-0000-0000000000af","table_id":"00000000-0000-0000-0000-000000000004","channel":"general"}"#;
+    let msg: ClientMsg = serde_json::from_str(raw).unwrap();
+    match msg {
+        ClientMsg::DrawTable { count, .. } => assert_eq!(count, 1),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
 fn chat_error_frame_round_trips_and_is_tagged() {
     let e = ServerMsg::ChatError {
         request_id: Uuid::from_u128(9),

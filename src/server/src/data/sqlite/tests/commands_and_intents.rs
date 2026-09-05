@@ -191,8 +191,8 @@ async fn player_may_create_message_but_not_other_types() {
         },
         2,
     );
-    other.doc_type = "note".into();
-    // "note" is not engine-defined (unlike "message"); the engine body
+    other.doc_type = "item".into();
+    // "item" is not engine-defined (unlike "message"); the engine body
     // `build_message_doc` set must not follow the doc_type override.
     other.engine = None;
     let err = r
@@ -3480,4 +3480,348 @@ async fn apply_command_replays_a_folder_move_and_refreshes_subtree_tags() {
     let refreshed = r.get_asset(asset.id).await.unwrap().unwrap();
     assert!(!refreshed.derived_tags.contains(&"alpha".to_string()));
     assert!(refreshed.derived_tags.contains(&"beta".to_string()));
+}
+
+#[tokio::test]
+async fn a_note_may_be_created_under_another_note_in_the_same_world() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let parent = note_doc(1, w, "parent", None);
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create {
+            doc: parent.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let child = note_doc(2, w, "child", Some(parent.id));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create { doc: child.clone() }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = r.get_document(child.id).await.unwrap().unwrap();
+    assert_eq!(stored.parent_id, Some(parent.id));
+}
+
+#[tokio::test]
+async fn a_note_may_be_moved_under_another_note_in_the_same_world() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = note_doc(1, w, "a", None);
+    let b = note_doc(2, w, "b", None);
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Move {
+            doc_id: b.id,
+            parent_id: Some(a.id),
+            old_parent_id: None,
+        }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let moved = r.get_document(b.id).await.unwrap().unwrap();
+    assert_eq!(moved.parent_id, Some(a.id));
+}
+
+#[tokio::test]
+async fn a_note_under_a_non_note_parent_is_rejected() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let actor = world_doc(1, w, serde_json::json!({}));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create { doc: actor.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let child = note_doc(2, w, "child", Some(actor.id));
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Create { doc: child }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+/// NOTE ON MECHANISM: for a `Create`, this is caught by the generic
+/// "an existing parent must be in this world" check `apply_intent`'s Create
+/// arm runs on EVERY doc_type carrying a `parent_id` (`check_command_scope`
+/// on the loaded parent), not by `check_note_parent`'s own `p.scope ==
+/// doc.scope` comparison -- a mutation experiment that stubs
+/// `check_note_parent` to `Ok(())` leaves this test passing, because the
+/// generic check independently rejects it first. `check_note_parent`'s own
+/// scope rule is genuinely pinned only on the `Move` arm below, which has no
+/// such generic parent-world check.
+#[tokio::test]
+async fn a_note_created_under_a_pre_existing_note_in_another_world_is_rejected_by_the_generic_parent_scope_check(
+) {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let other_gm = r
+        .create_user("gm-other", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w2 = r.create_world_owned("W2", other_gm, 0).await.unwrap();
+    let ctx2 = crate::data::membership::PermissionContext {
+        user_id: other_gm,
+        world_role: WorldRole::Gm,
+    };
+    let foreign = note_doc(9, w2.id, "foreign", None);
+    r.apply_intent(
+        &ctx2,
+        w2.id,
+        vec![Operation::Create {
+            doc: foreign.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let child = note_doc(2, w, "child", Some(foreign.id));
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Create { doc: child }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+/// Genuinely pins `check_note_parent`'s own doc_type rule on the `Move` arm:
+/// unlike `Create`, `Move` has no separate generic doc_type check on the
+/// new parent, so this fails when `check_note_parent` is stubbed.
+#[tokio::test]
+async fn moving_a_note_under_a_non_note_parent_is_rejected() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = note_doc(1, w, "a", None);
+    let actor = world_doc(2, w, serde_json::json!({}));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: actor.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Move {
+                doc_id: a.id,
+                parent_id: Some(actor.id),
+                old_parent_id: None,
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+/// Genuinely pins `check_note_parent`'s own scope rule on the `Move` arm:
+/// unlike `Create`, `Move` has no generic "parent must be in this world"
+/// check at all, so this is the ONLY test that fails when
+/// `check_note_parent` is stubbed to `Ok(())`.
+#[tokio::test]
+async fn moving_a_note_under_a_note_in_another_world_is_rejected() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let other_gm = r
+        .create_user("gm-other", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w2 = r.create_world_owned("W2", other_gm, 0).await.unwrap();
+    let ctx2 = crate::data::membership::PermissionContext {
+        user_id: other_gm,
+        world_role: WorldRole::Gm,
+    };
+    let foreign = note_doc(9, w2.id, "foreign", None);
+    r.apply_intent(
+        &ctx2,
+        w2.id,
+        vec![Operation::Create {
+            doc: foreign.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let a = note_doc(1, w, "a", None);
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create { doc: a.clone() }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Move {
+                doc_id: a.id,
+                parent_id: Some(foreign.id),
+                old_parent_id: None,
+            }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+#[tokio::test]
+async fn same_batch_note_parent_and_child_create_succeed() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let parent = note_doc(1, w, "parent", None);
+    let child = note_doc(2, w, "child", Some(parent.id));
+
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![
+            Operation::Create {
+                doc: parent.clone(),
+            },
+            Operation::Create { doc: child.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = r.get_document(child.id).await.unwrap().unwrap();
+    assert_eq!(stored.parent_id, Some(parent.id));
+}
+
+#[tokio::test]
+async fn moving_a_note_beneath_its_own_child_is_rejected() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = note_doc(1, w, "a", None);
+    let b = note_doc(2, w, "b", Some(a.id));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Move {
+                doc_id: a.id,
+                parent_id: Some(b.id),
+                old_parent_id: None,
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+#[tokio::test]
+async fn deleting_a_parent_note_cascades_its_children() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let a = note_doc(1, w, "a", None);
+    let b = note_doc(2, w, "b", Some(a.id));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![
+            Operation::Create { doc: a.clone() },
+            Operation::Create { doc: b.clone() },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored_a = r.get_document(a.id).await.unwrap().unwrap();
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Delete { doc: stored_a }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    assert!(r.get_document(a.id).await.unwrap().is_none());
+    assert!(
+        r.get_document(b.id).await.unwrap().is_none(),
+        "the child note cascades with its parent"
+    );
 }

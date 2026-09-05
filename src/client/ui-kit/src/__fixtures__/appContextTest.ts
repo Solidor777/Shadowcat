@@ -91,6 +91,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       edit: () => Promise.resolve(),
       delete: () => Promise.resolve(),
       recalc: () => Promise.resolve(),
+      drawTable: () => Promise.resolve(),
     },
     leaveWorld: over.leaveWorld ?? (() => {}),
     logout: over.logout ?? (async () => {}),
