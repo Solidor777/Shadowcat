@@ -63,11 +63,6 @@ async function dragScene(
  * @param from The drag's start point, in stage-canvas-local pixels.
  * @param to The drag's end point, in stage-canvas-local pixels.
  * @param labelSubstring The substring the route-preview label must contain before release.
- * @example
- * ```
- * declare function dragSceneExpectingLabel(page: Page, from: { x: number; y: number }, to: { x: number; y: number }, labelSubstring: string): Promise<void>;
- * dragSceneExpectingLabel(page, { x: 0, y: 0 }, { x: 10, y: 0 }, "stops at budget");
- * ```
  */
 async function dragSceneExpectingLabel(
   page: Page,
