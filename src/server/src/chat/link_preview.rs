@@ -789,6 +789,12 @@ fn ipv4_in_cidr(ip: u32, network: u32, prefix: u32) -> bool {
 /// the verdict is "any containing entry"; the most specific one is the
 /// entry logged, so a hit inside a nested row (PCP Anycast rather than its
 /// IETF Protocol Assignments parent) is auditable by its own name.
+///
+/// INVARIANT: the most-specific selection here is LOG-ONLY and cannot change
+/// the verdict, which is why it may spell the rule `select_v6_range` also
+/// spells rather than sharing it. Giving `V4Range` a disposition would make
+/// this selection verdict-bearing and turn the two spellings into one
+/// decision resolved in two places — unify them before adding one.
 fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
     let n = u32::from(ip);
     let Some(r) = V4_BLOCKED
