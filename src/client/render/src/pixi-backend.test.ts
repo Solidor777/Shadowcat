@@ -3,7 +3,7 @@ import { Container } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
-import type { TokenNodeSpec } from "./types";
+import type { TokenNodeSpec, VisibilityInput } from "./types";
 
 vi.mock("pixi.js", async (importActual) => {
   const actual = await importActual<typeof import("pixi.js")>();
@@ -34,22 +34,46 @@ function headlessBackend(): PixiBackend {
   return new PixiBackend(fakeApp);
 }
 
+/** A headless backend whose `app.renderer.render` is a counting stub instead of a real GPU
+ * call — enough for `setVisibilityBlend`'s `captureFog` path to run (it only needs
+ * `app.screen`/`app.renderer.resolution`/`app.renderer.render`/`RenderTexture.create`, none of
+ * which need a live GL context) while exposing how many full render-to-texture passes it
+ * performed.
+ * @returns The backend plus a `renderCalls` counter incremented once per `app.renderer.render`.
+ */
+function headlessBackendWithRenderCounter(): { backend: PixiBackend; renderCalls: { count: number } } {
+  const renderCalls = { count: 0 };
+  const fakeApp = {
+    stage: new Container(),
+    screen: { width: 800, height: 600 },
+    renderer: {
+      resolution: 1,
+      render: () => {
+        renderCalls.count++;
+      },
+    },
+  } as unknown as Application;
+  return { backend: new PixiBackend(fakeApp), renderCalls };
+}
+
 interface GraphicsInstructionLog {
   context: {
     instructions: { data: { path: { instructions: { action: string; data: unknown[] }[] } } }[];
   };
 }
 
-/** Extracts the flat point arrays passed to every `poly(...)` draw call recorded on a Graphics'
- * context — the same instruction log `Graphics` builds without a GL context, so this reads what
- * `setLighting` actually drew.
- * @param backend A `PixiBackend`; only its private `lightingGraphics` field is read.
+/** Extracts the flat point arrays passed to every `poly(...)` draw call recorded on one of the
+ * backend's lighting-layer Graphics — the same instruction log `Graphics` builds without a GL
+ * context, so this reads what `setLighting` actually drew.
+ * @param backend A `PixiBackend`; only the named private Graphics field is read.
+ * @param field Which lighting Graphics to read: the per-cell fills, the darkness sheet, or
+ * the lit-cell holes cut from it.
  * @returns One flat `[x0,y0,x1,y1,…]` array per `poly(...)` call, in draw order.
  */
-function polyDraws(backend: PixiBackend): number[][] {
+function polyDraws(backend: PixiBackend, field: "lightingGraphics" | "darknessGraphics" | "litHoles" = "lightingGraphics"): number[][] {
   // Reads a private field to inspect the recorded draw instructions — no public accessor
   // exists, and this test's whole point is pinning what the backend actually draws.
-  const graphics = (backend as unknown as { lightingGraphics: GraphicsInstructionLog }).lightingGraphics;
+  const graphics = (backend as unknown as Record<typeof field, GraphicsInstructionLog>)[field];
   return graphics.context.instructions
     .map((i) => i.data.path.instructions.find((pi) => pi.action === "poly"))
     .filter((pi): pi is { action: string; data: unknown[] } => pi !== undefined)
@@ -57,6 +81,22 @@ function polyDraws(backend: PixiBackend): number[][] {
 }
 
 describe("PixiBackend.setLighting", () => {
+  test("with no lit cell the darkness sheet paints whole and UNMASKED; with one it is inverse-masked by the holes", () => {
+    const backend = headlessBackend();
+    const priv = backend as unknown as { darknessGraphics: Container; litHoles: Container };
+    const dark = { points: [0, 0, 300, 0, 300, 300, 0, 300] };
+    backend.setLighting({ cell: 100, cells: [], darkness: [dark] });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([dark.points]);
+    // Pixi reports a cleared mask as `undefined` (no mask effect attached), never a Graphics.
+    expect(priv.darknessGraphics.mask ?? null).toBeNull();
+    const corners = [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }];
+    backend.setLighting({ cell: 100, cells: [{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners }], darkness: [dark] });
+    expect(priv.darknessGraphics.mask).toBe(priv.litHoles);
+    // A degenerate cell cuts no hole, so it counts as "nothing lit" too.
+    backend.setLighting({ cell: 100, cells: [{ i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: corners.slice(0, 2) }], darkness: [dark] });
+    expect(priv.darknessGraphics.mask ?? null).toBeNull();
+  });
+
   test("draws each cell's own poly geometry from LitDrawCell.corners, not an index*cellSize rect", () => {
     const backend = headlessBackend();
     // i=5, j=3 at cell=70 would rect-anchor at (350,210) under an index*cellSize scheme; these
@@ -66,12 +106,37 @@ describe("PixiBackend.setLighting", () => {
     const frame: LightingFrame = {
       cell: 70,
       cells: [{ i: 5, j: 3, alpha: 0.4, tint: 0x112233, tintAlpha: 0.25, desaturate: false, corners }],
+      darkness: [],
     };
     backend.setLighting(frame);
     const draws = polyDraws(backend);
     expect(draws.length).toBeGreaterThan(0);
     const expected = corners.flatMap((p) => [p.x, p.y]);
     for (const d of draws) expect(d).toEqual(expected);
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([]);
+    expect(polyDraws(backend, "litHoles")).toEqual([expected]);
+  });
+
+  test("paints the darkness regions as a sheet with every lit cell cut out as a hole", () => {
+    const backend = headlessBackend();
+    const corners = [{ x: 0, y: 0 }, { x: 70, y: 0 }, { x: 70, y: 70 }, { x: 0, y: 70 }];
+    const los = [0, 0, 700, 0, 700, 700, 0, 700];
+    backend.setLighting({
+      cell: 70,
+      cells: [
+        { i: 0, j: 0, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners },
+        { i: 9, j: 9, alpha: 0, tint: 0, tintAlpha: 0, desaturate: false, corners: [{ x: 1, y: 1 }] }, // degenerate: no hole
+      ],
+      darkness: [{ points: los }, { points: [5, 5, 6, 6] }], // the 2-vertex region is skipped
+    });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([los]);
+    expect(polyDraws(backend, "litHoles")).toEqual([corners.flatMap((p) => [p.x, p.y])]);
+    const sheet = (backend as unknown as { darknessGraphics: { mask: unknown }; litHoles: unknown });
+    expect(sheet.darknessGraphics.mask).toBe(sheet.litHoles);
+    // A later frame with no darkness clears the sheet and the holes.
+    backend.setLighting({ cell: 70, cells: [], darkness: [] });
+    expect(polyDraws(backend, "darknessGraphics")).toEqual([]);
+    expect(polyDraws(backend, "litHoles")).toEqual([]);
   });
 });
 
@@ -135,8 +200,46 @@ function styleOf(g: GraphicsInstructionLog, action: "fill" | "stroke"): { width?
   return instr ? (instr.data as unknown as { style: { width?: number; color?: number; alpha?: number } }).style : null;
 }
 
+describe("PixiBackend.setVisibilityBlend", () => {
+  test("reuses both captured RenderTextures across many ticks holding the same (from, to) sample pair — only the blend factor moves", () => {
+    // Mirrors RenderEngine.applyVisionSweep's per-tick call shape: a sweep holds the same
+    // (from, to) sample pair for many consecutive ticks, only `factor` advancing.
+    const { backend, renderCalls } = headlessBackendWithRenderCounter();
+    const from: VisibilityInput = { mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10, 0, 10] }], explored: [], perceived: [] };
+    const to: VisibilityInput = { mode: "masked", visible: [{ points: [0, 0, 20, 0, 20, 20, 0, 20] }], explored: [], perceived: [] };
+    for (let i = 0; i < 30; i++) backend.setVisibilityBlend(from, to, i / 30);
+    // One GPU render-to-texture pass per endpoint (from, to) — never one pair per tick.
+    expect(renderCalls.count).toBeLessThan(5);
+  });
+
+  test("captures a fresh pair whenever the (from, to) content actually changes — render count scales with DISTINCT pairs, not tick count", () => {
+    // A cache that stops discriminating (e.g. a key collapsed to a constant) would pass the
+    // "holds the same pair" test above and show an even LARGER render-count reduction here,
+    // while silently reusing a stale rasterized texture for content that genuinely changed —
+    // exactly the failure `visibilityInputKey`'s own discrimination tests guard against.
+    const { backend, renderCalls } = headlessBackendWithRenderCounter();
+    const endpoints: VisibilityInput[] = Array.from({ length: 6 }, (_, i) => ({
+      mode: "masked",
+      visible: [{ points: [0, 0, (i + 1) * 10, 0, (i + 1) * 10, (i + 1) * 10, 0, (i + 1) * 10] }],
+      explored: [],
+      perceived: [],
+    }));
+    const ticksPerPair = 6;
+    const pairCount = endpoints.length - 1;
+    for (let pair = 0; pair < pairCount; pair++) {
+      for (let tick = 0; tick < ticksPerPair; tick++) {
+        backend.setVisibilityBlend(endpoints[pair], endpoints[pair + 1], tick / ticksPerPair);
+      }
+    }
+    // Exactly one fresh capture per endpoint (2 per pair transition), never per tick: a
+    // content-blind cache would report far fewer than 2*pairCount; a never-caching one would
+    // report 2*pairCount*ticksPerPair (60).
+    expect(renderCalls.count).toBe(2 * pairCount);
+  });
+});
+
 describe("PixiBackend.updateTokenGeneratedFrame", () => {
-  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
 
   test("composes background → masked art → ring inside visualContainer, under the faction border", () => {
     const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
@@ -204,7 +307,7 @@ describe("PixiBackend.updateTokenGeneratedFrame", () => {
 });
 
 describe("PixiBackend.updateTokenAura", () => {
-  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
   const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
 
   test("draws the disc as the container's bottom-most child with the given color + opacity", () => {
@@ -254,7 +357,7 @@ describe("PixiBackend.updateTokenAura", () => {
 });
 
 describe("PixiBackend.updateTokenFx", () => {
-  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square" };
+  const base: Omit<TokenNodeSpec, "visual"> = { x: 0, y: 0, w: 100, h: 50, rotation: 0, borderColor: null, badges: [], shape: "square", perceived: false };
   const imageVisual: TokenNodeSpec["visual"] = { kind: "image", url: "u" };
 
   test("composes the fx list into one ColorMatrixFilter on the visualContainer", () => {

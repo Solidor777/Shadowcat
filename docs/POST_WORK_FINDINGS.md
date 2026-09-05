@@ -3,6 +3,18 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: vitest worker start-up timeouts under sibling-worktree cargo load. Summary: on
+  the M17c gate run, `pnpm run test:scripts` failed 4 then 2 tests across two runs (each a
+  20s/5s per-test timeout, the failing test moving between runs, incl. the skill-corpus
+  conservation check), and `pnpm --filter @shadowcat/core test:e2e` failed once on the module
+  toolchain spec and once with a `vitest-pool` "Timeout waiting for worker to respond" while
+  starting a different spec — all while another session's cargo build was running on the
+  machine. Every failing file passed in isolation (117/117, 97/97) with zero code change; no
+  assertion failed at any point. Same contention class as the render-ready flakes, but at
+  worker start-up rather than inside a test. Status: Needs Review (if it recurs on a quiet
+  machine, raise the per-test timeout on the corpus-scanning script tests, which read the
+  whole skills checkout).
+
 - Title: ui-e2e hex-movement setup step flaked once on CI. Summary: on the docs
   Phase-1 push (run 30558898300, ubuntu), `hex-movement.spec.ts` "non-GM
   wall-crossing drag rejected" failed at a SETUP assertion — the GM view's

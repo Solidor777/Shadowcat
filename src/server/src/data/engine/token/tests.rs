@@ -11,6 +11,7 @@ fn base() -> TokenEngine {
         actor_id: None,
         overrides: None,
         face: None,
+        elevation: None,
     }
 }
 
@@ -28,6 +29,9 @@ fn non_finite_fields_are_rejected() {
         let mut t = base();
         t.rotation = f;
         assert!(t.validate().is_err(), "rotation = {f} must be rejected");
+        let mut t = base();
+        t.elevation = Some(f);
+        assert!(t.validate().is_err(), "elevation = {f} must be rejected");
     }
 }
 
@@ -210,6 +214,8 @@ fn token_validate_covers_override_emissions() {
         size: None,
         shape: None,
         vision: None,
+        light: None,
+        movement: None,
         aura: Some(AuraEmission {
             color: "nope".to_string(),
             opacity: 0.4,
@@ -229,6 +235,8 @@ fn token_validate_covers_override_emissions() {
         size: None,
         shape: None,
         vision: None,
+        light: None,
+        movement: None,
         aura: Some(aura()),
         sound: Some(sound()),
         vfx: Some(vfx()),

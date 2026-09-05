@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use crate::data::engine::scene::LightEmission;
+
 /// A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
 /// is the token CENTER. `visual` is set only on raw (actorless) tokens —
 /// actor-backed tokens resolve their visual via the linked/embedded actor.
@@ -46,6 +48,12 @@ pub struct TokenEngine {
     /// actor's faces map, not an override of actor data).
     #[serde(default)]
     pub face: Option<String>,
+    /// Elevation above the scene's ground plane (`None`/absent = 0, grounded).
+    /// Token state, not actor state: altitude is per-token. Read through
+    /// `scene::elevation::elevation_or_ground`, which clamps a non-finite
+    /// stored value to ground.
+    #[serde(default)]
+    pub elevation: Option<f64>,
 }
 
 impl TokenEngine {
@@ -72,6 +80,11 @@ impl TokenEngine {
         ] {
             if !v.is_finite() {
                 return Err(format!("{name} must be finite"));
+            }
+        }
+        if let Some(e) = self.elevation {
+            if !e.is_finite() {
+                return Err("elevation must be finite".to_string());
             }
         }
         let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
@@ -267,6 +280,19 @@ pub struct TokenOverrides {
     /// when present.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Per-token light override: replaces the actor's `light` entirely when
+    /// present (wholesale, same shape as `vision`); an emission with
+    /// `enabled: false` suppresses this token's carried light. Authoring it is
+    /// GM-only at ingress (`permission::carried_light_touched`): an emission joins the shared
+    /// illumination field every viewer's mask reads, unlike the other owner-writable overrides.
+    #[serde(default)]
+    pub light: Option<LightEmission>,
+    /// Per-token movement-tag override: replaces the actor's resolved movement set (actor ∪
+    /// faction) entirely when present — wholesale, same shape as `vision`. The engine-reserved
+    /// semantics of `"flying"`/`"incorporeal"` are stated on `ActorEngine::movement`; they apply
+    /// identically to tags arriving through this override.
+    #[serde(default)]
+    pub movement: Option<Vec<String>>,
     /// Per-token aura override: replaces the actor's `aura` entirely when
     /// present (wholesale, never merged).
     #[serde(default)]
@@ -282,9 +308,14 @@ pub struct TokenOverrides {
 }
 
 impl TokenOverrides {
-    /// Ingress validation of the emission payloads only (`aura`/`sound`/`vfx`);
+    /// Ingress validation of the emission payloads only (`light`/`aura`/`sound`/`vfx`);
     /// every other whitelisted field's shape is serde-enforced.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(light) = &self.light {
+            light
+                .validate()
+                .map_err(|m| format!("overrides.light: {m}"))?;
+        }
         if let Some(aura) = &self.aura {
             aura.validate()?;
         }
@@ -526,6 +557,22 @@ pub struct ActorEngine {
     /// + range in grid cells.
     #[serde(default)]
     pub vision: Option<Vec<VisionAssignment>>,
+    /// Light this actor's tokens carry: every token resolving this actor
+    /// emits it at its live position unless the token's override replaces or
+    /// suppresses it (`TokenOverrides::light`). Writing it is GM-only at ingress
+    /// (`permission::carried_light_touched`), since an emission edits the shared illumination
+    /// field every viewer's mask reads.
+    #[serde(default)]
+    pub light: Option<LightEmission>,
+    /// Movement-type tags (system vocabulary space, same posture as `conditions`). The engine
+    /// reserves exactly two — `"flying"` and `"incorporeal"` — each meaning the mover ignores
+    /// difficult-terrain COST (`RegionField::terrain_multiplier` reads as 1.0) and NOTHING else:
+    /// walls still gate, impassable regions still block, arrest regions still stop, and the
+    /// visibility mask still gates. Unknown tags are carried as inert data for system modules to
+    /// interpret. Resolution (`SceneEcs::token_movement_tags` / `resolveTokenActor`) unions these
+    /// with the linked faction's `Faction.movement`; a token override replaces the whole set.
+    #[serde(default)]
+    pub movement: Vec<String>,
     /// The actor's aura emission, inherited by linked tokens (a per-token
     /// `TokenOverrides.aura` replaces it wholesale).
     #[serde(default)]
@@ -542,9 +589,12 @@ pub struct ActorEngine {
 
 impl ActorEngine {
     /// Ingress validation beyond serde shape, covering ONLY the emission
-    /// payloads (`aura`/`sound`/`vfx`) — every pre-existing field keeps its
-    /// serde-enforced shape and its current behavior.
+    /// payloads (`light` through `LightEmission::validate`, plus `aura`/`sound`/`vfx`) — every
+    /// other field keeps its serde-enforced shape.
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(light) = &self.light {
+            light.validate().map_err(|m| format!("light: {m}"))?;
+        }
         if let Some(aura) = &self.aura {
             aura.validate()?;
         }

@@ -25,8 +25,8 @@ pub use combat::{
 };
 pub use geometry::{
     DrawingEngine, DrawingShape, Fill, NoticeAudience, RegionEngine, RegionShape, RegionTrigger,
-    Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallEngine,
-    MAX_TRIGGER_ID_CHARS,
+    Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallElevation,
+    WallEngine, MAX_TRIGGER_ID_CHARS,
 };
 pub use registries::{
     Channel, ChannelDiceOverride, ChannelRegistryEngine, ChatSettingsEngine, Condition,
@@ -34,10 +34,11 @@ pub use registries::{
     FactionRegistryEngine, FactionStance,
 };
 pub use scene::{
-    AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, Grid, GridDistance,
-    LightEngine, LightGradationEngine, LightMode, MovementModel, MovementRestriction, Pathfinding,
-    SceneDimensions, SceneEngine, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
-    VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine,
+    AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, FalloffCurve, Grid,
+    GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode, MovementModel,
+    MovementRestriction, Pathfinding, Perception, SceneDimensions, SceneEngine,
+    SceneLightingOverrides, SceneVisionOverrides, VisionMode, VisionModesEngine,
+    WorldSceneDefaults, WorldSettingsEngine,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
@@ -231,7 +232,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("region: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
-        "light" => round_trip::<LightEngine>(v, "light"),
+        "light" => {
+            let typed: LightEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("light: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("light: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "drawing" => round_trip::<DrawingEngine>(v, "drawing"),
         "template" => round_trip::<TemplateEngine>(v, "template"),
         "actor" => {

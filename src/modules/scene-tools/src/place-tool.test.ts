@@ -98,6 +98,8 @@ const actorEngine = (prototype: boolean) => ({
   conditions: [],
   prototype,
   vision: null,
+  light: null,
+  movement: [],
   aura: null,
   sound: null,
   vfx: null,

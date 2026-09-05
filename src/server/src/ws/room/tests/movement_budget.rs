@@ -1065,3 +1065,147 @@ async fn a_token_that_is_not_a_combatant_moves_freely_during_combat() {
         .await
         .is_ok());
 }
+
+/// Links the budget scene's player token to a fresh world actor carrying `movement` tags (the
+/// terrain-exemption source `token_movement_tags` resolves), through two ordinary publishes:
+/// the actor create, then a wholesale `/engine` write whose OCC pre-image is the token's LIVE
+/// stored engine body (read back from the repo, never re-derivable fixture text).
+async fn link_movement_actor(h: &BudgetHandle, movement: serde_json::Value) {
+    use serde_json::json;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let actor_id = Uuid::from_u128(0x5CEB);
+    let mut actor = wdoc(h.world_id, actor_id, "actor");
+    actor.owner = Some(h.gm.user_id);
+    actor.engine = Some(json!({
+        "displayName": "Skyborn",
+        "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "square",
+        "faction": null,
+        "conditions": [],
+        "prototype": false,
+        "movement": movement
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: actor }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let stored = h
+        .repo
+        .get_document(h.token_id)
+        .await
+        .unwrap()
+        .expect("player token")
+        .engine
+        .expect("engine body");
+    let mut linked = stored.clone();
+    linked["actor_id"] = json!(actor_id.to_string());
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Update {
+                doc_id: h.token_id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine".into(),
+                    old: stored,
+                    new: linked,
+                }],
+            }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+}
+
+/// Publishes a ×3 terrain region over the three cells the `start → adj → adj2 → adj3` walk
+/// enters, parented to the budget scene.
+async fn add_terrain_band(h: &BudgetHandle) {
+    use serde_json::json;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let mut region = wdoc(h.world_id, Uuid::from_u128(0x5CEC), "region");
+    region.parent_id = Some(h.scene_id);
+    region.owner = Some(h.gm.user_id);
+    region.engine = Some(json!({
+        "shape": { "kind": "rect", "points": [100.0, 0.0, 400.0, 100.0] },
+        "behavior": "terrain",
+        "cost": 3.0,
+        "enabled": true
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: region }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn exempt_mover_decrements_the_exempt_cost_where_the_ground_mover_pays_the_multiplier() {
+    use serde_json::json;
+    // Budget 10 cells (current 10 / perCell 1); the two-step walk crosses two ×3 cells, so the
+    // ground mover pays 6 and the flying mover pays 2 — the SAME move, the SAME budget gate,
+    // and the decrement consumes the executor's exempt `MoveOutcome.cost` unchanged.
+    let ground = budget_scene("hard", "per_cell", Some(1.0)).await;
+    add_terrain_band(&ground).await;
+    let flying = budget_scene("hard", "per_cell", Some(1.0)).await;
+    add_terrain_band(&flying).await;
+    link_movement_actor(&flying, json!(["flying"])).await;
+
+    let ground_res = ground
+        .room
+        .execute_move(
+            &ground.repo,
+            &ground.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: ground.scene_id,
+                token: ground.token_id,
+                path: vec![ground.start, ground.adj, ground.adj2],
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(ground_res.stop, ground.adj2);
+    assert_eq!(
+        ground.resource_current().await,
+        4.0,
+        "ground mover: 10 - 2 steps × 3"
+    );
+
+    let fly_res = flying
+        .room
+        .execute_move(
+            &flying.repo,
+            &flying.player,
+            crate::ws::room::MoveRequestInputs {
+                scene_id: flying.scene_id,
+                token: flying.token_id,
+                path: vec![flying.start, flying.adj, flying.adj2],
+                ts: now_millis(),
+                request_id: Uuid::nil(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(fly_res.stop, flying.adj2);
+    assert_eq!(
+        flying.resource_current().await,
+        8.0,
+        "flying mover: 10 - 2 steps × 1 (terrain multiplier reads as 1.0)"
+    );
+}

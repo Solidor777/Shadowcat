@@ -14,7 +14,7 @@ function gmStoreWith(...docs: WireDocument[]) {
 describe("FactionsPanel field edits", () => {
   it("reads the raw stored value as `old` on a SECOND edit to the same field (OCC regression)", async () => {
     const dispatchIntent = vi.fn();
-    const registry = buildFactionRegistryDoc("w1", { f1: { name: "Friendly", color: "#3fb950", stance: "friendly" } }, "reg1");
+    const registry = buildFactionRegistryDoc("w1", { f1: { name: "Friendly", color: "#3fb950", stance: "friendly", movement: [] } }, "reg1");
     const store = gmStoreWith(registry);
     render(FactionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }) });
 
@@ -48,5 +48,28 @@ describe("server-seeded faction registry", () => {
     render(FactionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: new DocumentStore(), dispatchIntent }) });
     await Promise.resolve();
     expect(dispatchIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe("FactionsPanel movement tags", () => {
+  it("a row tag toggle dispatches a whole-array update with the raw stored list as old", async () => {
+    const dispatchIntent = vi.fn();
+    const registry = buildFactionRegistryDoc("w1", { f1: { name: "Friendly", color: "#3fb950", stance: "friendly", movement: ["flying"] } }, "reg1");
+    render(FactionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(registry), dispatchIntent }) });
+
+    await fireEvent.click(screen.getByTestId("movement-toggle-incorporeal"));
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "reg1", changes: [{ path: "/engine/factions/f1/movement", old: ["flying"], new: ["flying", "incorporeal"] }] },
+    ]);
+  });
+
+  it("add seeds a new faction with an empty movement list", async () => {
+    const dispatchIntent = vi.fn();
+    const registry = buildFactionRegistryDoc("w1", {}, "reg1");
+    render(FactionsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(registry), dispatchIntent }) });
+
+    await fireEvent.click(screen.getByText("factions.add"));
+    const calls = dispatchIntent.mock.calls[0][0];
+    expect(calls[0].changes[0].new).toMatchObject({ movement: [] });
   });
 });

@@ -4,7 +4,7 @@
 // A `//` header, not a `/** */` block: a doc block preceding another doc block rather
 // than a declaration binds to nothing, since every consumer takes the NEAREST one.
 
-import type { MoveVisionSample } from "./types";
+import type { Polygon, VisibilityInput } from "./types";
 
 /**
  * Blend factor for cross-fading between two consecutive vision samples' rasterized fog
@@ -64,12 +64,36 @@ export function fogBlendRtStale(existing: {
   return existing.width !== width || existing.height !== height || existing.resolution !== resolution;
 }
 
+/**
+ * A content fingerprint of one `VisibilityInput`, covering exactly the fields `paintFogSheets`
+ * reads (`mode`, `visible`, `explored` — never `perceived`, which that function never touches).
+ * Two inputs with equal keys paint pixel-identical fog, so `PixiBackend.setVisibilityBlend` uses
+ * this to skip re-rasterizing a cross-fade endpoint whose content is unchanged from the previous
+ * tick: a sweep holds the same `(from, to)` pair for many consecutive ticks (only the blend
+ * `factor` moves), so recapturing on every tick redoes the SAME `paintFogSheets` draw + GPU
+ * render-to-texture pass for content that has not changed since the prior call.
+ * @param input The visibility sample to fingerprint.
+ * @returns A string equal for two inputs `paintFogSheets` would draw identically.
+ * @example
+ * ```
+ * // not exported from @shadowcat/render; internal to PixiBackend.setVisibilityBlend
+ * visibilityInputKey({ mode: "all", visible: [], explored: [], perceived: [] }); // "all"
+ * ```
+ */
+export function visibilityInputKey(input: VisibilityInput): string {
+  if (input.mode !== "masked") return input.mode;
+  const ring = (p: Polygon): string => p.points.join(",");
+  return `masked|${input.visible.map(ring).join(";")}|${input.explored.map(ring).join(";")}`;
+}
+
 /** The sweep sample that should be showing at `elapsed` ms: the one with the greatest
- * `tMs <= elapsed`, or the first sample when `elapsed` precedes every sample.
+ * `tMs <= elapsed`, or the first sample when `elapsed` precedes every sample. ONE rule for
+ * every timed timeline — the fog sweep's `MoveVisionSample`s and the lighting sweep's
+ * `MoveLightSample`s select through this same function, never a second copy.
  * INVARIANT (server parity): mirrors the server's `chosen_vision_sample` — the egress clip admits
  * a moving token's sample only where this sample's polygons will show it. Fixture-tested on both
- * sides (`__fixtures__/chosen-vision-sample.json`).
- * @param samples The sweep's ordered vision samples (non-empty).
+ * sides and both sample kinds (`__fixtures__/chosen-vision-sample.json`).
+ * @param samples The sweep's ordered samples (non-empty).
  * @param elapsed Milliseconds elapsed since the sweep started.
  * @returns The sample to show at `elapsed`.
  * @example
@@ -77,7 +101,10 @@ export function fogBlendRtStale(existing: {
  * chooseVisionSample([{ tMs: 0, polygons: [] }, { tMs: 500, polygons: [] }], 250).tMs; // 0
  * ```
  */
-export function chooseVisionSample(samples: MoveVisionSample[], elapsed: number): MoveVisionSample {
+export function chooseVisionSample<T extends {
+  /** The sample's elapsed offset from its timeline's origin, in ms. */
+  tMs: number;
+}>(samples: T[], elapsed: number): T {
   let chosen = samples[0];
   for (const s of samples) {
     if (s.tMs <= elapsed) chosen = s;

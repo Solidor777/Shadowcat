@@ -21,8 +21,8 @@ use crate::data::engine::{
     SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
-    cap, declared_caps_for_document, declared_caps_for_path, required_cap_for_path,
-    resolve_access_world, Access,
+    cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
+    declared_caps_for_path, required_cap_for_path, resolve_access_world, Access,
 };
 use crate::data::repository::Repository;
 use crate::data::snapshot::{CommandSnapshot, StoredCommand};
@@ -2775,89 +2775,6 @@ fn merged_combat_engine(cur: &Document, changes: &[FieldChange]) -> Option<Comba
     doc.engine.and_then(|e| serde_json::from_value(e).ok())
 }
 
-/// Largest integer magnitude an `f64` represents exactly (2^53); beyond this,
-/// adjacent integers alias to the same `f64`, so a Number/variant comparison
-/// falling back to `as f64` would silently equate genuinely different values.
-const MAX_EXACT_F64_INT: i128 = 1i128 << 53;
-
-/// Structural equality used ONLY at `SqliteRepository::apply_intent`'s Phase-1 OCC pre-image
-/// comparison (`actual != ch.old`). `serde_json::Value::Number`
-/// splits whole numbers into `PosInt`/`NegInt` and non-whole numbers into `Float`;
-/// an engine field stored as a whole-number `f64` (e.g. `100.0`) serializes to
-/// `Float(100.0)`, but a JS client cannot preserve "this was a float" through
-/// `JSON.parse`/re-serialize for a whole-number value, so an echoed pre-image
-/// comes back as `PosInt(100)`. Raw `==` treats these as unequal, causing a
-/// spurious `Conflict` on an otherwise up-to-date write (e.g. an ordinary token
-/// drag after a server-executed `execute_move`, or the `ActorsPanel` vision-range
-/// editor's nested `range` field). This function recurses into `Object`/`Array`
-/// structure and treats mismatched-variant Number leaves as equal when they
-/// represent the same value. Two Numbers that BOTH parse as integers (either
-/// PosInt/NegInt variant) are compared EXACTLY as `i128`, with no magnitude
-/// limit -- this case never touches `f64`, so distinct large integers (past
-/// 2^53) never alias into a false match. The `|n| <= 2^53` exactness guard
-/// applies ONLY to the genuinely mixed case, one side an integer and the other
-/// a `Float`, where an `f64` comparison is unavoidable because the Float side
-/// has no exact integer form; outside that range, or for any non-Number
-/// mismatch, it falls back to serde's derived `PartialEq`.
-fn values_semantically_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    use serde_json::Value;
-    match (a, b) {
-        (Value::Object(ma), Value::Object(mb)) => {
-            ma.len() == mb.len()
-                && ma
-                    .iter()
-                    .all(|(k, va)| mb.get(k).is_some_and(|vb| values_semantically_eq(va, vb)))
-        }
-        (Value::Array(xa), Value::Array(xb)) => {
-            xa.len() == xb.len()
-                && xa
-                    .iter()
-                    .zip(xb.iter())
-                    .all(|(va, vb)| values_semantically_eq(va, vb))
-        }
-        (Value::Number(na), Value::Number(nb)) => {
-            if na == nb {
-                return true;
-            }
-            // Variants differ (one PosInt/NegInt, the other Float, or the pair
-            // straddles PosInt/NegInt with mismatched sign representation).
-            // Compare numerically only when any integer operand is exactly
-            // representable as f64; otherwise trust the exact comparison above.
-            let ia = na
-                .as_i64()
-                .map(|v| v as i128)
-                .or_else(|| na.as_u64().map(|v| v as i128));
-            let ib = nb
-                .as_i64()
-                .map(|v| v as i128)
-                .or_else(|| nb.as_u64().map(|v| v as i128));
-            match (ia, ib) {
-                // Both sides parse as integers (PosInt/NegInt pair): i128 holds
-                // every i64/u64 value without loss, so compare exactly. Never
-                // fall through to f64 here -- two distinct integers past 2^53
-                // (e.g. 2^62 vs 2^62 + 1) alias to the same f64 and would
-                // falsely compare equal, which is an OCC bypass (a stale
-                // pre-image would match a genuinely different stored value).
-                (Some(va), Some(vb)) => va == vb,
-                // Genuinely mixed case: one side is an integer, the other a
-                // Float. f64 comparison is unavoidable here since the Float
-                // side has no exact integer representation; only exact when
-                // the integer side is within f64's exact range.
-                (Some(v), None) | (None, Some(v))
-                    if v.unsigned_abs() > MAX_EXACT_F64_INT as u128 =>
-                {
-                    false
-                }
-                _ => match (na.as_f64(), nb.as_f64()) {
-                    (Some(fa), Some(fb)) => fa == fb,
-                    _ => false,
-                },
-            }
-        }
-        _ => a == b,
-    }
-}
-
 #[async_trait]
 impl Repository for SqliteRepository {
     async fn apply_command(&self, cmd: UnsequencedCommand) -> Result<StoredCommand, DataError> {
@@ -3551,6 +3468,20 @@ impl Repository for SqliteRepository {
                             return Err(DataError::Forbidden);
                         }
                     }
+                    // Create carries no field paths, so the carried-light GM gate
+                    // (see the Update arm below) checks the body directly: a non-GM may not
+                    // create a token/actor already carrying an emission, even in a world whose
+                    // `core:create` grant otherwise admits the Create itself.
+                    if !origin.skips_capability_gates()
+                        && ctx.world_role != WorldRole::Gm
+                        && carried_light_in_body(&doc.doc_type, &doc_json)
+                    {
+                        tracing::debug!(
+                            user = %ctx.user_id, doc_type = %doc.doc_type,
+                            "create denied: carried-light authoring is GM-only"
+                        );
+                        return Err(DataError::Forbidden);
+                    }
                     // Create is non-clobbering: an existing id is a conflict,
                     // not a silent overwrite (unlike upsert in apply_command).
                     if Self::load_document(&mut *tx, doc.id).await?.is_some() {
@@ -3813,6 +3744,29 @@ impl Repository for SqliteRepository {
                                 }
                             }
                         }
+                        // Carried-light authoring is GM-only, value-aware
+                        // (`permission::carried_light_touched`): an emission joins the SHARED
+                        // illumination field every viewer's lit mask and movement gate read, so
+                        // unlike an owner's other writable fields (presentation/self-scoped),
+                        // writing one edits other players' secrecy masks. An ancestor write is
+                        // refused only when the emission subtree actually changes, so a whole-
+                        // `/engine/overrides` write that leaves `light` untouched stays legal.
+                        if !origin.skips_capability_gates()
+                            && ctx.world_role != WorldRole::Gm
+                            && carried_light_touched(
+                                &cur.doc_type,
+                                &ch.path,
+                                ch.remove,
+                                &whole,
+                                &ch.new,
+                            )
+                        {
+                            tracing::debug!(
+                                user = %ctx.user_id, path = %ch.path,
+                                "intent denied: carried-light authoring is GM-only"
+                            );
+                            return Err(DataError::Forbidden);
+                        }
                         let actual = whole
                             .pointer(&ch.path)
                             .cloned()
@@ -3821,7 +3775,7 @@ impl Repository for SqliteRepository {
                         // through a JS client loses its Float-ness (PosInt/Float variant
                         // split), so raw `!=` here would spuriously Conflict an otherwise
                         // up-to-date write. See `values_semantically_eq` doc comment.
-                        if !values_semantically_eq(&actual, &ch.old) {
+                        if !crate::data::command::values_semantically_eq(&actual, &ch.old) {
                             return Err(DataError::Conflict(format!(
                                 "stale pre-image at {}",
                                 ch.path

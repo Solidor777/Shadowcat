@@ -28,6 +28,7 @@ function tokenEngine(linked: boolean, overrides: TokenEngine["overrides"] = null
     h: 100,
     rotation: 0,
     visual: null,
+    elevation: null,
     actor_id: linked ? "act1" : null,
     overrides,
     face: null,
@@ -38,7 +39,7 @@ function actorDoc(visual: TokenVisual = { kind: "image", asset: "a1" }): WireDoc
   return buildActorDoc(
     "w1",
     "Troll",
-    { displayName: "Troll", visual, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null },
+    { displayName: "Troll", visual, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, aura: null, sound: null, vfx: null , light: null, movement: [] },
     "act1",
   );
 }
@@ -98,7 +99,7 @@ describe("TokenVisualControl", () => {
   it("apply reads the RAW stored override as the OCC pre-image", async () => {
     const dispatchIntent = vi.fn();
     const existing: TokenVisual = { kind: "image", asset: "ov1" };
-    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null };
+    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null , light: null, movement: null };
     render(TokenVisualControl, {
       context: setAppContextForTest({ documents: storeWith(actorDoc(), buildTokenDoc("w1", "scene1", tokenEngine(true, overrides), "tok1")), dispatchIntent, canEdit: () => true, assets }),
       props: { tokenId: "tok1" },
@@ -116,7 +117,7 @@ describe("TokenVisualControl", () => {
   it("clear dispatches /engine/overrides/visual writing null with the raw stored override as `old`", async () => {
     const dispatchIntent = vi.fn();
     const existing: TokenVisual = { kind: "image", asset: "ov1" };
-    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null };
+    const overrides = { name: null, visual: existing, size: null, shape: null, vision: null, aura: null, sound: null, vfx: null , light: null, movement: null };
     render(TokenVisualControl, {
       context: setAppContextForTest({ documents: storeWith(actorDoc(), buildTokenDoc("w1", "scene1", tokenEngine(true, overrides), "tok1")), dispatchIntent, canEdit: () => true, assets }),
       props: { tokenId: "tok1" },

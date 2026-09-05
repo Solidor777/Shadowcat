@@ -11,13 +11,15 @@ fn sq(cell: f64) -> SquareGrid {
     }
 }
 
-/// A square covering one cell's center marks exactly that cell (resolution = cell).
+/// A 3×3 block of cell indices, the seed most tests below share.
+fn block(n: i32) -> impl Iterator<Item = (i32, i32)> {
+    (0..n).flat_map(move |i| (0..n).map(move |j| (i, j)))
+}
+
 #[test]
-fn marks_cells_whose_center_is_inside() {
+fn marks_the_cells_it_is_given_and_reports_growth() {
     let mut set = ExploredSet::new();
-    // A 100×100 square from (0,0) to (100,100); cell_size 100 → cell (0,0) center (50,50) is in.
-    let poly = vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0];
-    let grew = set.mark_polygons(&[poly], &sq(100.0), 100.0);
+    let grew = set.mark_cells([(0, 0)]);
     assert_eq!(grew, 1);
     assert!(set.contains((0, 0)));
     assert!(!set.contains((1, 0)));
@@ -26,10 +28,9 @@ fn marks_cells_whose_center_is_inside() {
 #[test]
 fn accumulation_is_monotone_no_growth_on_revisit() {
     let mut set = ExploredSet::new();
-    let poly = vec![0.0, 0.0, 300.0, 0.0, 300.0, 300.0, 0.0, 300.0];
-    let first = set.mark_polygons(std::slice::from_ref(&poly), &sq(100.0), 100.0);
+    let first = set.mark_cells(block(3));
     assert_eq!(first, 9); // a 3×3 block of cells
-    let again = set.mark_polygons(&[poly], &sq(100.0), 100.0);
+    let again = set.mark_cells(block(3));
     assert_eq!(again, 0, "revisiting the same area adds no cells");
     assert_eq!(set.len(), 9);
 }
@@ -37,11 +38,7 @@ fn accumulation_is_monotone_no_growth_on_revisit() {
 #[test]
 fn round_trips_through_bytes_deterministically() {
     let mut set = ExploredSet::new();
-    set.mark_polygons(
-        &[vec![0.0, 0.0, 250.0, 0.0, 250.0, 250.0, 0.0, 250.0]],
-        &sq(100.0),
-        100.0,
-    );
+    set.mark_cells(block(3));
     let bytes = set.to_bytes(crate::scene::GridKind::Square);
     assert_eq!(bytes.len(), EXPLORED_HEADER_LEN + set.len() * 8);
     let back = ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Square);
@@ -51,11 +48,7 @@ fn round_trips_through_bytes_deterministically() {
 #[test]
 fn from_bytes_drops_a_truncated_trailing_record() {
     let mut set = ExploredSet::new();
-    set.mark_polygons(
-        &[vec![0.0, 0.0, 100.0, 0.0, 100.0, 100.0, 0.0, 100.0]],
-        &sq(100.0),
-        100.0,
-    );
+    set.mark_cells([(0, 0)]);
     // One cell, via the real encoder, then a 2-byte truncated tail appended by hand.
     let mut bytes = set.to_bytes(crate::scene::GridKind::Square);
     bytes.extend_from_slice(&[0xAB, 0xCD]);
@@ -64,37 +57,9 @@ fn from_bytes_drops_a_truncated_trailing_record() {
 }
 
 #[test]
-fn bounds_a_polygon_whose_bbox_exceeds_the_cell_cap_to_the_scan_window() {
-    // A long thin strip: bbox ~9,000,000 × 4 cells at cell_size 1, over the 4M cap. The
-    // enumeration is clamped to a window around the bbox centre rather than skipped, so
-    // the polygon does bounded work instead of none.
+fn an_empty_cell_set_marks_nothing() {
     let mut set = ExploredSet::new();
-    let strip = vec![0.0, 0.0, 9_000_000.0, 0.0, 9_000_000.0, 3.0, 0.0, 3.0];
-    let grew = set.mark_polygons(&[strip], &sq(1.0), 1.0);
-    assert!(
-        grew > 0,
-        "the clamped scan marks a bounded neighbourhood, not nothing"
-    );
-    // The bbox centre's own column sits at x = 4_500_000.
-    assert!(
-        set.contains((4_500_000, 0)),
-        "the cell at the bbox centre's own column is marked"
-    );
-    let outside = 4_500_000 + SCAN_WINDOW_HALF_CELLS as i32 + 10;
-    assert!(
-        !set.contains((outside, 0)),
-        "a cell far outside the window is not marked"
-    );
-}
-
-#[test]
-fn empty_polygon_and_nonpositive_cell_size_mark_nothing() {
-    let mut set = ExploredSet::new();
-    assert_eq!(set.mark_polygons(&[vec![0.0, 0.0]], &sq(100.0), 100.0), 0); // < 3 points
-    assert_eq!(
-        set.mark_polygons(&[vec![0.0, 0.0, 9.0, 0.0, 9.0, 9.0]], &sq(1.0), 0.0),
-        0
-    ); // bad size
+    assert_eq!(set.mark_cells(std::iter::empty()), 0);
     assert!(set.is_empty());
 }
 
@@ -104,11 +69,7 @@ fn a_blob_written_under_one_grid_kind_does_not_decode_under_the_other() {
     // the assertion is that the SAME bytes yield cells under one kind and none under the
     // other, which no format lacking the tag can satisfy.
     let mut set = ExploredSet::new();
-    set.mark_polygons(
-        &[vec![0.0, 0.0, 250.0, 0.0, 250.0, 250.0, 0.0, 250.0]],
-        &sq(100.0),
-        100.0,
-    );
+    set.mark_cells(block(3));
     let bytes = set.to_bytes(crate::scene::GridKind::Square);
     assert_eq!(
         ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Square),
@@ -134,52 +95,12 @@ fn a_headerless_blob_decodes_to_nothing() {
 fn a_hex_blob_round_trips_under_its_own_kind() {
     // Discrimination: fails if the header is written but the record payload is mis-offset,
     // which a square-only round-trip test would not catch.
-    let g = HexGrid { size: 100.0 };
-    let (cx, cy) = g.cell_center((1, 0));
-    let poly = vec![
-        cx - 10.0,
-        cy - 10.0,
-        cx + 10.0,
-        cy - 10.0,
-        cx + 10.0,
-        cy + 10.0,
-        cx - 10.0,
-        cy + 10.0,
-    ];
     let mut set = ExploredSet::new();
-    set.mark_polygons(&[poly], &g, g.size);
+    set.mark_cells([(1, 0), (-2, 3)]);
     let bytes = set.to_bytes(crate::scene::GridKind::Hex);
     assert_eq!(
         ExploredSet::from_bytes(&bytes, crate::scene::GridKind::Hex),
         set
-    );
-}
-
-/// On a hex grid, `mark_polygons` indexes HEX axial cells (through `GridShape`), not square
-/// cells: a polygon around a hex cell's center marks that hex's own axial coordinate, and the
-/// resulting `contains` composes with hex `line_traversal` move-cells. Proves the indexing is
-/// grid-shape-driven, not hardcoded square math.
-#[test]
-fn hex_grid_marks_the_hex_axial_cell_containing_a_covered_center() {
-    let g = HexGrid { size: 100.0 };
-    // Cover a small AABB tightly around hex (1,0)'s center; only that hex's center falls in it.
-    let (cx, cy) = g.cell_center((1, 0));
-    let poly = vec![
-        cx - 10.0,
-        cy - 10.0,
-        cx + 10.0,
-        cy - 10.0,
-        cx + 10.0,
-        cy + 10.0,
-        cx - 10.0,
-        cy + 10.0,
-    ];
-    let mut set = ExploredSet::new();
-    let grew = set.mark_polygons(&[poly], &g, g.size);
-    assert_eq!(grew, 1, "exactly the one hex whose center the AABB covers");
-    assert!(
-        set.contains((1, 0)),
-        "hex axial (1,0) is marked, not a square index"
     );
 }
 

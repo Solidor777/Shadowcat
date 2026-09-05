@@ -30,6 +30,24 @@ pub struct Seg {
     pub y2: f64,
 }
 
+/// The elevation interval a wall's occlusion applies to. A sight/light source at
+/// elevation `e` is occluded by the wall iff `bottom ≤ e ≤ top`; an absent end is
+/// unbounded (`bottom: None` = −∞, `top: None` = +∞). A wall whose `elevation`
+/// field is absent occludes every elevation, and a malformed interval
+/// (`bottom > top`, or a non-finite endpoint) fails closed to occluding
+/// everything — see `scene::elevation::wall_occludes`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct WallElevation {
+    /// Lower end of the occluded band; absent = unbounded below.
+    #[serde(default)]
+    pub bottom: Option<f64>,
+    /// Upper end of the occluded band; absent = unbounded above.
+    #[serde(default)]
+    pub top: Option<f64>,
+}
+
 /// A wall's segment + sight/light/movement-blocking flags. Absent/false
 /// flags exclude the wall from that gate, matching how each gate
 /// (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
@@ -50,6 +68,11 @@ pub struct WallEngine {
     /// traversal decision). Absent/false = passable.
     #[serde(default)]
     pub blocks_move: Option<bool>,
+    /// The elevation band this wall's sight/light occlusion applies to;
+    /// absent = occludes every elevation. Never consulted by the movement
+    /// gate (movement is ground-plane).
+    #[serde(default)]
+    pub elevation: Option<WallElevation>,
 }
 
 /// A region's vector geometry. `points` layout by

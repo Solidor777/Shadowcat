@@ -4,7 +4,7 @@ import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation } from "@shadowcat/core";
 import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
@@ -77,7 +77,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
       }, "tok1"),
     }],
   });
@@ -97,7 +97,7 @@ test("the measure tool's double-click route-commit reaches AppContext.moveReques
         moves.push({ tokenId, path });
         return {
           requestId: "r1", tokenId, mover: "u1", scene: "s1", startServerMs: 0,
-          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false,
+          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
         };
       },
     }),
@@ -132,7 +132,7 @@ test("the measure tool's Warn-overage label reaches AppContext.t (ToolRail must 
         op: "create",
         doc: buildTokenDoc("w1", "s1", {
           x: 50, y: 50, w: 100, h: 100, rotation: 0,
-          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+          visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
         }, "tok1"),
       },
     ],
@@ -216,7 +216,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
       op: "create",
       doc: buildTokenDoc("w1", "s1", {
         x: 0, y: 0, w: 100, h: 100, rotation: 0,
-        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null,
+        visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null,
       }, "tok1"),
     }],
   });
@@ -235,7 +235,7 @@ test("a non-GM's select drag issues a moveRequest and writes no document update"
         moves.push({ tokenId, path });
         return {
           requestId: "r1", tokenId, mover: "u1", scene: s, startServerMs: 0,
-          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, cost: 1, truncated: false,
+          durationMs: 300, stop: path.at(-1)!, samples: [], moverVision: null, moverLight: null, cost: 1, truncated: false,
         };
       },
     }),
@@ -332,7 +332,7 @@ test("a player who owns the single selected token sees and can use the speak-as-
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
       "tok1",
     ),
     owner: "u-self",
@@ -355,7 +355,7 @@ test("a non-owner player does not see the speak-as-token button", () => {
   const token = {
     ...buildTokenDoc(
       "w1", sceneDoc.id,
-      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null },
+      { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
       "tok1",
     ),
     owner: "someone-else",
@@ -378,7 +378,7 @@ test("no button renders when more than one token is selected, even for a GM", ()
   const documents = new DocumentStore();
   const sceneDoc = buildSceneDoc("w1", {}, "S1");
   documents.applyCommand({ seq: 1, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: sceneDoc }] });
-  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null };
+  const engine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: { kind: "image" as const, asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null };
   const tok1 = buildTokenDoc("w1", sceneDoc.id, engine, "tok1");
   const tok2 = buildTokenDoc("w1", sceneDoc.id, engine, "tok2");
   documents.applyCommand({ seq: 2, world_id: "w1", author: "gm", ts: 0, ops: [{ op: "create" as const, doc: tok1 }, { op: "create" as const, doc: tok2 }] });
@@ -406,4 +406,192 @@ test("select/input controls fit the rail's content box instead of overflowing it
   expect(controlsRuleMatch?.[1]).toMatch(/min-width:\s*0;/);
   expect(controlsRuleMatch?.[1]).toMatch(/max-width:\s*100%;/);
   expect(controlsRuleMatch?.[1]).toMatch(/box-sizing:\s*border-box;/);
+});
+
+// --- Light/wall editors (the shared editing selection) ---
+
+/** A store with one scene, one light at (200,200), one wall along y=700. */
+function editorStore(): DocumentStore {
+  const docs = sceneStore();
+  docs.applyCommand({
+    seq: 2, world_id: "w1", author: "a", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildLightDoc("w1", "s1", {
+          x: 200, y: 200,
+          elevation: null,
+          emission: { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true },
+        }, "light-1"),
+      },
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "wall", {
+          seg: { x1: 0, y1: 700, x2: 400, y2: 700 }, blocksSight: true, blocksMove: true, blocksLight: true,
+        }),
+      },
+    ],
+  });
+  return docs;
+}
+
+test("the light tool is GM-only in the rail; a GM sees it, a player does not", () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  expect(screen.getByTestId("tool-light")).toBeTruthy();
+
+  const second = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "player", scene: second.scene }) });
+  expect(screen.queryAllByTestId("tool-light")).toHaveLength(1); // only the GM instance's
+});
+
+test("clicking a light with the light tool opens the editor; edits dispatch whole-payload writes with the raw stored emission as old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  const tool = tools.at(-1)!;
+  tool.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tool.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  expect(await screen.findByTestId("light-editor")).toBeTruthy();
+
+  const stored = { color: "#ffcc66", intensity: 0.8, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true };
+
+  // Intensity edit: one `/engine/emission` write carrying the whole payload.
+  await fireEvent.change(screen.getByTestId("emission-intensity"), { target: { value: "0.5" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/emission", old: stored, new: { ...stored, intensity: 0.5 } }],
+  });
+
+  // Enabled toggle off (suppress, not delete).
+  await fireEvent.click(screen.getByTestId("emission-enabled"));
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/emission", old: stored, new: { ...stored, enabled: false } }],
+  });
+
+  // Falloff select writes the wrapper object inside the whole payload; the raw stored
+  // `falloff` was absent → null in both pre-image and payload.
+  await fireEvent.change(screen.getByTestId("emission-falloff"), { target: { value: "quadratic" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/emission", old: stored, new: { ...stored, falloff: { curve: "quadratic" } } }],
+  });
+});
+
+test("the light editor's delete dispatches the full pre-image and closes the editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tools.at(-1)!.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  await screen.findByTestId("light-editor");
+  await fireEvent.click(screen.getByTestId("light-delete"));
+  const op = dispatched.at(-1)![0];
+  expect(op.op).toBe("delete");
+  if (op.op === "delete") expect(op.doc.id).toBe("light-1");
+  expect(screen.queryByTestId("light-editor")).toBeNull();
+});
+
+test("selecting a wall with the select tool opens the flag editor; a flag toggle dispatches raw-old", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("wall-editor")).toBeTruthy();
+
+  await fireEvent.click(screen.getByTestId("wall-blocks-light")); // uncheck blocksLight
+  const wallId = docs.query("wall")[0].id;
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/blocksLight", old: true, new: false }],
+  });
+});
+
+test("Escape clears the open editor", async () => {
+  const { scene, tools } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: () => {} }) });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tools.at(-1)!.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  await screen.findByTestId("light-editor");
+  await fireEvent.keyDown(window, { key: "Escape" });
+  expect(screen.queryByTestId("light-editor")).toBeNull();
+});
+
+test("the light editor's elevation input writes /engine/elevation, normalizing ground to null", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: docs, dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-light"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 200 }, {} as PointerEvent);
+  tools.at(-1)!.onPointerUp({ x: 200, y: 200 }, {} as PointerEvent);
+  await screen.findByTestId("light-editor");
+
+  const input = screen.getByTestId("light-elevation") as HTMLInputElement;
+  expect(input.value).toBe("0"); // absent stored value displays as ground
+  await fireEvent.change(input, { target: { value: "10" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "light-1",
+    changes: [{ path: "/engine/elevation", old: null, new: 10 }],
+  });
+});
+
+test("the wall editor's band inputs write the whole /engine/elevation object, preserving the other end; both empty writes null", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  const docs = editorStore();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: docs,
+      dispatchIntent: (ops) => {
+        dispatched.push(ops);
+        // Apply the intent back so the next edit's `old` re-derives from confirmed state.
+        docs.applyCommand({ seq: docs.appliedSeq + 1, world_id: "w1", author: "a", ts: 0, ops });
+      },
+    }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 200, y: 700 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("wall-editor");
+  const wallId = docs.query("wall")[0].id;
+
+  // Setting a bottom end on an unbounded (absent) band creates the band object.
+  await fireEvent.change(screen.getByTestId("wall-elevation-bottom"), { target: { value: "2" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: null, new: { bottom: 2, top: null } }],
+  });
+
+  // Setting the top end preserves the confirmed bottom.
+  await fireEvent.change(screen.getByTestId("wall-elevation-top"), { target: { value: "10" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: { bottom: 2, top: null }, new: { bottom: 2, top: 10 } }],
+  });
+
+  // Clearing both ends writes null — the canonical "occludes every elevation".
+  await fireEvent.change(screen.getByTestId("wall-elevation-bottom"), { target: { value: "" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: { bottom: 2, top: 10 }, new: { bottom: null, top: 10 } }],
+  });
+  await fireEvent.change(screen.getByTestId("wall-elevation-top"), { target: { value: "" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: wallId,
+    changes: [{ path: "/engine/elevation", old: { bottom: null, top: 10 }, new: null }],
+  });
 });

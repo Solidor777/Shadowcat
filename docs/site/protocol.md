@@ -82,7 +82,7 @@ Every `ServerMsg` variant:
 | `path_error` | Pathfind request failed |
 | `move_error` | Move request failed |
 | `chat_error` | Chat send/edit/delete failed |
-| `move_stream` | Broadcast move animation: timed position samples, per-recipient-clipped mover vision, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
+| `move_stream` | Broadcast move animation: timed position samples (empty for a glow-only recipient), per-recipient-clipped mover vision, per-recipient-admitted carried-light timeline, nullable cost ([`MoveStream`](/api/ts/interfaces/_shadowcat_core.MoveStream.html)) |
 | `combat_result` | A `combat_*` intent from you was accepted; carries the committed `seq` your correlated wait resolves on |
 | `combat_error` | A `combat_*` intent from you was refused; carries the player-presentable reason |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
@@ -141,7 +141,19 @@ validates and *executes* the move → every viewer receives `move_stream`, whose
 position samples and mover-vision polygons are **clipped per recipient** before
 sending — an observer who cannot see a stretch of the path simply never
 receives it (the nullable `cost` exists for the same reason: the true cost can
-leak secret terrain).
+leak secret terrain). "See" means line of sight **and** illumination: on a
+lighting-enabled scene a normal-vision observer is sent only the samples that
+fall in a lit cell (a carried torch counts, composed per instant from the
+in-flight `mover_light` timelines), while darkvision within its range and a GM
+see in the dark. The carried-light timeline is admitted per sample wherever its
+glow lights a cell in the recipient's sight; a recipient the glow reaches but
+the token never does gets a **glow-only** frame — `samples` empty,
+`mover_light` present, `stop`/`duration_ms` at the last admitted light sample —
+and a recipient reached by neither gets no frame at all. At least one of
+`samples`/`mover_light` is non-empty in every delivered frame. Each
+[`MoveLightSample`](/api/ts/interfaces/_shadowcat_core.MoveLightSample.html)
+carries the emission's `intensity` and `falloff` alongside its reach, so the
+frame describes its own light.
 
 The `"combat"` channel carries every combat's resolved per-combatant resource numbers
 (`current`/`max`/`error` for each registry-key binding) and movement-in-cells conversion

@@ -50,6 +50,13 @@ export interface VisibilityInput {
   /** Polygons rendered as the dimmed-memory (explored, not currently visible) fog state — see
    * the interface doc. */
   explored: Polygon[];
+  /** Ids of tokens the recipient perceives ONLY through a creature sense (tremorsense & kin),
+   * scene-filtered by `RenderEngine.toVisibility` exactly like `visible`/`explored`. Empty for
+   * `mode:"all"` and on any missing/garbled `perceived` payload key — fail-closed, an absent
+   * list never widens the render. The compositor ignores this field (it paints fog only);
+   * `RenderEngine.applyDerived` consumes it, and `TokenView.toSpec`/`PixiBackend.setToken`
+   * raise a listed token's node above the fog/lighting overlays. */
+  perceived: string[];
 }
 
 /** A token's animatable transform (scene coords; `(x,y)` = center). */
@@ -140,7 +147,8 @@ export type TokenFx =
       strength: number;
     };
 
-/** A resolved token render node: transform + size + resolved visual + faction border + footprint shape. */
+/** A resolved token render node: transform + size + resolved visual + faction border +
+ * footprint shape + the perceived (creature-sense) flag. */
 export interface TokenNodeSpec {
   /** Center's scene x-coordinate — from `resolveTokenBox`. */
   x: number;
@@ -184,10 +192,18 @@ export interface TokenNodeSpec {
       };
   /** Faction border color (0xRRGGBB), or null for no border. */
   borderColor: number | null;
-  /** Condition marker glyphs (emoji), rendered as upright chips along the token's top edge. */
+  /** Upright marker chips along the token's top edge: condition glyphs (emoji) from
+   * `resolveConditions`, then an elevation chip (`↑n`/`↓n`) when the token is off the ground
+   * plane (`TokenView.toSpec`). */
   badges: string[];
   /** Footprint shape: drives the border outline + hit-test. */
   shape: "square" | "circle";
+  /** `true` = the token is perceived ONLY through a creature sense (tremorsense & kin), so its
+   * node renders THROUGH fog and darkness: `PixiBackend.setToken` parents it to the dedicated
+   * above-`mask` container instead of the `tokens` layer (same node re-parented — never a
+   * duplicate copy), and back when the token leaves the perceived set. Terrain fog itself is
+   * untouched (no fog holes). */
+  perceived: boolean;
   /** The token's aura disc, drawn UNDER the art (a `container` child ordered below
    * `visualContainer`), or absent for none. Fully pre-resolved by `TokenView.toSpec`: color is
    * already `parseColor`-packed, radius already converted from grid cells to scene units — the
@@ -273,6 +289,33 @@ export interface MoveVisionSample {
    * `tMs <= clock` selection rule. */
   tMs: number;
   /** One raycast-visibility polygon per group, each a list of `[x,y]` scene-coord vertices. */
+  polygons: [number, number][][];
+}
+
+/** A carried-light sample paired with a MoveSample by `tMs`: the mover's enabled emission
+ * raycast at that instant (`animateSamples`'s `moverLight` argument). Full for the mover and a
+ * plain GM; an observer receives only the samples whose glow reached their vision, `null` when
+ * none did. Drives the lighting sweep: the sample chosen by the same `chooseVisionSample` rule
+ * the fog sweep uses is rasterized onto the cells within `dim` of `pos` that lie inside its
+ * polygons AND the viewer's own line of sight, unioned over the held lighting frame. */
+export interface MoveLightSample {
+  /** Server-clock offset, in ms, this sample applies from. */
+  tMs: number;
+  /** The emitter's scene-coordinate `[x, y]` position at this sample. */
+  pos: [number, number];
+  /** Full-brightness reach from `pos`, scene units. */
+  bright: number;
+  /** Dim-light outer reach from `pos`, scene units. */
+  dim: number;
+  /** Packed `0xRRGGBB` light color. */
+  color: number;
+  /** The emission's intensity in `[0, 1]` — the sample is self-describing, so the server's
+   * per-recipient clip composes it into the illumination field without a document read. */
+  intensity: number;
+  /** The emission's falloff curve across the dim band (`FalloffCurve`'s wire spelling). */
+  falloff: "linear" | "quadratic" | "none";
+  /** The light's occluded illumination polygon(s), each a list of `[x,y]` scene-coord
+   * vertices — NOT clipped to the viewer's sight; the sweep intersects them itself. */
   polygons: [number, number][][];
 }
 
@@ -386,7 +429,9 @@ export interface SceneToolHost {
    * @param serverNow Optional server-clock accessor, used once at call time to compute catch-up
    * elapsed time (see above); when absent, elapsed starts at `0`.
    * @param moverVision Mover-only per-sample vision polygons (`null`/absent for observers);
-   * presence starts a fog vision-sweep alongside the position tween. */
+   * presence starts a fog vision-sweep alongside the position tween.
+   * @param moverLight Per-sample carried-light polygons (`null`/absent when the mover carries
+   * no enabled light or none of it reached this viewer); presence starts a lighting sweep. */
   animateSamples(
     id: string,
     samples: {
@@ -399,5 +444,6 @@ export interface SceneToolHost {
     startServerMs: number,
     serverNow?: () => number,
     moverVision?: MoveVisionSample[] | null,
+    moverLight?: MoveLightSample[] | null,
   ): void;
 }
