@@ -109,9 +109,10 @@ describe("CombatantRow", () => {
       displayName: "Goblin", visual: { kind: "image", asset: "goblin.png" },
       size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [],
       prototype: false, vision: null, aura: null, sound: null, vfx: null,
+      light: null, movement: [],
     };
     const actor = buildActorDoc("w1", "Goblin", actorEngine, "actor-1");
-    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null };
+    const tokenEngine: TokenEngine = { x: 0, y: 0, w: 1, h: 1, rotation: 0, visual: null, actor_id: "actor-1", overrides: null, face: null, elevation: null };
     const token = buildTokenDoc("w1", "scene-1", tokenEngine, "token-1");
     const registry = buildConditionRegistryDoc("w1", { prone: { name: "Prone", icon: "🔻" } });
     const store = new DocumentStore();
