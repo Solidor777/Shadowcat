@@ -46,8 +46,33 @@ fn ignores_anchor_tag_with_no_href_attribute() {
 
 // -- is_blocked_ip: table-driven, one representative per named range ----
 
+// The v4 guard's own enumeration IS `V4_BLOCKED` (`link_preview::V4_BLOCKED`)
+// — `every_v4_range_is_blocked` reads that one table, so a future registry
+// row is covered the moment it is transcribed, never a discrepancy between
+// the guard and its tests.
+
+#[test]
+fn every_v4_range_is_blocked() {
+    // Every V4_BLOCKED entry is refused for outbound fetch, regardless of its
+    // own registry-listed reachability (see the INCLUSION RULE comment
+    // above V4_BLOCKED for why nothing there is ever left excluded).
+    for r in V4_BLOCKED {
+        let addr = IpAddr::V4(r.network);
+        assert!(
+            is_blocked_ip(addr),
+            "{addr}/{} ({}, {}) must be blocked",
+            r.prefix_len,
+            r.rfc,
+            r.reason
+        );
+    }
+}
+
 #[test]
 fn blocks_every_named_ipv4_range() {
+    // One non-network-address representative per range, distinct from
+    // `every_v4_range_is_blocked`'s check of the bare network address —
+    // pins that the mask covers the WHOLE range, not just its first address.
     let cases: &[&str] = &[
         "0.1.2.3",         // 0.0.0.0/8
         "10.1.2.3",        // 10/8
@@ -55,10 +80,15 @@ fn blocks_every_named_ipv4_range() {
         "127.0.0.1",       // 127/8
         "169.254.1.1",     // 169.254/16
         "172.16.5.5",      // 172.16/12
-        "192.0.0.5",       // 192.0.0/24
+        "192.0.0.5",       // 192.0.0/24, inside the /29 service-continuity row
+        "192.0.0.9",       // PCP Anycast — Globally Reachable: True, blocked anyway
+        "192.0.0.200",     // 192.0.0/24, outside every nested row
         "192.0.2.5",       // TEST-NET-1
+        "192.31.196.5",    // AS112-v4 — Globally Reachable: True, blocked anyway
+        "192.52.193.5",    // AMT — Globally Reachable: True, blocked anyway
         "192.88.99.5",     // 6to4 relay
         "192.168.1.1",     // 192.168/16
+        "192.175.48.5",    // Direct Delegation AS112 — Globally Reachable: True, blocked anyway
         "198.18.0.5",      // benchmark
         "198.51.100.5",    // TEST-NET-2
         "203.0.113.5",     // TEST-NET-3
@@ -69,6 +99,45 @@ fn blocks_every_named_ipv4_range() {
     for &ip in cases {
         let addr: IpAddr = ip.parse().unwrap();
         assert!(is_blocked_ip(addr), "{ip} should be blocked");
+    }
+}
+
+#[test]
+fn allows_addresses_one_step_outside_each_narrow_v4_special_purpose_range() {
+    // Negative control pinning each /24-or-narrower arm's exact boundary:
+    // one address step outside the range must stay public (or fall through
+    // to a less-specific blocked parent, per the case's own comment).
+    // Catches an over-broad mask a positive control cannot.
+    let cases: &[(&str, bool)] = &[
+        // one past IETF Protocol Assignments 192.0.0.0/24 — public.
+        ("192.0.1.1", false),
+        // one past TURN Anycast 192.0.0.10/32 — unclaimed within the
+        // 192.0.0.0/24 parent, so it falls through to that blocked parent.
+        ("192.0.0.11", true),
+        // one past TEST-NET-1 192.0.2.0/24 — public.
+        ("192.0.3.1", false),
+        // either side of AS112-v4 192.31.196.0/24 — public.
+        ("192.31.195.255", false),
+        ("192.31.197.0", false),
+        // either side of AMT 192.52.193.0/24 — public.
+        ("192.52.192.255", false),
+        ("192.52.194.0", false),
+        // one past the 6to4 relay 192.88.99.0/24 — public.
+        ("192.88.100.1", false),
+        // either side of Direct Delegation AS112 192.175.48.0/24 — public.
+        ("192.175.47.255", false),
+        ("192.175.49.0", false),
+        // one past TEST-NET-2 / TEST-NET-3 — public.
+        ("198.51.101.1", false),
+        ("203.0.114.1", false),
+    ];
+    for &(ip, expect_blocked) in cases {
+        let addr: IpAddr = ip.parse().unwrap();
+        assert_eq!(
+            is_blocked_ip(addr),
+            expect_blocked,
+            "{ip} blocked-state mismatch"
+        );
     }
 }
 
@@ -164,6 +233,11 @@ fn allows_known_public_addresses() {
     // A public IPv4-mapped v6 must also unwrap and be allowed.
     let mapped: IpAddr = "::ffff:93.184.216.34".parse().unwrap();
     assert!(!is_blocked_ip(mapped));
+    // Same through the NAT64 well-known prefix (RFC 6052, UnwrapV4): the
+    // prefix is a translation mechanism, so a public embedded destination
+    // is allowed and only what it embeds decides.
+    let nat64: IpAddr = "64:ff9b::93.184.216.34".parse().unwrap();
+    assert!(!is_blocked_ip(nat64));
 }
 
 #[test]
@@ -223,8 +297,9 @@ fn allows_addresses_one_step_outside_each_narrow_v6_special_purpose_range() {
 
 #[test]
 fn an_unwrapv4_entry_resolves_via_its_own_disposition_not_a_blanket_block() {
-    // Every V6_RANGES entry is Blocked except the two translation prefixes
-    // (V6Disposition::UnwrapV4): an UnwrapV4 entry must resolve via its OWN
+    // Every V6_RANGES entry is Blocked except the three UnwrapV4 entries
+    // (IPv4-mapped, IPv4-compatible, NAT64 well-known): an UnwrapV4 entry
+    // must resolve via its OWN
     // disposition (recheck the embedded v4) rather than any coarser rule
     // that would refuse it outright without inspecting what it embeds. A
     // public embedded address proves the recheck ran: an unconditional
@@ -236,6 +311,104 @@ fn an_unwrapv4_entry_resolves_via_its_own_disposition_not_a_blanket_block() {
          a public v4 destination must resolve via the embedded-address \
          recheck, not a blanket refusal"
     );
+}
+
+// A synthetic table nesting the two dispositions BOTH ways — a narrow
+// Blocked entry inside a broad UnwrapV4 one, and a narrow UnwrapV4 entry
+// inside a broad Blocked one — which the real registry never does (every
+// V6_RANGES nesting is Blocked inside Blocked, so no real address can tell
+// most-specific-match from first-match, last-match or any-match). Entry
+// order is deliberately mixed so that first-match and last-match each pick
+// a wrong entry for at least one address below. Every embedded v4 is
+// public, so an UnwrapV4 selection reads as allowed and a Blocked one as
+// refused — the verdict itself, not just the selected entry, is observable.
+const NESTED_DISPOSITION_FIXTURE: &[V6Range] = &[
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "fixture",
+        reason: "broad UnwrapV4, listed BEFORE its narrow Blocked child",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 1, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "fixture",
+        reason: "narrow Blocked, inside the broad UnwrapV4 above",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 1, 1, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "fixture",
+        reason: "narrow UnwrapV4, listed BEFORE its broad Blocked parent",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 1, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "fixture",
+        reason: "broad Blocked, containing the narrow UnwrapV4 above",
+        disposition: V6Disposition::Blocked,
+    },
+];
+
+#[test]
+fn select_v6_range_picks_the_most_specific_entry_regardless_of_table_order() {
+    let table = NESTED_DISPOSITION_FIXTURE;
+    // (address, index of the entry that must govern it, expected verdict)
+    let cases: &[(&str, usize, bool)] = &[
+        // Inside the /32 UnwrapV4 AND the /64 Blocked child listed after
+        // it: first-match and shortest-prefix both pick the /32 and let
+        // the public embedded address through.
+        ("2001:db8:0:1::93.184.216.34", 1, true),
+        // Inside the /32 UnwrapV4, the /64 UnwrapV4 AND the /48 Blocked
+        // listed LAST: last-match picks the /48 and refuses a public
+        // embedded address the governing /64 unwraps and allows.
+        ("2001:db8:1:1::93.184.216.34", 2, false),
+        // Inside the /32 UnwrapV4 and the /48 Blocked but not the /64:
+        // the /48 governs and refuses.
+        ("2001:db8:1:2::93.184.216.34", 3, true),
+        // Only the /32 UnwrapV4 contains it: unwrapped, public, allowed.
+        ("2001:db8:2::93.184.216.34", 0, false),
+    ];
+    for &(ip, expect_index, expect_blocked) in cases {
+        let addr: Ipv6Addr = ip.parse().unwrap();
+        let selected = select_v6_range(addr.segments(), table)
+            .unwrap_or_else(|| panic!("{ip} must select an entry"));
+        assert!(
+            std::ptr::eq(selected, &table[expect_index]),
+            "{ip} selected entry {:?} ({}), expected index {expect_index}",
+            selected.network,
+            selected.reason
+        );
+        assert_eq!(
+            is_blocked_ipv6_in(addr, table),
+            expect_blocked,
+            "{ip} verdict must follow the most specific entry's disposition"
+        );
+    }
+    // An address in no entry selects nothing and is allowed.
+    let outside: Ipv6Addr = "2001:db9::1".parse().unwrap();
+    assert!(select_v6_range(outside.segments(), table).is_none());
+    assert!(!is_blocked_ipv6_in(outside, table));
+}
+
+#[test]
+fn select_v6_range_picks_the_registry_leaf_inside_nested_v6_ranges() {
+    // The real table nests Blocked inside Blocked, so the VERDICT cannot
+    // distinguish selection orders there — but the selected ENTRY can:
+    // PCP Anycast's /128 sits inside Teredo's /32 inside IETF Protocol
+    // Assignments' /23, all listed parent-first.
+    let pcp: Ipv6Addr = "2001:1::1".parse().unwrap();
+    let selected = select_v6_range(pcp.segments(), V6_RANGES).unwrap();
+    assert_eq!(selected.prefix_len, 128, "selected {}", selected.reason);
+    assert_eq!(selected.rfc, "RFC 7723");
+    // An unclaimed address inside the /23 selects the /23 itself, not a
+    // sibling leaf.
+    let unclaimed: Ipv6Addr = "2001:100::1".parse().unwrap();
+    let selected = select_v6_range(unclaimed.segments(), V6_RANGES).unwrap();
+    assert_eq!(selected.prefix_len, 23, "selected {}", selected.reason);
 }
 
 // -- extract_preview: pure unit tests -----------------------------------
