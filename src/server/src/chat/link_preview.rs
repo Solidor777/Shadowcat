@@ -521,42 +521,52 @@ impl std::error::Error for DnsFailureError {}
 // NOT `Ipv4Addr::is_global` (unstable, and its semantics have drifted across
 // nightlies) — every range here is a named, cited constant, table-tested.
 //
-// INCLUSION RULE: a range is BLOCKED iff it is not globally routable —
-// reserved, private-use, loopback, link-local, documentation, tunneling,
-// translation, or protocol-internal — plus the IPv4 and IPv6 benchmarking
-// ranges, which route in principle but are never a legitimate link-preview
-// target. `V4_BLOCKED` is a flat array under this rule with no separate
-// "excluded" bookkeeping, since the IANA IPv4 Special-Purpose Address
-// Registry has no globally-routable entries this guard would need to record
-// as deliberately skipped. `V6_RANGES` below is the same rule applied to the
-// IANA IPv6 Special-Purpose Address Registry (plus `ff00::/8` multicast,
-// which is tracked in the separate IANA IPv6 Multicast Address Space
-// Registry rather than the special-purpose unicast one, and the historical
-// IPv4-compatible `::/96` form, RFC 4291 §2.5.5.1, which the live registry no
-// longer carries as its own row but which Rust's `Ipv6Addr` parser still
-// accepts and which is retained here for defense-in-depth rather than
-// dropped for the sake of a stricter transcription). SOURCE: the table below
-// is a transcription of the IANA IPv6 Special-Purpose Address Registry as
-// fetched and supplied for this guard's construction — re-diff `V6_RANGES`
-// against that registry directly rather than re-deriving this rule's intent
-// from memory. A registry entry marked "Globally Reachable: N/A" (Teredo,
-// 6to4, and the deprecated former-ORCHID range) is treated as non-routable
-// for this guard's purposes, the same as an entry marked `False` — a
-// transition/tunneling mechanism or a withdrawn assignment is never a
-// legitimate stable link-preview target regardless of how the registry
-// classifies its reachability. `V6_RANGES` ALSO records every registry entry
-// the rule excludes (globally routable, `V6Disposition::Excluded`) with its
-// routability reason, so a registry entry this guard does not block is
-// either present as `Excluded` (considered and kept public on purpose) or
-// genuinely absent (a gap to fix), and the two never look identical.
+// INCLUSION RULE: an address is refused if it falls ANYWHERE in the IANA
+// IPv4 or IPv6 Special-Purpose Address Registry, regardless of that entry's
+// "Globally Reachable" value. "Globally routable" is a ROUTING property, and
+// this guard's actual job is narrower and stricter: refuse anything that
+// lets a requester reach a destination it could not otherwise reach, or that
+// is not a real public web host. For several registry entries those two
+// properties come apart — an anycast service address (PCP/TURN/DNS-SD-SRP,
+// AMT, AS112-v6, Direct Delegation AS112) is globally routable YET resolves
+// to the NEAREST responder, typically a device on the requester's own
+// network or its provider's edge: exactly the internal-reachability vector
+// this guard exists to close. ORCHIDv2 and Drone Remote ID DETs are
+// cryptographic IDENTIFIER space, not host addresses, and never serve web
+// content either way. Nothing in special-purpose space is ever a legitimate
+// link-preview target, so blocking the entire registry costs nothing, while
+// allowing any routable-but-unsafe entry through is a live SSRF surface.
+// `V4_BLOCKED` is a flat array under this rule (the IANA IPv4 registry has
+// no entry this guard would need special reasoning to still refuse).
+// `V6_RANGES` is the same rule applied to the IANA IPv6 Special-Purpose
+// Address Registry, plus `ff00::/8` multicast (tracked in the separate IANA
+// IPv6 Multicast Address Space Registry, not the special-purpose one) and
+// the historical IPv4-compatible `::/96` form (RFC 4291 §2.5.5.1, which the
+// live registry no longer carries as its own row but which Rust's
+// `Ipv6Addr` parser still accepts and which is retained here for
+// defense-in-depth rather than dropped for the sake of a stricter
+// transcription). SOURCE: the table below is a transcription of the IANA
+// IPv6 Special-Purpose Address Registry as fetched and supplied for this
+// guard's construction — re-diff `V6_RANGES` against that registry directly
+// rather than re-deriving this rule's intent from memory. Every entry the
+// registry marks "Globally Reachable: True" or "N/A" carries that fact in
+// its own `reason` string alongside WHY it is refused anyway (anycast
+// nearest-responder resolution, or identifier space rather than a host) —
+// an entry blocked against its own registry flag needs that reasoning
+// visible, or the next reader sees a contradiction and "corrects" it back.
 // `is_blocked_ipv6` and its test suite both read this one table; a future
 // registry change is a visible row to add here, never a discrepancy between
 // the guard and its own tests. THE REGISTRY NESTS — `2001::/23` (IETF
-// Protocol Assignments, non-routable) contains several more specific
-// entries the registry marks globally routable (the PCP/TURN/DNS-SD-SRP
-// anycast addresses, AMT, AS112-v6, ORCHIDv2, Drone Remote ID) — so
+// Protocol Assignments) contains several more specific entries (the
+// PCP/TURN/DNS-SD-SRP anycast addresses, Benchmarking, AMT, AS112-v6, the
+// deprecated ex-ORCHID range, ORCHIDv2, Drone Remote ID) — so
 // `is_blocked_ipv6` matches MOST-SPECIFIC-FIRST (longest `prefix_len` wins),
-// the registry's own semantics, never first-match or any-match.
+// the registry's own semantics, never first-match or any-match. Every entry
+// in this table is `Blocked` except the two translation prefixes
+// (`V6Disposition::UnwrapV4`), which still need most-specific-match to
+// resolve to their OWN disposition rather than a covering `Blocked` parent's
+// — the embedded-address recheck only runs if the more specific `UnwrapV4`
+// entry, not the parent, wins the match.
 // ---------------------------------------------------------------------------
 
 /// `(network, prefix_len)` pairs, each cited to the RFC that reserves it.
@@ -596,7 +606,10 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
         .any(|&(network, prefix)| ipv4_in_cidr(n, u32::from(network), prefix))
 }
 
-/// How a `V6_RANGES` entry participates in `is_blocked_ipv6`.
+/// How a `V6_RANGES` entry participates in `is_blocked_ipv6`. Every entry is
+/// `Blocked` except the two translation prefixes: see the INCLUSION RULE
+/// comment above `V4_BLOCKED` for why NOTHING in special-purpose space is
+/// ever excluded, regardless of its registry-listed reachability.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum V6Disposition {
     /// The whole range is blocked outright.
@@ -605,9 +618,6 @@ enum V6Disposition {
     /// re-checking it through `V4_BLOCKED` — a mapped or translated
     /// destination must inherit the v4 guard, not bypass it.
     UnwrapV4,
-    /// Globally routable: deliberately NOT blocked. See the INCLUSION RULE
-    /// comment above `V4_BLOCKED` for why this disposition exists at all.
-    Excluded,
 }
 
 /// One entry of the IANA IPv6 Special-Purpose Address Registry (RFC-cited)
@@ -670,7 +680,8 @@ const V6_RANGES: &[V6Range] = &[
         reason: "IPv4-IPv6 Translat. (well-known prefix) — the PREFIX is \
                   globally reachable as a translation mechanism, which is \
                   orthogonal to whether the v4 address it embeds is itself \
-                  routable, so this stays UnwrapV4 rather than Excluded",
+                  routable, so this stays UnwrapV4 to recheck the embedded \
+                  address rather than being blocked wholesale",
         disposition: V6Disposition::UnwrapV4,
     },
     V6Range {
@@ -704,8 +715,11 @@ const V6_RANGES: &[V6Range] = &[
         prefix_len: 23,
         rfc: "RFC 2928",
         reason: "IETF Protocol Assignments — the parent pool several more \
-                  specific, globally-routable entries below carve out of; \
-                  most-specific-match makes those children win here",
+                  specific, registry-globally-routable entries below carve \
+                  out of; every one of those children is ALSO Blocked here \
+                  (see each entry's own reason for why), so this parent \
+                  exists to catch whatever the registry has not yet carved \
+                  a named entry out of",
         disposition: V6Disposition::Blocked,
     },
     V6Range {
@@ -726,23 +740,32 @@ const V6_RANGES: &[V6Range] = &[
         network: [0x2001, 1, 0, 0, 0, 0, 0, 1],
         prefix_len: 128,
         rfc: "RFC 7723",
-        reason: "PCP Anycast — globally routable",
-        disposition: V6Disposition::Excluded,
+        reason: "PCP Anycast. Globally Reachable: True per the registry, \
+                  but an anycast address resolves to the NEAREST responder \
+                  — typically a device on the requester's own network or \
+                  its provider's edge, the exact internal-reachability \
+                  vector this guard exists to close — so it is Blocked \
+                  despite the registry's reachability flag",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 1, 0, 0, 0, 0, 0, 2],
         prefix_len: 128,
         rfc: "RFC 8155",
-        reason: "TURN Anycast — globally routable",
-        disposition: V6Disposition::Excluded,
+        reason: "TURN Anycast. Globally Reachable: True per the registry, \
+                  but see PCP Anycast's reason above — anycast resolution \
+                  to the nearest responder is the same guard-defeating \
+                  property regardless of the protocol",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 1, 0, 0, 0, 0, 0, 3],
         prefix_len: 128,
         rfc: "RFC 9665",
-        reason: "DNS-SD Service Registration Protocol Anycast — globally \
-                  routable",
-        disposition: V6Disposition::Excluded,
+        reason: "DNS-SD Service Registration Protocol Anycast. Globally \
+                  Reachable: True per the registry; see PCP Anycast's \
+                  reason above for why an anycast entry is Blocked anyway",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 2, 0, 0, 0, 0, 0, 0],
@@ -756,15 +779,19 @@ const V6_RANGES: &[V6Range] = &[
         network: [0x2001, 3, 0, 0, 0, 0, 0, 0],
         prefix_len: 32,
         rfc: "RFC 7450",
-        reason: "AMT — globally routable relay/gateway addressing",
-        disposition: V6Disposition::Excluded,
+        reason: "AMT relay/gateway addressing. Globally Reachable: True per \
+                  the registry, but AMT relays are anycast — see PCP \
+                  Anycast's reason above for why that is Blocked anyway",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 4, 0x0112, 0, 0, 0, 0, 0],
         prefix_len: 48,
         rfc: "RFC 7535",
-        reason: "AS112-v6 — globally routable anycast sink",
-        disposition: V6Disposition::Excluded,
+        reason: "AS112-v6 anycast sink. Globally Reachable: True per the \
+                  registry, but see PCP Anycast's reason above — anycast \
+                  resolution to the nearest responder is Blocked here too",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 0x0010, 0, 0, 0, 0, 0, 0],
@@ -778,16 +805,20 @@ const V6_RANGES: &[V6Range] = &[
         network: [0x2001, 0x0020, 0, 0, 0, 0, 0, 0],
         prefix_len: 28,
         rfc: "RFC 7343",
-        reason: "ORCHIDv2 — globally routable",
-        disposition: V6Disposition::Excluded,
+        reason: "ORCHIDv2. Globally Reachable: True per the registry, but \
+                  this is cryptographic IDENTIFIER space, not a host \
+                  address — nothing here ever serves web content, so it is \
+                  Blocked despite the registry's reachability flag",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 0x0030, 0, 0, 0, 0, 0, 0],
         prefix_len: 28,
         rfc: "RFC 9374",
-        reason: "Drone Remote ID Protocol Entity Tags (DETs) — globally \
-                  routable",
-        disposition: V6Disposition::Excluded,
+        reason: "Drone Remote ID Protocol Entity Tags (DETs). Globally \
+                  Reachable: True per the registry; see ORCHIDv2's reason \
+                  above — identifier space, not a host, Blocked anyway",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
@@ -810,8 +841,10 @@ const V6_RANGES: &[V6Range] = &[
         network: [0x2620, 0x004f, 0x8000, 0, 0, 0, 0, 0],
         prefix_len: 48,
         rfc: "RFC 7534",
-        reason: "Direct Delegation AS112 Service — globally routable",
-        disposition: V6Disposition::Excluded,
+        reason: "Direct Delegation AS112 Service. Globally Reachable: True \
+                  per the registry, but see PCP Anycast's reason above — \
+                  an AS112 delegation is anycast, Blocked here too",
+        disposition: V6Disposition::Blocked,
     },
     V6Range {
         network: [0x3fff, 0, 0, 0, 0, 0, 0, 0],
@@ -876,13 +909,15 @@ fn ipv6_in_cidr(ip: [u16; 8], network: [u16; 8], prefix_len: u32) -> bool {
     true
 }
 
-/// Whether `ip` is in a blocked (or explicitly excluded) `V6_RANGES` entry.
-/// Matches MOST-SPECIFIC-FIRST (the entry with the longest `prefix_len`
-/// among every entry that contains `ip`) — the registry nests (see THE
-/// REGISTRY NESTS note above `V4_BLOCKED`), so a first-match or any-match
-/// scan would give the wrong disposition for a globally-routable child
-/// carved out of a non-routable parent pool. `V6Disposition::UnwrapV4` forms
-/// re-check the embedded v4 through the v4 table.
+/// Whether `ip` is in a `V6_RANGES` entry. Matches MOST-SPECIFIC-FIRST (the
+/// entry with the longest `prefix_len` among every entry that contains
+/// `ip`) — the registry nests (see THE REGISTRY NESTS note above
+/// `V4_BLOCKED`), so a first-match or any-match scan could resolve a
+/// `V6Disposition::UnwrapV4` entry to its covering `Blocked` parent's
+/// disposition instead of its own, skipping the embedded-address recheck
+/// entirely. Every entry in the table is `Blocked` (see the INCLUSION RULE
+/// comment above `V4_BLOCKED` for why nothing here is ever excluded)
+/// except the two translation prefixes.
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
     let most_specific = V6_RANGES
@@ -892,13 +927,12 @@ fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     let Some(r) = most_specific else {
         return false;
     };
-    // Cites the matched registry entry so a rejected/allowed preview fetch
-    // is auditable from logs alone, not just from this table.
+    // Cites the matched registry entry so a rejected preview fetch is
+    // auditable from logs alone, not just from this table.
     tracing::trace!(%ip, rfc = r.rfc, reason = r.reason, "matched V6_RANGES entry");
     match r.disposition {
         V6Disposition::Blocked => true,
         V6Disposition::UnwrapV4 => is_blocked_ipv4(embedded_v4(s)),
-        V6Disposition::Excluded => false,
     }
 }
 
