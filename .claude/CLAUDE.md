@@ -566,7 +566,7 @@ git commit -m "Fixed memory leak"
 fs.writeFileSync("./debug/dumps/trace_output.json", dump);
 
 # Post-fix cleanup
-rm -rf ./debug/dumps/*
+trash ./debug/dumps/*
 git commit -m "Fix memory leak in texture allocator"
 ```
 
