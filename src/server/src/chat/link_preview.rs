@@ -520,6 +520,23 @@ impl std::error::Error for DnsFailureError {}
 // Address guard: explicit, clean-room, RFC-cited blocked ranges. Deliberately
 // NOT `Ipv4Addr::is_global` (unstable, and its semantics have drifted across
 // nightlies) — every range here is a named, cited constant, table-tested.
+//
+// INCLUSION RULE: a range is BLOCKED iff it is not globally routable —
+// reserved, private-use, loopback, link-local, documentation, tunneling,
+// translation, or protocol-internal — plus the IPv4 and IPv6 benchmarking
+// ranges, which route in principle but are never a legitimate link-preview
+// target. `V4_BLOCKED` is a flat array under this rule with no separate
+// "excluded" bookkeeping, since the IANA IPv4 Special-Purpose Address
+// Registry has no globally-routable entries this guard would need to record
+// as deliberately skipped. `V6_RANGES` below is the same rule applied to the
+// IANA IPv6 Special-Purpose Address Registry, but ALSO records every
+// registry entry the rule excludes (globally routable) with its routability
+// reason, via `V6Disposition::Excluded` — so a registry entry this guard
+// does not block is either present as `Excluded` (considered and kept
+// public on purpose) or genuinely absent (a gap to fix), and the two never
+// look identical. `is_blocked_ipv6` and its test suite both read this one
+// table; a future registry change is a visible row to add here, never a
+// discrepancy between the guard and its own tests.
 // ---------------------------------------------------------------------------
 
 /// `(network, prefix_len)` pairs, each cited to the RFC that reserves it.
@@ -559,77 +576,249 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
         .any(|&(network, prefix)| ipv4_in_cidr(n, u32::from(network), prefix))
 }
 
-/// Whether `ip` is in a blocked v6 range; v4-mapped and NAT64 forms are
-/// unwrapped and re-checked through the v4 table.
+/// How a `V6_RANGES` entry participates in `is_blocked_ipv6`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum V6Disposition {
+    /// The whole range is blocked outright.
+    Blocked,
+    /// Blocked by unwrapping the low 32 bits as an embedded IPv4 address and
+    /// re-checking it through `V4_BLOCKED` — a mapped or translated
+    /// destination must inherit the v4 guard, not bypass it.
+    UnwrapV4,
+    /// Globally routable: deliberately NOT blocked. See the INCLUSION RULE
+    /// comment above `V4_BLOCKED` for why this disposition exists at all.
+    Excluded,
+}
+
+/// One entry of the IANA IPv6 Special-Purpose Address Registry (RFC-cited)
+/// relevant to the SSRF guard. See the INCLUSION RULE comment above
+/// `V4_BLOCKED` for what determines an entry's `disposition`.
+struct V6Range {
+    /// Network address, in `Ipv6Addr::segments()` order; bits beyond
+    /// `prefix_len` are ignored and conventionally zero here.
+    network: [u16; 8],
+    /// CIDR prefix length, 0..=128.
+    prefix_len: u32,
+    /// RFC (or registry source) that reserves this range.
+    rfc: &'static str,
+    /// One-line reason, matched to the registry's own designation.
+    reason: &'static str,
+    /// Whether a fetch target inside this range is blocked, unwrapped, or
+    /// deliberately allowed.
+    disposition: V6Disposition,
+}
+
+/// The IANA IPv6 Special-Purpose Address Registry, as it bears on this
+/// guard. Believed exhaustive against that registry under the INCLUSION
+/// RULE stated above `V4_BLOCKED`: every entry the rule requires to route
+/// publicly is present below with `V6Disposition::Excluded` and its
+/// routability reason, rather than left absent.
+const V6_RANGES: &[V6Range] = &[
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 128,
+        rfc: "RFC 4291",
+        reason: "unspecified address",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 1],
+        prefix_len: 128,
+        rfc: "RFC 4291",
+        reason: "loopback",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0xffff, 0, 0],
+        prefix_len: 96,
+        rfc: "RFC 4291 §2.5.5.2",
+        reason: "IPv4-mapped",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 96,
+        rfc: "RFC 4291 §2.5.5.1",
+        reason: "IPv4-compatible (deprecated)",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x0064, 0xff9b, 0, 0, 0, 0, 0, 0],
+        prefix_len: 96,
+        rfc: "RFC 6052",
+        reason: "NAT64 well-known prefix",
+        disposition: V6Disposition::UnwrapV4,
+    },
+    V6Range {
+        network: [0x0064, 0xff9b, 1, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 8215",
+        reason: "NAT64 local-use prefix — blocked wholesale rather than \
+                  unwrapped: RFC 6052's embedding position shifts with the \
+                  operator-chosen prefix length, so a partial decode here \
+                  risks the same off-by-one class this guard exists to \
+                  prevent, and the range is non-globally-routable regardless \
+                  of what it carries",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2002, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 16,
+        rfc: "RFC 7526",
+        reason: "6to4 (deprecated) — an arbitrary v4 is encapsulated in bits \
+                  16-48, so the whole prefix is blocked rather than unwrapped",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x0100, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 64,
+        rfc: "RFC 6666",
+        reason: "discard-only",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0db8, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 3849",
+        reason: "documentation",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 1, 0, 0, 0, 0, 0, 1],
+        prefix_len: 128,
+        rfc: "RFC 7723",
+        reason: "PCP Anycast",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 1, 0, 0, 0, 0, 0, 2],
+        prefix_len: 128,
+        rfc: "RFC 8155",
+        reason: "TURN Anycast",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 2, 0, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 5180 / RFC 9637",
+        reason: "benchmarking — the IPv6 analog of V4_BLOCKED's 198.18/15; \
+                  routable in principle, never a legitimate fetch target",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0x0020, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 7343",
+        reason: "ORCHIDv2 — cryptographic hash identifiers, never a real \
+                  routable next hop for a fetch",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0x2001, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 4380",
+        reason: "Teredo — an IPv4-in-IPv6 tunneling scheme; the embedded \
+                  client address is NOT unwrapped and re-checked the way the \
+                  IPv4-mapped/NAT64 entries above are, because a Teredo \
+                  address XOR-obfuscates the sending NAT's public IPv4 \
+                  against a fixed constant rather than embedding it plainly \
+                  — blocking the whole prefix is the only sound option \
+                  without a dedicated decoder",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xfc00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 7,
+        rfc: "RFC 4193",
+        reason: "unique-local",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xfe80, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 10,
+        rfc: "RFC 4291",
+        reason: "link-local",
+        disposition: V6Disposition::Blocked,
+    },
+    V6Range {
+        network: [0xff00, 0, 0, 0, 0, 0, 0, 0],
+        prefix_len: 8,
+        rfc: "RFC 4291",
+        reason: "multicast",
+        disposition: V6Disposition::Blocked,
+    },
+    // -- Deliberately EXCLUDED: globally routable, so NOT blocked. Recorded
+    // here rather than left absent, per the INCLUSION RULE above.
+    V6Range {
+        network: [0x2001, 3, 0, 0, 0, 0, 0, 0],
+        prefix_len: 32,
+        rfc: "RFC 7450",
+        reason: "AMT — globally routable relay/gateway addressing",
+        disposition: V6Disposition::Excluded,
+    },
+    V6Range {
+        network: [0x2001, 4, 0x0112, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 7535",
+        reason: "AS112-v6 — globally routable anycast sink",
+        disposition: V6Disposition::Excluded,
+    },
+    V6Range {
+        network: [0x2620, 0x004f, 0x8000, 0, 0, 0, 0, 0],
+        prefix_len: 48,
+        rfc: "RFC 7534",
+        reason: "Direct Delegation AS112 Service — globally routable",
+        disposition: V6Disposition::Excluded,
+    },
+    V6Range {
+        network: [0x2001, 0x0030, 0, 0, 0, 0, 0, 0],
+        prefix_len: 28,
+        rfc: "RFC 9374",
+        reason: "Drone Remote ID Protocol Entity Tags — globally routable",
+        disposition: V6Disposition::Excluded,
+    },
+];
+
+/// Whether `ip`'s segments fall inside `network`/`prefix_len` (0..=128),
+/// comparing 16 bits at a time so a prefix that splits unevenly across a
+/// segment boundary (e.g. a `/28`) still masks correctly.
+fn ipv6_in_cidr(ip: [u16; 8], network: [u16; 8], prefix_len: u32) -> bool {
+    let mut remaining = prefix_len;
+    for i in 0..8 {
+        if remaining == 0 {
+            return true;
+        }
+        let seg_bits = remaining.min(16);
+        let mask: u16 = if seg_bits == 16 {
+            0xffff
+        } else {
+            !(0xffffu16 >> seg_bits)
+        };
+        if (ip[i] & mask) != (network[i] & mask) {
+            return false;
+        }
+        remaining -= seg_bits;
+    }
+    true
+}
+
+/// Whether `ip` is in a blocked (or explicitly excluded) `V6_RANGES` entry;
+/// `V6Disposition::UnwrapV4` forms re-check the embedded v4 through the v4
+/// table.
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
-
-    // ::ffff:0:0/96 — IPv4-mapped (RFC 4291 §2.5.5.2). Unwrap and re-check
-    // through the v4 rules; a mapped-private address must stay blocked.
-    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0xffff {
-        return is_blocked_ipv4(embedded_v4(s));
-    }
-    // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052). Same unwrap-and-recheck.
-    if s[0] == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
-        return is_blocked_ipv4(embedded_v4(s));
-    }
-    if ip.is_unspecified() {
-        return true; // ::/128, RFC 4291
-    }
-    if ip.is_loopback() {
-        return true; // ::1/128, RFC 4291
-    }
-    // ::/96 IPv4-compatible (deprecated, RFC 4291 §2.5.5.1). `::` and `::1` are
-    // already returned above; any remaining address with an all-zero high 96
-    // bits embeds a v4 in segments 6-7 — unwrap and re-check through the v4
-    // rules, mirroring the ::ffff:0:0/96 mapped-address handling above (e.g.
-    // ::127.0.0.1 must stay blocked).
-    if s[0] == 0 && s[1] == 0 && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
-        return is_blocked_ipv4(embedded_v4(s));
-    }
-    if s[0] == 0x2002 {
-        return true; // 2002::/16 6to4 (deprecated, RFC 7526) — an arbitrary v4
-                     // is encapsulated in bits 16-48, so block the prefix wholesale
-    }
-    if s[0] == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0 {
-        return true; // 100::/64 discard-only, RFC 6666
-    }
-    if s[0] == 0x2001 && s[1] == 0x0db8 {
-        return true; // 2001:db8::/32 documentation, RFC 3849
-    }
-    if s[0] == 0x2001
-        && s[1] == 0x0001
-        && s[2] == 0
-        && s[3] == 0
-        && s[4] == 0
-        && s[5] == 0
-        && s[6] == 0
-        && (s[7] == 1 || s[7] == 2)
-    {
-        return true; // 2001:1::1/128 PCP Anycast (RFC 7723), 2001:1::2/128 TURN
-                     // Anycast (RFC 8155) — routable anycast addresses, not host-owned
-    }
-    if s[0] == 0x2001 && (s[1] & 0xfff0) == 0x0020 {
-        return true; // 2001:20::/28 ORCHIDv2, RFC 7343 — cryptographic hash
-                     // identifiers, never a real routable next hop for a fetch
-    }
-    if s[0] == 0x2001 && s[1] == 0 {
-        return true; // 2001::/32 Teredo, RFC 4380 — an IPv4-in-IPv6 tunneling
-                     // scheme; the embedded client address is NOT re-unwrapped and
-                     // re-checked (unlike the ::ffff:0:0/96 and 64:ff9b::/96 arms
-                     // above) because a Teredo address also encodes the sending
-                     // NAT's public IPv4 obfuscated by XOR against a fixed
-                     // constant, not a plain embedded address — blocking the whole
-                     // prefix is the only sound option without a dedicated decoder
-    }
-    if (s[0] & 0xfe00) == 0xfc00 {
-        return true; // fc00::/7 unique-local, RFC 4193
-    }
-    if (s[0] & 0xffc0) == 0xfe80 {
-        return true; // fe80::/10 link-local, RFC 4291
-    }
-    if (s[0] & 0xff00) == 0xff00 {
-        return true; // ff00::/8 multicast, RFC 4291
+    for r in V6_RANGES {
+        if !ipv6_in_cidr(s, r.network, r.prefix_len) {
+            continue;
+        }
+        // Cites the matched registry entry so a rejected/allowed preview
+        // fetch is auditable from logs alone, not just from this table.
+        tracing::trace!(%ip, rfc = r.rfc, reason = r.reason, "matched V6_RANGES entry");
+        return match r.disposition {
+            V6Disposition::Blocked => true,
+            V6Disposition::UnwrapV4 => is_blocked_ipv4(embedded_v4(s)),
+            V6Disposition::Excluded => false,
+        };
     }
     false
 }
@@ -646,8 +835,9 @@ fn embedded_v4(segments: [u16; 8]) -> Ipv4Addr {
 }
 
 /// True if `ip` must never be connected to by the preview fetcher. See the
-/// module-level `V4_BLOCKED` table and `is_blocked_ipv6` for the exact,
-/// RFC-cited ranges.
+/// module-level `V4_BLOCKED` and `V6_RANGES` tables for the exact, RFC-cited
+/// ranges and the INCLUSION RULE comment above `V4_BLOCKED` for what
+/// determines membership.
 pub fn is_blocked_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_blocked_ipv4(v4),

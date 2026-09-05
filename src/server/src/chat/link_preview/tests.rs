@@ -72,33 +72,60 @@ fn blocks_every_named_ipv4_range() {
     }
 }
 
+// The v6 guard's own enumeration IS `V6_RANGES` (`link_preview::V6_RANGES`)
+// — every case below reads its expected outcome from that one table rather
+// than restating ranges here, so a future registry gap is a hole in the
+// table, never a discrepancy between the guard and its tests.
+
 #[test]
-fn blocks_every_named_ipv6_range() {
-    let cases: &[&str] = &[
-        "::",                                   // unspecified
-        "::1",                                  // loopback
-        "::ffff:10.0.0.1",                      // IPv4-mapped private
-        "64:ff9b::10.0.0.1",                    // NAT64-mapped private
-        "::127.0.0.1",                          // ::/96 IPv4-compatible embedding loopback
-        "::7f00:1",          // ::/96 IPv4-compatible embedding loopback (packed form)
-        "2002:c0a8:0101::1", // 2002::/16 6to4 encapsulating 192.168.1.1
-        "2002::1",           // 2002::/16 6to4 (blocked wholesale)
-        "100::1",            // discard
-        "2001:db8::1",       // documentation
-        "2001:1::1",         // PCP Anycast
-        "2001:1::2",         // TURN Anycast
-        "2001:20::1",        // ORCHIDv2
-        "2001:2f::1",        // ORCHIDv2 (upper end of the /28)
-        "2001::1",           // Teredo
-        "2001:0:4136:e378:8000:63bf:3fff:fdd2", // Teredo, real client-form address
-        "fc00::1",           // unique-local
-        "fd12:3456::1",      // unique-local (fd00::/8 subset)
-        "fe80::1",           // link-local
-        "ff02::1",           // multicast
+fn every_v6_range_matches_its_declared_disposition() {
+    for r in V6_RANGES {
+        let addr = IpAddr::V6(Ipv6Addr::from(r.network));
+        match r.disposition {
+            V6Disposition::Excluded => assert!(
+                !is_blocked_ip(addr),
+                "{addr} ({}, {}) is Excluded and must NOT be blocked",
+                r.rfc,
+                r.reason
+            ),
+            V6Disposition::Blocked | V6Disposition::UnwrapV4 => assert!(
+                is_blocked_ip(addr),
+                "{addr} ({}, {}) must be blocked",
+                r.rfc,
+                r.reason
+            ),
+        }
+    }
+}
+
+#[test]
+fn blocks_representative_addresses_within_each_v6_range() {
+    // One non-network-address representative per range, distinct from
+    // `every_v6_range_matches_its_declared_disposition`'s check of the bare
+    // network address itself — pins that the mask covers the WHOLE range,
+    // not just its first address.
+    let cases: &[(&str, &str)] = &[
+        ("::ffff:10.0.0.1", "IPv4-mapped, private"),
+        ("64:ff9b::10.0.0.1", "NAT64 well-known, private"),
+        ("64:ff9b:1::1", "NAT64 local-use"),
+        ("::127.0.0.1", "IPv4-compatible embedding loopback"),
+        (
+            "::7f00:1",
+            "IPv4-compatible embedding loopback, packed form",
+        ),
+        ("2002:c0a8:0101::1", "6to4 encapsulating 192.168.1.1"),
+        ("2001:2::ffff", "benchmarking"),
+        ("2001:2f::1", "ORCHIDv2, upper end of the /28"),
+        (
+            "2001:0:4136:e378:8000:63bf:3fff:fdd2",
+            "Teredo, real client-form address",
+        ),
+        ("fd12:3456::1", "unique-local, fd00::/8 subset"),
+        ("ff02::1", "multicast, link-local scope"),
     ];
-    for &ip in cases {
+    for &(ip, label) in cases {
         let addr: IpAddr = ip.parse().unwrap();
-        assert!(is_blocked_ip(addr), "{ip} should be blocked");
+        assert!(is_blocked_ip(addr), "{ip} ({label}) should be blocked");
     }
 }
 
@@ -114,14 +141,17 @@ fn allows_known_public_addresses() {
 }
 
 #[test]
-fn allows_addresses_just_outside_the_new_ipv6_special_purpose_arms() {
-    // Negative control pinning each new arm's exact boundary: one step outside
-    // 2001:1::1/128, 2001:1::2/128, 2001:20::/28 and 2001::/32 must stay public.
+fn allows_addresses_one_step_outside_each_narrow_v6_special_purpose_range() {
+    // Negative control pinning each narrow arm's exact boundary: one address
+    // step outside the range must stay public. Catches an over-broad mask a
+    // positive control cannot.
     let cases: &[&str] = &[
-        "2001:1::3",   // one past the PCP/TURN anycast pair
-        "2001:1f::1",  // one below the ORCHIDv2 /28
-        "2001:30::1",  // one above the ORCHIDv2 /28
-        "2001:1::1:0", // outside 2001::/32 (s[1] != 0)
+        "2001:1::3",    // one past the PCP/TURN anycast pair
+        "2001:1f::1",   // one below the ORCHIDv2 /28
+        "2001:30::1",   // one above the ORCHIDv2 /28 (lands in Drone Remote ID, Excluded)
+        "2001:1::1:0",  // outside 2001::/32 Teredo (s[1] != 0)
+        "2001:3::1",    // one past benchmarking 2001:2::/48 (lands in AMT, Excluded)
+        "64:ff9b:2::1", // one past NAT64 local-use 64:ff9b:1::/48
     ];
     for &ip in cases {
         let addr: IpAddr = ip.parse().unwrap();
