@@ -190,6 +190,8 @@ jobs:
         run: pnpm lint:file-size
       - name: No inline Rust test-module bodies
         run: pnpm lint:inline-tests
+      - name: No i18n keys as accessible text
+        run: pnpm lint:aria-labels
       - name: Doc examples typecheck (TS)
         run: pnpm docs:check-examples
       - name: Doc coverage (Rust)

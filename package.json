@@ -26,6 +26,7 @@
     "lint:allowances": "node scripts/check-lint-allowances.mjs",
     "lint:file-size": "node scripts/check-file-lines.mjs",
     "lint:inline-tests": "node scripts/check-inline-tests.mjs",
+    "lint:aria-labels": "node scripts/check-aria-label-keys.mjs",
     "test:scripts": "vitest run scripts/"
   },
   "devDependencies": {
