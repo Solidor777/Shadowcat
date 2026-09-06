@@ -108,7 +108,7 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
 }) => {
   test.setTimeout(180_000);
 
-  const playerName = `player-${Date.now().toString(36)}`;
+  const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";
   const worldName = `Senses World ${Date.now().toString(36)}`;
 

@@ -175,7 +175,7 @@ async function setupTorchScene(
   observerAt: Point,
   bearerAt: Point,
 ): Promise<{ player: Page; close: () => Promise<void> }> {
-  const playerName = `player-${Date.now().toString(36)}`;
+  const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";
 
   await login(gm, account.username, account.password);

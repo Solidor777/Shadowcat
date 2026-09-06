@@ -90,8 +90,15 @@ export const test = base.extend<
       await page.getByLabel("Password", { exact: true }).fill(password);
       await page.getByLabel("Server administrator").check();
       await page.getByRole("button", { name: "Create account" }).click();
+      // Budgeted for the contended full-suite run rather than the config's `expect.timeout`:
+      // account creation hashes the password (Argon2), and every worker mints its account at
+      // the same moment at the start of the run, so this one step contends worker-count-wide
+      // — the config's own comment sizes that envelope at up to ~53s per test. This is a
+      // SETUP step, not an assertion about product behaviour, so a budget covering that
+      // envelope costs no coverage; the global `expect.timeout` stays sized for genuine
+      // behavioural failures.
       await expect(page.getByText(`Created account ${username}.`)).toBeVisible({
-        timeout: 15_000,
+        timeout: 60_000,
       });
       await context.close();
       await use({ username, password });

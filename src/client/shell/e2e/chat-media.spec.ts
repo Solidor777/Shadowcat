@@ -36,14 +36,19 @@ test("the composer's image button is gated by the chat images setting, and a sen
     .setInputFiles({ name: "map.png", mimeType: "image/png", buffer: PNG_1X1 });
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
 
-  // Insert via the composer's image button: opens the pick overlay in
-  // single-select mode, where clicking the one tile confirms immediately.
+  // Insert via the composer's image button: opens the pick overlay. A tile click only
+  // SELECTS (`AssetGrid`'s `onclick` -> `select`); the pick is confirmed through
+  // `PickConfirmBar`'s confirm button, the primary path every pick mode shares (double-click
+  // is a single-select shortcut, and one a touch pointer cannot rely on).
   await page.getByTitle("Insert an image").click();
-  await expect(page.getByTestId("asset-pick-dialog")).toBeVisible();
-  await page.getByTestId("asset-pick-dialog").getByTestId("asset-tile").click();
-  await expect(page.getByTestId("asset-pick-dialog")).toHaveCount(0);
+  const pickDialog = page.getByTestId("asset-pick-dialog");
+  await expect(pickDialog).toBeVisible();
+  await pickDialog.getByTestId("asset-tile").click();
+  await pickDialog.getByTestId("pick-confirm").click();
+  await expect(pickDialog).toHaveCount(0);
 
-  await page.getByRole("button", { name: "Send" }).click();
+  // `exact`: the tool rail's "Send emote" button also matches a substring "Send".
+  await page.getByRole("button", { name: "Send", exact: true }).click();
 
   const card = page.locator(".card").filter({ has: page.getByTestId("image-segment") });
   await expect(card).toHaveCount(1);

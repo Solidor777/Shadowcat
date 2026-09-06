@@ -25,14 +25,20 @@ async function closeTracker(page: Page): Promise<void> {
   await page.getByTestId("launcher-item-combat-tracker:panel").click();
 }
 
-async function placeToken(page: Page, x: number, y: number): Promise<void> {
+/** Activates the place tool, picks the first asset once, then places one raw token per
+ * point. The tool stays active and the picked asset persists across placements (a second
+ * `tool-place` click would toggle the tool OFF), so both are done exactly once.
+ * @param page The GM's page.
+ * @param points Canvas-local points to place a token at, in order.
+ */
+async function placeTokens(page: Page, points: { x: number; y: number }[]): Promise<void> {
   await page.getByTestId("tool-place").click();
   const pick = page.getByTestId("picker-asset").first();
   await expect(pick).toBeVisible({ timeout: 10_000 });
   await pick.click();
   const box = await page.getByTestId("stage-canvas").boundingBox();
   expect(box).not.toBeNull();
-  await page.mouse.click(box!.x + x, box!.y + y);
+  for (const p of points) await page.mouse.click(box!.x + p.x, box!.y + p.y);
 }
 
 // Two browser contexts (GM + invited player), the `hex-movement.spec.ts` seating flow: the GM
@@ -48,7 +54,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
 }) => {
   test.setTimeout(180_000);
 
-  const playerName = `player-${Date.now().toString(36)}`;
+  const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";
   const worldName = `Combat Tracker World ${Date.now().toString(36)}`;
 
@@ -68,8 +74,6 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
   await gm.getByRole("button", { name: "Create invite" }).click();
   const code = await gm.getByLabel("Invite code").inputValue();
   expect(code.length).toBeGreaterThan(0);
-  await gm.getByTestId("launcher-trigger").click();
-  await gm.getByTestId("launcher-item-settings:panel").click();
 
   const playerCtx = await browser.newContext({
     baseURL: test.info().project.use.baseURL,
@@ -83,10 +87,14 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await player.getByRole("button", { name: "Join with an invite code" }).click();
     await expect(stageHost(player)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
-    // Re-enter as the GM so the freshly seated player is assignable as a token owner.
+    // Re-enter as the GM so the freshly seated player is assignable as a token owner. "Leave
+    // world" lives inside the settings panel's content, so that panel stays open until this
+    // click; the persisted layout re-docks it on re-entry, and it closes only then.
     await gm.getByRole("button", { name: /leave world/i }).click();
     await gm.getByRole("button", { name: new RegExp(worldName) }).click();
     await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-settings:panel").click();
 
     // Token art, then two tokens: one for the player, one an unassigned NPC.
     await gm.getByTestId("launcher-trigger").click();
@@ -94,8 +102,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await gm.getByTestId("asset-upload-input").setInputFiles({ name: "tok.png", mimeType: "image/png", buffer: PNG_1X1 });
     await expect(gm.getByTestId("asset-tile")).toHaveCount(1);
 
-    await placeToken(gm, 200, 300);
-    await placeToken(gm, 400, 300);
+    await placeTokens(gm, [{ x: 200, y: 300 }, { x: 400, y: 300 }]);
     await expect(stageHost(gm)).toHaveAttribute("data-token-count", "2", { timeout: 15_000 });
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-asset-browser:panel").click();
@@ -110,13 +117,12 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await gm.getByLabel("Token owner").selectOption({ label: playerName });
     await expect(gm.getByText(`Effective owner: ${playerName}`)).toBeVisible({ timeout: 15_000 });
 
-    // Select both tokens (drag-select) for the tracker's "add selected".
-    const start = { x: canvasBox!.x + 150, y: canvasBox!.y + 250 };
-    const end = { x: canvasBox!.x + 450, y: canvasBox!.y + 350 };
-    await gm.mouse.move(start.x, start.y);
-    await gm.mouse.down();
-    await gm.mouse.move(end.x, end.y);
-    await gm.mouse.up();
+    // Extend the selection to the NPC token for the tracker's "add selected": Shift+click adds
+    // to the select tool's selection (a plain click replaces it; a pointer-down on empty
+    // ground clears it — there is no marquee).
+    await gm.keyboard.down("Shift");
+    await gm.mouse.click(canvasBox!.x + 400, canvasBox!.y + 300);
+    await gm.keyboard.up("Shift");
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
 
@@ -126,7 +132,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await expect(gm.getByTestId("combat-tracker:add-selected")).toBeEnabled({ timeout: 15_000 });
     await gm.getByTestId("combat-tracker:add-selected").click();
 
-    await gm.getByRole("button", { name: "combatTracker.addEvent" }).click();
+    await gm.getByRole("button", { name: "Add event" }).click();
     await gm.getByLabel("combatTracker.eventName").fill("Trap trigger");
     await gm.getByLabel("combatTracker.eventLifespan").fill("1");
     await gm.getByLabel("combatTracker.eventMessage").fill("The floor gives way!");
@@ -143,22 +149,34 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await expect(gm.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
     await expect(player.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
 
+    // The "your turn" notice is an auto-dismissing toast that fires the moment the clock lands on
+    // the player's own row — which may be the very first turn — so the watch for it starts
+    // BEFORE Start and is awaited once the advance loop below has landed there.
+    const yourTurnNotice = expect(player.getByText("It's your turn!")).toBeVisible({ timeout: 60_000 });
+
     // Start the combat — round 1, the first row is aria-current on BOTH browsers.
-    await gm.getByRole("button", { name: "combatTracker.start" }).click();
-    await expect(gm.getByText("combatTracker.round").first()).toBeVisible({ timeout: 15_000 });
+    await gm.getByRole("button", { name: "Start", exact: true }).click();
+    await expect(gm.getByText("Round 1", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(gm.locator('[aria-current="true"]')).toHaveCount(1, { timeout: 15_000 });
     await expect(player.locator('[aria-current="true"]')).toHaveCount(1, { timeout: 15_000 });
 
     // Whichever row is current, advance the clock until it lands on the player's own row so the
     // "your turn" notice and End-my-turn assertions below are deterministic regardless of turn
-    // order (initiative is random). GM-side Advance covers every non-owner turn.
+    // order (initiative is random). "End my turn" renders on the player's header only during
+    // their own turn (owner-may-end turn control), so it is the player-side signal; each GM-side
+    // Advance is followed by waiting for the player's tracker to show the same current row, so
+    // the check never runs against a stale view and skips past the player's turn.
+    const gmCurrentRow = gm.locator('[aria-current="true"]');
     for (let i = 0; i < 4; i++) {
-      const playerRowCurrent = await player.locator('[aria-current="true"]').getAttribute("data-testid");
-      if (playerRowCurrent) break;
+      if ((await player.getByTestId("combat-tracker:end-my-turn").count()) > 0) break;
+      const before = await gmCurrentRow.getAttribute("data-testid");
       await gm.getByTestId("combat-tracker:advance").click();
+      await expect(gmCurrentRow).not.toHaveAttribute("data-testid", before!, { timeout: 15_000 });
+      const after = await gmCurrentRow.getAttribute("data-testid");
+      await expect(player.locator('[aria-current="true"]')).toHaveAttribute("data-testid", after!, { timeout: 15_000 });
     }
 
-    await expect(player.getByText("combatTracker.yourTurn")).toBeVisible({ timeout: 15_000 });
+    await yourTurnNotice;
     await player.getByTestId("combat-tracker:end-my-turn").click();
     await expect(gm.locator('[aria-current="true"]')).toHaveCount(1, { timeout: 15_000 });
 
@@ -178,14 +196,17 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await expect(player.getByText("The floor gives way!")).toBeVisible({ timeout: 15_000 });
 
     // Hide the NPC (unassigned) row — it vanishes from the player's tracker live; reveal returns.
-    const npcHideButton = gm.locator('[data-testid^="combat-tracker:hide-"]').last();
-    const npcRowTestId = await npcHideButton.evaluate((el) =>
-      el.closest('[data-testid^="combat-tracker:row-"]')?.getAttribute("data-testid"),
-    );
+    // The NPC row is the one the PLAYER cannot act on: their own row carries the editable
+    // initiative input, the NPC's shows initiative as text.
+    const npcRowTestId = await player
+      .locator('[data-testid^="combat-tracker:row-"]')
+      .filter({ hasNot: player.getByLabel("combatTracker.initiative") })
+      .getAttribute("data-testid");
     expect(npcRowTestId).toBeTruthy();
+    const npcHideButton = gm.getByTestId(npcRowTestId!.replace("combat-tracker:row-", "combat-tracker:hide-"));
     await npcHideButton.click();
     await expect(player.getByTestId(npcRowTestId!)).toHaveCount(0, { timeout: 15_000 });
-    await gm.locator('[data-testid^="combat-tracker:hide-"]').last().click();
+    await npcHideButton.click();
     await expect(player.getByTestId(npcRowTestId!)).toHaveCount(1, { timeout: 15_000 });
 
     // Rewind — the previous row is current again on both browsers.
@@ -197,8 +218,8 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     // the player.
     await gm.getByTestId("combat-tracker:end").click();
     await gm.getByTestId("combat-tracker:end").click();
-    await expect(gm.getByText("combatTracker.noCombat")).toBeVisible({ timeout: 15_000 });
-    await expect(player.getByText("combatTracker.noCombatPlayer")).toBeVisible({ timeout: 15_000 });
+    await expect(gm.getByText("No combat running on this scene.")).toBeVisible({ timeout: 15_000 });
+    await expect(player.getByText("No combat is running.")).toBeVisible({ timeout: 15_000 });
 
     // Compact viewport smoke, reusing the player context: the panel reflows into its compact
     // layout (this end-to-end assertion is a class check only). The ≥44px coarse-pointer touch

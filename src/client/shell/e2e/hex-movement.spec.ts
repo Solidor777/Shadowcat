@@ -183,7 +183,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
 
   // Unique per run: the dev server is reused across local runs (`reuseExistingServer`),
   // so a fixed account name would collide with its own previous run. Synthetic only.
-  const playerName = `player-${Date.now().toString(36)}`;
+  const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";
   const worldName = `Hex Gate World ${Date.now().toString(36)}`;
 
