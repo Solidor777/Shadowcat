@@ -1,5 +1,10 @@
 import { test, expect, login, type WorkerAccount } from "./fixtures";
 import type { Page } from "@playwright/test";
+import { COOLDOWN_MS } from "../src/lib/uiStatePersistCooldown";
+
+/** Slack added to `COOLDOWN_MS` so the cooldown's trailing flush has landed before the seed
+ * PUT is issued. Covers scheduling jitter only; the cooldown itself is not restated here. */
+const SETTLE_MARGIN_MS = 200;
 
 async function enterFreshWorld(
   page: Page,
@@ -204,8 +209,9 @@ test("the restore action reopens a multi-panel arrangement into one window hosti
   // Wait out the shell's ui-state persist cooldown (`schedulePersist`) before
   // seeding, so no boot persist lands after the seed and clobbers it; no
   // gestures follow the seed, so nothing schedules another `panelLayout`
-  // write before the reload.
-  await page.waitForTimeout(700);
+  // write before the reload. Derived from `COOLDOWN_MS` rather than restated, so
+  // raising that constant cannot silently shrink this margin to nothing.
+  await page.waitForTimeout(COOLDOWN_MS + SETTLE_MARGIN_MS);
   const seedLayout = {
     version: 1,
     expanded: {

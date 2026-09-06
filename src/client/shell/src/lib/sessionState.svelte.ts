@@ -1,6 +1,7 @@
 import { consoleLogger } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
+import { COOLDOWN_MS } from "./uiStatePersistCooldown";
 
 const logger = consoleLogger();
 let state: UiState = { global: { locale: "en", lastWorld: null }, worlds: {} };
@@ -10,7 +11,6 @@ let observing = false;
 // Leading-edge debounce with a trailing catch-up (ui_state changes are user-paced;
 // the leading edge persists promptly, the trailing flush captures a change made
 // during the cooldown). See [[debounce-leading-edge-not-trailing-rearm]].
-const COOLDOWN_MS = 500;
 let timer: ReturnType<typeof setTimeout> | null = null;
 let pendingDuringCooldown = false;
 
