@@ -1504,7 +1504,7 @@ export const ACKNOWLEDGED_NON_SYMBOLS = new Set([
   // Non-Rust/TS/Svelte source this checker's symbol index does not cover (Python hook internals,
   // SQL/OS keywords, HTTP method/header names).
   "SUBSYSTEMS", "file_path", "NOCASE", "Referer", "GET", "POST", "SO_SNDBUF", "SO_RCVBUF",
-  "EXEMPT", "TODO",
+  "TODO",
   // `#[serde(...)]` / rustdoc attribute keywords - serde's and rustdoc's own vocabulary, not a
   // symbol this repo declares.
   "deny_unknown_fields", "skip_serializing_if", "no_run", // Durable-tracker filenames RULE 15/16 already govern on their own terms (a "Pointers"-section
@@ -1593,10 +1593,10 @@ export const ACKNOWLEDGED_EXTERNAL_PREFIX = new Set([
   // `serde_json::Number`'s own PRIVATE variant names, cited while describing serde_json's internal
   // representation split.
   "PosInt", "NegInt", "Float",
-  // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, PixiJS's
-  // `Link` filter, the `ammonia` HTML-sanitizer's `PassThrough` element-handling mode,
-  // `polyanya`'s `Mesh`/`Layer`, `axum`'s `DefaultBodyLimit`).
-  "Host", "Link", "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
+  // Further external crate/Web-API types (`hyper`'s `Host` header enum, `url`'s `Url`, the
+  // `ammonia` HTML-sanitizer's `PassThrough` element-handling mode, `polyanya`'s `Mesh`/`Layer`,
+  // `axum`'s `DefaultBodyLimit`).
+  "Host", "PassThrough", "SqlSafeStr", "Url", "Mesh", "Layer",
 ]);
 
 /**
