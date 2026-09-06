@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 // Moving-light e2e: a GM walks a torch-bearing token (a carried `LightEmission` authored
@@ -286,7 +286,7 @@ test("a carried torch lights the corridor for an observing player mid-walk", asy
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
   const gm = page;
   const { player, close } = await setupTorchScene(
     gm,
@@ -346,7 +346,7 @@ test("an observer walled off from the walk never sees a light sweep", async ({
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
   const gm = page;
   const { player, close } = await setupTorchScene(
     gm,
@@ -396,7 +396,7 @@ test("a sight-only wall hides the bearer but its glow still sweeps the observer'
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
   const gm = page;
   const { player, close } = await setupTorchScene(
     gm,

@@ -23,6 +23,18 @@ export async function login(
   await page.getByRole("button", { name: "Log in" }).click();
 }
 
+/** Budget for a spec that drives TWO browser contexts (a GM plus an invited player) through a
+ * full end-to-end scenario: world creation, account, invite, join, then the behaviour under test.
+ * Sized for the slowest supported CI runner, which executes this suite at roughly four times a
+ * developer machine's wall-clock — a scenario finishing in ~50s locally lands near three minutes
+ * there, so a budget cut close to the local figure fails on hardware rather than on behaviour.
+ *
+ * INVARIANT: every dual-session spec reads this constant. Spelling the number inline splits it
+ * across sites, and the split only shows up on the slowest machine that runs the suite, which is
+ * never the one the number was chosen on.
+ */
+export const DUAL_SESSION_TIMEOUT_MS = 360_000;
+
 /** Budget for the account-creation confirmation, sized for the contended full-suite run rather
  * than the config's `expect.timeout`: creating an account hashes the password (Argon2), and under
  * the full suite every worker mints accounts at once, so this one step contends

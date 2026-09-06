@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 const PNG_1X1 = Buffer.from(
@@ -136,7 +136,7 @@ test("the resource registry and combat chain editors drive a real movement-budge
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
   const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";
   const worldName = `Combat Settings World ${Date.now().toString(36)}`;

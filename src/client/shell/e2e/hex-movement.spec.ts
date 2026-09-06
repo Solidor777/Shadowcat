@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 // A 1×1 PNG used as token art (same fixture the stage suite uses).
@@ -179,7 +179,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
 
   // Unique per run: the dev server is reused across local runs (`reuseExistingServer`),
   // so a fixed account name would collide with its own previous run. Synthetic only.

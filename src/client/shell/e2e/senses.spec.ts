@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 // Senses e2e: a creature-sense (tremorsense) assignment reveals a grounded token through
@@ -106,7 +106,7 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
 
   const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";

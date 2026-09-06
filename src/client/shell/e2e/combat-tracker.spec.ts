@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 // A 1×1 PNG used as token art (same fixture `hex-movement.spec.ts`/`assets.spec.ts` use).
@@ -52,7 +52,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
   browser,
   account,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(DUAL_SESSION_TIMEOUT_MS);
 
   const playerName = `player-${test.info().workerIndex}-${Date.now().toString(36)}`;
   const playerPassword = "pw-player-e2e";
