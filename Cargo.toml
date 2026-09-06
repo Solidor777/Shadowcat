@@ -2,6 +2,19 @@
 resolver = "2"
 members = ["src/server", "src/server/test-support"]
 
+# Argon2 is a deliberately CPU-bound KDF, so an unoptimized build runs it an order of magnitude
+# slower than intended and that cost dominates any dev or test run that creates accounts or logs
+# in — the browser suite pays it per session, several times per spec. Optimizing these two
+# packages alone leaves the workspace itself unoptimized, so rebuilds stay fast and the server
+# stays debuggable, while the hash costs what it is designed to cost. `blake2` carries argon2's
+# compression function: optimizing `argon2` without it leaves the hot loop cold. Neither entry
+# changes an Argon2 parameter, so the work performed per hash is identical.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"
 lto = true
