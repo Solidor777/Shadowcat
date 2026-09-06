@@ -104,16 +104,16 @@
     <form onsubmit={(e) => { e.preventDefault(); addEvent(); }}>
       <label>
         {ctx.t("combatTracker.eventName")}
-        <input type="text" aria-label="combatTracker.eventName" bind:value={eventName} required />
+        <input type="text" aria-label={ctx.t("combatTracker.eventName")} bind:value={eventName} required />
       </label>
       <label>
         {ctx.t("combatTracker.eventLifespan")}
-        <input type="number" aria-label="combatTracker.eventLifespan" value={eventLifespan}
+        <input type="number" aria-label={ctx.t("combatTracker.eventLifespan")} value={eventLifespan}
           oninput={(e) => (eventLifespan = (e.currentTarget as HTMLInputElement).value)} />
       </label>
       <label>
         {ctx.t("combatTracker.eventMessage")}
-        <input type="text" aria-label="combatTracker.eventMessage" bind:value={eventMessage} />
+        <input type="text" aria-label={ctx.t("combatTracker.eventMessage")} bind:value={eventMessage} />
       </label>
       <label>
         <input type="checkbox" bind:checked={eventHidden} />

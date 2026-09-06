@@ -23,7 +23,7 @@ test("the composer's image button is gated by the chat images setting, and a sen
 
   await page.getByTestId("launcher-trigger").click();
   await page.getByTestId("launcher-item-game-settings:panel").click();
-  await page.getByLabel("gameSettings.chat.images").check();
+  await page.getByLabel("Images: asset links and server-fetched copies of linked images; never hotlinked", { exact: true }).check();
 
   await expect(page.getByTitle("Insert an image")).toBeVisible();
 

@@ -212,7 +212,7 @@
 
   <label>
     {ctx.t("gameSettings.combat.movementResource")}
-    <select aria-label="gameSettings.combat.movementResource" value={prov("combat.movementResource").value ?? "__inherit"}
+    <select aria-label={ctx.t("gameSettings.combat.movementResource")} value={prov("combat.movementResource").value ?? "__inherit"}
       onchange={(e) => onMovementResourceChange((e.currentTarget as HTMLSelectElement).value)}>
       <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
       <option value="__none">{ctx.t("gameSettings.combat.none")}</option>
@@ -226,7 +226,7 @@
 
   <label>
     {ctx.t("gameSettings.combat.interpretation")}
-    <select aria-label="gameSettings.combat.interpretation" value={wsys?.combat?.interpretation ?? "__inherit"}
+    <select aria-label={ctx.t("gameSettings.combat.interpretation")} value={wsys?.combat?.interpretation ?? "__inherit"}
       onchange={(e) => {
         const v = (e.currentTarget as HTMLSelectElement).value;
         if (v === "__inherit") leafRemove("interpretation");
@@ -243,7 +243,7 @@
 
   <label>
     {ctx.t("gameSettings.combat.enforcement")}
-    <select aria-label="gameSettings.combat.enforcement" value={wsys?.combat?.enforcement ?? "__inherit"}
+    <select aria-label={ctx.t("gameSettings.combat.enforcement")} value={wsys?.combat?.enforcement ?? "__inherit"}
       onchange={(e) => {
         const v = (e.currentTarget as HTMLSelectElement).value;
         if (v === "__inherit") leafRemove("enforcement");
@@ -260,7 +260,7 @@
 
   <label>
     {ctx.t("gameSettings.combat.turnControl")}
-    <select aria-label="gameSettings.combat.turnControl" value={wsys?.combat?.turnControl ?? "__inherit"}
+    <select aria-label={ctx.t("gameSettings.combat.turnControl")} value={wsys?.combat?.turnControl ?? "__inherit"}
       onchange={(e) => {
         const v = (e.currentTarget as HTMLSelectElement).value;
         if (v === "__inherit") leafRemove("turnControl");
@@ -279,7 +279,7 @@
     {@const k = key as "effectCleanup" | "rewindRestore" | "forwardRestore"}
     <label>
       {ctx.t(labelKey)}
-      <select aria-label={labelKey} value={wsys?.combat?.[k] === undefined || wsys?.combat?.[k] === null ? "__inherit" : String(wsys.combat[k])}
+      <select aria-label={ctx.t(labelKey)} value={wsys?.combat?.[k] === undefined || wsys?.combat?.[k] === null ? "__inherit" : String(wsys.combat[k])}
         onchange={(e) => {
           const v = (e.currentTarget as HTMLSelectElement).value;
           if (v === "__inherit") leafRemove(k);
@@ -301,7 +301,7 @@
     {#each LIFECYCLE_LEAVES as leaf (leaf)}
       <label>
         {ctx.t("gameSettings.combat." + leaf)}
-        <input type="text" aria-label={"gameSettings.combat." + leaf}
+        <input type="text" aria-label={ctx.t("gameSettings.combat." + leaf)}
           value={wsys?.combat?.effectLifecycle?.[leaf] ?? ""}
           onchange={(e) => onLifecycleInput(leaf, (e.currentTarget as HTMLInputElement).value)} />
       </label>

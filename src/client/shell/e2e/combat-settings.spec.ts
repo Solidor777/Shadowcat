@@ -233,43 +233,43 @@ test("the resource registry and combat chain editors drive a real movement-budge
     // confines a player's route to the cells their token can see, and this token carries no
     // vision source. The gate under proof is the movement BUDGET, so the world tier lifts the
     // restriction (`hex-movement.spec.ts` authors the same).
-    await gm.getByLabel("gameSettings.movementRestriction").selectOption("unrestricted");
-    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue("unrestricted");
+    await gm.getByLabel("Movement restriction", { exact: true }).selectOption("unrestricted");
+    await expect(gm.getByLabel("Movement restriction", { exact: true })).toHaveValue("unrestricted");
 
     // --- Resources editor: add a Tracked "movement" resource. `max`/`turnStart` reference the
     // actor's own named `system.speed` leaf authored above.
-    await gm.getByLabel("gameSettings.resources.key").fill("movement");
+    await gm.getByLabel("Key", { exact: true }).fill("movement");
     await gm.getByRole("button", { name: "Add resource" }).click();
-    await gm.getByLabel("gameSettings.resources.kind-movement").selectOption("tracked");
-    await gm.getByLabel("gameSettings.resources.max-movement").fill("speed");
-    await gm.getByLabel("gameSettings.resources.turnStart-movement").fill("speed");
+    await gm.getByLabel("Kind for resource movement", { exact: true }).selectOption("tracked");
+    await gm.getByLabel("Max for resource movement", { exact: true }).fill("speed");
+    await gm.getByLabel("Turn start for resource movement", { exact: true }).fill("speed");
 
     // --- Chain editor (world tier): movementResource = movement, interpretation = per_cell,
     // enforcement = hard.
-    await gm.getByLabel("gameSettings.combat.movementResource").selectOption("movement");
+    await gm.getByLabel("Movement resource", { exact: true }).selectOption("movement");
     await expect(gm.getByTestId("provenance:combat.movementResource")).toHaveText("World setting");
     // `spaces`: the resource IS the cell count (`per_cell` would divide `speed` by the scene's
     // distance-per-cell), so `speed` = 2 is the 2-cell budget the geometry above assumes.
-    await gm.getByLabel("gameSettings.combat.interpretation").selectOption("spaces");
-    await gm.getByLabel("gameSettings.combat.enforcement").selectOption("hard");
+    await gm.getByLabel("Budget interpretation", { exact: true }).selectOption("spaces");
+    await gm.getByLabel("Enforcement", { exact: true }).selectOption("hard");
     await expect(gm.getByTestId("provenance:combat.enforcement")).toHaveText("World setting");
     await expect(gm.getByTestId("gameSettings:combat-effective-combat.enforcement")).toHaveText('"hard"');
 
     // --- Scene tier: enforcement = warn overrides the world's hard on the selected scene.
-    await gm.getByLabel("gameSettings.combat.scene.enforcement").selectOption("warn");
+    await gm.getByLabel("Enforcement (override)", { exact: true }).selectOption("warn");
     await expect(gm.getByTestId("gameSettings:combat-effective-combat.enforcement")).toHaveText('"warn"');
     await expect(gm.getByTestId("provenance:combat.scene.enforcement")).toHaveText("Scene override");
 
     // Reset the scene override — falls back to the world's hard.
-    await gm.getByLabel("gameSettings.combat.scene.enforcement").selectOption("__inherit");
+    await gm.getByLabel("Enforcement (override)", { exact: true }).selectOption("__inherit");
     await expect(gm.getByTestId("gameSettings:combat-effective-combat.enforcement")).toHaveText('"hard"');
 
     // World reset — falls all the way back to the engine default (none) — then re-arm hard for
     // the gate proof below.
-    await gm.getByLabel("gameSettings.combat.enforcement").selectOption("__inherit");
+    await gm.getByLabel("Enforcement", { exact: true }).selectOption("__inherit");
     await expect(gm.getByTestId("provenance:combat.enforcement")).toHaveText("Engine default");
     await expect(gm.getByTestId("gameSettings:combat-effective-combat.enforcement")).toHaveText('"none"');
-    await gm.getByLabel("gameSettings.combat.enforcement").selectOption("hard");
+    await gm.getByLabel("Enforcement", { exact: true }).selectOption("hard");
     await closeGameSettings(gm);
 
     // --- Assign the seated token's ownership (the actor + linked token were placed above,
@@ -330,7 +330,7 @@ test("the resource registry and combat chain editors drive a real movement-budge
     // combat: end this one, then create and start another over the same selected token — its
     // fresh combatant reads its budget as full (lazy-full), so no refill is needed.
     await openGameSettings(gm);
-    await gm.getByLabel("gameSettings.combat.enforcement").selectOption("warn");
+    await gm.getByLabel("Enforcement", { exact: true }).selectOption("warn");
     await expect(gm.getByTestId("gameSettings:combat-effective-combat.enforcement")).toHaveText('"warn"');
     await closeGameSettings(gm);
     await gm.getByTestId("launcher-trigger").click();

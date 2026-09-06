@@ -109,7 +109,7 @@
 
   <label>
     {ctx.t("combatTracker.notation")}
-    <input type="text" aria-label="combatTracker.notation" bind:value={notation} />
+    <input type="text" aria-label={ctx.t("combatTracker.notation")} bind:value={notation} />
   </label>
   <button type="button" data-testid="combat-tracker:roll-all" disabled={busy} onclick={rollAll}>{ctx.t("combatTracker.rollAll")}</button>
 

@@ -213,7 +213,7 @@
   {#if combats.length > 1}
     <label>
       {ctx.t("combatTracker.pick")}
-      <select aria-label="combatTracker.pick" value={selectedCombat?.id}
+      <select aria-label={ctx.t("combatTracker.pick")} value={selectedCombat?.id}
         onchange={(e) => (selectedId = (e.currentTarget as HTMLSelectElement).value)}>
         {#each combats as c (c.id)}
           <option value={c.id}>{c.name ?? c.id}</option>

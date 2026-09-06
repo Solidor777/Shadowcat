@@ -172,7 +172,7 @@
     {/each}
 
     {#if can.edit || mayEditResource}
-      <input type="number" aria-label="combatTracker.initiative" value={engine.initiative ?? ""}
+      <input type="number" aria-label={ctx.t("combatTracker.initiative")} value={engine.initiative ?? ""}
         onchange={(e) => setInitiative((e.currentTarget as HTMLInputElement).value)} />
     {:else}
       <span>{engine.initiative ?? ""}</span>

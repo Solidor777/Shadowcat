@@ -197,8 +197,8 @@
   <legend>{ctx.t("gameSettings.combat.scene.title")}</legend>
 
   <label>
-    {ctx.t("gameSettings.combat.movementResource")}
-    <select aria-label="gameSettings.combat.scene.movementResource" value={prov("combat.movementResource").value ?? "__inherit"}
+    {ctx.t("gameSettings.combat.scene.movementResource")}
+    <select aria-label={ctx.t("gameSettings.combat.scene.movementResource")} value={prov("combat.movementResource").value ?? "__inherit"}
       onchange={(e) => onMovementResourceChange((e.currentTarget as HTMLSelectElement).value)}>
       <option value="__inherit">{ctx.t("gameSettings.inherit")}</option>
       <option value="__none">{ctx.t("gameSettings.combat.none")}</option>
@@ -208,8 +208,8 @@
   <p data-testid="provenance:combat.scene.movementResource">{ctx.t("gameSettings.source." + prov("combat.movementResource").source)}</p>
 
   <label>
-    {ctx.t("gameSettings.combat.interpretation")}
-    <select aria-label="gameSettings.combat.scene.interpretation" value={ssys?.combat?.interpretation ?? "__inherit"}
+    {ctx.t("gameSettings.combat.scene.interpretation")}
+    <select aria-label={ctx.t("gameSettings.combat.scene.interpretation")} value={ssys?.combat?.interpretation ?? "__inherit"}
       onchange={(e) => {
         const v = (e.currentTarget as HTMLSelectElement).value;
         if (v === "__inherit") leafRemove("interpretation");
@@ -222,8 +222,8 @@
   <p data-testid="provenance:combat.scene.interpretation">{ctx.t("gameSettings.source." + prov("combat.interpretation").source)}</p>
 
   <label>
-    {ctx.t("gameSettings.combat.enforcement")}
-    <select aria-label="gameSettings.combat.scene.enforcement" value={ssys?.combat?.enforcement ?? "__inherit"}
+    {ctx.t("gameSettings.combat.scene.enforcement")}
+    <select aria-label={ctx.t("gameSettings.combat.scene.enforcement")} value={ssys?.combat?.enforcement ?? "__inherit"}
       onchange={(e) => {
         const v = (e.currentTarget as HTMLSelectElement).value;
         if (v === "__inherit") leafRemove("enforcement");
@@ -236,8 +236,8 @@
   <p data-testid="provenance:combat.scene.enforcement">{ctx.t("gameSettings.source." + prov("combat.enforcement").source)}</p>
 
   <label>
-    {ctx.t("gameSettings.combat.turnControl")}
-    <select aria-label="gameSettings.combat.scene.turnControl" value={ssys?.combat?.turnControl ?? "__inherit"}
+    {ctx.t("gameSettings.combat.scene.turnControl")}
+    <select aria-label={ctx.t("gameSettings.combat.scene.turnControl")} value={ssys?.combat?.turnControl ?? "__inherit"}
       onchange={(e) => {
         const v = (e.currentTarget as HTMLSelectElement).value;
         if (v === "__inherit") leafRemove("turnControl");
@@ -249,11 +249,11 @@
   </label>
   <p data-testid="provenance:combat.scene.turnControl">{ctx.t("gameSettings.source." + prov("combat.turnControl").source)}</p>
 
-  {#each [["effectCleanup", "gameSettings.combat.effectCleanup"], ["rewindRestore", "gameSettings.combat.rewindRestore"], ["forwardRestore", "gameSettings.combat.forwardRestore"]] as [key, labelKey] (key)}
+  {#each [["effectCleanup", "gameSettings.combat.scene.effectCleanup"], ["rewindRestore", "gameSettings.combat.scene.rewindRestore"], ["forwardRestore", "gameSettings.combat.scene.forwardRestore"]] as [key, labelKey] (key)}
     {@const k = key as "effectCleanup" | "rewindRestore" | "forwardRestore"}
     <label>
       {ctx.t(labelKey)}
-      <select aria-label={"gameSettings.combat.scene." + key} value={ssys?.combat?.[k] === undefined || ssys?.combat?.[k] === null ? "__inherit" : String(ssys.combat[k])}
+      <select aria-label={ctx.t(labelKey)} value={ssys?.combat?.[k] === undefined || ssys?.combat?.[k] === null ? "__inherit" : String(ssys.combat[k])}
         onchange={(e) => {
           const v = (e.currentTarget as HTMLSelectElement).value;
           if (v === "__inherit") leafRemove(k);
@@ -271,8 +271,8 @@
     <legend>{ctx.t("gameSettings.combat.lifecycle")}</legend>
     {#each LIFECYCLE_LEAVES as leaf (leaf)}
       <label>
-        {ctx.t("gameSettings.combat." + leaf)}
-        <input type="text" aria-label={"gameSettings.combat.scene." + leaf}
+        {ctx.t("gameSettings.combat.scene." + leaf)}
+        <input type="text" aria-label={ctx.t("gameSettings.combat.scene." + leaf)}
           value={ssys?.combat?.effectLifecycle?.[leaf] ?? ""}
           onchange={(e) => onLifecycleInput(leaf, (e.currentTarget as HTMLInputElement).value)} />
       </label>

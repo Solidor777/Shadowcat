@@ -261,19 +261,19 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // --- GM authors the scene through the real game-settings controls. ---
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-game-settings:panel").click();
-    await gm.getByLabel("gameSettings.scene.gridKind").selectOption("hex");
+    await gm.getByLabel("Grid kind", { exact: true }).selectOption("hex");
     // Unrestricted is what makes the rejection below attributable to the wall: the
     // visibility mask cannot reject in this mode, so `blocks_move` is the only gate left.
     // Set at the WORLD tier, which the scene inherits. The per-scene override control
     // cannot be used: a scene document's `engine.vision` is `null` until something
     // writes it, and `/engine/vision/movementRestriction` cannot descend through null.
     await gm
-      .getByLabel("gameSettings.movementRestriction")
+      .getByLabel("Movement restriction", { exact: true })
       .selectOption("unrestricted");
     // Pin that it persisted. Silently falling back to `Visible` would move the rejection
     // below onto the visibility mask, re-entering the very ambiguity the control leg closes —
     // and on a lit scene the control leg would still pass, so nothing else would catch it.
-    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue(
+    await expect(gm.getByLabel("Movement restriction", { exact: true })).toHaveValue(
       "unrestricted",
     );
     await gm.getByTestId("launcher-trigger").click();
@@ -450,10 +450,10 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // Panel-open is not instant under a session this long (many panels stay
     // mounted); wait for the control to be VISIBLE before asserting its value,
     // with its own generous budget.
-    await expect(gm.getByLabel("gameSettings.movementRestriction")).toBeVisible({
+    await expect(gm.getByLabel("Movement restriction", { exact: true })).toBeVisible({
       timeout: 30_000,
     });
-    await expect(gm.getByLabel("gameSettings.movementRestriction")).toHaveValue(
+    await expect(gm.getByLabel("Movement restriction", { exact: true })).toHaveValue(
       "unrestricted",
     );
   } finally {

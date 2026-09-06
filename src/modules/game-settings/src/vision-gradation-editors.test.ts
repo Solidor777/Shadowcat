@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { i18n } from "@shadowcat/ui-kit";
 import {
   DocumentStore,
   buildLightGradationDoc,
@@ -18,6 +19,11 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 
+// Every per-row control is named by its field AND its row ("Default range (cells) for vision mode
+// darkvision"), which only the catalog-backed `t` renders — the fixture's identity-echo `t` drops
+// interpolation params, so every row would share one name.
+const t = (k: string, p?: Parameters<typeof i18n.t>[1]) => i18n.t(k, p);
+
 /** The seeded gradation doc's raw stored band array (unsorted, as stored). */
 const seedBands = () => [
   { name: "bright", minIllumination: 0.67 },
@@ -27,7 +33,7 @@ const seedBands = () => [
 
 function renderPanel(dispatchIntent: (ops: WireOperation[]) => void, docs: WireDocument[]) {
   return render(GameSettingsPanel, {
-    context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(...docs), dispatchIntent }),
+    context: setAppContextForTest({ role: "gm", world: "w1", documents: storeWith(...docs), dispatchIntent, t }),
   });
 }
 
@@ -35,7 +41,7 @@ describe("gradation band editor", () => {
   it("add appends a uniquely-named band via a whole-array write with the raw stored bands as old", async () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildLightGradationDoc("w1", undefined, "lg1")]);
-    await fireEvent.click(screen.getByLabelText("gameSettings.gradationAdd"));
+    await fireEvent.click(screen.getByLabelText("Add band"));
     expect(dispatchIntent).toHaveBeenCalledWith([
       {
         op: "update",
@@ -48,7 +54,7 @@ describe("gradation band editor", () => {
   it("remove drops the band via a whole-array write", async () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildLightGradationDoc("w1", undefined, "lg1")]);
-    await fireEvent.click(screen.getByLabelText("gameSettings.gradationRemove.dim"));
+    await fireEvent.click(screen.getByLabelText("Remove band dim"));
     expect(dispatchIntent).toHaveBeenCalledWith([
       {
         op: "update",
@@ -61,7 +67,7 @@ describe("gradation band editor", () => {
   it("a threshold edit still writes the indexed pointer with the raw stored value as old", async () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildLightGradationDoc("w1", undefined, "lg1")]);
-    await fireEvent.change(screen.getByLabelText("gameSettings.gradation.dark"), { target: { value: "0.1" } });
+    await fireEvent.change(screen.getByLabelText("Minimum illumination for band dark"), { target: { value: "0.1" } });
     expect(dispatchIntent).toHaveBeenCalledWith([
       { op: "update", doc_id: "lg1", changes: [{ path: "/engine/bands/2/minIllumination", old: 0, new: 0.1 }] },
     ]);
@@ -74,7 +80,7 @@ describe("vision-mode editor", () => {
   it("the floor dropdown options derive from the resolved gradation, not a hardcoded list", () => {
     const gradation: LightGradationEngine = { bands: [{ name: "gloom", minIllumination: 0.2 }, { name: "noon", minIllumination: 0.9 }] };
     renderPanel(vi.fn(), [buildLightGradationDoc("w1", gradation, "lg1"), buildVisionModesDoc("w1", undefined, "vm1")]);
-    const select = screen.getByLabelText("gameSettings.visionMode.normal") as HTMLSelectElement;
+    const select = screen.getByLabelText("Illumination floor for vision mode normal") as HTMLSelectElement;
     // resolveGradation sorts brightest-first; the seeded "dim"/"dark" floors are absent from a
     // custom gradation, so "dim" (normal's stored floor) appears once as the raw-value fallback.
     expect([...select.options].map((o) => o.value)).toEqual(["noon", "gloom", "dim"]);
@@ -84,27 +90,27 @@ describe("vision-mode editor", () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildLightGradationDoc("w1", undefined, "lg1"), buildVisionModesDoc("w1", undefined, "vm1")]);
 
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.darkvision"), { target: { value: "dim" } });
+    await fireEvent.change(screen.getByLabelText("Illumination floor for vision mode darkvision"), { target: { value: "dim" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/darkvision/illuminationFloor", old: "dark", new: "dim" }] },
     ]);
 
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.darkvision.range"), { target: { value: "24" } });
+    await fireEvent.change(screen.getByLabelText("Default range (cells) for vision mode darkvision"), { target: { value: "24" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/darkvision/defaultRange", old: 12, new: 24 }] },
     ]);
 
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.tremorsense.perceives"), { target: { value: "terrain" } });
+    await fireEvent.change(screen.getByLabelText("Perceives for vision mode tremorsense"), { target: { value: "terrain" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/tremorsense/perceives", old: "creatures", new: "terrain" }] },
     ]);
 
-    await fireEvent.click(screen.getByLabelText("gameSettings.visionMode.tremorsense.requiresLos"));
+    await fireEvent.click(screen.getByLabelText("Requires line of sight for vision mode tremorsense"));
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/tremorsense/requiresLos", old: false, new: true }] },
     ]);
 
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.normal.name"), { target: { value: "Normal sight" } });
+    await fireEvent.change(screen.getByLabelText("Name for vision mode normal"), { target: { value: "Normal sight" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/name", old: "Normal", new: "Normal sight" }] },
     ]);
@@ -114,12 +120,12 @@ describe("vision-mode editor", () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildVisionModesDoc("w1", undefined, "vm1")]);
 
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.normal.renderHint"), { target: { value: "sepia" } });
+    await fireEvent.change(screen.getByLabelText("Render hint for vision mode normal"), { target: { value: "sepia" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/normal/renderHint", old: null, new: "sepia" }] },
     ]);
 
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.darkvision.renderHint"), { target: { value: "" } });
+    await fireEvent.change(screen.getByLabelText("Render hint for vision mode darkvision"), { target: { value: "" } });
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/darkvision/renderHint", old: "desaturate", new: null }] },
     ]);
@@ -135,17 +141,17 @@ describe("vision-mode editor", () => {
     });
     const store = storeWith(buildLightGradationDoc("w1", undefined, "lg1"), buildVisionModesDoc("w1", undefined, "vm1"));
     render(GameSettingsPanel, {
-      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent }),
+      context: setAppContextForTest({ role: "gm", world: "w1", documents: store, dispatchIntent, t }),
     });
 
     const expected = (id: string) => ({
       id, name: id, illuminationFloor: "dark", defaultRange: 12, perceives: "terrain", requiresLos: true, renderHint: null,
     });
-    await fireEvent.click(screen.getByLabelText("gameSettings.visionModeAdd"));
+    await fireEvent.click(screen.getByLabelText("Add vision mode"));
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/custom-1", old: null, new: expected("custom-1") }] },
     ]);
-    await fireEvent.click(screen.getByLabelText("gameSettings.visionModeAdd"));
+    await fireEvent.click(screen.getByLabelText("Add vision mode"));
     expect(dispatchIntent).toHaveBeenLastCalledWith([
       { op: "update", doc_id: "vm1", changes: [{ path: "/engine/modes/custom-2", old: null, new: expected("custom-2") }] },
     ]);
@@ -154,7 +160,7 @@ describe("vision-mode editor", () => {
   it("remove replaces the whole modes map minus the removed id", async () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildVisionModesDoc("w1", undefined, "vm1")]);
-    await fireEvent.click(screen.getByLabelText("gameSettings.visionModeRemove.tremorsense"));
+    await fireEvent.click(screen.getByLabelText("Remove vision mode tremorsense"));
     const next = seededModes();
     delete next.tremorsense;
     expect(dispatchIntent).toHaveBeenCalledWith([
@@ -165,7 +171,7 @@ describe("vision-mode editor", () => {
   it("a blank name edit dispatches nothing", async () => {
     const dispatchIntent = vi.fn();
     renderPanel(dispatchIntent, [buildVisionModesDoc("w1", undefined, "vm1")]);
-    await fireEvent.change(screen.getByLabelText("gameSettings.visionMode.normal.name"), { target: { value: "   " } });
+    await fireEvent.change(screen.getByLabelText("Name for vision mode normal"), { target: { value: "   " } });
     expect(dispatchIntent).not.toHaveBeenCalled();
   });
 
@@ -176,7 +182,7 @@ describe("vision-mode editor", () => {
       id: "normal", name: "Normal", illuminationFloor: "dim", defaultRange: 0, renderHint: null,
     } as unknown as VisionModesEngine["modes"][string];
     renderPanel(vi.fn(), [buildVisionModesDoc("w1", { modes: { normal: legacy } }, "vm1")]);
-    expect((screen.getByLabelText("gameSettings.visionMode.normal.requiresLos") as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByLabelText("gameSettings.visionMode.normal.perceives") as HTMLSelectElement).value).toBe("terrain");
+    expect((screen.getByLabelText("Requires line of sight for vision mode normal") as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByLabelText("Perceives for vision mode normal") as HTMLSelectElement).value).toBe("terrain");
   });
 });

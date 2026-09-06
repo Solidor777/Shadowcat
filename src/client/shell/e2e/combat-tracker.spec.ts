@@ -133,9 +133,9 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await gm.getByTestId("combat-tracker:add-selected").click();
 
     await gm.getByRole("button", { name: "Add event" }).click();
-    await gm.getByLabel("combatTracker.eventName").fill("Trap trigger");
-    await gm.getByLabel("combatTracker.eventLifespan").fill("1");
-    await gm.getByLabel("combatTracker.eventMessage").fill("The floor gives way!");
+    await gm.getByLabel("Event name", { exact: true }).fill("Trap trigger");
+    await gm.getByLabel("Turns remaining", { exact: true }).fill("1");
+    await gm.getByLabel("Message", { exact: true }).fill("The floor gives way!");
     await gm.getByTestId("combat-tracker:add-event").click();
 
     await openTracker(player);
@@ -143,9 +143,9 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     // Roll all with 1d20 — both actor rows gain an initiative value, and the two rolls
     // (the event never rolls) each post a roll card to chat — combat intents reach chat, not
     // just the tracker's own state.
-    await gm.getByLabel("combatTracker.notation").fill("1d20");
+    await gm.getByLabel("Notation", { exact: true }).fill("1d20");
     await gm.getByTestId("combat-tracker:roll-all").click();
-    await expect(gm.getByLabel("combatTracker.initiative").first()).not.toHaveValue("", { timeout: 15_000 });
+    await expect(gm.getByLabel("Initiative", { exact: true }).first()).not.toHaveValue("", { timeout: 15_000 });
     await expect(gm.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
     await expect(player.locator(".roll-block")).toHaveCount(2, { timeout: 15_000 });
 
@@ -200,7 +200,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     // initiative input, the NPC's shows initiative as text.
     const npcRowTestId = await player
       .locator('[data-testid^="combat-tracker:row-"]')
-      .filter({ hasNot: player.getByLabel("combatTracker.initiative") })
+      .filter({ hasNot: player.getByLabel("Initiative", { exact: true }) })
       .getAttribute("data-testid");
     expect(npcRowTestId).toBeTruthy();
     const npcHideButton = gm.getByTestId(npcRowTestId!.replace("combat-tracker:row-", "combat-tracker:hide-"));

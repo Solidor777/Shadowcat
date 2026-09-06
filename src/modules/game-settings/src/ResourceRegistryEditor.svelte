@@ -156,17 +156,17 @@
         <legend>{key}</legend>
         <label>
           {ctx.t("gameSettings.resources.name")}
-          <input type="text" aria-label={"gameSettings.resources.name-" + key} value={entry.name}
+          <input type="text" aria-label={ctx.t("gameSettings.resources.nameFor", { key })} value={entry.name}
             onchange={(e) => writeField(key, "/name", entry.name, (e.currentTarget as HTMLInputElement).value)} />
         </label>
         <label>
           {ctx.t("gameSettings.resources.order")}
-          <input type="number" step="1" aria-label={"gameSettings.resources.order-" + key} value={entry.order}
+          <input type="number" step="1" aria-label={ctx.t("gameSettings.resources.orderFor", { key })} value={entry.order}
             onchange={(e) => writeField(key, "/order", entry.order, Number((e.currentTarget as HTMLInputElement).value))} />
         </label>
         <label>
           {ctx.t("gameSettings.resources.kind")}
-          <select aria-label={"gameSettings.resources.kind-" + key} value={entry.binding.kind}
+          <select aria-label={ctx.t("gameSettings.resources.kindFor", { key })} value={entry.binding.kind}
             onchange={(e) => switchKind(key, entry.binding, (e.currentTarget as HTMLSelectElement).value as ResourceBinding["kind"])}>
             <option value="mirror">{ctx.t("gameSettings.resources.mirror")}</option>
             <option value="tracked">{ctx.t("gameSettings.resources.tracked")}</option>
@@ -176,21 +176,21 @@
         {#if entry.binding.kind === "mirror"}
           <label>
             {ctx.t("gameSettings.resources.value")}
-            <input type="text" aria-label={"gameSettings.resources.value-" + key} value={String(entry.binding.value)}
+            <input type="text" aria-label={ctx.t("gameSettings.resources.valueFor", { key })} value={String(entry.binding.value)}
               onchange={(e) => onFormulaInput(key, key + ":value", "/binding/value", entry.binding.kind === "mirror" ? entry.binding.value : null, (e.currentTarget as HTMLInputElement).value)} />
           </label>
           {#if errors[key + ":value"]}<p class="error">{errors[key + ":value"]}</p>{/if}
         {:else}
           <label>
             {ctx.t("gameSettings.resources.max")}
-            <input type="text" aria-label={"gameSettings.resources.max-" + key} value={String(entry.binding.max)}
+            <input type="text" aria-label={ctx.t("gameSettings.resources.maxFor", { key })} value={String(entry.binding.max)}
               onchange={(e) => onFormulaInput(key, key + ":max", "/binding/max", entry.binding.kind === "tracked" ? entry.binding.max : null, (e.currentTarget as HTMLInputElement).value)} />
           </label>
           {#if errors[key + ":max"]}<p class="error">{errors[key + ":max"]}</p>{/if}
           {#each [["turnStart", "turn_start"], ["turnEnd", "turn_end"], ["roundStart", "round_start"], ["roundEnd", "round_end"]] as [labelKey, field] (field)}
             <label>
               {ctx.t("gameSettings.resources." + labelKey)}
-              <input type="text" aria-label={"gameSettings.resources." + labelKey + "-" + key}
+              <input type="text" aria-label={ctx.t("gameSettings.resources." + labelKey + "For", { key })}
                 value={String(entry.binding.kind === "tracked" ? entry.binding.recover[field as keyof typeof entry.binding.recover] : "")}
                 onchange={(e) => onFormulaInput(key, key + ":" + field, "/binding/recover/" + field, entry.binding.kind === "tracked" ? entry.binding.recover[field as keyof typeof entry.binding.recover] : null, (e.currentTarget as HTMLInputElement).value)} />
             </label>
@@ -198,13 +198,13 @@
           {/each}
         {/if}
 
-        <button type="button" aria-label={"gameSettings.resources.remove-" + key} onclick={() => remove(key)}>{ctx.t("gameSettings.resources.remove")}</button>
+        <button type="button" aria-label={ctx.t("gameSettings.resources.removeFor", { key })} onclick={() => remove(key)}>{ctx.t("gameSettings.resources.remove")}</button>
       </fieldset>
     {/each}
 
     <label>
       {ctx.t("gameSettings.resources.key")}
-      <input type="text" aria-label="gameSettings.resources.key" value={newKey}
+      <input type="text" aria-label={ctx.t("gameSettings.resources.key")} value={newKey}
         onchange={(e) => (newKey = (e.currentTarget as HTMLInputElement).value)} />
     </label>
     <button type="button" onclick={add}>{ctx.t("gameSettings.resources.add")}</button>

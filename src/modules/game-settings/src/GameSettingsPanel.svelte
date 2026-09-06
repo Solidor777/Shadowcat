@@ -362,11 +362,11 @@
   <!-- Per-control provenance hint + reset-to-system-default button, shared by every world-defaults
        control below. Provenance is structural on the overlay: a PRESENT world leaf IS an
        override, so the reset button renders exactly when a stored leaf exists to clear. -->
-  {#snippet provControl(path: WorldDefaultsPath, old: unknown)}
+  {#snippet provControl(path: WorldDefaultsPath, old: unknown, labelKey: string)}
     {@const p = prov(path)}
     <p class="hint" data-testid={"provenance:" + path}>{ctx.t("gameSettings.source." + p.source)}</p>
     {#if p.source === "world"}
-      <button type="button" class="reset-to-system" aria-label={"gameSettings.resetToSystem:" + path}
+      <button type="button" class="reset-to-system" aria-label={ctx.t("gameSettings.resetToSystemFor", { setting: ctx.t(labelKey) })}
         onclick={() => resetToSystem(path, old)}>{ctx.t("gameSettings.resetToSystem")}</button>
     {/if}
   {/snippet}
@@ -375,67 +375,67 @@
     <!-- World-defaults: movement, lighting, light mode, fog, pathfinding, animation -->
     <label>
       {ctx.t("gameSettings.movementRestriction")}
-      <select aria-label="gameSettings.movementRestriction" value={prov("scene.movementRestriction").value as string}
+      <select aria-label={ctx.t("gameSettings.movementRestriction")} value={prov("scene.movementRestriction").value as string}
         onchange={(e) => set(ws.id, "/engine/scene/movementRestriction", wsys.scene?.movementRestriction, (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
-    {@render provControl("scene.movementRestriction", wsys.scene?.movementRestriction)}
+    {@render provControl("scene.movementRestriction", wsys.scene?.movementRestriction, "gameSettings.movementRestriction")}
 
     <label>
       {ctx.t("gameSettings.movementModel")}
-      <select aria-label="gameSettings.movementModel" value={prov("scene.movementModel").value as string}
+      <select aria-label={ctx.t("gameSettings.movementModel")} value={prov("scene.movementModel").value as string}
         onchange={(e) => set(ws.id, "/engine/scene/movementModel", wsys.scene?.movementModel, (e.currentTarget as HTMLSelectElement).value)}>
         {#each MOVEMENT_MODEL as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
-    {@render provControl("scene.movementModel", wsys.scene?.movementModel)}
+    {@render provControl("scene.movementModel", wsys.scene?.movementModel, "gameSettings.movementModel")}
 
     <label>
       {ctx.t("gameSettings.lightingEnabled")}
-      <input type="checkbox" aria-label="gameSettings.lightingEnabled" checked={prov("scene.lightingEnabled").value === true}
+      <input type="checkbox" aria-label={ctx.t("gameSettings.lightingEnabled")} checked={prov("scene.lightingEnabled").value === true}
         onchange={(e) => set(ws.id, "/engine/scene/lightingEnabled", wsys.scene?.lightingEnabled, (e.currentTarget as HTMLInputElement).checked)} />
     </label>
-    {@render provControl("scene.lightingEnabled", wsys.scene?.lightingEnabled)}
+    {@render provControl("scene.lightingEnabled", wsys.scene?.lightingEnabled, "gameSettings.lightingEnabled")}
 
     <label>
       {ctx.t("gameSettings.lightMode")}
-      <select aria-label="gameSettings.lightMode" value={prov("scene.lightMode").value as string}
+      <select aria-label={ctx.t("gameSettings.lightMode")} value={prov("scene.lightMode").value as string}
         onchange={(e) => set(ws.id, "/engine/scene/lightMode", wsys.scene?.lightMode, (e.currentTarget as HTMLSelectElement).value)}>
         {#each LIGHTMODE as m}<option value={m}>{m}</option>{/each}
       </select>
     </label>
-    {@render provControl("scene.lightMode", wsys.scene?.lightMode)}
+    {@render provControl("scene.lightMode", wsys.scene?.lightMode, "gameSettings.lightMode")}
 
     <!-- No editable world-level fog control exists: only the per-scene override below has an
          input. This section renders the provenance hint + reset-to-system button standalone,
          reading the current stored value from wsys for the reset's OCC pre-image. -->
-    {@render provControl("scene.fog", wsys.scene?.fog)}
+    {@render provControl("scene.fog", wsys.scene?.fog, "gameSettings.fog")}
 
     <label>
       {ctx.t("gameSettings.diagonalRule")}
-      <select aria-label="gameSettings.diagonalRule" value={prov("pathfinding.diagonalRule").value as string}
+      <select aria-label={ctx.t("gameSettings.diagonalRule")} value={prov("pathfinding.diagonalRule").value as string}
         onchange={(e) => set(ws.id, "/engine/pathfinding/diagonalRule", wsys.pathfinding?.diagonalRule, (e.currentTarget as HTMLSelectElement).value)}>
         {#each DIAGONAL as d}<option value={d}>{d}</option>{/each}
       </select>
     </label>
-    {@render provControl("pathfinding.diagonalRule", wsys.pathfinding?.diagonalRule)}
+    {@render provControl("pathfinding.diagonalRule", wsys.pathfinding?.diagonalRule, "gameSettings.diagonalRule")}
 
     <label>
       {ctx.t("gameSettings.animSpeed")}
-      <input type="number" min="1" step="1" aria-label="gameSettings.animSpeed" value={prov("animation.speedCellsPerSec").value as number}
+      <input type="number" min="1" step="1" aria-label={ctx.t("gameSettings.animSpeed")} value={prov("animation.speedCellsPerSec").value as number}
         onchange={(e) => set(ws.id, "/engine/animation/speedCellsPerSec", wsys.animation?.speedCellsPerSec, Number((e.currentTarget as HTMLInputElement).value))} />
     </label>
-    {@render provControl("animation.speedCellsPerSec", wsys.animation?.speedCellsPerSec)}
+    {@render provControl("animation.speedCellsPerSec", wsys.animation?.speedCellsPerSec, "gameSettings.animSpeed")}
 
     <label>
       {ctx.t("gameSettings.animEasing")}
-      <select aria-label="gameSettings.animEasing" value={prov("animation.easing").value as string}
+      <select aria-label={ctx.t("gameSettings.animEasing")} value={prov("animation.easing").value as string}
         onchange={(e) => set(ws.id, "/engine/animation/easing", wsys.animation?.easing, (e.currentTarget as HTMLSelectElement).value)}>
         {#each EASING as ea}<option value={ea}>{ea}</option>{/each}
       </select>
     </label>
-    {@render provControl("animation.easing", wsys.animation?.easing)}
+    {@render provControl("animation.easing", wsys.animation?.easing, "gameSettings.animEasing")}
 
     <CombatSettings {ws} {wsys} {set} {prov} {scene} />
   {/if}
@@ -453,16 +453,16 @@
             {band.name}
             <input
               type="number" min="0" max="1" step="0.01"
-              aria-label="gameSettings.gradation.{band.name}"
+              aria-label={ctx.t("gameSettings.gradationFloorFor", { band: band.name })}
               value={band.minIllumination}
               onchange={(e) => set(lgDoc.id, `/engine/bands/${i}/minIllumination`, band.minIllumination, Number((e.currentTarget as HTMLInputElement).value))}
             />
           </label>
-          <button type="button" aria-label="gameSettings.gradationRemove.{band.name}"
+          <button type="button" aria-label={ctx.t("gameSettings.gradationRemoveFor", { band: band.name })}
             onclick={() => removeBand(i)}>{ctx.t("gameSettings.gradationRemove")}</button>
         </div>
       {/each}
-      <button type="button" aria-label="gameSettings.gradationAdd"
+      <button type="button" aria-label={ctx.t("gameSettings.gradationAdd")}
         onclick={addBand}>{ctx.t("gameSettings.gradationAdd")}</button>
     </fieldset>
   {/if}
@@ -482,7 +482,7 @@
             {ctx.t("gameSettings.visionModeName")}
             <input
               type="text"
-              aria-label="gameSettings.visionMode.{mode.id}.name"
+              aria-label={ctx.t("gameSettings.visionModeNameFor", { id: mode.id })}
               value={mode.name}
               onchange={(e) => commitModeName(mode.id, (e.currentTarget as HTMLInputElement).value)}
             />
@@ -495,7 +495,7 @@
                  server resolves it as the `terrain` serde default — display THAT. The write's
                  `old` still passes the raw stored value (`set` coalesces absent to null). -->
             <select
-              aria-label="gameSettings.visionMode.{mode.id}.perceives"
+              aria-label={ctx.t("gameSettings.visionModePerceivesFor", { id: mode.id })}
               value={mode.perceives ?? "terrain"}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/perceives`, mode.perceives, (e.currentTarget as HTMLSelectElement).value)}
             >
@@ -508,7 +508,7 @@
                  blank, for a mode entry that predates the field. -->
             <input
               type="checkbox"
-              aria-label="gameSettings.visionMode.{mode.id}.requiresLos"
+              aria-label={ctx.t("gameSettings.visionModeRequiresLosFor", { id: mode.id })}
               checked={mode.requiresLos ?? true}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/requiresLos`, mode.requiresLos, (e.currentTarget as HTMLInputElement).checked)}
             />
@@ -518,7 +518,7 @@
             {ctx.t("gameSettings.visionModeRenderHint")}
             <input
               type="text"
-              aria-label="gameSettings.visionMode.{mode.id}.renderHint"
+              aria-label={ctx.t("gameSettings.visionModeRenderHintFor", { id: mode.id })}
               value={mode.renderHint ?? ""}
               onchange={(e) => commitModeRenderHint(mode.id, (e.currentTarget as HTMLInputElement).value)}
             />
@@ -526,7 +526,7 @@
           <label>
             {ctx.t("gameSettings.illuminationFloor")}
             <select
-              aria-label="gameSettings.visionMode.{mode.id}"
+              aria-label={ctx.t("gameSettings.visionModeFloorFor", { id: mode.id })}
               value={mode.illuminationFloor}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/illuminationFloor`, mode.illuminationFloor, (e.currentTarget as HTMLSelectElement).value)}
             >
@@ -542,16 +542,16 @@
             {ctx.t("gameSettings.visionModeRange")}
             <input
               type="number" min="0" step="1"
-              aria-label="gameSettings.visionMode.{mode.id}.range"
+              aria-label={ctx.t("gameSettings.visionModeRangeFor", { id: mode.id })}
               value={mode.defaultRange}
               onchange={(e) => set(vmDoc.id, `/engine/modes/${mode.id}/defaultRange`, mode.defaultRange, Number((e.currentTarget as HTMLInputElement).value))}
             />
           </label>
-          <button type="button" aria-label="gameSettings.visionModeRemove.{mode.id}"
+          <button type="button" aria-label={ctx.t("gameSettings.visionModeRemoveFor", { id: mode.id })}
             onclick={() => removeVisionMode(mode.id)}>{ctx.t("gameSettings.visionModeRemove")}</button>
         </div>
       {/each}
-      <button type="button" aria-label="gameSettings.visionModeAdd"
+      <button type="button" aria-label={ctx.t("gameSettings.visionModeAdd")}
         onclick={addVisionMode}>{ctx.t("gameSettings.visionModeAdd")}</button>
     </fieldset>
   {/if}
@@ -568,7 +568,7 @@
       <legend>{ctx.t("gameSettings.dice.title")}</legend>
       <label>
         {ctx.t("gameSettings.dice.mode")}
-        <select aria-label="gameSettings.dice.mode" value={dicesys.mode}
+        <select aria-label={ctx.t("gameSettings.dice.mode")} value={dicesys.mode}
           onchange={(e) => set(diceDoc.id, "/engine/mode", dicesys.mode, (e.currentTarget as HTMLSelectElement).value)}>
           {#each DICE_MODE as m}
             <option value={m}>{m === "total" ? ctx.t("gameSettings.dice.modeTotal") : ctx.t("gameSettings.dice.modeSuccess")}</option>
@@ -578,7 +578,7 @@
 
       <label>
         {ctx.t("gameSettings.dice.direction")}
-        <select aria-label="gameSettings.dice.direction" value={dicesys.direction}
+        <select aria-label={ctx.t("gameSettings.dice.direction")} value={dicesys.direction}
           onchange={(e) => set(diceDoc.id, "/engine/direction", dicesys.direction, (e.currentTarget as HTMLSelectElement).value)}>
           {#each DICE_DIRECTION as d}
             <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
@@ -596,7 +596,7 @@
               <span>{channel.name}</span>
               <label>
                 {ctx.t("gameSettings.dice.channelOverride")}
-                <select aria-label="gameSettings.dice.channelOverride.{id}"
+                <select aria-label={ctx.t("gameSettings.dice.channelOverrideFor", { channel: id })}
                   value={override != null ? "override" : ""}
                   onchange={(e) => {
                     const v = (e.currentTarget as HTMLSelectElement).value;
@@ -615,7 +615,7 @@
               {#if override != null}
                 <label>
                   {ctx.t("gameSettings.dice.mode")}
-                  <select aria-label="gameSettings.dice.channelOverride.{id}.mode" value={override.mode}
+                  <select aria-label={ctx.t("gameSettings.dice.channelModeFor", { channel: id })} value={override.mode}
                     onchange={(e) => set(diceDoc.id, `/engine/channel_overrides/${id}`, override, { mode: (e.currentTarget as HTMLSelectElement).value, direction: override.direction })}>
                     {#each DICE_MODE as m}
                       <option value={m}>{m === "total" ? ctx.t("gameSettings.dice.modeTotal") : ctx.t("gameSettings.dice.modeSuccess")}</option>
@@ -624,7 +624,7 @@
                 </label>
                 <label>
                   {ctx.t("gameSettings.dice.direction")}
-                  <select aria-label="gameSettings.dice.channelOverride.{id}.direction" value={override.direction}
+                  <select aria-label={ctx.t("gameSettings.dice.channelDirectionFor", { channel: id })} value={override.direction}
                     onchange={(e) => set(diceDoc.id, `/engine/channel_overrides/${id}`, override, { mode: override.mode, direction: (e.currentTarget as HTMLSelectElement).value })}>
                     {#each DICE_DIRECTION as d}
                       <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
@@ -663,13 +663,13 @@
       <legend>{ctx.t("gameSettings.chat.title")}</legend>
       <label>
         {ctx.t("gameSettings.chat.hyperlinks")}
-        <input type="checkbox" aria-label="gameSettings.chat.hyperlinks" checked={chatsys.hyperlinks ?? false}
+        <input type="checkbox" aria-label={ctx.t("gameSettings.chat.hyperlinks")} checked={chatsys.hyperlinks ?? false}
           onchange={(e) => set(chatDoc.id, "/engine/hyperlinks", chatsys.hyperlinks ?? null, (e.currentTarget as HTMLInputElement).checked)} />
       </label>
 
       <label>
         {ctx.t("gameSettings.chat.linkPreviews")}
-        <select aria-label="gameSettings.chat.linkPreviews"
+        <select aria-label={ctx.t("gameSettings.chat.linkPreviews")}
           value={chatsys.link_previews == null ? "" : chatsys.link_previews ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -683,7 +683,7 @@
 
       <label>
         {ctx.t("gameSettings.chat.images")}
-        <input type="checkbox" aria-label="gameSettings.chat.images" checked={chatsys.images ?? false}
+        <input type="checkbox" aria-label={ctx.t("gameSettings.chat.images")} checked={chatsys.images ?? false}
           onchange={(e) => set(chatDoc.id, "/engine/images", chatsys.images ?? null, (e.currentTarget as HTMLInputElement).checked)} />
       </label>
     </fieldset>
@@ -705,7 +705,7 @@
         <!-- Scene picker — only shown when >1 scene exists in this world. -->
         <label>
           {ctx.t("gameSettings.scene.pick")}
-          <select aria-label="gameSettings.scene.pick" value={scene.id}
+          <select aria-label={ctx.t("gameSettings.scene.pick")} value={scene.id}
             onchange={(e) => (selectedSceneId = (e.currentTarget as HTMLSelectElement).value)}>
             {#each scenes as s}<option value={s.id}>{s.name ?? s.id}</option>{/each}
           </select>
@@ -716,7 +716,7 @@
            back to the world default (null ?? default → default in resolveSceneSettings). -->
       <label>
         {ctx.t("gameSettings.scene.movementRestriction")}
-        <select aria-label="gameSettings.scene.movementRestriction"
+        <select aria-label={ctx.t("gameSettings.scene.movementRestriction")}
           value={ssys.vision?.movementRestriction ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -729,7 +729,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.movementModel")}
-        <select aria-label="gameSettings.scene.movementModel"
+        <select aria-label={ctx.t("gameSettings.scene.movementModel")}
           value={ssys.vision?.movementModel ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -742,7 +742,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.losRestriction")}
-        <select aria-label="gameSettings.scene.losRestriction"
+        <select aria-label={ctx.t("gameSettings.scene.losRestriction")}
           value={ssys.vision?.losRestriction == null ? "" : ssys.vision.losRestriction ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -756,7 +756,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.fog")}
-        <select aria-label="gameSettings.scene.fog"
+        <select aria-label={ctx.t("gameSettings.scene.fog")}
           value={ssys.vision?.fog == null ? "" : ssys.vision.fog ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -770,7 +770,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.observerVision")}
-        <select aria-label="gameSettings.scene.observerVision"
+        <select aria-label={ctx.t("gameSettings.scene.observerVision")}
           value={ssys.vision?.observerVision == null ? "" : ssys.vision.observerVision ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -785,7 +785,7 @@
       <!-- Lighting overrides -->
       <label>
         {ctx.t("gameSettings.scene.lightingEnabled")}
-        <select aria-label="gameSettings.scene.lightingEnabled"
+        <select aria-label={ctx.t("gameSettings.scene.lightingEnabled")}
           value={ssys.lighting?.enabled == null ? "" : ssys.lighting.enabled ? "true" : "false"}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -799,7 +799,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.lightMode")}
-        <select aria-label="gameSettings.scene.lightMode"
+        <select aria-label={ctx.t("gameSettings.scene.lightMode")}
           value={ssys.lighting?.mode ?? ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -818,7 +818,7 @@
            because DEFAULT_WORLD_SETTINGS is deep-frozen. -->
       <label>
         {ctx.t("gameSettings.scene.environment")}
-        <select aria-label="gameSettings.scene.environment"
+        <select aria-label={ctx.t("gameSettings.scene.environment")}
           value={ssys.lighting?.environment != null ? "override" : ""}
           onchange={(e) => {
             const v = (e.currentTarget as HTMLSelectElement).value;
@@ -839,7 +839,7 @@
       {#if ssys.lighting?.environment != null}
         <label>
           {ctx.t("gameSettings.scene.envColor")}
-          <input type="color" aria-label="gameSettings.scene.envColor"
+          <input type="color" aria-label={ctx.t("gameSettings.scene.envColor")}
             value={ssys.lighting.environment.color}
             onchange={(e) => {
               // Coupling: reads sibling intensity from the current override (always present in
@@ -854,7 +854,7 @@
         <label>
           {ctx.t("gameSettings.scene.envIntensity")}
           <!-- Blank ("") intensity means "environment absent / inherit"; intensity 0 is a real value. -->
-          <input type="number" min="0" max="1" step="0.05" aria-label="gameSettings.scene.envIntensity"
+          <input type="number" min="0" max="1" step="0.05" aria-label={ctx.t("gameSettings.scene.envIntensity")}
             value={ssys.lighting.environment.intensity}
             onchange={(e) => {
               // Coupling: reads sibling color from the current override (always present in
@@ -872,7 +872,7 @@
            tri-state the vision/lighting overrides above use. -->
       <label>
         {ctx.t("gameSettings.scene.gridKind")}
-        <select aria-label="gameSettings.scene.gridKind" value={ssys.grid?.kind ?? "square"}
+        <select aria-label={ctx.t("gameSettings.scene.gridKind")} value={ssys.grid?.kind ?? "square"}
           onchange={(e) => setScene("/engine/grid/kind", ssys.grid?.kind ?? "square", (e.currentTarget as HTMLSelectElement).value)}>
           {#each GRID_KIND as k}<option value={k}>{k}</option>{/each}
         </select>
@@ -880,7 +880,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.gridSize")}
-        <input type="number" min="1" step="1" aria-label="gameSettings.scene.gridSize"
+        <input type="number" min="1" step="1" aria-label={ctx.t("gameSettings.scene.gridSize")}
           value={ssys.grid?.size ?? 100}
           onchange={(e) => setScene("/engine/grid/size", ssys.grid?.size ?? 100, Number((e.currentTarget as HTMLInputElement).value))} />
       </label>
@@ -889,7 +889,7 @@
            present, or falls back to the defaults that resolveSceneSettings uses (5 ft/cell). -->
       <label>
         {ctx.t("gameSettings.scene.distancePerCell")}
-        <input type="number" min="0" step="0.5" aria-label="gameSettings.scene.distancePerCell"
+        <input type="number" min="0" step="0.5" aria-label={ctx.t("gameSettings.scene.distancePerCell")}
           value={ssys.grid?.distance?.perCell ?? ""}
           onchange={(e) => setScene("/engine/grid/distance", ssys.grid?.distance ?? null, {
             perCell: Number((e.currentTarget as HTMLInputElement).value),
@@ -899,7 +899,7 @@
 
       <label>
         {ctx.t("gameSettings.scene.distanceUnit")}
-        <input type="text" aria-label="gameSettings.scene.distanceUnit"
+        <input type="text" aria-label={ctx.t("gameSettings.scene.distanceUnit")}
           value={ssys.grid?.distance?.unit ?? ""}
           onchange={(e) => setScene("/engine/grid/distance", ssys.grid?.distance ?? null, {
             perCell: ssys?.grid?.distance?.perCell ?? 5,
@@ -912,13 +912,13 @@
       <!-- Scene bounds: per-scene only, fixed default (not an inherit-from-world tri-state). -->
       <label>
         {ctx.t("gameSettings.scene.boundsWidth")}
-        <input type="number" min="1" step="1" aria-label="gameSettings.scene.boundsWidth"
+        <input type="number" min="1" step="1" aria-label={ctx.t("gameSettings.scene.boundsWidth")}
           value={ssys?.bounds?.width ?? DEFAULT_SCENE_BOUNDS.width}
           onchange={(e) => setBounds("width", Number((e.currentTarget as HTMLInputElement).value))} />
       </label>
       <label>
         {ctx.t("gameSettings.scene.boundsHeight")}
-        <input type="number" min="1" step="1" aria-label="gameSettings.scene.boundsHeight"
+        <input type="number" min="1" step="1" aria-label={ctx.t("gameSettings.scene.boundsHeight")}
           value={ssys?.bounds?.height ?? DEFAULT_SCENE_BOUNDS.height}
           onchange={(e) => setBounds("height", Number((e.currentTarget as HTMLInputElement).value))} />
       </label>

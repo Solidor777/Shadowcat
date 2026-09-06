@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { i18n } from "@shadowcat/ui-kit";
 import { DocumentStore, buildDiceSettingsDoc, buildChannelRegistryDoc, type WireDocument } from "@shadowcat/core";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
@@ -10,16 +11,19 @@ function gmStoreWith(...docs: WireDocument[]) {
   return s;
 }
 
+// Each channel row's controls are named by field AND channel ("Mode for channel general"), which
+// only the catalog-backed `t` renders — the fixture's identity-echo `t` drops interpolation params,
+// so every row would share one name.
+const t = (k: string, p?: Parameters<typeof i18n.t>[1]) => i18n.t(k, p);
+
 describe("per-channel dice-settings editor", () => {
   it("renders nothing when the channel registry has no channels", () => {
     const dispatchIntent = vi.fn();
     const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     const reg = buildChannelRegistryDoc("w1", {}, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    // setAppContextForTest's default `t` returns the literal key (not
-    // translated copy), so the section heading renders as this exact string.
-    expect(screen.queryByText("gameSettings.dice.channelOverrides")).toBeNull();
+    expect(screen.queryByText("Channel overrides")).toBeNull();
   });
 
   it("renders without crashing when the stored doc predates channel_overrides (no key at all)", () => {
@@ -36,10 +40,10 @@ describe("per-channel dice-settings editor", () => {
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
 
     expect(() =>
-      render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) }),
+      render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) }),
     ).not.toThrow();
 
-    const sel = screen.getByLabelText("gameSettings.dice.channelOverride.general") as HTMLSelectElement;
+    const sel = screen.getByLabelText("Custom settings for channel general") as HTMLSelectElement;
     expect(sel.value).toBe("");
   });
 
@@ -47,22 +51,22 @@ describe("per-channel dice-settings editor", () => {
     const dispatchIntent = vi.fn();
     const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" }, ic: { name: "In Character" } }, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    const generalSel = screen.getByLabelText("gameSettings.dice.channelOverride.general") as HTMLSelectElement;
-    const icSel = screen.getByLabelText("gameSettings.dice.channelOverride.ic") as HTMLSelectElement;
+    const generalSel = screen.getByLabelText("Custom settings for channel general") as HTMLSelectElement;
+    const icSel = screen.getByLabelText("Custom settings for channel ic") as HTMLSelectElement;
     expect(generalSel.value).toBe("");
     expect(icSel.value).toBe("");
-    expect(screen.queryByLabelText("gameSettings.dice.channelOverride.general.mode")).toBeNull();
+    expect(screen.queryByLabelText("Mode for channel general")).toBeNull();
   });
 
   it("selecting Custom seeds mode/direction from the world default and dispatches a create", async () => {
     const dispatchIntent = vi.fn();
     const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    const sel = screen.getByLabelText("gameSettings.dice.channelOverride.general") as HTMLSelectElement;
+    const sel = screen.getByLabelText("Custom settings for channel general") as HTMLSelectElement;
     await fireEvent.change(sel, { target: { value: "override" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
@@ -78,9 +82,9 @@ describe("per-channel dice-settings editor", () => {
       "dice1",
     );
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    const modeSel = screen.getByLabelText("gameSettings.dice.channelOverride.general.mode") as HTMLSelectElement;
+    const modeSel = screen.getByLabelText("Mode for channel general") as HTMLSelectElement;
     await fireEvent.change(modeSel, { target: { value: "success_count" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
@@ -103,9 +107,9 @@ describe("per-channel dice-settings editor", () => {
       "dice1",
     );
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    const dirSel = screen.getByLabelText("gameSettings.dice.channelOverride.general.direction") as HTMLSelectElement;
+    const dirSel = screen.getByLabelText("Direction for channel general") as HTMLSelectElement;
     await fireEvent.change(dirSel, { target: { value: "low_wins" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
@@ -128,9 +132,9 @@ describe("per-channel dice-settings editor", () => {
       "dice1",
     );
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    const sel = screen.getByLabelText("gameSettings.dice.channelOverride.general") as HTMLSelectElement;
+    const sel = screen.getByLabelText("Custom settings for channel general") as HTMLSelectElement;
     await fireEvent.change(sel, { target: { value: "" } });
 
     expect(dispatchIntent).toHaveBeenCalledWith([
@@ -149,8 +153,8 @@ describe("per-channel dice-settings editor", () => {
     const dispatchIntent = vi.fn();
     const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
     const reg = buildChannelRegistryDoc("w1", { general: { name: "General" } }, "reg1");
-    render(GameSettingsPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent }) });
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "player", world: "w1", documents: gmStoreWith(dice, reg), dispatchIntent, t }) });
 
-    expect(screen.queryByLabelText("gameSettings.dice.channelOverride.general")).toBeNull();
+    expect(screen.queryByLabelText("Custom settings for channel general")).toBeNull();
   });
 });
