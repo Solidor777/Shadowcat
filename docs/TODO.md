@@ -48,6 +48,3 @@ capability already exists — but are deferred as out-of-scope-for-now work.
     status, so the agent-registration and skill-invocation questions above remain unverified for
     a reason outside this session's control. Re-attempt once quota refreshes or extra usage is
     purchased.
-
-## Actionable now — next file-size split candidate
-- TODO: `src/server/src/data/sqlite.rs` production code is 4,742 lines — the largest remaining production file, now within ~260 lines of the 5,000-line soft limit after the templates-merge work landed its base-ownership queries. No longer a forecast: the next feature to touch this file is likely to cross the gate. Split `SqliteRepository` by concern (documents/commands, membership/invites, search, world export/import) into `data/sqlite/<concern>.rs` `impl` blocks before it reaches the limit; the gate (`pnpm lint:file-size`) fails the build at that point and no allowlist entry is to be added.
