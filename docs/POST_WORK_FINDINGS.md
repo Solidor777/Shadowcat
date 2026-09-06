@@ -811,3 +811,45 @@ are observations awaiting triage, not committed work.
   combat-resolution finding above: the fix belongs to those milestones'
   close-outs, either by building the cited symbols or re-scoping the prose to
   what exists. Status: Needs Review.
+
+- Title: The browser suite's cost is scenario length, not slow operations.
+  Summary: a trace of the carried-torch mid-walk spec records 237 Playwright
+  actions across three browser contexts in 17.4s with ZERO actions over one
+  second (slowest 0.91s); per-action cost there (~73ms) matches the fast stage
+  spec (~60ms). Two hypotheses were tested and DISCONFIRMED: CSS/Svelte
+  animation stalling actionability checks (the app declares transitions in one
+  file), and accumulated state in the shared `sqlite::memory:` database (a
+  freshly booted server measured 3.2m against 3.0m for an accumulated one at
+  the same worker count). What does drive per-test latency is worker
+  oversubscription: the popped-out-arrangement test measures 3.1s at four
+  workers and 59.4s at twelve on one machine, ~19x, while total wall-clock
+  barely differs. Capping workers took the suite from 235s to 146s and turned
+  the one failing upload assertion green. Status: Resolved for the cap; the
+  remaining cost is that the dual-session specs re-run a full world + account +
+  invite + join + actor-authoring setup per test. Sharing that setup would
+  trade per-test isolation for roughly 35s and is an owner decision, not taken.
+
+- Title: 94 Rust doctests cost 41.3s, a quarter of `cargo test --all`.
+  Summary: the Rust suite runs 2719 tests in 165s with zero failures, and the
+  library unit tests are 2502 of those in 7.94s. The single largest line item is
+  `Doc-tests shadowcat` at 41.31s for 94 tests (~440ms each), which is compile
+  and link cost per doctest binary rather than runtime. No defect; recorded so
+  the figure is not re-diagnosed as a runtime regression. Status: Needs Review.
+
+- Title: 96 `expect(getBy*(...)).toBeTruthy()` assertions add nothing.
+  Summary: across 33 unit test files, assertions wrap a Testing Library `getBy*`
+  query in `.toBeTruthy()`. Those queries throw when no element matches and
+  otherwise return an element that is always truthy, so the wrapper cannot fail
+  independently of the query. These are not false passes — the query itself
+  still fails the test when the element is missing — so they are redundant
+  rather than defective, and were left untouched. Replacing each with a real
+  assertion on the element (text, attribute, state) would raise coverage.
+  Status: Needs Review.
+
+- Title: The browser suite's entry-flow spec is fully covered elsewhere.
+  Summary: both of its assertions are proven by other specs — the world-list
+  visibility by the asset-browser and chat-media specs' opening steps, and the
+  post-creation stage canvas by the stage spec's first test, which additionally
+  proves `data-render-ready`, a non-zero bounding box, and teardown. Removing it
+  deletes coverage that is duplicated rather than unique, but it is a deletion
+  of a test and was left to the owner. Status: Needs Review.
