@@ -1,4 +1,4 @@
-import { test, expect, login } from "./fixtures";
+import { test, expect, login, createAccount } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 // Senses e2e: a creature-sense (tremorsense) assignment reveals a grounded token through
@@ -122,10 +122,7 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
   // Account + invite through the real settings surfaces (the hex-gate suite's pattern).
   await gm.getByTestId("launcher-trigger").click();
   await gm.getByTestId("launcher-item-settings:panel").click();
-  await gm.getByLabel("Account name").fill(playerName);
-  await gm.getByLabel("Password", { exact: true }).fill(playerPassword);
-  await gm.getByRole("button", { name: "Create account" }).click();
-  await expect(gm.getByText(`Created account ${playerName}.`)).toBeVisible({ timeout: 15_000 });
+  await createAccount(gm, playerName, playerPassword);
   await gm.getByLabel("World role").selectOption("player");
   await gm.getByRole("button", { name: "Create invite" }).click();
   const code = await gm.getByLabel("Invite code").inputValue();

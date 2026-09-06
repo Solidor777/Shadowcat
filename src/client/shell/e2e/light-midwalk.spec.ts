@@ -1,4 +1,4 @@
-import { test, expect, login } from "./fixtures";
+import { test, expect, login, createAccount } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 // Moving-light e2e: a GM walks a torch-bearing token (a carried `LightEmission` authored
@@ -185,10 +185,7 @@ async function setupTorchScene(
 
   await gm.getByTestId("launcher-trigger").click();
   await gm.getByTestId("launcher-item-settings:panel").click();
-  await gm.getByLabel("Account name").fill(playerName);
-  await gm.getByLabel("Password", { exact: true }).fill(playerPassword);
-  await gm.getByRole("button", { name: "Create account" }).click();
-  await expect(gm.getByText(`Created account ${playerName}.`)).toBeVisible({ timeout: 15_000 });
+  await createAccount(gm, playerName, playerPassword);
   await gm.getByLabel("World role").selectOption("player");
   await gm.getByRole("button", { name: "Create invite" }).click();
   const code = await gm.getByLabel("Invite code").inputValue();

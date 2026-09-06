@@ -1,4 +1,4 @@
-import { test, expect, login } from "./fixtures";
+import { test, expect, login, createAccount } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 // A 1×1 PNG used as token art (same fixture the stage suite uses).
@@ -202,13 +202,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
   await gm.getByTestId("launcher-item-settings:panel").click();
 
   // Create the player account through the real admin-gated surface (`POST /api/users`).
-  await gm.getByLabel("Account name").fill(playerName);
-  await gm.getByLabel("Password", { exact: true }).fill(playerPassword);
-  await gm.getByRole("button", { name: "Create account" }).click();
-  await expect(gm.getByText(`Created account ${playerName}.`)).toBeVisible({
-    timeout: 15_000,
-  });
-
+  await createAccount(gm, playerName, playerPassword);
   // Mint a player-role invite. The GM never names the account — the invitee redeems
   // the code from their own session — so this is the only seating path there is.
   await gm.getByLabel("World role").selectOption("player");

@@ -23,6 +23,49 @@ export async function login(
   await page.getByRole("button", { name: "Log in" }).click();
 }
 
+/** Budget for the account-creation confirmation, sized for the contended full-suite run rather
+ * than the config's `expect.timeout`: creating an account hashes the password (Argon2), and under
+ * the full suite every worker mints accounts at once, so this one step contends
+ * worker-count-wide — the config's own timeout comment sizes that envelope at up to ~53s per
+ * test. It is a SETUP step, not an assertion about product behaviour, so covering that envelope
+ * costs no coverage, while the global `expect.timeout` stays sized for genuine behavioural
+ * failures.
+ */
+const ACCOUNT_CREATED_TIMEOUT_MS = 60_000;
+
+/** Fills the settings panel's account form and waits for its confirmation notice.
+ *
+ * INVARIANT: every account-creating step in the suite routes through here, so
+ * `ACCOUNT_CREATED_TIMEOUT_MS` has ONE definition. Spelling the sequence inline again splits the
+ * budget across sites, which is how a contended run fails at some of them and not others.
+ *
+ * The caller opens the settings panel first; specs differ in when they do that.
+ * @param page - The page showing the account form.
+ * @param username - The account name to create.
+ * @param password - The new account's password.
+ * @param opts - Creation options.
+ * @param opts.admin - Whether to tick "Server administrator".
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * await createAccount(page, "player-0-abc", "pw-player-e2e");
+ * ```
+ */
+export async function createAccount(
+  page: Page,
+  username: string,
+  password: string,
+  opts: { admin?: boolean } = {},
+): Promise<void> {
+  await page.getByLabel("Account name").fill(username);
+  await page.getByLabel("Password", { exact: true }).fill(password);
+  if (opts.admin === true) await page.getByLabel("Server administrator").check();
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByText(`Created account ${username}.`)).toBeVisible({
+    timeout: ACCOUNT_CREATED_TIMEOUT_MS,
+  });
+}
+
 /** One Playwright worker's dedicated server-admin account. */
 export interface WorkerAccount {
   /** The account's username. */
@@ -86,20 +129,7 @@ export const test = base.extend<
       await page.getByRole("button", { name: "Create world" }).click();
       await page.getByTestId("launcher-trigger").click();
       await page.getByTestId("launcher-item-settings:panel").click();
-      await page.getByLabel("Account name").fill(username);
-      await page.getByLabel("Password", { exact: true }).fill(password);
-      await page.getByLabel("Server administrator").check();
-      await page.getByRole("button", { name: "Create account" }).click();
-      // Budgeted for the contended full-suite run rather than the config's `expect.timeout`:
-      // account creation hashes the password (Argon2), and every worker mints its account at
-      // the same moment at the start of the run, so this one step contends worker-count-wide
-      // — the config's own comment sizes that envelope at up to ~53s per test. This is a
-      // SETUP step, not an assertion about product behaviour, so a budget covering that
-      // envelope costs no coverage; the global `expect.timeout` stays sized for genuine
-      // behavioural failures.
-      await expect(page.getByText(`Created account ${username}.`)).toBeVisible({
-        timeout: 60_000,
-      });
+      await createAccount(page, username, password, { admin: true });
       await context.close();
       await use({ username, password });
     },
