@@ -21,20 +21,13 @@ on unbuilt Phase-2+ infrastructure or on external circumstances.
 Milestones in build order; each gets its own brainstorm → spec → plan cycle and may decompose
 further at design time. Numbering continues from Phase 1.
 
-### M14 · Combat tracker
-- **M14a (document/permission substrate) and M14b (combat clock) are DONE** — full delivery
-  notes in [`HISTORY.md`](HISTORY.md)'s M14a and M14b entries.
-- **M14c — server authority + combat client seams**, six sub-projects in build order (design:
-  [`superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md`](superpowers/specs/2026-08-30-m14c-1-server-formula-engine-design.md) §1):
-  - **M14c-1 — server formula engine + invariant 6** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-2 — combat resolution server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-3 — world-config authority** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-4 — dice references + chat channel** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-5 — templates merge server-side** — DONE (see [`HISTORY.md`](HISTORY.md)).
-  - **M14c-6 — combat client seams** — DONE (see [`HISTORY.md`](HISTORY.md)).
-- **M14d — tracker module + settings editors — DONE** (see [`HISTORY.md`](HISTORY.md)).
-- Depends on: M11 dice, the M10 movement executor, M14a+M14b (done).
-- Excludes: automation of attacks/damage resolution (system-owned); audio/VFX cues (Phase 3).
+### M14 · Combat tracker ✅
+Complete: M14a (document/permission substrate), M14b (combat clock), M14c's six server-authority
+sub-projects (server formula engine + invariant 6, combat resolution server-side, world-config
+authority, dice references + chat channel, templates merge server-side, combat client seams) and
+M14d (tracker module + settings editors) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M14
+entries. Automation of attack/damage resolution stays system-owned and audio/VFX cues stay
+Phase 3, both by design.
 
 ### M15 · Asset pipeline + browser ✅
 Complete: M15a (pipeline) and M15b (browser module + the generic GM-only document `Move`

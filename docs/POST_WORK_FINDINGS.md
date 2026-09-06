@@ -3,6 +3,32 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: whole-record embedded pre-image still key-count-conflicts under load. Summary: the OCC
+  pre-image comparison now re-reads an ENGINE-band pre-image through the ingress normalizer, so a
+  client pre-image that omits keys the store holds as explicit nulls no longer conflicts.
+  `permission::targets_engine_band` deliberately refuses a whole-record `/embedded/<coll>/<idx>`
+  path, because such a pre-image carries envelope fields the `Document` round trip would relax —
+  admitting it would weaken OCC outside the engine band. A whole-record client write built from an
+  optimistic view would therefore still conflict under load. No such writer exists today (every
+  whole-object writer targets an `/engine/...` path). Status: Needs Review (revisit if a
+  whole-record embedded writer is added).
+
+- Title: Argon2 runs under a size-optimized release profile. Summary: `[profile.release]` sets
+  `opt-level = "z"` workspace-wide, which applies to the KDF as well. Dev builds were an order of
+  magnitude slower still until `[profile.dev.package.argon2]`/`[profile.dev.package.blake2]` were
+  set to `opt-level = 3`; the release profile was left alone. Size optimization of a deliberately
+  CPU-bound hash costs login throughput without adding security — an attacker uses an optimized
+  implementation regardless — so a matching release-side package override may be warranted.
+  Status: Needs Review (measure a release-build hash before changing anything).
+
+- Title: a skill citation of the TypeScript `void` keyword cannot resolve. Summary: the
+  symbol-citation gate reports one broken citation in the codebase-skill corpus — a backtick-cited
+  `void` in the client-shell skill, describing a return shape. `void` is a language keyword, not a
+  symbol the tree declares, so it resolves against nothing. The line belongs to another session's
+  uncommitted work in the shared plugin checkout and was deliberately not edited here. Status:
+  Needs Review (either rephrase so the keyword is not cited as a symbol, or add a named
+  acknowledgement entry covering language keywords alongside the existing `true`/`false`/`NaN`).
+
 - Title: vitest worker start-up timeouts under sibling-worktree cargo load. Summary: on
   the M17c gate run, `pnpm run test:scripts` failed 4 then 2 tests across two runs (each a
   20s/5s per-test timeout, the failing test moving between runs, incl. the skill-corpus
