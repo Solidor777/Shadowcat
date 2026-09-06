@@ -48,3 +48,15 @@ describe("NotificationCenter", () => {
     expect(center.items[1].action).toBeUndefined();
   });
 });
+
+describe("NotificationCenter items identity", () => {
+  it("push exposes a NEW items array, so a reference-equality reactive read observes it (dismiss already does)", () => {
+    const center = new NotificationCenter();
+    const before = center.items;
+    center.push("info", "Saved.");
+    expect(center.items).not.toBe(before);
+    const afterPush = center.items;
+    center.dismiss(afterPush[0].id);
+    expect(center.items).not.toBe(afterPush);
+  });
+});

@@ -65,7 +65,10 @@ export class NotificationCenter {
    */
   push(level: NotificationLevel, message: string, action?: Notification["action"]): string {
     const id = `n${this.#nextId++}`;
-    this.#items.push({ id, level, message, ...(action ? { action } : {}) });
+    // A NEW array, never an in-place push: `items` is read through a reference-equality
+    // reactive bridge (`activeNotifications()` in a `$derived`), which observes a changed
+    // reference and nothing else — `dismiss` replaces the array for the same reason.
+    this.#items = [...this.#items, { id, level, message, ...(action ? { action } : {}) }];
     this.#emit();
     return id;
   }

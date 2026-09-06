@@ -1,4 +1,5 @@
 import { test, expect, afterEach, beforeEach, vi } from "vitest";
+import { tick } from "svelte";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { notifications } from "./notifications.svelte";
 import NotificationHost from "./NotificationHost.svelte";
@@ -64,4 +65,12 @@ test("an info notification carrying an action is not auto-dismissed", async () =
   } finally {
     vi.useRealTimers();
   }
+});
+
+test("a notification pushed AFTER the host mounts renders (the live push path every runtime notice takes)", async () => {
+  render(NotificationHost);
+  expect(screen.queryByText("It's your turn!")).toBeNull();
+  notifications.push("info", "It's your turn!");
+  await tick();
+  expect(screen.getByText("It's your turn!")).toBeTruthy();
 });
