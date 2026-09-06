@@ -3825,3 +3825,228 @@ async fn deleting_a_parent_note_cascades_its_children() {
         "the child note cascades with its parent"
     );
 }
+
+/// A GM world holding a `world-settings` singleton whose `/engine/combat` was
+/// written in the CLIENT shape (only the keys the author set), so the stored
+/// row carries the normalizer's explicit-null form of every other key.
+async fn world_settings_with_combat(
+    combat: serde_json::Value,
+) -> (
+    SqliteRepository,
+    Uuid,
+    crate::data::membership::PermissionContext,
+    Uuid,
+) {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let mut doc = singleton_test_doc(1, w, "world-settings");
+    doc.engine = Some(serde_json::json!({ "combat": combat }));
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create { doc: doc.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    (r, w, ctx, doc.id)
+}
+
+/// The store holds the NORMALIZED engine object (every declared key, absent
+/// ones as explicit null), so a client pre-image carrying only the keys it
+/// set differs from the stored value by key count alone. The OCC check must
+/// read the pre-image through the same normalizer that produced the stored
+/// value: this write is faithful and is accepted.
+#[tokio::test]
+async fn occ_accepts_an_engine_pre_image_that_omits_keys_the_store_holds_as_null() {
+    let (r, w, ctx, id) =
+        world_settings_with_combat(serde_json::json!({ "enforcement": "hard" })).await;
+    let stored = r.get_document(id).await.unwrap().unwrap();
+    let stored_combat = stored.engine.as_ref().unwrap()["combat"].clone();
+    assert!(
+        stored_combat.as_object().unwrap().len() > 1,
+        "the stored object must carry the normalizer's explicit-null keys for this test to bite"
+    );
+    let ok = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Update {
+                doc_id: id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/combat".into(),
+                    old: serde_json::json!({ "enforcement": "hard" }),
+                    new: serde_json::json!({ "enforcement": "warn" }),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.command.seq, 2);
+    let after = r.get_document(id).await.unwrap().unwrap();
+    assert_eq!(
+        after.engine.as_ref().unwrap()["combat"]["enforcement"],
+        serde_json::json!("warn")
+    );
+}
+
+/// The relaxation covers ONLY the absent-vs-null distinction the normalizer
+/// cannot represent. A pre-image that omits a key the store holds with a real
+/// value, or disagrees on one, is genuinely stale and still conflicts.
+#[tokio::test]
+async fn occ_still_conflicts_when_an_engine_pre_image_omits_or_disagrees_on_a_real_value() {
+    let (r, w, ctx, id) =
+        world_settings_with_combat(serde_json::json!({ "enforcement": "hard" })).await;
+    // The stored form plus one key the store does not hold: a superset
+    // pre-image is a disagreement too, in the direction a key-count guard
+    // alone catches.
+    let mut superset = r.get_document(id).await.unwrap().unwrap().engine.unwrap()["combat"].clone();
+    superset["bogus"] = serde_json::json!(1);
+    for stale in [
+        serde_json::json!({}),
+        serde_json::json!({ "enforcement": "warn" }),
+        serde_json::json!({ "enforcement": "hard", "effectCleanup": false }),
+        superset,
+    ] {
+        let err = r
+            .apply_intent(
+                &ctx,
+                w,
+                vec![Operation::Update {
+                    doc_id: id,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine/combat".into(),
+                        old: stale.clone(),
+                        new: serde_json::json!({ "enforcement": "none" }),
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DataError::Conflict(_)),
+            "pre-image {stale} must conflict, got {err:?}"
+        );
+    }
+    let after = r.get_document(id).await.unwrap().unwrap();
+    assert_eq!(
+        after.engine.as_ref().unwrap()["combat"]["enforcement"],
+        serde_json::json!("hard")
+    );
+}
+
+/// The `system` band has no normalizer: an explicit null there is user data,
+/// so absent-vs-null stays a real disagreement and conflicts exactly as before.
+#[tokio::test]
+async fn occ_keeps_absent_vs_null_fatal_on_the_system_band() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let doc = world_doc(
+        1,
+        w,
+        serde_json::json!({ "stats": { "hp": 10, "mp": null } }),
+    );
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create { doc: doc.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let err = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![Operation::Update {
+                doc_id: doc.id,
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/system/stats".into(),
+                    old: serde_json::json!({ "hp": 10 }),
+                    new: serde_json::json!({ "hp": 5 }),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        r.get_document(doc.id).await.unwrap().unwrap().system["stats"]["hp"],
+        serde_json::json!(10)
+    );
+}
+
+/// An embedded child's engine band is normalized under the CHILD's doc_type,
+/// so a pre-image for `/embedded/<coll>/<idx>/engine…` gets the same
+/// treatment as the root's — and a stale one still conflicts.
+#[tokio::test]
+async fn occ_normalizes_an_embedded_child_engine_pre_image_under_the_child_doc_type() {
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let client_shape = |name: &str| {
+        serde_json::json!({
+            "displayName": name, "visual": { "kind": "image", "asset": "a.png" },
+            "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+            "conditions": [], "prototype": true
+        })
+    };
+    let mut token = owned_token_doc(w, None);
+    let mut child = actor_doc_owned_by(w, None);
+    // Client shape: the optional `faction` left unset.
+    child.engine = Some(client_shape("Embedded"));
+    token.embedded.insert("actor".into(), vec![child]);
+    r.apply_intent(
+        &ctx,
+        w,
+        vec![Operation::Create { doc: token.clone() }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let stored = r.get_document(token.id).await.unwrap().unwrap();
+    let stored_engine = stored.embedded["actor"][0].engine.clone().unwrap();
+    assert!(stored_engine.get("faction").is_some_and(|v| v.is_null()));
+    let write = |old: serde_json::Value, new: serde_json::Value| Operation::Update {
+        doc_id: token.id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/embedded/actor/0/engine".into(),
+            old,
+            new,
+        }],
+    };
+    let ok = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![write(client_shape("Embedded"), client_shape("Renamed"))],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.command.seq, 2);
+    let stale = r
+        .apply_intent(
+            &ctx,
+            w,
+            vec![write(client_shape("Embedded"), client_shape("Again"))],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(stale, DataError::Conflict(_)), "got {stale:?}");
+}

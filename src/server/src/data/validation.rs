@@ -100,6 +100,57 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     Ok(())
 }
 
+/// The value the store would hold at `path` had `pre_image` been written
+/// there — the OCC comparand for an engine-band pre-image. `whole` is the
+/// serialized stored document (`serde_json::to_value` of the current row).
+///
+/// A stored engine band is `normalize_engine_opt`'s OUTPUT, not the client's
+/// input: an absent `Option` field is re-serialized as an explicit `null`, so
+/// a client pre-image built from its own optimistic view (carrying only the
+/// keys it set) differs from the stored value by key count alone even when
+/// it is faithful. `SqliteRepository::apply_intent`'s Phase-1 OCC check
+/// therefore reads the pre-image through the SAME normalizer the stored value
+/// came from, by splicing it into a copy of the stored document at `path`
+/// and running `validate_engine_tree` on the result — the very function
+/// Phase 2 runs to produce what gets stored, which also normalizes an
+/// embedded child's band under the CHILD's `doc_type` (a bare
+/// `normalize_engine_opt(root doc_type, …)` would misread
+/// `/embedded/actor/0/engine`). The value at `path` is then re-extracted.
+///
+/// Returns `None` — the caller then falls back to the raw comparison, which
+/// is never weaker — when `path` is not an engine-band path
+/// (`permission::targets_engine_band`: the `system` band has no normalizer
+/// and an explicit `null` there is user data, so absent-vs-null must stay a
+/// real disagreement), or when any step fails (the spliced pre-image does
+/// not deserialize as the typed engine, the splice lands on an ungrowable
+/// array index, the document re-parse fails). Only the pointer's own value
+/// is compared; envelope fields the round trip re-serializes (`permissions`
+/// defaults and the like) never reach the comparison because `path` lies
+/// inside a band. What the normalizer cannot represent stops being fatal —
+/// absent-vs-null, and a key an internally-tagged enum silently drops — and
+/// nothing else: a pre-image omitting or disagreeing on a key the store holds
+/// with a real value normalizes to a value that still differs.
+pub(crate) fn normalized_engine_pre_image(
+    whole: &serde_json::Value,
+    path: &str,
+    pre_image: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    if !crate::data::permission::targets_engine_band(path) {
+        return None;
+    }
+    let mut probe = whole.clone();
+    crate::data::command::set_pointer(&mut probe, path, pre_image.clone()).ok()?;
+    let mut probe: Document = serde_json::from_value(probe).ok()?;
+    validate_engine_tree(&mut probe).ok()?;
+    let probe = serde_json::to_value(probe).ok()?;
+    Some(
+        probe
+            .pointer(path)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    )
+}
+
 /// The band keys every `MergeBase`-shaped node must carry exactly; an
 /// embedded child record additionally carries `sourceId`, the root
 /// additionally `BASE_STANDING_KEY`. The recorded policy key is required

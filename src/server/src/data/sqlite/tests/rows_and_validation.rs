@@ -28,6 +28,14 @@ fn values_semantically_eq_rejects_genuinely_stale_pre_image() {
 }
 
 #[test]
+fn values_semantically_eq_rejects_an_extra_key_on_either_side() {
+    let base = serde_json::json!({ "a": 1 });
+    let superset = serde_json::json!({ "a": 1, "b": null });
+    assert!(!values_semantically_eq(&base, &superset));
+    assert!(!values_semantically_eq(&superset, &base));
+}
+
+#[test]
 fn values_semantically_eq_recurses_into_nested_array_and_object() {
     // ActorsPanel-style vision pre-image: an array of objects with a Number
     // leaf that differs only in serde_json variant must be equal; the same

@@ -21,8 +21,13 @@ export type FieldChange = {
  */
 path: string, 
 /**
- * OCC pre-image: the raw currently-stored value (`values_semantically_eq`
- * compares it at apply time; a mismatch rejects the intent).
+ * OCC pre-image: the currently-stored value as the writer last saw it
+ * (`values_semantically_eq` compares it at apply time; a mismatch rejects
+ * the intent). For the `engine` band the stored value is the ingress
+ * normalizer's output, so a mismatch is re-tried against the pre-image
+ * read through that same normalizer (`validation::normalized_engine_pre_image`):
+ * a pre-image omitting keys the store holds as `null` is faithful, one
+ * omitting or disagreeing on a real value is not.
  */
 old: unknown, 
 /**

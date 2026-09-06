@@ -1044,3 +1044,65 @@ fn validate_containment_forbids_embedding_an_asset_folder() {
     actor.embedded.insert("stuff".into(), vec![folder]);
     assert!(validate_containment(&actor).is_err());
 }
+
+/// A stored `world-settings` document serialized the way `apply_intent`'s
+/// Phase 1 serializes the current row (`whole`).
+fn stored_world_settings(combat: serde_json::Value) -> serde_json::Value {
+    let mut d = doc_with_system(serde_json::json!({}));
+    d.doc_type = "world-settings".into();
+    d.engine = Some(serde_json::json!({ "combat": combat }));
+    validate_engine_tree(&mut d).unwrap();
+    serde_json::to_value(d).unwrap()
+}
+
+#[test]
+fn normalized_engine_pre_image_reads_the_pre_image_through_the_stored_normalizer() {
+    let whole = stored_world_settings(serde_json::json!({ "enforcement": "hard" }));
+    let stored = whole.pointer("/engine/combat").unwrap();
+    // The stored form carries every declared key; the client's carries one.
+    assert!(stored.as_object().unwrap().len() > 1);
+    let normalized = normalized_engine_pre_image(
+        &whole,
+        "/engine/combat",
+        &serde_json::json!({ "enforcement": "hard" }),
+    )
+    .unwrap();
+    assert_eq!(&normalized, stored);
+    // A faithful whole-band pre-image normalizes to the whole stored band.
+    let band = normalized_engine_pre_image(
+        &whole,
+        "/engine",
+        &serde_json::json!({ "combat": { "enforcement": "hard" } }),
+    )
+    .unwrap();
+    assert_eq!(&band, whole.pointer("/engine").unwrap());
+}
+
+#[test]
+fn normalized_engine_pre_image_keeps_a_real_disagreement_visible() {
+    let whole = stored_world_settings(serde_json::json!({ "enforcement": "hard" }));
+    let stored = whole.pointer("/engine/combat").unwrap();
+    for stale in [
+        serde_json::json!({}),
+        serde_json::json!({ "enforcement": "warn" }),
+        serde_json::json!({ "enforcement": "hard", "effectCleanup": false }),
+    ] {
+        let normalized = normalized_engine_pre_image(&whole, "/engine/combat", &stale).unwrap();
+        assert_ne!(&normalized, stored, "{stale}");
+    }
+}
+
+#[test]
+fn normalized_engine_pre_image_declines_non_engine_paths_and_unparseable_pre_images() {
+    let whole = stored_world_settings(serde_json::json!({ "enforcement": "hard" }));
+    assert!(normalized_engine_pre_image(&whole, "/system/x", &serde_json::json!({})).is_none());
+    assert!(normalized_engine_pre_image(&whole, "/name", &serde_json::json!("n")).is_none());
+    assert!(normalized_engine_pre_image(&whole, "/permissions", &serde_json::json!({})).is_none());
+    // An unknown key fails the typed deserialize; the caller keeps the raw verdict.
+    assert!(normalized_engine_pre_image(
+        &whole,
+        "/engine/combat",
+        &serde_json::json!({ "bogus": 1 })
+    )
+    .is_none());
+}

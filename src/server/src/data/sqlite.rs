@@ -3898,7 +3898,25 @@ impl Repository for SqliteRepository {
                         // through a JS client loses its Float-ness (PosInt/Float variant
                         // split), so raw `!=` here would spuriously Conflict an otherwise
                         // up-to-date write. See `values_semantically_eq` doc comment.
-                        if !crate::data::command::values_semantically_eq(&actual, &ch.old) {
+                        // Shape-aware for the engine band: the stored value is the
+                        // normalizer's output (absent `Option` fields as explicit null),
+                        // so a raw mismatch is re-tried against the pre-image read through
+                        // that same normalizer (`normalized_engine_pre_image`); a `system`
+                        // pre-image gets no second reading. A pre-image that omits or
+                        // disagrees on a REAL stored value still differs after
+                        // normalization and still conflicts.
+                        let pre_image_matches =
+                            crate::data::command::values_semantically_eq(&actual, &ch.old)
+                                || validation::normalized_engine_pre_image(
+                                    &whole, &ch.path, &ch.old,
+                                )
+                                .is_some_and(|normalized| {
+                                    crate::data::command::values_semantically_eq(
+                                        &actual,
+                                        &normalized,
+                                    )
+                                });
+                        if !pre_image_matches {
                             return Err(DataError::Conflict(format!(
                                 "stale pre-image at {}",
                                 ch.path

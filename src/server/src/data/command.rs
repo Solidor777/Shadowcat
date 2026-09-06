@@ -29,8 +29,13 @@ use crate::data::DataError;
 pub struct FieldChange {
     /// JSON pointer to the field, e.g. `/system/hp`.
     pub path: String,
-    /// OCC pre-image: the raw currently-stored value (`values_semantically_eq`
-    /// compares it at apply time; a mismatch rejects the intent).
+    /// OCC pre-image: the currently-stored value as the writer last saw it
+    /// (`values_semantically_eq` compares it at apply time; a mismatch rejects
+    /// the intent). For the `engine` band the stored value is the ingress
+    /// normalizer's output, so a mismatch is re-tried against the pre-image
+    /// read through that same normalizer (`validation::normalized_engine_pre_image`):
+    /// a pre-image omitting keys the store holds as `null` is faithful, one
+    /// omitting or disagreeing on a real value is not.
     #[ts(type = "unknown")]
     pub old: Value,
     /// The value to write (unused when `remove` is true).

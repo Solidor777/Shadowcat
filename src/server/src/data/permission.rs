@@ -302,16 +302,48 @@ fn band_has_interior(band: &str) -> bool {
 /// different structures with different validators, but neither treats an empty
 /// trailing segment as naming a path.
 pub(crate) fn writes_a_content_band(path: &str) -> bool {
+    WRITABLE_BANDS.iter().any(|band| writes_band(path, band))
+}
+
+/// Whether `path` writes the content band `band` whole, or writes into it. The ONE
+/// statement of the band-prefix rule: `writes_a_content_band` folds it over
+/// `WRITABLE_BANDS`, `targets_engine_band` applies it to the engine band alone.
+fn writes_band(path: &str, band: &str) -> bool {
     let Some(rest) = path.strip_prefix('/') else {
         return false;
     };
-    WRITABLE_BANDS.iter().any(|band| {
-        rest == *band
-            || (band_has_interior(band)
-                && rest
-                    .strip_prefix(*band)
-                    .is_some_and(|tail| tail.starts_with('/') && tail.len() > 1))
-    })
+    rest == band
+        || (band_has_interior(band)
+            && rest
+                .strip_prefix(band)
+                .is_some_and(|tail| tail.starts_with('/') && tail.len() > 1))
+}
+
+/// Whether `path` writes the typed `engine` band of the document itself or of an
+/// embedded child at any depth (`/engine…`, `/embedded/<coll>/<idx>/engine…`) — the
+/// band `engine::normalize_engine_opt` re-serializes at ingress, so a value stored
+/// there is the normalizer's output rather than the client's input. Consumed by
+/// `validation::normalized_engine_pre_image` to decide which OCC pre-images are read
+/// through that normalizer; every other band stores client input verbatim and gets
+/// no such reading. Hops are stripped by the same `strip_embedded_hops`
+/// `is_base_content_residual` descends with, so the two cannot disagree on what a
+/// hop is.
+pub(crate) fn targets_engine_band(path: &str) -> bool {
+    strip_embedded_hops(path).is_some_and(|rest| writes_band(&rest, "engine"))
+}
+
+/// Strip zero or more `/embedded/<coll>/<idx>` hops off `path`, returning the
+/// residual (always starting with `/`). Each hop requires BOTH a collection name
+/// and an index segment to keep descending, so a path naming a whole collection
+/// (`/embedded/item`) or a whole record (`/embedded/item/0`) yields `None`.
+fn strip_embedded_hops(path: &str) -> Option<String> {
+    let mut rest = path.to_string();
+    while let Some(after_embedded) = rest.strip_prefix("/embedded/") {
+        let (_collection, after_collection) = after_embedded.split_once('/')?;
+        let (_index, after_index) = after_collection.split_once('/')?;
+        rest = format!("/{after_index}");
+    }
+    Some(rest)
 }
 
 /// The capability required to write a document field at `path`, or `None` when
@@ -567,27 +599,16 @@ pub fn redaction_target(pointer: &str) -> Option<RedactionTarget> {
 
 /// Whether `residual` (a `/base` pointer's trailing path, always starting with `/`) names
 /// CONTENT within a stored base snapshot rather than one of the snapshot's own STRUCTURAL
-/// keys. Strips zero or more `/embedded/<coll>/<idx>` hops — each hop requires BOTH a
-/// collection name and an index segment to keep descending, so naming a whole collection
-/// (`/embedded/item`) or a whole record (`/embedded/item/0`) fails to strip and is refused
-/// by the final check below — then requires what remains to match `writes_a_content_band`
-/// (`/name`, `/engine…`, `/system…`, the same three bands `MergeBase`/`EmbeddedBaseChild`
-/// record as content). Everything else a `check_base_node_shape`-valid node carries at any
-/// depth (`embedded` itself, the record's policy map, `sourceId`, the root's
-/// `owner_standing`) fails this test and is refused, since removing any of them would leave
-/// a shape `check_base_node_shape` itself would reject.
+/// keys. Strips zero or more `/embedded/<coll>/<idx>` hops (`strip_embedded_hops` —
+/// naming a whole collection or a whole record fails to strip and is refused) then
+/// requires what remains to match `writes_a_content_band` (`/name`, `/engine…`,
+/// `/system…`, the same three bands `MergeBase`/`EmbeddedBaseChild` record as content).
+/// Everything else a `check_base_node_shape`-valid node carries at any depth (`embedded`
+/// itself, the record's policy map, `sourceId`, the root's `owner_standing`) fails this
+/// test and is refused, since removing any of them would leave a shape
+/// `check_base_node_shape` itself would reject.
 fn is_base_content_residual(residual: &str) -> bool {
-    let mut rest = residual.to_string();
-    while let Some(after_embedded) = rest.strip_prefix("/embedded/") {
-        let Some((_collection, after_collection)) = after_embedded.split_once('/') else {
-            return false;
-        };
-        let Some((_index, after_index)) = after_collection.split_once('/') else {
-            return false;
-        };
-        rest = format!("/{after_index}");
-    }
-    writes_a_content_band(&rest)
+    strip_embedded_hops(residual).is_some_and(|rest| writes_a_content_band(&rest))
 }
 
 #[cfg(test)]

@@ -101,3 +101,38 @@ fn source_is_immutable_no_cap() {
     assert_eq!(required_cap_for_path("/source"), None);
     assert_eq!(required_cap_for_path("/source/id"), None);
 }
+
+#[test]
+fn targets_engine_band_admits_the_root_and_embedded_engine_bands_only() {
+    assert!(targets_engine_band("/engine"));
+    assert!(targets_engine_band("/engine/combat"));
+    assert!(targets_engine_band("/embedded/actor/0/engine"));
+    assert!(targets_engine_band("/embedded/actor/0/engine/faction"));
+    assert!(targets_engine_band(
+        "/embedded/actor/0/embedded/item/2/engine/x"
+    ));
+    // Other bands, the envelope, and boundary neighbours.
+    assert!(!targets_engine_band("/system"));
+    assert!(!targets_engine_band("/system/engine"));
+    assert!(!targets_engine_band("/name"));
+    assert!(!targets_engine_band("/engine_x"));
+    assert!(!targets_engine_band("/engine/"));
+    assert!(!targets_engine_band("/permissions/default"));
+    assert!(!targets_engine_band("/base/engine"));
+    // A whole collection or a whole record is not an engine-band write.
+    assert!(!targets_engine_band("/embedded/actor"));
+    assert!(!targets_engine_band("/embedded/actor/0"));
+    assert!(!targets_engine_band("/embedded/actor/0/system/hp"));
+}
+
+#[test]
+fn targets_engine_band_and_writes_a_content_band_share_the_band_prefix_rule() {
+    // Every engine-band path is a content-band write; the converse fails only
+    // on the other two bands.
+    for p in ["/engine", "/engine/x", "/engine/a/b"] {
+        assert!(targets_engine_band(p) && writes_a_content_band(p), "{p}");
+    }
+    for p in ["/system", "/system/x", "/name"] {
+        assert!(!targets_engine_band(p) && writes_a_content_band(p), "{p}");
+    }
+}
