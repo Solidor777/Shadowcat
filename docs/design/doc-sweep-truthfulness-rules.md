@@ -796,3 +796,30 @@ files under `docs/superpowers/` remain wholly exempt — they are executed recor
 references, and are never themselves rewritten to satisfy this rule. Do not carry this rule's
 code-comment prohibition into ordinary Markdown documentation, and do not carry a skill's narrow
 carve-out back into code.
+
+## RULE 17 — a documentation exemption must state a property of the GENERATOR, never of the effort
+
+`intentionallyNotDocumented` in a `typedoc.json` suppresses the undocumented-member check for the
+members it names. Every entry currently on that list in `src/types/typedoc.json` is a
+discriminant property of a **ts-rs-generated union member**: serde synthesizes the tag from a
+container attribute, so the tag has no declaration site anywhere in the Rust source that could
+carry a doc comment, and the emitted TypeScript is generated output that must never be hand-edited.
+The exemption therefore records something true about the generator. Restructuring the Rust enums
+into named per-variant types would not create a place to document the synthesized tag, so there is
+no fix being deferred.
+
+That is the ONLY admissible justification. An entry is a defect when the member it names has a
+real declaration site — a hand-written type, a Rust field, a function parameter — because then a
+doc comment is possible and the entry is silencing the diagnostic rather than describing the tool.
+The test to apply before adding one is not "is this hard to document?" but **"where would the doc
+comment go?"** If that question has an answer, write the comment instead.
+
+Two consequences worth stating, because both have been reached for:
+- The list is not a convenience for generated code in general. Generated members that DO trace
+  back to a documented Rust item inherit that documentation and need no entry.
+- The list grows silently through merges — two branches each adding their own entries union
+  cleanly and nothing flags the total. A jump in its length is a prompt to re-apply the test above
+  to every entry, not evidence that the exemption is load-bearing.
+
+**Scope.** Every `typedoc.json` in the repo. Unrelated to RULE 16: this rule governs what may be
+exempted from documentation, not what a comment may refer to.
