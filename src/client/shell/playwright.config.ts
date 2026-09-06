@@ -17,14 +17,24 @@ const bin = path.join(
 
 export default defineConfig({
   testDir: "./e2e",
-  // Budgets sized for the contended 6-worker full-suite run (isolated boots take
-  // 3-8s; contention has been measured at 15-53s per test). Without an explicit
-  // test timeout, Playwright's 30s default equals the specs' own 30s
-  // render-ready assertion budget, so that assertion could never actually use
-  // its stated window — the root cause of the render-ready flake class
-  // (POST_WORK_FINDINGS "ui-e2e panels reload test flaked once locally").
-  timeout: 120_000,
-  expect: { timeout: 15_000 },
+  // CPU budget. Each worker drives a Chromium rendering a WebGL stage, which costs
+  // far more than one core, so Playwright's default (half the logical CPUs) heavily
+  // oversubscribes a developer machine and inflates per-test latency roughly 19x:
+  // `panels-floating.spec.ts`'s popped-out-arrangement test measures 3.1s at four
+  // workers and 59.4s at twelve, on the same machine against a freshly booted server.
+  // Total wall-clock barely differs between those two settings, so the extra workers
+  // buy no throughput while making the machine unusable and pushing ordinary
+  // assertions past `expect`'s budget. Four is the measured knee.
+  //
+  // INVARIANT: this cap is what keeps the timeouts below honest. Raising it
+  // re-inflates per-test latency and the budgets stop bounding product behaviour.
+  workers: process.env.CI === undefined ? 4 : 2,
+  // With parallelism capped, the slowest test measures 27.1s, so this bounds a
+  // genuine hang while leaving ~2x headroom. `expect`'s budget stays well above the
+  // slowest single action (0.91s measured across a 237-action trace) and well under
+  // the test budget, so an assertion fails on the assertion rather than on the clock.
+  timeout: 60_000,
+  expect: { timeout: 10_000 },
   webServer: {
     command: `"${bin}"`,
     cwd: repoRoot,

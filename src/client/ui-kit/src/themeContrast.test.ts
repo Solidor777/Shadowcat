@@ -1,3 +1,6 @@
+// @vitest-environment node
+// Exercises plain state and pure functions: no component render and no DOM API use, so
+// the package-default jsdom environment would be constructed per file and never touched.
 // Executable WCAG 2.x contrast audit over every built-in theme: each pairing
 // in `CONTRAST_PAIRINGS` (the single source the theme editor's warnings also
 // read) must meet its minimum ratio against the theme DATA, so a palette

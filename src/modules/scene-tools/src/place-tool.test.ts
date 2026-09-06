@@ -1,3 +1,6 @@
+// @vitest-environment node
+// Exercises plain state and pure functions: no component render and no DOM API use, so
+// the package-default jsdom environment would be constructed per file and never touched.
 import { test, expect } from "vitest";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildActorDoc, type WireOperation, type FootprintLookup } from "@shadowcat/core";
 import { SceneInteractionBridge, ActorSelection } from "@shadowcat/ui-kit";

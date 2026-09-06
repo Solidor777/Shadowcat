@@ -1,3 +1,6 @@
+// @vitest-environment node
+// Exercises plain state and pure functions: no component render and no DOM API use, so
+// the package-default jsdom environment would be constructed per file and never touched.
 import { describe, expect, it, test } from "vitest";
 import { decodeLayout, encodeLayout } from "./persist";
 import { applyOp, defaultLayout, type PanelLayoutV1 } from "./tree";

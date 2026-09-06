@@ -1,3 +1,6 @@
+// @vitest-environment node
+// Exercises plain state and pure functions: no component render and no DOM API use, so
+// the package-default jsdom environment would be constructed per file and never touched.
 import { describe, it, expect, vi } from "vitest";
 import {
   TemplatesController, MERGE_TIMEOUT_BASE_MS, MERGE_TIMEOUT_PER_INSTANCE_MS,

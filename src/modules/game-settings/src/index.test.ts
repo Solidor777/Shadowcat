@@ -1,3 +1,6 @@
+// @vitest-environment node
+// Exercises plain state and pure functions: no component render and no DOM API use, so
+// the package-default jsdom environment would be constructed per file and never touched.
 import { describe, it, expect } from "vitest";
 import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
 import { gameSettings } from "./index";
