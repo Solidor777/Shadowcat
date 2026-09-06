@@ -55,7 +55,10 @@ export async function createAccount(
   page: Page,
   username: string,
   password: string,
-  opts: { admin?: boolean } = {},
+  opts: {
+    /** Whether to tick "Server administrator" on the creation form. */
+    admin?: boolean;
+  } = {},
 ): Promise<void> {
   await page.getByLabel("Account name").fill(username);
   await page.getByLabel("Password", { exact: true }).fill(password);
