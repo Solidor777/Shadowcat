@@ -27,9 +27,14 @@ export default defineConfig({
   // workers buy no throughput, make the machine unusable, and push ordinary assertions
   // past `expect`'s budget until they fail on the clock. Four is the measured knee.
   //
+  // The hosted runner gets ONE. It has two cores, and a dual-session spec opens two canvases on
+  // its own, so any second worker guarantees more canvases than cores — and a starved page stops
+  // answering the driver entirely rather than merely rendering late, which surfaces as a spec
+  // burning its whole budget instead of failing an assertion.
+  //
   // INVARIANT: this cap is what keeps the timeouts below honest. Raising it
   // re-inflates per-test latency and the budgets stop bounding product behaviour.
-  workers: process.env.CI === undefined ? 4 : 2,
+  workers: process.env.CI === undefined ? 4 : 1,
   // Sized on the WORST observed passing test, not the best: run-to-run spread at the
   // capped worker count is wide (a test measured at 27.1s in one run and 59.3s in
   // another), so a budget fitted to a favourable run leaves no headroom and converts a
