@@ -22,19 +22,22 @@ export default defineConfig({
   // oversubscribes a developer machine and inflates per-test latency roughly 19x:
   // `panels-floating.spec.ts`'s popped-out-arrangement test measures 3.1s at four
   // workers and 59.4s at twelve, on the same machine against a freshly booted server.
-  // Total wall-clock barely differs between those two settings, so the extra workers
-  // buy no throughput while making the machine unusable and pushing ordinary
-  // assertions past `expect`'s budget. Four is the measured knee.
+  // Oversubscription costs on every axis at once: the full suite measures 146s at four
+  // workers with all 34 passing, against 235s at twelve with one failure. The extra
+  // workers buy no throughput, make the machine unusable, and push ordinary assertions
+  // past `expect`'s budget until they fail on the clock. Four is the measured knee.
   //
   // INVARIANT: this cap is what keeps the timeouts below honest. Raising it
   // re-inflates per-test latency and the budgets stop bounding product behaviour.
   workers: process.env.CI === undefined ? 4 : 2,
-  // With parallelism capped, the slowest test measures 27.1s, so this bounds a
-  // genuine hang while leaving ~2x headroom. `expect`'s budget stays well above the
-  // slowest single action (0.91s measured across a 237-action trace) and well under
-  // the test budget, so an assertion fails on the assertion rather than on the clock.
-  timeout: 60_000,
-  expect: { timeout: 10_000 },
+  // Sized on the WORST observed passing test, not the best: run-to-run spread at the
+  // capped worker count is wide (a test measured at 27.1s in one run and 59.3s in
+  // another), so a budget fitted to a favourable run leaves no headroom and converts a
+  // slow-but-correct run into failures. `expect`'s budget sits well above the slowest
+  // single action (0.91s across a 237-action trace) and well under the test budget, so
+  // an assertion fails on the assertion rather than on the clock.
+  timeout: 120_000,
+  expect: { timeout: 15_000 },
   webServer: {
     command: `"${bin}"`,
     cwd: repoRoot,
