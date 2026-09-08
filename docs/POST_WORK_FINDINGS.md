@@ -853,3 +853,32 @@ are observations awaiting triage, not committed work.
   proves `data-render-ready`, a non-zero bounding box, and teardown. Removing it
   deletes coverage that is duplicated rather than unique, but it is a deletion
   of a test and was left to the owner. Status: Needs Review.
+
+- Title: The browser suite hangs intermittently at the capped worker count.
+  Summary: CORRECTS the entry above, which reported 34/34 in 146s at four
+  workers as if it were representative. It was one sample. Two later runs at the
+  same worker count on the same commit produced 9 failures in 17.9m and 7
+  failures in 20.0m. The bulk of that wall-clock is three dual-session specs
+  (the combat tracker turn cycle, the movement-budget gate, and the hex
+  wall-crossing rejection) each burning their full `DUAL_SESSION_TIMEOUT_MS`
+  budget — six minutes apiece — so these are HANGS, not slowness. Collateral
+  timeouts then hit tests that pass in about a second alone, including the
+  token place-and-drag test failing on `mouse.move` after 60s.
+  Ruled out by measurement, not argument: the machine and the built artifact are
+  fine (the stage spec runs 11 tests in 12.4s isolated, every test 0.6-1.6s, right
+  after a failing suite run); disk is not the constraint (`PhysicalDisk` queue
+  length 0 and 0% disk time during a slow run); and no competing session or
+  foreign server was present (nothing listening on the suite's port, no other
+  working copy's processes). What a live sample DOES show is one
+  `chrome-headless-shell` consuming 577% of a core — 5.8 cores — with a second at
+  218%, which is consistent with a hung spec spinning a software-rasterized WebGL
+  canvas and starving its sibling workers. That is a mechanism consistent with the
+  observations, NOT a diagnosed cause; the trigger is unknown and the hang did not
+  reproduce in any isolated single-spec run attempted.
+  Also corrects a measurement method used throughout: the browser process is
+  `chrome-headless-shell`, not `chrome`, so any process-count or RSS figure
+  gathered by sampling `chrome` undercounted the browsers to zero.
+  Status: Needs Review — open, reproducible, undiagnosed. The worker cap itself
+  remains supported (per-test latency 3.1s at four workers against 59.4s at
+  twelve, same machine, fresh server); what is NOT supported is any claim that
+  capping workers makes the suite reliably green.
