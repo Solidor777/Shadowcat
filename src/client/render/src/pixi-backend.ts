@@ -11,6 +11,14 @@ import type { EmoteGlyph } from "./emote-view";
 export interface PixiBackendOptions {
   /** The initial background clear color, packed `0xRRGGBB`. */
   background: number;
+  /** Whether the renderer multisamples. Defaults to `true`.
+   *
+   * Cost is per PIXEL rather than per object, and a GPU absorbs it where a software rasterizer
+   * does not, so a host without one pays it in CPU. Set it `false` where nothing judges visual
+   * output. It is a REDUCTION, not a remedy: a measured software-rasterizing host still spends
+   * whole cores per canvas with this off, because the frame is re-rasterized on every ticker
+   * tick whether or not the scene changed. Do not treat disabling it as making canvases cheap. */
+  antialias?: boolean;
 }
 
 /** Per-token render state. `container` is the outer, non-rotating node (position = token
@@ -1415,8 +1423,9 @@ function paintFogSheets(dark: Graphics, dim: Graphics, exploredHoles: Graphics, 
 /** Construct a PixiBackend over a canvas (async: v8 Application.init is async).
  * @param canvas The `<canvas>` element Pixi renders into.
  * @param opts Initial renderer options.
- * @returns A `PixiBackend` wrapping a fully-initialized Pixi `Application` (antialiased, WebGL
- * preferred, HiDPI-aware via `devicePixelRatio` resolution + `autoDensity`).
+ * @returns A `PixiBackend` wrapping a fully-initialized Pixi `Application` (WebGL preferred,
+ * HiDPI-aware via `devicePixelRatio` resolution + `autoDensity`, multisampled unless
+ * `opts.antialias` says otherwise).
  * @example
  * ```ts
  * import { createPixiBackend } from "@shadowcat/render";
@@ -1432,7 +1441,7 @@ export async function createPixiBackend(
   const app = new Application();
   await app.init({
     canvas,
-    antialias: true,
+    antialias: opts.antialias ?? true,
     resolution: globalThis.devicePixelRatio || 1,
     autoDensity: true,
     background: opts.background,

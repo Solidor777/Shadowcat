@@ -11,10 +11,18 @@
   import { createSubscriber } from "svelte/reactivity";
 
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
-   * (jsdom has no WebGL — real GL is covered by Playwright). */
+   * (jsdom has no WebGL — real GL is covered by Playwright).
+   *
+   * `VITE_SC_ANTIALIAS=0` turns multisampling off at build time, for a host that renders WebGL in
+   * software and does not judge visual output. Absent or any other value keeps it on, so every
+   * shipped build is multisampled. It trims a per-pixel term rather than making a canvas cheap —
+   * see `PixiBackendOptions.antialias` for what it does not fix. */
   let {
     createBackend = (canvas: HTMLCanvasElement): Promise<DisplayBackend> =>
-      createPixiBackend(canvas, { background: readColor("--surface-base", 0x101014) }),
+      createPixiBackend(canvas, {
+        background: readColor("--surface-base", 0x101014),
+        antialias: import.meta.env.VITE_SC_ANTIALIAS !== "0",
+      }),
     logger,
   }: {
     /** See the doc comment on the destructured default above. */

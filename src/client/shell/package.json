@@ -36,7 +36,7 @@
     "build": "vite build",
     "typecheck": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
-    "e2e:build": "vite build && cargo build -p shadowcat --bin shadowcat",
+    "e2e:build": "pnpm -w run clean && vite build --mode e2e && cargo build -p shadowcat --bin shadowcat",
     "e2e": "pnpm e2e:build && playwright test"
   },
   "devDependencies": {
