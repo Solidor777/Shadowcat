@@ -1,0 +1,18 @@
+# Repo-scoped build CPU budget.
+#
+# A cold build of the workspace runs one rustc per available core (measured: 23 concurrent
+# processes at 99% CPU on a 24-core machine), which starves the desktop for the duration --
+# and the browser e2e script begins with exactly this build, so the stall lands the moment a
+# developer starts the suite.
+#
+# This file applies only to cargo invocations made from inside this repository, so it imposes
+# nothing on other Rust projects on the machine. Cargo reads `CARGO_BUILD_JOBS` ahead of this
+# value, so any invocation can opt out or pick its own budget without editing the repo:
+#
+#     CARGO_BUILD_JOBS=24 cargo build      # this machine's full parallelism, one command
+#     CARGO_BUILD_JOBS=4  cargo test       # a tighter budget while doing something else
+#
+# A CI runner with fewer cores than this is unaffected: cargo already caps concurrency at the
+# available parallelism, so a budget above a runner's core count is inert rather than a floor.
+[build]
+jobs = 12
