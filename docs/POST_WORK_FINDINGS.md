@@ -912,3 +912,33 @@ are observations awaiting triage, not committed work.
   single largest per-pixel term, and one no assertion in the suite depends on)
   drops the per-canvas cost enough to clear the threshold. That is a render-init
   change and is the owner's call. Status: Needs Review.
+
+- Title: Disabling multisampling clears the browser suite's saturation
+  threshold; the continuous re-render behind it remains.
+  Summary: ANSWERS the open question in the entry above. Four consecutive
+  full-suite runs with `antialias` off pass 33/33 in 105-138s with slowest tests
+  of 3.4s, 9.7s and 9.8s. The comparable runs with it on are two passes at 146s
+  and 169s and two failures at 17.9m and 20.0m, with slowest tests of 31.3s and
+  59.3s. Multisampling is a per-pixel term a GPU absorbs and a software
+  rasterizer pays in CPU, and no assertion in the suite inspects edge quality --
+  the specs read the stage through its debug attributes, never its pixels.
+  A retraction worth recording with it: a single per-process CPU sample taken
+  during the first antialias-off run showed renderers still at 888%, 857% and
+  650% of a core, and that was read as the change having failed. It had not; the
+  instrument was wrong for the question. Per-process CPU stays high because the
+  software rasterizer parallelizes across whatever cores exist, so it reports
+  demand rather than the per-frame work that actually changed. The measure that
+  answers "did this help" is the suite's own pass rate and per-test durations
+  across repeated runs, and one run of either arm decides nothing given a spread
+  that runs from 105s to 20m.
+  What remains, and is NOT fixed: `pixi-backend`'s `createPixiBackend` registers
+  a ticker callback and the render package contains no `app.stop()`, no
+  `autoStart: false` and no `maxFPS`, so Pixi re-renders the full canvas on
+  every tick whether or not the scene changed. The engine's `pingsActive` and
+  `emotesActive` flags gate only those overlays' redraw, not the canvas render.
+  A canvas therefore costs a full software rasterization ~60x/second while a
+  test sits waiting on an assertion, and on a GPU-less host that is the standing
+  cost antialias only trimmed. Rendering on demand would remove it and would
+  also stop an idle client burning a laptop's battery, but it is a render-
+  architecture change requiring every mutation source to invalidate correctly.
+  Status: Needs Review.
