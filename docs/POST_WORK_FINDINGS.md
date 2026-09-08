@@ -882,3 +882,33 @@ are observations awaiting triage, not committed work.
   remains supported (per-test latency 3.1s at four workers against 59.4s at
   twelve, same machine, fresh server); what is NOT supported is any claim that
   capping workers makes the suite reliably green.
+
+- Title: Software-rasterized canvases, not worker count, are the browser suite's
+  ceiling. Summary: REFINES the entry above, which recorded the 577%-of-a-core
+  renderer as a mechanism "consistent with the observations, NOT a diagnosed
+  cause". A per-process CPU-delta sample during a stalled full-suite run
+  measures two `chrome-headless-shell` renderers at 883% and 869% of a core --
+  roughly 8.8 cores EACH -- with browser and node processes summing to 1856% of
+  the 2400% the machine has, while 44.9 GB of RAM sits free. The renderer
+  initializes Pixi with `antialias: true` at the device pixel ratio, which is
+  nearly free on a GPU and multiplies per-pixel work under SwiftShader, and
+  SwiftShader parallelizes across every core it can reach. So ONE canvas can
+  demand ~9 cores and a dual-session spec runs TWO.
+  This overturns the worker-count framing: the machine saturates at roughly two
+  active canvases regardless of how many workers are configured, which is
+  precisely why wall-clock barely moved across 4, 6 and 12 workers while
+  per-test latency inflated ~19x. Raising workers subdivides a fixed
+  rasterization budget rather than adding throughput. Under saturation a page
+  stops servicing Playwright's protocol at all -- a `.poll()` with its own 20s
+  budget ran past the test's 360s budget without firing, and two of the three
+  six-minute hangs stalled in `playerCtx.close()` during context teardown, not
+  in any assertion.
+  Bounded by measurement, not argument: the five dual-session specs run ALONE at
+  the same worker count pass 8/8 in 5.1m, so no single spec hangs; the hang needs
+  the full suite's combined canvas load and is therefore a saturation threshold
+  rather than a defect in one spec. Disk is not involved (`PhysicalDisk` queue
+  length 0, 0% disk time) and neither is memory.
+  What is NOT yet established: whether disabling antialias for the suite (the
+  single largest per-pixel term, and one no assertion in the suite depends on)
+  drops the per-canvas cost enough to clear the threshold. That is a render-init
+  change and is the owner's call. Status: Needs Review.
