@@ -63,12 +63,12 @@ export function parseWorkflowRunSteps(yamlText) {
         if (lines[k].search(/\S/) <= indent) break;
         body.push(bare);
       }
-      out.push({ job, command: normCommand(body.join(" ")), line: i + 1 });
+      out.push({ job, command: normCommand(body.join(" ")), line: i + 1, multiline: true });
       i = k - 1;
       continue;
     }
     const inline = lines[i].match(RUN_INLINE);
-    if (inline) out.push({ job, command: normCommand(inline[1]), line: i + 1 });
+    if (inline) out.push({ job, command: normCommand(inline[1]), line: i + 1, multiline: false });
   }
   return out;
 }
@@ -119,6 +119,29 @@ export function parseGateManifest(text, sourceName) {
 // by construction; a plain space is not (a job or command could itself contain one).
 const key = (x) => `${x.job}\u0000${x.command}`;
 
+// Two shapes are not executable locally by construction, and tiering either `commit` or `push`
+// is always a defect — the binary-size step was exactly this: a `run: |` block naming the
+// binary through `${{ runner.os == 'Windows' && '.exe' || '' }}`, an expression that resolves
+// only inside Actions, folded by `normCommand` into one line of concatenated fragments rather
+// than the three statements it actually runs. The fix in both cases is the same: extract the
+// step into a script both CI and the local runner invoke (`check-binary-size.mjs` is the
+// precedent), then tier the one-line invocation.
+//   - an unresolved GitHub Actions expression (`${{ ... }}` cannot occur outside an
+//     Actions-only string, so this has zero false positives on a real one-liner)
+//   - a step whose source was a multi-line `run: |`/`run: >` block — `parseWorkflowRunSteps`
+//     tags this at parse time (`multiline: true`), before `normCommand` erases the distinction
+export const UNRESOLVED_EXPRESSION = /\$\{\{/;
+
+/** Commands tiered `commit`/`push` that cannot execute locally: expression or multi-line block. */
+export function unrunnableLocalEntries(steps, entries) {
+  const blockKeys = new Set(steps.filter((s) => s.multiline).map(key));
+  return entries.filter(
+    (e) =>
+      (e.tier === "commit" || e.tier === "push") &&
+      (UNRESOLVED_EXPRESSION.test(e.command) || blockKeys.has(key(e))),
+  );
+}
+
 /** Workflow steps with no entry, entries with no step, and ci-only entries with no reason. */
 export function diffManifest(steps, entries) {
   const byEntry = new Set(entries.map(key));
@@ -127,6 +150,7 @@ export function diffManifest(steps, entries) {
     unclassified: steps.filter((s) => !byEntry.has(key(s))),
     stale: entries.filter((e) => !byStep.has(key(e))),
     missingReason: entries.filter((e) => e.tier === "ci-only" && e.reason.trim() === ""),
+    unrunnableLocal: unrunnableLocalEntries(steps, entries),
   };
 }
 
@@ -134,12 +158,18 @@ if (isDirectEntry(import.meta.url)) {
   const steps = parseWorkflowRunSteps(readFileSync(WORKFLOW, "utf8"));
   const entries = parseGateManifest(readFileSync(MANIFEST, "utf8"), MANIFEST);
   const d = diffManifest(steps, entries);
-  const bad = d.unclassified.length + d.stale.length + d.missingReason.length;
+  const bad =
+    d.unclassified.length + d.stale.length + d.missingReason.length + d.unrunnableLocal.length;
   for (const s of d.unclassified) {
     console.error(`${WORKFLOW}:${s.line}: [${s.job}] unclassified gate: ${s.command}`);
   }
   for (const e of d.stale) {
     console.error(`${MANIFEST}:${e.line}: [${e.job}] entry names no workflow step: ${e.command}`);
+  }
+  for (const e of d.unrunnableLocal) {
+    console.error(
+      `${MANIFEST}:${e.line}: [${e.job}] tier "${e.tier}" entry cannot run locally (unresolved expression or multi-line block): ${e.command}. Extract it into a script both CI and the local runner invoke.`,
+    );
   }
   for (const e of d.missingReason) {
     console.error(`${MANIFEST}:${e.line}: ci-only entry needs a reason: ${e.command}`);

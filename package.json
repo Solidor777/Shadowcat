@@ -27,6 +27,7 @@
     "lint:file-size": "node scripts/check-file-lines.mjs",
     "lint:inline-tests": "node scripts/check-inline-tests.mjs",
     "lint:aria-labels": "node scripts/check-aria-label-keys.mjs",
+    "lint:binary-size": "node scripts/check-binary-size.mjs",
     "lint:gate-manifest": "node scripts/check-gate-manifest.mjs",
     "gate:commit": "node scripts/run-gate-tier.mjs commit",
     "gate:push": "node scripts/run-gate-tier.mjs push",

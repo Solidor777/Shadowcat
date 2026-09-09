@@ -6,12 +6,18 @@
 //
 // The receipt is keyed to a TREE HASH, never a timestamp. Gates run against a working tree, so
 // a receipt keyed to time can describe a tree other than the one being pushed — the defect this
-// mechanism exists to remove.
+// mechanism exists to remove. But a tree hash alone is not enough: `push` mode RUNS the gates
+// against the working tree and then STAMPS the receipt with `HEAD^{tree}`. If the tree is dirty
+// at run time those two are different trees — an uncommitted fix can turn a red HEAD green for
+// the run, get discarded afterward, and leave a receipt that verifies a clean tree nobody tested.
+// So `push` mode refuses outright on a dirty tree, checked BEFORE any gate command executes;
+// checking after the fact cannot retroactively prove what was actually tested.
 //
 // Order is workflow order, so the client build precedes the cargo steps that embed dist/:
 // `tierCommands` never reorders `entries`, it only filters and dedupes, so INCLUDED's ordering
 // guarantee reduces to `parseGateManifest`'s own emission order — the manifest already lists
-// `pnpm build` before every cargo step in the push tier.
+// `pnpm build` before every cargo step in the push tier (pinned by a test against the real
+// manifest, not just synthetic fixtures, so a future reordering in `gates.toml` fails the suite).
 
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -50,12 +56,20 @@ export function writeReceipt(gitDir, receipt) {
   writeFileSync(receiptPath(gitDir), JSON.stringify(receipt, null, 2) + "\n");
 }
 
+/**
+ * Reads the receipt, or `null` when none exists or the file cannot be parsed. Both cases collapse
+ * to `null` for the caller's control flow (missing and corrupt both mean "no receipt to trust"),
+ * but a corrupt file is a different problem for the OPERATOR than a merely absent one — recreating
+ * it costs the full push-tier run, so the distinction is worth a diagnostic even though the return
+ * value can't carry it without breaking every existing caller's `object | null` contract.
+ */
 export function readReceipt(gitDir) {
   const p = receiptPath(gitDir);
   if (!existsSync(p)) return null;
   try {
     return JSON.parse(readFileSync(p, "utf8"));
-  } catch {
+  } catch (err) {
+    console.error(`gate: receipt at ${p} is corrupt (${err.message}) — treating as missing: re-run \`pnpm gate:push\``);
     return null;
   }
 }
@@ -75,10 +89,31 @@ export function receiptMatches(receipt, { tree, manifest }) {
   return { ok: true, why: "" };
 }
 
+/**
+ * Whether `push` mode may proceed: a dirty tree means whatever the gates run against cannot be
+ * proven identical to the tree the receipt will name (`HEAD^{tree}`), so refusal is the only
+ * sound answer — checked against `git status --porcelain` BEFORE the first gate command runs.
+ */
+export function pushDirtyTreeRefusal(porcelainStatus) {
+  const dirty = porcelainStatus.trim() !== "";
+  return {
+    ok: !dirty,
+    why: dirty
+      ? "gate: refusing to run the push tier on a dirty tree — uncommitted changes mean a green run cannot be proven to describe HEAD's tree. Commit or stash, then re-run `pnpm gate:push`."
+      : "",
+  };
+}
+
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 if (isDirectEntry(import.meta.url)) {
   const [mode, arg] = process.argv.slice(2);
+
+  if (mode === "--verify-receipt" && !arg) {
+    console.error("usage: node scripts/run-gate-tier.mjs --verify-receipt <tree>");
+    process.exit(2);
+  }
+
   const text = readFileSync(MANIFEST, "utf8");
   const entries = parseGateManifest(text, MANIFEST);
   const hash = manifestHash(text);
@@ -94,20 +129,31 @@ if (isDirectEntry(import.meta.url)) {
     process.exit(0);
   }
 
+  if (mode === "push") {
+    const status = git("status", "--porcelain");
+    const refusal = pushDirtyTreeRefusal(status);
+    if (!refusal.ok) {
+      console.error(refusal.why);
+      process.exit(1);
+    }
+  }
+
   const commands = tierCommands(entries, mode);
   console.log(`gate:${mode} — ${commands.length} step(s)`);
   for (const cmd of commands) {
     const started = Date.now();
-    process.stdout.write(`  ${cmd} ... `);
+    console.log(`  ${cmd}`);
     try {
-      execFileSync(cmd, { shell: true, stdio: ["ignore", "pipe", "pipe"] });
+      // Streams live rather than buffering: a hung step (this codebase has a recorded history of
+      // suites hanging) must show the operator real output, not a frozen prefix, and `stdio:
+      // "inherit"` also removes execFileSync's default 10MB maxBuffer ceiling — a real limit
+      // against a verbose step like `cargo test --all` or `cargo +nightly doc`.
+      execFileSync(cmd, { shell: true, stdio: "inherit" });
     } catch (err) {
-      console.log("FAIL");
-      process.stderr.write(String(err.stdout ?? "") + String(err.stderr ?? ""));
-      console.error(`\ngate:${mode} FAILED at: ${cmd}`);
+      console.error(`\ngate:${mode} FAILED at: ${cmd}\n${err.message}`);
       process.exit(1);
     }
-    console.log(`ok ${Math.round((Date.now() - started) / 1000)}s`);
+    console.log(`  ok ${Math.round((Date.now() - started) / 1000)}s`);
   }
 
   if (mode === "push") {

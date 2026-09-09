@@ -52,7 +52,7 @@ tier = "push"
 
 [[gate]]
 job = "rust"
-command = "bin=\"target/release/shadowcat${{ runner.os == 'Windows' && '.exe' || '' }}\" size=$(wc -c < \"$bin\") echo \"release binary size: ${size} bytes\" # 60 MiB guardrail; tighten as the binary's real baseline settles. test \"${size}\" -lt 62914560"
+command = "node scripts/check-binary-size.mjs"
 tier = "push"
 
 [[gate]]

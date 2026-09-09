@@ -3,6 +3,7 @@ import {
   parseWorkflowRunSteps,
   parseGateManifest,
   diffManifest,
+  unrunnableLocalEntries,
   normCommand,
 } from "./check-gate-manifest.mjs";
 
@@ -47,7 +48,7 @@ jobs:
 `;
   const steps = parseWorkflowRunSteps(wf);
   expect(steps.some((s) => s.job === "push")).toBe(false);
-  expect(steps).toContainEqual({ job: "rust", command: "pnpm build", line: 8 });
+  expect(steps).toContainEqual({ job: "rust", command: "pnpm build", line: 8, multiline: false });
 });
 
 test("a multi-line block body is normalised to one line", () => {
@@ -126,9 +127,42 @@ test("a workflow run: line quoting a GitHub Actions expression matches its escap
   const toml = `[[gate]]
 job = "rust"
 command = "bash scripts/package.sh \\"\${{ runner.os == 'macOS' && 'macos' || 'linux' }}\\""
-tier = "push"
+tier = "ci-only"
+reason = "Packages per runner OS; one desktop cannot produce every leg."
 `;
   const steps = parseWorkflowRunSteps(wf);
   const entries = parseGateManifest(toml, "t.toml");
-  expect(diffManifest(steps, entries)).toEqual({ unclassified: [], stale: [], missingReason: [] });
+  expect(diffManifest(steps, entries)).toEqual({
+    unclassified: [],
+    stale: [],
+    missingReason: [],
+    unrunnableLocal: [],
+  });
+});
+
+test("a commit/push entry with an unresolved Actions expression is unrunnable locally", () => {
+  const entries = [
+    { job: "rust", command: 'echo "${{ runner.os }}"', tier: "push", reason: "", line: 1 },
+    { job: "rust", command: "cargo fmt --all -- --check", tier: "commit", reason: "", line: 2 },
+  ];
+  expect(unrunnableLocalEntries([], entries)).toEqual([entries[0]]);
+});
+
+test("a ci-only entry with an Actions expression is exempt: it never claims to run locally", () => {
+  const entries = [
+    { job: "rust", command: 'bash scripts/package.sh "${{ runner.os }}"', tier: "ci-only", reason: "x", line: 1 },
+  ];
+  expect(unrunnableLocalEntries([], entries)).toEqual([]);
+});
+
+test("a commit/push entry sourced from a multi-line `run: |` block is unrunnable locally", () => {
+  const steps = [{ job: "rust", command: "a=1 b=2", line: 5, multiline: true }];
+  const entries = [{ job: "rust", command: "a=1 b=2", tier: "push", reason: "", line: 1 }];
+  expect(unrunnableLocalEntries(steps, entries)).toEqual([entries[0]]);
+});
+
+test("an inline (non-block) commit/push entry with no expression is runnable", () => {
+  const steps = [{ job: "rust", command: "cargo fmt --all -- --check", line: 5, multiline: false }];
+  const entries = [{ job: "rust", command: "cargo fmt --all -- --check", tier: "commit", reason: "", line: 1 }];
+  expect(unrunnableLocalEntries(steps, entries)).toEqual([]);
 });
