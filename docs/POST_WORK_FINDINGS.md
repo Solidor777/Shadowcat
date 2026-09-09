@@ -959,3 +959,32 @@ are observations awaiting triage, not committed work.
   every tick whether or not the scene changed, and the fixes buy headroom under
   it. The suite is therefore one runner-capacity change away from red again, and
   the durable remedy is rendering on demand. Status: Needs Review.
+
+- Title: The browser suite was software-rendering by CONFIGURATION, not necessity.
+  Summary: CORRECTS the three entries above, which treated software rasterization
+  as an inherent property of running headless and reasoned only about how to
+  reduce the work it did. Probing the same browser the suite launches shows the
+  machine's real device was available to it the whole time: default headless
+  reports `SwiftShader`, while the identical launch with `--use-gl=angle`
+  reports the host's discrete GPU, as does a headed launch. Selecting the
+  platform GL backend takes the full suite from 235s with failures to 21s with
+  33/33, over three consecutive runs. ANGLE falls back to SwiftShader by itself
+  where no device exists, so the flag needs no per-environment gating.
+  The measurements in those entries were not wrong -- whole cores per canvas,
+  saturation at roughly two canvases, the unbounded per-tick redraw -- but the
+  conclusion drawn around them was aimed at the wrong layer. The question
+  "how do we make software rasterization cheaper" was never the question; it
+  was "why is this rasterizing in software at all", and nothing measured to that
+  point had asked it. Every accommodation built beforehand (dropping
+  multisampling, capping workers) was optimizing a cost that did not need to
+  exist on a host with a GPU.
+  It also exposed a real defect the slow renderer had been hiding, since fixed:
+  scene gestures converted a canvas-local point to page coordinates from a
+  bounding box read earlier and then clicked absolute coordinates, which performs
+  no actionability check. Closing a docked panel resizes the canvas, so the box
+  could describe a layout that no longer existed and a placement landed on the
+  panel, silently placing nothing. It passed for years only because the renderer
+  was always slow enough to finish the relayout first. Status: Resolved.
+  Still true and still unfixed: the renderer redraws the full canvas every tick
+  whether or not the scene changed. A GPU absorbs that; a host without one does
+  not, which is what CI still runs on.
