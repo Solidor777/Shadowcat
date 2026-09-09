@@ -187,17 +187,20 @@ test("buildReceipt's output fields equal its input sample's fields, unmixed and 
   expect(second.tree).toBe(otherSample.tree);
 });
 
-test("only one atomic git call feeds buildReceipt: the post-run block calls `git(` exactly once", () => {
+test("only one atomic git call feeds buildReceipt: the post-run block calls `gitOrAbort(` exactly once", () => {
   // Source-scanning regression test for what buildReceipt's own unit tests cannot see (its input's
-  // provenance): a future edit that adds a second, independent `git(...)` call anywhere between
+  // provenance): a future edit that adds a second, independent git-invoking call anywhere between
   // the post-run status check and `writeReceipt` — reintroducing a split-sample receipt — fails
-  // this test even though buildReceipt's signature and behavior are untouched.
+  // this test even though buildReceipt's signature and behavior are untouched. Matches
+  // `gitOrAbort(`, the one call every git invocation in this file's direct-entry block routes
+  // through (itself a thin wrapper over the shared `runGit` in `scripts/lib/run-git.mjs`) — a
+  // literal `git(` no longer appears in this file at all.
   const start = RUN_GATE_TIER_SOURCE.indexOf("// GIT-CALL-BUDGET-START");
   const end = RUN_GATE_TIER_SOURCE.indexOf("// GIT-CALL-BUDGET-END");
   expect(start).toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   const region = RUN_GATE_TIER_SOURCE.slice(start, end);
-  const gitCalls = region.match(/\bgit\(/g) ?? [];
+  const gitCalls = region.match(/\bgitOrAbort\(/g) ?? [];
   expect(gitCalls).toHaveLength(1);
 });
 

@@ -57,6 +57,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { runGit } from "./lib/run-git.mjs";
 import { parseGateManifest, MANIFEST } from "./check-gate-manifest.mjs";
 
 const INCLUDED = { commit: ["commit"], push: ["commit", "push"] };
@@ -241,13 +242,16 @@ export function buildReceipt({ sha, tree }, manifest, finishedAt = new Date().to
   return { tree, sha, manifest, finishedAt };
 }
 
-// Impure capture helpers — mirrors the `git` helper below: real filesystem/`git` reads, kept out
-// of the pure comparison functions above so those stay directly testable without touching disk.
+// Impure capture helpers — mirrors the git-invoking helpers below: real filesystem/`git` reads,
+// kept out of the pure comparison functions above so those stay directly testable without
+// touching disk.
 
 // NUL-delimited so a path needing quoting (non-ASCII, `core.quotepath`) arrives verbatim: a
 // quoted path would fail to stat at both samples and refuse every push.
-function listTrackedFiles(runGit) {
-  return runGit("ls-files", "-z").split("\0").filter(Boolean);
+// `gitCall` is a (...args) => string callback, not the shared `runGit` import directly — the
+// caller supplies one bound to its own mode-appropriate abort behavior (see `gitOrAbort` below).
+function listTrackedFiles(gitCall) {
+  return gitCall("ls-files", "-z").split("\0").filter(Boolean);
 }
 
 /**
@@ -281,7 +285,24 @@ export function captureFileTable(paths) {
   return table;
 }
 
-const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
+/**
+ * Runs a git command for `mode`, aborting legibly (never a raw stack trace) on failure — every
+ * git invocation in this direct-entry block routes through this rather than calling `runGit`
+ * (`scripts/lib/run-git.mjs`) inline, because the shared helper deliberately reports failure
+ * without deciding what it means, and each of this plan's three entry points needs a DIFFERENT
+ * safe direction on failure. Here, specifically: `--verify-receipt` is called from `pre-push` to
+ * decide whether a push may proceed, so a git failure means it cannot verify anything — refusing
+ * the push is the only safe answer, worded the same as every other push refusal so an operator
+ * cannot tell this apart from a real gate failure by wording alone. `commit`/`push` modes cannot
+ * safely continue without knowing the git state either, so they abort the same way.
+ */
+function gitOrAbort(args, what, mode) {
+  const result = runGit(args, what);
+  if (result.ok) return result.stdout;
+  const prefix = mode === "--verify-receipt" ? "gate: refusing the push" : `gate:${mode} aborted`;
+  console.error(`${prefix} — ${result.message}`);
+  process.exit(1);
+}
 
 if (isDirectEntry(import.meta.url)) {
   const [mode, arg] = process.argv.slice(2);
@@ -294,7 +315,7 @@ if (isDirectEntry(import.meta.url)) {
   const text = readFileSync(MANIFEST, "utf8");
   const entries = parseGateManifest(text, MANIFEST);
   const hash = manifestHash(text);
-  const gitDir = git("rev-parse", "--absolute-git-dir");
+  const gitDir = gitOrAbort(["rev-parse", "--absolute-git-dir"], "the git directory", mode);
 
   if (mode === "--verify-receipt") {
     const r = receiptMatches(readReceipt(gitDir), { tree: arg, manifest: hash });
@@ -311,15 +332,15 @@ if (isDirectEntry(import.meta.url)) {
   let startTable = {};
   let mtimeExemptions = [];
   if (mode === "push") {
-    const status = git("status", "--porcelain");
+    const status = gitOrAbort(["status", "--porcelain"], "the working tree status", mode);
     const refusal = pushDirtyTreeRefusal(status);
     if (!refusal.ok) {
       console.error(refusal.why);
       process.exit(1);
     }
-    startHead = git("rev-parse", "HEAD");
+    startHead = gitOrAbort(["rev-parse", "HEAD"], "HEAD", mode);
     mtimeExemptions = derivedMtimeExemptions(entries);
-    trackedFiles = listTrackedFiles(git);
+    trackedFiles = listTrackedFiles((...args) => gitOrAbort(args, "the tracked-file list", mode));
     startTable = captureFileTable(trackedFiles);
   }
 
@@ -345,7 +366,8 @@ if (isDirectEntry(import.meta.url)) {
     // Re-checked here rather than trusted from before the run: the run just took up to ~19
     // minutes, and either check moving during that window means the receipt is about to name a
     // tree the gates never actually ran against as a whole.
-    const endStatusRefusal = pushDirtyTreeRefusalAfterRun(git("status", "--porcelain"));
+    const endStatus = gitOrAbort(["status", "--porcelain"], "the working tree status", mode);
+    const endStatusRefusal = pushDirtyTreeRefusalAfterRun(endStatus);
     if (!endStatusRefusal.ok) {
       console.error(endStatusRefusal.why);
       process.exit(1);
@@ -360,10 +382,12 @@ if (isDirectEntry(import.meta.url)) {
       console.error(tableRefusal.why);
       process.exit(1);
     }
-    // GIT-CALL-BUDGET-START — exactly one call to the `git` helper may appear before the closing
+    // GIT-CALL-BUDGET-START — exactly one call to `gitOrAbort` may appear before the closing
     // marker below (the atomic sha/tree capture). `buildReceipt`'s own comment explains why this
     // is enforced here by a source-scanning test rather than by that function's unit tests.
-    const captured = parseHeadAndTree(git("rev-parse", "HEAD", "HEAD^{tree}"));
+    const captured = parseHeadAndTree(
+      gitOrAbort(["rev-parse", "HEAD", "HEAD^{tree}"], "the atomic HEAD/tree sample", mode),
+    );
     const headRefusal = headMovedRefusal(startHead, captured.sha);
     if (!headRefusal.ok) {
       console.error(headRefusal.why);

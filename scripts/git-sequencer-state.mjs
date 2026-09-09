@@ -17,6 +17,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { runGit } from "./lib/run-git.mjs";
 
 /**
  * The five filesystem markers git itself uses for an in-progress sequencer operation, each
@@ -52,29 +53,28 @@ export function detectSequencerState(gitDir, exists = existsSync) {
 /**
  * Resolves what `pre-commit` should do: run the tier, or skip it for a named sequencer state.
  * Isolates the one step in this module that can fail for reasons outside its control (the `git
- * rev-parse --git-dir` call) from `detectSequencerState`'s pure logic, so a git failure here
- * cannot silently reach the caller as a skip.
+ * rev-parse --git-dir` call, routed through the shared `runGit` — see `scripts/lib/run-git.mjs`)
+ * from `detectSequencerState`'s pure logic, so a git failure here cannot silently reach the
+ * caller as a skip.
  *
- * FAILS TOWARD RUNNING THE TIER: when the git-dir lookup itself throws, the sequencer state is
+ * FAILS TOWARD RUNNING THE TIER: when the git-dir lookup itself fails, the sequencer state is
  * UNKNOWN, not "no sequencer state" — and an unknown state that skips is a silent hole in the
  * gate, while an unknown state that runs the tier costs ~70s and nothing else. So `determined:
  * false` is the caller's signal to run the tier, exactly like `detectSequencerState` returning
  * `null` for "no marker found" — same as the derived mtime exemption elsewhere in this project
- * failing toward stricter when its own manifest entry is absent.
+ * failing toward stricter when its own manifest entry is absent. This is THIS caller's choice of
+ * safe direction, not `runGit`'s — the shared helper only reports failure, never decides what it
+ * means.
  *
  * @param {{ execFile?: typeof execFileSync, exists?: (path: string) => boolean }} [deps] -
- *   injectable for tests: `execFile` to make the git-dir lookup throw, `exists` to drive
+ *   injectable for tests: `execFile` to make the git-dir lookup fail, `exists` to drive
  *   `detectSequencerState`.
  * @returns {{ determined: true, state: string | null } | { determined: false, reason: string }}
  */
 export function resolveSkipState({ execFile = execFileSync, exists = existsSync } = {}) {
-  let gitDir;
-  try {
-    gitDir = execFile("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim();
-  } catch (err) {
-    return { determined: false, reason: err.message };
-  }
-  return { determined: true, state: detectSequencerState(gitDir, exists) };
+  const gitDirResult = runGit(["rev-parse", "--git-dir"], "the sequencer state", { execFile });
+  if (!gitDirResult.ok) return { determined: false, reason: gitDirResult.message };
+  return { determined: true, state: detectSequencerState(gitDirResult.stdout, exists) };
 }
 
 if (isDirectEntry(import.meta.url)) {

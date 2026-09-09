@@ -16,6 +16,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
+import { runGit } from "./lib/run-git.mjs";
 
 export function hooksDir(repoRoot) {
   return join(repoRoot, "scripts", "git-hooks");
@@ -47,6 +48,9 @@ export const HOOK_FILES = ["pre-commit", "pre-push"];
  * armed. Hooks are a convenience for a full dev checkout, not a dependency of installing one — a
  * slim container without git, a source tarball, a sparse checkout that omits
  * `scripts/git-hooks/`, or a filesystem where `chmod` fails must all still finish `pnpm install`.
+ * Every git call routes through the shared `runGit` (`scripts/lib/run-git.mjs`), which never
+ * throws either — this function's own job is deciding what "unarmed" means for `prepare`
+ * specifically (non-fatal, warn-and-continue), not re-deciding how to talk to git.
  *
  * The `execFile`/`exists`/`chmod` params exist so a test can drive every failure path (a throwing
  * git invocation, a missing directory, an unwritable file) without spawning a real subprocess or
@@ -57,25 +61,27 @@ export function installHooks({
   exists = existsSync,
   chmod = chmodSync,
 } = {}) {
+  const rootResult = runGit(["rev-parse", "--show-toplevel"], "the repository root", { execFile });
+  if (!rootResult.ok) return { armed: false, reason: rootResult.message };
+  const dir = hooksDir(rootResult.stdout);
+  if (!exists(dir)) {
+    return { armed: false, reason: `${dir} is missing` };
+  }
+  for (const step of configPlan(rootResult.stdout)) {
+    const configResult = runGit(step.args, "a hook config write", { execFile });
+    if (!configResult.ok) return { armed: false, reason: configResult.message };
+  }
   try {
-    const root = execFile("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
-    const dir = hooksDir(root);
-    if (!exists(dir)) {
-      return { armed: false, reason: `${dir} is missing` };
-    }
-    for (const step of configPlan(root)) {
-      execFile("git", step.args, { stdio: "inherit" });
-    }
     // core.filemode is false on Windows checkouts, so the bit is set explicitly rather than
     // relying on the checkout to carry it.
     for (const name of HOOK_FILES) {
       const p = join(dir, name);
       if (exists(p)) chmod(p, 0o755);
     }
-    return { armed: true, dir };
   } catch (err) {
     return { armed: false, reason: err.message };
   }
+  return { armed: true, dir };
 }
 
 if (isDirectEntry(import.meta.url)) {
