@@ -9,7 +9,7 @@ const PNG_1X1 = Buffer.from(
 
 // Drives the served binary: after entering a world the Pixi canvas mounts, the
 // engine reaches first-frame readiness, accepts a pan gesture, and tears down on
-// leave. Real WebGL via headless chromium (SwiftShader).
+// leave. Real WebGL in headless chromium, on whichever backend the launch flags select.
 test("stage canvas mounts, renders, and tears down on leave", async ({
   page,
   account,
