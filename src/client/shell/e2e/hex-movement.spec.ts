@@ -74,6 +74,26 @@ async function canvasOrigin(page: Page): Promise<Point> {
   return { x: box!.x, y: box!.y };
 }
 
+/** Clicks a scene coordinate on the stage canvas.
+ *
+ * Addresses the canvas as an ELEMENT rather than converting to page coordinates, so the gesture
+ * inherits the actionability wait: the canvas must be visible, hold a bounding box unchanged
+ * across consecutive frames, and be the element that receives the event. Opening or closing a
+ * docked panel resizes the canvas, and a coordinate computed from a box read before that resize
+ * settles lands somewhere else — on a host slow enough to finish the relayout first the gesture
+ * happens to land correctly, so the defect is invisible exactly where the suite usually runs.
+ * @param page - The page whose stage is clicked.
+ * @param at - The point in canvas-local coordinates.
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * await clickScene(page, { x: 210, y: 310 });
+ * ```
+ */
+async function clickScene(page: Page, at: Point): Promise<void> {
+  await page.getByTestId("stage-canvas").click({ position: { x: at.x, y: at.y } });
+}
+
 /** One pointermove for the whole displacement.
  *
  * `makeSelectMoveTool` captures the grab origins at `onPointerDown`, so every intent it
@@ -84,8 +104,11 @@ async function canvasOrigin(page: Page): Promise<Point> {
  * `onPointerMove`, then the `onPointerUp` flush), but both carry the identical full
  * displacement, so nothing partial can commit. */
 async function dragScene(page: Page, from: Point, to: Point): Promise<void> {
+  // Hover the canvas as an ELEMENT first: that carries the actionability wait (visible, bounding
+  // box unchanged across consecutive frames, receiving events), so the box read next describes a
+  // settled layout rather than one still resizing around a panel.
+  await page.getByTestId("stage-canvas").hover({ position: { x: from.x, y: from.y } });
   const o = await canvasOrigin(page);
-  await page.mouse.move(o.x + from.x, o.y + from.y);
   await page.mouse.down();
   await page.mouse.move(o.x + to.x, o.y + to.y);
   await page.mouse.up();
@@ -299,8 +322,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     const pick = gm.getByTestId("picker-asset").first();
     await expect(pick).toBeVisible({ timeout: 10_000 });
     await pick.click();
-    let origin = await canvasOrigin(gm);
-    await gm.mouse.click(origin.x + PLACE_X, origin.y + TOKEN_Y);
+    await clickScene(gm, { x: PLACE_X, y: TOKEN_Y });
     await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", {
       timeout: 15_000,
     });
@@ -330,8 +352,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
     await gm.getByTestId("tool-select").click();
-    origin = await canvasOrigin(gm);
-    await gm.mouse.click(origin.x + PLACE_X, origin.y + TOKEN_Y);
+    await clickScene(gm, { x: PLACE_X, y: TOKEN_Y });
     await gm.getByLabel("Token owner").selectOption({ label: playerName });
     await expect(gm.getByText(`Effective owner: ${playerName}`)).toBeVisible({
       timeout: 15_000,

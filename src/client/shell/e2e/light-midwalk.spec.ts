@@ -88,6 +88,40 @@ async function canvasOrigin(page: Page): Promise<Point> {
   return { x: box!.x, y: box!.y };
 }
 
+/** Clicks a scene coordinate on the stage canvas.
+ *
+ * Addresses the canvas as an ELEMENT rather than converting to page coordinates, so the gesture
+ * inherits the actionability wait: the canvas must be visible, hold a bounding box unchanged
+ * across consecutive frames, and be the element that receives the event. Opening or closing a
+ * docked panel resizes the canvas, and a coordinate computed from a box read before that resize
+ * settles lands somewhere else — on a host slow enough to finish the relayout first the gesture
+ * happens to land correctly, so the defect is invisible exactly where the suite usually runs.
+ * @param page - The page whose stage is clicked.
+ * @param at - The point in canvas-local coordinates.
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * await clickScene(page, { x: 210, y: 310 });
+ * ```
+ */
+async function clickScene(page: Page, at: Point): Promise<void> {
+  await page.getByTestId("stage-canvas").click({ position: { x: at.x, y: at.y } });
+}
+
+/** Double-clicks a scene coordinate on the stage canvas. Element-relative for the same reason as
+ * `clickScene` — see its doc.
+ * @param page - The page whose stage is double-clicked.
+ * @param at - The point in canvas-local coordinates.
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * await dblclickScene(page, { x: 610, y: 310 });
+ * ```
+ */
+async function dblclickScene(page: Page, at: Point): Promise<void> {
+  await page.getByTestId("stage-canvas").dblclick({ position: { x: at.x, y: at.y } });
+}
+
 /** Turn grid snapping off so every authored point is exactly the clicked scene coordinate. */
 async function disableSnap(page: Page): Promise<void> {
   const snap = page.getByTestId("snap-toggle");
@@ -113,8 +147,11 @@ async function uploadTokenArt(page: Page): Promise<void> {
 
 /** One pointermove for the whole displacement (the wall tool authors a segment per drag). */
 async function dragScene(page: Page, from: Point, to: Point): Promise<void> {
+  // Hover the canvas as an ELEMENT first: that carries the actionability wait (visible, bounding
+  // box unchanged across consecutive frames, receiving events), so the box read next describes a
+  // settled layout rather than one still resizing around a panel.
+  await page.getByTestId("stage-canvas").hover({ position: { x: from.x, y: from.y } });
   const o = await canvasOrigin(page);
-  await page.mouse.move(o.x + from.x, o.y + from.y);
   await page.mouse.down();
   await page.mouse.move(o.x + to.x, o.y + to.y);
   await page.mouse.up();
@@ -247,8 +284,7 @@ async function setupTorchScene(
 
   await watcher.getByRole("button", { name: "Watcher", exact: true }).click();
   await gm.getByTestId("tool-place").click();
-  let origin = await canvasOrigin(gm);
-  await gm.mouse.click(origin.x + observerAt.x, origin.y + observerAt.y);
+  await clickScene(gm, { x: observerAt.x, y: observerAt.y });
   await bearer.getByRole("button", { name: "Bearer", exact: true }).click();
   // The bearer's cell sits far enough east that the docked actors panel narrows the canvas past
   // it, so the panel closes before this gesture (and stays closed for the walk below). Both the
@@ -257,8 +293,7 @@ async function setupTorchScene(
   // placement.
   await gm.getByTestId("launcher-trigger").click();
   await gm.getByTestId("launcher-item-actors:panel").click();
-  origin = await canvasOrigin(gm);
-  await gm.mouse.click(origin.x + bearerAt.x, origin.y + bearerAt.y);
+  await clickScene(gm, bearerAt);
   await expect(stageHost(gm)).toHaveAttribute("data-token-count", "2", { timeout: 15_000 });
   await expect(stageHost(player)).toHaveAttribute("data-token-count", "2", { timeout: 15_000 });
 
@@ -274,11 +309,9 @@ async function setupTorchScene(
 async function walkBearer(gm: Page, from: Point, to: Point): Promise<void> {
   const select = gm.getByTestId("tool-select");
   if ((await select.getAttribute("aria-pressed")) !== "true") await select.click();
-  let origin = await canvasOrigin(gm);
-  await gm.mouse.click(origin.x + from.x, origin.y + from.y);
+  await clickScene(gm, { x: from.x, y: from.y });
   await gm.getByTestId("tool-measure").click();
-  origin = await canvasOrigin(gm);
-  await gm.mouse.dblclick(origin.x + to.x, origin.y + to.y);
+  await dblclickScene(gm, to);
 }
 
 test("a carried torch lights the corridor for an observing player mid-walk", async ({
@@ -419,8 +452,7 @@ test("a sight-only wall hides the bearer but its glow still sweeps the observer'
     // rail editor) and switch its light occlusion off: the torch's glow now crosses the wall
     // while the observer's line of sight still ends at it.
     await gm.getByTestId("tool-select").click();
-    const origin = await canvasOrigin(gm);
-    await gm.mouse.click(origin.x + SIGHT_WALL.x, origin.y + (SIGHT_WALL.y0 + SIGHT_WALL.y1) / 2);
+    await clickScene(gm, { x: SIGHT_WALL.x, y: (SIGHT_WALL.y0 + SIGHT_WALL.y1) / 2 });
     await expect(gm.getByTestId("wall-editor")).toBeVisible();
     await expect(gm.getByTestId("wall-blocks-light")).toBeChecked();
     await gm.getByTestId("wall-blocks-light").uncheck();

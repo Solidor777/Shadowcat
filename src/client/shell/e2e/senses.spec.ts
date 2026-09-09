@@ -31,12 +31,24 @@ function stageHost(page: Page): Locator {
   return page.locator(".stage-host");
 }
 
-/** Canvas-local → page coordinates. Re-read per gesture: opening or closing a panel resizes
- * the canvas (which moves its origin) without moving the camera. */
-async function canvasOrigin(page: Page): Promise<Point> {
-  const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(box, "the stage canvas must be laid out before a pointer gesture").not.toBeNull();
-  return { x: box!.x, y: box!.y };
+/** Clicks a scene coordinate on the stage canvas.
+ *
+ * Addresses the canvas as an ELEMENT rather than converting to page coordinates, so the gesture
+ * inherits the actionability wait: the canvas must be visible, hold a bounding box unchanged
+ * across consecutive frames, and be the element that receives the event. Opening or closing a
+ * docked panel resizes the canvas, and a coordinate computed from a box read before that resize
+ * settles lands somewhere else — on a host slow enough to finish the relayout first the gesture
+ * happens to land correctly, so the defect is invisible exactly where the suite usually runs.
+ * @param page - The page whose stage is clicked.
+ * @param at - The point in canvas-local coordinates.
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * await clickScene(page, { x: 210, y: 310 });
+ * ```
+ */
+async function clickScene(page: Page, at: Point): Promise<void> {
+  await page.getByTestId("stage-canvas").click({ position: { x: at.x, y: at.y } });
 }
 
 /** `data-token-positions` is `id:x,y` pairs, id-sorted and `;`-joined. */
@@ -167,13 +179,11 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
     // Place the player's token, then the raw target token 3 cells away.
     await row.getByRole("button", { name: "Lurker" }).click();
     await gm.getByTestId("tool-place").click();
-    let origin = await canvasOrigin(gm);
-    await gm.mouse.click(origin.x + LURKER.x, origin.y + LURKER.y);
+    await clickScene(gm, { x: LURKER.x, y: LURKER.y });
     const pick = gm.getByTestId("picker-asset").first();
     await expect(pick).toBeVisible({ timeout: 10_000 });
     await pick.click();
-    origin = await canvasOrigin(gm);
-    await gm.mouse.click(origin.x + TARGET.x, origin.y + TARGET.y);
+    await clickScene(gm, { x: TARGET.x, y: TARGET.y });
     await expect(stageHost(gm)).toHaveAttribute("data-token-count", "2", { timeout: 15_000 });
 
     // Both tokens ride the player's document stream (creature senses pierce fog, never the
@@ -222,8 +232,7 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
 
     // --- The grounding rule: raising the target off the ground ends the perception. ---
     await gm.getByTestId("tool-select").click();
-    origin = await canvasOrigin(gm);
-    await gm.mouse.click(origin.x + TARGET.x, origin.y + TARGET.y);
+    await clickScene(gm, { x: TARGET.x, y: TARGET.y });
     const elevation = actors.getByTestId("token-elevation");
     await expect(elevation).toBeVisible();
     await elevation.fill("10");
@@ -267,8 +276,7 @@ test("a token off the ground renders its elevation badge, and returning to groun
   const pick = gm.getByTestId("picker-asset").first();
   await expect(pick).toBeVisible({ timeout: 10_000 });
   await pick.click();
-  let origin = await canvasOrigin(gm);
-  await gm.mouse.click(origin.x + TARGET.x, origin.y + TARGET.y);
+  await clickScene(gm, { x: TARGET.x, y: TARGET.y });
   await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
 
   // Grounded: no badge chip.
@@ -279,8 +287,7 @@ test("a token off the ground renders its elevation badge, and returning to groun
   await gm.getByTestId("launcher-trigger").click();
   await gm.getByTestId("launcher-item-actors:panel").click();
   await gm.getByTestId("tool-select").click();
-  origin = await canvasOrigin(gm);
-  await gm.mouse.click(origin.x + TARGET.x, origin.y + TARGET.y);
+  await clickScene(gm, { x: TARGET.x, y: TARGET.y });
   const elevation = gm.locator(".actors").getByTestId("token-elevation");
   await expect(elevation).toBeVisible();
   await elevation.fill("3");

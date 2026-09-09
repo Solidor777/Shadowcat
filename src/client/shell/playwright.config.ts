@@ -72,5 +72,15 @@ export default defineConfig({
   // retained trace a red `ui-e2e` is diagnosable only by hypothesis. Scoped to
   // failures so passing runs write nothing. The CI job uploads `test-results/`
   // on failure — dropping that upload step silently re-blinds this setting.
-  use: { baseURL: "http://127.0.0.1:31999", trace: "retain-on-failure" },
+  use: {
+    baseURL: "http://127.0.0.1:31999",
+    trace: "retain-on-failure",
+    // Headless Chromium picks SwiftShader by default, so the stage's WebGL is rasterized on the
+    // CPU — measured as whole cores per canvas, which is what starves a page until it stops
+    // answering the driver. `--use-gl=angle` selects the platform's real GL backend instead, and
+    // ANGLE falls back to SwiftShader by itself where no device exists, so the flag is safe on a
+    // GPU-less runner rather than something to gate per environment. It also makes the suite
+    // exercise the same rendering path a browser actually gives a user.
+    launchOptions: { args: ["--use-gl=angle"] },
+  },
 });
