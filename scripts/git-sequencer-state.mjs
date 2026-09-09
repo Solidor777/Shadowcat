@@ -49,12 +49,48 @@ export function detectSequencerState(gitDir, exists = existsSync) {
   return null;
 }
 
+/**
+ * Resolves what `pre-commit` should do: run the tier, or skip it for a named sequencer state.
+ * Isolates the one step in this module that can fail for reasons outside its control (the `git
+ * rev-parse --git-dir` call) from `detectSequencerState`'s pure logic, so a git failure here
+ * cannot silently reach the caller as a skip.
+ *
+ * FAILS TOWARD RUNNING THE TIER: when the git-dir lookup itself throws, the sequencer state is
+ * UNKNOWN, not "no sequencer state" — and an unknown state that skips is a silent hole in the
+ * gate, while an unknown state that runs the tier costs ~70s and nothing else. So `determined:
+ * false` is the caller's signal to run the tier, exactly like `detectSequencerState` returning
+ * `null` for "no marker found" — same as the derived mtime exemption elsewhere in this project
+ * failing toward stricter when its own manifest entry is absent.
+ *
+ * @param {{ execFile?: typeof execFileSync, exists?: (path: string) => boolean }} [deps] -
+ *   injectable for tests: `execFile` to make the git-dir lookup throw, `exists` to drive
+ *   `detectSequencerState`.
+ * @returns {{ determined: true, state: string | null } | { determined: false, reason: string }}
+ */
+export function resolveSkipState({ execFile = execFileSync, exists = existsSync } = {}) {
+  let gitDir;
+  try {
+    gitDir = execFile("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim();
+  } catch (err) {
+    return { determined: false, reason: err.message };
+  }
+  return { determined: true, state: detectSequencerState(gitDir, exists) };
+}
+
 if (isDirectEntry(import.meta.url)) {
-  const gitDir = execFileSync("git", ["rev-parse", "--git-dir"], { encoding: "utf8" }).trim();
-  const state = detectSequencerState(gitDir);
+  const result = resolveSkipState();
+  if (!result.determined) {
+    // Prints to stderr, prints NOTHING to stdout, and still exits 0: `pre-commit` reads stdout
+    // to decide whether to skip, so an empty stdout here means "run the tier" even though the
+    // process itself exits cleanly rather than propagating a raw git failure to the operator.
+    console.error(
+      `git-sequencer-state: could not determine sequencer state (${result.reason}) — running the tier anyway.`,
+    );
+    process.exit(0);
+  }
   // Always exits 0: this is a detector, not a gate. The caller (`pre-commit`) decides what a
   // non-empty line means; printing nothing on no-detection lets a shell `if [ -n "$x" ]` read it
   // directly.
-  if (state) console.log(state);
+  if (result.state) console.log(result.state);
   process.exit(0);
 }

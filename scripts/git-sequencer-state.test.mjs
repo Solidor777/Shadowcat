@@ -1,5 +1,5 @@
 import { test, expect } from "vitest";
-import { detectSequencerState } from "./git-sequencer-state.mjs";
+import { detectSequencerState, resolveSkipState } from "./git-sequencer-state.mjs";
 
 // A real rebase/cherry-pick/merge/revert is not driven here: `detectSequencerState` is pure over
 // an injectable `exists` predicate specifically so each filesystem shape can be asserted without
@@ -41,4 +41,31 @@ test("resolves markers under the given git dir, not a hardcoded .git", () => {
   // function must join against whatever path it is given, never assume the caller's cwd.
   const exists = (p) => p.replace(/\\/g, "/") === "/repo/.git/worktrees/feature/MERGE_HEAD";
   expect(detectSequencerState("/repo/.git/worktrees/feature", exists)).toBe("merge");
+});
+
+test("resolveSkipState reports the detected state when the git-dir lookup succeeds", () => {
+  const execFile = () => "/repo/.git\n";
+  const exists = (p) => p.replace(/\\/g, "/") === "/repo/.git/MERGE_HEAD";
+  const result = resolveSkipState({ execFile, exists });
+  expect(result).toEqual({ determined: true, state: "merge" });
+});
+
+test("resolveSkipState reports the ordinary no-sequencer case as determined", () => {
+  const execFile = () => "/repo/.git\n";
+  const result = resolveSkipState({ execFile, exists: () => false });
+  expect(result).toEqual({ determined: true, state: null });
+});
+
+test("resolveSkipState fails toward RUNNING the tier, never toward skipping, when the git-dir lookup throws", () => {
+  const execFile = () => {
+    throw new Error("fatal: not a git repository (or any of the parent directories): .git");
+  };
+  const result = resolveSkipState({ execFile });
+  expect(result.determined).toBe(false);
+  expect(result.reason).toMatch(/not a git repository/);
+  // The undetermined shape must carry no `state` a caller could mistake for "skip" — asserting
+  // its shape directly is what would catch a future change that adds `state: null` back in and
+  // lets a careless `if (!result.state)` read it as "no sequencer state, and also not skip", the
+  // same ambiguity `determined` exists to remove.
+  expect(result).not.toHaveProperty("state");
 });
