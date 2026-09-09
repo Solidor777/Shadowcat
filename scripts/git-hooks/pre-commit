@@ -1,0 +1,9 @@
+#!/bin/sh
+# Blocks a commit that has not passed the manifest's commit tier (~70s).
+#
+# Runs against the WORKING TREE, not the staged index: several checkers resolve paths relative
+# to the repository root and one additionally scans an external skills checkout, so gating an
+# exported index would silently change the corpus they scan. The exact gate is the push receipt,
+# which is keyed to the tree actually being pushed.
+set -e
+exec node scripts/run-gate-tier.mjs commit

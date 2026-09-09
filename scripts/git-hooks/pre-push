@@ -1,0 +1,27 @@
+#!/bin/sh
+# Blocks a push whose tree has no green receipt from `pnpm gate:push`.
+#
+# The push tier costs ~19 minutes and cannot run here: an agent's shell tool caps at 600s, and a
+# killed push is the pressure that produces --no-verify. Verifying a receipt keeps the push
+# instant while keeping the guarantee exact.
+#
+# INVARIANT: a dirty working tree fails, because the receipt describes HEAD's tree and an unclean
+# tree means the gated content is not what the commit contains.
+set -e
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "gate: refusing the push — the working tree is dirty. Commit or stash, then re-run \`pnpm gate:push\`." >&2
+    exit 1
+fi
+
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    # An all-zero local sha is a branch deletion; there is no tree to gate.
+    case "$local_sha" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+    tree=$(git rev-parse "$local_sha^{tree}")
+    node scripts/run-gate-tier.mjs --verify-receipt "$tree" || exit 1
+done
+
+exit 0

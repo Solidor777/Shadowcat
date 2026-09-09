@@ -5,6 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9",
   "scripts": {
+    "prepare": "node scripts/install-git-hooks.mjs",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "eslint .",
