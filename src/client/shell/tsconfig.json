@@ -9,6 +9,7 @@
   },
   "include": [
     "src/**/*.ts",
-    "src/**/*.svelte"
+    "src/**/*.svelte",
+    "e2e/**/*.ts"
   ]
 }

@@ -1,5 +1,7 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
+import { clickScene } from "./stage-gestures";
+import type { ScenePoint as Point } from "./stage-gestures";
 
 // Senses e2e: a creature-sense (tremorsense) assignment reveals a grounded token through
 // fog on a real player's client, elevation on the target breaks the perception (a flying
@@ -25,30 +27,8 @@ const TARGET = { x: 510, y: 310 }; // 3 cells away — inside the authored 12-ce
 const VIEWPORT = { width: 1600, height: 1000 };
 test.use({ viewport: VIEWPORT });
 
-type Point = { x: number; y: number };
-
 function stageHost(page: Page): Locator {
   return page.locator(".stage-host");
-}
-
-/** Clicks a scene coordinate on the stage canvas.
- *
- * Addresses the canvas as an ELEMENT rather than converting to page coordinates, so the gesture
- * inherits the actionability wait: the canvas must be visible, hold a bounding box unchanged
- * across consecutive frames, and be the element that receives the event. Opening or closing a
- * docked panel resizes the canvas, and a coordinate computed from a box read before that resize
- * settles lands somewhere else — on a host slow enough to finish the relayout first the gesture
- * happens to land correctly, so the defect is invisible exactly where the suite usually runs.
- * @param page - The page whose stage is clicked.
- * @param at - The point in canvas-local coordinates.
- * @example
- * ```
- * declare const page: import("@playwright/test").Page;
- * await clickScene(page, { x: 210, y: 310 });
- * ```
- */
-async function clickScene(page: Page, at: Point): Promise<void> {
-  await page.getByTestId("stage-canvas").click({ position: { x: at.x, y: at.y } });
 }
 
 /** `data-token-positions` is `id:x,y` pairs, id-sorted and `;`-joined. */

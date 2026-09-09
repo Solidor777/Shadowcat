@@ -1,5 +1,7 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
+import { clickScene } from "./stage-gestures";
+import type { ScenePoint } from "./stage-gestures";
 
 // A 1×1 PNG used as token art (same fixture `hex-movement.spec.ts`/`assets.spec.ts` use).
 const PNG_1X1 = Buffer.from(
@@ -31,14 +33,12 @@ async function closeTracker(page: Page): Promise<void> {
  * @param page The GM's page.
  * @param points Canvas-local points to place a token at, in order.
  */
-async function placeTokens(page: Page, points: { x: number; y: number }[]): Promise<void> {
+async function placeTokens(page: Page, points: readonly ScenePoint[]): Promise<void> {
   await page.getByTestId("tool-place").click();
   const pick = page.getByTestId("picker-asset").first();
   await expect(pick).toBeVisible({ timeout: 10_000 });
   await pick.click();
-  const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(box).not.toBeNull();
-  for (const p of points) await page.mouse.click(box!.x + p.x, box!.y + p.y);
+  for (const p of points) await clickScene(page, p);
 }
 
 // Two browser contexts (GM + invited player), the `hex-movement.spec.ts` seating flow: the GM
@@ -108,9 +108,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
     await gm.getByTestId("tool-select").click();
-    const canvasBox = await gm.getByTestId("stage-canvas").boundingBox();
-    expect(canvasBox).not.toBeNull();
-    await gm.mouse.click(canvasBox!.x + 200, canvasBox!.y + 300);
+    await clickScene(gm, { x: 200, y: 300 });
     await gm.getByLabel("Token owner").selectOption({ label: playerName });
     await expect(gm.getByText(`Effective owner: ${playerName}`)).toBeVisible({ timeout: 15_000 });
 
@@ -118,7 +116,7 @@ test("the combat tracker runs a full turn cycle across a GM and player session",
     // to the select tool's selection (a plain click replaces it; a pointer-down on empty
     // ground clears it — there is no marquee).
     await gm.keyboard.down("Shift");
-    await gm.mouse.click(canvasBox!.x + 400, canvasBox!.y + 300);
+    await clickScene(gm, { x: 400, y: 300 });
     await gm.keyboard.up("Shift");
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();

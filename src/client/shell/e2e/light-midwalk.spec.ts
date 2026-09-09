@@ -1,5 +1,7 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
+import { clickScene, dblclickScene, dragScene } from "./stage-gestures";
+import type { ScenePoint as Point } from "./stage-gestures";
 
 // Moving-light e2e: a GM walks a torch-bearing token (a carried `LightEmission` authored
 // through the actors panel) past an observing player's token in a pitch-dark scene. The
@@ -74,52 +76,8 @@ const FAR_STOP = { x: 1150, y: 350 };
 const VIEWPORT = { width: 1600, height: 1000 };
 test.use({ viewport: VIEWPORT });
 
-type Point = { x: number; y: number };
-
 function stageHost(page: Page): Locator {
   return page.locator(".stage-host");
-}
-
-/** Canvas-local → page coordinates. Re-read per gesture: opening or closing a panel resizes
- * the canvas (which moves its origin) without moving the camera. */
-async function canvasOrigin(page: Page): Promise<Point> {
-  const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(box, "the stage canvas must be laid out before a pointer gesture").not.toBeNull();
-  return { x: box!.x, y: box!.y };
-}
-
-/** Clicks a scene coordinate on the stage canvas.
- *
- * Addresses the canvas as an ELEMENT rather than converting to page coordinates, so the gesture
- * inherits the actionability wait: the canvas must be visible, hold a bounding box unchanged
- * across consecutive frames, and be the element that receives the event. Opening or closing a
- * docked panel resizes the canvas, and a coordinate computed from a box read before that resize
- * settles lands somewhere else — on a host slow enough to finish the relayout first the gesture
- * happens to land correctly, so the defect is invisible exactly where the suite usually runs.
- * @param page - The page whose stage is clicked.
- * @param at - The point in canvas-local coordinates.
- * @example
- * ```
- * declare const page: import("@playwright/test").Page;
- * await clickScene(page, { x: 210, y: 310 });
- * ```
- */
-async function clickScene(page: Page, at: Point): Promise<void> {
-  await page.getByTestId("stage-canvas").click({ position: { x: at.x, y: at.y } });
-}
-
-/** Double-clicks a scene coordinate on the stage canvas. Element-relative for the same reason as
- * `clickScene` — see its doc.
- * @param page - The page whose stage is double-clicked.
- * @param at - The point in canvas-local coordinates.
- * @example
- * ```
- * declare const page: import("@playwright/test").Page;
- * await dblclickScene(page, { x: 610, y: 310 });
- * ```
- */
-async function dblclickScene(page: Page, at: Point): Promise<void> {
-  await page.getByTestId("stage-canvas").dblclick({ position: { x: at.x, y: at.y } });
 }
 
 /** Turn grid snapping off so every authored point is exactly the clicked scene coordinate. */
@@ -143,18 +101,6 @@ async function uploadTokenArt(page: Page): Promise<void> {
   await expect(page.getByTestId("asset-tile")).toHaveCount(1);
   await page.getByTestId("launcher-trigger").click();
   await page.getByTestId("launcher-item-asset-browser:panel").click();
-}
-
-/** One pointermove for the whole displacement (the wall tool authors a segment per drag). */
-async function dragScene(page: Page, from: Point, to: Point): Promise<void> {
-  // Hover the canvas as an ELEMENT first: that carries the actionability wait (visible, bounding
-  // box unchanged across consecutive frames, receiving events), so the box read next describes a
-  // settled layout rather than one still resizing around a panel.
-  await page.getByTestId("stage-canvas").hover({ position: { x: from.x, y: from.y } });
-  const o = await canvasOrigin(page);
-  await page.mouse.down();
-  await page.mouse.move(o.x + to.x, o.y + to.y);
-  await page.mouse.up();
 }
 
 /** Record every distinct `(data-light-sweep, data-lit-bbox)` pair the observer's stage takes

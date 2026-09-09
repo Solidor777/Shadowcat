@@ -1,4 +1,5 @@
 import { test, expect, login } from "./fixtures";
+import { clickScene, dragScenePath, sceneCenter } from "./stage-gestures";
 
 // A 1×1 PNG used as token art.
 const PNG_1X1 = Buffer.from(
@@ -30,10 +31,7 @@ test("stage canvas mounts, renders, and tears down on leave", async ({
   expect(box?.height ?? 0).toBeGreaterThan(0);
 
   // A pan gesture must not throw (pointer events drive the camera).
-  await canvas.hover();
-  await page.mouse.down();
-  await page.mouse.move(box!.x + 50, box!.y + 50);
-  await page.mouse.up();
+  await dragScenePath(page, await sceneCenter(page), [{ x: 50, y: 50 }]);
   await expect(host).toHaveAttribute("data-render-ready", "true");
 
   // "Leave world" lives in the Settings panel, which starts launcher-closed;
@@ -75,23 +73,15 @@ test("place a token via the tool rail, then drag it", async ({
   await pick.click();
 
   // Click the canvas → a token document is created (optimistic) and rendered.
-  const canvas = page.getByTestId("stage-canvas");
-  const box = (await canvas.boundingBox())!;
-  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  const center = await sceneCenter(page);
+  await clickScene(page, center);
   await expect(host).toHaveAttribute("data-token-count", "1", {
     timeout: 15_000,
   });
 
   // Drag the token with the select/move tool: it must not throw and the token persists.
   await page.getByTestId("tool-select").click();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(
-    box.x + box.width / 2 + 60,
-    box.y + box.height / 2 + 40,
-    { steps: 4 },
-  );
-  await page.mouse.up();
+  await dragScenePath(page, center, [{ x: center.x + 60, y: center.y + 40 }], 4);
   await expect(host).toHaveAttribute("data-token-count", "1");
 });
 
@@ -154,9 +144,7 @@ test("author an animated (frame-list) actor token; it places without error", asy
   // precedence over a raw asset, so no asset picker is needed.
   await actorsPanel.getByRole("button", { name: "Wisp", exact: true }).click();
   await page.getByTestId("tool-place").click();
-  const canvas = page.getByTestId("stage-canvas");
-  const box = (await canvas.boundingBox())!;
-  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await clickScene(page, await sceneCenter(page));
   await expect(host).toHaveAttribute("data-token-count", "1", {
     timeout: 15_000,
   });
@@ -176,18 +164,17 @@ test("draw a freehand stroke via the tool rail; the drawing renders", async ({
   });
 
   await page.getByTestId("tool-draw").click();
-  const canvas = page.getByTestId("stage-canvas");
-  const box = (await canvas.boundingBox())!;
+  const center = await sceneCenter(page);
   // Drag a freehand path across the canvas.
-  await page.mouse.move(box.x + box.width / 2 - 40, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 30, {
-    steps: 3,
-  });
-  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2, {
-    steps: 3,
-  });
-  await page.mouse.up();
+  await dragScenePath(
+    page,
+    { x: center.x - 40, y: center.y },
+    [
+      { x: center.x, y: center.y - 30 },
+      { x: center.x + 40, y: center.y },
+    ],
+    3,
+  );
   await expect(host).toHaveAttribute("data-shape-count", "1", {
     timeout: 15_000,
   });
@@ -207,9 +194,7 @@ test("ping a location via the tool rail; the relayed ping renders", async ({
   });
 
   await page.getByTestId("tool-ping").click();
-  const canvas = page.getByTestId("stage-canvas");
-  const box = (await canvas.boundingBox())!;
-  await canvas.click({ position: { x: box.width / 2, y: box.height / 2 } });
+  await clickScene(page, await sceneCenter(page));
   // The server relays the ping back to the sender → Stage's onPing sets data-last-ping.
   await expect(host).toHaveAttribute("data-last-ping", /.+/, {
     timeout: 15_000,
@@ -230,16 +215,13 @@ test("draw a wall via the tool rail; the wall renders", async ({
   });
 
   await page.getByTestId("tool-wall").click();
-  const canvas = page.getByTestId("stage-canvas");
-  const box = (await canvas.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2 - 60, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(
-    box.x + box.width / 2 + 60,
-    box.y + box.height / 2 + 20,
-    { steps: 3 },
+  const center = await sceneCenter(page);
+  await dragScenePath(
+    page,
+    { x: center.x - 60, y: center.y },
+    [{ x: center.x + 60, y: center.y + 20 }],
+    3,
   );
-  await page.mouse.up();
   await expect(host).toHaveAttribute("data-wall-count", "1", {
     timeout: 15_000,
   });
@@ -430,8 +412,8 @@ test("a tool rail taller than the viewport scrolls inside its cell; the grid and
   const before = (await canvas.boundingBox())!;
   expect(before.y + before.height).toBeLessThanOrEqual(viewport.height);
 
-  // Reaching a control at the bottom of the rail scrolls the rail cell, never the document,
-  // so a canvas rect measured beforehand stays valid for a raw-coordinate gesture.
+  // Reaching a control at the bottom of the rail scrolls the rail cell, never the document:
+  // the canvas holds its place in the viewport, so nothing anchored to it is displaced.
   await rail.getByTestId("emote-send").scrollIntoViewIfNeeded();
   await expect
     .poll(() => rail.evaluate((el) => el.scrollTop))

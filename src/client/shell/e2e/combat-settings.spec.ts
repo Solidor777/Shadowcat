@@ -1,5 +1,7 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
+import { clickScene, dblclickScene, dragScene, sceneOrigin } from "./stage-gestures";
+import type { ScenePoint } from "./stage-gestures";
 
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGNgAAAAAgAB" +
@@ -52,19 +54,6 @@ async function closeGameSettings(page: Page): Promise<void> {
   await page.getByTestId("launcher-item-game-settings:panel").click();
 }
 
-async function dragScene(
-  page: Page,
-  from: { x: number; y: number },
-  to: { x: number; y: number },
-): Promise<void> {
-  const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(box).not.toBeNull();
-  await page.mouse.move(box!.x + from.x, box!.y + from.y);
-  await page.mouse.down();
-  await page.mouse.move(box!.x + to.x, box!.y + to.y);
-  await page.mouse.up();
-}
-
 /** Activates a tool rail tool unless it is already the active one — `ToolController.toggle`
  * turns a tool OFF on a second click of that same tool, so an unconditional click would
  * deactivate it.
@@ -81,7 +70,7 @@ async function activateTool(page: Page, id: "select" | "measure"): Promise<void>
  * @param page The page whose stage to read.
  * @returns The token's center in scene units (canvas-local pixels at the default camera).
  */
-async function tokenCenter(page: Page): Promise<{ x: number; y: number }> {
+async function tokenCenter(page: Page): Promise<ScenePoint> {
   const positions = (await stageHost(page).getAttribute("data-token-positions")) ?? "";
   const m = /:(-?[\d.]+),(-?[\d.]+)/.exec(positions);
   expect(m, `one token position in ${JSON.stringify(positions)}`).not.toBeNull();
@@ -97,7 +86,7 @@ async function tokenCenter(page: Page): Promise<{ x: number; y: number }> {
  * never labels. This is the one end-to-end proof that the resolved combat movement enforcement,
  * read from the REAL scene/world-settings documents through the real server round trip,
  * reaches this label — the label's own text/color logic is otherwise covered only at the unit
- * level (`measure-tool.test.ts`/`ToolRail.test.ts`). The hover is re-nudged on every poll so
+ * level (`makeMeasureTool`'s and `ToolRail`'s own unit tests). The hover is re-nudged on every poll so
  * a preview requested before the player's client held the combat's current rules is refreshed
  * rather than frozen (the preview fires per pointer move, leading-edge).
  * @param page The routing player's page.
@@ -107,27 +96,28 @@ async function tokenCenter(page: Page): Promise<{ x: number; y: number }> {
  */
 async function routeExpectingLabel(
   page: Page,
-  from: { x: number; y: number },
-  to: { x: number; y: number },
+  from: ScenePoint,
+  to: ScenePoint,
   labelSubstring: string,
 ): Promise<void> {
-  const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(box).not.toBeNull();
   await activateTool(page, "select");
-  await page.mouse.click(box!.x + from.x, box!.y + from.y);
+  await clickScene(page, from);
   await activateTool(page, "measure");
-  await page.mouse.move(box!.x + from.x, box!.y + from.y);
+  // The press-and-hold below runs on raw pointer primitives (they take page coordinates and
+  // carry no actionability wait), so the origin comes from `sceneOrigin`, whose hover both
+  // settles the layout and leaves the pointer on the press point.
+  const o = await sceneOrigin(page, from);
   await page.mouse.down();
   let nudge = 0;
   await expect
     .poll(async () => {
       nudge = (nudge + 1) % 2;
-      await page.mouse.move(box!.x + to.x + nudge, box!.y + to.y);
+      await page.mouse.move(o.x + to.x + nudge, o.y + to.y);
       return (await stageHost(page).getAttribute("data-measure-label")) ?? "";
     }, { timeout: 15_000 })
     .toContain(labelSubstring);
   await page.mouse.up();
-  await page.mouse.dblclick(box!.x + to.x, box!.y + to.y);
+  await dblclickScene(page, to);
   await activateTool(page, "select");
 }
 
@@ -217,9 +207,7 @@ test("the resource registry and combat chain editors drive a real movement-budge
 
     await actorsPanel.getByRole("button", { name: "PlayerChar" }).click();
     await gm.getByTestId("tool-place").click();
-    let box = await gm.getByTestId("stage-canvas").boundingBox();
-    expect(box).not.toBeNull();
-    await gm.mouse.click(box!.x + PLACE_X, box!.y + TOKEN_Y);
+    await clickScene(gm, { x: PLACE_X, y: TOKEN_Y });
     await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
@@ -274,8 +262,7 @@ test("the resource registry and combat chain editors drive a real movement-budge
     await gm.getByTestId("launcher-trigger").click();
     await gm.getByTestId("launcher-item-actors:panel").click();
     await gm.getByTestId("tool-select").click();
-    box = await gm.getByTestId("stage-canvas").boundingBox();
-    await gm.mouse.click(box!.x + PLACE_X, box!.y + TOKEN_Y);
+    await clickScene(gm, { x: PLACE_X, y: TOKEN_Y });
     await gm.getByLabel("Token owner").selectOption({ label: playerName });
     await expect(gm.getByText(`Effective owner: ${playerName}`)).toBeVisible({ timeout: 15_000 });
     // That click also left the token selected for the tracker's "add selected" below.

@@ -1,5 +1,6 @@
 import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
+import { clickScene, dragScene, stageCanvas } from "./stage-gestures";
 
 // A 1×1 PNG used as token art (same fixture the stage suite uses).
 const PNG_1X1 = Buffer.from(
@@ -52,66 +53,26 @@ const VIEWPORT = { width: 1600, height: 1000 };
 
 test.use({ viewport: VIEWPORT });
 
-type Point = { x: number; y: number };
-
 function stageHost(page: Page): Locator {
   return page.locator(".stage-host");
 }
 
-/** Canvas-local → page coordinates. Re-read per gesture: opening or closing a panel
- * resizes the canvas (which moves its origin) without moving the camera. */
-async function canvasOrigin(page: Page): Promise<Point> {
-  const box = await page.getByTestId("stage-canvas").boundingBox();
-  expect(
-    box,
-    "the stage canvas must be laid out before a pointer gesture",
-  ).not.toBeNull();
-  // Gestures below address scene coordinates out to (ILLEGAL_X, WALL_Y1). A canvas
-  // that small keeps the pointer inside the element for every gesture, so no gesture
-  // depends on Stage's pointer capture retargeting an out-of-canvas move.
-  expect(box!.width).toBeGreaterThan(ILLEGAL_X + 20);
-  expect(box!.height).toBeGreaterThan(WALL_Y1 + 20);
-  return { x: box!.x, y: box!.y };
-}
-
-/** Clicks a scene coordinate on the stage canvas.
- *
- * Addresses the canvas as an ELEMENT rather than converting to page coordinates, so the gesture
- * inherits the actionability wait: the canvas must be visible, hold a bounding box unchanged
- * across consecutive frames, and be the element that receives the event. Opening or closing a
- * docked panel resizes the canvas, and a coordinate computed from a box read before that resize
- * settles lands somewhere else — on a host slow enough to finish the relayout first the gesture
- * happens to land correctly, so the defect is invisible exactly where the suite usually runs.
- * @param page - The page whose stage is clicked.
- * @param at - The point in canvas-local coordinates.
+/** Fails fast if the canvas is too small for the gestures below, which address scene coordinates
+ * out to (`ILLEGAL_X`, `WALL_Y1`). A canvas that small would put the pointer outside the element,
+ * making a gesture depend on `Stage`'s pointer capture retargeting an out-of-canvas move rather
+ * than on the behaviour under test.
+ * @param page - The page whose stage to measure.
  * @example
  * ```
  * declare const page: import("@playwright/test").Page;
- * await clickScene(page, { x: 210, y: 310 });
+ * await assertCanvasFitsGestures(page);
  * ```
  */
-async function clickScene(page: Page, at: Point): Promise<void> {
-  await page.getByTestId("stage-canvas").click({ position: { x: at.x, y: at.y } });
-}
-
-/** One pointermove for the whole displacement.
- *
- * `makeSelectMoveTool` captures the grab origins at `onPointerDown`, so every intent it
- * emits is start→CURRENT — a stepped drag therefore emits progressively longer full-span
- * segments, not incremental hops, and each of the early (short) ones commits. The rollback
- * assertion would then revert to the last committed intermediate rather than to the pre-drag
- * position. A single pointermove still emits two intents (the leading-edge send in
- * `onPointerMove`, then the `onPointerUp` flush), but both carry the identical full
- * displacement, so nothing partial can commit. */
-async function dragScene(page: Page, from: Point, to: Point): Promise<void> {
-  // Hover the canvas as an ELEMENT first: that carries the actionability wait (visible, bounding
-  // box unchanged across consecutive frames, receiving events), so the box read next describes a
-  // settled layout rather than one still resizing around a panel.
-  await page.getByTestId("stage-canvas").hover({ position: { x: from.x, y: from.y } });
-  const o = await canvasOrigin(page);
-  await page.mouse.down();
-  await page.mouse.move(o.x + to.x, o.y + to.y);
-  await page.mouse.up();
+async function assertCanvasFitsGestures(page: Page): Promise<void> {
+  const box = await stageCanvas(page).boundingBox();
+  expect(box, "the stage canvas must be laid out before a pointer gesture").not.toBeNull();
+  expect(box!.width).toBeGreaterThan(ILLEGAL_X + 20);
+  expect(box!.height).toBeGreaterThan(WALL_Y1 + 20);
 }
 
 /** `data-token-positions` is `id:x,y` pairs, id-sorted and `;`-joined (set by `Stage`'s `$effect`). */
@@ -339,6 +300,15 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // it, independent of window size. Four segments enclose the token's PLACE/HANDOFF/LEGAL/SETTLE
     // positions in a box; ILLEGAL_X sits outside it.
     await gm.getByTestId("tool-wall").click();
+    // Every drag in this spec is ONE pointermove for the whole displacement (`dragScene`'s
+    // default). `makeSelectMoveTool` captures the grab origins at `onPointerDown`, so every
+    // intent it emits is start→CURRENT — a stepped drag therefore emits progressively longer
+    // full-span segments, not incremental hops, and each of the early (short) ones commits. The
+    // rollback assertion would then revert to the last committed intermediate rather than to the
+    // pre-drag position. A single pointermove still emits two intents (the leading-edge send in
+    // `onPointerMove`, then the `onPointerUp` flush), but both carry the identical full
+    // displacement, so nothing partial can commit.
+    await assertCanvasFitsGestures(gm);
     await dragScene(gm, { x: BOX_X0, y: WALL_Y0 }, { x: BOX_X0, y: WALL_Y1 }); // left
     await dragScene(gm, { x: BOX_X0, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y0 }); // top
     await dragScene(gm, { x: WALL_X, y: WALL_Y0 }, { x: WALL_X, y: WALL_Y1 }); // right
@@ -383,6 +353,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     await player.getByTestId("tool-select").click();
 
     // --- Control leg: a LEGAL drag by the same player, same token, same session. ---
+    await assertCanvasFitsGestures(player);
     await dragScene(
       player,
       { x: HANDOFF_X, y: TOKEN_Y },
