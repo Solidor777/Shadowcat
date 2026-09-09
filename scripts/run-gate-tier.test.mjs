@@ -1,5 +1,14 @@
 import { test, expect, vi } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  readFileSync,
+  symlinkSync,
+  statSync,
+  utimesSync,
+  lutimesSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +24,7 @@ import {
   headMovedRefusal,
   derivedMtimeExemptions,
   fileTableChangedRefusal,
+  captureFileTable,
   parseHeadAndTree,
   buildReceipt,
 } from "./run-gate-tier.mjs";
@@ -210,14 +220,14 @@ test("in the real manifest, the derived mtime exemption matches the bindings-syn
 });
 
 test("fileTableChangedRefusal passes when no tracked file's size or mtime moved", () => {
-  const before = { "a.txt": { size: 10, mtimeMs: 100 }, "b.txt": { size: 20, mtimeMs: 200 } };
-  const after = { "a.txt": { size: 10, mtimeMs: 100 }, "b.txt": { size: 20, mtimeMs: 200 } };
+  const before = { "a.txt": { size: 10n, mtimeNs: 100n }, "b.txt": { size: 20n, mtimeNs: 200n } };
+  const after = { "a.txt": { size: 10n, mtimeNs: 100n }, "b.txt": { size: 20n, mtimeNs: 200n } };
   expect(fileTableChangedRefusal(before, after)).toEqual({ ok: true, why: "" });
 });
 
 test("fileTableChangedRefusal catches an edit-and-revert: content matches, mtime moved anyway", () => {
-  const before = { "a.txt": { size: 10, mtimeMs: 100 } };
-  const after = { "a.txt": { size: 10, mtimeMs: 999 } };
+  const before = { "a.txt": { size: 10n, mtimeNs: 100n } };
+  const after = { "a.txt": { size: 10n, mtimeNs: 999n } };
   const result = fileTableChangedRefusal(before, after);
   expect(result.ok).toBe(false);
   expect(result.why).toMatch(/a\.txt/);
@@ -226,12 +236,12 @@ test("fileTableChangedRefusal catches an edit-and-revert: content matches, mtime
 
 test("fileTableChangedRefusal exempts only the derived prefix, not lookalike paths", () => {
   const before = {
-    "src/types/generated/foo.ts": { size: 1, mtimeMs: 1 },
-    "src/types/generated-extra/bar.ts": { size: 1, mtimeMs: 1 },
+    "src/types/generated/foo.ts": { size: 1n, mtimeNs: 1n },
+    "src/types/generated-extra/bar.ts": { size: 1n, mtimeNs: 1n },
   };
   const after = {
-    "src/types/generated/foo.ts": { size: 1, mtimeMs: 999 },
-    "src/types/generated-extra/bar.ts": { size: 1, mtimeMs: 999 },
+    "src/types/generated/foo.ts": { size: 1n, mtimeNs: 999n },
+    "src/types/generated-extra/bar.ts": { size: 1n, mtimeNs: 999n },
   };
   const result = fileTableChangedRefusal(before, after, ["src/types/generated"]);
   expect(result.ok).toBe(false);
@@ -240,7 +250,69 @@ test("fileTableChangedRefusal exempts only the derived prefix, not lookalike pat
 });
 
 test("fileTableChangedRefusal flags a tracked file created or deleted between the two samples", () => {
-  const before = { "a.txt": { size: 10, mtimeMs: 100 } };
-  const after = { "a.txt": { size: 10, mtimeMs: 100 }, "b.txt": { size: 5, mtimeMs: 5 } };
+  const before = { "a.txt": { size: 10n, mtimeNs: 100n } };
+  const after = { "a.txt": { size: 10n, mtimeNs: 100n }, "b.txt": { size: 5n, mtimeNs: 5n } };
   expect(fileTableChangedRefusal(before, after).ok).toBe(false);
+});
+
+test("fileTableChangedRefusal counts a path that could not be stat'd as CHANGED, in either or both samples", () => {
+  const readable = { size: 1n, mtimeNs: 1n };
+  // Unreadable at both samples is the case that would otherwise sit silently outside the check.
+  const both = fileTableChangedRefusal({ "sub/module": null }, { "sub/module": null });
+  expect(both.ok).toBe(false);
+  expect(both.why).toMatch(/sub\/module/);
+  expect(both.why).toMatch(/could not be read/);
+  expect(fileTableChangedRefusal({ "a.txt": null }, { "a.txt": readable }).ok).toBe(false);
+  expect(fileTableChangedRefusal({ "a.txt": readable }, { "a.txt": null }).ok).toBe(false);
+});
+
+test("captureFileTable records null, not absence, for a path that cannot be stat'd", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-"));
+  const missing = join(dir, "does-not-exist");
+  const table = captureFileTable([missing]);
+  expect(Object.keys(table)).toEqual([missing]);
+  expect(table[missing]).toBe(null);
+});
+
+test("captureFileTable carries bigint mtimeNs and sees a sub-millisecond mtime move", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-"));
+  const f = join(dir, "a.txt");
+  writeFileSync(f, "same content at both samples");
+  const base = Math.floor(Date.now() / 1000);
+  utimesSync(f, base, base);
+  const before = captureFileTable([f]);
+  expect(typeof before[f].mtimeNs).toBe("bigint");
+  expect(typeof before[f].size).toBe("bigint");
+  // One microsecond later: representable in the filesystem's own units on NTFS (100 ns), APFS and
+  // ext4 (1 ns), and below the 1 ms a millisecond comparison would fold together.
+  utimesSync(f, base, base + 1e-6);
+  const after = captureFileTable([f]);
+  expect(after[f].mtimeNs - before[f].mtimeNs).toBeGreaterThan(0n);
+  expect(after[f].mtimeNs - before[f].mtimeNs).toBeLessThan(1_000_000n);
+  expect(fileTableChangedRefusal(before, after).ok).toBe(false);
+});
+
+test("captureFileTable observes a link's OWN metadata, not its target's", () => {
+  const dir = mkdtempSync(join(tmpdir(), "gate-"));
+  const target = join(dir, "target");
+  mkdirSync(target);
+  writeFileSync(join(target, "f.txt"), "x");
+  const link = join(dir, "link");
+  // A directory link is creatable without elevated privileges on every platform: Windows makes a
+  // junction, POSIX ignores the type hint and makes an ordinary symlink.
+  symlinkSync(target, link, "junction");
+  const first = captureFileTable([link]);
+  // Move the TARGET's mtime far away from now.
+  utimesSync(target, 1000, 1000);
+  // Positive control: a following stat does see the target move, so an unchanged table entry
+  // below is evidence of lstat, not of nothing having happened.
+  expect(statSync(link, { bigint: true }).mtimeNs).toBe(1000n * 1_000_000_000n);
+  const targetMoved = captureFileTable([link]);
+  expect(fileTableChangedRefusal(first, targetMoved)).toEqual({ ok: true, why: "" });
+  // Move the LINK's own mtime, which is what recreating a symlink (edit-and-revert) does.
+  lutimesSync(link, 2000, 2000);
+  const linkMoved = captureFileTable([link]);
+  const result = fileTableChangedRefusal(first, linkMoved);
+  expect(result.ok).toBe(false);
+  expect(result.why).toContain(link);
 });

@@ -51,7 +51,7 @@
 // `pnpm build` before every cargo step in the push tier (pinned by a test against the real
 // manifest, not just synthetic fixtures, so a future reordering in `gates.toml` fails the suite).
 
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -180,10 +180,13 @@ export function derivedMtimeExemptions(entries) {
 
 /**
  * Whether any tracked file — outside the derived exemptions — changed size or mtime between two
- * captured `{ path: { size, mtimeMs } }` tables. Catches an edit that lands and is fully REVERTED
- * within the run: content matches at both samples, so `git status` never sees it, but a revert
- * still moves the file's mtime, which this compares directly rather than inferring from git.
- * A path present in only one table (created or deleted between samples) also counts as changed.
+ * captured `{ path: { size, mtimeNs } | null }` tables. Catches an edit that lands and is fully
+ * REVERTED within the run: content matches at both samples, so `git status` never sees it, but a
+ * revert still moves the file's mtime, which this compares directly rather than inferring from
+ * git. `mtimeNs` is a bigint compared exactly, so two stamps differ here whenever the OS reports
+ * them differently. A path present in only one table (created or deleted between samples) counts
+ * as changed, and so does a `null` entry (the path could not be stat'd) in EITHER table — an
+ * unreadable path fails toward refusal, never toward sitting silently outside the check.
  */
 export function fileTableChangedRefusal(before, after, exemptPrefixes = []) {
   const isExempt = (p) =>
@@ -194,14 +197,14 @@ export function fileTableChangedRefusal(before, after, exemptPrefixes = []) {
     if (isExempt(p)) continue;
     const b = before[p];
     const a = after[p];
-    if (!b || !a || b.size !== a.size || b.mtimeMs !== a.mtimeMs) changed.push(p);
+    if (!b || !a || b.size !== a.size || b.mtimeNs !== a.mtimeNs) changed.push(p);
   }
   changed.sort();
   return {
     ok: changed.length === 0,
     why:
       changed.length > 0
-        ? `gate: refusing to write the receipt — ${changed.length} tracked file(s) changed on disk during the run (e.g. ${changed[0]}), even though HEAD and \`git status\` both read clean. This can happen from an edit that landed and was reverted mid-run. Repeat \`pnpm gate:push\`.`
+        ? `gate: refusing to write the receipt — ${changed.length} tracked file(s) changed on disk, appeared, disappeared, or could not be read during the run (e.g. ${changed[0]}), even though HEAD and \`git status\` both read clean. This can happen from an edit that landed and was reverted mid-run. Repeat \`pnpm gate:push\`.`
         : "",
   };
 }
@@ -241,19 +244,38 @@ export function buildReceipt({ sha, tree }, manifest, finishedAt = new Date().to
 // Impure capture helpers — mirrors the `git` helper below: real filesystem/`git` reads, kept out
 // of the pure comparison functions above so those stay directly testable without touching disk.
 
+// NUL-delimited so a path needing quoting (non-ASCII, `core.quotepath`) arrives verbatim: a
+// quoted path would fail to stat at both samples and refuse every push.
 function listTrackedFiles(runGit) {
-  return runGit("ls-files").split("\n").filter(Boolean);
+  return runGit("ls-files", "-z").split("\0").filter(Boolean);
 }
 
-function captureFileTable(paths) {
+/**
+ * Captures `{ size, mtimeNs }` for every path, keyed by path, from each entry's OWN inode via
+ * `lstatSync`. A tracked symlink is a blob whose content is its target path string, so editing
+ * and reverting one recreates the LINK and moves the link's mtime while the target's inode never
+ * changes; a following `stat` would watch the wrong object. The link's own size and mtime are
+ * what is compared — its target string is content, and content equality at both samples is what
+ * `git status` already establishes; this table exists for the time dimension content equality
+ * cannot see, so reading the target string here would fork that decision.
+ *
+ * `mtimeNs` is a bigint, exact at whatever resolution the OS reports; the `mtimeMs` double has a
+ * ~244 ns spacing at the current epoch and folds distinct nanosecond stamps together. LIMIT: the
+ * filesystem's own timestamp clock still bounds detection. Measured on Windows/NTFS, successive
+ * writes land on stamps no closer than ~0.3 ms, so an edit fully reverted within one clock step is
+ * invisible to this table; Linux and macOS have their own clock granularities, unmeasured here.
+ *
+ * A path that cannot be stat'd records `null` rather than being left out, so
+ * `fileTableChangedRefusal` counts it as changed even when it is unreadable at BOTH samples.
+ */
+export function captureFileTable(paths) {
   const table = {};
   for (const p of paths) {
     try {
-      const st = statSync(p);
-      table[p] = { size: st.size, mtimeMs: st.mtimeMs };
+      const st = lstatSync(p, { bigint: true });
+      table[p] = { size: st.size, mtimeNs: st.mtimeNs };
     } catch {
-      // Deleted since the path list was captured: absence from this table (vs. presence in the
-      // other) is itself what `fileTableChangedRefusal` flags as changed — no special case needed.
+      table[p] = null;
     }
   }
   return table;
