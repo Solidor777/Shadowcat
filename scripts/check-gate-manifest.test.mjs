@@ -155,6 +155,31 @@ test("a ci-only entry with an Actions expression is exempt: it never claims to r
   expect(unrunnableLocalEntries([], entries)).toEqual([]);
 });
 
+test("a single-line commit/push entry referencing a runner-only env var is unrunnable locally, with no ${{ present", () => {
+  const entries = [
+    { job: "docs", command: 'echo "size" >> "$GITHUB_STEP_SUMMARY"', tier: "push", reason: "", line: 1 },
+  ];
+  expect(entries[0].command).not.toContain("${{");
+  expect(unrunnableLocalEntries([], entries)).toEqual([entries[0]]);
+});
+
+test("every named runner-only env var is caught, plus the wider GITHUB_*/RUNNER_* family", () => {
+  const names = [
+    "GITHUB_ENV",
+    "GITHUB_OUTPUT",
+    "GITHUB_STEP_SUMMARY",
+    "GITHUB_WORKSPACE",
+    "RUNNER_OS",
+    "RUNNER_TEMP",
+    "GITHUB_SHA",
+    "RUNNER_ARCH",
+  ];
+  for (const name of names) {
+    const entries = [{ job: "x", command: `echo "$${name}"`, tier: "commit", reason: "", line: 1 }];
+    expect(unrunnableLocalEntries([], entries)).toEqual([entries[0]]);
+  }
+});
+
 test("a commit/push entry sourced from a multi-line `run: |` block is unrunnable locally", () => {
   const steps = [{ job: "rust", command: "a=1 b=2", line: 5, multiline: true }];
   const entries = [{ job: "rust", command: "a=1 b=2", tier: "push", reason: "", line: 1 }];

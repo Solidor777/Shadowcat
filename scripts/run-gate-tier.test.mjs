@@ -10,6 +10,8 @@ import {
   readReceipt,
   receiptMatches,
   pushDirtyTreeRefusal,
+  pushDirtyTreeRefusalAfterRun,
+  headMovedRefusal,
 } from "./run-gate-tier.mjs";
 import { parseGateManifest, MANIFEST } from "./check-gate-manifest.mjs";
 
@@ -111,4 +113,20 @@ test("push mode refuses on a dirty tree, before any gate runs", () => {
 test("push mode proceeds on a clean tree", () => {
   expect(pushDirtyTreeRefusal("")).toEqual({ ok: true, why: "" });
   expect(pushDirtyTreeRefusal("   \n")).toEqual({ ok: true, why: "" });
+});
+
+test("the receipt write is refused if the tree went dirty during the run", () => {
+  expect(pushDirtyTreeRefusalAfterRun(" M scripts/run-gate-tier.mjs\n")).toEqual({
+    ok: false,
+    why: expect.stringMatching(/refusing to write the receipt.*dirty/),
+  });
+  expect(pushDirtyTreeRefusalAfterRun("")).toEqual({ ok: true, why: "" });
+});
+
+test("the receipt write is refused if HEAD moved during the run", () => {
+  expect(headMovedRefusal("aaa111", "bbb222")).toEqual({
+    ok: false,
+    why: expect.stringMatching(/refusing to write the receipt.*HEAD moved/),
+  });
+  expect(headMovedRefusal("aaa111", "aaa111")).toEqual({ ok: true, why: "" });
 });

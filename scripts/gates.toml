@@ -52,7 +52,7 @@ tier = "push"
 
 [[gate]]
 job = "rust"
-command = "node scripts/check-binary-size.mjs"
+command = "pnpm lint:binary-size"
 tier = "push"
 
 [[gate]]

@@ -132,13 +132,26 @@ const key = (x) => `${x.job}\u0000${x.command}`;
 //     tags this at parse time (`multiline: true`), before `normCommand` erases the distinction
 export const UNRESOLVED_EXPRESSION = /\$\{\{/;
 
-/** Commands tiered `commit`/`push` that cannot execute locally: expression or multi-line block. */
+// A third shape needs no `${{ }}` at all: a plain single-line `run:` step that reads an
+// environment variable the Actions RUNNER injects and a local shell never sets — `$GITHUB_ENV`,
+// `$GITHUB_OUTPUT`, `$GITHUB_STEP_SUMMARY`, `$GITHUB_WORKSPACE`, `$RUNNER_OS`, `$RUNNER_TEMP` are
+// the named instances found in this workflow's history, all injected by the same runner runtime.
+// Rather than enumerate (which only ever catches names already seen), this matches the whole
+// `GITHUB_*`/`RUNNER_*` family — every member arrives the same way, so the same defect recurs
+// under any of their names (`GITHUB_SHA`, `RUNNER_ARCH`, ...) without a matching entry here.
+// `${VAR}`/`${VAR:-default}` and bare `$VAR` both match; the leading `\$\{?` is optional so
+// either form is caught.
+export const RUNNER_ONLY_VAR = /\$\{?(?:GITHUB_|RUNNER_)[A-Z_]+/;
+
+/** Commands tiered `commit`/`push` that cannot execute locally: expression, runner-only env var, or multi-line block. */
 export function unrunnableLocalEntries(steps, entries) {
   const blockKeys = new Set(steps.filter((s) => s.multiline).map(key));
   return entries.filter(
     (e) =>
       (e.tier === "commit" || e.tier === "push") &&
-      (UNRESOLVED_EXPRESSION.test(e.command) || blockKeys.has(key(e))),
+      (UNRESOLVED_EXPRESSION.test(e.command) ||
+        RUNNER_ONLY_VAR.test(e.command) ||
+        blockKeys.has(key(e))),
   );
 }
 
@@ -168,7 +181,7 @@ if (isDirectEntry(import.meta.url)) {
   }
   for (const e of d.unrunnableLocal) {
     console.error(
-      `${MANIFEST}:${e.line}: [${e.job}] tier "${e.tier}" entry cannot run locally (unresolved expression or multi-line block): ${e.command}. Extract it into a script both CI and the local runner invoke.`,
+      `${MANIFEST}:${e.line}: [${e.job}] tier "${e.tier}" entry cannot run locally (unresolved expression, runner-only env var, or multi-line block): ${e.command}. Extract it into a script both CI and the local runner invoke.`,
     );
   }
   for (const e of d.missingReason) {

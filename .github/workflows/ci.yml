@@ -58,7 +58,7 @@ jobs:
       - name: Release build
         run: cargo build --release
       - name: Binary size budget
-        run: node scripts/check-binary-size.mjs
+        run: pnpm lint:binary-size
       # Assemble the icon-carrying distributable. Windows is excluded: the icon
       # is embedded in the .exe at build time (build.rs). macOS -> .app (.icns);
       # Linux -> staging tree with a .desktop entry + hicolor PNG.

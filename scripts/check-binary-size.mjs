@@ -14,7 +14,12 @@ import { join } from "node:path";
 import process from "node:process";
 import { isDirectEntry } from "./lib/is-main.mjs";
 
-export const BINARY_NAME = process.platform === "win32" ? "shadowcat.exe" : "shadowcat";
+/** The release binary's platform-specific filename — pure, so both branches are directly testable. */
+export function binaryNameForPlatform(platform) {
+  return platform === "win32" ? "shadowcat.exe" : "shadowcat";
+}
+
+export const BINARY_NAME = binaryNameForPlatform(process.platform);
 export const BINARY_PATH = join("target", "release", BINARY_NAME);
 export const SIZE_LIMIT_BYTES = 62914560;
 
@@ -24,7 +29,18 @@ export function checkBinarySize(sizeBytes, limitBytes = SIZE_LIMIT_BYTES) {
 }
 
 if (isDirectEntry(import.meta.url)) {
-  const size = statSync(BINARY_PATH).size;
+  let size;
+  try {
+    size = statSync(BINARY_PATH).size;
+  } catch (err) {
+    if (err.code === "ENOENT") {
+      console.error(
+        `binary size check: no release binary at ${BINARY_PATH}. Run \`cargo build --release\` first.`,
+      );
+      process.exit(1);
+    }
+    throw err;
+  }
   console.log(`release binary size: ${size} bytes`);
   const result = checkBinarySize(size);
   if (!result.ok) {

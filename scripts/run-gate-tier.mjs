@@ -13,6 +13,13 @@
 // So `push` mode refuses outright on a dirty tree, checked BEFORE any gate command executes;
 // checking after the fact cannot retroactively prove what was actually tested.
 //
+// A pre-run check alone still leaves a ~19-minute TOCTOU window open: a commit landing, or a
+// tree edit, between the pre-run check and `writeReceipt` produces the exact same defect — the
+// receipt names a tree the gates never ran against as a whole. Two other windows in this repo's
+// own history record edits landing under a backgrounded gate chain, so this is not hypothetical.
+// The fix is symmetric: capture `git status --porcelain` and `git rev-parse HEAD` BEFORE the
+// run, and re-check both immediately before `writeReceipt` — refusing if either moved.
+//
 // Order is workflow order, so the client build precedes the cargo steps that embed dist/:
 // `tierCommands` never reorders `entries`, it only filters and dedupes, so INCLUDED's ordering
 // guarantee reduces to `parseGateManifest`'s own emission order — the manifest already lists
@@ -104,6 +111,32 @@ export function pushDirtyTreeRefusal(porcelainStatus) {
   };
 }
 
+/**
+ * Whether the tree became dirty DURING a push-tier run — the same check as
+ * `pushDirtyTreeRefusal`, re-run immediately before `writeReceipt` rather than only before the
+ * first gate command, since a pre-run-only check leaves the whole run's duration racy.
+ */
+export function pushDirtyTreeRefusalAfterRun(porcelainStatus) {
+  const dirty = porcelainStatus.trim() !== "";
+  return {
+    ok: !dirty,
+    why: dirty
+      ? "gate: refusing to write the receipt — the working tree became dirty during the run, so the gates cannot be proven to describe what's being pushed. Commit or stash, then repeat `pnpm gate:push`."
+      : "",
+  };
+}
+
+/** Whether HEAD moved between the start and end of a push-tier run — a race the receipt must refuse. */
+export function headMovedRefusal(startHead, endHead) {
+  const moved = startHead !== endHead;
+  return {
+    ok: !moved,
+    why: moved
+      ? `gate: refusing to write the receipt — HEAD moved during the run (was ${startHead}, now ${endHead}), so the gates did not run against the commit now at HEAD. Repeat \`pnpm gate:push\`.`
+      : "",
+  };
+}
+
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 if (isDirectEntry(import.meta.url)) {
@@ -129,6 +162,7 @@ if (isDirectEntry(import.meta.url)) {
     process.exit(0);
   }
 
+  let startHead = null;
   if (mode === "push") {
     const status = git("status", "--porcelain");
     const refusal = pushDirtyTreeRefusal(status);
@@ -136,6 +170,7 @@ if (isDirectEntry(import.meta.url)) {
       console.error(refusal.why);
       process.exit(1);
     }
+    startHead = git("rev-parse", "HEAD");
   }
 
   const commands = tierCommands(entries, mode);
@@ -157,9 +192,23 @@ if (isDirectEntry(import.meta.url)) {
   }
 
   if (mode === "push") {
+    // Re-checked here rather than trusted from before the run: the run just took up to ~19
+    // minutes, and either check moving during that window means the receipt is about to name a
+    // tree the gates never actually ran against as a whole.
+    const endStatusRefusal = pushDirtyTreeRefusalAfterRun(git("status", "--porcelain"));
+    if (!endStatusRefusal.ok) {
+      console.error(endStatusRefusal.why);
+      process.exit(1);
+    }
+    const endHead = git("rev-parse", "HEAD");
+    const headRefusal = headMovedRefusal(startHead, endHead);
+    if (!headRefusal.ok) {
+      console.error(headRefusal.why);
+      process.exit(1);
+    }
     writeReceipt(gitDir, {
       tree: git("rev-parse", "HEAD^{tree}"),
-      sha: git("rev-parse", "HEAD"),
+      sha: endHead,
       manifest: hash,
       finishedAt: new Date().toISOString(),
     });
