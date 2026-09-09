@@ -942,3 +942,20 @@ are observations awaiting triage, not committed work.
   also stop an idle client burning a laptop's battery, but it is a render-
   architecture change requiring every mutation source to invalidate correctly.
   Status: Needs Review.
+
+- Title: The browser CI job is green; the canvas cost behind it is unchanged.
+  Summary: `ui-e2e` had failed on every run for some time. It now passes, from
+  two changes that both follow the rasterization mechanism rather than guessing
+  at the symptom: the suite's build drops multisampling, and the hosted runner
+  executes the suite single-worker because it has two cores and a dual-session
+  spec opens two canvases by itself, so any second worker guarantees more
+  canvases than cores. Evidence, stated at the confidence it has: two of two
+  reruns of the same commit pass at one worker; at two workers the same commit
+  gave one pass and one failure (the movement-budget gate spec consuming its
+  whole 360s budget), which is a threshold being crossed rather than a defect in
+  that spec; before either change, four consecutive runs failed. Two samples is
+  what supports this, not a characterization of long-run stability.
+  The underlying cost is untouched: the renderer still redraws the full canvas
+  every tick whether or not the scene changed, and the fixes buy headroom under
+  it. The suite is therefore one runner-capacity change away from red again, and
+  the durable remedy is rendering on demand. Status: Needs Review.
