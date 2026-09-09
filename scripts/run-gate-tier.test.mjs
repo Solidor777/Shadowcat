@@ -1,7 +1,8 @@
 import { test, expect, vi } from "vitest";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   tierCommands,
   manifestHash,
@@ -12,10 +13,17 @@ import {
   pushDirtyTreeRefusal,
   pushDirtyTreeRefusalAfterRun,
   headMovedRefusal,
+  derivedMtimeExemptions,
+  fileTableChangedRefusal,
   parseHeadAndTree,
   buildReceipt,
 } from "./run-gate-tier.mjs";
 import { parseGateManifest, MANIFEST } from "./check-gate-manifest.mjs";
+
+const RUN_GATE_TIER_SOURCE = readFileSync(
+  resolve(dirname(fileURLToPath(import.meta.url)), "run-gate-tier.mjs"),
+  "utf8",
+);
 
 const E = (job, command, tier) => ({ job, command, tier, reason: "", line: 1 });
 
@@ -152,10 +160,13 @@ test("buildReceipt uses the captured sample's sha and tree, never an independent
   });
 });
 
-test("buildReceipt's sha and tree always trace back to the SAME captured sample", () => {
-  // Structural pin: this is what a future edit that adds a second, independent `git` call for
-  // one field (reintroducing the split-sample defect) would break — the sample handed in is the
-  // ONLY source for both fields, so mutating just the sample changes both outputs together.
+test("buildReceipt's output fields equal its input sample's fields, unmixed and unswapped", () => {
+  // This only confirms buildReceipt doesn't drop or swap the fields it's handed — it CANNOT see
+  // whether the caller's `{ sha, tree }` sample came from one atomic `git` call or was bundled
+  // from two independent calls before being passed in, so it is not, by itself, a regression test
+  // for a future call site reintroducing a second `git` call. That call-site regression is what
+  // the "only one atomic git call feeds buildReceipt" test below checks instead, by scanning the
+  // real source between the GIT-CALL-BUDGET markers.
   const sample = { sha: "s1", tree: "t1" };
   const first = buildReceipt(sample, "m", "t");
   expect(first.sha).toBe(sample.sha);
@@ -164,4 +175,72 @@ test("buildReceipt's sha and tree always trace back to the SAME captured sample"
   const second = buildReceipt(otherSample, "m", "t");
   expect(second.sha).toBe(otherSample.sha);
   expect(second.tree).toBe(otherSample.tree);
+});
+
+test("only one atomic git call feeds buildReceipt: the post-run block calls `git(` exactly once", () => {
+  // Source-scanning regression test for what buildReceipt's own unit tests cannot see (its input's
+  // provenance): a future edit that adds a second, independent `git(...)` call anywhere between
+  // the post-run status check and `writeReceipt` — reintroducing a split-sample receipt — fails
+  // this test even though buildReceipt's signature and behavior are untouched.
+  const start = RUN_GATE_TIER_SOURCE.indexOf("// GIT-CALL-BUDGET-START");
+  const end = RUN_GATE_TIER_SOURCE.indexOf("// GIT-CALL-BUDGET-END");
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const region = RUN_GATE_TIER_SOURCE.slice(start, end);
+  const gitCalls = region.match(/\bgit\(/g) ?? [];
+  expect(gitCalls).toHaveLength(1);
+});
+
+test("derivedMtimeExemptions reads the path out of the manifest's `git diff --exit-code <path>` entry", () => {
+  const entries = [
+    E("rust", "cargo test --all", "push"),
+    E("rust", "git diff --exit-code src/types/generated", "push"),
+  ];
+  expect(derivedMtimeExemptions(entries)).toEqual(["src/types/generated"]);
+});
+
+test("derivedMtimeExemptions yields no exemption when no such entry exists — fails toward stricter", () => {
+  const entries = [E("rust", "cargo test --all", "push"), E("web", "pnpm lint", "commit")];
+  expect(derivedMtimeExemptions(entries)).toEqual([]);
+});
+
+test("in the real manifest, the derived mtime exemption matches the bindings-sync gate", () => {
+  const entries = parseGateManifest(readFileSync(MANIFEST, "utf8"), MANIFEST);
+  expect(derivedMtimeExemptions(entries)).toEqual(["src/types/generated"]);
+});
+
+test("fileTableChangedRefusal passes when no tracked file's size or mtime moved", () => {
+  const before = { "a.txt": { size: 10, mtimeMs: 100 }, "b.txt": { size: 20, mtimeMs: 200 } };
+  const after = { "a.txt": { size: 10, mtimeMs: 100 }, "b.txt": { size: 20, mtimeMs: 200 } };
+  expect(fileTableChangedRefusal(before, after)).toEqual({ ok: true, why: "" });
+});
+
+test("fileTableChangedRefusal catches an edit-and-revert: content matches, mtime moved anyway", () => {
+  const before = { "a.txt": { size: 10, mtimeMs: 100 } };
+  const after = { "a.txt": { size: 10, mtimeMs: 999 } };
+  const result = fileTableChangedRefusal(before, after);
+  expect(result.ok).toBe(false);
+  expect(result.why).toMatch(/a\.txt/);
+  expect(result.why).toMatch(/reverted mid-run/);
+});
+
+test("fileTableChangedRefusal exempts only the derived prefix, not lookalike paths", () => {
+  const before = {
+    "src/types/generated/foo.ts": { size: 1, mtimeMs: 1 },
+    "src/types/generated-extra/bar.ts": { size: 1, mtimeMs: 1 },
+  };
+  const after = {
+    "src/types/generated/foo.ts": { size: 1, mtimeMs: 999 },
+    "src/types/generated-extra/bar.ts": { size: 1, mtimeMs: 999 },
+  };
+  const result = fileTableChangedRefusal(before, after, ["src/types/generated"]);
+  expect(result.ok).toBe(false);
+  expect(result.why).toMatch(/src\/types\/generated-extra\/bar\.ts/);
+  expect(result.why).not.toMatch(/generated\/foo\.ts/);
+});
+
+test("fileTableChangedRefusal flags a tracked file created or deleted between the two samples", () => {
+  const before = { "a.txt": { size: 10, mtimeMs: 100 } };
+  const after = { "a.txt": { size: 10, mtimeMs: 100 }, "b.txt": { size: 5, mtimeMs: 5 } };
+  expect(fileTableChangedRefusal(before, after).ok).toBe(false);
 });

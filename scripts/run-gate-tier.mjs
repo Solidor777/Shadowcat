@@ -30,13 +30,28 @@
 // second, later, or field-specific `git` call. See `buildReceipt`'s own comment for the
 // invariant this enforces at the one place a receipt is assembled.
 //
+// Sampling `sha`/`tree`/status/HEAD at two points is still not the general answer: any tracked
+// file that is edited and REVERTED entirely between the pre-run and post-run samples is invisible
+// to every point-in-time check above — HEAD never moves, `git status --porcelain` reads clean at
+// both samples, and the receipt certifies a tree some gate command never actually ran against.
+// This repo's own history records that exact operational shape twice. No amount of additional
+// point sampling closes this; the fix is a continuous-coverage check instead: capture every
+// tracked file's `(path, size, mtime)` before the run and again before `writeReceipt`, and refuse
+// if anything changed — a revert still moves the file's mtime even though its final content
+// matches. One family of tracked files needs a DERIVED exemption: the push tier itself
+// regenerates `src/types/generated` (`cargo test --all` runs ts-rs) while leaving `git status`
+// clean, so a naive table refuses every real push. The exemption is read out of the manifest's
+// own `git diff --exit-code <path>` entry (the bindings-sync gate already asserts that path stays
+// generated-and-clean) rather than hardcoded, so it tracks that entry automatically and an absent
+// entry yields an EMPTY exemption set — failing toward stricter, never toward permissive.
+//
 // Order is workflow order, so the client build precedes the cargo steps that embed dist/:
 // `tierCommands` never reorders `entries`, it only filters and dedupes, so INCLUDED's ordering
 // guarantee reduces to `parseGateManifest`'s own emission order — the manifest already lists
 // `pnpm build` before every cargo step in the push tier (pinned by a test against the real
 // manifest, not just synthetic fixtures, so a future reordering in `gates.toml` fails the suite).
 
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
@@ -148,6 +163,50 @@ export function headMovedRefusal(startHead, endHead) {
 }
 
 /**
+ * Reads the tracked-file mtime-table exemption out of the manifest's own `git diff --exit-code
+ * <path>` entry (the bindings-sync gate), rather than hardcoding a path. An entry that is ever
+ * removed or repointed carries the exemption with it automatically; an ABSENT entry yields an
+ * EMPTY exemption array, so a manifest edit that drops the entry fails the mtime-table check
+ * toward stricter, never toward silently permissive.
+ */
+export function derivedMtimeExemptions(entries) {
+  const out = [];
+  for (const e of entries) {
+    const m = e.command.match(/^git diff --exit-code (\S+)$/);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+/**
+ * Whether any tracked file — outside the derived exemptions — changed size or mtime between two
+ * captured `{ path: { size, mtimeMs } }` tables. Catches an edit that lands and is fully REVERTED
+ * within the run: content matches at both samples, so `git status` never sees it, but a revert
+ * still moves the file's mtime, which this compares directly rather than inferring from git.
+ * A path present in only one table (created or deleted between samples) also counts as changed.
+ */
+export function fileTableChangedRefusal(before, after, exemptPrefixes = []) {
+  const isExempt = (p) =>
+    exemptPrefixes.some((prefix) => p === prefix || p.startsWith(`${prefix.replace(/\/$/, "")}/`));
+  const paths = new Set([...Object.keys(before), ...Object.keys(after)]);
+  const changed = [];
+  for (const p of paths) {
+    if (isExempt(p)) continue;
+    const b = before[p];
+    const a = after[p];
+    if (!b || !a || b.size !== a.size || b.mtimeMs !== a.mtimeMs) changed.push(p);
+  }
+  changed.sort();
+  return {
+    ok: changed.length === 0,
+    why:
+      changed.length > 0
+        ? `gate: refusing to write the receipt — ${changed.length} tracked file(s) changed on disk during the run (e.g. ${changed[0]}), even though HEAD and \`git status\` both read clean. This can happen from an edit that landed and was reverted mid-run. Repeat \`pnpm gate:push\`.`
+        : "",
+  };
+}
+
+/**
  * Splits `git rev-parse HEAD HEAD^{tree}`'s two-line stdout into its sha and tree. One
  * invocation resolves both refs against the SAME repository state, so the two lines can never
  * describe two different instants the way two separate `git rev-parse` calls could.
@@ -165,9 +224,39 @@ export function parseHeadAndTree(stdout) {
  * its own, here or anywhere else, reintroduces a split-sample receipt — two fields that are each
  * individually valid while together describing an instant that never existed. Route any new
  * field through the captured sample instead of adding a call.
+ *
+ * This function CANNOT enforce that invariant by itself: given `{ sha, tree }`, it has no way to
+ * tell whether both came from one `git rev-parse HEAD HEAD^{tree}` call or were bundled from two
+ * independent calls at the call site before being passed in — the object looks identical either
+ * way. The real enforcement is the `GIT-CALL-BUDGET-START`/`-END` markers bracketing the call
+ * site below, plus the test in `run-gate-tier.test.mjs` that scans between them and fails if more
+ * than one `git(` call appears. That is a documented convention checked by a source-scanning
+ * test, not a property this function's own unit tests can verify — they can only confirm this
+ * function doesn't drop or swap the fields it's handed.
  */
 export function buildReceipt({ sha, tree }, manifest, finishedAt = new Date().toISOString()) {
   return { tree, sha, manifest, finishedAt };
+}
+
+// Impure capture helpers — mirrors the `git` helper below: real filesystem/`git` reads, kept out
+// of the pure comparison functions above so those stay directly testable without touching disk.
+
+function listTrackedFiles(runGit) {
+  return runGit("ls-files").split("\n").filter(Boolean);
+}
+
+function captureFileTable(paths) {
+  const table = {};
+  for (const p of paths) {
+    try {
+      const st = statSync(p);
+      table[p] = { size: st.size, mtimeMs: st.mtimeMs };
+    } catch {
+      // Deleted since the path list was captured: absence from this table (vs. presence in the
+      // other) is itself what `fileTableChangedRefusal` flags as changed — no special case needed.
+    }
+  }
+  return table;
 }
 
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -196,6 +285,9 @@ if (isDirectEntry(import.meta.url)) {
   }
 
   let startHead = null;
+  let trackedFiles = [];
+  let startTable = {};
+  let mtimeExemptions = [];
   if (mode === "push") {
     const status = git("status", "--porcelain");
     const refusal = pushDirtyTreeRefusal(status);
@@ -204,6 +296,9 @@ if (isDirectEntry(import.meta.url)) {
       process.exit(1);
     }
     startHead = git("rev-parse", "HEAD");
+    mtimeExemptions = derivedMtimeExemptions(entries);
+    trackedFiles = listTrackedFiles(git);
+    startTable = captureFileTable(trackedFiles);
   }
 
   const commands = tierCommands(entries, mode);
@@ -233,8 +328,19 @@ if (isDirectEntry(import.meta.url)) {
       console.error(endStatusRefusal.why);
       process.exit(1);
     }
-    // ONE invocation for both values — see `buildReceipt`'s comment for why a second, later, or
-    // field-specific `git` call is never added here.
+    // Catches an edit-and-revert within the run: content matches at both point samples above, so
+    // status/HEAD stay clean, but a revert still moves the file's mtime. Compared against the
+    // SAME `trackedFiles` path list captured before the run, so this is a fixed-path-set diff,
+    // not a re-listing that could itself drift.
+    const endTable = captureFileTable(trackedFiles);
+    const tableRefusal = fileTableChangedRefusal(startTable, endTable, mtimeExemptions);
+    if (!tableRefusal.ok) {
+      console.error(tableRefusal.why);
+      process.exit(1);
+    }
+    // GIT-CALL-BUDGET-START — exactly one call to the `git` helper may appear before the closing
+    // marker below (the atomic sha/tree capture). `buildReceipt`'s own comment explains why this
+    // is enforced here by a source-scanning test rather than by that function's unit tests.
     const captured = parseHeadAndTree(git("rev-parse", "HEAD", "HEAD^{tree}"));
     const headRefusal = headMovedRefusal(startHead, captured.sha);
     if (!headRefusal.ok) {
@@ -242,6 +348,7 @@ if (isDirectEntry(import.meta.url)) {
       process.exit(1);
     }
     writeReceipt(gitDir, buildReceipt(captured, hash));
+    // GIT-CALL-BUDGET-END
     console.log("gate:push green — receipt written");
   }
 }
