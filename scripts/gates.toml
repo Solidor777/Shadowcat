@@ -119,8 +119,7 @@ tier = "setup"
 [[gate]]
 job = "e2e"
 command = "cargo build -p shadowcat --bin test_server"
-tier = "ci-only"
-reason = "Builds the binary the ci-only cross-runtime spec run consumes; running it locally without that run buys nothing."
+tier = "push"
 
 [[gate]]
 job = "e2e"
@@ -133,9 +132,7 @@ job = "ui-e2e"
 command = "pnpm install --frozen-lockfile"
 tier = "setup"
 
-# Not in the spec's classification table (which named the underlying `playwright install` verb,
-# not the exact `pnpm --filter` invocation the workflow spells it with); classified by the same
-# reasoning as its sibling setup steps — installs a prerequisite, gates nothing on its own.
+# Installs the Chromium build the e2e step drives; a prerequisite, not a check in its own right.
 [[gate]]
 job = "ui-e2e"
 command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"

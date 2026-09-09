@@ -35,8 +35,19 @@ test("every run step is found, with its job", () => {
   ]);
 });
 
-test("a job name containing digits or dashes is not missed", () => {
-  expect(parseWorkflowRunSteps(WF).some((s) => s.job === "ui-e2e")).toBe(true);
+test("a 2-space-indented key outside `jobs:` is never treated as a job", () => {
+  const wf = `name: CI
+on:
+  push:
+    run: echo not-a-job
+jobs:
+  rust:
+    steps:
+      - run: pnpm build
+`;
+  const steps = parseWorkflowRunSteps(wf);
+  expect(steps.some((s) => s.job === "push")).toBe(false);
+  expect(steps).toContainEqual({ job: "rust", command: "pnpm build", line: 8 });
 });
 
 test("a multi-line block body is normalised to one line", () => {
@@ -82,4 +93,42 @@ test("the same command in two jobs is two independent entries", () => {
   ];
   const entries = [{ job: "rust", command: "pnpm build", tier: "push", reason: "", line: 1 }];
   expect(diffManifest(steps, entries).unclassified).toEqual([steps[1]]);
+});
+
+test("a '#' inside a manifest command's own quoted value is not read as a trailing comment", () => {
+  const toml = `[[gate]]
+job = "rust"
+command = "echo \\"x\\" # not a comment"
+tier = "push"
+`;
+  expect(parseGateManifest(toml, "t.toml")).toEqual([
+    { job: "rust", command: 'echo "x" # not a comment', tier: "push", reason: "", line: 1 },
+  ]);
+});
+
+test("an escaped quote inside a manifest command round-trips to a literal quote", () => {
+  const toml = `[[gate]]
+job = "web"
+command = "pnpm --filter \\"pkg\\" build"
+tier = "push"
+`;
+  expect(parseGateManifest(toml, "t.toml")).toEqual([
+    { job: "web", command: 'pnpm --filter "pkg" build', tier: "push", reason: "", line: 1 },
+  ]);
+});
+
+test("a workflow run: line quoting a GitHub Actions expression matches its escaped manifest entry", () => {
+  const wf = `jobs:
+  rust:
+    steps:
+      - run: bash scripts/package.sh "\${{ runner.os == 'macOS' && 'macos' || 'linux' }}"
+`;
+  const toml = `[[gate]]
+job = "rust"
+command = "bash scripts/package.sh \\"\${{ runner.os == 'macOS' && 'macos' || 'linux' }}\\""
+tier = "push"
+`;
+  const steps = parseWorkflowRunSteps(wf);
+  const entries = parseGateManifest(toml, "t.toml");
+  expect(diffManifest(steps, entries)).toEqual({ unclassified: [], stale: [], missingReason: [] });
 });
