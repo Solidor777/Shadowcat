@@ -28,6 +28,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # The repo pins a build-parallelism budget for a desktop the build shares with its user.
+      # Cargo does not clamp that value to the host's parallelism, so on a runner with fewer
+      # cores it raises concurrent rustc instead of lowering it and multiplies peak memory --
+      # which a runner pays for as an allocation failure, not as slowness. Cargo reads this
+      # variable ahead of the config file, so each runner builds at its own width. The fallback
+      # chain covers the three images without depending on one tool being present on all of them.
+      - name: Build parallelism (runner width, not the repo's desktop budget)
+        shell: bash
+        run: |
+          n=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-2}")
+          echo "runner parallelism: $n"
+          echo "CARGO_BUILD_JOBS=$n" >> "$GITHUB_ENV"
       # Format is OS-independent; run once to avoid redundant matrix cost.
       - name: Format
         if: runner.os == 'Linux'

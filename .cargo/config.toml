@@ -12,7 +12,10 @@
 #     CARGO_BUILD_JOBS=24 cargo build      # this machine's full parallelism, one command
 #     CARGO_BUILD_JOBS=4  cargo test       # a tighter budget while doing something else
 #
-# A CI runner with fewer cores than this is unaffected: cargo already caps concurrency at the
-# available parallelism, so a budget above a runner's core count is inert rather than a floor.
+# This budget is for a machine the build SHARES with the person running it. Cargo does not clamp
+# this value to the host's parallelism -- measured: 40 requested yields 32 concurrent rustc on 24
+# logical cores -- so on a host with fewer cores than this it RAISES concurrency instead of
+# lowering it, multiplying peak memory rather than trimming CPU. A build host that competes with
+# nothing therefore sets `CARGO_BUILD_JOBS` to its own width and ignores this file.
 [build]
 jobs = 12
