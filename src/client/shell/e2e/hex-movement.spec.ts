@@ -300,7 +300,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
     // it, independent of window size. Four segments enclose the token's PLACE/HANDOFF/LEGAL/SETTLE
     // positions in a box; ILLEGAL_X sits outside it.
     await gm.getByTestId("tool-wall").click();
-    // Every drag in this spec is ONE pointermove for the whole displacement (`dragScene`'s
+    // Every drag below is ONE pointermove for the whole displacement (`dragScene`'s
     // default). `makeSelectMoveTool` captures the grab origins at `onPointerDown`, so every
     // intent it emits is start→CURRENT — a stepped drag therefore emits progressively longer
     // full-span segments, not incremental hops, and each of the early (short) ones commits. The
