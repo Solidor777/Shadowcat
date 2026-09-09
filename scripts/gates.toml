@@ -1,0 +1,208 @@
+# Classifies every `run:` step in .github/workflows/ci.yml so a workflow step and a manifest
+# entry can be checked against each other rather than trusted to stay in sync by hand.
+# `pnpm lint:gate-manifest` (scripts/check-gate-manifest.mjs) enforces this: every step in the
+# workflow needs exactly one entry here, keyed by (job, normalised command), and every entry
+# needs a step. A `tier = "ci-only"` entry additionally needs a non-empty `reason`.
+#
+# Tiers:
+#   setup    — installs/builds a prerequisite; not a gate in its own right.
+#   commit   — fast, deterministic, run before every commit.
+#   push     — slower or environment-sensitive; run before every push.
+#   ci-only  — cannot or should not run on a developer machine; `reason` says why.
+
+[[gate]]
+job = "rust"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+
+[[gate]]
+job = "rust"
+command = "pnpm build"
+tier = "push"
+
+[[gate]]
+job = "rust"
+command = "n=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo \"${NUMBER_OF_PROCESSORS:-2}\") echo \"runner parallelism: $n\" echo \"CARGO_BUILD_JOBS=$n\" >> \"$GITHUB_ENV\""
+tier = "setup"
+
+[[gate]]
+job = "rust"
+command = "cargo fmt --all -- --check"
+tier = "commit"
+
+[[gate]]
+job = "rust"
+command = "cargo clippy --all-targets -- -D warnings"
+tier = "push"
+
+[[gate]]
+job = "rust"
+command = "cargo test --all"
+tier = "push"
+
+[[gate]]
+job = "rust"
+command = "git diff --exit-code src/types/generated"
+tier = "push"
+
+[[gate]]
+job = "rust"
+command = "cargo build --release"
+tier = "push"
+
+[[gate]]
+job = "rust"
+command = "bin=\"target/release/shadowcat${{ runner.os == 'Windows' && '.exe' || '' }}\" size=$(wc -c < \"$bin\") echo \"release binary size: ${size} bytes\" # 60 MiB guardrail; tighten as the binary's real baseline settles. test \"${size}\" -lt 62914560"
+tier = "push"
+
+[[gate]]
+job = "rust"
+command = "bash scripts/package.sh \"${{ runner.os == 'macOS' && 'macos' || 'linux' }}\""
+tier = "ci-only"
+reason = "Packages per runner OS through a runner.os expression; one desktop cannot produce the macOS and Linux bundles the matrix legs build."
+
+[[gate]]
+job = "web"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+
+[[gate]]
+job = "web"
+command = "pnpm -r typecheck"
+tier = "push"
+
+[[gate]]
+job = "web"
+command = "pnpm -r test"
+tier = "push"
+
+[[gate]]
+job = "web"
+command = "pnpm run test:scripts"
+tier = "commit"
+
+[[gate]]
+job = "web"
+command = "pnpm docs:check-examples"
+tier = "push"
+
+[[gate]]
+job = "web"
+command = "pnpm lint"
+tier = "commit"
+
+[[gate]]
+job = "web"
+command = "pnpm build"
+tier = "push"
+
+[[gate]]
+job = "web"
+command = "pnpm --filter \"shadowcat-example-*\" build"
+tier = "push"
+
+[[gate]]
+job = "web"
+command = "pnpm run check:svelte-runtime"
+tier = "commit"
+
+[[gate]]
+job = "e2e"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+
+[[gate]]
+job = "e2e"
+command = "pnpm build"
+tier = "setup"
+
+[[gate]]
+job = "e2e"
+command = "cargo build -p shadowcat --bin test_server"
+tier = "ci-only"
+reason = "Builds the binary the ci-only cross-runtime spec run consumes; running it locally without that run buys nothing."
+
+[[gate]]
+job = "e2e"
+command = "pnpm --filter @shadowcat/core test:e2e"
+tier = "ci-only"
+reason = "Cross-runtime suite against a spawned server on a fixed port; a parallel local session poisons the run."
+
+[[gate]]
+job = "ui-e2e"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+
+# Not in the spec's classification table (which named the underlying `playwright install` verb,
+# not the exact `pnpm --filter` invocation the workflow spells it with); classified by the same
+# reasoning as its sibling setup steps — installs a prerequisite, gates nothing on its own.
+[[gate]]
+job = "ui-e2e"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+tier = "setup"
+
+[[gate]]
+job = "ui-e2e"
+command = "pnpm --filter @shadowcat/shell e2e"
+tier = "ci-only"
+reason = "Browser suite on a fixed port, contention-sensitive and intermittently hanging; blocking a push on it would block for reasons unrelated to the diff."
+
+[[gate]]
+job = "docs"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+
+[[gate]]
+job = "docs"
+command = "pnpm build:all"
+tier = "push"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:docs"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:props"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:comments"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:allowances"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:file-size"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:inline-tests"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:aria-labels"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm docs:check-examples"
+tier = "push"
+
+[[gate]]
+job = "docs"
+command = "cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items"
+tier = "push"
+
+[[gate]]
+job = "docs"
+command = "cargo +nightly doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps --target-dir target/nightly-doc"
+tier = "push"
