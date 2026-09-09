@@ -4,6 +4,30 @@
 # Runs against the WORKING TREE, not the staged index: several checkers resolve paths relative
 # to the repository root and one additionally scans an external skills checkout, so gating an
 # exported index would silently change the corpus they scan. The exact gate is the push receipt,
-# which is keyed to the tree actually being pushed.
+# which is keyed to the tree actually being pushed. One consequence: "pre-commit passed" describes
+# the working tree at commit time, not necessarily what a partial `git add` actually committed —
+# a commit built from a subset of the working tree's changes is not itself re-verified here, only
+# at push time, when the receipt's tree-hash check covers exactly what gets pushed.
+#
+# EXEMPTION, reasoned rather than a convenience carve-out — this is the one place in the project
+# where the tier is deliberately skipped rather than run: while git has this repository mid a
+# rebase, cherry-pick, revert, or merge, git invokes this hook once per replayed commit,
+# multiplying the ~70s tier by the commit count — with an agent's shell cap, a multi-commit
+# sequence can exceed the available time with no permitted escape. None of the replayed commits
+# is ever pushed in isolation: the sequencer produces ordinary commits inside one operation, and
+# `pre-push`'s tree-keyed receipt still gates the eventual push and independently refuses on a
+# dirty tree, so skipping here removes redundant intermediate work without letting anything
+# unverified reach the remote. The skip is reachable ONLY when git itself has put the repository
+# into one of those states (detected from the git dir's own filesystem markers by
+# `git-sequencer-state.mjs`) — there is no flag, environment variable, or file a caller can set to
+# trigger the same skip outside a real sequencer operation, because that would be a bypass wearing
+# this exemption's clothes.
 set -e
+
+sequencer_state=$(node scripts/git-sequencer-state.mjs)
+if [ -n "$sequencer_state" ]; then
+    echo "gate: skipping the commit tier — a $sequencer_state is in progress." >&2
+    exit 0
+fi
+
 exec node scripts/run-gate-tier.mjs commit

@@ -6,7 +6,23 @@
 # instant while keeping the guarantee exact.
 #
 # INVARIANT: a dirty working tree fails, because the receipt describes HEAD's tree and an unclean
-# tree means the gated content is not what the commit contains.
+# tree means the gated content is not what the commit contains. This check is scoped to the WHOLE
+# working directory, not to the ref actually being pushed: pushing an already-committed ref other
+# than the checked-out HEAD (a different local branch's tip, `--all`, `--mirror`) is refused by
+# this exact same check even though that other ref's own tree has nothing to do with HEAD's
+# uncommitted state. This is deliberate — distinguishing "dirty because of HEAD" from "dirty but
+# irrelevant to this ref" is itself a decision that would need its own verification, and it is
+# fail-closed either way: the worst outcome of the broader check is an inexplicable-looking
+# refusal on an otherwise-legitimate push, never an unverified push getting through. Commit or
+# stash, then retry.
+#
+# LIMITATION: only one receipt file exists (`.git/shadowcat-gate-receipt`, one tree), but a
+# multi-ref push (`git push origin a b`, `--all`, `--mirror`, `--follow-tags`) feeds one line per
+# ref to the loop below. Each ref is checked against that same single receipt and the loop exits
+# on the FIRST mismatch, so a legitimate push of several refs is refused unless every one of them
+# happens to share the exact tree the last `pnpm gate:push` ran against. This is fail-closed and
+# therefore safe, but it reads as an inexplicable refusal rather than a real gate failure — if a
+# push is refused here for a ref that is not the one just gated, this is why.
 set -e
 
 if [ -n "$(git status --porcelain)" ]; then
