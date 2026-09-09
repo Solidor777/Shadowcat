@@ -12,6 +12,8 @@ import {
   pushDirtyTreeRefusal,
   pushDirtyTreeRefusalAfterRun,
   headMovedRefusal,
+  parseHeadAndTree,
+  buildReceipt,
 } from "./run-gate-tier.mjs";
 import { parseGateManifest, MANIFEST } from "./check-gate-manifest.mjs";
 
@@ -129,4 +131,37 @@ test("the receipt write is refused if HEAD moved during the run", () => {
     why: expect.stringMatching(/refusing to write the receipt.*HEAD moved/),
   });
   expect(headMovedRefusal("aaa111", "aaa111")).toEqual({ ok: true, why: "" });
+});
+
+test("parseHeadAndTree splits `git rev-parse HEAD HEAD^{tree}`'s two-line stdout", () => {
+  expect(parseHeadAndTree("aaa111\nbbb222\n")).toEqual({ sha: "aaa111", tree: "bbb222" });
+  expect(parseHeadAndTree("aaa111\nbbb222")).toEqual({ sha: "aaa111", tree: "bbb222" });
+});
+
+test("buildReceipt uses the captured sample's sha and tree, never an independent lookup", () => {
+  const receipt = buildReceipt(
+    { sha: "capturedSha", tree: "capturedTree" },
+    "manifestHash123",
+    "2020-01-01T00:00:00.000Z",
+  );
+  expect(receipt).toEqual({
+    tree: "capturedTree",
+    sha: "capturedSha",
+    manifest: "manifestHash123",
+    finishedAt: "2020-01-01T00:00:00.000Z",
+  });
+});
+
+test("buildReceipt's sha and tree always trace back to the SAME captured sample", () => {
+  // Structural pin: this is what a future edit that adds a second, independent `git` call for
+  // one field (reintroducing the split-sample defect) would break — the sample handed in is the
+  // ONLY source for both fields, so mutating just the sample changes both outputs together.
+  const sample = { sha: "s1", tree: "t1" };
+  const first = buildReceipt(sample, "m", "t");
+  expect(first.sha).toBe(sample.sha);
+  expect(first.tree).toBe(sample.tree);
+  const otherSample = { sha: "s2", tree: "t2" };
+  const second = buildReceipt(otherSample, "m", "t");
+  expect(second.sha).toBe(otherSample.sha);
+  expect(second.tree).toBe(otherSample.tree);
 });

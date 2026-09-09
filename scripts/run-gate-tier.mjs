@@ -20,6 +20,16 @@
 // The fix is symmetric: capture `git status --porcelain` and `git rev-parse HEAD` BEFORE the
 // run, and re-check both immediately before `writeReceipt` — refusing if either moved.
 //
+// A per-field check is not enough either: `sha` and `tree` were each read by their OWN
+// `git rev-parse` call, so even with the dirty/HEAD-moved checks passing, the two values could
+// still be sampled from two different instants a process switch apart — the receipt could name
+// a `sha` and a `tree` that never coexisted. The general lesson, not just this one instance: a
+// receipt field sampled by its own independent `git` invocation is never provably simultaneous
+// with any other field's sample. So EVERY receipt field is derived from ONE atomic capture —
+// a single `git rev-parse HEAD HEAD^{tree}` call, one process, one ref read — never from a
+// second, later, or field-specific `git` call. See `buildReceipt`'s own comment for the
+// invariant this enforces at the one place a receipt is assembled.
+//
 // Order is workflow order, so the client build precedes the cargo steps that embed dist/:
 // `tierCommands` never reorders `entries`, it only filters and dedupes, so INCLUDED's ordering
 // guarantee reduces to `parseGateManifest`'s own emission order — the manifest already lists
@@ -137,6 +147,29 @@ export function headMovedRefusal(startHead, endHead) {
   };
 }
 
+/**
+ * Splits `git rev-parse HEAD HEAD^{tree}`'s two-line stdout into its sha and tree. One
+ * invocation resolves both refs against the SAME repository state, so the two lines can never
+ * describe two different instants the way two separate `git rev-parse` calls could.
+ */
+export function parseHeadAndTree(stdout) {
+  const [sha, tree] = stdout.trim().split("\n").map((l) => l.trim());
+  return { sha, tree };
+}
+
+/**
+ * Assembles the receipt from ONE captured `{ sha, tree }` sample plus the manifest hash. This is
+ * the single place a receipt is built, and that is load-bearing: every field here comes from the
+ * SAME captured sample, or from data captured at this same instant (the manifest hash,
+ * `finishedAt`), never from its own independent lookup. INVARIANT: a field that calls `git` on
+ * its own, here or anywhere else, reintroduces a split-sample receipt — two fields that are each
+ * individually valid while together describing an instant that never existed. Route any new
+ * field through the captured sample instead of adding a call.
+ */
+export function buildReceipt({ sha, tree }, manifest, finishedAt = new Date().toISOString()) {
+  return { tree, sha, manifest, finishedAt };
+}
+
 const git = (...args) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 if (isDirectEntry(import.meta.url)) {
@@ -200,18 +233,15 @@ if (isDirectEntry(import.meta.url)) {
       console.error(endStatusRefusal.why);
       process.exit(1);
     }
-    const endHead = git("rev-parse", "HEAD");
-    const headRefusal = headMovedRefusal(startHead, endHead);
+    // ONE invocation for both values — see `buildReceipt`'s comment for why a second, later, or
+    // field-specific `git` call is never added here.
+    const captured = parseHeadAndTree(git("rev-parse", "HEAD", "HEAD^{tree}"));
+    const headRefusal = headMovedRefusal(startHead, captured.sha);
     if (!headRefusal.ok) {
       console.error(headRefusal.why);
       process.exit(1);
     }
-    writeReceipt(gitDir, {
-      tree: git("rev-parse", "HEAD^{tree}"),
-      sha: endHead,
-      manifest: hash,
-      finishedAt: new Date().toISOString(),
-    });
+    writeReceipt(gitDir, buildReceipt(captured, hash));
     console.log("gate:push green — receipt written");
   }
 }
