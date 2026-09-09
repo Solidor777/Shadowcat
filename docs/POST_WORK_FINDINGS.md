@@ -988,3 +988,43 @@ are observations awaiting triage, not committed work.
   Still true and still unfixed: the renderer redraws the full canvas every tick
   whether or not the scene changed. A GPU absorbs that; a host without one does
   not, which is what CI still runs on.
+
+- Title: Cargo's job budget is not clamped to the host, and a repo-scoped one
+  reached CI.
+  Summary: A repo-scoped `[build] jobs` value exists to keep a build from
+  starving the desktop it shares with its user. It is not a ceiling relative to
+  the host: with 40 requested against 24 logical cores and a workload of 40
+  independent crates, 32 concurrent rustc were observed. On a host with FEWER
+  cores than the budget it therefore raises concurrency rather than lowering it,
+  and multiplies peak memory. A runner pays for that as an allocation failure
+  rather than as slowness -- the observed shape is a metadata read failing with
+  the OS reporting the paging file too small, which reads like a corrupt
+  artifact and not like a resource budget. The comment in the config asserted
+  the opposite ("cargo already caps concurrency at the available parallelism")
+  and had never been measured; two runs carrying the config passed before one
+  failed, so the config is not established as the cause of that failure, only as
+  something that moves its likelihood. `CARGO_BUILD_JOBS` overrides the file
+  (measured: 6 requested inside the repo yields 6, not the file's 12), so the
+  build hosts that compete with nothing now set it to their own width.
+  Status: Resolved.
+
+- Title: A fix reported as closing a defect class had reached half its sites.
+  Summary: Scene gestures that convert canvas-local points through a separately
+  read bounding box were corrected in the three spec files whose tests had
+  failed, and the class was reported closed. Three more carried the same shape,
+  including one never named in the original diagnosis. The cause is structural
+  rather than an oversight: six spec files each held a PRIVATE copy of the same
+  gesture decision, so there was no single place a fix could land, and the three
+  that happened to fail were the three the slow renderer had exposed. The
+  gestures now live in one shared module and every private copy is deleted; the
+  origin needed for the pointer primitives that cannot be expressed
+  element-relatively is reachable only through a helper that settles the layout
+  first, so a caller cannot reintroduce the conversion. Status: Resolved.
+
+- Title: The browser specs were never typechecked.
+  Summary: The shell's tsconfig included only `src`, so nothing type-checked the
+  Playwright specs -- Playwright transpiles without checking. A spec could name a
+  helper that does not exist, or pass the wrong shape, and only a run would say
+  so. The directory is now in the include, verified by a positive control rather
+  than by a clean result: a deliberate type error is reported, and its removal
+  returns the check to clean. Status: Resolved.
