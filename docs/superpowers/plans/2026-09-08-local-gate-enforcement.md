@@ -24,6 +24,7 @@
 ## Model/Effort directives
 
 Plan written mainline (owner's choice at the handoff checkpoint) on Opus 5.
+Dispatch loop owned mainline in the same session (owner's choice at the execution checkpoint).
 
 Execution roles, per `~/.claude/docs/sdd-model-effort-tiers.md` **and** the project rule in
 `.claude/CLAUDE.md` that mandates agent identity independently of tier:
