@@ -36,7 +36,6 @@ examples/*/dist/
 
 # Personal local Claude Code settings (permission allowlist, etc.)
 .claude/settings.local.json
-.claude/settings.json
 # Auto-generated graphify skill stays local; project-authored codebase skills are committed.
 .claude/skills/graphify/
 # Fixed, reused-in-place throwaway directory `check-skill-symbol-refs.test.mjs`'s listSkillDirs
