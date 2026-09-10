@@ -253,6 +253,20 @@ test("fileTableChangedRefusal catches an edit-and-revert: content matches, mtime
   expect(result.why).toMatch(/reverted mid-run/);
 });
 
+// A deterministic cause (a gate step or test that writes to a tracked path itself) is
+// indistinguishable, from the file table alone, from a genuine concurrent edit — but the two
+// calls for opposite advice: repeating helps one and not the other. The message must name both
+// rather than blanket-advising a repeat, which loops an agent for the run's full duration on a
+// cause repeating can never fix.
+test("fileTableChangedRefusal's advice names both a concurrent edit and a self-writing gate step, not just 'repeat'", () => {
+  const before = { "a.txt": { size: 10n, mtimeNs: 100n } };
+  const after = { "a.txt": { size: 10n, mtimeNs: 999n } };
+  const result = fileTableChangedRefusal(before, after);
+  expect(result.why).toMatch(/concurrent edit/);
+  expect(result.why).toMatch(/gate step or test writes/);
+  expect(result.why).not.toMatch(/^gate:.*Repeat `pnpm gate:push`\.$/);
+});
+
 test("fileTableChangedRefusal exempts only the derived prefix, not lookalike paths", () => {
   const before = {
     "src/types/generated/foo.ts": { size: 1n, mtimeNs: 1n },

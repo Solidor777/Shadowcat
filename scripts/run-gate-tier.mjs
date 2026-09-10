@@ -205,7 +205,7 @@ export function fileTableChangedRefusal(before, after, exemptPrefixes = []) {
     ok: changed.length === 0,
     why:
       changed.length > 0
-        ? `gate: refusing to write the receipt — ${changed.length} tracked file(s) changed on disk, appeared, disappeared, or could not be read during the run (e.g. ${changed[0]}), even though HEAD and \`git status\` both read clean. This can happen from an edit that landed and was reverted mid-run. Repeat \`pnpm gate:push\`.`
+        ? `gate: refusing to write the receipt — ${changed.length} tracked file(s) changed on disk, appeared, disappeared, or could not be read during the run (e.g. ${changed[0]}), even though HEAD and \`git status\` both read clean. This can happen two ways: a genuine concurrent edit landed and was reverted mid-run — repeat \`pnpm gate:push\` and it should pass — or a gate step or test writes to that path itself and restores it, which repeating will not fix; check whether the named file's own writer (a test fixture, a generated artifact) is the cause before repeating.`
         : "",
   };
 }
