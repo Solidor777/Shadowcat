@@ -1,8 +1,8 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveConditions, type CombatAffordances, type CombatantEngine, type Resource } from "@shadowcat/core";
-  import { formatResource, firstChannel, type Row } from "./model";
+  import { resolveConditions, firstChannel, type CombatAffordances, type CombatantEngine, type Resource } from "@shadowcat/core";
+  import { formatResource, type Row } from "./model";
 
   /** CombatantRow props. */
   interface Props {

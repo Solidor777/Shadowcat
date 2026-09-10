@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { WireDocument, CombatEngine } from "@shadowcat/core";
-  import { rollTargets, firstChannel, type Row } from "./model";
+  import { firstChannel, type WireDocument, type CombatEngine } from "@shadowcat/core";
+  import { rollTargets, type Row } from "./model";
 
   /** CombatHeader props. */
   interface Props {

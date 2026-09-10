@@ -5,7 +5,6 @@ import AssetPickOverlay from "./AssetPickOverlay.svelte";
 export {
   folderChildren,
   folderPathNames,
-  buildMoveOp,
   isDescendantOrSelf,
   buildFolderDoc,
 } from "./folderOps";

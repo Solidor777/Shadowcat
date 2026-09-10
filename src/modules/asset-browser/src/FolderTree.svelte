@@ -1,10 +1,9 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { deleteAssetFolder, type WireDocument } from "@shadowcat/core";
+  import { deleteAssetFolder, buildMoveOp, type WireDocument } from "@shadowcat/core";
   import {
     folderChildren,
-    buildMoveOp,
     buildFolderDoc,
     isDescendantOrSelf,
     ASSET_FOLDER_DOC_TYPE,

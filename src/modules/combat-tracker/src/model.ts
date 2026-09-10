@@ -7,15 +7,8 @@ import type {
   CombatantView,
   ResolvedResourceView,
   CombatantEngine,
-  ReadableDocuments,
   WorldRole,
 } from "@shadowcat/core";
-
-/** Shape of `ChannelRegistryEngine`'s `channels` field, narrowed for `firstChannel`. */
-type ChannelRegistryShape = {
-  /** The registered channel keys, in map insertion order. */
-  channels?: Record<string, unknown>;
-};
 
 /** One rendered tracker row: a combatant document joined with its resolved numbers. */
 export interface Row {
@@ -108,24 +101,6 @@ export function rollTargets(rows: Row[], role: WorldRole, selfId: string): strin
     .filter((r) => r.kind === "actor" && (r.doc.engine as CombatantEngine).initiative === null)
     .filter((r) => role === "gm" || r.doc.owner === selfId)
     .map((r) => r.doc.id);
-}
-
-/** The channel-registry's first channel key, in map insertion order — the channel initiative
- * rolls always post to.
- * @param documents The document view to query the singleton `channel-registry` from.
- * @returns The first channel key, or `null` when the registry is absent or empty.
- * @example
- * ```
- * declare const documents: ReadableDocuments;
- * firstChannel(documents); // "general"
- * ```
- */
-export function firstChannel(documents: ReadableDocuments): string | null {
-  const doc = documents.query("channel-registry")[0];
-  const channels = (doc?.engine as ChannelRegistryShape | undefined)?.channels;
-  if (!channels) return null;
-  const keys = Object.keys(channels);
-  return keys.length > 0 ? keys[0] : null;
 }
 
 /** Renders one resolved resource view as tracker cell text.

@@ -6,7 +6,6 @@ import { envelope, type WireDocument } from "@shadowcat/core";
 import {
   folderChildren,
   folderPathNames,
-  buildMoveOp,
   isDescendantOrSelf,
   buildFolderDoc,
 } from "./folderOps";
@@ -37,16 +36,6 @@ describe("folderPathNames", () => {
   });
 });
 
-describe("buildMoveOp", () => {
-  it("carries the target and the true OCC pre-image", () => {
-    expect(buildMoveOp("child-z", null, "root-a")).toEqual({
-      op: "move",
-      doc_id: "child-z",
-      parent_id: null,
-      old_parent_id: "root-a",
-    });
-  });
-});
 
 describe("isDescendantOrSelf", () => {
   it("covers self, deep descent, and unrelated nodes", () => {

@@ -1,19 +1,24 @@
 import { describe, it, expect } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
-import { ContributionRegistry, sheetContract, DocumentStore, envelope } from "@shadowcat/core";
+import { ContributionRegistry, sheetContract, DocumentStore, envelope, buildChannelRegistryDoc } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import ItemSheet from "./ItemSheet.svelte";
 import { sheetItem } from "./index";
 
 /** Builds an item doc on the three-band shape: `name` is pulled out onto the envelope
- * (matching `buildItemDoc`'s contract), the rest stays in the opaque `system` tree. */
-function storeWith(fields: Record<string, unknown>) {
+ * (matching `buildItemDoc`'s contract), the rest stays in the opaque `system` tree. A
+ * `channel-registry` singleton with a `general` key is seeded alongside it so `firstChannel`
+ * resolves — pass `seedChannel: false` to exercise the no-registry case. */
+function storeWith(fields: Record<string, unknown>, opts: { seedChannel?: boolean } = {}) {
   const { name, ...system } = fields;
   const s = new DocumentStore();
-  s.applyCommand({
-    seq: 1, world_id: "w1", author: "u", ts: 0,
-    ops: [{ op: "create", doc: envelope("w1", "item", null, system, "i1", undefined, (name as string | null) ?? null) }],
-  });
+  const ops: Parameters<typeof s.applyCommand>[0]["ops"] = [
+    { op: "create", doc: envelope("w1", "item", null, system, "i1", undefined, (name as string | null) ?? null) },
+  ];
+  if (opts.seedChannel !== false) {
+    ops.push({ op: "create", doc: buildChannelRegistryDoc("w1", { general: { name: "General" } }) });
+  }
+  s.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops });
   return s;
 }
 
@@ -55,6 +60,13 @@ describe("ItemSheet dice roll-to-chat", () => {
     const { getByRole } = render(ItemSheet, { props: { docId: "i1", systemPrefix: "/system", close: () => {} }, context });
     await fireEvent.click(getByRole("button", { name: "damage: 1d8+2" }));
     expect(sent).toEqual([{ channel: "general", content: "/roll 1d8+2" }]);
+  });
+
+  it("disables the roll button when no channel-registry doc exists", () => {
+    const documents = storeWith({ name: "Sword", damage: "1d8+2" }, { seedChannel: false });
+    const context = setAppContextForTest({ documents, canEdit: () => true });
+    const { getByRole } = render(ItemSheet, { props: { docId: "i1", systemPrefix: "/system", close: () => {} }, context });
+    expect((getByRole("button", { name: "damage: 1d8+2" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("edits the item name with the real pre-image", async () => {
