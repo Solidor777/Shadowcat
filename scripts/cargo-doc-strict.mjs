@@ -3,11 +3,15 @@
 //
 //   warnings — `RUSTDOCFLAGS="-D warnings"` on the stable toolchain; the `docs:api:rust` stage of
 //              `pnpm build:all`.
-//   examples — `RUSTDOCFLAGS="-D rustdoc::missing_doc_code_examples"` on nightly, into its own
-//              target dir; `pnpm docs:check-rust-examples`. The lint is nightly-only, which bears on
-//              which toolchain runs it, not on whether a missing example is acceptable — so it
-//              denies rather than warns. A separate target dir keeps nightly's artifacts from
-//              invalidating stable's fingerprints in `target/`.
+//   examples — `RUSTDOCFLAGS="-Zcrate-attr=feature(rustdoc_missing_doc_code_examples)
+//              -D rustdoc::missing_doc_code_examples"` on nightly, into its own target dir;
+//              `pnpm docs:check-rust-examples`. The lint is unstable: without the feature gate
+//              rustdoc reports it as an unknown lint and exits 0, so `-D` alone enforces nothing.
+//              `-Zcrate-attr` injects the gate from the flag rather than from the crate source,
+//              which keeps `#![feature]` out of a crate that stable builds. The lint being
+//              nightly-only bears on which toolchain runs it, not on whether a missing example is
+//              acceptable — so it denies rather than warns. A separate target dir keeps nightly's
+//              artifacts from invalidating stable's fingerprints in `target/`.
 //
 // The flag lives in this script's own spawned child environment rather than in a workflow `env:`
 // block or a `VAR=val cmd` prefix: the gate manifest stores a step's command string alone and the
@@ -26,7 +30,7 @@ export const MODES = {
   warnings: { toolchain: null, rustdocflags: "-D warnings", targetDir: null },
   examples: {
     toolchain: "nightly",
-    rustdocflags: "-D rustdoc::missing_doc_code_examples",
+    rustdocflags: "-Zcrate-attr=feature(rustdoc_missing_doc_code_examples) -D rustdoc::missing_doc_code_examples",
     targetDir: ["target", "nightly-doc"],
   },
 };
