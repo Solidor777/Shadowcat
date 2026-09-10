@@ -6,14 +6,14 @@
 // gate stops and reports to the owner.
 //
 // This inspects the literal command STRING the harness is about to run; it does not run a shell.
-// It cannot see a git invocation reached through a shell wrapper (`sh -c "..."`), command
-// substitution, `eval`, an alias, or a shell function, because classifying an arbitrary shell
-// string reliably would require executing one. Its purpose is to make the casual and accidental
-// bypass impossible and the rule visible at the point of temptation, not to stop a determined
-// caller working around the string match itself. Two other layers carry the actual guarantee: the
-// git hooks (core.hooksPath) enforce on everything that reaches git through the normal path
-// regardless of what this guard decides, and the remote enforces branch protection with required
-// status checks, which is server-side and unaffected by anything local.
+// It cannot see a git invocation reached through a shell wrapper (`sh -c "..."`, `env NAME=value
+// git ...`), command substitution, `eval`, an alias, or a shell function, because classifying an
+// arbitrary shell string reliably would require executing one. Its purpose is to make the casual
+// and accidental bypass impossible and the rule visible at the point of temptation, not to stop a
+// determined caller working around the string match itself. Two other layers carry the actual
+// guarantee: the git hooks (core.hooksPath) enforce on everything that reaches git through the
+// normal path regardless of what this guard decides, and the remote enforces branch protection
+// with required status checks, which is server-side and unaffected by anything local.
 //
 // The unarmed-repository denial is what makes the git-hook layer non-optional rather than
 // best-effort: without it, a fresh clone with no hooks installed permits every commit and push
@@ -48,6 +48,11 @@ import { runGit } from "../../scripts/lib/run-git.mjs";
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)=/;
+// Matches a bare `export` argument naming a GIT_CONFIG_* variable, with or without a `=value` —
+// `export GIT_CONFIG_KEY_0` (exporting an already-assigned shell variable) redirects the gate
+// exactly like `export GIT_CONFIG_KEY_0=...` (assigning and exporting in one step); only the
+// value's presence differs, never whether the override applies.
+const GIT_CONFIG_EXPORT_ARG_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)(=.*)?$/;
 
 // Inside double quotes, a backslash escapes only these four characters (POSIX shell grammar); a
 // backslash before anything else inside double quotes is a literal backslash, and the following
@@ -268,12 +273,32 @@ function configPositionalArgs(scanArgs) {
  * — git 2.31+ honours these for a single invocation, so they redirect core.hooksPath exactly like
  * `-c core.hooksPath=...` without that string ever appearing as a `-c` token. Scoped to the same
  * segment as `gitTokenIndex` already scopes the assignments themselves: a bare `VAR=value` prefix
- * applies only to the command it directly prefixes, never to a later command in a `;`/`&&` chain,
- * so checking other segments would deny an unrelated command that merely follows one.
+ * (with no `export`) applies only to the command it directly prefixes, never to a later command in
+ * a `;`/`&&` chain, so checking other segments would deny an unrelated command that merely follows
+ * one — unlike `export`, below, which genuinely does propagate.
  */
 function hasGitConfigEnvOverride(tokens, gi) {
   for (let i = 0; i < gi; i++) {
     if (GIT_CONFIG_ENV_RE.test(tokens[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * True when `tokens` contains an `export` naming a GIT_CONFIG_* variable — either `export
+ * NAME=value` (assigns and exports together) or a bare `export NAME` (exports a variable a prior
+ * segment already assigned). Unlike a bare `VAR=value` prefix, `export` marks the variable in the
+ * shell's own environment table, which every command the shell spawns AFTER it inherits — so this
+ * is checked across every segment preceding the git invocation, not just the one containing it.
+ */
+function segmentExportsGitConfigVar(tokens) {
+  for (let i = 0; i < tokens.length; i++) {
+    if (tokens[i] !== "export") continue;
+    for (let j = i + 1; j < tokens.length; j++) {
+      const t = tokens[j];
+      if (GIT_CONFIG_EXPORT_ARG_RE.test(t)) return true;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(=.*)?$/.test(t)) break; // end of this export's argument list
+    }
   }
   return false;
 }
@@ -304,7 +329,8 @@ export function classify(command, { hooksPathSet }) {
     return armedCache;
   };
 
-  for (const tokens of segments) {
+  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+    const tokens = segments[segIdx];
     const gi = gitTokenIndex(tokens);
     if (gi === -1) continue;
     const gitArgs = tokens.slice(gi);
@@ -337,7 +363,10 @@ export function classify(command, { hooksPathSet }) {
 
     if (sub !== "commit" && sub !== "push") continue;
 
-    if (hasGitConfigEnvOverride(tokens, gi)) return deny(GIT_CONFIG_ENV_REFUSAL);
+    const envOverride =
+      hasGitConfigEnvOverride(tokens, gi) ||
+      segments.slice(0, segIdx).some((seg) => segmentExportsGitConfigVar(seg));
+    if (envOverride) return deny(GIT_CONFIG_ENV_REFUSAL);
     if (hasBypassFlag(scanArgs, sub)) return deny(NO_VERIFY_REFUSAL);
     if (!isArmed()) return deny(UNARMED_REFUSAL);
   }

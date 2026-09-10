@@ -247,3 +247,24 @@ test("a parse failure with an unrelated field naming git commit does not deny th
   });
   expect(result.stdout.trim()).toBe("");
 });
+
+// A bare `VAR=value` prefix applies only to the command it directly prefixes (segment-scoped,
+// confirmed above). `export`, in contrast, marks the variable in the shell's OWN environment
+// table, which every later command the shell spawns in the same invocation inherits — so it must
+// propagate across segments, and an export of an unrelated variable must not.
+test("export propagates a GIT_CONFIG_* override to a later command in the same chain", () => {
+  expect(classify("export GIT_CONFIG_COUNT=1 && git commit -m x", armed).deny).toBe(true);
+  expect(
+    classify("export GIT_CONFIG_KEY_0=core.hooksPath; git push origin main", armed).deny,
+  ).toBe(true);
+  // The bare `export NAME` form (exporting a variable a prior segment already assigned) must
+  // propagate identically to `export NAME=value`.
+  expect(
+    classify("GIT_CONFIG_COUNT=1; export GIT_CONFIG_COUNT; git commit -m x", armed).deny,
+  ).toBe(true);
+});
+
+test("export of an unrelated variable does not deny, and a bare non-exported prefix still does not propagate", () => {
+  expect(classify("export FOO=1 && git commit -m x", armed).deny).toBe(false);
+  expect(classify('GIT_CONFIG_COUNT=1 echo hi; git commit -m "x"', armed).deny).toBe(false);
+});
