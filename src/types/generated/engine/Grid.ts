@@ -5,6 +5,15 @@ import type { GridDistance } from "./GridDistance";
  * A scene's grid geometry. There is NO fallback size anywhere downstream:
  * consumers refuse (`None`/empty) on an absent grid rather than synthesizing
  * a default (`scene_grid_sizes` is the sole defaulting source).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Grid;
+ *
+ * let grid = Grid { kind: "square".to_string(), size: 50.0, distance: None };
+ * assert!(grid.distance.is_none());
+ * ```
  */
 export type Grid = { 
 /**

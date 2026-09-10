@@ -3,6 +3,19 @@ import type { Formula } from "./Formula";
 
 /**
  * The three lifecycle formulas as chain-level defaults (no `resolved`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{EffectLifecycleDefaults, Formula};
+ *
+ * let defaults = EffectLifecycleDefaults {
+ *     on_combat_end: Some(Formula::Number(1.0)),
+ *     ..Default::default()
+ * };
+ * assert_eq!(defaults.on_combat_end, Some(Formula::Number(1.0)));
+ * assert!(defaults.on_advance.is_none());
+ * ```
  */
 export type EffectLifecycleDefaults = { 
 /**

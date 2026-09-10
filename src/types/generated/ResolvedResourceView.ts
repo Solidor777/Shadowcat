@@ -3,6 +3,21 @@ import type { ResourceBindingKind } from "./ResourceBindingKind";
 
 /**
  * One resource's resolved numbers for one combatant.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::combat::channel::{ResolvedResourceView, ResourceBindingKind};
+ *
+ * let view = ResolvedResourceView {
+ *     binding: ResourceBindingKind::Tracked,
+ *     current: Some(8.0),
+ *     max: Some(10.0),
+ *     error: None,
+ * };
+ * assert_eq!(view.current, Some(8.0));
+ * assert!(view.error.is_none());
+ * ```
  */
 export type ResolvedResourceView = { 
 /**

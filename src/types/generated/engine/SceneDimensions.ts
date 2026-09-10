@@ -2,6 +2,15 @@
 
 /**
  * A scene's authored dimensions in GRID UNITS (width × height cells).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::SceneDimensions;
+ *
+ * let dims = SceneDimensions { width: 30.0, height: 20.0 };
+ * assert_eq!(dims.width * dims.height, 600.0);
+ * ```
  */
 export type SceneDimensions = { 
 /**

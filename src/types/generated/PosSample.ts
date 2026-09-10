@@ -4,6 +4,16 @@
  * A single position sample in a `MoveStream` timeline.
  * `t_ms` is elapsed milliseconds from `start_server_ms`; `pos` is the scene-coord
  * cell-center at that instant. INVARIANT: `t_ms >= 0`; samples are ordered by ascending `t_ms`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::PosSample;
+ *
+ * let sample = PosSample { t_ms: 250.0, pos: [3.0, 4.0] };
+ * let json = serde_json::to_value(&sample).unwrap();
+ * assert_eq!(json["pos"], serde_json::json!([3.0, 4.0]));
+ * ```
  */
 export type PosSample = { 
 /**

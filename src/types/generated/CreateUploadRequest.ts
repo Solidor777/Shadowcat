@@ -2,6 +2,19 @@
 
 /**
  * `POST /api/worlds/{world}/assets/uploads` body.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::assets::uploads::CreateUploadRequest;
+ *
+ * let body: CreateUploadRequest = serde_json::from_str(
+ *     r#"{"name":"art.png","content_type":"image/png","byte_size":1024}"#,
+ * )
+ * .unwrap();
+ * assert_eq!(body.name, "art.png");
+ * assert!(body.folder_id.is_none()); // omitted key = world root
+ * ```
  */
 export type CreateUploadRequest = { 
 /**

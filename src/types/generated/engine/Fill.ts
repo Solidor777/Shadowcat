@@ -2,6 +2,15 @@
 
 /**
  * A drawing's fill style.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Fill;
+ *
+ * let fill = Fill { color: "#00ff00".to_string(), alpha: Some(0.5) };
+ * assert_eq!(fill.alpha, Some(0.5));
+ * ```
  */
 export type Fill = { 
 /**

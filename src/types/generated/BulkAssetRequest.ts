@@ -2,6 +2,19 @@
 
 /**
  * `POST /api/worlds/{world}/assets/bulk` body.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::assets::mutate::BulkAssetRequest;
+ *
+ * let body: BulkAssetRequest = serde_json::from_str(
+ *     r#"{"ids":["3fa85f64-5717-4562-b3fc-2c963f66afa6"],"add_tags":["npc"]}"#,
+ * )
+ * .unwrap();
+ * assert_eq!(body.add_tags, vec!["npc".to_string()]);
+ * assert!(body.remove_tags.is_empty()); // omitted key defaults to empty
+ * ```
  */
 export type BulkAssetRequest = { 
 /**

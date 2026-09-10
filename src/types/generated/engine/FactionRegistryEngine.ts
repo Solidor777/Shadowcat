@@ -5,6 +5,15 @@ import type { Faction } from "./Faction";
  * The world's faction registry: a singleton config document. Keyed by
  * faction id — an actor's `faction` field references a key. A MAP, not an
  * array, for the same single-key-Update reason as `ChannelRegistryEngine`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::FactionRegistryEngine;
+ *
+ * let registry = FactionRegistryEngine::seed();
+ * assert!(registry.factions.contains_key("hostile"));
+ * ```
  */
 export type FactionRegistryEngine = { 
 /**

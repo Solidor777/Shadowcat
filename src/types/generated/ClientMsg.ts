@@ -8,6 +8,16 @@ import type { WireRecalcOp } from "./WireRecalcOp";
 
 /**
  * Client -> server frames.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::ClientMsg;
+ *
+ * // Internally tagged on `type`, matching the TS client's discriminated union.
+ * let json = serde_json::to_value(ClientMsg::Pong).unwrap();
+ * assert_eq!(json, serde_json::json!({ "type": "pong" }));
+ * ```
  */
 export type ClientMsg = { "type": "hello", 
 /**

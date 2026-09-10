@@ -7,6 +7,23 @@ import type { Schema } from "./Schema";
  * `subtree_pointer` is a strict `/system/…` descendant (enforced at set-time).
  * `schema_format` is the engine-owned vocabulary version; `version` is the
  * module's content version (provenance only).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{Schema, SchemaDeclaration};
+ *
+ * let decl = SchemaDeclaration {
+ *     module_id: "example-module".into(),
+ *     version: "1.0.0".into(),
+ *     schema_format: 1,
+ *     doc_type: "actor".into(),
+ *     subtree_pointer: "/system/stats".into(),
+ *     schema: Schema::default(),
+ * };
+ * assert_eq!(decl.doc_type, "actor");
+ * assert!(decl.subtree_pointer.starts_with("/system/"));
+ * ```
  */
 export type SchemaDeclaration = { 
 /**

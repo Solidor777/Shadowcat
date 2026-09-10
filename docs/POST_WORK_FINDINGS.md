@@ -3,6 +3,17 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: Rust doc examples now appear in the generated TypeScript bindings. Summary: ts-rs copies
+  a type's whole `///` block into `src/types/generated/*.ts`, so the `# Examples` sections the
+  server crate now carries on every ts-rs-exported struct and enum (171 generated files, ~2,000
+  comment lines) render inside the TS type docs, `use shadowcat::…` and `assert_eq!` included.
+  Nothing compiles or lints them there (the TS example checker and the comment gates skip
+  `generated`), and the bindings must follow the source, so they were regenerated and committed.
+  For a TypeScript reader of `/api/ts/` a Rust example on a wire type is noise at best. ts-rs has
+  no attribute that trims part of a doc comment; a post-export strip would have to live inside
+  the export path the `git diff --exit-code src/types/generated` check runs immediately after.
+  Status: Needs Review (accept as-is, or decide where a doc-trimming step would sit).
+
 - Title: the comment-reference gate reads a doc example's Rust code as prose. Summary: a doctest
   in `chat::TableDrawSegment`'s doc comment carried the struct-literal field `spec: None`, which
   `check-comment-refs.mjs`'s "unnamed spec reference" pattern matched; the campaign implementer

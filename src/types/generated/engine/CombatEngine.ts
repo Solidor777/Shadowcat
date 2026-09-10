@@ -8,6 +8,37 @@ import type { TurnControl } from "./TurnControl";
  * `CombatEngine`). World-level, bound to one scene; at most one combat per
  * scene is `active` at a time, enforced at the `apply_intent` Create/Update
  * chokepoints via `SqliteRepository::active_combat_owner`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{
+ *     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+ *     TurnControl,
+ * };
+ * use uuid::Uuid;
+ *
+ * let combatant = Uuid::new_v4();
+ * let engine = CombatEngine {
+ *     scene_id: Uuid::new_v4(),
+ *     active: true,
+ *     round: 1,
+ *     turn: Some(combatant),
+ *     turn_control: TurnControl::OwnerMayEnd,
+ *     order: vec![combatant],
+ *     movement: MovementRules {
+ *         resource: None,
+ *         interpretation: Interpretation::PerCell,
+ *         enforcement: Enforcement::None,
+ *     },
+ *     effect_cleanup: true,
+ *     rewind_restore: true,
+ *     forward_restore: false,
+ *     effect_lifecycle: EffectLifecycleDefaults::default(),
+ * };
+ * assert_eq!(engine.order, vec![combatant]);
+ * assert_eq!(engine.turn, Some(combatant));
+ * ```
  */
 export type CombatEngine = { 
 /**

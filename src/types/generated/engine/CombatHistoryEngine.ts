@@ -8,6 +8,16 @@ import type { TurnRecord } from "./TurnRecord";
  * independently, to a serialized-byte ceiling `combat::history::append_record`
  * enforces by evicting oldest-first (record COUNT alone does not bound
  * serialized SIZE, and only size is what `validate_system_size` refuses on).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::CombatHistoryEngine;
+ *
+ * let history = CombatHistoryEngine::default();
+ * assert!(history.records.is_empty());
+ * assert_eq!(history.cursor, 0);
+ * ```
  */
 export type CombatHistoryEngine = { 
 /**

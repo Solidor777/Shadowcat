@@ -4,6 +4,21 @@
  * A sound emission: a looping or one-shot audio asset audible within
  * `radius` grid cells. Playback-ready data only — no playback consumer exists
  * yet, so nothing server-side or client-side reads it beyond storage.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::token::SoundEmission;
+ *
+ * let sound = SoundEmission {
+ *     asset: "asset-001".to_string(),
+ *     radius: 6.0,
+ *     volume: 0.7,
+ *     loop_: true,
+ *     enabled: true,
+ * };
+ * assert!(sound.loop_);
+ * ```
  */
 export type SoundEmission = { 
 /**

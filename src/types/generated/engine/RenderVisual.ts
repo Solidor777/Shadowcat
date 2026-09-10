@@ -8,6 +8,19 @@ import type { GeneratedCrop } from "./GeneratedCrop";
  * The kinds the render layer actually draws — the render/resolution
  * boundary. A face's own visual is always one of these — no `faces` nesting
  * (a face can never itself be `{kind:"faces"}`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::RenderVisual;
+ *
+ * let visual = RenderVisual::Image { asset: "token-goblin.png".to_string() };
+ * let json = serde_json::to_value(&visual).unwrap();
+ * assert_eq!(json["kind"], "image");
+ * // A face's visual is a leaf kind: the `faces` discriminant is refused here.
+ * let nested = serde_json::json!({ "kind": "faces", "faces": [] });
+ * assert!(serde_json::from_value::<RenderVisual>(nested).is_err());
+ * ```
  */
 export type RenderVisual = { "kind": "image", 
 /**

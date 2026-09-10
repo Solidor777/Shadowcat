@@ -9,6 +9,26 @@ import type { VisionAssignment } from "./VisionAssignment";
 
 /**
  * The per-token override whitelist for a linked token.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::TokenOverrides;
+ *
+ * let overrides = TokenOverrides {
+ *     name: Some("Goblin Scout".to_string()),
+ *     visual: None,
+ *     size: None,
+ *     shape: None,
+ *     vision: None,
+ *     light: None,
+ *     movement: None,
+ *     aura: None,
+ *     sound: None,
+ *     vfx: None,
+ * };
+ * assert_eq!(overrides.name.as_deref(), Some("Goblin Scout"));
+ * ```
  */
 export type TokenOverrides = { 
 /**

@@ -4,5 +4,14 @@
  * How a `MergeRevert` resolved. Revert never conflicts (the child's local diffs
  * are discarded outright), so the only outcome is `Applied`; the variant exists so
  * the wire shape of `MergeOutcome::Revert` cannot claim otherwise.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::MergeRevertStatus;
+ *
+ * let json = serde_json::to_value(MergeRevertStatus::Applied).unwrap();
+ * assert_eq!(json, serde_json::json!("applied"));
+ * ```
  */
 export type MergeRevertStatus = "applied";

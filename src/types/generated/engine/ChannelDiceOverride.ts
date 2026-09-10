@@ -10,6 +10,18 @@ import type { DiceModeSetting } from "./DiceModeSetting";
  * always carries BOTH fields, so a channel either fully overrides the
  * world default or (absent from the map) fully inherits it; there is no
  * "override just mode, inherit direction" state to resolve.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{ChannelDiceOverride, DiceDirectionSetting, DiceModeSetting};
+ *
+ * let over = ChannelDiceOverride {
+ *     mode: DiceModeSetting::SuccessCount,
+ *     direction: DiceDirectionSetting::LowWins,
+ * };
+ * assert_eq!(over.mode, DiceModeSetting::SuccessCount);
+ * ```
  */
 export type ChannelDiceOverride = { 
 /**

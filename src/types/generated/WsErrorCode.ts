@@ -2,5 +2,14 @@
 
 /**
  * Error categories surfaced over the socket.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::WsErrorCode;
+ *
+ * let json = serde_json::to_value(WsErrorCode::Forbidden).unwrap();
+ * assert_eq!(json, serde_json::json!("forbidden"));
+ * ```
  */
 export type WsErrorCode = "world_not_found" | "bad_message" | "publish_failed" | "forbidden" | "internal";

@@ -6,6 +6,21 @@ import type { DocRole } from "./DocRole";
  * keyed by grantee — a `DocRole` or a user id — and its values are namespaced
  * capability strings (e.g. `core:manage_embedded`). Grants widen what a
  * role/user may do on a document; they never revoke the floor.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{CapabilityGrants, DocRole};
+ *
+ * let mut grants = CapabilityGrants::default();
+ * grants
+ *     .by_role
+ *     .entry(DocRole::Observer)
+ *     .or_default()
+ *     .insert("core:manage_embedded".into());
+ * assert!(grants.by_role[&DocRole::Observer].contains("core:manage_embedded"));
+ * assert!(grants.by_user.is_empty());
+ * ```
  */
 export type CapabilityGrants = { 
 /**

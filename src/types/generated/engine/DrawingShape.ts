@@ -3,6 +3,15 @@
 /**
  * `points` layout mirrors `RegionShape` (path vertices for freehand/line/
  * polygon, or bbox corners `[x0,y0,x1,y1]` for rect/ellipse).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::DrawingShape;
+ *
+ * let shape = DrawingShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 4.0, 4.0] };
+ * assert_eq!(shape.kind, "rect");
+ * ```
  */
 export type DrawingShape = { 
 /**

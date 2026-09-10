@@ -3,6 +3,34 @@
 /**
  * Metadata for one stored asset. Bytes live on disk at `storage_key`
  * (relative to `assets_dir`); identity (`id`) is stable across rename/replace.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::asset::query::{sort_key_of, AssetSort};
+ * use shadowcat::data::asset::{Asset, AssetMeta};
+ * use uuid::Uuid;
+ *
+ * let asset = Asset {
+ *     id: Uuid::new_v4(),
+ *     world_id: Uuid::new_v4(),
+ *     storage_key: "w/id".into(),
+ *     original_name: "Map.png".into(),
+ *     content_type: "image/webp".into(),
+ *     byte_size: 10,
+ *     created_by: None,
+ *     created_at: 42,
+ *     version: 1,
+ *     folder_id: None,
+ *     tags: vec![],
+ *     derived_tags: vec![],
+ *     meta: AssetMeta::unprocessed("image/png", 10),
+ * };
+ * // `sort_key_of` derives its output from the asset's fields; it is not a value
+ * // the literal above assigns directly.
+ * assert_eq!(sort_key_of(&asset, AssetSort::Name), "map.png");
+ * assert_eq!(sort_key_of(&asset, AssetSort::Created), "42");
+ * ```
  */
 export type Asset = { 
 /**

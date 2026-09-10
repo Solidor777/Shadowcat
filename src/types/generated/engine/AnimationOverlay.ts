@@ -3,6 +3,15 @@ import type { EasingMode } from "./EasingMode";
 
 /**
  * `Option`-lifted twin of `AnimationSettings`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::system_defaults::AnimationOverlay;
+ *
+ * let overlay = AnimationOverlay { speed_cells_per_sec: Some(4.0), easing: None };
+ * assert!(overlay.speed_cells_per_sec.unwrap() > 0.0);
+ * ```
  */
 export type AnimationOverlay = { 
 /**

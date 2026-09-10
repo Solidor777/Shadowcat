@@ -7,6 +7,19 @@ import type { NoticeAudience } from "./NoticeAudience";
  * tagged, so `deny_unknown_fields` is unavailable (the
  * `CombatantKind`/`ResourceBinding` precedent); `normalize_engine`'s
  * re-serialization still drops smuggled keys.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::TriggerEffect;
+ *
+ * let effect = TriggerEffect::ConditionAdd { condition: "prone".to_string() };
+ * let json = serde_json::to_value(&effect).unwrap();
+ * // Internally tagged on `type`, snake_case: the variant name is the discriminant.
+ * assert_eq!(json["type"], "condition_add");
+ * assert_eq!(json["condition"], "prone");
+ * assert_eq!(serde_json::from_value::<TriggerEffect>(json).unwrap(), effect);
+ * ```
  */
 export type TriggerEffect = { "type": "condition_add", 
 /**

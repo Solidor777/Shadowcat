@@ -2,6 +2,15 @@
 
 /**
  * A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Size;
+ *
+ * let size = Size { w: 2.0, h: 2.0 };
+ * assert_eq!(size.w, 2.0);
+ * ```
  */
 export type Size = { 
 /**

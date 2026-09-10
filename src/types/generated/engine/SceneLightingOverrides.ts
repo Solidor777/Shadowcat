@@ -5,6 +5,15 @@ import type { LightMode } from "./LightMode";
 /**
  * Per-scene overrides for lighting; same null-vs-absent equivalence as
  * `SceneVisionOverrides`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::SceneLightingOverrides;
+ *
+ * let overrides = SceneLightingOverrides { enabled: Some(false), mode: None, environment: None };
+ * assert_eq!(overrides.enabled, Some(false));
+ * ```
  */
 export type SceneLightingOverrides = { 
 /**

@@ -10,5 +10,22 @@
  * under this standing rather than under the instance's own ownership
  * (`relate`): a recorded `OwnerOrGm` names the template's owner, not the
  * instance's. Recorded as of the write; the next merge write re-resolves it.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{OwnerStanding, Visibility};
+ *
+ * // A recorded OwnerOrGm entry names the TEMPLATE owner, so it only stands
+ * // under the instance owner's own Owner standing.
+ * assert_eq!(
+ *     OwnerStanding::Reader.relate(Visibility::OwnerOrGm),
+ *     Visibility::GmOnly
+ * );
+ * assert_eq!(
+ *     OwnerStanding::Owner.relate(Visibility::OwnerOrGm),
+ *     Visibility::OwnerOrGm
+ * );
+ * ```
  */
 export type OwnerStanding = "stranger" | "reader" | "owner";

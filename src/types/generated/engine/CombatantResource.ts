@@ -6,6 +6,17 @@
  * resource intents move it, clamped to the binding's evaluated `max`. An
  * ABSENT entry means untouched — the server reads it as full (`current`
  * equal to the evaluated `max`) and materializes the entry on first change.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::CombatantResource;
+ *
+ * let resource = CombatantResource { current: 12.0 };
+ * let json = serde_json::to_value(&resource).unwrap();
+ * let round_tripped: CombatantResource = serde_json::from_value(json).unwrap();
+ * assert_eq!(round_tripped.current, 12.0);
+ * ```
  */
 export type CombatantResource = { 
 /**

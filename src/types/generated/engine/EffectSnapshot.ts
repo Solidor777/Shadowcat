@@ -3,6 +3,25 @@ import type { EffectEngine } from "./EffectEngine";
 
 /**
  * One anchored effect as it stood at a turn boundary.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{EffectEngine, EffectSnapshot};
+ * use uuid::Uuid;
+ *
+ * let snapshot = EffectSnapshot {
+ *     host: Uuid::new_v4(),
+ *     path: "/embedded/effect/0".to_string(),
+ *     engine: EffectEngine {
+ *         active: true,
+ *         transfer: false,
+ *         duration: None,
+ *         lifecycle: None,
+ *     },
+ * };
+ * assert_eq!(snapshot.path, "/embedded/effect/0");
+ * ```
  */
 export type EffectSnapshot = { 
 /**

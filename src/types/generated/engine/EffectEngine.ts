@@ -7,6 +7,21 @@ import type { EffectLifecycle } from "./EffectLifecycle";
  * `EffectEngine`). Modifiers stay in the system band; the engine owns only
  * activation, transfer and the clock-bound lifetime. Absent `transfer` and
  * `duration` read as `false` / `None`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::EffectEngine;
+ *
+ * let effect = EffectEngine {
+ *     active: true,
+ *     transfer: false,
+ *     duration: None,
+ *     lifecycle: None,
+ * };
+ * assert!(effect.active);
+ * assert!(!effect.transfer);
+ * ```
  */
 export type EffectEngine = { 
 /**

@@ -8,6 +8,15 @@ import type { DiceModeSetting } from "./DiceModeSetting";
  * `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
  * or absent body fills the rest with the safe default (Total + HighWins,
  * empty `channel_overrides`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::DiceSettingsEngine;
+ *
+ * let settings = DiceSettingsEngine::default();
+ * assert!(settings.channel_overrides.is_empty());
+ * ```
  */
 export type DiceSettingsEngine = { 
 /**

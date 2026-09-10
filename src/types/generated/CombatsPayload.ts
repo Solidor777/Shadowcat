@@ -4,6 +4,17 @@ import type { CombatView } from "./CombatView";
 /**
  * The whole `"combat"` derived-channel payload: every combat `ctx` may read, sorted by id for a
  * stable fingerprint (the egress loop's change detection compares whole payloads).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::combat::channel::CombatsPayload;
+ *
+ * let payload = CombatsPayload { combats: Vec::new() };
+ * let json = serde_json::to_value(&payload).unwrap();
+ * let round_tripped: CombatsPayload = serde_json::from_value(json).unwrap();
+ * assert!(round_tripped.combats.is_empty());
+ * ```
  */
 export type CombatsPayload = { 
 /**

@@ -5,6 +5,22 @@ import type { Formula } from "./Formula";
 
 /**
  * A clock-bound lifetime for an effect.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{Duration, DurationUnit, ExpiryPoint, Formula};
+ *
+ * let duration = Duration {
+ *     amount: Formula::Number(3.0),
+ *     remaining: None,
+ *     unit: DurationUnit::Rounds,
+ *     anchor: None,
+ *     expires: ExpiryPoint::RoundEnd,
+ * };
+ * assert!(duration.remaining.is_none());
+ * assert_eq!(duration.expires, ExpiryPoint::RoundEnd);
+ * ```
  */
 export type Duration = { 
 /**

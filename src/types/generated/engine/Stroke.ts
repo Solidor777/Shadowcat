@@ -2,6 +2,15 @@
 
 /**
  * A drawing's outline style.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Stroke;
+ *
+ * let stroke = Stroke { color: "#ff0000".to_string(), width: 2.0 };
+ * assert_eq!(stroke.width, 2.0);
+ * ```
  */
 export type Stroke = { 
 /**

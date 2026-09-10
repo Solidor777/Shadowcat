@@ -10,6 +10,19 @@ import type { SceneDefaultsOverlay } from "./SceneDefaultsOverlay";
  * package's manifest declaration (the world-config seed path — no client
  * origin may author it); `active_scene` is world state, not a setting, and
  * has no overlay.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::system_defaults::{AnimationOverlay, SystemDefaultsEngine};
+ *
+ * let engine = SystemDefaultsEngine {
+ *     animation: Some(AnimationOverlay { speed_cells_per_sec: Some(4.0), easing: None }),
+ *     ..Default::default()
+ * };
+ * assert!(engine.animation.is_some());
+ * assert!(engine.combat.is_none()); // no combat-rule overlay declared
+ * ```
  */
 export type SystemDefaultsEngine = { 
 /**

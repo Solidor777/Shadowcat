@@ -9,6 +9,21 @@ import type { RegionTrigger } from "./RegionTrigger";
  * `cost` is a multiplier (>=1, clamped read-side) meaningful only for
  * `behavior:"terrain"`. `enabled` lets a GM toggle a region off without
  * deleting it (disabled regions are dropped entirely at read time).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{RegionEngine, RegionShape};
+ *
+ * let region = RegionEngine {
+ *     shape: RegionShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 5.0, 5.0] },
+ *     behavior: "terrain".to_string(),
+ *     cost: 2.0,
+ *     enabled: true,
+ *     triggers: Vec::new(),
+ * };
+ * assert!(region.validate().is_ok());
+ * ```
  */
 export type RegionEngine = { 
 /**

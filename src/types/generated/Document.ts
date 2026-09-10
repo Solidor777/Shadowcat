@@ -5,6 +5,32 @@ import type { Source } from "./Source";
 
 /**
  * The persisted document: typed envelope around an opaque `system` body.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{Document, PermissionSet, Scope};
+ *
+ * let doc = Document {
+ *     id: uuid::Uuid::new_v4(),
+ *     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+ *     doc_type: "note".into(),
+ *     schema_version: 1,
+ *     name: Some("Session recap".into()),
+ *     source: None,
+ *     base: None,
+ *     owner: None,
+ *     permissions: PermissionSet::default(),
+ *     embedded: Default::default(),
+ *     parent_id: None,
+ *     engine: None,
+ *     system: serde_json::json!({}),
+ *     created_at: 0,
+ *     updated_at: 0,
+ * };
+ * assert_eq!(doc.doc_type, "note");
+ * assert_eq!(doc.name.as_deref(), Some("Session recap"));
+ * ```
  */
 export type Document = { 
 /**

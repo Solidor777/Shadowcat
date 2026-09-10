@@ -5,6 +5,20 @@ import type { ContractProvide } from "./ContractProvide";
  * A module's UI contract declaration: what surface contracts it provides and
  * which it requires an active provider for. Pure data — the server validates
  * and distributes these strings; it never holds components or runs module code.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::ContractDeclaration;
+ *
+ * let decl = ContractDeclaration {
+ *     module_id: "example-module".into(),
+ *     version: "1.0.0".into(),
+ *     provides: vec![],
+ *     requires: vec!["shadowcat.panel".into()],
+ * };
+ * assert_eq!(decl.requires, vec!["shadowcat.panel".to_string()]);
+ * ```
  */
 export type ContractDeclaration = { 
 /**

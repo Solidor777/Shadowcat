@@ -20,5 +20,13 @@ import type { MergeOutcome } from "./MergeOutcome";
  * live documents, so an instance committed before the failure reads as
  * `Applied` (in sync, nothing left to write) and the remainder carry their
  * current conflicts. Re-sending the intent commits what remains.
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::MergeErrorKind;
+ *
+ * let json = serde_json::to_value(MergeErrorKind::Internal).unwrap();
+ * assert_eq!(json, serde_json::json!("internal"));
+ * ```
  */
 export type MergeErrorKind = "not_found" | "not_an_instance" | "forbidden" | "corrupt_base" | { "stale_resolutions": MergeOutcome } | { "unknown_resolution": MergeOutcome } | { "unresolvable": MergeOutcome } | "internal";

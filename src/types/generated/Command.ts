@@ -3,6 +3,21 @@ import type { Operation } from "./Operation";
 
 /**
  * A command that has been assigned a per-world sequence number.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::command::Command;
+ *
+ * let cmd = Command {
+ *     seq: 42,
+ *     world_id: uuid::Uuid::nil(),
+ *     author: uuid::Uuid::nil(),
+ *     ts: 0,
+ *     ops: vec![],
+ * };
+ * assert_eq!(cmd.seq, 42); // the client's replay watermark
+ * ```
  */
 export type Command = { 
 /**

@@ -4,6 +4,23 @@ import type { EffectSnapshot } from "./EffectSnapshot";
 
 /**
  * Every combatant and anchored effect as they stood when `turn` began.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::TurnRecord;
+ * use uuid::Uuid;
+ *
+ * let turn = Uuid::new_v4();
+ * let record = TurnRecord {
+ *     round: 1,
+ *     turn,
+ *     combatants: Vec::new(),
+ *     effects: Vec::new(),
+ * };
+ * assert_eq!(record.turn, turn);
+ * assert!(record.combatants.is_empty());
+ * ```
  */
 export type TurnRecord = { 
 /**

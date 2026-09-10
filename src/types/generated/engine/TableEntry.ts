@@ -4,6 +4,16 @@ import type { DocLinkTarget } from "./DocLinkTarget";
 /**
  * One thing a drawn row yields, resolved by `crate::tables::draw::draw_table`
  * at draw time (never at ingress — the `Segment::DocLink` precedent).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::table::TableEntry;
+ *
+ * let entry = TableEntry::Text { text: "You find a rusty key.".into() };
+ * let TableEntry::Text { text } = &entry else { unreachable!() };
+ * assert_eq!(text, "You find a rusty key.");
+ * ```
  */
 export type TableEntry = { "kind": "text", 
 /**

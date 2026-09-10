@@ -4,6 +4,17 @@ import type { WorldRole } from "./WorldRole";
 /**
  * A world the caller can access, with their effective role. The client's
  * world-select list item.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::WorldRole;
+ * use shadowcat::http::routes::WorldEntry;
+ *
+ * let entry = WorldEntry { id: uuid::Uuid::new_v4(), name: "Curse of Strahd".into(), role: WorldRole::Gm };
+ * let value = serde_json::to_value(&entry).unwrap();
+ * assert_eq!(value["name"], "Curse of Strahd");
+ * ```
  */
 export type WorldEntry = { 
 /**

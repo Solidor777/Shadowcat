@@ -23,6 +23,22 @@ import type { Visibility } from "./Visibility";
  * same way ingest would, rather than coalescing a missing key into
  * `null`/empty and reading a malformed snapshot as an ordinary one. The
  * ts-rs export is the client's `MergeBase`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::merge::bands::MergeBase;
+ * use std::collections::BTreeMap;
+ *
+ * let base = MergeBase {
+ *     name: Some("Dragon".to_string()),
+ *     engine: serde_json::Value::Null,
+ *     system: serde_json::json!({ "hp": 10 }),
+ *     embedded: BTreeMap::new(),
+ *     property_overrides: BTreeMap::new(),
+ * };
+ * assert_eq!(base.system["hp"], 10);
+ * ```
  */
 export type MergeBase = { 
 /**

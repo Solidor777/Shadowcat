@@ -5,6 +5,16 @@
  * or an instanced actor resolved through its token. Carried on the
  * `SendMessage` frame and stored in `MessageEngine`. No ID newtypes exist —
  * identifiers are bare `Uuid` (rendered `string` in TS).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::chat::ActorOwnerRef;
+ *
+ * let owner = ActorOwnerRef::Actor { actor_id: uuid::Uuid::nil() };
+ * let json = serde_json::to_value(&owner).unwrap();
+ * assert_eq!(json["kind"], "actor");
+ * ```
  */
 export type ActorOwnerRef = { "kind": "actor", 
 /**

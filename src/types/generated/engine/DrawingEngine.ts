@@ -9,6 +9,19 @@ import type { Stroke } from "./Stroke";
  * (`{...} | null`, not optional) — `Option<T>` without a serde default
  * mirrors that exactly (the key must be present, either an object or
  * `null`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{DrawingEngine, DrawingShape};
+ *
+ * let drawing = DrawingEngine {
+ *     shape: DrawingShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 4.0, 4.0] },
+ *     stroke: None,
+ *     fill: None,
+ * };
+ * assert!(drawing.stroke.is_none());
+ * ```
  */
 export type DrawingEngine = { 
 /**

@@ -2,5 +2,15 @@
 
 /**
  * The clock boundary an effect expires on.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::ExpiryPoint;
+ *
+ * let json = serde_json::to_value(ExpiryPoint::TurnStart).unwrap();
+ * assert_eq!(json, serde_json::json!("turn_start"));
+ * assert_ne!(ExpiryPoint::TurnStart, ExpiryPoint::TurnEnd);
+ * ```
  */
 export type ExpiryPoint = "turn_start" | "turn_end" | "round_start" | "round_end";

@@ -5,6 +5,20 @@ import type { VfxAnchor } from "./VfxAnchor";
  * A VFX emission: a visual effect asset anchored to the token. Playback-ready
  * data only — no playback consumer exists yet, so nothing server-side or
  * client-side reads it beyond storage.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::token::{VfxAnchor, VfxEmission};
+ *
+ * let vfx = VfxEmission {
+ *     asset: "fx-glow".to_string(),
+ *     anchor: VfxAnchor::Above,
+ *     loop_: false,
+ *     enabled: true,
+ * };
+ * assert_eq!(vfx.anchor, VfxAnchor::Above);
+ * ```
  */
 export type VfxEmission = { 
 /**

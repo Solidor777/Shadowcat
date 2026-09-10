@@ -4,6 +4,19 @@
  * A single vision-polygon sample in a `MoveStream` timeline, paired with a `PosSample` by `t_ms`.
  * Ordered `[x,y]` vertices of a visible region at this instant; multiple polygons cover
  * non-contiguous visible regions. Not necessarily convex. Sent only for the mover.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::VisionSample;
+ *
+ * let sample = VisionSample {
+ *     t_ms: 0.0,
+ *     polygons: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]],
+ * };
+ * let json = serde_json::to_value(&sample).unwrap();
+ * assert_eq!(json["polygons"][0].as_array().unwrap().len(), 3);
+ * ```
  */
 export type VisionSample = { 
 /**

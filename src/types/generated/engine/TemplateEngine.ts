@@ -3,6 +3,18 @@ import type { TemplateShape } from "./TemplateShape";
 
 /**
  * A template document's engine body: a measured-area overlay.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{TemplateEngine, TemplateShape};
+ *
+ * let template = TemplateEngine {
+ *     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0 },
+ *     color: "#ffaa00".to_string(),
+ * };
+ * assert_eq!(template.color, "#ffaa00");
+ * ```
  */
 export type TemplateEngine = { 
 /**

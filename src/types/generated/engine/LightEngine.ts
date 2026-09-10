@@ -6,6 +6,27 @@ import type { LightEmission } from "./LightEmission";
  * (mirrors the client's `LightEngine`). The emission shape lives exactly
  * once, in `LightEmission` — a carried emission is the same payload resolved
  * at a token's live position.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{LightEmission, LightEngine};
+ *
+ * let light = LightEngine {
+ *     x: 10.0,
+ *     y: 10.0,
+ *     elevation: None,
+ *     emission: LightEmission {
+ *         color: "#ffffff".to_string(),
+ *         intensity: 1.0,
+ *         bright_radius: 5.0,
+ *         dim_radius: 10.0,
+ *         falloff: None,
+ *         enabled: true,
+ *     },
+ * };
+ * assert_eq!(light.emission.bright_radius, 5.0);
+ * ```
  */
 export type LightEngine = { 
 /**

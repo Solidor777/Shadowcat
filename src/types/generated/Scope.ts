@@ -2,6 +2,16 @@
 
 /**
  * Storage/runtime scope of a document.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::Scope;
+ *
+ * let scope = Scope::World { world_id: uuid::Uuid::nil() };
+ * let Scope::World { world_id } = scope else { unreachable!() };
+ * assert_eq!(world_id, uuid::Uuid::nil());
+ * ```
  */
 export type Scope = { "kind": "compendium", 
 /**

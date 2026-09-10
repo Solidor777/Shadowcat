@@ -2,6 +2,15 @@
 
 /**
  * How a draw selects a row from `TableEngine.rows`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::table::DrawRule;
+ *
+ * let rule = DrawRule::Formula { notation: "1d20".into() };
+ * assert_ne!(rule, DrawRule::Weighted);
+ * ```
  */
 export type DrawRule = { "kind": "weighted" } | { "kind": "formula", 
 /**

@@ -8,6 +8,17 @@
  * stays a purely client-chosen label — the server never validates it or
  * derives audience from it; a client module choosing to post into a "GM"
  * channel is what sets `Audience::GmOnly`, not the channel string itself.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::chat::Audience;
+ *
+ * let audience = Audience::Whisper { recipients: vec![uuid::Uuid::nil()] };
+ * let json = serde_json::to_value(&audience).unwrap();
+ * assert_eq!(json["kind"], "whisper");
+ * assert_eq!(Audience::default(), Audience::Public);
+ * ```
  */
 export type Audience = { "kind": "public" } | { "kind": "whisper", 
 /**

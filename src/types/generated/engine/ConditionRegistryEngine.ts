@@ -5,6 +5,16 @@ import type { Condition } from "./Condition";
  * The world's condition registry: a singleton config document. Keyed by
  * condition id — an actor's `conditions` array holds keys. A MAP, not an
  * array, for the same single-key-Update reason as `ChannelRegistryEngine`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::ConditionRegistryEngine;
+ *
+ * let registry = ConditionRegistryEngine::seed();
+ * assert!(registry.conditions.contains_key("unconscious"));
+ * assert_eq!(registry.conditions.len(), 9);
+ * ```
  */
 export type ConditionRegistryEngine = { 
 /**

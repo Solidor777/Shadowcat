@@ -3,6 +3,15 @@ import type { GradationBand } from "./GradationBand";
 
 /**
  * The engine body of a "light-gradation" config document.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::LightGradationEngine;
+ *
+ * let engine = LightGradationEngine::seed();
+ * assert_eq!(engine.bands[0].name, "bright");
+ * ```
  */
 export type LightGradationEngine = { 
 /**

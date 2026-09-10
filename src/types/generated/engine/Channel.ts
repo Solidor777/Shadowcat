@@ -2,6 +2,15 @@
 
 /**
  * A chat channel's display config (mirrors the client's `Channel`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Channel;
+ *
+ * let channel = Channel { name: "Out of Character".into() };
+ * assert_eq!(channel.name, "Out of Character");
+ * ```
  */
 export type Channel = { 
 /**

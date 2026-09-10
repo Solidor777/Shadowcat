@@ -4,6 +4,14 @@
  * A drawn footprint's extent in SCENE units (already scaled by the scene's `grid.size`), as the
  * client renders and hit-tests it. Carries no radius: the collision radius is a server-side gate
  * quantity and is deliberately not disclosed as a client-consumable number.
+ *
+ * # Examples
+ *
+ * ```
+ * let extent = shadowcat::scene::footprint::FootprintExtent { w: 1.0, h: 2.0 };
+ * assert_eq!(extent.w, 1.0);
+ * assert_eq!(extent.h, 2.0);
+ * ```
  */
 export type FootprintExtent = { 
 /**

@@ -10,6 +10,23 @@ import type { SceneVisionOverrides } from "./SceneVisionOverrides";
  * `bounds` = the authored play-area rectangle in grid units, which the
  * continuous router and the per-player vision/lighting path both read;
  * absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{Grid, SceneEngine};
+ *
+ * let scene = SceneEngine {
+ *     grid: Grid { kind: "square".to_string(), size: 50.0, distance: None },
+ *     background: None,
+ *     bounds: None,
+ *     snap_to_grid: None,
+ *     vision: None,
+ *     lighting: None,
+ *     combat: None,
+ * };
+ * assert_eq!(scene.grid.size, 50.0);
+ * ```
  */
 export type SceneEngine = { 
 /**

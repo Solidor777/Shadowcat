@@ -9,6 +9,19 @@ import type { SchemaType } from "./SchemaType";
  * deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
  * Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
  * `validate_schema` enforces it at set-time.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{Schema, SchemaType};
+ *
+ * let schema = Schema {
+ *     ty: Some(SchemaType::Object),
+ *     ..Default::default()
+ * };
+ * assert_eq!(schema.ty, Some(SchemaType::Object));
+ * assert!(schema.properties.is_none()); // absent = any type/shape beneath
+ * ```
  */
 export type Schema = { 
 /**

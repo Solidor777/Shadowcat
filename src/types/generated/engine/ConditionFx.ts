@@ -3,6 +3,15 @@
 /**
  * A condition's built-in token-art effects (css colors), folded by the
  * client's `TokenView.toSpec` into the token's render fx.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::registries::ConditionFx;
+ *
+ * let fx = ConditionFx { tint: Some("#f85149".into()), desaturate: Some(true), highlight: None };
+ * assert!(fx.desaturate.unwrap());
+ * ```
  */
 export type ConditionFx = { 
 /**

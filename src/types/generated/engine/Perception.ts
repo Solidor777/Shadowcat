@@ -7,5 +7,13 @@
  * range, ignoring illumination and — when `VisionMode::requires_los` is
  * false — walls. The lit-mask pipeline reads terrain senses only; creature
  * senses feed the `perceived` token list (`SceneEcs::player_perceived_tokens`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Perception;
+ *
+ * assert_eq!(Perception::default(), Perception::Terrain);
+ * ```
  */
 export type Perception = "terrain" | "creatures";

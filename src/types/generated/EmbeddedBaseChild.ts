@@ -16,6 +16,23 @@ import type { Visibility } from "./Visibility";
  * unchanged against a `null` band — the data-losing direction for a
  * template-deleted child). The ts-rs export is the client's
  * `EmbeddedBaseChild`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::merge::bands::EmbeddedBaseChild;
+ * use std::collections::BTreeMap;
+ *
+ * let child = EmbeddedBaseChild {
+ *     source_id: "11111111-1111-1111-1111-111111111111".to_string(),
+ *     name: Some("Sword".to_string()),
+ *     engine: serde_json::Value::Null,
+ *     system: serde_json::json!({ "damage": 4 }),
+ *     embedded: BTreeMap::new(),
+ *     property_overrides: BTreeMap::new(),
+ * };
+ * assert_eq!(child.name.as_deref(), Some("Sword"));
+ * ```
  */
 export type EmbeddedBaseChild = { 
 /**

@@ -10,6 +10,24 @@ import type { TurnControl } from "./TurnControl";
  * `null`/absent both mean "unset — fall through". `movement_resource` is
  * doubly optional: `Some(None)` explicitly CLEARS an inherited resource,
  * `None` inherits.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{CombatDefaults, Enforcement};
+ *
+ * let defaults = CombatDefaults {
+ *     enforcement: Some(Enforcement::Warn),
+ *     ..Default::default()
+ * };
+ * let json = serde_json::to_value(&defaults).unwrap();
+ * // `movementResource` alone is omitted when unset (its inner `None` is an explicit
+ * // clear, so absence must stay distinguishable); every other unset leaf is an explicit null.
+ * assert!(json.get("movementResource").is_none());
+ * assert_eq!(json["turnControl"], serde_json::Value::Null);
+ * let round_tripped: CombatDefaults = serde_json::from_value(json).unwrap();
+ * assert_eq!(round_tripped.enforcement, Some(Enforcement::Warn));
+ * ```
  */
 export type CombatDefaults = { 
 /**

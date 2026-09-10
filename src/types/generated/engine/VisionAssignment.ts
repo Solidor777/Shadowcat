@@ -3,6 +3,15 @@
 /**
  * A per-actor or per-token vision assignment: which mode (by id, referencing
  * a `vision-modes` registry entry) + effective range in grid cells.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::VisionAssignment;
+ *
+ * let assignment = VisionAssignment { mode: "darkvision".to_string(), range: Some(12.0) };
+ * assert_eq!(assignment.range, Some(12.0));
+ * ```
  */
 export type VisionAssignment = { 
 /**

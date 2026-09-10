@@ -5,5 +5,17 @@
  * property_overrides`). Enforced per recipient by `Access::can_see` inside
  * `filter_properties` — hidden values are stripped BEFORE transmission, never
  * sent-then-hidden.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{OwnerStanding, Visibility};
+ *
+ * // A non-owner recipient can never reach the owner half of `OwnerOrGm`.
+ * assert_eq!(OwnerStanding::Reader.relate(Visibility::OwnerOrGm), Visibility::GmOnly);
+ * assert_eq!(OwnerStanding::Owner.relate(Visibility::OwnerOrGm), Visibility::OwnerOrGm);
+ * // Wire form is snake_case.
+ * assert_eq!(serde_json::to_value(Visibility::OwnerOrGm).unwrap(), "owner_or_gm");
+ * ```
  */
 export type Visibility = "all" | "gm_only" | "owner_or_gm";

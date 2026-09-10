@@ -2,5 +2,14 @@
 
 /**
  * Which tier served a resync.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::ResyncSource;
+ *
+ * let json = serde_json::to_value(ResyncSource::Buffer).unwrap();
+ * assert_eq!(json, serde_json::json!("buffer"));
+ * ```
  */
 export type ResyncSource = "buffer" | "log";

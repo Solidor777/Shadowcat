@@ -4,6 +4,15 @@
  * A template's area anchored at `(x,y)` with a `size` and `direction`
  * (degrees), tessellated per `kind`. Client mirror: `TemplateEngine["shape"]`
  * (`@shadowcat/core`) — the shape lives one level inside the engine body.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::TemplateShape;
+ *
+ * let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0 };
+ * assert_eq!(shape.size, 15.0);
+ * ```
  */
 export type TemplateShape = { 
 /**

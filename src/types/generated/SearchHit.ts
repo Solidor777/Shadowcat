@@ -4,6 +4,26 @@ import type { Document } from "./Document";
 /**
  * One search result: the per-recipient-filtered document, its BM25 relevance
  * (lower = more relevant, as SQLite returns it), and a highlighted snippet.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::Document;
+ * use shadowcat::data::search::SearchHit;
+ *
+ * let doc: Document = serde_json::from_value(serde_json::json!({
+ *     "id": "00000000-0000-0000-0000-000000000001",
+ *     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+ *     "doc_type": "item",
+ *     "schema_version": 1,
+ *     "name": "MOCK_NOTE_A",
+ *     "system": {},
+ *     "created_at": 0,
+ *     "updated_at": 0
+ * })).unwrap();
+ * let hit = SearchHit { document: doc, score: 1.5, snippet: "MOCK_NOTE_A".to_string() };
+ * assert!(hit.score < 2.0);
+ * ```
  */
 export type SearchHit = { 
 /**

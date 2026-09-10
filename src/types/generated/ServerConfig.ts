@@ -4,6 +4,15 @@
  * Public server bootstrap info for the SPA's first-load routing (setup vs
  * login). Exposes nothing beyond the `initialized` bit the setup-409 already
  * reveals.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::routes::ServerConfig;
+ *
+ * let cfg = ServerConfig { initialized: true };
+ * assert_eq!(serde_json::to_value(&cfg).unwrap(), serde_json::json!({"initialized": true}));
+ * ```
  */
 export type ServerConfig = { 
 /**

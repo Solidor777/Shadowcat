@@ -2,5 +2,13 @@
 
 /**
  * Where a token-anchored VFX emission renders relative to the token's art.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::token::VfxAnchor;
+ *
+ * assert_ne!(VfxAnchor::Above, VfxAnchor::Below);
+ * ```
  */
 export type VfxAnchor = "token" | "above" | "below";

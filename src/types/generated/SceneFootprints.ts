@@ -4,6 +4,19 @@ import type { TokenFootprint } from "./TokenFootprint";
 
 /**
  * Every resolved token extent in one scene, plus that scene's unit footprint.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::scene::footprint::{FootprintExtent, SceneFootprints};
+ *
+ * let sf = SceneFootprints {
+ *     scene: uuid::Uuid::nil(),
+ *     unit: FootprintExtent { w: 1.0, h: 1.0 },
+ *     tokens: Vec::new(),
+ * };
+ * assert!(sf.tokens.is_empty());
+ * ```
  */
 export type SceneFootprints = { 
 /**

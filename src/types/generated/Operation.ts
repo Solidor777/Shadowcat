@@ -4,6 +4,21 @@ import type { FieldChange } from "./FieldChange";
 
 /**
  * A single operation within a command.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::command::Operation;
+ *
+ * let op = Operation::Move {
+ *     doc_id: uuid::Uuid::nil(),
+ *     parent_id: None,
+ *     old_parent_id: Some(uuid::Uuid::nil()),
+ * };
+ * let Operation::Move { parent_id, old_parent_id, .. } = op else { unreachable!() };
+ * assert_eq!(parent_id, None);
+ * assert_eq!(old_parent_id, Some(uuid::Uuid::nil()));
+ * ```
  */
 export type Operation = { "op": "create", 
 /**

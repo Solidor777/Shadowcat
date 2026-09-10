@@ -7,6 +7,16 @@ import type { MovementRestriction } from "./MovementRestriction";
 /**
  * `Option`-lifted twin of `WorldSceneDefaults`; a field added there without
  * a twin here fails `world_scene_defaults_and_overlay_share_a_field_set`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::system_defaults::SceneDefaultsOverlay;
+ *
+ * let overlay = SceneDefaultsOverlay { fog: Some(true), ..Default::default() };
+ * assert_eq!(overlay.fog, Some(true));
+ * assert!(overlay.light_mode.is_none()); // absent: falls through to the next layer
+ * ```
  */
 export type SceneDefaultsOverlay = { 
 /**

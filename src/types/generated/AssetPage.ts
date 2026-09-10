@@ -3,6 +3,16 @@ import type { Asset } from "./Asset";
 
 /**
  * One page of query results.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::assets::query::AssetPage;
+ *
+ * let page = AssetPage { items: vec![], next_cursor: None };
+ * assert!(page.items.is_empty());
+ * assert_eq!(page.next_cursor, None); // no further page
+ * ```
  */
 export type AssetPage = { 
 /**

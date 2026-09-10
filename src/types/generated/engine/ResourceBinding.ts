@@ -4,6 +4,21 @@ import type { Recovery } from "./Recovery";
 
 /**
  * How a resource's value relates to the combatant's actor.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{Formula, Recovery, ResourceBinding};
+ *
+ * let binding = ResourceBinding::Tracked {
+ *     max: Formula::Number(10.0),
+ *     recover: Recovery::default(),
+ * };
+ * let json = serde_json::to_value(&binding).unwrap();
+ * assert_eq!(json["kind"], "tracked");
+ * let round_tripped: ResourceBinding = serde_json::from_value(json).unwrap();
+ * assert_eq!(round_tripped, binding);
+ * ```
  */
 export type ResourceBinding = { "kind": "mirror", 
 /**

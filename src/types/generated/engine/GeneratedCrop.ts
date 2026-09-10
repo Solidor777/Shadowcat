@@ -2,5 +2,13 @@
 
 /**
  * The crop shape of a generated token visual (`RenderVisual::Generated`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::GeneratedCrop;
+ *
+ * assert_ne!(GeneratedCrop::Circle, GeneratedCrop::Square);
+ * ```
  */
 export type GeneratedCrop = "circle" | "square";

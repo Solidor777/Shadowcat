@@ -4,6 +4,15 @@ import type { FalloffCurve } from "./FalloffCurve";
 /**
  * A falloff curve wrapper. `curve` defaults to `FalloffCurve::Linear`
  * (read-side) when the whole `falloff` key is absent from `LightEmission`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{Falloff, FalloffCurve};
+ *
+ * let falloff = Falloff { curve: FalloffCurve::Quadratic };
+ * assert_eq!(falloff.curve, FalloffCurve::Quadratic);
+ * ```
  */
 export type Falloff = { 
 /**

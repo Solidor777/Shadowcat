@@ -2,5 +2,14 @@
 
 /**
  * Diagonal-step cost rule for the grid pathfinder (`pathfinding::find`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::DiagonalRule;
+ *
+ * let rule = DiagonalRule::Euclidean;
+ * assert_eq!(rule, DiagonalRule::Euclidean);
+ * ```
  */
 export type DiagonalRule = "chebyshev" | "alternating" | "euclidean" | "manhattan";

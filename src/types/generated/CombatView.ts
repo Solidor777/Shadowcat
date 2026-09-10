@@ -3,6 +3,20 @@ import type { CombatantView } from "./CombatantView";
 
 /**
  * One combat's resolved view: identity plus every combatant `ctx` may read, sorted by id.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::combat::channel::CombatView;
+ * use uuid::Uuid;
+ *
+ * let view = CombatView {
+ *     id: Uuid::new_v4(),
+ *     scene_id: Uuid::new_v4(),
+ *     combatants: Vec::new(),
+ * };
+ * assert!(view.combatants.is_empty());
+ * ```
  */
 export type CombatView = { 
 /**

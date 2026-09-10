@@ -5,6 +5,13 @@ import type { SceneFootprints } from "./SceneFootprints";
  * The `"footprints"` derived channel's payload: the resolved drawn geometry for every scene the
  * recipient can see, so the client renders authoritative footprints instead of mirroring the
  * formula that produced them.
+ *
+ * # Examples
+ *
+ * ```
+ * let payload = shadowcat::scene::footprint::FootprintsPayload { scenes: Vec::new() };
+ * assert!(payload.scenes.is_empty());
+ * ```
  */
 export type FootprintsPayload = { 
 /**

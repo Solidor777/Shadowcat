@@ -3,6 +3,21 @@ import type { ResourceBinding } from "./ResourceBinding";
 
 /**
  * One turn-resource definition (mirrors the client's `Resource`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{Formula, Resource, ResourceBinding};
+ *
+ * let resource = Resource {
+ *     name: "Movement".to_string(),
+ *     order: 0,
+ *     binding: ResourceBinding::Mirror {
+ *         value: Formula::Number(30.0),
+ *     },
+ * };
+ * assert_eq!(resource.name, "Movement");
+ * ```
  */
 export type Resource = { 
 /**

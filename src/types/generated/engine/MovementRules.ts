@@ -5,6 +5,21 @@ import type { Interpretation } from "./Interpretation";
 /**
  * The movement rules a running combat snapshots at start (mirrors the
  * client's `MovementRules`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{Enforcement, Interpretation, MovementRules};
+ *
+ * let rules = MovementRules {
+ *     resource: Some("movement".to_string()),
+ *     interpretation: Interpretation::PerCell,
+ *     enforcement: Enforcement::Hard,
+ * };
+ * let json = serde_json::to_value(&rules).unwrap();
+ * let round_tripped: MovementRules = serde_json::from_value(json).unwrap();
+ * assert_eq!(round_tripped, rules);
+ * ```
  */
 export type MovementRules = { 
 /**

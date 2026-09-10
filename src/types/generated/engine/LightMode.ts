@@ -2,5 +2,13 @@
 
 /**
  * Scene lighting mode.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::LightMode;
+ *
+ * assert_ne!(LightMode::GlobalIllumination, LightMode::EnvironmentLight);
+ * ```
  */
 export type LightMode = "globalIllumination" | "environmentLight";
