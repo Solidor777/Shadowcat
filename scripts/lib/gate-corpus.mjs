@@ -12,6 +12,7 @@ import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
+import { runGit } from "./run-git.mjs";
 
 // Shared: both gates walk the same tree and must skip the same directories. Two copies of a skip
 // list drift into two different notions of what the repo is.
@@ -98,17 +99,17 @@ export const EXAMPLE_EXEMPT = /\bEXAMPLE:/;
  *   names directly under `skillsRoot`, or null when git cannot answer (no checkout, or no git).
  */
 export function listSkillDirs(skillsRoot) {
-  let listed;
-  try {
-    listed = execFileSync("git", ["-C", skillsRoot, "ls-files", "-z"], {
-      encoding: "utf8",
-      maxBuffer: 64 * 1024 * 1024,
-    });
-  } catch {
-    return null;
-  }
+  // `runGit`'s default `encoding: "utf8"` options object carries no `maxBuffer`, so this wraps the
+  // real `execFileSync` to raise it for a corpus-sized file list — the same override shape
+  // `run-git.test.mjs`'s own `listTrackedFiles` fixture uses.
+  const execFile = (cmd, args, opts) =>
+    execFileSync(cmd, args, { ...opts, maxBuffer: 64 * 1024 * 1024 });
+  const result = runGit(["-C", skillsRoot, "ls-files", "-z"], "the skill corpus file list", {
+    execFile,
+  });
+  if (!result.ok) return null;
   const tracked = new Set();
-  for (const entry of listed.split("\0")) {
+  for (const entry of result.stdout.split("\0")) {
     if (entry === "") continue;
     const rel = norm(entry);
     if (rel.includes("/")) tracked.add(rel.split("/")[0]);

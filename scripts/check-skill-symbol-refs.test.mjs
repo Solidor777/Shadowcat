@@ -30,6 +30,7 @@ import {
   buildSymbolIndex,
 } from "./check-skill-symbol-refs.mjs";
 import { listSkillDirs, defaultSkillsRoot } from "./lib/gate-corpus.mjs";
+import { scrubGitEnv } from "./lib/run-git.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -986,8 +987,8 @@ describe("listSkillDirs", () => {
       writeFileSync(join(skillsRoot, "tracked-skill", "SKILL.md"), "");
       mkdirSync(join(skillsRoot, "untracked-skill"), { recursive: true });
       writeFileSync(join(skillsRoot, "untracked-skill", "SKILL.md"), "");
-      execFileSync("git", ["init", "-q"], { cwd: skillsRoot });
-      execFileSync("git", ["add", "tracked-skill"], { cwd: skillsRoot });
+      execFileSync("git", ["init", "-q"], { cwd: skillsRoot, env: scrubGitEnv() });
+      execFileSync("git", ["add", "tracked-skill"], { cwd: skillsRoot, env: scrubGitEnv() });
       const dirs = listSkillDirs(skillsRoot);
       expect(dirs).not.toBeNull();
       expect(dirs.tracked.has("tracked-skill")).toBe(true);
