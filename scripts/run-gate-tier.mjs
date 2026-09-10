@@ -286,21 +286,25 @@ export function captureFileTable(paths) {
 }
 
 /**
- * Runs a git command for `mode`, aborting legibly (never a raw stack trace) on failure — every
- * git invocation in this direct-entry block routes through this rather than calling `runGit`
- * (`scripts/lib/run-git.mjs`) inline, because the shared helper deliberately reports failure
- * without deciding what it means, and each of this plan's three entry points needs a DIFFERENT
- * safe direction on failure. Here, specifically: `--verify-receipt` is called from `pre-push` to
- * decide whether a push may proceed, so a git failure means it cannot verify anything — refusing
- * the push is the only safe answer, worded the same as every other push refusal so an operator
- * cannot tell this apart from a real gate failure by wording alone. `commit`/`push` modes cannot
- * safely continue without knowing the git state either, so they abort the same way.
+ * Runs a git command for `mode`, aborting legibly (never a raw stack trace) on failure. Every git
+ * invocation in this direct-entry block routes through this rather than calling the shared
+ * `runGit` (`scripts/lib/run-git.mjs`) directly — the shared helper deliberately reports failure
+ * without deciding what it means, and this file's own safe direction is: no mode can safely
+ * continue without knowing the git state, so every mode aborts (exit 1), including
+ * `--verify-receipt`, which is called from `pre-push` and cannot verify anything without it.
+ *
+ * The failure is labeled "git tooling failure", a DIFFERENT prefix from `gate: refusing the
+ * push` (used only for an actual receipt mismatch, via `receiptMatches`) — the two are
+ * deliberately distinguishable rather than worded alike: `pre-push` runs locally under the same
+ * operator, so there is no adversary the indistinguishability would protect, and the two failures
+ * have different remedies. A receipt mismatch is fixed by re-running `pnpm gate:push`; a tooling
+ * failure means git itself could not be run, and re-running the same command may not even be
+ * reachable — conflating the two would send an operator to the wrong fix.
  */
 function gitOrAbort(args, what, mode) {
   const result = runGit(args, what);
   if (result.ok) return result.stdout;
-  const prefix = mode === "--verify-receipt" ? "gate: refusing the push" : `gate:${mode} aborted`;
-  console.error(`${prefix} — ${result.message}`);
+  console.error(`gate:${mode} — git tooling failure: ${result.message}`);
   process.exit(1);
 }
 

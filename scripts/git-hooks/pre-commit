@@ -17,11 +17,15 @@
 # is ever pushed in isolation: the sequencer produces ordinary commits inside one operation, and
 # `pre-push`'s tree-keyed receipt still gates the eventual push and independently refuses on a
 # dirty tree, so skipping here removes redundant intermediate work without letting anything
-# unverified reach the remote. The skip is reachable ONLY when git itself has put the repository
-# into one of those states (detected from the git dir's own filesystem markers by
-# `git-sequencer-state.mjs`) — there is no flag, environment variable, or file a caller can set to
-# trigger the same skip outside a real sequencer operation, because that would be a bypass wearing
-# this exemption's clothes.
+# unverified reach the remote. The skip requires the git dir's own filesystem markers to match the
+# SHAPE of a real sequencer operation, validated by `git-sequencer-state.mjs`: a `*_HEAD` file
+# must contain an id that resolves to a real object in this repository, and a rebase directory
+# must carry the sibling files git itself writes there, one of which is checked the same way.
+# There is no flag, environment variable, or plain marker file that triggers this by itself. HONEST
+# LIMIT: git's own sequencer state is filesystem-trust-based, so this cannot be absolute either —
+# a deliberate, informed forgery (writing a real, resolvable object id into the right paths) is not
+# something any detector reading only the working tree can rule out. What this guarantees is that
+# the skip is not reachable casually or by accident, not that it is unforgeable.
 set -e
 
 sequencer_state=$(node scripts/git-sequencer-state.mjs)

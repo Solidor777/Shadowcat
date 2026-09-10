@@ -193,8 +193,14 @@ test("only one atomic git call feeds buildReceipt: the post-run block calls `git
   // the post-run status check and `writeReceipt` — reintroducing a split-sample receipt — fails
   // this test even though buildReceipt's signature and behavior are untouched. Matches
   // `gitOrAbort(`, the one call every git invocation in this file's direct-entry block routes
-  // through (itself a thin wrapper over the shared `runGit` in `scripts/lib/run-git.mjs`) — a
-  // literal `git(` no longer appears in this file at all.
+  // through (itself a thin wrapper over the shared `runGit` in `scripts/lib/run-git.mjs`).
+  //
+  // This regex alone has a second door: it does not see a future `runGit(...)` call added
+  // directly inside this region, bypassing `gitOrAbort` entirely and reintroducing the same
+  // split-sample defect through a route this pattern cannot match. The companion test below
+  // closes that door structurally, by asserting `runGit` is referenced nowhere in this file
+  // except inside `gitOrAbort`'s own definition — a stronger, file-wide invariant that makes a
+  // region-scoped widening of this regex unnecessary.
   const start = RUN_GATE_TIER_SOURCE.indexOf("// GIT-CALL-BUDGET-START");
   const end = RUN_GATE_TIER_SOURCE.indexOf("// GIT-CALL-BUDGET-END");
   expect(start).toBeGreaterThan(-1);
@@ -202,6 +208,16 @@ test("only one atomic git call feeds buildReceipt: the post-run block calls `git
   const region = RUN_GATE_TIER_SOURCE.slice(start, end);
   const gitCalls = region.match(/\bgitOrAbort\(/g) ?? [];
   expect(gitCalls).toHaveLength(1);
+});
+
+test("runGit is referenced exactly once in this file: inside gitOrAbort's own definition", () => {
+  // Closes the second door the test above cannot see (see its comment): every OTHER git
+  // invocation in this file must go through `gitOrAbort`, never call the shared `runGit`
+  // directly, or it evades both this file's abort-wording contract and the GIT-CALL-BUDGET
+  // region's one-call invariant. `\brunGit\(` matches a call, not the `import { runGit }` line
+  // (no `(` immediately follows `runGit` there), so this counts call sites only.
+  const calls = RUN_GATE_TIER_SOURCE.match(/\brunGit\(/g) ?? [];
+  expect(calls).toHaveLength(1);
 });
 
 test("derivedMtimeExemptions reads the path out of the manifest's `git diff --exit-code <path>` entry", () => {

@@ -1,8 +1,6 @@
-// A single guarded entry point for shelling out to git, so a failing invocation never reaches an
-// operator as a raw Node stack trace. This plan's three entry points — the hook installer, the
-// sequencer probe, and the tier runner — each had their own unguarded `execFileSync("git", ...)`
-// at an entry point, fixed one at a time across three separate rounds; three instances of one
-// class means the site was never the cause, so this module is the fix instead of a fourth patch.
+// The single guarded entry point for shelling out to git across the git-hook installer, the
+// sequencer probe, and the tier runner: every git invocation in each of those files routes
+// through this, so a failing invocation never reaches an operator as a raw Node stack trace.
 //
 // Deliberately does NOT decide what a failure means for the caller: the installer must degrade to
 // a warning and keep `pnpm install` succeeding, the sequencer probe must run the tier rather than
