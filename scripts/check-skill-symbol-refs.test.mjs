@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { join, dirname, resolve, basename } from "node:path";
@@ -980,22 +980,20 @@ describe("listSkillDirs", () => {
   it("includes a committed skill directory and excludes an untracked one", () => {
     // Hermetic: `listSkillDirs` now scopes to the SKILLS root's own git checkout (the standalone
     // shadowcat-codebase plugin, not this repo since the migration), so the fixture is a throwaway
-    // git-init'd tree rather than anything under this repo's own `.claude/skills`.
-    const skillsRoot = mkdtempSync(join(tmpdir(), "listskilldirs-"));
-    try {
-      mkdirSync(join(skillsRoot, "tracked-skill"), { recursive: true });
-      writeFileSync(join(skillsRoot, "tracked-skill", "SKILL.md"), "");
-      mkdirSync(join(skillsRoot, "untracked-skill"), { recursive: true });
-      writeFileSync(join(skillsRoot, "untracked-skill", "SKILL.md"), "");
-      execFileSync("git", ["init", "-q"], { cwd: skillsRoot, env: scrubGitEnv() });
-      execFileSync("git", ["add", "tracked-skill"], { cwd: skillsRoot, env: scrubGitEnv() });
-      const dirs = listSkillDirs(skillsRoot);
-      expect(dirs).not.toBeNull();
-      expect(dirs.tracked.has("tracked-skill")).toBe(true);
-      expect(dirs.untracked).toContain("untracked-skill");
-    } finally {
-      rmSync(skillsRoot, { recursive: true, force: true });
-    }
+    // git-init'd tree rather than anything under this repo's own `.claude/skills`. Fixed path under
+    // the suite's shared FIXTURE_ROOT, rewritten in place rather than a fresh temp directory per
+    // run: this repo permits no permanent-deletion call, so a per-run directory accumulates forever.
+    const skillsRoot = join(FIXTURE_ROOT, "listskilldirs");
+    mkdirSync(join(skillsRoot, "tracked-skill"), { recursive: true });
+    writeFileSync(join(skillsRoot, "tracked-skill", "SKILL.md"), "");
+    mkdirSync(join(skillsRoot, "untracked-skill"), { recursive: true });
+    writeFileSync(join(skillsRoot, "untracked-skill", "SKILL.md"), "");
+    execFileSync("git", ["init", "-q"], { cwd: skillsRoot, env: scrubGitEnv() });
+    execFileSync("git", ["add", "tracked-skill"], { cwd: skillsRoot, env: scrubGitEnv() });
+    const dirs = listSkillDirs(skillsRoot);
+    expect(dirs).not.toBeNull();
+    expect(dirs.tracked.has("tracked-skill")).toBe(true);
+    expect(dirs.untracked).toContain("untracked-skill");
   });
 });
 

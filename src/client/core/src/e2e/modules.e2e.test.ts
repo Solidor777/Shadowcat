@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
@@ -61,14 +61,16 @@ describe("module toolchain e2e", () => {
   // `cargo build` of `test_server` first, and only the config's `hookTimeout` is sized
   // for a cold build — a per-test timeout is not.
   beforeAll(async () => {
-    modulesDir = mkdtempSync(path.join(tmpdir(), "shadowcat-modules-"));
+    // Fixed path under the OS temp dir, rewritten in place rather than a fresh temp directory per
+    // run: this repo permits no permanent-deletion call, so a per-run directory accumulates
+    // forever. Every file this suite writes below has deterministic content, so reuse is safe.
+    modulesDir = path.join(tmpdir(), "shadowcat-modules-e2e-fixture");
     modDir = path.join(modulesDir, "fixture-mod");
     mkdirSync(modDir, { recursive: true });
     server = await startTestServer({ modulesDir });
   });
   afterAll(() => {
     server?.stop();
-    rmSync(modulesDir, { recursive: true, force: true });
   });
 
   it("discovers an installed module, enables it per-world, and serves its entry through the path-traversal-guarded static route", async () => {
