@@ -59,8 +59,33 @@ Owner rulings taken during design:
 
 - **Depth.** Two tiers. Commit is gated by the ~70s checker tier; push is gated by full non-e2e
   parity.
-- **Bypass.** None. `--no-verify` is denied at the harness layer. An agent that cannot pass the
-  gate stops and reports; only the owner can push by hand.
+- **Enforcement model.** Three layers, and only the outermost is authoritative.
+
+  **The remote is the gate.** Branch protection on `main` requires the seven CI checks to pass
+  before a merge (`strict`, `enforce_admins`, force-pushes and deletions refused). It is the only
+  layer that cannot be bypassed from a developer machine, and it is what makes the guarantee
+  real; witnessed: a fast-forward commit pushed straight at `main` through the API is refused with
+  `422 — 7 of 7 required status checks are expected`. Everything local exists to catch a failure
+  in seconds rather than after a push.
+
+  **Git hooks are the working layer.** `core.hooksPath` hooks run the tier on every commit and
+  verify the receipt on every push, for every tool that reaches git normally. They are skipped
+  only by `--no-verify` and by the sequencer exemption below.
+
+  **The harness guard is a best-effort pre-filter.** It denies `--no-verify`, the inline and
+  environment config overrides, and any commit or push into an unarmed repository. It models
+  git's option grammar and therefore cannot be complete: git reached through a shell wrapper,
+  `eval`, an alias, a function, `command`/`exec`, or a subshell is invisible to it, and those
+  boundaries are stated in its header. A miss costs a slow CI failure, not an escaped merge.
+
+  No bypass is offered on demand at any layer. One state-triggered exemption exists; see below.
+- **Sequencer exemption.** The commit tier is skipped while git has genuine in-progress
+  sequencer work — a rebase with remaining steps, or an operation stopped on unresolved
+  conflicts — because a rebase replaying twenty commits would otherwise run the tier twenty times
+  and a conflict stop has no green tree to offer. Measured: a bare `git merge --no-commit` also
+  creates a valid `MERGE_HEAD`, so the skip keys on remaining work rather than on a marker file's
+  presence; a merge with nothing left to resolve gates normally. The push tier has no exemption,
+  so a sequencer's output is gated in full before it can leave the machine.
 - **Privacy.** Nothing carrying personally identifiable information is committed. This
   constrains the harness-layer work, which requires tracking a settings file.
 
@@ -129,7 +154,14 @@ describes an exact tree, and cannot be inherited by a different one.
 partial commit is gated on more than it contains. The alternative — exporting the index to a
 temporary tree — would silently change the corpus the checkers scan, because several resolve
 paths relative to the repository root and one additionally scans the external skills checkout.
-A known, bounded gap is preferred to an unknown one. The push receipt is the exact gate.
+A known, bounded gap is preferred to an unknown one. The push receipt closes it for the pushed
+tree: a receipt names one tree hash and cannot be inherited by another. It is not proof the tree
+was untouched, and it is not authenticated — it is a local JSON file whose two load-bearing
+fields are computable without running any gate, so a receipt can be written by hand. The checks
+that narrow the window (a clean tree sampled before and after, a stable `HEAD`, and a tracked-file
+`{size, mtimeNs}` table catching an edit reverted to identical bytes) are recorded with their
+residuals in `scripts/run-gate-tier.mjs`, which is the authority on what remains open. The
+backstop for a forged receipt is the remote, not the receipt.
 
 ### 4. Enforcement
 
@@ -175,8 +207,15 @@ Two CI jobs stay unreachable locally and are recorded as `ci-only` manifest entr
 reasons: the cross-runtime `e2e` job and the browser `ui-e2e` job. The `rust` job's macOS and
 Windows matrix legs are likewise out of local reach from any one desktop.
 
-That is the complete surface CI can catch that the local gate cannot. It is enumerated in the
-manifest rather than left open, and the drift check keeps it enumerated.
+The manifest enumerates every `run:` step of every workflow, keyed by workflow, job and
+command, with a step's own `env:` (or its job's or workflow's) recorded as part of the step's
+identity — such a step cannot be tiered `commit` or `push`, because the local runner applies no
+per-step environment, and is instead extracted into a script both sides invoke. Two axes remain
+unrepresented and are stated here rather than claimed closed: a step's `if:` condition is
+dropped, so a Linux-only step runs unconditionally locally; and the `rust` job's macOS and
+Windows matrix legs have no manifest identity of their own, so an OS-specific step would be
+tiered as ordinary. The drift check keeps the enumerated part enumerated; it does not see those
+two axes.
 
 ## Testing
 
@@ -204,7 +243,14 @@ cover exists:
 | `scripts/git-hooks/pre-commit` | new |
 | `scripts/git-hooks/pre-push` | new |
 | `scripts/check-tracked-settings-privacy.mjs` | new — privacy check, plus its test sibling |
-| `.claude/hooks/guard-git.mjs` | new — harness bypass guard |
+| `scripts/git-sequencer-state.mjs` | new — the sequencer exemption's state reader, plus its test sibling |
+| `scripts/lib/run-git.mjs` | new — the one guarded git runner every hook and script spawns through; its test holds production code to zero direct git calls and test code to explicit environments |
+| `scripts/lib/gate-corpus.mjs` | modified — tracked-file corpus shared by the scans, plus a new test sibling |
+| `scripts/lib/no-fs-delete-calls.test.mjs` | new — holds the tree to zero `fs.rm`/`unlink`/`rmdir` calls (owner ruling) |
+| `scripts/check-binary-size.mjs` | new — the size budget extracted from a `${{ }}` workflow step so it can be tiered, plus its test sibling |
+| `scripts/cargo-doc-strict.mjs` | new — `cargo doc` with the lint environment inside the script rather than a workflow `env:` block, plus its test sibling |
+| `scripts/assemble-docs.test.mjs`, `check-skill-api-refs.test.mjs`, `check-skill-symbol-refs.test.mjs`, `check-skill-symbol-refs-cli.test.mjs`, `report-doc-exemptions.test.mjs`, `src/client/core/src/e2e/modules.e2e.test.ts` | modified — explicit git environments and recoverable temp-dir cleanup under the two corpus tests above |
+| `.claude/hooks/guard-git.mjs` | new — harness bypass guard, plus its test sibling |
 | `.claude/settings.json` | becomes tracked; gains the guard hook |
 | `.gitignore` | drops the `.claude/settings.json` entry |
 | `package.json` | gains `gate:commit`, `gate:push`, `lint:gate-manifest`, `prepare` |
