@@ -1,52 +1,106 @@
-// Denies the direct, typed forms of every known route around the git gates: --no-verify/-n on
-// commit (never on push, where -n means --dry-run and mutates nothing), an inline
-// `-c core.hooksPath=...` override or a `GIT_CONFIG_*` environment override of the same key, a
-// `git config` write to core.hooksPath or extensions.worktreeConfig, and any commit or push at
-// all in a repository with no gate installed. There is no bypass: an agent that cannot pass the
-// gate stops and reports to the owner.
+// A best-effort pre-filter over the git invocations an agent types. It denies the direct, typed
+// forms of every known route around the git gates:
+//   - `--no-verify` on commit or push, in every spelling git accepts: any unambiguous
+//     abbreviation (`--no-veri`), or `-n` anywhere in a short-option bundle on commit (`-an`,
+//     `-nm x`). On push `-n` is `--dry-run`, which mutates nothing.
+//   - an inline configuration of a gate-carrying key on ANY subcommand, through `-c`,
+//     `--config-env`, or a `GIT_CONFIG_*` environment variable: `core.hooksPath`,
+//     `extensions.worktreeConfig`, and the include directives `include.path` /
+//     `includeIf.<condition>.path` (an included file carries the gate key at command-line
+//     precedence, which outranks every file scope).
+//   - a `git config` write to a gate key in any spelling, scope or file; a section-level write
+//     (`--remove-section`, `--rename-section`) to the `core` or `extensions` section; and
+//     `git config --edit`, whose scripted editor is a write with no visible key.
+//   - an inline alias (`-c alias.<name>=…`) invoked in the same command, classified through its
+//     expansion.
+//   - any commit or push at all in a repository with no gate installed.
+// There is no bypass: an agent that cannot pass the gate stops and reports to the owner.
 //
-// This inspects the literal command STRING the harness is about to run; it does not run a shell.
-// It cannot see a git invocation reached through a shell wrapper (`sh -c "..."`, `env NAME=value
-// git ...`, `command git`, `exec git`), command substitution, `eval`, an alias, or a shell
-// function, because classifying an arbitrary shell string reliably would require executing one.
-// For the same reason it recognises a command word only at the START of a segment (after any
-// leading `NAME=value` assignments): a git word behind a subshell `(`, a brace group `{`, or a
-// reserved word (`then`, `do`, `!`, `time`) is a wrapper of the same family and is not seen. Its
-// purpose is to make the casual and accidental bypass impossible and the rule visible at the
-// point of temptation, not to stop a determined caller working around the string match itself.
-// Two other layers carry the actual guarantee: the git hooks (core.hooksPath) enforce on
-// everything that reaches git through the normal path regardless of what this guard decides, and
-// the remote enforces branch protection with required status checks, which is server-side and
-// unaffected by anything local.
+// WHAT THIS LAYER IS. It inspects the literal command STRING the harness is about to run; it does
+// not run a shell and it does not run git's own parser. Its surface is unbounded, so it is not
+// and cannot be a complete barrier: it does not see a git invocation reached through command
+// substitution, `eval`, a shell alias or function, a wrapper script, `env`, `command`, `exec`,
+// a subshell `(…)`, a brace group `{ …; }`, a reserved word (`then`, `do`, `!`, `time`), process
+// substitution `<(…)`, or an alias persisted in a config file, and it recognises a command word
+// only at the START of a segment after any leading `NAME=value` assignments. Nothing here stops a
+// determined caller working around the string match; the purpose is to make the casual and
+// accidental bypass impossible and the rule visible at the point of temptation. The layers that
+// do not depend on parsing carry the actual guarantee: the git hooks (`core.hooksPath`) run on
+// everything that reaches git through the normal path whatever this guard decides, and the
+// remote's branch protection with required status checks is server-side and unaffected by
+// anything local. The unarmed-repository denial is what makes the hook layer non-optional
+// rather than best-effort: without it, a fresh clone with no hooks installed permits every
+// commit and push silently.
 //
-// The unarmed-repository denial is what makes the git-hook layer non-optional rather than
-// best-effort: without it, a fresh clone with no hooks installed permits every commit and push
-// silently.
+// REGISTRATION. Runs as a PreToolUse hook on EVERY harness tool. The set of tools that execute a
+// command string (Bash, PowerShell, Monitor, any added later) is not enumerable from this file,
+// and a matcher that misses one loses the whole layer through that tool, so the hook is
+// registered for all of them and is a no-op for any payload without a `tool_input.command`
+// string. The common path stays cheap: nothing is parsed as a git invocation unless a segment's
+// command word has the basename `git`/`git.exe`/`git.cmd`, and the one git subprocess this
+// script spawns — to read core.hooksPath — runs lazily, only once classification reaches a
+// commit or push with no other refusal already found.
+//
+// GRAMMAR BOUNDARY. The tokenizer implements the POSIX Shell Command Language (see
+// `segmentAndTokenize`), which is the grammar of the Bash tool and of git's own `!`-alias and
+// hook execution. The PowerShell tool runs PowerShell, whose quoting differs (backtick escapes,
+// doubled quotes inside a quoted string, no backslash escapes, `--%`): a PowerShell command
+// whose quoting the POSIX rules read differently can misclassify in either direction, and only a
+// PowerShell tokenizer would close that. Plain spellings with no quoting disagreement classify
+// identically in both shells.
+//
+// GIT GRAMMAR. Every rule about git's own argument syntax is taken from git's documentation and
+// measured against git, never inferred from examples — the alternative reimplements git's parser
+// from imagination one spelling at a time. The rules, each named at the code that
+// implements it:
+//   git(1) OPTIONS — the front end's own options (`-c`, `--config-env`, `-C`, `--git-dir`, …),
+//     matched by exact string: no bundling, no abbreviation; parsing ends at the first word
+//     that is not an option, which is the subcommand (`subcommandIndex`).
+//   parse-options API (Documentation/technical/api-parse-options) — every subcommand's options:
+//     short options bundle, a short option taking a value takes the rest of its bundle or, if
+//     the bundle ends, the next word; an optional value takes only the rest of the bundle; a long
+//     option takes `--name=value` or `--name value` (required) / `--name=value` only (optional);
+//     long names may be abbreviated to any prefix that names exactly one option, exact spellings
+//     win, and an ambiguous prefix is an error; `--no-name` negates and takes no value, and an
+//     option named `no-x` is negated by `--x`; `--` ends options and everything after it is an
+//     operand (`walkOptions`, `resolveLongOption`, the `*_OPTIONS` tables).
+//   git-config(1) — section and variable names are case-insensitive, subsection names are not
+//     (`foldConfigKey`); `-c name` with no `=` and `-c name=` are both writes of `name`
+//     (`inlineConfigPairs`); the subcommand modes (`list`/`get` read; `set`/`unset`/
+//     `rename-section`/`remove-section`/`edit` write), the deprecated flag modes, and the
+//     positional rule with no mode (one operand reads, two or more write) (`configWritesGate`).
+//   git(1) ENVIRONMENT — `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` and
+//     `GIT_CONFIG_PARAMETERS` add configuration at command-line precedence. Their NAMES are
+//     matched case-insensitively: environment variable names are case-insensitive on Windows,
+//     so `git_config_count=1` redirects the gate there, and a lowercase spelling is inert
+//     elsewhere, so the wider match denies nothing that would have run.
+//   git-config(1) `alias.<name>` — an alias is expanded by splitting its value into words under
+//     shell quoting rules and substituting them for the subcommand; a value beginning with `!`
+//     runs as a shell command with the remaining arguments appended. An alias cannot hide
+//     `commit`, `push` or `config` (git ignores an alias that shadows a builtin), so expansion
+//     stops at those (the alias arm of `classifyGitSegment`).
+//   Not modelled, by design: a subcommand's option not in its table is read as a flag taking no
+//     value, which can only produce a false denial (a value read as a flag), never a bypass; the
+//     tables are pinned against the installed git's own `-h` output by the test suite. A
+//     `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` file is inert against the gate, which is armed at
+//     worktree scope, the highest file scope.
 //
 // Quoted content (a commit message, most plainly) is one opaque token throughout: it is never
 // read as a flag, a config key, or an environment override, and a `;`/`&`/`|` inside it is never
 // a chain separator — a message that happens to quote `core.hooksPath` or a bypass flag as prose
-// must stay an ordinary commit, and must not manufacture a fake segment either. The tokenizer
-// implements the POSIX Shell Command Language's quoting and token-recognition rules as a
-// grammar, enumerated at `segmentAndTokenize`; a false denial here blocks real work with no
-// switch to turn it off, so every rule that decides where a quoted span ENDS is implemented,
-// including the ones that only matter for the innocent direction. What it does NOT do is
-// EXPAND: `$var`, `$(…)`, `` `…` ``, `${…}` and `$((…))` are tracked only for their extent, so the
-// enclosing quote state stays correct across them, and their text is kept verbatim as opaque
-// content — a flag produced by an expansion is the command-substitution boundary above. Named
-// bash extensions outside the POSIX grammar, deliberately not implemented: `$'…'` (ANSI-C
-// quoting — the `$` is read as a literal and the quote after it as an ordinary single quote, so
-// a word built with it is misread), `$"…"` (locale translation), brace expansion (`{a,b}`),
-// and a `case` pattern's unbalanced `)` inside `$(…)`, whose extent is found by parenthesis
-// balance. The one shape that lets content past a quote read as flags again is genuinely
-// unterminated input (a quote with no matching close at all), which a real shell also refuses
-// to run, so it is not a bypass this guard's decision on it can actually affect.
-//
-// Runs as a PreToolUse hook on every Bash call, so the common path stays cheap: nothing is parsed
-// as a git invocation unless the command word's basename is `git`/`git.exe`/`git.cmd` (so a
-// path-qualified or Windows-suffixed git is still recognised), and the one git subprocess this
-// script itself spawns — to read core.hooksPath — is called lazily, only once classification
-// actually reaches a commit or push with no bypass flag already found.
+// must stay an ordinary commit, and must not manufacture a fake segment either. A false denial
+// blocks real work with no switch to turn it off, so every rule that decides where a quoted span
+// ENDS is implemented, including the ones that only matter for the innocent direction. What the
+// tokenizer does NOT do is EXPAND: `$var`, `$(…)`, `` `…` ``, `${…}` and `$((…))` are tracked
+// only for their extent, so the enclosing quote state stays correct across them, and their text
+// is kept verbatim as opaque content — a flag produced by an expansion is the command-substitution
+// boundary above. Named bash extensions outside the POSIX grammar, deliberately not implemented:
+// `$'…'` (ANSI-C quoting — the `$` is read as a literal and the quote after it as an ordinary
+// single quote, so a word built with it is misread), `$"…"` (locale translation), brace expansion
+// (`{a,b}`), and a `case` pattern's unbalanced `)` inside `$(…)`, whose extent is found by
+// parenthesis balance. The one shape that lets content past a quote read as flags again is
+// genuinely unterminated input (a quote with no matching close at all), which a real shell also
+// refuses to run, so it is not a bypass this guard's decision on it can actually affect.
 //
 // An internal error fails OPEN for every command except one that plausibly names a git commit or
 // push — --no-verify and the unarmed-repository check are the only two cases this guard uniquely
@@ -58,12 +112,15 @@ import process from "node:process";
 import { runGit } from "../../scripts/lib/run-git.mjs";
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)=/;
+// The configuration-carrying environment variables git(1) documents, matched by NAME only and
+// case-insensitively (see the header's ENVIRONMENT rule).
+const GIT_CONFIG_ENV_NAME = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/i;
+const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)=/i;
 // Matches a bare `export` argument naming a GIT_CONFIG_* variable, with or without a `=value` —
 // `export GIT_CONFIG_KEY_0` (exporting an already-assigned shell variable) redirects the gate
 // exactly like `export GIT_CONFIG_KEY_0=...` (assigning and exporting in one step); only the
 // value's presence differs, never whether the override applies.
-const GIT_CONFIG_EXPORT_ARG_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)(=.*)?$/;
+const GIT_CONFIG_EXPORT_ARG_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)(=.*)?$/i;
 
 // Inside double quotes a backslash escapes exactly these four characters plus <newline> (which
 // is a line continuation, handled separately because the pair is REMOVED rather than replaced);
@@ -79,7 +136,7 @@ const HEREDOC_DELIMITER_END = /[\s;&|<>()]/;
 /**
  * Splits `command` into shell segments and each segment into argv-style word tokens, following
  * the POSIX Shell Command Language (IEEE Std 1003.1-2017, XCU chapter 2: Quoting, Token
- * Recognition, Command Substitution, Here-Document). The rules, each of which the
+ * Recognition, Redirection, Command Substitution, Here-Document). The rules, each of which the
  * test suite exercises in both the denied and the allowed direction:
  *
  *   Escape Character — Outside quotes a backslash preserves the literal value of the next character, which
@@ -98,13 +155,19 @@ const HEREDOC_DELIMITER_END = /[\s;&|<>()]/;
  *           An unquoted `#` at the start of a word begins a comment that runs to the newline and
  *           is discarded whole — nothing inside it, a quote character or a backslash-<newline>
  *           included, has any effect. Unquoted `;`, `&`, `&&`, `|`, `||` and <newline> end a
- *           segment; `>&`, `<&`, `>|` (and bash's `&>`, `&>>`) are redirection operators, not
- *           separators, so the arguments after them still belong to the same command.
+ *           segment.
+ *   Redirection — An unquoted `<` or `>` ends the word before it and begins a redirection
+ *           operator (`<`, `<&`, `<>`, `>`, `>>`, `>&`, `>|`, and bash's `&>`, `&>>`); the
+ *           operator and the word after it (its target, possibly quoted) are removed from the
+ *           command's arguments wherever they sit, so `-m >out x` still gives `-m` the value
+ *           `x`, and `--no-verify>out` is still the flag. An unquoted word of only digits
+ *           directly before the operator is its file-descriptor number and is removed with it
+ *           (`2>&1`). `<<<` is a here-string: its operand word is data, removed the same way.
  *   Here-Document — `<<` or `<<-` followed by a delimiter word (quoted or not) opens a here-document
  *           whose body starts after the next unquoted <newline> and ends at the first line equal
  *           to the delimiter (leading tabs stripped under `<<-`); with an unquoted delimiter a
  *           body line ending in backslash joins the next line before the comparison. The body is
- *           data, never a segment. `<<<` is a here-string and opens nothing.
+ *           data, never a segment.
  *
  * A substitution's extent is tracked so quote state survives it; its text is kept verbatim in
  * the word and is never expanded (see the header for the named exclusions).
@@ -118,6 +181,10 @@ export function segmentAndTokenize(command) {
   let tokens = [];
   let cur = "";
   let has = false;
+  // True while the current word consists solely of unquoted digits (a candidate IO_NUMBER).
+  let curPlainDigits = false;
+  // True when the next completed word is a redirection target, removed rather than kept.
+  let dropNextWord = false;
 
   // Enclosing contexts, innermost last. `single`/`double`/`backtick` are quote spans; `paren`
   // (`$(`, balanced to its `)`) and `brace` (`${`, to its `}`) are substitutions whose interior
@@ -141,28 +208,29 @@ export function segmentAndTokenize(command) {
     return t.kind;
   };
 
-  const add = (s) => {
+  const add = (s, plainDigit = false) => {
+    curPlainDigits = (has ? curPlainDigits : true) && plainDigit;
     cur += s;
     has = true;
   };
   const flushToken = () => {
     if (has) {
-      tokens.push(cur);
+      if (dropNextWord) dropNextWord = false;
+      else tokens.push(cur);
       cur = "";
       has = false;
+      curPlainDigits = false;
     }
   };
   const flushSegment = () => {
     flushToken();
+    dropNextWord = false;
     if (tokens.length) segments.push(tokens);
     tokens = [];
   };
 
   // True at a position where an unquoted `#` starts a comment: the start of a word.
   let atWordStart = true;
-  // True when the last character added to the current top-level word is an unquoted `>` or `<`,
-  // so a following `&` or `|` completes a redirection operator instead of separating segments.
-  let prevRedir = false;
   // Here-documents opened on the current line, consumed in order after its unquoted newline.
   let pendingHeredocs = [];
 
@@ -338,15 +406,16 @@ export function segmentAndTokenize(command) {
         i++;
       }
       atWordStart = false;
-      prevRedir = false;
       continue;
     }
     if (ch === "'" || ch === '"') {
       push({ kind: ch === "'" ? "single" : "double" });
       if (verbatim) add(ch);
-      else has = true; // an empty quoted span is still a (possibly empty) word
+      else {
+        has = true; // an empty quoted span is still a (possibly empty) word
+        curPlainDigits = false;
+      }
       atWordStart = false;
-      prevRedir = false;
       i++;
       continue;
     }
@@ -354,7 +423,6 @@ export function segmentAndTokenize(command) {
       push({ kind: "backtick" });
       add(ch);
       atWordStart = false;
-      prevRedir = false;
       i++;
       continue;
     }
@@ -369,7 +437,6 @@ export function segmentAndTokenize(command) {
         atWordStart = false;
         i++;
       }
-      prevRedir = false;
       continue;
     }
     if (ch === "#" && atWordStart && (!frame || frame.kind === "paren")) {
@@ -383,7 +450,6 @@ export function segmentAndTokenize(command) {
       if (verbatim) add(ch);
       else flushSegment();
       atWordStart = true;
-      prevRedir = false;
       i = pendingHeredocs.length ? consumeHeredocBodies(i + 1) : i + 1;
       continue;
     }
@@ -402,21 +468,11 @@ export function segmentAndTokenize(command) {
       i++;
       continue;
     }
-    if (ch === "<" && text[i + 1] === "<" && text[i + 2] === "<") {
-      flushToken();
-      add("<<<"); // here-string operator: its operand is an ordinary word, not a body
-      flushToken();
-      atWordStart = true;
-      prevRedir = false;
-      i += 3;
-      continue;
-    }
-    if (ch === "<" && text[i + 1] === "<") {
+    if (ch === "<" && text[i + 1] === "<" && text[i + 2] !== "<") {
       const j = readHeredocOperator(i);
       if (verbatim) add(text.slice(i, j));
       else flushToken();
       atWordStart = true;
-      prevRedir = false;
       i = j;
       continue;
     }
@@ -426,27 +482,47 @@ export function segmentAndTokenize(command) {
       i++;
       continue;
     }
-    if (ch === ";" || ch === "&" || ch === "|") {
-      const redirection = ch !== ";" && (prevRedir || (ch === "&" && text[i + 1] === ">"));
-      if (!redirection) {
-        flushSegment();
-        while (i + 1 < n && ";&|".includes(text[i + 1])) i++;
-        atWordStart = true;
-        prevRedir = false;
-        i++;
-        continue;
+    if (ch === "<" || ch === ">" || (ch === "&" && text[i + 1] === ">")) {
+      // Redirection rule: the operator and its target word leave the argument list; an
+      // unquoted all-digit word directly before it is the descriptor number and leaves too —
+      // unless that word is itself the target of the operator before it (`> 2>&1` writes to a
+      // file named `2`), in which case it is dropped as a target.
+      if (has && curPlainDigits && !dropNextWord) {
+        cur = "";
+        has = false;
+        curPlainDigits = false;
+      } else flushToken();
+      let j = i + 1;
+      if (ch === "&") {
+        j++; // `&>`
+        if (text[j] === ">") j++; // `&>>`
+      } else if (ch === ">") {
+        if (text[j] === ">" || text[j] === "|" || text[j] === "&") j++;
+      } else if (text[j] === "<" && text[j + 1] === "<") {
+        j += 2; // `<<<` here-string
+      } else if (text[j] === "&" || text[j] === ">") {
+        j++;
       }
+      dropNextWord = true;
+      atWordStart = true;
+      i = j;
+      continue;
+    }
+    if (ch === ";" || ch === "&" || ch === "|") {
+      flushSegment();
+      while (i + 1 < n && ";&|".includes(text[i + 1])) i++;
+      atWordStart = true;
+      i++;
+      continue;
     }
     if (/\s/.test(ch)) {
       flushToken();
       atWordStart = true;
-      prevRedir = false;
       i++;
       continue;
     }
-    add(ch);
+    add(ch, /\d/.test(ch));
     atWordStart = false;
-    prevRedir = ch === ">" || ch === "<";
     i++;
   }
   flushSegment();
@@ -480,114 +556,393 @@ function gitTokenIndex(tokens) {
   return i < tokens.length && isGitWord(tokens[i]) ? i : -1;
 }
 
-// Global flags that consume a SEPARATE next token as their value; an attached `--flag=value` form
-// needs no special case, since it is already one token that `startsWith("-")` skips whole.
-const GLOBAL_VALUE_FLAGS = new Set(["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"]);
+// ---------------------------------------------------------------------------------------------
+// git(1) OPTIONS rule: the front end's own options, matched by exact string. These take their
+// value as the NEXT word (`--config-env` and `--attr-source` also accept `--name=value`; `-c`
+// and `-C` accept only the separate form — `-ccore.x=1` is an unknown option to git). Every
+// other option is a flag, and any `--name=value` is one word. Parsing ends at the first word
+// that is not an option: the subcommand.
+// ---------------------------------------------------------------------------------------------
+const MAIN_SEPARATE_VALUE_OPTIONS = new Set([
+  "-C",
+  "-c",
+  "--config-env",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--attr-source",
+]);
 
-/** The git subcommand, skipping global flags (and their values) that precede it. */
-function subcommand(gitArgs) {
+/** Index in `gitArgs` (whose element 0 is the git word) of the subcommand, or -1 when there is none. */
+function subcommandIndex(gitArgs) {
   for (let i = 1; i < gitArgs.length; i++) {
     const t = gitArgs[i];
-    if (GLOBAL_VALUE_FLAGS.has(t)) {
+    if (MAIN_SEPARATE_VALUE_OPTIONS.has(t)) {
       i++;
       continue;
     }
     if (t.startsWith("-")) continue;
-    return t;
+    return i;
   }
-  return "";
+  return -1;
+}
+
+// ---------------------------------------------------------------------------------------------
+// git-config(1) name syntax: `section.variable` or `section.subsection.variable`; section and
+// variable names fold case, the subsection (everything between the first and last dot) does not.
+// ---------------------------------------------------------------------------------------------
+
+/** `key` in git's canonical spelling: section and variable lowercased, subsection untouched. */
+function foldConfigKey(key) {
+  const first = key.indexOf(".");
+  if (first === -1) return key.toLowerCase();
+  const last = key.lastIndexOf(".");
+  if (last === first) return key.toLowerCase();
+  return key.slice(0, first).toLowerCase() + key.slice(first, last + 1) + key.slice(last + 1).toLowerCase();
+}
+
+/** The folded section of a key (everything before the last dot) — for section-level operations. */
+function sectionOf(foldedKey) {
+  const last = foldedKey.lastIndexOf(".");
+  return last === -1 ? foldedKey : foldedKey.slice(0, last);
+}
+
+const GATE_KEYS = new Set(["core.hookspath", "extensions.worktreeconfig"]);
+const GATE_SECTIONS = new Set(["core", "extensions"]);
+
+/** True for `include.path` and `includeIf.<condition>.path`, the config include directives. */
+function isIncludeDirective(foldedKey) {
+  return foldedKey === "include.path" || (foldedKey.startsWith("includeif.") && foldedKey.endsWith(".path"));
 }
 
 /**
- * `args` with the value token belonging to `-m`/`--message` (or a combined short cluster carrying
- * `m`, e.g. `-am`) dropped — every other check in this file reads this instead of the raw args, so
- * a commit message can never be mistaken for a flag, a config key, or an inline override, no
- * matter what comes after it.
+ * Every configuration pair this invocation adds at command-line precedence, in order:
+ * `-c name[=value]`, `--config-env name=ENVVAR` (value read from a leading `ENVVAR=value`
+ * assignment in the same segment when there is one, else unknown), and — from the segment's
+ * leading assignments — `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pairs and the words of
+ * `GIT_CONFIG_PARAMETERS` (each a shell-quoted `'key'='value'`, split by the shell rules).
+ * Keys are returned folded; `value` is `null` when it cannot be read from the command string.
+ *
+ * @returns {{ key: string, value: string | null }[]}
  */
-function argsExcludingMessageValue(args) {
-  const out = [];
+function inlineConfigPairs(tokens, gi) {
+  const pairs = [];
+  const assigned = new Map();
+  const envKeys = new Map();
+  const envValues = new Map();
+  for (let i = 0; i < gi; i++) {
+    const eq = tokens[i].indexOf("=");
+    const name = tokens[i].slice(0, eq);
+    const value = tokens[i].slice(eq + 1);
+    assigned.set(name, value);
+    const upper = name.toUpperCase();
+    if (!GIT_CONFIG_ENV_NAME.test(upper)) continue;
+    if (upper.startsWith("GIT_CONFIG_KEY_")) envKeys.set(upper.slice("GIT_CONFIG_KEY_".length), value);
+    else if (upper.startsWith("GIT_CONFIG_VALUE_")) envValues.set(upper.slice("GIT_CONFIG_VALUE_".length), value);
+    else if (upper === "GIT_CONFIG_PARAMETERS") {
+      for (const word of segmentAndTokenize(value).flat()) {
+        const weq = word.indexOf("=");
+        pairs.push(
+          weq === -1
+            ? { key: foldConfigKey(word), value: null }
+            : { key: foldConfigKey(word.slice(0, weq)), value: word.slice(weq + 1) },
+        );
+      }
+    }
+  }
+  for (const [index, key] of envKeys) {
+    pairs.push({ key: foldConfigKey(key), value: envValues.has(index) ? envValues.get(index) : null });
+  }
+  const end = subcommandIndex(tokens.slice(gi));
+  const stop = end === -1 ? tokens.length : gi + end;
+  for (let i = gi + 1; i < stop; i++) {
+    const t = tokens[i];
+    let spec = null;
+    let fromEnv = false;
+    if (t === "-c") spec = tokens[++i];
+    else if (t === "--config-env") {
+      spec = tokens[++i];
+      fromEnv = true;
+    } else if (t.startsWith("--config-env=")) {
+      spec = t.slice("--config-env=".length);
+      fromEnv = true;
+    } else continue;
+    if (spec === undefined) break;
+    const eq = spec.indexOf("=");
+    const key = foldConfigKey(eq === -1 ? spec : spec.slice(0, eq));
+    if (!fromEnv) pairs.push({ key, value: eq === -1 ? null : spec.slice(eq + 1) });
+    else {
+      const envName = eq === -1 ? null : spec.slice(eq + 1);
+      pairs.push({ key, value: envName !== null && assigned.has(envName) ? assigned.get(envName) : null });
+    }
+  }
+  return pairs;
+}
+
+// ---------------------------------------------------------------------------------------------
+// parse-options API rule: per-subcommand option tables, taken from `git <cmd> -h` (the test suite
+// re-derives them from the installed git and fails on drift). `arg` is "none", "required"
+// (`--name value`/`--name=value`, `-x value`/`-xvalue`) or "optional" (`--name=value`, `-xvalue`
+// only). `noneg` marks the options git prints without `[no-]`.
+// ---------------------------------------------------------------------------------------------
+
+/** @typedef {{ long: string, short?: string, arg: "none" | "required" | "optional", noneg?: boolean }} OptionSpec */
+
+/** @param {OptionSpec[]} specs */
+function optionTable(specs) {
+  const byShort = new Map();
+  for (const spec of specs) if (spec.short) byShort.set(spec.short, spec);
+  return { specs, byShort };
+}
+
+const COMMIT_OPTIONS = optionTable([
+  { long: "quiet", short: "q", arg: "none" },
+  { long: "verbose", short: "v", arg: "none" },
+  { long: "file", short: "F", arg: "required" },
+  { long: "author", arg: "required" },
+  { long: "date", arg: "required" },
+  { long: "message", short: "m", arg: "required" },
+  { long: "reedit-message", short: "c", arg: "required" },
+  { long: "reuse-message", short: "C", arg: "required" },
+  { long: "fixup", arg: "required" },
+  { long: "squash", arg: "required" },
+  { long: "reset-author", arg: "none" },
+  { long: "trailer", arg: "required", noneg: true },
+  { long: "signoff", short: "s", arg: "none" },
+  { long: "template", short: "t", arg: "required" },
+  { long: "edit", short: "e", arg: "none" },
+  { long: "cleanup", arg: "required" },
+  { long: "status", arg: "none" },
+  { long: "gpg-sign", short: "S", arg: "optional" },
+  { long: "all", short: "a", arg: "none" },
+  { long: "include", short: "i", arg: "none" },
+  { long: "interactive", arg: "none" },
+  { long: "patch", short: "p", arg: "none" },
+  { long: "unified", short: "U", arg: "required", noneg: true },
+  { long: "inter-hunk-context", arg: "required", noneg: true },
+  { long: "only", short: "o", arg: "none" },
+  { long: "no-verify", short: "n", arg: "none" },
+  { long: "dry-run", arg: "none" },
+  { long: "short", arg: "none" },
+  { long: "branch", arg: "none" },
+  { long: "ahead-behind", arg: "none" },
+  { long: "porcelain", arg: "none" },
+  { long: "long", arg: "none" },
+  { long: "null", short: "z", arg: "none" },
+  { long: "amend", arg: "none" },
+  { long: "no-post-rewrite", arg: "none" },
+  { long: "untracked-files", short: "u", arg: "optional" },
+  { long: "pathspec-from-file", arg: "required" },
+  { long: "pathspec-file-nul", arg: "none" },
+]);
+
+const PUSH_OPTIONS = optionTable([
+  { long: "verbose", short: "v", arg: "none" },
+  { long: "quiet", short: "q", arg: "none" },
+  { long: "repo", arg: "required" },
+  { long: "all", arg: "none" },
+  { long: "branches", arg: "none" },
+  { long: "mirror", arg: "none" },
+  { long: "delete", short: "d", arg: "none" },
+  { long: "tags", arg: "none" },
+  { long: "dry-run", short: "n", arg: "none" },
+  { long: "porcelain", arg: "none" },
+  { long: "force", short: "f", arg: "none" },
+  { long: "force-with-lease", arg: "optional" },
+  { long: "force-if-includes", arg: "none" },
+  { long: "recurse-submodules", arg: "required" },
+  { long: "thin", arg: "none" },
+  { long: "receive-pack", arg: "required" },
+  { long: "exec", arg: "required" },
+  { long: "set-upstream", short: "u", arg: "none" },
+  { long: "progress", arg: "none" },
+  { long: "prune", arg: "none" },
+  { long: "no-verify", arg: "none" },
+  { long: "follow-tags", arg: "none" },
+  { long: "signed", arg: "optional" },
+  { long: "atomic", arg: "none" },
+  { long: "push-option", short: "o", arg: "required" },
+  { long: "ipv4", short: "4", arg: "none", noneg: true },
+  { long: "ipv6", short: "6", arg: "none", noneg: true },
+]);
+
+// git-config(1): the subcommand options and the deprecated flag modes, as one table — a legacy
+// mode flag and a subcommand option never collide by name.
+const CONFIG_OPTIONS = optionTable([
+  { long: "global", arg: "none" },
+  { long: "system", arg: "none" },
+  { long: "local", arg: "none" },
+  { long: "worktree", arg: "none" },
+  { long: "file", short: "f", arg: "required" },
+  { long: "blob", arg: "required" },
+  { long: "type", short: "t", arg: "required" },
+  { long: "bool", arg: "none" },
+  { long: "int", arg: "none" },
+  { long: "bool-or-int", arg: "none" },
+  { long: "bool-or-str", arg: "none" },
+  { long: "path", arg: "none" },
+  { long: "expiry-date", arg: "none" },
+  { long: "null", short: "z", arg: "none" },
+  { long: "name-only", arg: "none" },
+  { long: "show-origin", arg: "none" },
+  { long: "show-scope", arg: "none" },
+  { long: "show-names", arg: "none" },
+  { long: "includes", arg: "none" },
+  { long: "default", arg: "required" },
+  { long: "comment", arg: "required" },
+  { long: "all", arg: "none" },
+  { long: "regexp", arg: "none" },
+  { long: "value", arg: "required" },
+  { long: "url", arg: "required" },
+  { long: "fixed-value", arg: "none" },
+  { long: "append", arg: "none" },
+  { long: "replace-all", arg: "none" },
+  { long: "add", arg: "none" },
+  { long: "unset", arg: "none" },
+  { long: "unset-all", arg: "none" },
+  { long: "rename-section", arg: "none" },
+  { long: "remove-section", arg: "none" },
+  { long: "edit", short: "e", arg: "none" },
+  { long: "list", short: "l", arg: "none" },
+  { long: "get", arg: "none" },
+  { long: "get-all", arg: "none" },
+  { long: "get-regexp", arg: "none" },
+  { long: "get-urlmatch", arg: "none" },
+  { long: "get-color", arg: "none" },
+  { long: "get-colorbool", arg: "none" },
+]);
+
+/** The tables the test suite pins against `git <cmd> -h`; keyed by subcommand. */
+export const OPTION_TABLES = { commit: COMMIT_OPTIONS, push: PUSH_OPTIONS, config: CONFIG_OPTIONS };
+
+/**
+ * Resolves a long option's name (the text between `--` and any `=`) the way parse-options does:
+ * every option is spelled `name`; unless `noneg`, also `no-name` (negated) and, for an option
+ * itself named `no-x`, `x` (negated). An exact spelling wins; otherwise the name must be a
+ * prefix of exactly one option's spellings. Returns `{ spec, negated }`, `{ ambiguous: [specs] }`
+ * for a prefix naming several options (an error in git), or `null` for an unknown option.
+ */
+function resolveLongOption(name, table) {
+  if (!name) return null;
+  const candidates = new Map();
+  for (const spec of table.specs) {
+    const spellings = [{ spelling: spec.long, negated: false }];
+    if (!spec.noneg) {
+      spellings.push({ spelling: `no-${spec.long}`, negated: true });
+      if (spec.long.startsWith("no-")) spellings.push({ spelling: spec.long.slice(3), negated: true });
+    }
+    for (const { spelling, negated } of spellings) {
+      if (spelling === name) return { spec, negated };
+      if (spelling.startsWith(name) && !candidates.has(spec)) candidates.set(spec, negated);
+    }
+  }
+  if (candidates.size === 1) {
+    const [[spec, negated]] = candidates;
+    return { spec, negated };
+  }
+  if (candidates.size > 1) return { ambiguous: [...candidates.keys()] };
+  return null;
+}
+
+/**
+ * Walks a subcommand's arguments under the parse-options rules (see the table comment) and
+ * returns every option occurrence and every operand. `options[i].spec` is `null` for an option
+ * git would reject as unknown, and `ambiguous` lists the candidates for a prefix naming several.
+ *
+ * @returns {{ options: { spec: OptionSpec | null, negated: boolean, ambiguous?: OptionSpec[] }[], operands: string[] }}
+ */
+function walkOptions(args, table) {
+  const options = [];
+  const operands = [];
   for (let i = 0; i < args.length; i++) {
     const t = args[i];
-    out.push(t);
-    if (t === "-m" || t === "--message") {
-      i++;
+    if (t === "--") {
+      operands.push(...args.slice(i + 1));
+      break;
+    }
+    if (t.startsWith("--")) {
+      const eq = t.indexOf("=");
+      const name = eq === -1 ? t.slice(2) : t.slice(2, eq);
+      const resolved = resolveLongOption(name, table);
+      if (!resolved) options.push({ spec: null, negated: false });
+      else if (resolved.ambiguous) options.push({ spec: null, negated: false, ambiguous: resolved.ambiguous });
+      else {
+        options.push(resolved);
+        if (!resolved.negated && resolved.spec.arg === "required" && eq === -1) i++;
+      }
       continue;
     }
-    if (/^-[a-zA-Z]+$/.test(t) && t.includes("m")) {
-      i++;
+    if (t.startsWith("-") && t.length > 1) {
+      for (let j = 1; j < t.length; j++) {
+        const spec = table.byShort.get(t[j]) ?? null;
+        options.push({ spec, negated: false });
+        if (spec && spec.arg !== "none") {
+          if (spec.arg === "required" && j === t.length - 1) i++;
+          break; // the rest of the bundle (or the next word) is this option's value
+        }
+      }
       continue;
     }
+    operands.push(t);
   }
-  return out;
+  return { options, operands };
 }
+
+/** True when any option in `walk` is a positive `no-verify`, or a prefix git would reject as ambiguous with it. */
+function hasNoVerify(walk) {
+  return walk.options.some(
+    (o) =>
+      (o.spec?.long === "no-verify" && !o.negated) ||
+      (o.ambiguous?.some((spec) => spec.long === "no-verify") ?? false),
+  );
+}
+
+// git-config(1) modes. The subcommand forms are the first operand; the deprecated forms are
+// flags; with neither, one operand reads and two or more write.
+const CONFIG_SUBCOMMANDS = new Set(["list", "get", "set", "unset", "rename-section", "remove-section", "edit"]);
+const CONFIG_READ_MODES = new Set(["list", "get", "get-all", "get-regexp", "get-urlmatch", "get-color", "get-colorbool"]);
+const CONFIG_WRITE_MODES = new Set(["set", "add", "replace-all", "unset", "unset-all", "rename-section", "remove-section", "edit"]);
+const CONFIG_SECTION_MODES = new Set(["rename-section", "remove-section"]);
 
 /**
- * `-n` is `--dry-run` for `git push` (mutates nothing) but skips the gate for `git commit`, so it
- * is only a bypass flag on `commit`. `--no-verify` skips the gate on both and is always a bypass.
+ * True when `git config <configArgs>` writes to a gate key or a gate section, in any spelling.
+ * Every operand is checked rather than only the operand in name position, so an option this
+ * table does not know (whose value would then read as an extra operand) cannot shift the name
+ * out of view.
  */
-function hasBypassFlag(scanArgs, sub) {
-  return scanArgs.some((t) => {
-    if (t === "--no-verify") return true;
-    if (sub !== "commit") return false;
-    return /^-[a-zA-Z]+$/.test(t) && t.includes("n");
-  });
-}
-
-// `git config --get`/`--get-all`/`--get-regexp`/`--get-urlmatch`/`-l`/`--list`/`--list-all` only
-// read. `--unset`/`--unset-all`/`--add`/`--replace-all`/`--edit`/`-e`/`--rename-section`/
-// `--remove-section` always write regardless of how many positional arguments follow. Absent
-// either, a bare `git config <key>` (one positional argument) reads and `git config <key> <value>`
-// (two) writes.
-const CONFIG_READ_FLAGS = new Set([
-  "--get",
-  "--get-all",
-  "--get-regexp",
-  "--get-urlmatch",
-  "-l",
-  "--list",
-  "--list-all",
-]);
-const CONFIG_WRITE_FLAGS = new Set([
-  "--unset",
-  "--unset-all",
-  "--add",
-  "--replace-all",
-  "--edit",
-  "-e",
-  "--rename-section",
-  "--remove-section",
-]);
-const CONFIG_VALUE_FLAGS = new Set(["--file", "-f", "--type", "-t", "--default"]);
-
-/** Positional (non-flag) arguments to `git config`, in `scanArgs`, after the `config` token. */
-function configPositionalArgs(scanArgs) {
-  const out = [];
-  let sawConfig = false;
-  for (let i = 1; i < scanArgs.length; i++) {
-    const t = scanArgs[i];
-    if (!sawConfig) {
-      if (t === "config") sawConfig = true;
-      continue;
-    }
-    if (CONFIG_VALUE_FLAGS.has(t)) {
-      i++;
-      continue;
-    }
-    if (t.startsWith("-")) continue;
-    out.push(t);
+function configWritesGate(configArgs) {
+  const walk = walkOptions(configArgs, CONFIG_OPTIONS);
+  let mode = null;
+  let operands = walk.operands;
+  if (operands.length && CONFIG_SUBCOMMANDS.has(operands[0])) {
+    mode = operands[0];
+    operands = operands.slice(1);
+  } else {
+    // git refuses more than one mode flag per invocation, so when several are present no write
+    // happens; taking a write mode over a read mode here keeps that refusal on the safe side
+    // (`-le` is read as `--edit`, never as `--list`).
+    const modes = walk.options.filter((o) => !o.negated && o.spec).map((o) => o.spec.long);
+    mode =
+      modes.find((name) => CONFIG_WRITE_MODES.has(name)) ??
+      modes.find((name) => CONFIG_READ_MODES.has(name)) ??
+      (operands.length >= 2 ? "set" : "get");
   }
-  return out;
+  if (!CONFIG_WRITE_MODES.has(mode)) return false;
+  if (mode === "edit") return true;
+  const folded = operands.map(foldConfigKey);
+  if (CONFIG_SECTION_MODES.has(mode)) return folded.some((k) => GATE_SECTIONS.has(sectionOf(k)) || GATE_SECTIONS.has(k));
+  return folded.some((k) => GATE_KEYS.has(k));
 }
 
 /**
  * True when a leading `NAME=value` assignment in THIS segment, immediately before the git word at
- * `gi`, sets a `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` environment variable
- * — git 2.31+ honours these for a single invocation, so they redirect core.hooksPath exactly like
- * `-c core.hooksPath=...` without that string ever appearing as a `-c` token. Scoped to the same
- * segment as `gitTokenIndex` already scopes the assignments themselves: a bare `VAR=value` prefix
- * (with no `export`) applies only to the command it directly prefixes, never to a later command in
- * a `;`/`&&` chain, so checking other segments would deny an unrelated command that merely follows
- * one — unlike `export`, below, which genuinely does propagate.
+ * `gi`, sets a configuration-carrying `GIT_CONFIG_*` variable (see the header's ENVIRONMENT
+ * rule) — it redirects core.hooksPath exactly like `-c core.hooksPath=...` without that string
+ * ever appearing as a `-c` token. Scoped to the same segment as `gitTokenIndex` already scopes
+ * the assignments themselves: a bare `VAR=value` prefix (with no `export`) applies only to the
+ * command it directly prefixes, never to a later command in a `;`/`&&` chain, so checking other
+ * segments would deny an unrelated command that merely follows one — unlike `export`, below,
+ * which genuinely does propagate.
  */
 function hasGitConfigEnvOverride(tokens, gi) {
   for (let i = 0; i < gi; i++) {
@@ -621,19 +976,93 @@ function segmentExportsGitConfigVar(tokens) {
 
 const GATE_CONFIG_REFUSAL =
   "Refused: core.hooksPath and extensions.worktreeConfig carry the gate. They are not overridable or reconfigurable by an agent. If the gate itself is wrong, stop and report it to the owner.";
+const INCLUDE_REFUSAL =
+  "Refused: an inline include.path / includeIf.*.path pulls a configuration file in at command-line precedence, where it can carry core.hooksPath. If the gate itself is wrong, stop and report it to the owner.";
 const GIT_CONFIG_ENV_REFUSAL =
   "Refused: a GIT_CONFIG_* environment variable can redirect core.hooksPath for a single git invocation without the string ever appearing as a -c token. Setting any GIT_CONFIG_* variable around a commit or push is refused. If the gate itself is wrong, stop and report it to the owner.";
 const NO_VERIFY_REFUSAL =
   "Refused: --no-verify (or -n on commit) skips the local gate. There is no bypass in this project. If the gate cannot pass, stop and report it to the owner.";
 const UNARMED_REFUSAL =
   "Refused: this repository has no gate installed (core.hooksPath is unset). Run `pnpm install` to arm it before committing or pushing.";
+const ALIAS_REFUSAL =
+  "Refused: the invoked subcommand is an alias defined inline for this invocation whose expansion this guard cannot read. Invoke the git command directly.";
+
+// Alias-to-alias chains beyond this depth are refused rather than followed.
+const MAX_ALIAS_DEPTH = 10;
 
 const deny = (reason) => ({ deny: true, reason });
+const ALLOW = { deny: false, reason: "" };
+
+/** Quotes `word` for a POSIX shell, so a `!`-alias expansion can be rebuilt as the string git would run. */
+function shellQuote(word) {
+  return `'${word.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Classifies one segment whose command word (at `gi`) is git, expanding an inline alias in
+ * place of its subcommand until the subcommand is one this guard reads (`commit`, `push`,
+ * `config`) or is not aliased. `context` carries the enclosing segments (for `export`
+ * propagation), the armed accessor, and the alias depth.
+ */
+function classifyGitSegment(tokens, gi, context) {
+  const pairs = inlineConfigPairs(tokens, gi);
+  for (const { key } of pairs) {
+    if (GATE_KEYS.has(key)) return deny(GATE_CONFIG_REFUSAL);
+    if (isIncludeDirective(key)) return deny(INCLUDE_REFUSAL);
+  }
+
+  const gitArgs = tokens.slice(gi);
+  const si = subcommandIndex(gitArgs);
+  if (si === -1) return ALLOW;
+  const sub = gitArgs[si];
+  const subArgs = gitArgs.slice(si + 1);
+
+  if (sub === "config") return configWritesGate(subArgs) ? deny(GATE_CONFIG_REFUSAL) : ALLOW;
+
+  if (sub === "commit" || sub === "push") {
+    const envOverride = hasGitConfigEnvOverride(tokens, gi) || context.priorSegments.some(segmentExportsGitConfigVar);
+    if (envOverride) return deny(GIT_CONFIG_ENV_REFUSAL);
+    if (hasNoVerify(walkOptions(subArgs, sub === "commit" ? COMMIT_OPTIONS : PUSH_OPTIONS))) {
+      return deny(NO_VERIFY_REFUSAL);
+    }
+    if (!context.isArmed()) return deny(UNARMED_REFUSAL);
+    return ALLOW;
+  }
+
+  // git-config(1) `alias.<name>`: an alias defined inline for the subcommand being invoked.
+  const aliasKey = `alias.${sub.toLowerCase()}`;
+  const alias = pairs.filter((p) => p.key === aliasKey).pop();
+  if (!alias) return ALLOW;
+  if (alias.value === null) return deny(ALIAS_REFUSAL);
+  if (context.aliasDepth >= MAX_ALIAS_DEPTH) return deny(ALIAS_REFUSAL);
+  const next = { ...context, aliasDepth: context.aliasDepth + 1 };
+  if (alias.value.startsWith("!")) {
+    const shell = [alias.value.slice(1), ...subArgs.map(shellQuote)].join(" ");
+    return classifyCommand(shell, next);
+  }
+  const expansion = segmentAndTokenize(alias.value).flat();
+  const expanded = [...tokens.slice(0, gi + si), ...expansion, ...subArgs];
+  return classifyGitSegment(expanded, gi, next);
+}
+
+/** Classifies every segment of a shell command string under `context`. */
+function classifyCommand(command, context) {
+  const segments = segmentAndTokenize(command);
+  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+    const tokens = segments[segIdx];
+    const gi = gitTokenIndex(tokens);
+    if (gi === -1) continue;
+    const verdict = classifyGitSegment(tokens, gi, {
+      ...context,
+      priorSegments: [...context.priorSegments, ...segments.slice(0, segIdx)],
+    });
+    if (verdict.deny) return verdict;
+  }
+  return ALLOW;
+}
 
 /** Whether this command must be refused, and what to tell the agent. */
 export function classify(command, { hooksPathSet }) {
-  const segments = segmentAndTokenize(command);
-
   // `hooksPathSet` may be a plain boolean (every existing test) or a lazy accessor (the real
   // entry point below, which must not spawn a git subprocess for a command that never reaches
   // this check). Evaluated at most once per `classify` call, and only on the path that needs it.
@@ -644,49 +1073,7 @@ export function classify(command, { hooksPathSet }) {
     }
     return armedCache;
   };
-
-  for (let segIdx = 0; segIdx < segments.length; segIdx++) {
-    const tokens = segments[segIdx];
-    const gi = gitTokenIndex(tokens);
-    if (gi === -1) continue;
-    const gitArgs = tokens.slice(gi);
-    const scanArgs = argsExcludingMessageValue(gitArgs);
-    const sub = subcommand(gitArgs);
-
-    // An inline `-c key=value` (or a `key=value` positional to `config`) is always a write for the
-    // scope it targets, regardless of subcommand.
-    if (
-      scanArgs.some(
-        (t) => t.startsWith("core.hooksPath=") || t.startsWith("extensions.worktreeConfig="),
-      )
-    ) {
-      return deny(GATE_CONFIG_REFUSAL);
-    }
-
-    if (sub === "config") {
-      const targetsGateConfig = scanArgs.some(
-        (t) => t === "core.hooksPath" || t === "extensions.worktreeConfig",
-      );
-      if (targetsGateConfig) {
-        const hasWriteFlag = scanArgs.some((t) => CONFIG_WRITE_FLAGS.has(t));
-        const hasReadFlag = scanArgs.some((t) => CONFIG_READ_FLAGS.has(t));
-        const positional = configPositionalArgs(scanArgs);
-        const isRead = !hasWriteFlag && (hasReadFlag || positional.length <= 1);
-        if (!isRead) return deny(GATE_CONFIG_REFUSAL);
-      }
-      continue; // `config` is never itself a commit or push
-    }
-
-    if (sub !== "commit" && sub !== "push") continue;
-
-    const envOverride =
-      hasGitConfigEnvOverride(tokens, gi) ||
-      segments.slice(0, segIdx).some((seg) => segmentExportsGitConfigVar(seg));
-    if (envOverride) return deny(GIT_CONFIG_ENV_REFUSAL);
-    if (hasBypassFlag(scanArgs, sub)) return deny(NO_VERIFY_REFUSAL);
-    if (!isArmed()) return deny(UNARMED_REFUSAL);
-  }
-  return { deny: false, reason: "" };
+  return classifyCommand(command, { isArmed, priorSegments: [], aliasDepth: 0 });
 }
 
 /** True when either the worktree or repository scope has core.hooksPath set to a non-empty value. */
@@ -745,7 +1132,9 @@ if (isMainEntry()) {
   process.stdin.on("end", () => {
     let command;
     try {
-      command = JSON.parse(raw)?.tool_input?.command ?? "";
+      // Registered for every tool: a payload with no command string (an edit, a read) is a no-op.
+      const field = JSON.parse(raw)?.tool_input?.command;
+      command = typeof field === "string" ? field : "";
       const verdict = classify(command, { hooksPathSet: queryHooksPathSet });
       if (verdict.deny) {
         process.stdout.write(
