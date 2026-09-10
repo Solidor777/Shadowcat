@@ -108,6 +108,14 @@ pub(crate) fn resolve_checked(
 /// A drawn footprint's extent in SCENE units (already scaled by the scene's `grid.size`), as the
 /// client renders and hit-tests it. Carries no radius: the collision radius is a server-side gate
 /// quantity and is deliberately not disclosed as a client-consumable number.
+///
+/// # Examples
+///
+/// ```
+/// let extent = shadowcat::scene::footprint::FootprintExtent { w: 1.0, h: 2.0 };
+/// assert_eq!(extent.w, 1.0);
+/// assert_eq!(extent.h, 2.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct FootprintExtent {
@@ -118,6 +126,20 @@ pub struct FootprintExtent {
 }
 
 /// One token's resolved drawn extent.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::footprint::{FootprintExtent, TokenFootprint};
+///
+/// let refused = TokenFootprint { token: uuid::Uuid::nil(), extent: None };
+/// let sized = TokenFootprint {
+///     token: uuid::Uuid::nil(),
+///     extent: Some(FootprintExtent { w: 1.0, h: 1.0 }),
+/// };
+/// assert!(refused.extent.is_none());
+/// assert!(sized.extent.is_some());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct TokenFootprint {
@@ -133,6 +155,19 @@ pub struct TokenFootprint {
 }
 
 /// Every resolved token extent in one scene, plus that scene's unit footprint.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::footprint::{FootprintExtent, SceneFootprints};
+///
+/// let sf = SceneFootprints {
+///     scene: uuid::Uuid::nil(),
+///     unit: FootprintExtent { w: 1.0, h: 1.0 },
+///     tokens: Vec::new(),
+/// };
+/// assert!(sf.tokens.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct SceneFootprints {
@@ -151,6 +186,13 @@ pub struct SceneFootprints {
 /// The `"footprints"` derived channel's payload: the resolved drawn geometry for every scene the
 /// recipient can see, so the client renders authoritative footprints instead of mirroring the
 /// formula that produced them.
+///
+/// # Examples
+///
+/// ```
+/// let payload = shadowcat::scene::footprint::FootprintsPayload { scenes: Vec::new() };
+/// assert!(payload.scenes.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct FootprintsPayload {

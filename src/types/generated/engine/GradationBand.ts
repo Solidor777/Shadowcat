@@ -4,6 +4,15 @@
  * A named illumination band (mirrors the client's `GradationBand`).
  * `minIllumination` is the minimum light level `[0,1]` a cell must reach to
  * qualify; bands are sorted brightest-first at resolution time.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::scene::GradationBand;
+ *
+ * let band = GradationBand { name: "bright".to_string(), min_illumination: 0.67 };
+ * assert_eq!(band.min_illumination, 0.67);
+ * ```
  */
 export type GradationBand = { 
 /**

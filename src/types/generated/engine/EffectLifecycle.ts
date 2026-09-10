@@ -5,6 +5,16 @@ import type { Formula } from "./Formula";
  * Authored lifecycle policy, evaluated server-side at each boundary. Every
  * formula is optional and falls through the combat-defaults chain to the
  * engine fallbacks (expire at combat end, keep at turn end, decrement).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::EffectLifecycle;
+ *
+ * let lifecycle = EffectLifecycle::default();
+ * assert!(lifecycle.on_combat_end.is_none());
+ * assert!(lifecycle.on_advance.is_none());
+ * ```
  */
 export type EffectLifecycle = { 
 /**

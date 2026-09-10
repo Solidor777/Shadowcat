@@ -17,6 +17,33 @@ import type { CombatantEngine } from "./CombatantEngine";
  * fields alone, with its `scope`/`doc_type`/`parent_id` derived from the
  * combat it belongs to and an empty `embedded` map — the record restores the
  * CLOCK's state, never a general document backup.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::PermissionSet;
+ * use shadowcat::data::engine::combat::{CapturedCombatant, CombatantEngine, CombatantKind};
+ * use std::collections::BTreeMap;
+ * use uuid::Uuid;
+ *
+ * let captured = CapturedCombatant {
+ *     id: Uuid::new_v4(),
+ *     name: Some("Goblin".to_string()),
+ *     permissions: PermissionSet::default(),
+ *     owner: None,
+ *     engine: CombatantEngine {
+ *         kind: CombatantKind::Event {
+ *             lifespan: None,
+ *             message: None,
+ *         },
+ *         initiative: None,
+ *         tiebreak: 0.0,
+ *         resources: BTreeMap::new(),
+ *     },
+ *     system: serde_json::json!({}),
+ * };
+ * assert_eq!(captured.name.as_deref(), Some("Goblin"));
+ * ```
  */
 export type CapturedCombatant = { 
 /**

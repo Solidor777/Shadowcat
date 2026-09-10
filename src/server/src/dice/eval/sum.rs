@@ -9,6 +9,25 @@ use crate::dice::spec::{BinOp, ConstTerm, Expr, FnName, RollSpec, TotalConfig};
 /// records (matched by `group_index`); a cursor consumes groups in AST order. If
 /// `cfg.difficulty` is set, classifies `total` (oriented by `spec.direction`) against
 /// `cfg.tiers` into `margin`/`pass`/`tier_label`/`tier_value`; otherwise reports a bare total.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::roll;
+/// use shadowcat::dice::eval::sum::evaluate_total;
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::spec::Mode;
+///
+/// let spec = parse("2d6+3", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raws = roll(&spec, &mut rng);
+/// let Mode::Total(cfg) = &spec.mode else { unreachable!() };
+/// let outcome = evaluate_total(&spec, cfg, &raws);
+/// // 2d6 kept-die sum plus the +3 constant; each die is in [1,6].
+/// assert!((5..=15).contains(&outcome.total));
+/// assert_eq!(outcome.pass, None); // no difficulty set
+/// ```
 pub fn evaluate_total(spec: &RollSpec, cfg: &TotalConfig, raws: &RawRoll) -> RollOutcome {
     let mut next_group = 0usize;
     let total = fold(&spec.expr, raws, &mut next_group);

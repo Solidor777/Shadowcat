@@ -30,6 +30,20 @@ pub const MAX_TABLE_DESCRIPTION_CHARS: usize = 2000;
 pub const MAX_NESTED_DRAW_COUNT: u32 = 10;
 
 /// The engine body of a rollable table. Envelope `name` is the table's name.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::table::{DrawRule, TableEngine, TableRow};
+///
+/// let table = TableEngine {
+///     draw: DrawRule::Weighted,
+///     rows: vec![TableRow { weight: 1, range: None, label: "Miss".into(), results: vec![] }],
+///     description: "A simple hit table.".into(),
+/// };
+/// assert_eq!(table.rows.len(), 1);
+/// assert!(table.validate().is_ok());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -45,6 +59,15 @@ pub struct TableEngine {
 }
 
 /// How a draw selects a row from `TableEngine.rows`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::table::DrawRule;
+///
+/// let rule = DrawRule::Formula { notation: "1d20".into() };
+/// assert_ne!(rule, DrawRule::Weighted);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -62,6 +85,16 @@ pub enum DrawRule {
 }
 
 /// One row of a table.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::table::TableRow;
+///
+/// let row = TableRow { weight: 3, range: None, label: "Treasure".into(), results: vec![] };
+/// assert_eq!(row.weight, 3);
+/// assert!(row.results.is_empty()); // a "nothing happens" row is legal
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -85,6 +118,15 @@ pub struct TableRow {
 /// ts-rs to emit a `bigint` field on a type constructed by client authoring
 /// code (`table-docs.ts`'s `buildTableDoc` callers), which `JSON.stringify`
 /// (`WsClient.send`) cannot serialize.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::table::RowRange;
+///
+/// let range = RowRange { lo: 1, hi: 10 };
+/// assert!(range.lo <= range.hi);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -97,6 +139,16 @@ pub struct RowRange {
 
 /// One thing a drawn row yields, resolved by `crate::tables::draw::draw_table`
 /// at draw time (never at ingress — the `Segment::DocLink` precedent).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::table::TableEntry;
+///
+/// let entry = TableEntry::Text { text: "You find a rusty key.".into() };
+/// let TableEntry::Text { text } = &entry else { unreachable!() };
+/// assert_eq!(text, "You find a rusty key.");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]

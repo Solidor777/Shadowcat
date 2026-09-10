@@ -2,5 +2,13 @@
 
 /**
  * The moment a region trigger fires.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::TriggerEvent;
+ *
+ * assert_ne!(TriggerEvent::Enter, TriggerEvent::Arrest);
+ * ```
  */
 export type TriggerEvent = "enter" | "arrest";

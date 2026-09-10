@@ -2,6 +2,20 @@
 
 /**
  * The engine body of a rich-text note. Envelope `name` is the note's title.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::note::NoteEngine;
+ *
+ * let note = NoteEngine {
+ *     source: "# Session recap".into(),
+ *     body: vec![],
+ *     sort: 0,
+ * };
+ * assert_eq!(note.source, "# Session recap");
+ * assert!(note.body.is_empty()); // server-derived; overwritten by derive_body
+ * ```
  */
 export type NoteEngine = { 
 /**

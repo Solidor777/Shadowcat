@@ -31,6 +31,15 @@ const SECRET_HEX_LEN: usize = SECRET_BYTES * 2;
 
 /// A freshly minted code: the plaintext handed to the GM once, and the PHC
 /// hash that is all the server retains.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::invite::mint;
+///
+/// let minted = mint().unwrap();
+/// assert!(minted.code.starts_with(&minted.id.simple().to_string()));
+/// ```
 pub struct MintedCode {
     /// Selector half (also the invite row id).
     pub id: Uuid,
@@ -41,6 +50,17 @@ pub struct MintedCode {
 }
 
 /// Generate an invite code. Fails only if Argon2 hashing fails.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::invite::{mint, parse, SECRET_BYTES};
+///
+/// let minted = mint().unwrap();
+/// let (id, secret) = parse(&minted.code).unwrap();
+/// assert_eq!(id, minted.id);
+/// assert_eq!(secret.len(), SECRET_BYTES * 2); // hex-encoded verifier
+/// ```
 pub fn mint() -> Result<MintedCode, argon2::password_hash::Error> {
     let id = Uuid::new_v4();
     let mut bytes = [0u8; SECRET_BYTES];
@@ -64,6 +84,18 @@ pub fn mint() -> Result<MintedCode, argon2::password_hash::Error> {
 /// the 2^-128 guess bound is unchanged. A case-SENSITIVE verifier would instead
 /// turn a re-typed or auto-capitalized code into an indistinguishable
 /// "unusable code" that the holder cannot diagnose.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::invite::{mint, parse};
+///
+/// assert!(parse("not-a-valid-code").is_none());
+///
+/// let minted = mint().unwrap();
+/// let (id, _secret) = parse(&minted.code).unwrap();
+/// assert_eq!(id, minted.id);
+/// ```
 pub fn parse(code: &str) -> Option<(Uuid, String)> {
     let (id, secret) = code.split_once('.')?;
     if secret.len() != SECRET_HEX_LEN || !secret.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -76,6 +108,15 @@ pub fn parse(code: &str) -> Option<(Uuid, String)> {
 /// of a code with no matching row verifies [`DUMMY_SECRET`] against it, so the
 /// unknown-code path costs the same as the wrong-secret path and neither the
 /// existence of an invite nor its state is observable through timing.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::invite::{dummy_phc, DUMMY_SECRET};
+/// use shadowcat::auth::password::verify_password;
+///
+/// assert!(verify_password(DUMMY_SECRET, dummy_phc()));
+/// ```
 pub fn dummy_phc() -> &'static str {
     static DUMMY: OnceLock<String> = OnceLock::new();
     DUMMY

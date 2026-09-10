@@ -5,6 +5,18 @@ import type { TriggerEvent } from "./TriggerEvent";
 /**
  * One region trigger: when `on` occurs for a token inside the region,
  * apply `effect`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{RegionTrigger, TriggerEffect, TriggerEvent};
+ *
+ * let trigger = RegionTrigger {
+ *     on: TriggerEvent::Enter,
+ *     effect: TriggerEffect::ConditionAdd { condition: "prone".to_string() },
+ * };
+ * assert_eq!(trigger.on, TriggerEvent::Enter);
+ * ```
  */
 export type RegionTrigger = { 
 /**

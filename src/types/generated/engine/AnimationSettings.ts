@@ -3,6 +3,15 @@ import type { EasingMode } from "./EasingMode";
 
 /**
  * Token move-animation settings.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::AnimationSettings;
+ *
+ * let anim = AnimationSettings::default();
+ * assert_eq!(anim.speed_cells_per_sec, 6.0);
+ * ```
  */
 export type AnimationSettings = { 
 /**

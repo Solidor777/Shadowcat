@@ -3,5 +3,13 @@
 /**
  * Which movement engine a scene uses — the dispatch axis between the grid
  * A* pathfinder and the continuous/navmesh router (`SceneEcs::pathfind`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::MovementModel;
+ *
+ * assert_ne!(MovementModel::GridStepped, MovementModel::Continuous);
+ * ```
  */
 export type MovementModel = "grid-stepped" | "continuous";

@@ -15,6 +15,24 @@ use serde::{Deserialize, Serialize};
 /// `RawRoll::group_spans`), or any id not present in the current base set, is
 /// silently ignored rather than treated as an error, as is a `ReplaceDie` face
 /// index outside a `Faces` die's face list.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::roll;
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::recalc::{recalculate, RecalcOp};
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("1d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(6);
+/// let raws = roll(&spec, &mut rng);
+/// let id = raws.records[0].id;
+/// let ops = [RecalcOp::ReplaceDie { id, natural: 6 }];
+/// let (new_raws, outcome) = recalculate(&spec, &raws, &ops, &mut rng);
+/// assert_eq!(new_raws.records[0].value, 6);
+/// assert_eq!(outcome.total, 6);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RecalcOp {
     /// Draw a fresh natural (via `rng`) for each targeted die.
@@ -38,6 +56,23 @@ pub enum RecalcOp {
 /// reroll/explode modifiers `recalculate(spec, raws, &[], rng) == (raws.clone(),
 /// evaluate(spec, raws))`. Reroll draws from `rng` (server-authoritative: the caller
 /// supplies a seeded/entropy-backed source, never a client-provided face).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::{evaluate, roll};
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::recalc::recalculate;
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("1d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(8);
+/// let raws = roll(&spec, &mut rng);
+/// // Empty ops is an identity: it replays the exact same naturals through the pipeline.
+/// let (same_raws, same_outcome) = recalculate(&spec, &raws, &[], &mut rng);
+/// assert_eq!(same_raws, raws);
+/// assert_eq!(same_outcome, evaluate(&spec, &raws));
+/// ```
 pub fn recalculate(
     spec: &RollSpec,
     raws: &RawRoll,

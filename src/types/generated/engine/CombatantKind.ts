@@ -4,6 +4,21 @@
  * What a combatant is: a token/actor that acts, or a named event in the
  * order. Internally tagged on `type`, so serde cannot `deny_unknown_fields`
  * here; `normalize_engine`'s re-serialization drops any unknown key.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::CombatantKind;
+ *
+ * let kind = CombatantKind::Event {
+ *     lifespan: Some(1),
+ *     message: None,
+ * };
+ * let json = serde_json::to_value(&kind).unwrap();
+ * assert_eq!(json["type"], "event");
+ * let round_tripped: CombatantKind = serde_json::from_value(json).unwrap();
+ * assert_eq!(round_tripped, kind);
+ * ```
  */
 export type CombatantKind = { "type": "actor", 
 /**

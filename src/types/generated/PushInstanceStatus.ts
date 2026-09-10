@@ -7,5 +7,14 @@ import type { MergeConflict } from "./MergeConflict";
  * per-path derivation. An instance the pusher cannot see at all is omitted
  * from the outcome — no entry, name, or count — mirroring redaction's
  * existence-hiding.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::PushInstanceStatus;
+ *
+ * let json = serde_json::to_value(PushInstanceStatus::Excluded).unwrap();
+ * assert_eq!(json, serde_json::json!("excluded"));
+ * ```
  */
 export type PushInstanceStatus = "applied" | { "conflicts": Array<MergeConflict> } | "excluded";

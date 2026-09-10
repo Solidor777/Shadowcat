@@ -16,6 +16,26 @@ import type { Visibility } from "./Visibility";
  * `syncState` and leaves `owner_standing` out BY TYPE — it is an access
  * fact about the instance's owner, not a template property, and no
  * template edit changes it.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::OwnerStanding;
+ * use shadowcat::merge::bands::{MergeBase, StoredBase};
+ * use std::collections::BTreeMap;
+ *
+ * let stored = StoredBase {
+ *     snapshot: MergeBase {
+ *         name: None,
+ *         engine: serde_json::Value::Null,
+ *         system: serde_json::Value::Null,
+ *         embedded: BTreeMap::new(),
+ *         property_overrides: BTreeMap::new(),
+ *     },
+ *     owner_standing: OwnerStanding::Owner,
+ * };
+ * assert_eq!(stored.owner_standing, OwnerStanding::Owner);
+ * ```
  */
 export type StoredBase = { 
 /**

@@ -27,6 +27,26 @@ pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
 /// `manifest.json`'s root: the exported world's identity/watermark plus
 /// per-table row counts `world_bundle::read_bundle` cross-checks against what
 /// it actually extracted before any row reaches a transaction.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::BundleManifest;
+///
+/// let manifest = BundleManifest {
+///     schema_version: 1,
+///     world_id: uuid::Uuid::new_v4(),
+///     world_name: "W".to_string(),
+///     world_seq: 0,
+///     world_created_at: 0,
+///     world_updated_at: 0,
+///     exported_at_unix_ms: 0,
+///     row_counts: Default::default(),
+/// };
+/// let json = serde_json::to_string(&manifest).unwrap();
+/// let round_tripped: BundleManifest = serde_json::from_str(&json).unwrap();
+/// assert_eq!(round_tripped, manifest);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BundleManifest {
     /// Bundle format version; import refuses cleanly on a mismatch.
@@ -64,6 +84,30 @@ pub struct BundleManifest {
 /// where a fresh Create always sets `seq == created_seq`), or a later
 /// `created_seq_at_commit` redaction-generation check would see the wrong
 /// generation.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::world_bundle::ExportedDocumentRow;
+///
+/// let document: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "item",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+/// let row = ExportedDocumentRow {
+///     document,
+///     owner_username: Some("mock_gm".to_string()),
+///     seq: 1,
+///     created_seq: 1,
+/// };
+/// assert_eq!(row.seq, row.created_seq); // a fresh export's document was never re-created
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedDocumentRow {
     /// The document envelope, with `owner` nulled (see `owner_username`).
@@ -81,6 +125,20 @@ pub struct ExportedDocumentRow {
 
 /// One exported `world_events` row. `command_json` is carried byte-for-byte —
 /// a historical audit/replay payload, never rewritten.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::ExportedEventRow;
+///
+/// let row = ExportedEventRow {
+///     seq: 1,
+///     author_username: Some("mock_gm".to_string()),
+///     ts: 0,
+///     command_json: "{}".to_string(),
+/// };
+/// assert_eq!(row.seq, 1);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedEventRow {
     /// `world_events.seq`.
@@ -103,6 +161,16 @@ pub struct ExportedEventRow {
 /// drops the row entirely rather than seat a membership for nobody — the
 /// same row-drop behavior `ExportedFogRow.username` uses for the identical
 /// reason.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::world_bundle::ExportedMemberRow;
+///
+/// let row = ExportedMemberRow { username: "mock_gm".to_string(), role: WorldRole::Gm };
+/// assert_eq!(row.role, WorldRole::Gm);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedMemberRow {
     /// The member's username.
@@ -112,6 +180,26 @@ pub struct ExportedMemberRow {
 }
 
 /// One exported `world_invites` row.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::world_bundle::ExportedInviteRow;
+///
+/// let row = ExportedInviteRow {
+///     id: uuid::Uuid::new_v4(),
+///     secret_hash: "$argon2id$mock".to_string(),
+///     role: WorldRole::Player,
+///     created_by_username: Some("mock_gm".to_string()),
+///     created_at: 0,
+///     expires_at: 1000,
+///     revoked_at: None,
+///     consumed_at: None,
+///     consumed_by_username: None,
+/// };
+/// assert!(row.consumed_at.is_none()); // not yet redeemed
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedInviteRow {
     /// Invite id, preserved verbatim (selector half of the invite code).
@@ -138,6 +226,28 @@ pub struct ExportedInviteRow {
 /// One exported `assets` row. `storage_key` is NOT preserved — import
 /// recomputes the standard `"{world_id}/{asset_id}"` scheme at extraction
 /// time (the world id is preserved verbatim across export/import).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::AssetMeta;
+/// use shadowcat::data::world_bundle::ExportedAssetRow;
+///
+/// let row = ExportedAssetRow {
+///     id: uuid::Uuid::new_v4(),
+///     original_name: "token.png".to_string(),
+///     content_type: "image/png".to_string(),
+///     byte_size: 2048,
+///     created_by_username: Some("mock_gm".to_string()),
+///     created_at: 0,
+///     version: 1,
+///     folder_id: None,
+///     tags: vec!["mock".to_string()],
+///     derived_tags: Vec::new(),
+///     meta: AssetMeta::default(),
+/// };
+/// assert_eq!(row.folder_id, None); // world root
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedAssetRow {
     /// Asset id (stable across rename/replace on the source; preserved
@@ -176,6 +286,19 @@ pub struct ExportedAssetRow {
 
 /// One staged sibling artifact (`assets/<id><suffix>` in the bundle): the
 /// retained original or a derivative, extracted beside its canonical.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::StagedSibling;
+///
+/// let sibling = StagedSibling {
+///     asset_id: uuid::Uuid::new_v4(),
+///     suffix: ".thumb.webp".to_string(),
+///     staged: std::path::PathBuf::from("assets").join("mock.import-tmp"),
+/// };
+/// assert_eq!(sibling.suffix, ".thumb.webp");
+/// ```
 #[derive(Debug, Clone)]
 pub struct StagedSibling {
     /// The canonical asset this file belongs to.
@@ -192,6 +315,19 @@ pub struct StagedSibling {
 /// `explored_fog` rows outright, so a fog row's user always resolves to a
 /// LIVE account on the source server, meaning `username` here is never
 /// itself absent at export time.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::ExportedFogRow;
+///
+/// let row = ExportedFogRow {
+///     scene_id: uuid::Uuid::new_v4(),
+///     username: "mock_player".to_string(),
+///     cells: vec![1, 0, 1],
+/// };
+/// assert_eq!(row.cells.len(), 3);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedFogRow {
     /// The scene the explored-cell memory belongs to.
@@ -206,6 +342,15 @@ pub struct ExportedFogRow {
 /// The key already embeds the world id (e.g. `"world_caps:{world_id}"`);
 /// since the world id is preserved verbatim on import, the key is
 /// reinserted unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::ExportedSettingRow;
+///
+/// let row = ExportedSettingRow { key: "world_caps:mock".to_string(), value: "{}".to_string() };
+/// assert_eq!(row.key, "world_caps:mock");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedSettingRow {
     /// The settings key, e.g. `"world_schemas:<world_id>"`.
@@ -219,6 +364,33 @@ pub struct ExportedSettingRow {
 /// included here — the writer streams them directly from
 /// `Config::assets_path()` via each row's `id`, so a large world's asset
 /// bytes are never buffered twice.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::{BundleManifest, WorldExportData};
+///
+/// let data = WorldExportData {
+///     manifest: BundleManifest {
+///         schema_version: 1,
+///         world_id: uuid::Uuid::new_v4(),
+///         world_name: "W".to_string(),
+///         world_seq: 0,
+///         world_created_at: 0,
+///         world_updated_at: 0,
+///         exported_at_unix_ms: 0,
+///         row_counts: Default::default(),
+///     },
+///     documents: Vec::new(),
+///     events: Vec::new(),
+///     members: Vec::new(),
+///     invites: Vec::new(),
+///     assets: Vec::new(),
+///     fog: Vec::new(),
+///     settings: Vec::new(),
+/// };
+/// assert!(data.documents.is_empty());
+/// ```
 #[derive(Debug, Clone)]
 pub struct WorldExportData {
     /// The manifest, with `row_counts` already filled from the vectors
@@ -243,6 +415,35 @@ pub struct WorldExportData {
 
 /// Every row `world_bundle::read_bundle` extracted from an uploaded `.tar`,
 /// ready for `SqliteRepository::import_world` to insert in one transaction.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::{BundleManifest, WorldImportData};
+///
+/// let data = WorldImportData {
+///     manifest: BundleManifest {
+///         schema_version: 1,
+///         world_id: uuid::Uuid::new_v4(),
+///         world_name: "W".to_string(),
+///         world_seq: 0,
+///         world_created_at: 0,
+///         world_updated_at: 0,
+///         exported_at_unix_ms: 0,
+///         row_counts: Default::default(),
+///     },
+///     documents: Vec::new(),
+///     events: Vec::new(),
+///     members: Vec::new(),
+///     invites: Vec::new(),
+///     assets: Vec::new(),
+///     fog: Vec::new(),
+///     settings: Vec::new(),
+///     staged_assets: Vec::new(),
+///     staged_siblings: Vec::new(),
+/// };
+/// assert!(data.staged_assets.is_empty());
+/// ```
 #[derive(Debug, Clone)]
 pub struct WorldImportData {
     /// The bundle's manifest (already schema-version- and row-count-checked).
@@ -286,6 +487,15 @@ pub struct WorldImportData {
 /// `SET NULL` degradation, see `ExportedMemberRow`/`ExportedFogRow`) are
 /// counted rather than silently absorbed, so the triggering admin can see
 /// exactly what was dropped.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::world_bundle::ImportSummary;
+///
+/// let summary = ImportSummary { world_id: uuid::Uuid::new_v4(), skipped_members: 0, skipped_fog: 0 };
+/// assert_eq!(summary.skipped_members, 0);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportSummary {
     /// The imported world's id (== the bundle's `manifest.world_id`).

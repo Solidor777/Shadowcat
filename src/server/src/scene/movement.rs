@@ -22,6 +22,17 @@ pub(crate) const MAX_MOVE_CELLS: i64 = 1_000_000;
 ///
 /// `None` ⇒ caller must fail closed: cell is not a positive finite number, any coordinate is
 /// non-finite, or the candidate span exceeds `MAX_MOVE_CELLS`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::movement::supercover_cells;
+///
+/// let cells = supercover_cells((0.5, 0.5), (2.5, 0.5), 1.0).unwrap();
+/// assert!(cells.contains(&(0, 0)));
+/// assert!(cells.contains(&(2, 0)));
+/// assert_eq!(supercover_cells((0.0, 0.0), (0.0, 0.0), 0.0), None);
+/// ```
 pub fn supercover_cells(a0: (f64, f64), a1: (f64, f64), cell: f64) -> Option<BTreeSet<Cell>> {
     // Fail-closed on degenerate cell size. `partial_cmp` returns None for NaN and Some(Less/Equal)
     // for zero/negative values; every non-Greater result (including NaN) → None (fail-closed).

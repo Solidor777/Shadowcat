@@ -21,6 +21,20 @@ pub mod sum;
 
 /// Roll every die in `spec`'s expression, left-to-right, running each group's
 /// pipeline. The ONLY randomness step; `evaluate` reads `raws.records` deterministically.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::roll;
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("3d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(7);
+/// let raws = roll(&spec, &mut rng);
+/// assert_eq!(raws.dice.len(), 3);
+/// assert!(raws.dice.iter().all(|d| (1..=6).contains(&d.natural)));
+/// ```
 pub fn roll(spec: &RollSpec, rng: &mut dyn RngSource) -> RawRoll {
     let mut raws = RawRoll::default();
     let mut group_index = 0usize;
@@ -67,6 +81,21 @@ fn roll_expr(expr: &Expr, rng: &mut dyn RngSource, raws: &mut RawRoll, group_ind
 }
 
 /// Deterministic scoring: (spec, raws) -> outcome. Reads `raws.records`; NO randomness.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::{evaluate, roll};
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("2d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(3);
+/// let raws = roll(&spec, &mut rng);
+/// let a = evaluate(&spec, &raws);
+/// let b = evaluate(&spec, &raws); // pure: repeat calls agree exactly
+/// assert_eq!(a, b);
+/// ```
 pub fn evaluate(spec: &RollSpec, raws: &RawRoll) -> RollOutcome {
     match &spec.mode {
         Mode::Total(cfg) => sum::evaluate_total(spec, cfg, raws),

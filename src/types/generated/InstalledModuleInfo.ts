@@ -10,6 +10,21 @@
  * than the folder it's installed under; callers must key enabled-set
  * membership on this `id` field, never `manifest.id`, or toggle state and
  * save requests silently diverge from the server's authoritative key space.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::module_routes::InstalledModuleInfo;
+ *
+ * let info = InstalledModuleInfo {
+ *     id: "dnd5e".into(),
+ *     manifest: serde_json::json!({ "id": "dnd5e", "version": "1.0.0" }),
+ *     entry_url: "/modules/dnd5e/index.js".into(),
+ * };
+ * let value = serde_json::to_value(&info).unwrap();
+ * assert_eq!(value["id"], "dnd5e");
+ * assert_eq!(value["entry_url"], "/modules/dnd5e/index.js");
+ * ```
  */
 export type InstalledModuleInfo = { 
 /**

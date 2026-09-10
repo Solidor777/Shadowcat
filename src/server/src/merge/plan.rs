@@ -24,6 +24,25 @@ use crate::merge::{MergeConflict, MergeError};
 
 /// Result of a 3-way merge: the child-wins-default merged bands plus the
 /// conflicts to resolve.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::MergeBands;
+/// use shadowcat::merge::plan::MergePlan;
+/// use std::collections::BTreeMap;
+///
+/// let plan = MergePlan {
+///     merged_bands: MergeBands {
+///         name: Some("Dragon".to_string()),
+///         engine: serde_json::Value::Null,
+///         system: serde_json::Value::Null,
+///         embedded: BTreeMap::new(),
+///     },
+///     conflicts: Vec::new(),
+/// };
+/// assert!(plan.conflicts.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct MergePlan {
     /// The merged bands (child-wins default for unresolved conflicts).
@@ -75,6 +94,47 @@ pub(crate) fn split_bands_tree(tree: &Value) -> BandTriple {
 /// withholds conflicts instead). Base and parent therefore agree on what
 /// the requester may see, and no hidden template value — from either the
 /// snapshot or the live template — enters the parent diff.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope};
+/// use shadowcat::merge::bands::snapshot_base;
+/// use shadowcat::merge::plan::merge3;
+/// use shadowcat::merge::AllVisible;
+/// use uuid::Uuid;
+///
+/// fn doc(name: &str, system: serde_json::Value) -> Document {
+///     Document {
+///         id: Uuid::new_v4(),
+///         scope: Scope::World { world_id: Uuid::new_v4() },
+///         doc_type: "actor".into(),
+///         schema_version: 1,
+///         name: Some(name.to_string()),
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: Default::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system,
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let template = doc("Dragon", serde_json::json!({ "hp": 10 }));
+/// let base = snapshot_base(&template);
+/// let mut parent_now = template.clone();
+/// parent_now.system = serde_json::json!({ "hp": 20 }); // template changed hp
+/// let child_now = doc("Dragon (mine)", serde_json::json!({ "hp": 10 })); // child untouched
+///
+/// let plan = merge3(&base, &parent_now, &child_now, &[], &AllVisible).unwrap();
+/// assert_eq!(plan.merged_bands.system["hp"], 20); // template's change auto-applies
+/// assert_eq!(plan.merged_bands.name.as_deref(), Some("Dragon (mine)")); // child-wins default
+/// assert!(plan.conflicts.is_empty());
+/// ```
 pub fn merge3(
     base: &MergeBase,
     parent_now: &Document,
@@ -141,6 +201,41 @@ pub fn merge3(
 /// stored value straight into it ignores that key rather than requiring it —
 /// a stored base predating the standing key, or a corpus fixture that never
 /// carried one, is not corruption.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope};
+/// use shadowcat::merge::plan::compute_pull;
+/// use shadowcat::merge::AllVisible;
+/// use uuid::Uuid;
+///
+/// fn doc(name: &str, system: serde_json::Value) -> Document {
+///     Document {
+///         id: Uuid::new_v4(),
+///         scope: Scope::World { world_id: Uuid::new_v4() },
+///         doc_type: "actor".into(),
+///         schema_version: 1,
+///         name: Some(name.to_string()),
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: Default::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system,
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let template = doc("Dragon", serde_json::json!({ "hp": 20 }));
+/// let child = doc("Dragon (mine)", serde_json::json!({ "hp": 10 })); // unstamped, base = None
+///
+/// let plan = compute_pull(&child, &template, &AllVisible).unwrap();
+/// assert_eq!(plan.merged_bands.system["hp"], 20); // clean template-wins result
+/// ```
 pub fn compute_pull(
     child: &Document,
     template: &Document,
@@ -208,6 +303,52 @@ fn is_empty_collection(v: &Value) -> bool {
 /// pointer as `Value::Null`, so emitting `[]` would produce an `old` that
 /// never matches the stored state and a spurious OCC rejection on an
 /// otherwise honest pre-image.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, OwnerStanding, Scope};
+/// use shadowcat::merge::bands::MergeBands;
+/// use shadowcat::merge::plan::plan_to_update;
+/// use std::collections::BTreeMap;
+/// use uuid::Uuid;
+///
+/// fn doc(name: &str, system: serde_json::Value) -> Document {
+///     Document {
+///         id: Uuid::new_v4(),
+///         scope: Scope::World { world_id: Uuid::new_v4() },
+///         doc_type: "actor".into(),
+///         schema_version: 1,
+///         name: Some(name.to_string()),
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: Default::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system,
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let template = doc("Dragon", serde_json::json!({ "hp": 20 }));
+/// let child = doc("Dragon (mine)", serde_json::json!({ "hp": 10 }));
+/// let merged_bands = MergeBands {
+///     name: child.name.clone(),
+///     engine: serde_json::Value::Null,
+///     system: serde_json::json!({ "hp": 20 }),
+///     embedded: BTreeMap::new(),
+/// };
+///
+/// let op = plan_to_update(&child, &template, &merged_bands, OwnerStanding::Owner);
+/// let Operation::Update { changes, .. } = op else {
+///     panic!("expected an Update")
+/// };
+/// assert!(changes.iter().any(|c| c.path == "/system"));
+/// ```
 pub fn plan_to_update(
     child: &Document,
     template: &Document,
@@ -361,6 +502,33 @@ fn pointer_key(path: &str) -> Vec<PointerToken> {
 /// is the reachable case) or the resolved tree no longer parses as embedded
 /// documents; nothing is written and the caller reports the set as
 /// unresolvable.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::MergeBands;
+/// use shadowcat::merge::plan::apply_resolutions;
+/// use shadowcat::merge::{MergeConflict, ParentKind};
+/// use std::collections::{BTreeMap, BTreeSet};
+///
+/// let merged_bands = MergeBands {
+///     name: None,
+///     engine: serde_json::Value::Null,
+///     system: serde_json::json!({ "hp": 10 }), // child-wins default
+///     embedded: BTreeMap::new(),
+/// };
+/// let conflict = MergeConflict {
+///     path: "/system/hp".to_string(),
+///     base: Some(serde_json::json!(5)),
+///     parent: Some(serde_json::json!(20)),
+///     child: Some(serde_json::json!(10)),
+///     parent_kind: ParentKind::Set,
+/// };
+/// let theirs: BTreeSet<String> = ["/system/hp".to_string()].into_iter().collect();
+///
+/// let resolved = apply_resolutions(&merged_bands, &[conflict], &theirs).unwrap();
+/// assert_eq!(resolved.system["hp"], 20); // "theirs" took the template's value
+/// ```
 pub fn apply_resolutions(
     merged_bands: &MergeBands,
     conflicts: &[MergeConflict],
@@ -438,6 +606,42 @@ pub(crate) fn revert_bands(
 /// `plan_to_update` against the full template, which refreshes `base`. No
 /// conflicts are possible (revert never asks the user to choose; it always
 /// takes the template).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope};
+/// use shadowcat::merge::plan::compute_revert;
+/// use shadowcat::merge::AllVisible;
+/// use uuid::Uuid;
+///
+/// fn doc(name: &str, system: serde_json::Value) -> Document {
+///     Document {
+///         id: Uuid::new_v4(),
+///         scope: Scope::World { world_id: Uuid::new_v4() },
+///         doc_type: "actor".into(),
+///         schema_version: 1,
+///         name: Some(name.to_string()),
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: Default::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system,
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let template = doc("Dragon", serde_json::json!({ "hp": 20 }));
+/// let child = doc("Dragon (mine)", serde_json::json!({ "hp": 10 }));
+///
+/// let bands = compute_revert(&child, &template, &AllVisible).unwrap();
+/// assert_eq!(bands.system["hp"], 20); // child-local edit discarded
+/// assert_eq!(bands.name.as_deref(), Some("Dragon")); // template's name wins too
+/// ```
 pub fn compute_revert(
     child: &Document,
     template: &Document,

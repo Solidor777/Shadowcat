@@ -28,6 +28,27 @@ use super::{CombatError, CombatSnapshot, Combatant};
 /// One effect document reachable from a combatant, located by its host
 /// document and a JSON pointer to the effect within it (e.g.
 /// `/embedded/effect/0`, `/embedded/item/0/embedded/effect/0`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::effects::EffectRef;
+/// use shadowcat::data::engine::combat::EffectEngine;
+/// use uuid::Uuid;
+///
+/// let effect_ref = EffectRef {
+///     host: Uuid::new_v4(),
+///     path: "/embedded/effect/0".to_string(),
+///     engine: EffectEngine {
+///         active: true,
+///         transfer: false,
+///         duration: None,
+///         lifecycle: None,
+///     },
+/// };
+/// assert_eq!(effect_ref.path, "/embedded/effect/0");
+/// assert!(effect_ref.engine.active);
+/// ```
 pub struct EffectRef {
     /// The document that embeds the effect (an actor or a token).
     pub host: Uuid,
@@ -176,6 +197,152 @@ fn walk_any_host(
 /// item-embedded effect still requires its own `transfer` flag. An `Event`
 /// combatant hosts no effects, but may still anchor effects hosted
 /// elsewhere, so both passes run for it too.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::effects::collect_effects;
+/// use shadowcat::combat::{CombatSnapshot, Combatant};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectEngine, EffectLifecycleDefaults,
+///     Enforcement, Interpretation, MovementRules, TurnControl,
+/// };
+/// use std::collections::{BTreeMap, HashMap};
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let actor_id = Uuid::new_v4();
+/// let effect_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "effect".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(
+///         serde_json::to_value(&EffectEngine {
+///             active: true,
+///             transfer: false,
+///             duration: None,
+///             lifecycle: None,
+///         })
+///         .unwrap(),
+///     ),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let mut embedded = BTreeMap::new();
+/// embedded.insert("effect".to_string(), vec![effect_doc]);
+/// let actor_doc = Document {
+///     id: actor_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "actor".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded,
+///     parent_id: None,
+///     engine: Some(serde_json::json!({})),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let combatant_engine = CombatantEngine {
+///     kind: CombatantKind::Actor {
+///         token_id: None,
+///         actor_id: Some(actor_id),
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     resources: Default::default(),
+/// };
+/// let combatant_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(Uuid::new_v4()),
+///     engine: Some(serde_json::to_value(&combatant_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let combatant = Combatant {
+///     doc: combatant_doc,
+///     engine: combatant_engine,
+/// };
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let mut hosts = HashMap::new();
+/// hosts.insert(actor_id, actor_doc);
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![combatant.clone()],
+///     hosts,
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let refs = collect_effects(&snapshot, &combatant);
+/// assert_eq!(refs.len(), 1);
+/// assert_eq!(refs[0].host, actor_id);
+/// assert_eq!(refs[0].path, "/embedded/effect/0");
+/// ```
 pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<EffectRef> {
     let mut out = Vec::new();
     let mut own: HashSet<Uuid> = HashSet::new();
@@ -246,6 +413,152 @@ pub fn collect_effects(snap: &CombatSnapshot, combatant: &Combatant) -> Vec<Effe
 /// with the combatant it was collected for. Used by `transition::end`, which
 /// must expire cleanup-eligible effects across the WHOLE combat rather than
 /// one combatant's turn.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::effects::collect_all_effects;
+/// use shadowcat::combat::{CombatSnapshot, Combatant};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectEngine, EffectLifecycleDefaults,
+///     Enforcement, Interpretation, MovementRules, TurnControl,
+/// };
+/// use std::collections::{BTreeMap, HashMap};
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let actor_id = Uuid::new_v4();
+/// let effect_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "effect".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(
+///         serde_json::to_value(&EffectEngine {
+///             active: true,
+///             transfer: false,
+///             duration: None,
+///             lifecycle: None,
+///         })
+///         .unwrap(),
+///     ),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let mut embedded = BTreeMap::new();
+/// embedded.insert("effect".to_string(), vec![effect_doc]);
+/// let actor_doc = Document {
+///     id: actor_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "actor".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded,
+///     parent_id: None,
+///     engine: Some(serde_json::json!({})),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let combatant_engine = CombatantEngine {
+///     kind: CombatantKind::Actor {
+///         token_id: None,
+///         actor_id: Some(actor_id),
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     resources: Default::default(),
+/// };
+/// let combatant_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(Uuid::new_v4()),
+///     engine: Some(serde_json::to_value(&combatant_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let combatant = Combatant {
+///     doc: combatant_doc,
+///     engine: combatant_engine,
+/// };
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let mut hosts = HashMap::new();
+/// hosts.insert(actor_id, actor_doc);
+/// let combatant_id = combatant.doc.id;
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![combatant],
+///     hosts,
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let all_refs = collect_all_effects(&snapshot);
+/// assert_eq!(all_refs.len(), 1);
+/// assert_eq!(all_refs[0].0, combatant_id);
+/// ```
 pub fn collect_all_effects(snap: &CombatSnapshot) -> Vec<(Uuid, EffectRef)> {
     snap.combatants
         .iter()
@@ -268,6 +581,73 @@ fn active_refs(refs: &[EffectRef]) -> impl Iterator<Item = &EffectRef> {
 /// (e.g. `effect_path = "/embedded/effect/0"`, `field = "/engine/active"`).
 /// The OCC pre-image is read from `host`'s own current value at that
 /// pointer, same convention as `ops::set_engine`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::effects::set_effect_field;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::EffectEngine;
+/// use std::collections::BTreeMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let effect_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "effect".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(
+///         serde_json::to_value(&EffectEngine {
+///             active: true,
+///             transfer: false,
+///             duration: None,
+///             lifecycle: None,
+///         })
+///         .unwrap(),
+///     ),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let mut embedded = BTreeMap::new();
+/// embedded.insert("effect".to_string(), vec![effect_doc]);
+/// let host = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "actor".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded,
+///     parent_id: None,
+///     engine: Some(serde_json::json!({})),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let change = set_effect_field(
+///     &host,
+///     "/embedded/effect/0",
+///     "/engine/active",
+///     serde_json::json!(false),
+/// )
+/// .unwrap();
+/// assert_eq!(change.path, "/embedded/effect/0/engine/active");
+/// assert_eq!(change.old, serde_json::json!(true));
+/// assert_eq!(change.new, serde_json::json!(false));
+/// ```
 pub fn set_effect_field(
     host: &Document,
     effect_path: &str,

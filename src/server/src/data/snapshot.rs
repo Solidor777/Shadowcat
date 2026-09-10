@@ -24,6 +24,25 @@ use crate::data::document::{PermissionSet, Visibility};
 /// signature change). Built ONCE per command, from the command's own post-image (never from an
 /// op's own per-iteration intermediate state — a per-op snapshot mid-command would leak a value
 /// a LATER op in the same command hides).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::snapshot::OpSnapshot;
+///
+/// let snap = OpSnapshot {
+///     owner_at_commit: None,
+///     doc_type: "note".into(),
+///     overrides_at_commit: vec![],
+///     retraction_hidden_at_commit: None,
+///     created_seq_at_commit: Some(1),
+///     permissions_at_commit: None,
+///     permissions_before_commit: None,
+///     owner_before_commit: None,
+/// };
+/// assert_eq!(snap.doc_type, "note");
+/// assert!(snap.retraction_hidden_at_commit.is_none()); // whole-doc ops need no retraction
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct OpSnapshot {
     /// Effective owner at commit (`permission::effective_owner`/`SqliteRepository::
@@ -87,6 +106,19 @@ pub struct OpSnapshot {
 
 /// Commit-time redaction inputs for a whole `Command`, index-aligned with `Command.ops`. Built
 /// ONCE per command, after every op in the command has applied.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::snapshot::CommandSnapshot;
+///
+/// let snap = CommandSnapshot {
+///     per_op: vec![None],
+///     world_gm_at_commit: std::collections::HashMap::new(),
+/// };
+/// assert_eq!(snap.per_op.len(), 1);
+/// assert!(snap.per_op[0].is_none()); // no recorded snapshot: dropped on replay
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CommandSnapshot {
     /// `None` at an index means "no snapshot recorded for this op" — the back-compat case for a
@@ -104,6 +136,29 @@ pub struct CommandSnapshot {
 /// A `Command` paired with its commit-time redaction snapshot. Server-internal transport shape:
 /// never serialized to the wire. Persisted into `world_events.command_json` and carried through
 /// the room broadcast/ring/resync path in place of a bare `Command`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::Command;
+/// use shadowcat::data::snapshot::{CommandSnapshot, StoredCommand};
+///
+/// let command = Command {
+///     seq: 1,
+///     world_id: uuid::Uuid::nil(),
+///     author: uuid::Uuid::nil(),
+///     ts: 0,
+///     ops: vec![],
+/// };
+/// let stored = StoredCommand {
+///     command: command.clone(),
+///     snapshot: CommandSnapshot {
+///         per_op: vec![],
+///         world_gm_at_commit: std::collections::HashMap::new(),
+///     },
+/// };
+/// assert_eq!(stored.command, command);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StoredCommand {
     /// The wire-shaped command.
@@ -119,6 +174,18 @@ impl StoredCommand {
     /// row is wrapped with an all-`None` `CommandSnapshot` and an empty `world_gm_at_commit` map:
     /// `filter_command` then drops every op in it on replay rather than falling back to a
     /// live-lookup redaction — an accepted cost against undated history, never a silent gap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::snapshot::StoredCommand;
+    ///
+    /// // A legacy bare-Command row (no `command`/`snapshot` keys).
+    /// let raw = r#"{"seq":1,"world_id":"00000000-0000-0000-0000-000000000000","author":"00000000-0000-0000-0000-000000000000","ts":0,"ops":[]}"#;
+    /// let stored = StoredCommand::from_stored_json(raw).unwrap();
+    /// assert_eq!(stored.command.seq, 1);
+    /// assert!(stored.snapshot.per_op.is_empty()); // no ops to snapshot
+    /// ```
     pub fn from_stored_json(raw: &str) -> Result<Self, serde_json::Error> {
         if let Ok(stored) = serde_json::from_str::<StoredCommand>(raw) {
             return Ok(stored);

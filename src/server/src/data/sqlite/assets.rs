@@ -99,6 +99,21 @@ impl SqliteRepository {
     }
 
     /// `folder_ancestor_names` on a fresh connection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// // The world root has no ancestor folders.
+    /// let names = repo.folder_ancestor_names_of(None).await?;
+    /// assert!(names.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn folder_ancestor_names_of(
         &self,
         folder_id: Option<Uuid>,
@@ -160,6 +175,22 @@ impl SqliteRepository {
     }
 
     /// `assets_in_folder_subtree` on a fresh connection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// // A folder id with no rows under it has an empty subtree.
+    /// let assets = repo.assets_in_folder_subtree_of(Uuid::new_v4()).await?;
+    /// assert!(assets.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn assets_in_folder_subtree_of(&self, folder: Uuid) -> Result<Vec<Uuid>, DataError> {
         let mut conn = self.pool.acquire().await?;
         Self::assets_in_folder_subtree(&mut conn, folder).await
@@ -182,6 +213,43 @@ impl SqliteRepository {
     /// `folder` (`Some(None)` = move to root) when given, the explicit tag
     /// set replaced by `tags` when given, then the derived set refreshed.
     /// `None` when the asset does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// let updated = repo
+    ///     .update_asset_placement(id, Some("renamed.png"), None, None)
+    ///     .await?
+    ///     .unwrap();
+    /// assert_eq!(updated.original_name, "renamed.png");
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn update_asset_placement(
         &self,
         id: Uuid,
@@ -250,6 +318,42 @@ impl SqliteRepository {
     /// `remove_tags` drops explicit tags only (a derived tag cannot be
     /// removed — it would come straight back on the next refresh). Returns
     /// the updated assets in `ids` order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// let updated = repo
+    ///     .bulk_update_assets(world.id, &[id], None, &["hero".to_string()], &[])
+    ///     .await?;
+    /// assert_eq!(updated[0].tags, vec!["hero".to_string()]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn bulk_update_assets(
         &self,
         world: Uuid,
@@ -302,6 +406,42 @@ impl SqliteRepository {
     }
 
     /// `refresh_derived_tags_tx` in its own transaction.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// assert!(repo.get_asset(id).await?.unwrap().derived_tags.is_empty());
+    /// repo.refresh_derived_tags(id).await?;
+    /// let refreshed = repo.get_asset(id).await?.unwrap();
+    /// assert!(refreshed.derived_tags.contains(&"image".to_string()));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn refresh_derived_tags(&self, id: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         Self::refresh_derived_tags_tx(&mut tx, id).await?;
@@ -359,6 +499,39 @@ impl SqliteRepository {
 
     /// Insert a new asset record. `version` starts at 1. Tags are NOT written
     /// here — `set_asset_tags` owns both tag sets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// assert!(repo.get_asset(id).await?.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn insert_asset(&self, a: &Asset) -> Result<(), DataError> {
         sqlx::query(
             "INSERT INTO assets \
@@ -478,6 +651,48 @@ impl SqliteRepository {
     /// Swap the bytes behind a stable id: rewrites the served-file columns AND
     /// every pipeline-metadata column from `meta`; bumps and returns the new
     /// version.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// let new_version = repo
+    ///     .replace_asset_bytes(
+    ///         id,
+    ///         &asset.storage_key,
+    ///         "image/webp",
+    ///         20,
+    ///         &AssetMeta::unprocessed("image/png", 40),
+    ///     )
+    ///     .await?;
+    /// assert_eq!(new_version, 2);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn replace_asset_bytes(
         &self,
         id: Uuid,
@@ -515,6 +730,43 @@ impl SqliteRepository {
     /// Replace BOTH tag sets of `id` in one transaction: `explicit` becomes
     /// the GM-set list, `derived` the pipeline list. A tag present in both is
     /// stored once, as explicit (the GM's intent outranks the derivation).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// repo.set_asset_tags(id, &["hero".to_string()], &["image".to_string()])
+    ///     .await?;
+    /// let got = repo.get_asset(id).await?.unwrap();
+    /// assert_eq!(got.tags, vec!["hero".to_string()]);
+    /// assert_eq!(got.derived_tags, vec!["image".to_string()]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_asset_tags(
         &self,
         id: Uuid,
@@ -551,6 +803,43 @@ impl SqliteRepository {
     /// observe the row and double-fire side effects (file remove + broadcast) —
     /// only the call that actually removes the row gets `Some`. Tag rows go
     /// with the `asset_tags` FK cascade; the returned struct carries none.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// let deleted = repo.delete_asset(id).await?.unwrap();
+    /// assert_eq!(deleted.id, id);
+    /// assert!(repo.get_asset(id).await?.is_none());
+    /// // A second delete finds nothing left to remove.
+    /// assert!(repo.delete_asset(id).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn delete_asset(&self, id: Uuid) -> Result<Option<Asset>, DataError> {
         let row = sqlx::query("DELETE FROM assets WHERE id = ? RETURNING *")
             .bind(id.to_string())
@@ -595,6 +884,44 @@ impl SqliteRepository {
     /// key then `id`, ascending), `after` resumes past a keyset position, and
     /// at most `limit` rows come back with tags filled. A recursive folder
     /// scope walks `documents.parent_id` over `asset_folder` rows in a CTE.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::query::AssetFilter;
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use uuid::Uuid;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let id = Uuid::new_v4();
+    /// let asset = Asset {
+    ///     id,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{id}", world.id),
+    ///     original_name: "map.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// };
+    /// repo.insert_asset(&asset).await?;
+    /// let page = repo
+    ///     .query_assets(world.id, &AssetFilter::default(), Default::default(), None, 10)
+    ///     .await?;
+    /// assert_eq!(page.len(), 1);
+    /// assert_eq!(page[0].id, id);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn query_assets(
         &self,
         world: Uuid,

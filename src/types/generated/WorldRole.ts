@@ -2,5 +2,15 @@
 
 /**
  * Per-world membership role (orthogonal to the server admin/user tier).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::WorldRole;
+ *
+ * let role = WorldRole::Player;
+ * assert_ne!(role, WorldRole::Gm);
+ * assert!(WorldRole::Gm < WorldRole::Player); // declaration-order Ord
+ * ```
  */
 export type WorldRole = "gm" | "player" | "spectator";

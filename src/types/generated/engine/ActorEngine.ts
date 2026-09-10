@@ -11,6 +11,29 @@ import type { VisionAssignment } from "./VisionAssignment";
  * An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
  * `name` which moves to the envelope). Every other field of `ActorEngine`
  * (inventory, stats, …) lives in `system` — this is a SPLIT type.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{ActorEngine, Size, TokenVisual};
+ *
+ * let actor = ActorEngine {
+ *     display_name: "Goblin Scout".to_string(),
+ *     visual: TokenVisual::Image { asset: "token-goblin.png".to_string() },
+ *     size: Size { w: 1.0, h: 1.0 },
+ *     shape: "square".to_string(),
+ *     faction: None,
+ *     conditions: Vec::new(),
+ *     prototype: false,
+ *     vision: None,
+ *     light: None,
+ *     movement: Vec::new(),
+ *     aura: None,
+ *     sound: None,
+ *     vfx: None,
+ * };
+ * assert_eq!(actor.display_name, "Goblin Scout");
+ * ```
  */
 export type ActorEngine = { 
 /**

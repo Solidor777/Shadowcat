@@ -3,6 +3,20 @@
 /**
  * Pipeline-derived metadata recorded at commit (`data::asset::process`) and
  * rewritten on replace/reconvert. Flattened into `Asset` on the wire.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::asset::AssetMeta;
+ *
+ * let meta = AssetMeta {
+ *     width: Some(64),
+ *     ..AssetMeta::unprocessed("image/png", 10)
+ * };
+ * // Fields not named in the literal come from `unprocessed`, not the update syntax.
+ * assert_eq!(meta.original_byte_size, 10);
+ * assert!(meta.height.is_none());
+ * ```
  */
 export type AssetMeta = { 
 /**

@@ -12,6 +12,7 @@ import {
   RUN_EXCLUSIONS,
 } from "./check-skill-symbol-refs-cli.mjs";
 import { defaultSkillsRoot } from "./lib/gate-corpus.mjs";
+import { scrubGitEnv } from "./lib/run-git.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CLI = join(REPO_ROOT, "scripts", "check-skill-symbol-refs-cli.mjs");
@@ -234,8 +235,8 @@ describe("the CLI process itself", () => {
     );
     // Tracked-ness is what scopes the corpus, so the fixture must be a real checkout. The index
     // alone is enough — nothing here needs a commit.
-    execFileSync("git", ["init", "-q"], { cwd: repoRoot });
-    execFileSync("git", ["add", "-A"], { cwd: repoRoot });
+    execFileSync("git", ["init", "-q"], { cwd: repoRoot, env: scrubGitEnv() });
+    execFileSync("git", ["add", "-A"], { cwd: repoRoot, env: scrubGitEnv() });
 
     const run = spawnSync(process.execPath, [CLI, repoRoot, join(repoRoot, ".claude", "skills")], {
       encoding: "utf8",

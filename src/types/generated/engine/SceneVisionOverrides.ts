@@ -8,6 +8,21 @@ import type { MovementRestriction } from "./MovementRestriction";
  * override); resolvers use `??`, so `null`/absent are semantically
  * identical — a stored explicit null re-serializes as absent, which is
  * semantically lossless.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::SceneVisionOverrides;
+ *
+ * let overrides = SceneVisionOverrides {
+ *     los_restriction: Some(true),
+ *     fog: None,
+ *     observer_vision: None,
+ *     movement_restriction: None,
+ *     movement_model: None,
+ * };
+ * assert_eq!(overrides.los_restriction, Some(true));
+ * ```
  */
 export type SceneVisionOverrides = { 
 /**

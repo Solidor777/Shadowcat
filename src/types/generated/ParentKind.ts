@@ -3,5 +3,13 @@
 /**
  * How `take_template` resolves a conflict: `"set"` writes the parent value,
  * `"delete"` removes the key.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::merge::ParentKind;
+ *
+ * assert_ne!(ParentKind::Set, ParentKind::Delete);
+ * ```
  */
 export type ParentKind = "set" | "delete";

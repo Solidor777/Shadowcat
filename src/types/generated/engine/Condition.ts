@@ -4,6 +4,15 @@ import type { ConditionFx } from "./ConditionFx";
 /**
  * A status condition's display (mirrors the client's `Condition`). `icon`
  * is a short glyph (emoji) rendered as a token badge.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Condition;
+ *
+ * let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None };
+ * assert!(condition.fx.is_none()); // no built-in token-art effect declared
+ * ```
  */
 export type Condition = { 
 /**

@@ -9,6 +9,16 @@
  * as `data::engine::table::TableEntry::Doc`'s target — the ts-rs export lives here (this type
  * itself, not `Segment`/`MessageEngine`, which stay opaque and unexported) since the table
  * engine body crosses the wire boundary and needs a generated mirror.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::chat::DocLinkTarget;
+ *
+ * let target = DocLinkTarget::Token { token_id: uuid::Uuid::nil() };
+ * let json = serde_json::to_value(&target).unwrap();
+ * assert_eq!(json["kind"], "token");
+ * ```
  */
 export type DocLinkTarget = { "kind": "doc", 
 /**

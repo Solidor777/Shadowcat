@@ -3,6 +3,15 @@ import type { DiagonalRule } from "./DiagonalRule";
 
 /**
  * World pathfinding settings.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{DiagonalRule, Pathfinding};
+ *
+ * let pf = Pathfinding::default();
+ * assert_eq!(pf.diagonal_rule, DiagonalRule::Chebyshev);
+ * ```
  */
 export type Pathfinding = { 
 /**

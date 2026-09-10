@@ -8,6 +8,18 @@ use serde::{Deserialize, Serialize};
 use crate::dice::spec::{ConstTerm, DieId, DieKind, RollSpec, Symbol};
 
 /// A single die's natural (RNG) result — the only nondeterministic artifact.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::outcome::RawRoll;
+/// use shadowcat::dice::spec::DieKind;
+/// let mut raws = RawRoll::default();
+/// let id = raws.push(DieKind::Numeric { min: 1, max: 6 }, 4);
+/// let die = &raws.dice[0];
+/// assert_eq!(die.id, id);
+/// assert_eq!(die.natural, 4);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawDie {
     /// Stable per-roll die id.
@@ -21,6 +33,16 @@ pub struct RawDie {
 /// The RNG output for a whole roll. `dice` is the natural-face log; `records` is the
 /// post-pipeline per-die result (filled by `roll`/`recalculate`); `next_id` hands out
 /// stable ids so reroll/add ops never collide with existing dice.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::outcome::RawRoll;
+/// let raws = RawRoll::default();
+/// assert!(raws.dice.is_empty());
+/// assert!(raws.records.is_empty());
+/// assert_eq!(raws.next_id, 0);
+/// ```
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawRoll {
     /// Natural-face log, in roll order.
@@ -39,6 +61,18 @@ pub struct RawRoll {
 
 impl RawRoll {
     /// Append a natural die with a fresh id; returns that id.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::outcome::RawRoll;
+    /// use shadowcat::dice::spec::DieKind;
+    /// let mut raws = RawRoll::default();
+    /// let a = raws.push(DieKind::Numeric { min: 1, max: 6 }, 3);
+    /// let b = raws.push(DieKind::Numeric { min: 1, max: 6 }, 5);
+    /// assert_ne!(a, b); // ids never collide within a roll
+    /// assert_eq!(raws.dice.len(), 2);
+    /// ```
     pub fn push(&mut self, kind: DieKind, natural: i32) -> DieId {
         let id = self.next_id;
         self.next_id = match self.next_id.checked_add(1) {
@@ -66,6 +100,22 @@ impl RawRoll {
 /// by `eval::success::evaluate_success` via `eval::crit::score_die`; BOTH can be
 /// `true` on the same die under an overlapping-threshold `SuccessConfig` — see
 /// `crit::score_die`'s doc comment for the rationale.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::roll;
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("1d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(11);
+/// let raws = roll(&spec, &mut rng);
+/// let record = &raws.records[0];
+/// assert!((1..=6).contains(&record.value));
+/// assert!(record.kept);
+/// assert_eq!(record.group_index, 0);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DieRecord {
     /// The die's stable id (matches its `RawDie`).
@@ -123,6 +173,23 @@ fn default_ordered() -> bool {
 /// carry that mode's primary output. `tier_label`/`tier_value` classify `margin`
 /// against `RollSpec`'s tier ladder; the crit/counter fields are SuccessCount-only
 /// aggregates (0 in Total mode).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::{evaluate, roll};
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("2d6+3", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(5);
+/// let raws = roll(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raws);
+/// // Bare total (no difficulty set): pass/margin/tiers are all None.
+/// assert!((5..=15).contains(&outcome.total));
+/// assert_eq!(outcome.pass, None);
+/// assert_eq!(outcome.successes, None); // Total mode never reports successes
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollOutcome {
     /// Total-mode fold result; in SuccessCount mode, the reference sum of
@@ -166,6 +233,21 @@ pub struct RollOutcome {
 
 impl RollOutcome {
     /// All records (kept and dropped) carrying `label`, in roll order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::eval::{evaluate, roll};
+    /// use shadowcat::dice::notation::{parse, ParseContext};
+    /// use shadowcat::dice::rng::NoiseRng;
+    ///
+    /// let spec = parse("2d6[dmg]", ParseContext::default()).unwrap();
+    /// let mut rng = NoiseRng::from_seed(9);
+    /// let raws = roll(&spec, &mut rng);
+    /// let outcome = evaluate(&spec, &raws);
+    /// assert_eq!(outcome.by_label("dmg").len(), 2);
+    /// assert!(outcome.by_label("nonexistent").is_empty());
+    /// ```
     pub fn by_label(&self, label: &str) -> Vec<&DieRecord> {
         self.records
             .iter()
@@ -177,6 +259,23 @@ impl RollOutcome {
     /// `None` if either label has no records, or either label's records are
     /// unordered (a symbolic group with no numeric value).
     /// Direction-independent: purely "which summed higher."
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::eval::{evaluate, roll};
+    /// use shadowcat::dice::notation::{parse, ParseContext};
+    /// use shadowcat::dice::rng::NoiseRng;
+    ///
+    /// let spec = parse("2d6[a]+2d6[b]", ParseContext::default()).unwrap();
+    /// let mut rng = NoiseRng::from_seed(2);
+    /// let raws = roll(&spec, &mut rng);
+    /// let outcome = evaluate(&spec, &raws);
+    /// // Both labels have records, so the comparison is always Some.
+    /// assert!(outcome.compare_labels("a", "b").is_some());
+    /// // A label that was never rolled has no defined ordering.
+    /// assert_eq!(outcome.compare_labels("a", "missing"), None);
+    /// ```
     pub fn compare_labels(&self, a: &str, b: &str) -> Option<std::cmp::Ordering> {
         let sum_of = |label: &str| -> Option<i64> {
             let recs = self.by_label(label);
@@ -192,6 +291,23 @@ impl RollOutcome {
 }
 
 /// A complete roll: what was asked, what the RNG produced, what it means.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::{evaluate, roll};
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::outcome::RollResult;
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(4);
+/// let raws = roll(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raws);
+/// let result = RollResult { spec, raws, outcome };
+/// assert_eq!(result.raws.records.len(), 1);
+/// assert_eq!(result.outcome.total, result.raws.records[0].value as i64);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollResult {
     /// The canonical parameters the roll ran with.

@@ -4,5 +4,17 @@
  * A number or a formula source. Untagged on the wire (`30` or `"speed"`).
  * `Text` is `crate::formula` source: parsed at ingress by `validate`, and
  * evaluated server-side through the same module.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::Formula;
+ *
+ * let n = Formula::Number(5.0);
+ * let t = Formula::Text("1".to_string());
+ * assert_eq!(serde_json::to_value(&n).unwrap(), serde_json::json!(5.0));
+ * assert_eq!(serde_json::to_value(&t).unwrap(), serde_json::json!("1"));
+ * assert_ne!(n, t);
+ * ```
  */
 export type Formula = number | string;

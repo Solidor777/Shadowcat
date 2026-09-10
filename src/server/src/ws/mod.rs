@@ -24,6 +24,16 @@ pub use room::RoomRegistry;
 /// Per-user sliding-window ping budget on shared state. Unlike the per-connection
 /// window it replaces, a user's N concurrent sockets share one budget — a stronger
 /// abuse backstop. 60 s window; over-budget pings drop silently at the call site.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// let limiter = PingRateLimiter::default();
+/// assert!(limiter.check(uuid::Uuid::nil(), 0, 1));
+/// assert!(!limiter.check(uuid::Uuid::nil(), 0, 1)); // budget of 1 already spent
+/// ```
 #[derive(Default)]
 pub struct PingRateLimiter {
     /// Per-user hit timestamps within the sliding window.
@@ -48,6 +58,18 @@ impl PingRateLimiter {
 
     /// Record a ping for `user` at `now_ms`, returning whether it is within the
     /// `per_min` budget over the trailing 60 s window.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::PingRateLimiter;
+    ///
+    /// let limiter = PingRateLimiter::new();
+    /// let user = uuid::Uuid::new_v4();
+    /// assert!(limiter.check(user, 0, 2));
+    /// assert!(limiter.check(user, 1_000, 2));
+    /// assert!(!limiter.check(user, 2_000, 2)); // third hit within the 60s window
+    /// ```
     pub fn check(&self, user: Uuid, now_ms: i64, per_min: usize) -> bool {
         let mut g = self.hits.lock().expect("ping rate-limiter mutex poisoned");
         let v = g.entry(user).or_default();
@@ -71,6 +93,15 @@ pub(crate) const MESSAGE_RATE_PER_MIN: usize = 30;
 
 /// Realtime state shared in `AppState`. A thin handle today; the seam for future
 /// bus internals (actor pool / external broker) without touching callers.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::WsState;
+///
+/// let state = WsState::default();
+/// assert!(state.rooms.get(uuid::Uuid::nil()).is_none());
+/// ```
 #[derive(Clone)]
 pub struct WsState {
     /// The world -> room fan-out registry.
@@ -126,6 +157,15 @@ impl WsState {
 
     /// A `WsState` whose rooms use a custom broadcast ring capacity. Test-only:
     /// shrinking the ring forces the lag-driven resync path deterministically.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::WsState;
+    ///
+    /// let state = WsState::with_broadcast_capacity(4);
+    /// assert!(state.rooms.get(uuid::Uuid::nil()).is_none());
+    /// ```
     pub fn with_broadcast_capacity(capacity: usize) -> Self {
         Self {
             rooms: Arc::new(RoomRegistry::with_capacity(capacity)),

@@ -73,6 +73,24 @@ pub const SYSTEM_CONTRACT: &str = "shadowcat.system";
 /// byte-for-byte at `GET /api/modules` so the client's own Zod schema sees
 /// every field a community author declared (dependencies, hooks, provides,
 /// requires, ...), not just the subset this mirror extracts.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::InstalledModule;
+///
+/// let m = InstalledModule {
+///     id: "example-mod".into(),
+///     requirements: vec![],
+///     engines_shadowcat: Some("*".into()),
+///     manifest_json: serde_json::json!({}),
+///     entry_url: "/modules/example-mod/index.js".into(),
+///     system_defaults: None,
+///     provides_system: false,
+/// };
+/// assert_eq!(m.id, "example-mod");
+/// assert!(!m.provides_system);
+/// ```
 #[derive(Debug, Clone)]
 pub struct InstalledModule {
     /// The install folder name — the routing id (`/modules/<id>/...`), distinct
@@ -307,6 +325,16 @@ pub fn engine_compat_ok(m: &InstalledModule) -> bool {
 /// an in-place manifest edit to an already-installed module, which does NOT
 /// change the parent directory's own mtime). One instance shared across every
 /// WS connection on the server (see `crate::ws::WsState::module_scan_cache`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::ModuleScanCache;
+///
+/// let cache = ModuleScanCache::default();
+/// let modules = cache.get_or_scan(std::path::Path::new("no-such-modules-dir"));
+/// assert!(modules.is_empty());
+/// ```
 #[derive(Default)]
 pub struct ModuleScanCache {
     /// The current cached scan, if any. Stored behind an `Arc` so

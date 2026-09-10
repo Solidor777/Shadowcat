@@ -3,6 +3,18 @@ import type { Cardinality } from "./Cardinality";
 
 /**
  * A UI surface contract a module provides, with its cardinality.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{Cardinality, ContractProvide};
+ *
+ * let provide = ContractProvide {
+ *     contract: "shadowcat.panel".into(),
+ *     cardinality: Cardinality::Multi,
+ * };
+ * assert_eq!(provide.contract, "shadowcat.panel");
+ * ```
  */
 export type ContractProvide = { 
 /**

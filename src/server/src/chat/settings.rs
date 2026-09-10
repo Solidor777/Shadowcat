@@ -31,22 +31,69 @@ pub type ChatContentPolicy = ChatSettingsEngine;
 
 impl ChatContentPolicy {
     /// Markdown rendering allowed (absent = false, fail-closed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// let policy = ChatContentPolicy::default();
+    /// assert!(!policy.markdown()); // absent = false
+    /// let policy = ChatContentPolicy { markdown: Some(true), ..Default::default() };
+    /// assert!(policy.markdown());
+    /// ```
     pub fn markdown(&self) -> bool {
         self.markdown.unwrap_or(false)
     }
     /// Raw-HTML input allowed (absent = false; output still ammonia-cleaned).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// let policy = ChatContentPolicy { html: Some(true), ..Default::default() };
+    /// assert!(policy.html());
+    /// ```
     pub fn html(&self) -> bool {
         self.html.unwrap_or(false)
     }
     /// Image embeds allowed (absent = false).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// let policy = ChatContentPolicy { images: Some(true), ..Default::default() };
+    /// assert!(policy.images());
+    /// ```
     pub fn images(&self) -> bool {
         self.images.unwrap_or(false)
     }
     /// Hyperlink anchors allowed (absent = false).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// let policy = ChatContentPolicy { hyperlinks: Some(true), ..Default::default() };
+    /// assert!(policy.hyperlinks());
+    /// ```
     pub fn hyperlinks(&self) -> bool {
         self.hyperlinks.unwrap_or(false)
     }
     /// Email autolinks allowed (absent = false).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// let policy = ChatContentPolicy { emails: Some(true), ..Default::default() };
+    /// assert!(policy.emails());
+    /// ```
     pub fn emails(&self) -> bool {
         self.emails.unwrap_or(false)
     }
@@ -58,6 +105,18 @@ impl ChatContentPolicy {
     /// out once hyperlinks are enabled. A fail-closed empty/default policy
     /// (`hyperlinks` absent) always resolves to `false` regardless of
     /// `link_previews`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::chat::ChatContentPolicy;
+    ///
+    /// let policy = ChatContentPolicy { hyperlinks: Some(true), ..Default::default() };
+    /// assert!(policy.previews_enabled()); // link_previews absent defaults ON
+    ///
+    /// let policy = ChatContentPolicy { hyperlinks: Some(false), ..Default::default() };
+    /// assert!(!policy.previews_enabled()); // hyperlinks off => always false
+    /// ```
     pub fn previews_enabled(&self) -> bool {
         self.hyperlinks() && self.link_previews.unwrap_or(true)
     }

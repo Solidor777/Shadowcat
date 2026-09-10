@@ -3,6 +3,16 @@
 /**
  * `PATCH /api/assets/{uuid}` body. Every field optional; an absent field is
  * left unchanged. `folder_id: null` moves the asset to the world root.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::assets::mutate::PatchAssetRequest;
+ *
+ * let body: PatchAssetRequest = serde_json::from_str(r#"{"name":"New Name"}"#).unwrap();
+ * assert_eq!(body.name.as_deref(), Some("New Name"));
+ * assert_eq!(body.folder_id, None); // absent field stays unchanged
+ * ```
  */
 export type PatchAssetRequest = { 
 /**

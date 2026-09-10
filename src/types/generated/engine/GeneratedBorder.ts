@@ -3,6 +3,15 @@
 /**
  * A generated token visual's decorative border ring
  * (`RenderVisual::Generated`), distinct from the faction ring.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::GeneratedBorder;
+ *
+ * let border = GeneratedBorder { color: "#000000".to_string(), width: 0.1 };
+ * assert_eq!(border.width, 0.1);
+ * ```
  */
 export type GeneratedBorder = { 
 /**

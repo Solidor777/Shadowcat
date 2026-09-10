@@ -2,6 +2,19 @@
 
 /**
  * One initiative roll within a `ClientMsg::CombatRoll` request.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::CombatRollEntry;
+ *
+ * let entry = CombatRollEntry {
+ *     combatant_id: uuid::Uuid::nil(),
+ *     notation: "1d20+3".into(),
+ * };
+ * let json = serde_json::to_value(&entry).unwrap();
+ * assert_eq!(json["notation"], "1d20+3");
+ * ```
  */
 export type CombatRollEntry = { 
 /**

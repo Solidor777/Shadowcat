@@ -3,5 +3,15 @@
 /**
  * Who a trigger's chat notice may reach. `Owner` means the token's
  * effective owner plus every GM.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::NoticeAudience;
+ *
+ * let audience = NoticeAudience::Owner;
+ * assert_eq!(audience, NoticeAudience::Owner);
+ * assert_ne!(audience, NoticeAudience::Public);
+ * ```
  */
 export type NoticeAudience = "public" | "gm_only" | "owner";

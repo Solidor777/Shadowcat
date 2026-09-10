@@ -16,6 +16,16 @@ use ts_rs::TS;
 
 /// A line segment in scene units (the scene's continuous coordinate space,
 /// not grid cells).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Seg;
+///
+/// let seg = Seg { x1: 0.0, y1: 0.0, x2: 3.0, y2: 4.0 };
+/// let len = ((seg.x2 - seg.x1).powi(2) + (seg.y2 - seg.y1).powi(2)).sqrt();
+/// assert_eq!(len, 5.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -36,6 +46,18 @@ pub struct Seg {
 /// field is absent occludes every elevation, and a malformed interval
 /// (`bottom > top`, or a non-finite endpoint) fails closed to occluding
 /// everything — see `scene::elevation::wall_occludes`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::WallElevation;
+///
+/// let unbounded = WallElevation { bottom: None, top: None };
+/// assert!(unbounded.bottom.is_none());
+///
+/// let band = WallElevation { bottom: Some(0.0), top: Some(10.0) };
+/// assert_eq!(band.top, Some(10.0));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -51,6 +73,21 @@ pub struct WallElevation {
 /// A wall's segment + sight/light/movement-blocking flags. Absent/false
 /// flags exclude the wall from that gate, matching how each gate
 /// (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{Seg, WallEngine};
+///
+/// let wall = WallEngine {
+///     seg: Seg { x1: 0.0, y1: 0.0, x2: 10.0, y2: 0.0 },
+///     blocks_sight: Some(true),
+///     blocks_light: Some(true),
+///     blocks_move: Some(true),
+///     elevation: None,
+/// };
+/// assert_eq!(wall.blocks_move, Some(true));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -78,6 +115,15 @@ pub struct WallEngine {
 /// A region's vector geometry. `points` layout by
 /// kind: rect: `[x0,y0,x1,y1]`; circle: `[cx,cy,r]`; polygon:
 /// `[x0,y0,x1,y1,...]` (>=3 vertices, even length).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::RegionShape;
+///
+/// let circle = RegionShape { kind: "circle".to_string(), points: vec![5.0, 5.0, 2.0] };
+/// assert_eq!(circle.points.len(), 3);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -97,6 +143,14 @@ pub struct RegionShape {
 pub const MAX_TRIGGER_ID_CHARS: usize = 128;
 
 /// The moment a region trigger fires.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TriggerEvent;
+///
+/// assert_ne!(TriggerEvent::Enter, TriggerEvent::Arrest);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -110,6 +164,16 @@ pub enum TriggerEvent {
 
 /// Who a trigger's chat notice may reach. `Owner` means the token's
 /// effective owner plus every GM.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::NoticeAudience;
+///
+/// let audience = NoticeAudience::Owner;
+/// assert_eq!(audience, NoticeAudience::Owner);
+/// assert_ne!(audience, NoticeAudience::Public);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +191,19 @@ pub enum NoticeAudience {
 /// tagged, so `deny_unknown_fields` is unavailable (the
 /// `CombatantKind`/`ResourceBinding` precedent); `normalize_engine`'s
 /// re-serialization still drops smuggled keys.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TriggerEffect;
+///
+/// let effect = TriggerEffect::ConditionAdd { condition: "prone".to_string() };
+/// let json = serde_json::to_value(&effect).unwrap();
+/// // Internally tagged on `type`, snake_case: the variant name is the discriminant.
+/// assert_eq!(json["type"], "condition_add");
+/// assert_eq!(json["condition"], "prone");
+/// assert_eq!(serde_json::from_value::<TriggerEffect>(json).unwrap(), effect);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -163,6 +240,18 @@ pub enum TriggerEffect {
 
 /// One region trigger: when `on` occurs for a token inside the region,
 /// apply `effect`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{RegionTrigger, TriggerEffect, TriggerEvent};
+///
+/// let trigger = RegionTrigger {
+///     on: TriggerEvent::Enter,
+///     effect: TriggerEffect::ConditionAdd { condition: "prone".to_string() },
+/// };
+/// assert_eq!(trigger.on, TriggerEvent::Enter);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -179,6 +268,21 @@ pub struct RegionTrigger {
 /// `cost` is a multiplier (>=1, clamped read-side) meaningful only for
 /// `behavior:"terrain"`. `enabled` lets a GM toggle a region off without
 /// deleting it (disabled regions are dropped entirely at read time).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{RegionEngine, RegionShape};
+///
+/// let region = RegionEngine {
+///     shape: RegionShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 5.0, 5.0] },
+///     behavior: "terrain".to_string(),
+///     cost: 2.0,
+///     enabled: true,
+///     triggers: Vec::new(),
+/// };
+/// assert!(region.validate().is_ok());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -206,6 +310,26 @@ impl RegionEngine {
     /// non-empty and `MAX_TRIGGER_ID_CHARS`-bounded, `amount` must satisfy
     /// `Formula::validate` (finite literal or parseable formula source), and
     /// notice text is bounded by `chat::MAX_MESSAGE_CHARS`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::{
+    ///     RegionEngine, RegionShape, RegionTrigger, TriggerEffect, TriggerEvent,
+    /// };
+    ///
+    /// let region = RegionEngine {
+    ///     shape: RegionShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 5.0, 5.0] },
+    ///     behavior: "terrain".to_string(),
+    ///     cost: 1.0,
+    ///     enabled: true,
+    ///     triggers: vec![RegionTrigger {
+    ///         on: TriggerEvent::Enter,
+    ///         effect: TriggerEffect::ConditionAdd { condition: String::new() },
+    ///     }],
+    /// };
+    /// assert!(region.validate().is_err()); // empty condition id
+    /// ```
     pub fn validate(&self) -> Result<(), String> {
         for trigger in &self.triggers {
             match &trigger.effect {
@@ -244,6 +368,15 @@ fn validate_trigger_id(id: &str, what: &str) -> Result<(), String> {
 
 /// `points` layout mirrors `RegionShape` (path vertices for freehand/line/
 /// polygon, or bbox corners `[x0,y0,x1,y1]` for rect/ellipse).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::DrawingShape;
+///
+/// let shape = DrawingShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 4.0, 4.0] };
+/// assert_eq!(shape.kind, "rect");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -257,6 +390,15 @@ pub struct DrawingShape {
 }
 
 /// A drawing's outline style.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Stroke;
+///
+/// let stroke = Stroke { color: "#ff0000".to_string(), width: 2.0 };
+/// assert_eq!(stroke.width, 2.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -268,6 +410,15 @@ pub struct Stroke {
 }
 
 /// A drawing's fill style.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Fill;
+///
+/// let fill = Fill { color: "#00ff00".to_string(), alpha: Some(0.5) };
+/// assert_eq!(fill.alpha, Some(0.5));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -284,6 +435,19 @@ pub struct Fill {
 /// (`{...} | null`, not optional) — `Option<T>` without a serde default
 /// mirrors that exactly (the key must be present, either an object or
 /// `null`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{DrawingEngine, DrawingShape};
+///
+/// let drawing = DrawingEngine {
+///     shape: DrawingShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 4.0, 4.0] },
+///     stroke: None,
+///     fill: None,
+/// };
+/// assert!(drawing.stroke.is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -299,6 +463,15 @@ pub struct DrawingEngine {
 /// A template's area anchored at `(x,y)` with a `size` and `direction`
 /// (degrees), tessellated per `kind`. Client mirror: `TemplateEngine["shape"]`
 /// (`@shadowcat/core`) — the shape lives one level inside the engine body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TemplateShape;
+///
+/// let shape = TemplateShape { kind: "cone".to_string(), x: 0.0, y: 0.0, size: 15.0, direction: 90.0 };
+/// assert_eq!(shape.size, 15.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -318,6 +491,18 @@ pub struct TemplateShape {
 }
 
 /// A template document's engine body: a measured-area overlay.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{TemplateEngine, TemplateShape};
+///
+/// let template = TemplateEngine {
+///     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0 },
+///     color: "#ffaa00".to_string(),
+/// };
+/// assert_eq!(template.color, "#ffaa00");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]

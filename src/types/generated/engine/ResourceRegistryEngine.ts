@@ -6,6 +6,15 @@ import type { Resource } from "./Resource";
  * (`RESOURCE_REGISTRY_DOC_TYPE` is in `SINGLETON_DOC_TYPES`), EMPTY by
  * default (the engine hooks up no resource, not even movement). Keyed by
  * resource id — a MAP for the single-key-Update reason every registry uses.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::ResourceRegistryEngine;
+ *
+ * let registry = ResourceRegistryEngine::default();
+ * assert!(registry.resources.is_empty());
+ * ```
  */
 export type ResourceRegistryEngine = { 
 /**

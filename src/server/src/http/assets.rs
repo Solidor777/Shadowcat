@@ -16,6 +16,16 @@ use uuid::Uuid;
 /// XML prolog or `<svg` root after an optional BOM/whitespace — every type
 /// `data::asset::process` has a branch for is sniffable here, so an honest
 /// declaration of one of them never collapses to octet-stream.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::detect_image_type;
+///
+/// let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+/// assert_eq!(detect_image_type(&png), Some("image/png"));
+/// assert_eq!(detect_image_type(b"not an image"), None);
+/// ```
 pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"BM") && bytes.len() >= 6 {
         return Some("image/bmp");
@@ -52,6 +62,18 @@ pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
 
 /// Per-user sliding-window upload limiter (trailing 60s). In-memory; resets on
 /// restart, which is acceptable for an abuse backstop.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::UploadRateLimiter;
+/// use uuid::Uuid;
+///
+/// let limiter = UploadRateLimiter::new();
+/// let user = Uuid::new_v4();
+/// assert!(limiter.check(user, 0, 1)); // first upload within budget
+/// assert!(!limiter.check(user, 0, 1)); // second within the same minute is refused
+/// ```
 pub struct UploadRateLimiter {
     /// Per-user hit timestamps within the trailing window.
     hits: Mutex<HashMap<Uuid, Vec<i64>>>,
@@ -62,8 +84,12 @@ impl UploadRateLimiter {
     ///
     /// # Examples
     ///
-    /// ```text
-    /// state.upload_rate.check(user, now_ms, per_min) // role-tiered per_min from Config
+    /// ```
+    /// use shadowcat::http::assets::UploadRateLimiter;
+    /// use uuid::Uuid;
+    ///
+    /// let limiter = UploadRateLimiter::new();
+    /// assert!(limiter.check(Uuid::new_v4(), 0, 5)); // fresh limiter starts empty
     /// ```
     pub fn new() -> Self {
         Self {
@@ -73,6 +99,19 @@ impl UploadRateLimiter {
 
     /// Record an upload at `now_ms` and report whether it is within `per_min`.
     /// Prunes entries older than the 60s window first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::UploadRateLimiter;
+    /// use uuid::Uuid;
+    ///
+    /// let limiter = UploadRateLimiter::new();
+    /// let user = Uuid::new_v4();
+    /// assert!(limiter.check(user, 1_000, 2));
+    /// assert!(limiter.check(user, 1_500, 2));
+    /// assert!(!limiter.check(user, 1_800, 2)); // third within the window is refused
+    /// ```
     pub fn check(&self, user: Uuid, now_ms: i64, per_min: u32) -> bool {
         let mut map = self.hits.lock().expect("rate-limiter mutex poisoned");
         let v = map.entry(user).or_default();
@@ -89,6 +128,19 @@ impl UploadRateLimiter {
     /// budget — called when the gated upload subsequently fails, so a rejected
     /// request (bad bytes, over-cap, I/O error) does not consume quota. The
     /// `check`-before-stream order still bounds in-flight concurrency.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::UploadRateLimiter;
+    /// use uuid::Uuid;
+    ///
+    /// let limiter = UploadRateLimiter::new();
+    /// let user = Uuid::new_v4();
+    /// assert!(limiter.check(user, 0, 1)); // consumes the only slot
+    /// limiter.refund(user, 0); // a failed upload gives it back
+    /// assert!(limiter.check(user, 0, 1));
+    /// ```
     pub fn refund(&self, user: Uuid, now_ms: i64) {
         let mut map = self.hits.lock().expect("rate-limiter mutex poisoned");
         if let Some(v) = map.get_mut(&user) {
@@ -206,6 +258,57 @@ pub(super) fn label_content_type(sniffed: Option<&'static str>, declared: Option
 /// (`require_gm`; server admins resolve to GM). There is no owner exception.
 /// Images are converted through `data::asset::process`; anything else is
 /// stored pass-through under its declared type. Lands in the world root.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::password::hash_password;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::{self, AppState};
+/// use std::sync::{atomic::AtomicBool, Arc};
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let hash = hash_password("pw").unwrap();
+/// let gm = repo.create_user("gm", Some(&hash), ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("example", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let server = axum_test::TestServer::builder()
+///     .save_cookies()
+///     .build(http::router(state).await)
+///     .unwrap();
+/// server
+///     .post("/api/login")
+///     .json(&serde_json::json!({ "username": "gm", "password": "pw" }))
+///     .await;
+/// let response = server
+///     .post(&format!("/api/worlds/{}/assets", world.id))
+///     .multipart(
+///         axum_test::multipart::MultipartForm::new().add_part(
+///             "file",
+///             axum_test::multipart::Part::bytes(b"\x89PNG\r\n\x1a\n".to_vec())
+///                 .file_name("dot.png")
+///                 .mime_type("image/png"),
+///         ),
+///     )
+///     .await;
+/// response.assert_status_ok();
+/// # }
+/// ```
 pub async fn upload(
     State(state): State<AppState>,
     user: AuthUser,
@@ -305,6 +408,17 @@ pub async fn upload(
 }
 
 /// `?variant=` on `GET /api/assets/{uuid}`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::ServeQuery;
+///
+/// let q: ServeQuery = serde_json::from_str(r#"{"variant":"thumb"}"#).unwrap();
+/// assert_eq!(q.variant.as_deref(), Some("thumb"));
+/// let canonical: ServeQuery = serde_json::from_str("{}").unwrap();
+/// assert!(canonical.variant.is_none()); // absent = the canonical file
+/// ```
 #[derive(Debug, serde::Deserialize)]
 pub struct ServeQuery {
     /// `thumb` | `preview`; absent = the canonical file.
@@ -317,6 +431,43 @@ pub struct ServeQuery {
 /// changes, so the version keys it. A missing derivative is regenerated on
 /// demand; if the canonical does not decode, the canonical itself is served
 /// in its place rather than a 404.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::serve(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+///     axum::extract::Query(shadowcat::http::assets::ServeQuery { variant: None }),
+///     axum::http::HeaderMap::new(),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn serve(
     State(state): State<AppState>,
     user: AuthUser,
@@ -425,6 +576,69 @@ async fn ensure_derivative(
 /// `POST /api/assets/{uuid}/replace` — GM-gated byte-swap behind a stable id
 /// (`require_gm`; no owner exception). Undo-exempt: no world seq, no
 /// event-log entry.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::password::hash_password;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::{self, AppState};
+/// use std::sync::{atomic::AtomicBool, Arc};
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let hash = hash_password("pw").unwrap();
+/// let gm = repo.create_user("gm", Some(&hash), ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("example", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let server = axum_test::TestServer::builder()
+///     .save_cookies()
+///     .build(http::router(state).await)
+///     .unwrap();
+/// server
+///     .post("/api/login")
+///     .json(&serde_json::json!({ "username": "gm", "password": "pw" }))
+///     .await;
+/// let created = server
+///     .post(&format!("/api/worlds/{}/assets", world.id))
+///     .multipart(
+///         axum_test::multipart::MultipartForm::new().add_part(
+///             "file",
+///             axum_test::multipart::Part::bytes(b"\x89PNG\r\n\x1a\n".to_vec())
+///                 .file_name("dot.png")
+///                 .mime_type("image/png"),
+///         ),
+///     )
+///     .await
+///     .json::<shadowcat::data::asset::Asset>();
+/// let response = server
+///     .post(&format!("/api/assets/{}/replace", created.id))
+///     .multipart(
+///         axum_test::multipart::MultipartForm::new().add_part(
+///             "file",
+///             axum_test::multipart::Part::bytes(b"\x89PNG\r\n\x1a\n".to_vec())
+///                 .file_name("dot2.png")
+///                 .mime_type("image/png"),
+///         ),
+///     )
+///     .await;
+/// response.assert_status_ok();
+/// # }
+/// ```
 pub async fn replace(
     State(state): State<AppState>,
     user: AuthUser,
@@ -597,6 +811,41 @@ pub(super) async fn delete_asset_files_and_row(
 /// `replace` on the same id, so `existing.version` can be stale by the time the row is actually
 /// removed — `delete_asset_files_and_row` reads the row `DELETE ... RETURNING *` actually removed
 /// for every post-delete use, so the broadcast always carries the truly deleted version.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::delete(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn delete(
     State(state): State<AppState>,
     user: AuthUser,

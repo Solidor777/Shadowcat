@@ -3,5 +3,13 @@
 /**
  * Photometric falloff curve identifier across the dim band
  * `(brightRadius, dimRadius]`, mirroring `lighting::Falloff`'s variants.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::FalloffCurve;
+ *
+ * assert_ne!(FalloffCurve::Linear, FalloffCurve::None);
+ * ```
  */
 export type FalloffCurve = "linear" | "quadratic" | "none";

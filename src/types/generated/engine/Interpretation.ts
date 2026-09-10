@@ -2,5 +2,20 @@
 
 /**
  * How a movement budget converts into grid cells.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::Interpretation;
+ *
+ * let budget = 30.0_f64;
+ * let per_cell = 5.0_f64;
+ * let cells = match Interpretation::PerCell {
+ *     Interpretation::PerCell => budget / per_cell,
+ *     Interpretation::Spaces => budget,
+ * };
+ * assert_eq!(cells, 6.0);
+ * assert_eq!(Interpretation::default(), Interpretation::PerCell);
+ * ```
  */
 export type Interpretation = "per_cell" | "spaces";

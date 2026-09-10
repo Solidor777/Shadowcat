@@ -3,6 +3,20 @@ import type { PushInstanceStatus } from "./PushInstanceStatus";
 
 /**
  * One instance's entry in a `MergeOutcome::Push` report.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::{PushInstanceOutcome, PushInstanceStatus};
+ *
+ * let outcome = PushInstanceOutcome {
+ *     instance_id: uuid::Uuid::nil(),
+ *     name: Some("example-token".into()),
+ *     status: PushInstanceStatus::Applied,
+ * };
+ * let json = serde_json::to_value(&outcome).unwrap();
+ * assert_eq!(json["status"], "applied");
+ * ```
  */
 export type PushInstanceOutcome = { 
 /**

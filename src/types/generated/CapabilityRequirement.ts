@@ -5,6 +5,18 @@
  * actor to additionally hold every capability in `caps` (on top of the
  * structural base capability for that path). Pure data — the server enforces
  * possession and never interprets the meaning of the path or the capabilities.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::CapabilityRequirement;
+ *
+ * let req = CapabilityRequirement {
+ *     path_prefix: "/engine/vision".into(),
+ *     caps: ["core:edit_vision".to_string()].into_iter().collect(),
+ * };
+ * assert!(req.caps.contains("core:edit_vision"));
+ * ```
  */
 export type CapabilityRequirement = { 
 /**

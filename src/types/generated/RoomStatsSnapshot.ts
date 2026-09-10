@@ -2,6 +2,24 @@
 
 /**
  * Serializable snapshot of a room's telemetry for the admin debug endpoint.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::room::RoomStatsSnapshot;
+ *
+ * let snap = RoomStatsSnapshot {
+ *     world_id: uuid::Uuid::nil(),
+ *     connections: 1,
+ *     current_seq: 5,
+ *     events_published: 5,
+ *     gaps_detected: 0,
+ *     resyncs_hot: 0,
+ *     resyncs_cold: 0,
+ *     lagged_drops: 0,
+ * };
+ * assert_eq!(snap.current_seq, 5);
+ * ```
  */
 export type RoomStatsSnapshot = { 
 /**

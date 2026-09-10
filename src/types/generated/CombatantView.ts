@@ -3,6 +3,20 @@ import type { ResolvedResourceView } from "./ResolvedResourceView";
 
 /**
  * One combatant's resolved numbers.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::combat::channel::CombatantView;
+ * use uuid::Uuid;
+ *
+ * let view = CombatantView {
+ *     id: Uuid::new_v4(),
+ *     resources: None,
+ *     movement_cells: Some(6.0),
+ * };
+ * assert_eq!(view.movement_cells, Some(6.0));
+ * ```
  */
 export type CombatantView = { 
 /**

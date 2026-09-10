@@ -5,5 +5,15 @@
  * `scene::move_exec::execute_move`/`gate_walk` (the sole traversal decision);
  * `Room::publish` additionally consults this for its Create-placement gate
  * (center cell only).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::MovementRestriction;
+ *
+ * let restriction = MovementRestriction::Visible;
+ * assert_eq!(restriction, MovementRestriction::Visible);
+ * assert_ne!(restriction, MovementRestriction::Unrestricted);
+ * ```
  */
 export type MovementRestriction = "visible" | "revealed" | "unrestricted";

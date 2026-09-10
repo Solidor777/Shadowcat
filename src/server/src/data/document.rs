@@ -10,6 +10,16 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 /// Storage/runtime scope of a document.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Scope;
+///
+/// let scope = Scope::World { world_id: uuid::Uuid::nil() };
+/// let Scope::World { world_id } = scope else { unreachable!() };
+/// assert_eq!(world_id, uuid::Uuid::nil());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -55,6 +65,16 @@ pub(crate) fn embedded_actor_copy(token: &Document) -> Option<&Document> {
 }
 
 /// Provenance link for the deferred pull/push merge.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Source;
+///
+/// let source = Source { id: uuid::Uuid::nil(), pack: None, version: 3 };
+/// assert_eq!(source.version, 3);
+/// assert!(source.pack.is_none()); // not stamped from a compendium pack
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct Source {
@@ -71,6 +91,17 @@ pub struct Source {
 /// `.min()` (see `effective_role`'s token owner floor). A
 /// `PermissionSet::users` entry REPLACES the default for that user (it can
 /// demote as well as promote), not a max.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::DocRole;
+///
+/// // Derived Ord follows declaration order: SMALLER is STRONGER.
+/// assert!(DocRole::Owner < DocRole::Observer);
+/// assert!(DocRole::Observer < DocRole::None);
+/// assert_eq!(DocRole::Owner.min(DocRole::None), DocRole::Owner);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -87,6 +118,18 @@ pub enum DocRole {
 /// property_overrides`). Enforced per recipient by `Access::can_see` inside
 /// `filter_properties` — hidden values are stripped BEFORE transmission, never
 /// sent-then-hidden.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{OwnerStanding, Visibility};
+///
+/// // A non-owner recipient can never reach the owner half of `OwnerOrGm`.
+/// assert_eq!(OwnerStanding::Reader.relate(Visibility::OwnerOrGm), Visibility::GmOnly);
+/// assert_eq!(OwnerStanding::Owner.relate(Visibility::OwnerOrGm), Visibility::OwnerOrGm);
+/// // Wire form is snake_case.
+/// assert_eq!(serde_json::to_value(Visibility::OwnerOrGm).unwrap(), "owner_or_gm");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -109,6 +152,23 @@ pub enum Visibility {
 /// under this standing rather than under the instance's own ownership
 /// (`relate`): a recorded `OwnerOrGm` names the template's owner, not the
 /// instance's. Recorded as of the write; the next merge write re-resolves it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{OwnerStanding, Visibility};
+///
+/// // A recorded OwnerOrGm entry names the TEMPLATE owner, so it only stands
+/// // under the instance owner's own Owner standing.
+/// assert_eq!(
+///     OwnerStanding::Reader.relate(Visibility::OwnerOrGm),
+///     Visibility::GmOnly
+/// );
+/// assert_eq!(
+///     OwnerStanding::Owner.relate(Visibility::OwnerOrGm),
+///     Visibility::OwnerOrGm
+/// );
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -133,6 +193,21 @@ impl OwnerStanding {
     /// and is unchanged. A `Stranger` hides the whole snapshot before any
     /// entry is read (`permission`'s `base_policy`), so the per-entry
     /// relation only ever matters for a `Reader` or an `Owner`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{OwnerStanding, Visibility};
+    ///
+    /// assert_eq!(
+    ///     OwnerStanding::Reader.relate(Visibility::GmOnly),
+    ///     Visibility::GmOnly
+    /// ); // unaffected: names no owner
+    /// assert_eq!(
+    ///     OwnerStanding::Reader.relate(Visibility::OwnerOrGm),
+    ///     Visibility::GmOnly
+    /// ); // recorded tier names the template owner, not this reader
+    /// ```
     pub fn relate(self, tier: Visibility) -> Visibility {
         match (self, tier) {
             (OwnerStanding::Owner, tier) => tier,
@@ -143,6 +218,16 @@ impl OwnerStanding {
 }
 
 /// Per-world membership role (orthogonal to the server admin/user tier).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+///
+/// let role = WorldRole::Player;
+/// assert_ne!(role, WorldRole::Gm);
+/// assert!(WorldRole::Gm < WorldRole::Player); // declaration-order Ord
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -167,6 +252,21 @@ impl Default for DocRole {
 /// keyed by grantee — a `DocRole` or a user id — and its values are namespaced
 /// capability strings (e.g. `core:manage_embedded`). Grants widen what a
 /// role/user may do on a document; they never revoke the floor.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{CapabilityGrants, DocRole};
+///
+/// let mut grants = CapabilityGrants::default();
+/// grants
+///     .by_role
+///     .entry(DocRole::Observer)
+///     .or_default()
+///     .insert("core:manage_embedded".into());
+/// assert!(grants.by_role[&DocRole::Observer].contains("core:manage_embedded"));
+/// assert!(grants.by_user.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CapabilityGrants {
@@ -183,6 +283,16 @@ pub struct CapabilityGrants {
 /// doc-type-scoped. `role_caps` carries world-level capabilities keyed by
 /// `WorldRole` (e.g. `core:create`) — distinct because creation has no document
 /// and thus no `DocRole`. GM/admin is never keyed here; it holds every capability.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldCapDefaults;
+///
+/// let defaults = WorldCapDefaults::default();
+/// assert!(defaults.all.by_role.is_empty());
+/// assert!(defaults.by_type.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WorldCapDefaults {
     /// Per-document grants applied to every doc_type.
@@ -199,6 +309,19 @@ pub struct WorldCapDefaults {
 /// World-level capabilities keyed by `WorldRole`, doc-type-scopable. Holds the
 /// `core:create` policy: a non-GM may create a document of `doc_type` only if
 /// their role is granted `core:create` in `all` or `by_type[doc_type]`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{RoleCaps, WorldRole};
+///
+/// let mut caps = RoleCaps::default();
+/// caps.all
+///     .entry(WorldRole::Player)
+///     .or_default()
+///     .insert("core:create".into());
+/// assert!(caps.all[&WorldRole::Player].contains("core:create"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct RoleCaps {
     /// World-level capabilities per role, for every doc_type.
@@ -286,6 +409,18 @@ impl WorldCapDefaults {
 /// actor to additionally hold every capability in `caps` (on top of the
 /// structural base capability for that path). Pure data — the server enforces
 /// possession and never interprets the meaning of the path or the capabilities.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::CapabilityRequirement;
+///
+/// let req = CapabilityRequirement {
+///     path_prefix: "/engine/vision".into(),
+///     caps: ["core:edit_vision".to_string()].into_iter().collect(),
+/// };
+/// assert!(req.caps.contains("core:edit_vision"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CapabilityRequirement {
@@ -297,6 +432,14 @@ pub struct CapabilityRequirement {
 }
 
 /// Cardinality of a UI surface contract: one provider or many.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Cardinality;
+///
+/// assert_ne!(Cardinality::Singleton, Cardinality::Multi);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -308,6 +451,18 @@ pub enum Cardinality {
 }
 
 /// A UI surface contract a module provides, with its cardinality.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Cardinality, ContractProvide};
+///
+/// let provide = ContractProvide {
+///     contract: "shadowcat.panel".into(),
+///     cardinality: Cardinality::Multi,
+/// };
+/// assert_eq!(provide.contract, "shadowcat.panel");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ContractProvide {
@@ -320,6 +475,20 @@ pub struct ContractProvide {
 /// A module's UI contract declaration: what surface contracts it provides and
 /// which it requires an active provider for. Pure data — the server validates
 /// and distributes these strings; it never holds components or runs module code.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::ContractDeclaration;
+///
+/// let decl = ContractDeclaration {
+///     module_id: "example-module".into(),
+///     version: "1.0.0".into(),
+///     provides: vec![],
+///     requires: vec!["shadowcat.panel".into()],
+/// };
+/// assert_eq!(decl.requires, vec!["shadowcat.panel".to_string()]);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ContractDeclaration {
@@ -338,6 +507,15 @@ pub struct ContractDeclaration {
 /// A single JSON type tag for a schema node. Shape only — never a value
 /// discriminator, keeping schema validation built from this type structural
 /// rather than semantic.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::SchemaType;
+///
+/// let ty = SchemaType::Number;
+/// assert_ne!(ty, SchemaType::String);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -362,6 +540,16 @@ pub enum SchemaType {
 /// `MapAccessDeserializer` so the inner schema's `deny_unknown_fields` is enforced
 /// (an untagged/internally-tagged derive would buffer through `Content` and drop
 /// that check — the same serde limitation documented for `TokenVisual`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::AdditionalProperties;
+///
+/// let closed = AdditionalProperties::Bool(false);
+/// let parsed: AdditionalProperties = serde_json::from_value(serde_json::json!(false)).unwrap();
+/// assert_eq!(closed, parsed);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum AdditionalProperties {
@@ -405,6 +593,19 @@ impl<'de> Deserialize<'de> for AdditionalProperties {
 /// deserialize at the set endpoint. An all-absent node (`{}`) matches any JSON.
 /// Cross-field legality (e.g. `items` only on an array) is not enforced by serde;
 /// `validate_schema` enforces it at set-time.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Schema, SchemaType};
+///
+/// let schema = Schema {
+///     ty: Some(SchemaType::Object),
+///     ..Default::default()
+/// };
+/// assert_eq!(schema.ty, Some(SchemaType::Object));
+/// assert!(schema.properties.is_none()); // absent = any type/shape beneath
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(deny_unknown_fields)]
@@ -445,6 +646,23 @@ pub struct Schema {
 /// `subtree_pointer` is a strict `/system/…` descendant (enforced at set-time).
 /// `schema_format` is the engine-owned vocabulary version; `version` is the
 /// module's content version (provenance only).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Schema, SchemaDeclaration};
+///
+/// let decl = SchemaDeclaration {
+///     module_id: "example-module".into(),
+///     version: "1.0.0".into(),
+///     schema_format: 1,
+///     doc_type: "actor".into(),
+///     subtree_pointer: "/system/stats".into(),
+///     schema: Schema::default(),
+/// };
+/// assert_eq!(decl.doc_type, "actor");
+/// assert!(decl.subtree_pointer.starts_with("/system/"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(deny_unknown_fields)]
@@ -465,6 +683,17 @@ pub struct SchemaDeclaration {
 
 /// Document-level permissions: default role, per-user overrides, property-level
 /// visibility keyed by JSON pointer, and additive capability grants.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{DocRole, PermissionSet};
+///
+/// // Fail-closed default: no role, so PermissionSet::default() denies access.
+/// let perms = PermissionSet::default();
+/// assert_eq!(perms.default, DocRole::None);
+/// assert!(perms.gm_role.is_none()); // GM's usual unconditional access is preserved
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct PermissionSet {
@@ -493,6 +722,32 @@ pub struct PermissionSet {
 }
 
 /// The persisted document: typed envelope around an opaque `system` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+///
+/// let doc = Document {
+///     id: uuid::Uuid::new_v4(),
+///     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+///     doc_type: "note".into(),
+///     schema_version: 1,
+///     name: Some("Session recap".into()),
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// assert_eq!(doc.doc_type, "note");
+/// assert_eq!(doc.name.as_deref(), Some("Session recap"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(deny_unknown_fields)]
@@ -562,6 +817,22 @@ pub struct Document {
 }
 
 /// A world row.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::World;
+///
+/// let world = World {
+///     id: uuid::Uuid::new_v4(),
+///     name: "Homebrew Campaign".into(),
+///     seq: 0,
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// assert_eq!(world.name, "Homebrew Campaign");
+/// assert_eq!(world.seq, 0); // fresh world: no committed commands yet
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct World {
     /// Stable world identity.

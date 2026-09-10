@@ -4,5 +4,14 @@
  * A single JSON type tag for a schema node. Shape only — never a value
  * discriminator, keeping schema validation built from this type structural
  * rather than semantic.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::SchemaType;
+ *
+ * let ty = SchemaType::Number;
+ * assert_ne!(ty, SchemaType::String);
+ * ```
  */
 export type SchemaType = "object" | "array" | "string" | "number" | "boolean" | "null";

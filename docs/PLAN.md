@@ -96,7 +96,7 @@ codebase produces most.**
 → Trusted local modding hardening → freeze the module API on evidence (≥1 external module ships without core patches, **or N internal modules across M independent systems exercise the full API surface** — whichever comes first, so the freeze is not deadlocked on an external author who may never appear) → [only if a marketplace is pursued] WASM sandbox + registry + signing / SRI / CSP + package browser → native wrappers (Tauri 2, Capacitor) → hardening + distribution (backup scheduling / automation, world snapshots, WS load + resync stress tests, rate limiting, rustls-acme TLS, Steam OpenID + plain-executable distribution).
 ## Documentation campaign (cross-phase, runs alongside feature work)
 
-Infrastructure, guides, and Sweeps 1–13 are complete (record in [`HISTORY.md`](HISTORY.md)).
+Infrastructure, guides, and Sweeps 1–14 are complete (record in [`HISTORY.md`](HISTORY.md)).
 Remaining, in order:
 - **Buddy-check convergence — after the last sweep (user directive 2026-07-30).** The completed
   first-pass documentation is buddy-checked (superpowers two-reviewer cross-check debate)

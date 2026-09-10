@@ -6,6 +6,16 @@ import type { Document } from "./Document";
  * per-recipient filtered exactly like `list_documents`, plus the room's `current_seq` at read
  * time — the client uses this to initialize its own sequence watermark
  * (`next_expected = seq + 1`) without replaying history it does not need.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::routes::WorldSnapshot;
+ *
+ * let snapshot = WorldSnapshot { documents: Vec::new(), seq: 0 };
+ * let value = serde_json::to_value(&snapshot).unwrap();
+ * assert_eq!(value["seq"], 0);
+ * ```
  */
 export type WorldSnapshot = { 
 /**

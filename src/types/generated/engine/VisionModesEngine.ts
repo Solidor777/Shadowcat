@@ -3,6 +3,15 @@ import type { VisionMode } from "./VisionMode";
 
 /**
  * The engine body of a "vision-modes" config document.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::VisionModesEngine;
+ *
+ * let engine = VisionModesEngine::seed();
+ * assert!(engine.modes.contains_key("normal"));
+ * ```
  */
 export type VisionModesEngine = { 
 /**

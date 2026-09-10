@@ -3,6 +3,16 @@
 /**
  * A line segment in scene units (the scene's continuous coordinate space,
  * not grid cells).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::Seg;
+ *
+ * let seg = Seg { x1: 0.0, y1: 0.0, x2: 3.0, y2: 4.0 };
+ * let len = ((seg.x2 - seg.x1).powi(2) + (seg.y2 - seg.y1).powi(2)).sqrt();
+ * assert_eq!(len, 5.0);
+ * ```
  */
 export type Seg = { 
 /**

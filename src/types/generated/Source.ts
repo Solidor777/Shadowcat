@@ -2,6 +2,16 @@
 
 /**
  * Provenance link for the deferred pull/push merge.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::Source;
+ *
+ * let source = Source { id: uuid::Uuid::nil(), pack: None, version: 3 };
+ * assert_eq!(source.version, 3);
+ * assert!(source.pack.is_none()); // not stamped from a compendium pack
+ * ```
  */
 export type Source = { 
 /**

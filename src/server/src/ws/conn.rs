@@ -38,6 +38,17 @@ use crate::ws::time::now_millis;
 use crate::ws::MESSAGE_RATE_PER_MIN;
 
 /// Query parameters of the `/ws` upgrade request.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::conn::WsQuery;
+///
+/// let q: WsQuery = serde_json::from_value(serde_json::json!({
+///     "world": "00000000-0000-0000-0000-000000000000"
+/// })).unwrap();
+/// assert_eq!(q.world, uuid::Uuid::nil());
+/// ```
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
     /// The world the connection joins.
@@ -131,6 +142,51 @@ fn search_fingerprint(hits: &[crate::data::search::SearchHit]) -> Vec<(Uuid, u64
 
 /// Session-gated upgrade. `AuthUser` enforces authentication (401 without a
 /// session) before the socket is established.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::{router, AppState};
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// // `router` wires this handler at `GET /ws` (see `http::router`'s own example).
+/// // A real socket is required: `WebSocketUpgrade` extraction needs hyper's
+/// // actual upgrade machinery, absent from the in-process mock transport.
+/// let server = axum_test::TestServer::builder()
+///     .http_transport()
+///     .build(router(state).await)
+///     .unwrap();
+///
+/// // `AuthUser` runs after the upgrade headers parse, so a well-formed-but-
+/// // unauthenticated upgrade attempt is refused with 401 before any socket
+/// // is established.
+/// let resp = server
+///     .get(&format!("/ws?world={}", uuid::Uuid::nil()))
+///     .add_header(axum::http::header::CONNECTION, "upgrade")
+///     .add_header(axum::http::header::UPGRADE, "websocket")
+///     .add_header("sec-websocket-version", "13")
+///     .add_header("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==")
+///     .await;
+/// resp.assert_status_unauthorized();
+/// # }
+/// ```
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
     user: AuthUser,

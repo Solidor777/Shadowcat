@@ -3,5 +3,15 @@
 /**
  * Discriminates `ResolvedResourceView`'s source binding kind, mirroring
  * `data::engine::combat::ResourceBinding`'s own wire tag.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::combat::channel::ResourceBindingKind;
+ *
+ * let json = serde_json::to_value(ResourceBindingKind::Mirror).unwrap();
+ * assert_eq!(json, serde_json::json!("mirror"));
+ * assert_ne!(ResourceBindingKind::Mirror, ResourceBindingKind::Tracked);
+ * ```
  */
 export type ResourceBindingKind = "mirror" | "tracked";

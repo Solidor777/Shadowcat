@@ -37,6 +37,19 @@ const CURSOR_SEP: char = '\u{1f}';
 
 /// Query string of `GET /api/worlds/{world}/assets`. Every field optional;
 /// with none present the route answers the bare `Asset[]` listing.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::query::AssetQuery;
+///
+/// let q = AssetQuery {
+///     name: Some("dragon".into()),
+///     ..Default::default()
+/// };
+/// assert_eq!(q.name.as_deref(), Some("dragon"));
+/// assert!(q.folder.is_none()); // every other field stays absent
+/// ```
 #[derive(Debug, Default, Deserialize)]
 pub struct AssetQuery {
     /// A folder document id, or `root`; absent = whole world.
@@ -75,6 +88,16 @@ impl AssetQuery {
 }
 
 /// One page of query results.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::query::AssetPage;
+///
+/// let page = AssetPage { items: vec![], next_cursor: None };
+/// assert!(page.items.is_empty());
+/// assert_eq!(page.next_cursor, None); // no further page
+/// ```
 #[derive(Debug, Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct AssetPage {
@@ -86,6 +109,16 @@ pub struct AssetPage {
 
 /// Compile `name_regex` under the size caps; a pattern over
 /// `MAX_REGEX_BYTES` or one that fails to compile is a 400.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::query::compile_regex;
+///
+/// let re = compile_regex("^dragon").unwrap();
+/// assert!(re.is_match("dragon egg"));
+/// assert!(compile_regex("(unterminated").is_err()); // invalid pattern is rejected
+/// ```
 pub fn compile_regex(pattern: &str) -> Result<regex::Regex, AppError> {
     if pattern.len() > MAX_REGEX_BYTES {
         return Err(AppError::BadRequest(format!(
@@ -100,12 +133,42 @@ pub fn compile_regex(pattern: &str) -> Result<regex::Regex, AppError> {
 }
 
 /// Opaque cursor text for a keyset position.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::query::AssetCursor;
+/// use shadowcat::http::assets::query::encode_cursor;
+///
+/// let cursor = AssetCursor {
+///     sort_key: "created".into(),
+///     id: uuid::Uuid::nil(),
+/// };
+/// let text = encode_cursor(&cursor);
+/// assert!(!text.is_empty());
+/// assert!(!text.contains('/')); // URL-safe base64: no path-breaking characters
+/// ```
 pub fn encode_cursor(cursor: &AssetCursor) -> String {
     let raw = format!("{}{CURSOR_SEP}{}", cursor.sort_key, cursor.id);
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw)
 }
 
 /// Inverse of `encode_cursor`; a malformed cursor is a 400.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::query::AssetCursor;
+/// use shadowcat::http::assets::query::{decode_cursor, encode_cursor};
+///
+/// let cursor = AssetCursor {
+///     sort_key: "created".into(),
+///     id: uuid::Uuid::nil(),
+/// };
+/// let round_tripped = decode_cursor(&encode_cursor(&cursor)).unwrap();
+/// assert_eq!(round_tripped, cursor);
+/// assert!(decode_cursor("not valid base64!!").is_err());
+/// ```
 pub fn decode_cursor(text: &str) -> Result<AssetCursor, AppError> {
     let bad = || AppError::BadRequest("malformed cursor".into());
     let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -202,6 +265,43 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
 /// selected, walking further SQL pages (up to `MAX_REGEX_PAGES`) until the
 /// page fills — `next_cursor` always marks the last row EXAMINED, so a
 /// caller following cursors never skips a row.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::assets::query::AssetQuery;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::query::list(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+///     axum::extract::Query(AssetQuery::default()),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn list(
     State(state): State<AppState>,
     user: AuthUser,

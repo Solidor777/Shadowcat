@@ -2,5 +2,13 @@
 
 /**
  * World-default roll direction (`DiceSettingsEngine.direction`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::DiceDirectionSetting;
+ *
+ * assert_eq!(DiceDirectionSetting::default(), DiceDirectionSetting::HighWins);
+ * ```
  */
 export type DiceDirectionSetting = "high_wins" | "low_wins";

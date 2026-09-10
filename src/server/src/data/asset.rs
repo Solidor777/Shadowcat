@@ -9,6 +9,20 @@ use uuid::Uuid;
 
 /// Pipeline-derived metadata recorded at commit (`data::asset::process`) and
 /// rewritten on replace/reconvert. Flattened into `Asset` on the wire.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::AssetMeta;
+///
+/// let meta = AssetMeta {
+///     width: Some(64),
+///     ..AssetMeta::unprocessed("image/png", 10)
+/// };
+/// // Fields not named in the literal come from `unprocessed`, not the update syntax.
+/// assert_eq!(meta.original_byte_size, 10);
+/// assert!(meta.height.is_none());
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(default)]
@@ -36,6 +50,16 @@ impl AssetMeta {
     /// decoded: no dimensions, no alpha/animation knowledge, no retained
     /// original. The pre-pipeline shape every commit path records until the
     /// conversion step fills the real values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::asset::AssetMeta;
+    ///
+    /// let meta = AssetMeta::unprocessed("image/png", 2048);
+    /// assert_eq!(meta.original_content_type, "image/png");
+    /// assert!(meta.width.is_none());
+    /// ```
     pub fn unprocessed(content_type: &str, byte_size: i64) -> Self {
         Self {
             width: None,
@@ -52,6 +76,17 @@ impl AssetMeta {
 
 /// Who authored an asset — feeds the `uploaded` / `link-preview` /
 /// `chat-image` derived tag.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::Provenance;
+/// use shadowcat::data::asset::tags::provenance_of;
+///
+/// // The provenance a stored derived-tag set encodes, recovered by `provenance_of`.
+/// let provenance = provenance_of(&["chat-image".to_string()]);
+/// assert_eq!(provenance, Provenance::ChatImage);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provenance {
     /// A GM upload (single-shot or chunked).
@@ -68,6 +103,34 @@ pub enum Provenance {
 
 /// Metadata for one stored asset. Bytes live on disk at `storage_key`
 /// (relative to `assets_dir`); identity (`id`) is stable across rename/replace.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::query::{sort_key_of, AssetSort};
+/// use shadowcat::data::asset::{Asset, AssetMeta};
+/// use uuid::Uuid;
+///
+/// let asset = Asset {
+///     id: Uuid::new_v4(),
+///     world_id: Uuid::new_v4(),
+///     storage_key: "w/id".into(),
+///     original_name: "Map.png".into(),
+///     content_type: "image/webp".into(),
+///     byte_size: 10,
+///     created_by: None,
+///     created_at: 42,
+///     version: 1,
+///     folder_id: None,
+///     tags: vec![],
+///     derived_tags: vec![],
+///     meta: AssetMeta::unprocessed("image/png", 10),
+/// };
+/// // `sort_key_of` derives its output from the asset's fields; it is not a value
+/// // the literal above assigns directly.
+/// assert_eq!(sort_key_of(&asset, AssetSort::Name), "map.png");
+/// assert_eq!(sort_key_of(&asset, AssetSort::Created), "42");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct Asset {
@@ -106,6 +169,15 @@ pub struct Asset {
 /// or the row insert failed (`DataError`). Mirrors `http::assets::upload`'s
 /// own two-stage failure surface, generalized for a caller with no
 /// `AppError`/HTTP response to produce (the background image pipeline).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::AssetError;
+///
+/// let err: AssetError = std::io::Error::new(std::io::ErrorKind::NotFound, "missing").into();
+/// assert!(matches!(err, AssetError::Io(_)));
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum AssetError {
     /// Writing/renaming the asset bytes on disk failed.
@@ -122,6 +194,22 @@ pub enum AssetError {
 /// and a sibling ABSENT at the staged stem removes any stale one at the
 /// final stem (a pass-through replace has no `.orig`; an undecodable one has
 /// no derivatives). A missing final sibling is not an error.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::move_asset_files;
+/// use std::path::Path;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // Renaming a staged stem that was never written fails rather than panicking.
+/// let err = move_asset_files(Path::new("no-such-staged"), Path::new("no-such-final"))
+///     .await
+///     .unwrap_err();
+/// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+/// # }
+/// ```
 pub async fn move_asset_files(
     staged: &std::path::Path,
     final_path: &std::path::Path,
@@ -147,6 +235,27 @@ pub async fn move_asset_files(
 /// Best-effort removal of a canonical and every sibling artifact; a file
 /// that is already gone is not an error. Used on every rollback path and by
 /// asset delete.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::sibling_paths;
+/// use shadowcat::data::asset::remove_asset_files;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // A directory outside the repo tree — never written to source control.
+/// let dir = tempfile::tempdir().unwrap();
+/// let canonical = dir.path().join("uuid");
+/// std::fs::write(&canonical, b"bytes").unwrap();
+/// for sibling in sibling_paths(&canonical) {
+///     std::fs::write(&sibling, b"bytes").unwrap();
+/// }
+/// remove_asset_files(&canonical).await;
+/// assert!(!canonical.exists());
+/// assert!(sibling_paths(&canonical).iter().all(|p| !p.exists()));
+/// # }
+/// ```
 pub async fn remove_asset_files(canonical: &std::path::Path) {
     let _ = tokio::fs::remove_file(canonical).await;
     for p in process::sibling_paths(canonical) {
@@ -157,6 +266,22 @@ pub async fn remove_asset_files(canonical: &std::path::Path) {
 /// Runs `process::process_staged` on the blocking pool (it is CPU-bound).
 /// On any failure the staged file and its siblings are removed, so a caller
 /// never has to reason about a half-processed stem.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process_staged_blocking;
+/// use std::path::PathBuf;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// // A missing staged file fails to open rather than panicking.
+/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true)
+///     .await
+///     .unwrap_err();
+/// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+/// # }
+/// ```
 pub async fn process_staged_blocking(
     staged: std::path::PathBuf,
     original_content_type: String,
@@ -194,6 +319,46 @@ pub async fn process_staged_blocking(
 /// byte-for-byte the same ordering logic. A row-insert failure removes every
 /// file just moved; a tag-write failure after the row is in leaves the asset
 /// untagged (`refresh_derived_tags` repairs it) rather than orphaning files.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::{commit_staged_asset, Asset, AssetError, AssetMeta};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use std::path::Path;
+/// use uuid::Uuid;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let asset = Asset {
+///     id: Uuid::new_v4(),
+///     world_id: Uuid::new_v4(),
+///     storage_key: "w/id".into(),
+///     original_name: "map.png".into(),
+///     content_type: "image/webp".into(),
+///     byte_size: 10,
+///     created_by: None,
+///     created_at: 0,
+///     version: 1,
+///     folder_id: None,
+///     tags: vec![],
+///     derived_tags: vec![],
+///     meta: AssetMeta::unprocessed("image/png", 10),
+/// };
+/// // No file was ever staged, so the move fails before the row insert.
+/// let err = commit_staged_asset(
+///     &repo,
+///     Path::new("no-such-staged"),
+///     Path::new("no-such-final"),
+///     asset,
+///     &[],
+/// )
+/// .await
+/// .unwrap_err();
+/// assert!(matches!(err, AssetError::Io(_)));
+/// # }
+/// ```
 pub async fn commit_staged_asset(
     repo: &crate::data::sqlite::SqliteRepository,
     tmp_path: &std::path::Path,
@@ -223,6 +388,31 @@ pub async fn commit_staged_asset(
 /// total) to stay under `clippy::too_many_arguments` by restructuring the
 /// signature, never by suppressing the lint (same pattern as `chat`'s
 /// `RecalcRollRequestCtx`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::tags::{derive, DeriveInput};
+/// use shadowcat::data::asset::{AssetMeta, NewAssetBytes, Provenance};
+///
+/// let bytes = [0u8; 4];
+/// let new = NewAssetBytes {
+///     bytes: &bytes,
+///     content_type: "image/png",
+///     original_name: "map.png",
+///     created_by: None,
+///     provenance: Provenance::Uploaded,
+///     retain_originals: true,
+/// };
+/// // The `provenance` field drives the derived tag set `tags::derive` computes.
+/// let tags = derive(DeriveInput {
+///     content_type: new.content_type,
+///     meta: &AssetMeta::unprocessed(new.content_type, new.bytes.len() as i64),
+///     folder_names: &[],
+///     provenance: new.provenance,
+/// });
+/// assert!(tags.contains(&"uploaded".to_string()));
+/// ```
 pub struct NewAssetBytes<'a> {
     /// The already-in-memory bytes to stage and commit.
     pub bytes: &'a [u8],
@@ -249,6 +439,43 @@ pub struct NewAssetBytes<'a> {
 /// own arbitrarily-large GM uploads stream straight to disk via
 /// `store_streamed` and call `commit_staged_asset` directly instead, never
 /// buffering the whole body here. The asset lands in the world root.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::{create_asset_from_bytes, NewAssetBytes, Provenance};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use std::io::Cursor;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let world = repo.create_world("w", 0).await.unwrap();
+/// // A directory outside the repo tree — never written to source control.
+/// let dir = tempfile::tempdir().unwrap();
+/// let mut png = Vec::new();
+/// image::RgbaImage::new(2, 2)
+///     .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+///     .unwrap();
+/// let asset = create_asset_from_bytes(
+///     &repo,
+///     dir.path(),
+///     world.id,
+///     NewAssetBytes {
+///         bytes: &png,
+///         content_type: "image/png",
+///         original_name: "swatch.png",
+///         created_by: None,
+///         provenance: Provenance::Uploaded,
+///         retain_originals: false,
+///     },
+///     0,
+/// )
+/// .await
+/// .unwrap();
+/// assert_eq!(asset.content_type, "image/webp");
+/// # }
+/// ```
 pub async fn create_asset_from_bytes(
     repo: &crate::data::sqlite::SqliteRepository,
     assets_root: &std::path::Path,

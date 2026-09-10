@@ -1,0 +1,49 @@
+#!/bin/sh
+# Blocks a push whose tree has no green receipt from `pnpm gate:push`.
+#
+# The push tier costs ~19 minutes and cannot run here: an agent's shell tool caps at 600s, and a
+# killed push is the pressure that produces --no-verify. Verifying a receipt keeps the push
+# instant, at the cost of two measured residuals `run-gate-tier.mjs` documents at its own
+# receipt-writing site: an edit reverted within one filesystem clock step (~0.3 ms measured on
+# NTFS) is invisible to the mtime table a receipt run checks, and this loop verifies exactly one
+# receipt against exactly one ref's tree — a multi-ref push is checked ref-by-ref against that same
+# single receipt (see LIMITATION below). The receipt is a tree-keyed local artifact under the
+# operator's own authority, not an unconditional guarantee; the remote's own branch protection is
+# the authoritative backstop, and this hook is defense-in-depth in front of it.
+#
+# INVARIANT: a dirty working tree fails, because the receipt describes HEAD's tree and an unclean
+# tree means the gated content is not what the commit contains. This check is scoped to the WHOLE
+# working directory, not to the ref actually being pushed: pushing an already-committed ref other
+# than the checked-out HEAD (a different local branch's tip, `--all`, `--mirror`) is refused by
+# this exact same check even though that other ref's own tree has nothing to do with HEAD's
+# uncommitted state. This is deliberate — distinguishing "dirty because of HEAD" from "dirty but
+# irrelevant to this ref" is itself a decision that would need its own verification, and it is
+# fail-closed either way: the worst outcome of the broader check is an inexplicable-looking
+# refusal on an otherwise-legitimate push, never an unverified push getting through. Commit or
+# stash, then retry.
+#
+# LIMITATION: only one receipt file exists (`.git/shadowcat-gate-receipt`, one tree), but a
+# multi-ref push (`git push origin a b`, `--all`, `--mirror`, `--follow-tags`) feeds one line per
+# ref to the loop below. Each ref is checked against that same single receipt and the loop exits
+# on the FIRST mismatch, so a legitimate push of several refs is refused unless every one of them
+# happens to share the exact tree the last `pnpm gate:push` ran against. This is fail-closed and
+# therefore safe, but it reads as an inexplicable refusal rather than a real gate failure — if a
+# push is refused here for a ref that is not the one just gated, this is why.
+set -e
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "gate: refusing the push — the working tree is dirty. Commit or stash, then re-run \`pnpm gate:push\`." >&2
+    exit 1
+fi
+
+while read -r _local_ref local_sha _remote_ref _remote_sha; do
+    # An all-zero local sha is a branch deletion; there is no tree to gate.
+    case "$local_sha" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+    tree=$(git rev-parse "$local_sha^{tree}")
+    node scripts/run-gate-tier.mjs --verify-receipt "$tree" || exit 1
+done
+
+exit 0

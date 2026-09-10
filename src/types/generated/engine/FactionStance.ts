@@ -2,5 +2,14 @@
 
 /**
  * A faction's stance toward the party (mirrors the client's `FactionStance`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::FactionStance;
+ *
+ * let stance = FactionStance::Hostile;
+ * assert_ne!(stance, FactionStance::Friendly);
+ * ```
  */
 export type FactionStance = "friendly" | "neutral" | "hostile";

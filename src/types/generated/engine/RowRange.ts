@@ -8,6 +8,15 @@
  * ts-rs to emit a `bigint` field on a type constructed by client authoring
  * code (`table-docs.ts`'s `buildTableDoc` callers), which `JSON.stringify`
  * (`WsClient.send`) cannot serialize.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::table::RowRange;
+ *
+ * let range = RowRange { lo: 1, hi: 10 };
+ * assert!(range.lo <= range.hi);
+ * ```
  */
 export type RowRange = { 
 /**

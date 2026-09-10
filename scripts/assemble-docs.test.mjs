@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -322,20 +322,24 @@ describe("assemble", () => {
   it("removes a file from a prior build whose current inputs no longer produce it", async () => {
     const src = mkdtempSync(join(tmpdir(), "docs-src-"));
     const out = join(mkdtempSync(join(tmpdir(), "docs-out-")), "dist-docs");
-    const portal = join(src, "portal");
+    // Two portal source trees stand in for "build 1" and "build 2" of the same site, since this
+    // repo permits no permanent-deletion call: portalV2 is what portalV1 looks like once
+    // stale-page.html stops being produced, rather than portalV1 with that file removed in place.
+    const portalV1 = join(src, "portal-v1");
+    const portalV2 = join(src, "portal-v2");
     const ts = join(src, "ts");
     const rust = join(src, "rust");
-    for (const dir of [portal, ts, rust]) mkdirSync(dir, { recursive: true });
-    writeFileSync(join(portal, "index.html"), "<html></html>");
-    writeFileSync(join(portal, "stale-page.html"), "<html>gone next build</html>");
+    for (const dir of [portalV1, portalV2, ts, rust]) mkdirSync(dir, { recursive: true });
+    writeFileSync(join(portalV1, "index.html"), "<html></html>");
+    writeFileSync(join(portalV1, "stale-page.html"), "<html>gone next build</html>");
+    writeFileSync(join(portalV2, "index.html"), "<html></html>");
     writeFileSync(join(ts, "index.html"), "<html></html>");
     writeFileSync(join(rust, "shadowcat.html"), "<html></html>");
-    await assemble({ portal, ts, rust, out });
+    await assemble({ portal: portalV1, ts, rust, out });
     expect(existsSync(join(out, "stale-page.html"))).toBe(true);
 
     // A second build's inputs no longer produce stale-page.html.
-    unlinkSync(join(portal, "stale-page.html"));
-    await assemble({ portal, ts, rust, out });
+    await assemble({ portal: portalV2, ts, rust, out });
     expect(existsSync(join(out, "stale-page.html"))).toBe(false);
     expect(existsSync(join(out, "index.html"))).toBe(true);
   });

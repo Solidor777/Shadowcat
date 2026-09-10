@@ -7,6 +7,22 @@ import type { Falloff } from "./Falloff";
  * and token/actor-carried emissions (`ActorEngine.light`,
  * `TokenOverrides.light`). `brightRadius`/`dimRadius` are in grid cells.
  * Every carrier validates it at ingress through `LightEmission::validate`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::LightEmission;
+ *
+ * let emission = LightEmission {
+ *     color: "#ffcc88".to_string(),
+ *     intensity: 0.8,
+ *     bright_radius: 4.0,
+ *     dim_radius: 8.0,
+ *     falloff: None,
+ *     enabled: true,
+ * };
+ * assert!(emission.enabled);
+ * ```
  */
 export type LightEmission = { 
 /**

@@ -5,6 +5,15 @@ import type { Channel } from "./Channel";
  * The world's channel registry: a singleton config document. Keyed by
  * channel id — a MAP, not an array, so add/rename/remove are single-key
  * field Updates (`set_pointer` cannot grow arrays).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::ChannelRegistryEngine;
+ *
+ * let registry = ChannelRegistryEngine::seed();
+ * assert!(registry.channels.contains_key("general"));
+ * ```
  */
 export type ChannelRegistryEngine = { 
 /**

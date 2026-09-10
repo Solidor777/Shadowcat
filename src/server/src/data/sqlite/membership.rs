@@ -73,6 +73,28 @@ impl SqliteRepository {
     /// Implicit coupling: `tower_sessions` is created by `SqlxSqliteStore::
     /// migrate`, called from `session_layer` at boot, before any route can reach this;
     /// repo-level tests must run that migrate themselves.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::auth::session::SqlxSqliteStore;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// // `tower_sessions` is created by `SqlxSqliteStore::migrate` at boot;
+    /// // a repo-level example must run it itself before deleting a user.
+    /// SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone())
+    ///     .migrate()
+    ///     .await
+    ///     .unwrap();
+    /// let id = repo.create_user("mock_target", None, ServerRole::User, 0).await?;
+    /// repo.delete_user(id).await?;
+    /// assert!(!repo.user_exists(id).await?);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn delete_user(&self, target: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         if Self::is_last_admin(&mut tx, target).await? {
@@ -118,6 +140,25 @@ impl SqliteRepository {
     }
 
     /// Change an existing member's role; `NotFound` if they are not a member.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let player = repo.create_user("mock_player", None, ServerRole::User, 0).await?;
+    /// repo.add_member(world.id, player, WorldRole::Player).await?;
+    /// repo.set_role(world.id, player, WorldRole::Spectator).await?;
+    /// assert_eq!(repo.member_role(world.id, player).await?, Some(WorldRole::Spectator));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_role(
         &self,
         world: Uuid,
@@ -149,15 +190,17 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// # let (world_id, sole_gm) = (uuid::Uuid::nil(), uuid::Uuid::nil());
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
     /// // Removing the only GM is refused with DataError::Conflict.
-    /// let err = repo.remove_member(world_id, sole_gm).await.unwrap_err();
-    /// # let _ = err;
+    /// let err = repo.remove_member(world.id, gm).await.unwrap_err();
+    /// assert!(matches!(err, shadowcat::data::DataError::Conflict(_)));
     /// # Ok(())
     /// # }
     /// ```
@@ -181,7 +224,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -219,6 +262,24 @@ impl SqliteRepository {
     /// Worlds the user may access, with their effective role. A server admin is
     /// GM on every world (mirrors `permission_context`); otherwise the user's
     /// joined `world_members.role`. Ordered by world name.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let worlds = repo.worlds_for_user(gm, ServerRole::User).await?;
+    /// assert_eq!(worlds.len(), 1);
+    /// assert_eq!(worlds[0].1, WorldRole::Gm);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn worlds_for_user(
         &self,
         user: Uuid,
@@ -266,6 +327,23 @@ impl SqliteRepository {
     /// Resolve a user's authority within a world: server admins are GM
     /// everywhere; a member resolves to their `role`; a non-member non-admin is
     /// `Forbidden` (cannot establish a context, so cannot join or write).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let ctx = repo.permission_context(world.id, gm, ServerRole::User).await?;
+    /// assert_eq!(ctx.world_role, WorldRole::Gm);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn permission_context(
         &self,
         world: Uuid,
@@ -293,7 +371,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -330,7 +408,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -368,6 +446,18 @@ impl SqliteRepository {
     /// Whether a user row with this id exists. Used to reject a membership
     /// write against an unknown user id with a client-actionable 404 instead of
     /// letting the `world_members.user_id` foreign key surface as a 500.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(!repo.user_exists(uuid::Uuid::nil()).await?);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn user_exists(&self, id: Uuid) -> Result<bool, DataError> {
         let row = sqlx::query("SELECT 1 FROM users WHERE id = ?")
             .bind(id.to_string())
@@ -385,6 +475,22 @@ impl SqliteRepository {
     /// HTTP boundary (`validate_username`), so SQLite's ASCII-only `NOCASE`
     /// collation is a complete case-fold — `Alice` and `alice` cannot coexist
     /// and impersonate one another in a member roster.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let first = repo.create_user_unique("mock-unique", "hash", ServerRole::User, 0).await?;
+    /// assert!(first.is_some());
+    /// let collision = repo.create_user_unique("mock-unique", "hash", ServerRole::User, 0).await?;
+    /// assert!(collision.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_user_unique(
         &self,
         username: &str,
@@ -412,6 +518,21 @@ impl SqliteRepository {
     /// Every account, for the admin user-management surface. Deliberately
     /// projects only the three non-secret columns — the password hash is never
     /// selected, so it cannot reach a response body by accident.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.create_user("mock_listed", None, ServerRole::User, 0).await?;
+    /// let users = repo.list_users().await?;
+    /// assert_eq!(users.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn list_users(&self) -> Result<Vec<(Uuid, String, ServerRole)>, DataError> {
         let rows = sqlx::query(
             "SELECT id, username, server_role FROM users ORDER BY username COLLATE NOCASE",
@@ -464,6 +585,21 @@ impl SqliteRepository {
     /// /api/users/{id}` exists: deletion is last-admin-guarded, so "users
     /// exist but no admin" still cannot arise — the NOCASE guard below stays
     /// as the structural backstop.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let first = repo.create_admin_if_none("mock_admin", "hash", 0).await?;
+    /// assert!(first.is_some());
+    /// let second = repo.create_admin_if_none("mock_admin_2", "hash", 0).await?;
+    /// assert!(second.is_none()); // an admin already exists
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_admin_if_none(
         &self,
         username: &str,
@@ -492,14 +628,18 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// use shadowcat::data::document::WorldRole;
-    /// # let (world_id, user_id) = (uuid::Uuid::nil(), uuid::Uuid::nil());
-    /// repo.add_member(world_id, user_id, WorldRole::Player).await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let player = repo.create_user("mock_player", None, ServerRole::User, 0).await?;
+    /// repo.add_member(world.id, player, WorldRole::Player).await?;
+    /// assert_eq!(repo.member_role(world.id, player).await?, Some(WorldRole::Player));
     /// # Ok(())
     /// # }
     /// ```
@@ -525,6 +665,24 @@ impl SqliteRepository {
     /// prevent). The guarded INSERT..SELECT proves user AND world existence
     /// atomically with the upsert: rows_affected == 0 ⇔ target user or world
     /// missing → NotFound. The sole-GM demotion guard runs on the same tx.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let player = repo.create_user("mock_player", None, ServerRole::User, 0).await?;
+    /// repo.upsert_member(world.id, player, WorldRole::Player).await?;
+    /// assert_eq!(repo.member_role(world.id, player).await?, Some(WorldRole::Player));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn upsert_member(
         &self,
         world: Uuid,
@@ -563,7 +721,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -610,6 +768,23 @@ impl SqliteRepository {
 
     /// The UUID of a member of `world` whose username matches exactly, or
     /// `None`. Mirrors `list_members`' join, scoped to one username.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let found = repo.member_id_by_username(world.id, "mock_gm").await?;
+    /// assert_eq!(found, Some(gm));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn member_id_by_username(
         &self,
         world: Uuid,
@@ -641,6 +816,32 @@ impl SqliteRepository {
     /// `NewInvite::id` is the selector half of the caller's minted code — the
     /// row id and the code MUST agree, so it is supplied rather than generated
     /// here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::{NewInvite, SqliteRepository};
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let invite = NewInvite {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     world: world.id,
+    ///     secret_hash: "mock-hash",
+    ///     role: WorldRole::Player,
+    ///     created_by: gm,
+    ///     now: 0,
+    ///     expires_at: 1_000,
+    /// };
+    /// let stored = repo.create_invite(invite, 10).await?;
+    /// assert!(stored);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_invite(
         &self,
         invite: NewInvite<'_>,
@@ -689,6 +890,33 @@ impl SqliteRepository {
     /// to obtain the stored hash — expiry/revocation/single-use are decided by
     /// `consume_invite`, so that every unusable code reaches the caller through
     /// one indistinguishable path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::{NewInvite, SqliteRepository};
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let id = uuid::Uuid::new_v4();
+    /// let invite = NewInvite {
+    ///     id,
+    ///     world: world.id,
+    ///     secret_hash: "mock-hash",
+    ///     role: WorldRole::Player,
+    ///     created_by: gm,
+    ///     now: 0,
+    ///     expires_at: 1_000,
+    /// };
+    /// repo.create_invite(invite, 10).await?;
+    /// assert!(repo.invite_by_id(id).await?.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn invite_by_id(&self, id: Uuid) -> Result<Option<InviteRecord>, DataError> {
         let row = sqlx::query(
             "SELECT id, world_id, secret_hash, role, created_at, expires_at, \
@@ -702,6 +930,34 @@ impl SqliteRepository {
 
     /// A world's invites, newest first. Never selects `secret_hash`: the GM
     /// listing must not be able to leak credential material.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::{NewInvite, SqliteRepository};
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let invite = NewInvite {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     world: world.id,
+    ///     secret_hash: "mock-hash",
+    ///     role: WorldRole::Player,
+    ///     created_by: gm,
+    ///     now: 0,
+    ///     expires_at: 1_000,
+    /// };
+    /// repo.create_invite(invite, 10).await?;
+    /// let invites = repo.list_invites(world.id).await?;
+    /// assert_eq!(invites.len(), 1);
+    /// assert!(invites[0].secret_hash.is_empty()); // never leaked to the listing
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn list_invites(&self, world: Uuid) -> Result<Vec<InviteRecord>, DataError> {
         let rows = sqlx::query(
             "SELECT id, world_id, '' AS secret_hash, role, created_at, expires_at, \
@@ -717,6 +973,34 @@ impl SqliteRepository {
     /// Revoke an invite, scoped to `world`. Returns whether a row changed —
     /// `false` covers both "no such invite" and "belongs to another world", so
     /// a GM cannot use this route to probe another world's invite ids.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::{NewInvite, SqliteRepository};
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let id = uuid::Uuid::new_v4();
+    /// let invite = NewInvite {
+    ///     id,
+    ///     world: world.id,
+    ///     secret_hash: "mock-hash",
+    ///     role: WorldRole::Player,
+    ///     created_by: gm,
+    ///     now: 0,
+    ///     expires_at: 1_000,
+    /// };
+    /// repo.create_invite(invite, 10).await?;
+    /// assert!(repo.revoke_invite(world.id, id, 1).await?);
+    /// assert!(!repo.revoke_invite(world.id, id, 1).await?); // already revoked
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn revoke_invite(&self, world: Uuid, id: Uuid, now: i64) -> Result<bool, DataError> {
         let res = sqlx::query(
             "UPDATE world_invites SET revoked_at = ? \
@@ -744,6 +1028,35 @@ impl SqliteRepository {
     /// An existing membership is left ALONE (`INSERT OR IGNORE`): redeeming an
     /// invite may only grant access, never change a role the caller already
     /// holds, so a `spectator` invite cannot be used to demote a world's GM.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::{NewInvite, SqliteRepository};
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let id = uuid::Uuid::new_v4();
+    /// let invite = NewInvite {
+    ///     id,
+    ///     world: world.id,
+    ///     secret_hash: "mock-hash",
+    ///     role: WorldRole::Player,
+    ///     created_by: gm,
+    ///     now: 0,
+    ///     expires_at: 1_000,
+    /// };
+    /// repo.create_invite(invite, 10).await?;
+    /// let redeemer = repo.create_user("mock_redeemer", None, ServerRole::User, 0).await?;
+    /// let seated = repo.consume_invite(id, redeemer, 1).await?.unwrap();
+    /// assert_eq!(seated.role, WorldRole::Player);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn consume_invite(
         &self,
         id: Uuid,

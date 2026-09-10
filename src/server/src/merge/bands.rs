@@ -17,6 +17,21 @@ use crate::data::permission::writes_a_content_band;
 /// by `plan_to_update`. Server-internal: it never crosses the wire (a
 /// `MergeResult` carries conflicts, the committed bands ride the ordinary
 /// `Event`), so it has no ts-rs export.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::MergeBands;
+/// use std::collections::BTreeMap;
+///
+/// let bands = MergeBands {
+///     name: Some("Dragon".to_string()),
+///     engine: serde_json::Value::Null,
+///     system: serde_json::json!({ "hp": 10 }),
+///     embedded: BTreeMap::new(),
+/// };
+/// assert_eq!(bands.name.as_deref(), Some("Dragon"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MergeBands {
     /// The document's `name` band after merge.
@@ -44,6 +59,23 @@ pub struct MergeBands {
 /// unchanged against a `null` band — the data-losing direction for a
 /// template-deleted child). The ts-rs export is the client's
 /// `EmbeddedBaseChild`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::EmbeddedBaseChild;
+/// use std::collections::BTreeMap;
+///
+/// let child = EmbeddedBaseChild {
+///     source_id: "11111111-1111-1111-1111-111111111111".to_string(),
+///     name: Some("Sword".to_string()),
+///     engine: serde_json::Value::Null,
+///     system: serde_json::json!({ "damage": 4 }),
+///     embedded: BTreeMap::new(),
+///     property_overrides: BTreeMap::new(),
+/// };
+/// assert_eq!(child.name.as_deref(), Some("Sword"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
@@ -90,6 +122,22 @@ pub struct EmbeddedBaseChild {
 /// same way ingest would, rather than coalescing a missing key into
 /// `null`/empty and reading a malformed snapshot as an ordinary one. The
 /// ts-rs export is the client's `MergeBase`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::MergeBase;
+/// use std::collections::BTreeMap;
+///
+/// let base = MergeBase {
+///     name: Some("Dragon".to_string()),
+///     engine: serde_json::Value::Null,
+///     system: serde_json::json!({ "hp": 10 }),
+///     embedded: BTreeMap::new(),
+///     property_overrides: BTreeMap::new(),
+/// };
+/// assert_eq!(base.system["hp"], 10);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct MergeBase {
@@ -128,6 +176,26 @@ pub struct MergeBase {
 /// `syncState` and leaves `owner_standing` out BY TYPE — it is an access
 /// fact about the instance's owner, not a template property, and no
 /// template edit changes it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::OwnerStanding;
+/// use shadowcat::merge::bands::{MergeBase, StoredBase};
+/// use std::collections::BTreeMap;
+///
+/// let stored = StoredBase {
+///     snapshot: MergeBase {
+///         name: None,
+///         engine: serde_json::Value::Null,
+///         system: serde_json::Value::Null,
+///         embedded: BTreeMap::new(),
+///         property_overrides: BTreeMap::new(),
+///     },
+///     owner_standing: OwnerStanding::Owner,
+/// };
+/// assert_eq!(stored.owner_standing, OwnerStanding::Owner);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct StoredBase {
@@ -196,6 +264,48 @@ pub(crate) fn recorded_overrides(doc: &Document) -> BTreeMap<String, Visibility>
 /// snapshot still records an explicit `All` verbatim
 /// (`recorded_overrides`/`snapshot_base` are unaffected) — only propagation
 /// onto a LIVE document's own policy skips it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope, Visibility};
+/// use shadowcat::merge::bands::propagate_overrides;
+/// use uuid::Uuid;
+///
+/// fn doc(system: serde_json::Value) -> Document {
+///     Document {
+///         id: Uuid::new_v4(),
+///         scope: Scope::World { world_id: Uuid::new_v4() },
+///         doc_type: "actor".into(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: Default::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system,
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let mut template = doc(serde_json::json!({}));
+/// template
+///     .permissions
+///     .property_overrides
+///     .insert("/system/hp".to_string(), Visibility::GmOnly);
+/// let mut instance = doc(serde_json::json!({}));
+///
+/// let changed = propagate_overrides(&mut instance, &template);
+/// assert!(changed);
+/// assert_eq!(
+///     instance.permissions.property_overrides.get("/system/hp"),
+///     Some(&Visibility::GmOnly)
+/// );
+/// ```
 pub fn propagate_overrides(instance: &mut Document, template: &Document) -> bool {
     let mut changed = false;
     for (p, tier) in recorded_overrides(template) {
@@ -229,6 +339,18 @@ pub fn propagate_overrides(instance: &mut Document, template: &Document) -> bool
 /// client's `syncState` badge excludes the same paths from its comparison,
 /// so a path excluded on one side and not the other would either flag a
 /// token's own position as a template change or let a merge clobber it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::placement_exclusions;
+///
+/// assert_eq!(
+///     placement_exclusions("token"),
+///     vec!["/engine/x", "/engine/y", "/engine/rotation"]
+/// );
+/// assert!(placement_exclusions("actor").is_empty());
+/// ```
 pub fn placement_exclusions(doc_type: &str) -> Vec<String> {
     if doc_type == "token" {
         vec![
@@ -244,6 +366,16 @@ pub fn placement_exclusions(doc_type: &str) -> Vec<String> {
 /// Whether `path` is inside the placement exclusion set (equal or a
 /// descendant). The same rule as the client's `isPlacementExcluded`, which
 /// `syncState` reads (see `placement_exclusions`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::bands::{is_placement_excluded, placement_exclusions};
+///
+/// let exclusions = placement_exclusions("token");
+/// assert!(is_placement_excluded("/engine/x", &exclusions));
+/// assert!(!is_placement_excluded("/system/hp", &exclusions));
+/// ```
 pub fn is_placement_excluded(path: &str, exclusions: &[String]) -> bool {
     exclusions
         .iter()
@@ -369,6 +501,35 @@ pub(crate) fn bands_merge_base(d: &Document) -> MergeBase {
 /// view, and egress cuts the stored base by the policy this snapshot records
 /// (`permission`'s `own_overrides`), so the two reductions must not diverge
 /// or the sync badge sticks.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope};
+/// use shadowcat::merge::bands::snapshot_base;
+/// use uuid::Uuid;
+///
+/// let doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id: Uuid::new_v4() },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: Some("Dragon".to_string()),
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: Default::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({ "hp": 10 }),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let base = snapshot_base(&doc);
+/// assert_eq!(base.name.as_deref(), Some("Dragon"));
+/// assert_eq!(base.system["hp"], 10);
+/// ```
 pub fn snapshot_base(doc: &Document) -> MergeBase {
     bands_merge_base(doc)
 }
@@ -390,6 +551,34 @@ pub fn snapshot_base(doc: &Document) -> MergeBase {
 /// branch calls this BEFORE validation, so the derived value is what
 /// `validate_engine_tree` shape-checks and normalizes and what gets stored,
 /// broadcast and logged.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, OwnerStanding, Scope, Source};
+/// use shadowcat::merge::bands::derive_create_base;
+/// use uuid::Uuid;
+///
+/// let mut instance = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id: Uuid::new_v4() },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: Some("Dragon Copy".to_string()),
+///     source: Some(Source { id: Uuid::new_v4(), pack: None, version: 1 }),
+///     base: None,
+///     owner: None,
+///     permissions: Default::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({ "hp": 10 }),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// derive_create_base(&mut instance, None, OwnerStanding::Stranger);
+/// assert!(instance.base.is_some()); // a stamped instance always gets a snapshot
+/// ```
 pub fn derive_create_base(
     doc: &mut Document,
     template: Option<&Document>,
@@ -429,6 +618,43 @@ fn clear_base_tree(doc: &mut Document) {
 /// origins (an embedded child never carries one; see `derive_create_base`).
 /// Server merge emission satisfies this by construction: `restamp_subtree`
 /// and the merge's own carry-over never put a `base` on a merged child.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope};
+/// use shadowcat::merge::bands::embedded_carries_base;
+/// use uuid::Uuid;
+///
+/// fn doc() -> Document {
+///     Document {
+///         id: Uuid::new_v4(),
+///         scope: Scope::World { world_id: Uuid::new_v4() },
+///         doc_type: "actor".into(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: Default::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system: serde_json::json!({}),
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let parent = doc();
+/// assert!(!embedded_carries_base(&parent));
+///
+/// let mut with_child = doc();
+/// let mut child = doc();
+/// child.base = Some(serde_json::json!({}));
+/// with_child.embedded.insert("item".to_string(), vec![child]);
+/// assert!(embedded_carries_base(&with_child));
+/// ```
 pub fn embedded_carries_base(doc: &Document) -> bool {
     doc.embedded
         .values()

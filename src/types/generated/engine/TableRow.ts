@@ -4,6 +4,16 @@ import type { TableEntry } from "./TableEntry";
 
 /**
  * One row of a table.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::table::TableRow;
+ *
+ * let row = TableRow { weight: 3, range: None, label: "Treasure".into(), results: vec![] };
+ * assert_eq!(row.weight, 3);
+ * assert!(row.results.is_empty()); // a "nothing happens" row is legal
+ * ```
  */
 export type TableRow = { 
 /**

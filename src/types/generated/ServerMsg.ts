@@ -18,6 +18,16 @@ import type { WsErrorCode } from "./WsErrorCode";
 
 /**
  * Server -> client frames.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::ServerMsg;
+ *
+ * // Internally tagged on `type`, matching the TS client's discriminated union.
+ * let json = serde_json::to_value(ServerMsg::Ping).unwrap();
+ * assert_eq!(json, serde_json::json!({ "type": "ping" }));
+ * ```
  */
 export type ServerMsg = { "type": "welcome", 
 /**

@@ -6,6 +6,21 @@ import type { WallElevation } from "./WallElevation";
  * A wall's segment + sight/light/movement-blocking flags. Absent/false
  * flags exclude the wall from that gate, matching how each gate
  * (`move_exec`/`pathfinding`/`lighting`) already reads these fields.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{Seg, WallEngine};
+ *
+ * let wall = WallEngine {
+ *     seg: Seg { x1: 0.0, y1: 0.0, x2: 10.0, y2: 0.0 },
+ *     blocks_sight: Some(true),
+ *     blocks_light: Some(true),
+ *     blocks_move: Some(true),
+ *     elevation: None,
+ * };
+ * assert_eq!(wall.blocks_move, Some(true));
+ * ```
  */
 export type WallEngine = { 
 /**

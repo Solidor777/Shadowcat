@@ -18,6 +18,21 @@ use crate::http::AppState;
 /// than the folder it's installed under; callers must key enabled-set
 /// membership on this `id` field, never `manifest.id`, or toggle state and
 /// save requests silently diverge from the server's authoritative key space.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::module_routes::InstalledModuleInfo;
+///
+/// let info = InstalledModuleInfo {
+///     id: "dnd5e".into(),
+///     manifest: serde_json::json!({ "id": "dnd5e", "version": "1.0.0" }),
+///     entry_url: "/modules/dnd5e/index.js".into(),
+/// };
+/// let value = serde_json::to_value(&info).unwrap();
+/// assert_eq!(value["id"], "dnd5e");
+/// assert_eq!(value["entry_url"], "/modules/dnd5e/index.js");
+/// ```
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct InstalledModuleInfo {
@@ -44,6 +59,37 @@ impl From<&crate::modules::InstalledModule> for InstalledModuleInfo {
 /// (a client needs this to resolve entry URLs for its world's enabled set).
 /// Freshly re-scanned per request, with no cache — a manual filesystem install is visible
 /// without a restart, at the cost of a directory walk per call.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::module_routes::list_installed_modules;
+/// use shadowcat::http::AppState;
+///
+/// // No modules directory exists here, so the scan reports nothing installed.
+/// # let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// # let state = AppState {
+/// #     repo,
+/// #     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+/// #     setup_token: None,
+/// #     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+/// #     ws: shadowcat::ws::WsState::new(),
+/// #     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+/// #     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+/// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+/// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+/// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// # };
+/// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
+/// let modules = list_installed_modules(user, State(state)).await;
+/// assert!(modules.0.is_empty());
+/// # }
+/// ```
 pub async fn list_installed_modules(
     _user: AuthUser,
     State(state): State<AppState>,
@@ -91,6 +137,43 @@ fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bo
 /// and `canonicalize` returns the on-disk casing regardless, so containment
 /// still holds — only content-addressing BY case would be affected, which
 /// this handler never does.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::module_routes::serve_module_file;
+/// use shadowcat::http::AppState;
+///
+/// # let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// # let state = AppState {
+/// #     repo,
+/// #     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+/// #     setup_token: None,
+/// #     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+/// #     ws: shadowcat::ws::WsState::new(),
+/// #     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+/// #     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+/// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+/// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+/// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// # };
+/// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
+/// let result = serve_module_file(
+///     user,
+///     State(state),
+///     Path(("dnd5e".to_string(), "index.js".to_string())),
+/// )
+/// .await;
+/// // No module is installed under a fresh `Config::default()`, so the
+/// // uniform "no distinguishing traversal from absence" 404 applies.
+/// assert!(matches!(result, Err(shadowcat::http::error::AppError::NotFound)));
+/// # }
+/// ```
 pub async fn serve_module_file(
     _user: AuthUser,
     State(state): State<AppState>,
@@ -144,6 +227,39 @@ const MAX_ENABLED_MODULES: usize = 256;
 
 /// A world's enabled installed-module ids. Any member (needed at join to load
 /// the enabled set) — mirrors `list_members`'s any-member-may-read stance.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::module_routes::get_world_enabled_modules;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let ids = get_world_enabled_modules(user, State(state), Path(world.id)).await.unwrap();
+/// assert!(ids.0.is_empty());
+/// # }
+/// ```
 pub async fn get_world_enabled_modules(
     user: AuthUser,
     State(state): State<AppState>,
@@ -161,6 +277,47 @@ pub async fn get_world_enabled_modules(
 /// `engines.shadowcat` range is satisfied by the running server version —
 /// enabling a version-incompatible or unknown module is rejected outright,
 /// atomically (never partially applied).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::module_routes::set_world_enabled_modules;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let result = set_world_enabled_modules(
+///     user,
+///     State(state),
+///     Path(world.id),
+///     Json(vec!["dnd5e".to_string()]),
+/// )
+/// .await;
+/// // No module is installed on this scan, so an unknown id is rejected.
+/// assert!(result.is_err());
+/// # }
+/// ```
 pub async fn set_world_enabled_modules(
     user: AuthUser,
     State(state): State<AppState>,

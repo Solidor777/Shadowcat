@@ -4,6 +4,16 @@ import type { Formula } from "./Formula";
 /**
  * Amounts a tracked resource recovers at each clock boundary; each defaults
  * to `0`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{Formula, Recovery};
+ *
+ * let recovery = Recovery::default();
+ * assert_eq!(recovery.turn_start, Formula::Number(0.0));
+ * assert_eq!(recovery.round_end, Formula::Number(0.0));
+ * ```
  */
 export type Recovery = { 
 /**

@@ -4,6 +4,20 @@ import type { FactionStance } from "./FactionStance";
 /**
  * A faction's display + stance (mirrors the client's `Faction`). `color`
  * is "#rrggbb" (the token border color).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{Faction, FactionStance};
+ *
+ * let faction = Faction {
+ *     name: "Thieves' Guild".into(),
+ *     color: "#3fb950".into(),
+ *     stance: FactionStance::Neutral,
+ *     movement: vec![],
+ * };
+ * assert_eq!(faction.stance, FactionStance::Neutral);
+ * ```
  */
 export type Faction = { 
 /**

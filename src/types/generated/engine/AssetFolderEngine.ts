@@ -6,6 +6,16 @@
  * it via `assets.folder_id`. Only ordering lives in the engine band.
  * INVARIANT (enforced at the persistence chokepoint, not here): `parent_id`
  * names another `asset_folder` in the same world and never forms a cycle.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::asset_folder::AssetFolderEngine;
+ *
+ * let root_children = AssetFolderEngine { sort: 0 };
+ * let second_child = AssetFolderEngine { sort: 1 };
+ * assert!(root_children.sort < second_child.sort);
+ * ```
  */
 export type AssetFolderEngine = { 
 /**

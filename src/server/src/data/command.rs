@@ -24,6 +24,22 @@ use crate::data::DataError;
 /// cannot distinguish "was absent" from "was explicitly null", so a set-creating-a-
 /// key is not re-derived as a removal. `invert` has no live caller (undo/redo is
 /// not wired), so this asymmetry is inert today.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use shadowcat::data::command::FieldChange;
+///
+/// let change = FieldChange {
+///     path: "/system/hp".into(),
+///     old: json!(10),
+///     new: json!(7),
+///     remove: false,
+/// };
+/// assert_eq!(change.path, "/system/hp");
+/// assert!(!change.remove);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct FieldChange {
@@ -61,6 +77,21 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// A single operation within a command.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::Operation;
+///
+/// let op = Operation::Move {
+///     doc_id: uuid::Uuid::nil(),
+///     parent_id: None,
+///     old_parent_id: Some(uuid::Uuid::nil()),
+/// };
+/// let Operation::Move { parent_id, old_parent_id, .. } = op else { unreachable!() };
+/// assert_eq!(parent_id, None);
+/// assert_eq!(old_parent_id, Some(uuid::Uuid::nil()));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -101,6 +132,21 @@ pub enum Operation {
 }
 
 /// A command awaiting a sequence number (constructed by callers).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::UnsequencedCommand;
+///
+/// let cmd = UnsequencedCommand {
+///     world_id: uuid::Uuid::nil(),
+///     author: uuid::Uuid::nil(),
+///     ts: 1_700_000_000_000,
+///     ops: vec![],
+/// };
+/// assert_eq!(cmd.ts, 1_700_000_000_000);
+/// assert!(cmd.ops.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnsequencedCommand {
     /// World the command applies to.
@@ -114,6 +160,21 @@ pub struct UnsequencedCommand {
 }
 
 /// A command that has been assigned a per-world sequence number.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::Command;
+///
+/// let cmd = Command {
+///     seq: 42,
+///     world_id: uuid::Uuid::nil(),
+///     author: uuid::Uuid::nil(),
+///     ts: 0,
+///     ops: vec![],
+/// };
+/// assert_eq!(cmd.seq, 42); // the client's replay watermark
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct Command {
@@ -272,6 +333,16 @@ impl Command {
 /// capability gates (the handler already derived authorization against the
 /// actual computed Update) and is the ONLY origin permitted to write the
 /// server-owned `/base` field.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::WriteOrigin;
+///
+/// let origin = WriteOrigin::CombatTransition;
+/// assert!(origin.is_server_authored());
+/// assert!(!WriteOrigin::Client.is_server_authored());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteOrigin {
     /// Any wire-derived write (WS intent or HTTP).

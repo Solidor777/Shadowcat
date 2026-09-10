@@ -2,5 +2,14 @@
 
 /**
  * Who may end the current turn.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::TurnControl;
+ *
+ * assert_eq!(TurnControl::default(), TurnControl::OwnerMayEnd);
+ * assert_ne!(TurnControl::OwnerMayEnd, TurnControl::GmOnly);
+ * ```
  */
 export type TurnControl = "owner_may_end" | "gm_only";

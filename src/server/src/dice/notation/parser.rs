@@ -66,6 +66,21 @@ struct P {
 /// ')'` (see `fn_call`). `ctx` supplies the ambient mode/
 /// direction the notation string itself does not encode; an explicit `cs`/`cf`
 /// forces `SuccessCount` regardless of `ctx.mode`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::spec::{Expr, Mode};
+///
+/// let spec = parse("4d6kh3", ParseContext::default()).unwrap();
+/// let Expr::Dice(group) = &spec.expr else { unreachable!() };
+/// assert_eq!(group.count, 4);
+/// assert!(matches!(spec.mode, Mode::Total(_)));
+///
+/// // A malformed expression is rejected with a player-presentable message.
+/// assert!(parse("2d", ParseContext::default()).is_err());
+/// ```
 pub fn parse(input: &str, ctx: ParseContext) -> Result<RollSpec, ParseError> {
     let toks = lex(input)?;
     if toks.is_empty() {

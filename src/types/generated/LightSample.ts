@@ -17,6 +17,26 @@ import type { FalloffCurve } from "./engine/FalloffCurve";
  * Within an admitted timeline the polygons are NOT clipped to the recipient's line of sight —
  * the client intersects them with its own fog, and the glow geometry outside it is the
  * accepted disclosure bounded by the emission's own reach.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::FalloffCurve;
+ * use shadowcat::ws::protocol::LightSample;
+ *
+ * let sample = LightSample {
+ *     t_ms: 0.0,
+ *     pos: [1.0, 1.0],
+ *     bright: 5.0,
+ *     dim: 10.0,
+ *     intensity: 1.0,
+ *     falloff: FalloffCurve::Linear,
+ *     color: 0xffcc00,
+ *     polygons: vec![],
+ * };
+ * let json = serde_json::to_value(&sample).unwrap();
+ * assert_eq!(json["dim"], 10.0);
+ * ```
  */
 export type LightSample = { 
 /**

@@ -3,6 +3,43 @@
 Living record of issues surfaced during review/audit. NOT a to-do list — entries
 are observations awaiting triage, not committed work.
 
+- Title: Rust doc examples now appear in the generated TypeScript bindings. Summary: ts-rs copies
+  a type's whole `///` block into `src/types/generated/*.ts`, so the `# Examples` sections the
+  server crate now carries on every ts-rs-exported struct and enum (171 generated files, ~2,000
+  comment lines) render inside the TS type docs, `use shadowcat::…` and `assert_eq!` included.
+  Nothing compiles or lints them there (the TS example checker and the comment gates skip
+  `generated`), and the bindings must follow the source, so they were regenerated and committed.
+  For a TypeScript reader of `/api/ts/` a Rust example on a wire type is noise at best. ts-rs has
+  no attribute that trims part of a doc comment; a post-export strip would have to live inside
+  the export path the `git diff --exit-code src/types/generated` check runs immediately after.
+  Status: Needs Review (accept as-is, or decide where a doc-trimming step would sit).
+
+- Title: the comment-reference gate reads a doc example's Rust code as prose. Summary: a doctest
+  in `chat::TableDrawSegment`'s doc comment carried the struct-literal field `spec: None`, which
+  `check-comment-refs.mjs`'s "unnamed spec reference" pattern matched; the campaign implementer
+  cleared it by respelling the literal as field-init shorthand (`spec,`). The code was never a
+  reference to anything outside the tree, so no rule intent was crossed, but the fix dodged the
+  detector rather than teaching it: fenced code inside a `///` block is code, and only its own
+  `//` comment lines are prose. With ~790 doctests now in the crate, the same false positive recurs
+  the next time a field named `spec` (or a marker-shaped token) appears in an example. Status:
+  Needs Review (owner's call whether `subjectGroups` should treat a doc-comment fence body as
+  code, scanning only its comment lines).
+
+- Title: two public items have no observable behaviour to exemplify. Summary: `ws::room::RingBuffer`
+  and `RingBuffer::new` are `pub`, but every method that does anything (`push`, `range_from`) is
+  `pub(crate)` and the buffer's contents have no public accessor, so their required doc examples
+  construct the value and can assert nothing; the reviewer confirmed no route through `Room`'s
+  public surface observes the ring. The examples say so in a comment rather than asserting a
+  tautology. Status: Needs Review (either the type's visibility is wider than its use, or a
+  construction-only example is the accepted shape for such items).
+
+- Title: the Rust doc-example gate adds a measurable cost to `cargo test --all`. Summary: the
+  server crate went from 94 to ~790 doctests. Each is a separate rustc invocation; the full
+  doctest pass measured 390s at 8 test threads on the development machine (94 took 44s), and
+  runs on all three CI matrix legs. Edition 2024's merged doctests would collapse most of that,
+  but the crate is edition 2021. Status: Needs Review (one measurement; watch the `rust` job's
+  duration on the first CI runs before deciding anything).
+
 - Title: whole-record embedded pre-image still key-count-conflicts under load. Summary: the OCC
   pre-image comparison now re-reads an ENGINE-band pre-image through the ingress normalizer, so a
   client pre-image that omits keys the store holds as explicit nulls no longer conflicts.

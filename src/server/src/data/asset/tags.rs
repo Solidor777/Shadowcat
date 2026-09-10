@@ -27,6 +27,15 @@ pub const MAX_TAGS: usize = 64;
 /// import alike): trimmed, non-empty, at most `MAX_TAG_CHARS` each and
 /// `MAX_TAGS` total; duplicates collapse, order kept. `Err` names the
 /// violation.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::tags::normalize_tags;
+///
+/// let tags = normalize_tags(vec![" Hero ".into(), "Hero".into()]).unwrap();
+/// assert_eq!(tags, vec!["Hero".to_string()], "duplicates collapse after trimming");
+/// ```
 pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
     if tags.len() > MAX_TAGS {
         return Err(format!("at most {MAX_TAGS} tags"));
@@ -48,6 +57,22 @@ pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
 }
 
 /// Everything `derive` reads.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::tags::{derive, DeriveInput};
+/// use shadowcat::data::asset::{AssetMeta, Provenance};
+///
+/// let input = DeriveInput {
+///     content_type: "image/png",
+///     meta: &AssetMeta::unprocessed("image/png", 10),
+///     folder_names: &[],
+///     provenance: Provenance::Uploaded,
+/// };
+/// let tags = derive(input);
+/// assert!(tags.contains(&"image".to_string()));
+/// ```
 pub struct DeriveInput<'a> {
     /// The served canonical's MIME type (`Asset.content_type`).
     pub content_type: &'a str,
@@ -60,6 +85,16 @@ pub struct DeriveInput<'a> {
 }
 
 /// The `Provenance` a stored derived-tag set encodes.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::tags::provenance_of;
+/// use shadowcat::data::asset::Provenance;
+///
+/// let provenance = provenance_of(&["link-preview".to_string()]);
+/// assert_eq!(provenance, Provenance::LinkPreview);
+/// ```
 pub fn provenance_of(derived: &[String]) -> Provenance {
     if derived.iter().any(|t| t == LINK_PREVIEW_TAG) {
         Provenance::LinkPreview
@@ -74,6 +109,25 @@ pub fn provenance_of(derived: &[String]) -> Provenance {
 /// kind (`image` + the subtype, or `other`), `animated` (+ `gif-animated`),
 /// `square`, `large`, `transparent`, every folder name verbatim, and the
 /// provenance tag.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::tags::{derive, DeriveInput};
+/// use shadowcat::data::asset::{AssetMeta, Provenance};
+///
+/// let mut meta = AssetMeta::unprocessed("image/png", 10);
+/// meta.width = Some(64);
+/// meta.height = Some(64);
+/// let tags = derive(DeriveInput {
+///     content_type: "image/png",
+///     meta: &meta,
+///     folder_names: &["Maps".into()],
+///     provenance: Provenance::Uploaded,
+/// });
+/// assert!(tags.contains(&"square".to_string()));
+/// assert!(tags.contains(&"Maps".to_string()));
+/// ```
 pub fn derive(input: DeriveInput<'_>) -> Vec<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     let (kind, subtype) = match input.content_type.split_once('/') {

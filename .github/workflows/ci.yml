@@ -58,13 +58,7 @@ jobs:
       - name: Release build
         run: cargo build --release
       - name: Binary size budget
-        shell: bash
-        run: |
-          bin="target/release/shadowcat${{ runner.os == 'Windows' && '.exe' || '' }}"
-          size=$(wc -c < "$bin")
-          echo "release binary size: ${size} bytes"
-          # 60 MiB guardrail; tighten as the binary's real baseline settles.
-          test "${size}" -lt 62914560
+        run: pnpm lint:binary-size
       # Assemble the icon-carrying distributable. Windows is excluded: the icon
       # is embedded in the .exe at build time (build.rs). macOS -> .app (.icns);
       # Linux -> staging tree with a .desktop entry + hicolor PNG.
@@ -204,18 +198,22 @@ jobs:
         run: pnpm lint:inline-tests
       - name: No i18n keys as accessible text
         run: pnpm lint:aria-labels
+      - name: Gate manifest matches CI
+        run: pnpm lint:gate-manifest
+      - name: No personal data in tracked agent settings
+        run: pnpm lint:settings-privacy
       - name: Doc examples typecheck (TS)
         run: pnpm docs:check-examples
       - name: Doc coverage (Rust)
         run: cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items
       # rustdoc's missing_doc_code_examples lint is nightly-only, so this step needs the nightly
-      # toolchain. It denies rather than warns: the lint being nightly-gated bears on which
-      # toolchain runs it, not on whether a missing example is acceptable.
+      # toolchain. The script sets RUSTDOCFLAGS itself (scripts/cargo-doc-strict.mjs, examples
+      # mode), so this step and a local `pnpm docs:check-rust-examples` run one invocation: an
+      # `env:` block on a run: step is environment the local gate tier never applies, and the
+      # gate manifest refuses to tier such a step commit/push.
       - uses: dtolnay/rust-toolchain@nightly
       - name: Doc examples present (Rust)
-        env:
-          RUSTDOCFLAGS: "-D rustdoc::missing_doc_code_examples"
-        run: cargo +nightly doc --manifest-path src/server/Cargo.toml --document-private-items --no-deps --target-dir target/nightly-doc
+        run: pnpm docs:check-rust-examples
       - name: Upload docs site
         uses: actions/upload-artifact@v4
         with:

@@ -2,5 +2,13 @@
 
 /**
  * World-default dice aggregation mode (`DiceSettingsEngine.mode`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::DiceModeSetting;
+ *
+ * assert_eq!(DiceModeSetting::default(), DiceModeSetting::Total);
+ * ```
  */
 export type DiceModeSetting = "total" | "success_count";

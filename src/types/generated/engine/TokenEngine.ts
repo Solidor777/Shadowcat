@@ -6,6 +6,26 @@ import type { TokenVisual } from "./TokenVisual";
  * A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
  * is the token CENTER. `visual` is set only on raw (actorless) tokens —
  * actor-backed tokens resolve their visual via the linked/embedded actor.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::TokenEngine;
+ *
+ * let token = TokenEngine {
+ *     x: 0.0,
+ *     y: 0.0,
+ *     w: 50.0,
+ *     h: 50.0,
+ *     rotation: 0.0,
+ *     visual: None,
+ *     actor_id: None,
+ *     overrides: None,
+ *     face: None,
+ *     elevation: None,
+ * };
+ * assert_eq!(token.w, 50.0);
+ * ```
  */
 export type TokenEngine = { 
 /**

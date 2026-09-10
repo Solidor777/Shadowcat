@@ -2,5 +2,14 @@
 
 /**
  * The kind of asset mutation an `AssetChanged` frame reports.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::AssetOp;
+ *
+ * let json = serde_json::to_value(AssetOp::Replaced).unwrap();
+ * assert_eq!(json, serde_json::json!("replaced"));
+ * ```
  */
 export type AssetOp = "created" | "replaced" | "moved" | "deleted";

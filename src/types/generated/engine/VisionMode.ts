@@ -7,6 +7,23 @@ import type { Perception } from "./Perception";
  * with this mode can see into (inert for creature senses — creature
  * perception never reads the illumination field). `defaultRange`: effective
  * sight distance in grid cells (0 = unlimited).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::{Perception, VisionMode};
+ *
+ * let mode = VisionMode {
+ *     id: "normal".to_string(),
+ *     name: "Normal".to_string(),
+ *     illumination_floor: "dim".to_string(),
+ *     default_range: 0.0,
+ *     perceives: Perception::Terrain,
+ *     requires_los: true,
+ *     render_hint: None,
+ * };
+ * assert_eq!(mode.perceives, Perception::Terrain);
+ * ```
  */
 export type VisionMode = { 
 /**

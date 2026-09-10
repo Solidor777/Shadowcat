@@ -3,6 +3,15 @@
 /**
  * Distance-per-cell scale for a scene grid. `unit` is a display label
  * (e.g. "ft", "m").
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::GridDistance;
+ *
+ * let distance = GridDistance { per_cell: 5.0, unit: "ft".to_string() };
+ * assert_eq!(distance.per_cell, 5.0);
+ * ```
  */
 export type GridDistance = { 
 /**

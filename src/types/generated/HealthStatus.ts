@@ -4,6 +4,17 @@
  * Server health snapshot shared with the client via the ts-rs type pipeline.
  * INVARIANT: the generated `HealthStatus` TS mirror must be regenerated whenever
  * this struct changes (CI enforces sync).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::health::HealthStatus;
+ *
+ * let h = HealthStatus { status: "ok".to_string(), db_connected: false };
+ * let json = serde_json::to_string(&h).unwrap();
+ * let round_tripped: HealthStatus = serde_json::from_str(&json).unwrap();
+ * assert_eq!(round_tripped, h);
+ * ```
  */
 export type HealthStatus = { 
 /**

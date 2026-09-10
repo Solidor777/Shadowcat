@@ -3,6 +3,20 @@ import type { FootprintExtent } from "./FootprintExtent";
 
 /**
  * One token's resolved drawn extent.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::scene::footprint::{FootprintExtent, TokenFootprint};
+ *
+ * let refused = TokenFootprint { token: uuid::Uuid::nil(), extent: None };
+ * let sized = TokenFootprint {
+ *     token: uuid::Uuid::nil(),
+ *     extent: Some(FootprintExtent { w: 1.0, h: 1.0 }),
+ * };
+ * assert!(refused.extent.is_none());
+ * assert!(sized.extent.is_some());
+ * ```
  */
 export type TokenFootprint = { 
 /**

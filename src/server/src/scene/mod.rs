@@ -44,6 +44,16 @@ use crate::scene::lighting::Band;
 /// Resolved per-scene lighting mode. The client's wire twin is generated from
 /// `eng::LightMode`, the identically-named wire enum this module imports under the `eng`
 /// alias and keeps distinct from this resolved representation.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::LightMode;
+///
+/// let mode = LightMode::GlobalIllumination;
+/// assert_eq!(mode, LightMode::GlobalIllumination);
+/// assert_ne!(mode, LightMode::EnvironmentLight);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LightMode {
     /// Every LOS cell is fully bright; per-light raycasts are skipped
@@ -58,6 +68,15 @@ pub enum LightMode {
 /// Selects the VISION-MASK arm of the gate only (`move_exec::execute_move`'s
 /// `check_mask`); the wall and region gates apply to every non-GM move
 /// regardless of mode.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::MovementRestriction;
+///
+/// let r = MovementRestriction::Visible;
+/// assert_ne!(r, MovementRestriction::Unrestricted);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementRestriction {
     /// Move cells must be currently visible to the mover's owner.
@@ -72,6 +91,15 @@ pub enum MovementRestriction {
 /// Per-scene movement/pathfinding engine choice. The client's wire twin is generated
 /// from `eng::MovementModel`. `GridStepped` = the existing grid A* router; `Continuous` = the
 /// polyanya navmesh router.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::MovementModel;
+///
+/// let model = MovementModel::GridStepped;
+/// assert_ne!(model, MovementModel::Continuous);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MovementModel {
     /// Grid A* router (`pathfinding::find`).
@@ -85,6 +113,15 @@ pub enum MovementModel {
 /// fog is indexed in, and which cached masks a change to it must invalidate. Anything other than
 /// the hex spelling resolves to `Square` — the hardened default an absent or malformed scene
 /// document falls back to.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::GridKind;
+///
+/// let kind = GridKind::Square;
+/// assert_ne!(kind, GridKind::Hex);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GridKind {
     /// Axis-aligned square cells.
@@ -114,6 +151,28 @@ pub const DEFAULT_SCENE_BOUNDS_UNITS: (f64, f64) = (100.0, 100.0);
 /// world-scoped, not per-scene, so they are resolved separately by
 /// `SceneEcs::resolved_diagonal_rule`/`SceneEcs::resolved_animation_speed` rather than carried
 /// as fields here).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::{GridKind, LightMode, MovementModel, MovementRestriction, ResolvedScene};
+///
+/// let scene = ResolvedScene {
+///     los_restriction: true,
+///     fog: true,
+///     observer_vision: false,
+///     lighting_enabled: false,
+///     light_mode: LightMode::GlobalIllumination,
+///     env_color: 0,
+///     env_intensity: 0.0,
+///     movement_restriction: MovementRestriction::Visible,
+///     movement_model: MovementModel::GridStepped,
+///     partial_cell_leniency: false,
+///     bounds: (100.0, 100.0),
+///     grid_kind: GridKind::Square,
+/// };
+/// assert!(scene.fog);
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedScene {
     /// Walls with `blocksSight` restrict line of sight (LOS raycasting on).
@@ -168,6 +227,22 @@ impl ResolvedScene {
 /// `perceives`/`requires_los` carry the sense descriptor through: a `Creatures` mode
 /// contributes nothing to the illumination-floor mask and instead feeds
 /// `SceneEcs::player_perceived_tokens`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::scene::Perception;
+/// use shadowcat::scene::VisionMode;
+///
+/// let darkvision = VisionMode {
+///     illumination_floor: "dark".into(),
+///     default_range: 12.0,
+///     render_hint: Some("desaturate".into()),
+///     perceives: Perception::Terrain,
+///     requires_los: true,
+/// };
+/// assert_eq!(darkvision.illumination_floor, "dark");
+/// ```
 #[derive(Clone, Debug)]
 pub struct VisionMode {
     /// Minimum illumination band name the mode can see under.
@@ -277,12 +352,68 @@ fn conv_diagonal_rule(v: eng::DiagonalRule) -> pathfinding::DiagonalRule {
 }
 
 /// A hydrated scene-entity document, one per hecs entity.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::scene::SceneEntity;
+///
+/// let doc = Document {
+///     id: uuid::Uuid::new_v4(),
+///     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+///     doc_type: "scene".into(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let entity = SceneEntity { doc };
+/// assert_eq!(entity.doc.doc_type, "scene");
+/// ```
 pub struct SceneEntity {
     /// The authoritative document this entity mirrors (derived, ephemeral).
     pub doc: Document,
 }
 
 /// A document is scene runtime state if it is a scene or a child of one.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::scene::is_scene_entity;
+///
+/// let scene_doc = Document {
+///     id: uuid::Uuid::new_v4(),
+///     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+///     doc_type: "scene".into(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let mut note_doc = scene_doc.clone();
+/// note_doc.doc_type = "note".into();
+/// assert!(is_scene_entity(&scene_doc));
+/// assert!(!is_scene_entity(&note_doc));
+/// ```
 pub fn is_scene_entity(doc: &Document) -> bool {
     doc.doc_type == "scene" || doc.parent_id.is_some()
 }
@@ -291,6 +422,17 @@ pub fn is_scene_entity(doc: &Document) -> bool {
 pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 
 /// One scene's visible cells for a player: `cells` are `(i, j, band_index, tint 0xRRGGBB, render_hint)`.
+///
+/// # Examples
+///
+/// ```
+/// let lit = shadowcat::scene::LitScene {
+///     scene: uuid::Uuid::new_v4(),
+///     cell: 1.0,
+///     cells: vec![(0, 0, 0, 0xffffff, None)],
+/// };
+/// assert_eq!(lit.cells.len(), 1);
+/// ```
 #[derive(Debug)]
 pub struct LitScene {
     /// Scene document id.
@@ -641,6 +783,23 @@ impl InstantSight<'_> {
 /// deliberately not one type: `PathfindRequest` crosses into this layer only after the presence
 /// gate and the named-token ownership check have run, and `RouteMover::footprint_radius` is
 /// REPLACED with the token-derived value on the way through.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+/// use shadowcat::scene::RouteRequester;
+///
+/// let defaults = WorldCapDefaults::default();
+/// let requester = RouteRequester {
+///     user: uuid::Uuid::new_v4(),
+///     is_gm: true,
+///     world_role: WorldRole::Gm,
+///     world_defaults: &defaults,
+///     explored: None,
+/// };
+/// assert!(requester.is_gm);
+/// ```
 pub struct RouteRequester<'a> {
     /// The requesting user. Selects the per-requester wall/region view via
     /// `move_walls(scene, Some(user))` / `region_field(scene, Some(user))`, and the visibility
@@ -671,6 +830,19 @@ pub struct RouteRequester<'a> {
 /// (`ws::conn::handle_pathfind`) and never re-derived inside the router; the executor's twin is
 /// `move_exec::MoveGateInputs`, whose `budget`/`traits` these two fields mirror so preview and
 /// execution are priced from the same resolved values.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::RouteMover;
+///
+/// let mover = RouteMover {
+///     footprint_radius: 0.4,
+///     budget_cells: None,
+///     traits: Default::default(),
+/// };
+/// assert_eq!(mover.footprint_radius, 0.4);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RouteMover {
     /// Mover footprint radius in CELLS — token-derived via `SceneEcs::resolve_token_footprint`
@@ -691,6 +863,13 @@ pub struct RouteMover {
 /// The per-world derived world. Writes are serialized by the caller
 /// (`Room::publish` under `publish_guard`); reads (derived recompute) take a
 /// shared borrow.
+///
+/// # Examples
+///
+/// ```
+/// let ecs = shadowcat::scene::SceneEcs::new();
+/// assert_eq!(ecs.entity_count(), 0);
+/// ```
 pub struct SceneEcs {
     /// The hecs world holding one `SceneEntity` per hydrated scene doc.
     world: hecs::World,
@@ -1078,6 +1257,16 @@ impl SceneEcs {
 
     /// Hydrate from a document set (scene entities only; others are ignored),
     /// reflecting state as of `seq` (the world's current seq at hydration).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::from_documents(Vec::new(), 5);
+    /// assert_eq!(ecs.committed_seq(), 5);
+    /// assert_eq!(ecs.entity_count(), 0);
+    /// ```
     pub fn from_documents(docs: Vec<Document>, seq: i64) -> Self {
         let mut ecs = Self::new();
         ecs.committed_seq = seq;
@@ -1092,17 +1281,40 @@ impl SceneEcs {
     }
 
     /// Record the seq of the command just applied (called under the write lock).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut ecs = shadowcat::scene::SceneEcs::new();
+    /// ecs.set_committed_seq(7);
+    /// assert_eq!(ecs.committed_seq(), 7);
+    /// ```
     pub fn set_committed_seq(&mut self, seq: i64) {
         self.committed_seq = seq;
     }
 
     /// The seq the ECS currently reflects — emitted as `computed_at_seq`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert_eq!(ecs.committed_seq(), 0);
+    /// ```
     pub fn committed_seq(&self) -> i64 {
         self.committed_seq
     }
 
     /// Seed the world config-docs (room-hydration path). Each is the singleton of its doc_type, or
     /// `None` when the world has not authored one (resolvers then fall back to built-in defaults).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut ecs = shadowcat::scene::SceneEcs::new();
+    /// ecs.set_world_config(None, None, None, None, None, None);
+    /// assert!(ecs.world_settings_doc().is_none());
+    /// ```
     pub fn set_world_config(
         &mut self,
         world_settings: Option<Document>,
@@ -1123,6 +1335,14 @@ impl SceneEcs {
     /// Seed the actor table (room-hydration path). Keyed by actor doc id.
     /// Relies on actor docs being world-scoped (parentless), which this method
     /// `debug_assert!`s: a parented actor would also hydrate as a scene entity.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut ecs = shadowcat::scene::SceneEcs::new();
+    /// ecs.set_actors(Vec::new());
+    /// assert!(ecs.actor(&uuid::Uuid::new_v4()).is_none());
+    /// ```
     pub fn set_actors(&mut self, actors: Vec<Document>) {
         debug_assert!(
             actors.iter().all(|d| d.parent_id.is_none()),
@@ -1134,6 +1354,14 @@ impl SceneEcs {
 
     /// Seed the world's `combat` documents (room-hydration path). World-level, not scene
     /// entities (see the `combats` field doc comment). Kept live thereafter by `apply_op`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut ecs = shadowcat::scene::SceneEcs::new();
+    /// ecs.set_combats(Vec::new());
+    /// assert!(ecs.active_combat_for_scene(uuid::Uuid::new_v4()).is_none());
+    /// ```
     pub fn set_combats(&mut self, docs: Vec<Document>) {
         self.combats = docs.into_iter().map(|d| (d.id, d)).collect();
     }
@@ -1142,22 +1370,45 @@ impl SceneEcs {
     ///
     /// # Examples
     ///
-    /// ```text
-    /// let owner = ecs.actor(&actor_id).and_then(|d| d.owner); // in-memory, no pool read
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// // No actor was seeded: the lookup returns None, never panics.
+    /// assert!(ecs.actor(&uuid::Uuid::new_v4()).is_none());
     /// ```
     pub fn actor(&self, id: &Uuid) -> Option<&Document> {
         self.actors.get(id)
     }
     /// The `world-settings` singleton, or `None` (resolvers use defaults).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.world_settings_doc().is_none());
+    /// ```
     pub fn world_settings_doc(&self) -> Option<&Document> {
         self.world_settings.as_ref()
     }
     /// The `system-defaults` singleton, or `None` (resolvers fall through to the engine literal).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.system_defaults_doc().is_none());
+    /// ```
     pub fn system_defaults_doc(&self) -> Option<&Document> {
         self.system_defaults.as_ref()
     }
     /// The `resource-registry` singleton's parsed engine, or `None` (absent,
     /// or a malformed body — fail closed to "no binding" rather than guessing).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.resource_registry_engine().is_none());
+    /// ```
     pub fn resource_registry_engine(&self) -> Option<eng::ResourceRegistryEngine> {
         let doc = self.resource_registry.as_ref()?;
         self.engine_as_cached::<eng::ResourceRegistryEngine>(doc.id, doc)
@@ -1165,15 +1416,36 @@ impl SceneEcs {
     /// The `faction-registry` singleton's parsed engine, or `None` (absent, or a malformed
     /// body — fail closed to "no factions", the same posture `resource_registry_engine`
     /// takes). `movement_tags::SceneEcs::token_movement_tags` is the consumer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.faction_registry_engine().is_none());
+    /// ```
     pub fn faction_registry_engine(&self) -> Option<eng::FactionRegistryEngine> {
         let doc = self.faction_registry.as_ref()?;
         self.engine_as_cached::<eng::FactionRegistryEngine>(doc.id, doc)
     }
     /// The `vision-modes` singleton, or `None` (seed modes apply).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.vision_modes_doc().is_none());
+    /// ```
     pub fn vision_modes_doc(&self) -> Option<&Document> {
         self.vision_modes.as_ref()
     }
     /// The `light-gradation` singleton, or `None` (built-in bands apply).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.gradation_doc().is_none());
+    /// ```
     pub fn gradation_doc(&self) -> Option<&Document> {
         self.gradation.as_ref()
     }
@@ -1194,6 +1466,35 @@ impl SceneEcs {
     }
 
     /// Reflect one already-committed authoritative op into the derived world.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::command::Operation;
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let mut ecs = SceneEcs::new();
+    /// let doc = Document {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+    ///     doc_type: "scene".into(),
+    ///     schema_version: 1,
+    ///     name: None,
+    ///     source: None,
+    ///     base: None,
+    ///     owner: None,
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// ecs.apply_op(&Operation::Create { doc });
+    /// assert_eq!(ecs.entity_count(), 1);
+    /// ```
     pub fn apply_op(&mut self, op: &Operation) {
         // Best-effort `engine_cache` trim (not load-bearing for correctness — see the
         // `engine_cache`/`CachedEngine` doc comments: a cached entry is only ever reused when its
@@ -1384,6 +1685,17 @@ impl SceneEcs {
 
     /// Resolve a scene's effective lighting/vision settings: engine literal < system-defaults <
     /// world < scene. Fail-closed and `null ⇒ inherit` (mirrors `resolveSceneSettings`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::{SceneEcs, DEFAULT_SCENE_BOUNDS_UNITS};
+    ///
+    /// // No scene document hydrated: resolves to the engine-literal defaults.
+    /// let ecs = SceneEcs::new();
+    /// let resolved = ecs.resolve_scene(uuid::Uuid::new_v4());
+    /// assert_eq!(resolved.bounds, DEFAULT_SCENE_BOUNDS_UNITS);
+    /// ```
     pub fn resolve_scene(&self, scene: Uuid) -> ResolvedScene {
         // World and system layers share one overlay shape: each contributes
         // only the leaves it declares.
@@ -1488,6 +1800,16 @@ impl SceneEcs {
     }
 
     /// Resolved gradation bands, brightest-first. Fail-closed to the built-in three-band default.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let bands = ecs.resolved_bands();
+    /// assert_eq!(bands[0].name, "bright");
+    /// ```
     pub fn resolved_bands(&self) -> Vec<Band> {
         let bands = self
             .gradation
@@ -1654,6 +1976,15 @@ impl SceneEcs {
     /// Fail-closed to the engine seed (`eng::VisionModesEngine::seed`) ONLY when no doc/`modes`
     /// is present (mirrors TS `sys?.modes ?? SEED`). A GM-authored modes doc with all-malformed entries is
     /// returned as-is rather than silently re-granting built-in modes the GM may have removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// // No vision-modes doc: falls back to the engine seed (includes "tremorsense").
+    /// let modes = ecs.resolved_vision_modes();
+    /// assert!(modes.contains_key("tremorsense"));
+    /// ```
     pub fn resolved_vision_modes(&self) -> BTreeMap<String, VisionMode> {
         let mut out = BTreeMap::new();
         // Seed only on the None (absent/malformed) branch — a present doc's modes being all
@@ -1681,6 +2012,13 @@ impl SceneEcs {
     }
 
     /// Count of hydrated scene entities. Feeds the debug-only `"identity"` channel's payload.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert_eq!(ecs.entity_count(), 0);
+    /// ```
     pub fn entity_count(&self) -> usize {
         self.index.len()
     }
@@ -1714,6 +2052,14 @@ impl SceneEcs {
     /// (game-system data) never reaches this gate — position lives exclusively in `/engine`.
     /// `None` if `token_id` is not a token with `(x,y)`. Reads the authoritative ECS state,
     /// never the client's `old`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// // No token hydrated under this id: nothing to resolve a move from.
+    /// assert!(ecs.token_move(uuid::Uuid::new_v4(), &[]).is_none());
+    /// ```
     pub fn token_move(
         &self,
         token_id: Uuid,
@@ -1762,6 +2108,19 @@ impl SceneEcs {
     /// their own polygons. The scene tag lets the client cut fog holes only for the scene it is
     /// rendering — a token in scene B must not punch a hole into scene A's fog (scene
     /// coordinates are scene-local). Empty when the player holds no source anywhere.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let defaults = WorldCapDefaults::default();
+    /// // No tokens hydrated: the player holds no vision source anywhere.
+    /// let polys = ecs.player_vision_polygons(uuid::Uuid::new_v4(), WorldRole::Player, &defaults);
+    /// assert!(polys.is_empty());
+    /// ```
     pub fn player_vision_polygons(
         &self,
         user_id: Uuid,
@@ -1913,6 +2272,13 @@ impl SceneEcs {
 
     /// Each scene's grid cell size (`engine.grid.size`), defaulting to 100 — the unit the
     /// explored-fog accumulation quantizes vision into. Read once per dispatch (cheap doc scan).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// assert!(ecs.scene_grid_sizes().is_empty());
+    /// ```
     pub fn scene_grid_sizes(&self) -> std::collections::HashMap<Uuid, f64> {
         let mut out = std::collections::HashMap::new();
         for e in self.world.query::<&SceneEntity>().iter() {
@@ -2043,6 +2409,27 @@ impl SceneEcs {
     /// method, the movement gate (`move_exec::execute_move`, reached via
     /// `Room::execute_move`), and `Room::publish`'s token-placement gate. Do NOT fork the
     /// per-cell decision here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+    /// use shadowcat::scene::{RouteMover, RouteRequester, SceneEcs};
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let defaults = WorldCapDefaults::default();
+    /// let requester = RouteRequester {
+    ///     user: uuid::Uuid::new_v4(),
+    ///     is_gm: false,
+    ///     world_role: WorldRole::Player,
+    ///     world_defaults: &defaults,
+    ///     explored: None,
+    /// };
+    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default() };
+    /// // No scene document exists: the route is refused, not routed against a synthesized grid.
+    /// let result = ecs.pathfind(requester, uuid::Uuid::new_v4(), (0.0, 0.0), &[], mover);
+    /// assert!(result.is_err());
+    /// ```
     pub fn pathfind(
         &self,
         requester: RouteRequester<'_>,
@@ -2383,6 +2770,34 @@ impl SceneEcs {
     /// lit-mask family calls this. Reading `doc.owner` directly at any of those
     /// sites forks ownership — a player could then move a token that contributes
     /// no vision, or see through one they cannot move.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let owner = uuid::Uuid::new_v4();
+    /// let token = Document {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+    ///     doc_type: "token".into(),
+    ///     schema_version: 1,
+    ///     name: None,
+    ///     source: None,
+    ///     base: None,
+    ///     owner: Some(owner),
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let ecs = SceneEcs::new();
+    /// assert_eq!(ecs.token_effective_owner(&token), Some(owner));
+    /// ```
     pub fn token_effective_owner(&self, token: &Document) -> Option<Uuid> {
         crate::data::permission::effective_owner_via(token, &|id| self.actors.get(id))
     }
@@ -2485,6 +2900,35 @@ impl SceneEcs {
     /// (`SceneEcs::player_perceived_tokens` is their consumer), so they must not widen the
     /// illumination-floor mask. Always returns ≥1 triple (normal fallback
     /// with `render_hint: None`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let token = Document {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: uuid::Uuid::new_v4() },
+    ///     doc_type: "token".into(),
+    ///     schema_version: 1,
+    ///     name: None,
+    ///     source: None,
+    ///     base: None,
+    ///     owner: None,
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let ecs = SceneEcs::new();
+    /// // No actor link and no embedded actor: falls back to the "normal" mode.
+    /// let floors = ecs.token_vision_floors(&token);
+    /// assert_eq!(floors.len(), 1);
+    /// ```
     pub fn token_vision_floors(&self, token: &Document) -> Vec<(f64, f64, Option<String>)> {
         let modes = self.resolved_vision_modes();
         let bands = self.resolved_bands();
@@ -2613,6 +3057,14 @@ impl SceneEcs {
     /// comment for why "first" is well-defined) whose decoded `CombatEngine` is `active` and
     /// bound to `scene`. `None` means no gate applies at all — the caller (`Room::execute_move`)
     /// must treat that as unlimited movement, not a refusal.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let ecs = shadowcat::scene::SceneEcs::new();
+    /// // No combat documents hydrated: no gate applies.
+    /// assert!(ecs.active_combat_for_scene(uuid::Uuid::new_v4()).is_none());
+    /// ```
     pub fn active_combat_for_scene(&self, scene: Uuid) -> Option<(Uuid, eng::CombatEngine)> {
         self.combats.iter().find_map(|(id, doc)| {
             let ce = self.engine_as_cached::<eng::CombatEngine>(*id, doc)?;
@@ -2632,6 +3084,21 @@ impl SceneEcs {
     /// at document egress. `None` means the token names no combatant in this combat — the caller
     /// must treat that as "moves freely", not a refusal (a token need not be in the fight to
     /// move on a scene where a fight is happening).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+    /// use shadowcat::data::membership::PermissionContext;
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let ctx = PermissionContext { user_id: uuid::Uuid::new_v4(), world_role: WorldRole::Player };
+    /// let defaults = WorldCapDefaults::default();
+    /// // No combatant documents hydrated: the token names no combatant.
+    /// let result = ecs.combatant_for_token(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), &ctx, &defaults);
+    /// assert!(result.is_none());
+    /// ```
     pub fn combatant_for_token(
         &self,
         combat: Uuid,
@@ -2686,6 +3153,18 @@ impl SceneEcs {
     /// (`actors` table) — so the movement gate and the combat transitions
     /// share ONE host-precedence rule rather than two documented-to-agree
     /// copies.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::CombatantKind;
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let kind = CombatantKind::Actor { token_id: None, actor_id: None };
+    /// // Neither the token nor the actor resolves: no host document.
+    /// assert!(ecs.combatant_formula_host(&kind).is_none());
+    /// ```
     pub fn combatant_formula_host(&self, kind: &eng::CombatantKind) -> Option<Document> {
         let eng::CombatantKind::Actor { token_id, actor_id } = kind else {
             return None;
@@ -3206,6 +3685,20 @@ impl SceneEcs {
     /// payload's `bands` array is the same resolution the mask's band indices were computed
     /// against — never a second read that could disagree. `world_role`/`world_defaults` feed the
     /// source admission exactly as `visible_cells`'s own pair does.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let defaults = WorldCapDefaults::default();
+    /// let bands = ecs.resolved_bands();
+    /// // No tokens hydrated: the player holds no vision source anywhere.
+    /// let lit = ecs.player_lit_mask(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, &bands);
+    /// assert!(lit.is_empty());
+    /// ```
     pub fn player_lit_mask(
         &self,
         user: Uuid,
@@ -3409,6 +3902,19 @@ impl SceneEcs {
     /// `world_role`/`world_defaults` feed `gather_vision_sources_in_scene`'s observer-vision
     /// admission (`user_access` → `resolve_access_world`), so a world-level READ grant widens
     /// this mask exactly as it widens document egress.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let defaults = WorldCapDefaults::default();
+    /// // No scene document exists: refuses rather than synthesizing a grid.
+    /// let cells = ecs.visible_cells(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false);
+    /// assert!(cells.is_empty());
+    /// ```
     pub fn visible_cells(
         &self,
         user: Uuid,
@@ -3457,6 +3963,19 @@ impl SceneEcs {
     /// `lighting_inputs`) and `accumulate_visible_cells`'s per-source LOS raycast + nested
     /// per-cell scan — the snapshot itself still re-reads every input document on every call (via
     /// already-cheap, self-verifying `engine_as_cached` decodes), so a real change is always seen.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+    /// use shadowcat::scene::SceneEcs;
+    ///
+    /// let ecs = SceneEcs::new();
+    /// let defaults = WorldCapDefaults::default();
+    /// // No scene document exists: refuses rather than synthesizing a grid.
+    /// let cells = ecs.visible_cells_cached(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false);
+    /// assert!(cells.is_empty());
+    /// ```
     pub fn visible_cells_cached(
         &self,
         user: Uuid,
@@ -4027,6 +4546,19 @@ impl Default for SceneEcs {
 /// world-level capability grants document egress resolves READ against, so the
 /// footprints channel cannot disclose a token the recipient's own document
 /// stream withholds.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::scene::{compute_derived, SceneEcs};
+///
+/// let ecs = SceneEcs::new();
+/// let ctx = PermissionContext { user_id: uuid::Uuid::new_v4(), world_role: WorldRole::Player };
+/// let defaults = WorldCapDefaults::default();
+/// assert!(compute_derived("not-a-real-channel", &ecs, &ctx, &defaults).is_none());
+/// ```
 pub fn compute_derived(
     channel: &str,
     ecs: &SceneEcs,

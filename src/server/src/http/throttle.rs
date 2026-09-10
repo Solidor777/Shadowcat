@@ -31,6 +31,15 @@ const WINDOW_MS: i64 = 60_000;
 
 /// Sliding-window budgets for login/invite abuse, keyed by opaque strings
 /// (`login:user:<name>`, `login:ip:<addr>`, ...). Fails closed at capacity.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::throttle::AuthThrottle;
+///
+/// let throttle = AuthThrottle::default();
+/// assert!(throttle.check("login:user:example", 0, 1));
+/// ```
 pub struct AuthThrottle {
     /// Per-key hit timestamps within the window.
     hits: Mutex<HashMap<String, Vec<i64>>>,
@@ -65,6 +74,19 @@ impl AuthThrottle {
     /// Record an attempt under `key` at `now_ms`; `true` iff within `per_min`
     /// over the trailing 60 s. At capacity, expired keys are swept first; if
     /// the map is still full a NEW key is refused (fail closed).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::throttle::AuthThrottle;
+    ///
+    /// let t = AuthThrottle::new();
+    /// assert!(t.check("login:user:example", 0, 3));
+    /// assert!(t.check("login:user:example", 100, 3));
+    /// assert!(t.check("login:user:example", 200, 3));
+    /// // A 4th hit within the trailing 60s window exceeds the per_min=3 budget.
+    /// assert!(!t.check("login:user:example", 300, 3));
+    /// ```
     pub fn check(&self, key: &str, now_ms: i64, per_min: usize) -> bool {
         let cutoff = now_ms - WINDOW_MS;
         let mut map = self.hits.lock().expect("auth-throttle mutex poisoned");
@@ -96,6 +118,15 @@ impl Default for AuthThrottle {
 /// proxy (`Config::trusted_proxies`), resolves through `X-Forwarded-For` instead of the raw TCP
 /// peer — see `resolve_client_ip`'s doc for the exact trust-walk algorithm. Default configuration
 /// (`trusted_proxies` empty) preserves the original TCP-peer-only behavior exactly.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::throttle::ClientIp;
+///
+/// let ip = ClientIp(Some("203.0.113.9".parse().unwrap()));
+/// assert_eq!(ip.0, Some("203.0.113.9".parse().unwrap()));
+/// ```
 pub struct ClientIp(pub Option<std::net::IpAddr>);
 
 impl axum::extract::FromRequestParts<crate::http::AppState> for ClientIp {

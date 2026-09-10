@@ -198,6 +198,14 @@ fn clamp_scan_window(
 }
 
 /// A sparse explored-cell set for one (scene, player).
+///
+/// # Examples
+///
+/// ```
+/// let s = shadowcat::scene::explored::ExploredSet::new();
+/// assert!(s.is_empty());
+/// assert!(!s.contains((0, 0)));
+/// ```
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct ExploredSet {
     /// Explored cells, ordered (deterministic wire/persistence output).
@@ -218,21 +226,49 @@ impl ExploredSet {
     }
 
     /// Number of explored cells.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = shadowcat::scene::explored::ExploredSet::new();
+    /// assert_eq!(s.len(), 0);
+    /// ```
     pub fn len(&self) -> usize {
         self.cells.len()
     }
 
     /// Whether no cell has been explored.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = shadowcat::scene::explored::ExploredSet::new();
+    /// assert!(s.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.cells.is_empty()
     }
 
     /// Whether `c` is in the explored memory (the `Revealed` gate's second arm).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = shadowcat::scene::explored::ExploredSet::new();
+    /// assert!(!s.contains((2, 3)));
+    /// ```
     pub fn contains(&self, c: Cell) -> bool {
         self.cells.contains(&c)
     }
 
     /// The cells in ascending (i, j) order.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let s = shadowcat::scene::explored::ExploredSet::new();
+    /// assert_eq!(s.iter().count(), 0);
+    /// ```
     pub fn iter(&self) -> impl Iterator<Item = Cell> + '_ {
         self.cells.iter().copied()
     }
@@ -257,6 +293,16 @@ impl ExploredSet {
     /// expressed in; `from_bytes` refuses a blob whose tag disagrees with the scene's current
     /// kind, because a square index and a hex axial index are different coordinate systems that
     /// share a representation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::{explored::ExploredSet, GridKind};
+    ///
+    /// let s = ExploredSet::new();
+    /// let bytes = s.to_bytes(GridKind::Square);
+    /// assert_eq!(ExploredSet::from_bytes(&bytes, GridKind::Square), s);
+    /// ```
     pub fn to_bytes(&self, kind: GridKind) -> Vec<u8> {
         let mut out = Vec::with_capacity(EXPLORED_HEADER_LEN + self.cells.len() * 8);
         out.extend_from_slice(&EXPLORED_MAGIC);
@@ -273,6 +319,16 @@ impl ExploredSet {
     /// version indexed in `kind`. Every refusal yields an EMPTY set: explored memory is
     /// best-effort and an empty set under-reveals, which is the safe direction for a fog gate. A
     /// trailing partial record is likewise dropped rather than erroring.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::scene::{explored::ExploredSet, GridKind};
+    ///
+    /// // Not the `to_bytes` format: refused, yielding an empty (under-revealing) set.
+    /// let s = ExploredSet::from_bytes(b"not-a-fog-blob", GridKind::Square);
+    /// assert!(s.is_empty());
+    /// ```
     pub fn from_bytes(b: &[u8], kind: GridKind) -> Self {
         if b.len() < EXPLORED_HEADER_LEN
             || b[..EXPLORED_MAGIC.len()] != EXPLORED_MAGIC

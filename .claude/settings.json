@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(trash *)",
+      "PowerShell(trash *)"
+    ],
+    "deny": [
+      "Bash(rm *)",
+      "Bash(sudo rm *)",
+      "PowerShell(rm *)",
+      "PowerShell(Remove-Item *)",
+      "PowerShell(ri *)",
+      "PowerShell(del *)",
+      "PowerShell(erase *)",
+      "PowerShell(rd *)",
+      "PowerShell(rmdir *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$CLAUDE_PROJECT_DIR/graphify-out/graph.json\" ] || exit 0; CMD=$(jq -r '.tool_input.command // .command // empty' 2>/dev/null || true); case \"$CMD\" in *grep*|*rg\\ *|*ripgrep*|*find\\ *|*fd\\ *|*ack\\ *|*ag\\ *) echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"graphify: knowledge graph at graphify-out/. For focused questions, run `graphify query \\\"<question>\\\"` (scoped subgraph, usually much smaller than GRAPH_REPORT.md) instead of grepping raw files. Read GRAPH_REPORT.md only for broad architecture context.\"}}' ;; esac; exit 0"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-git.mjs\""
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$CLAUDE_PROJECT_DIR/graphify-out/graph.json\" ] || exit 0; S=$(jq -r '[(.tool_input.file_path // .file_path // \"\"), (.tool_input.pattern // .pattern // \"\"), (.tool_input.path // .path // \"\")] | join(\" \") | ascii_downcase | gsub(\"\\\\\\\\\"; \"/\")' 2>/dev/null || true); case \"$S\" in *graphify-out/*) exit 0 ;; esac; case \"$S\" in *.py*|*.js*|*.ts*|*.tsx*|*.jsx*|*.go*|*.rs*|*.java*|*.rb*|*.c*|*.h*|*.cpp*|*.hpp*|*.cc*|*.cs*|*.kt*|*.swift*|*.php*|*.scala*|*.lua*|*.sh*|*.md*|*.rst*|*.txt*|*.mdx*) echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"graphify: knowledge graph at graphify-out/. For codebase questions, run `graphify query \\\"<question>\\\"` (scoped subgraph, usually much smaller than reading files one by one), `graphify explain \\\"<concept>\\\"`, or `graphify path \\\"<A>\\\" \\\"<B>\\\"`, instead of reading source files to answer. Read raw files to modify or debug specific code, or when the graph lacks the detail.\"}}' ;; esac; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

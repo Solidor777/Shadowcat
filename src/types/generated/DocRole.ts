@@ -6,5 +6,16 @@
  * `.min()` (see `effective_role`'s token owner floor). A
  * `PermissionSet::users` entry REPLACES the default for that user (it can
  * demote as well as promote), not a max.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::DocRole;
+ *
+ * // Derived Ord follows declaration order: SMALLER is STRONGER.
+ * assert!(DocRole::Owner < DocRole::Observer);
+ * assert!(DocRole::Observer < DocRole::None);
+ * assert_eq!(DocRole::Owner.min(DocRole::None), DocRole::Owner);
+ * ```
  */
 export type DocRole = "owner" | "observer" | "none";

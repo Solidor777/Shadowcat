@@ -46,6 +46,41 @@ async fn gm_asset(state: &AppState, user: &AuthUser, id: Uuid) -> Result<Asset, 
 /// original bytes (`<uuid>.orig`), served under the arrived content type as
 /// an attachment named after the upload. 404 when the original was not
 /// retained (pass-through upload, or `retain_originals = false`).
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::mutate::original(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn original(
     State(state): State<AppState>,
     user: AuthUser,
@@ -91,6 +126,41 @@ fn attachment_disposition(original_name: &str) -> String {
 /// commits the result exactly like a replace (row-first, sibling swap under
 /// the barrier, derived-tag refresh, `Replaced` broadcast). Whether the
 /// original survives follows the CURRENT `retain_originals` setting.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::mutate::reconvert(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn reconvert(
     State(state): State<AppState>,
     user: AuthUser,
@@ -124,6 +194,16 @@ pub async fn reconvert(
 
 /// `PATCH /api/assets/{uuid}` body. Every field optional; an absent field is
 /// left unchanged. `folder_id: null` moves the asset to the world root.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::mutate::PatchAssetRequest;
+///
+/// let body: PatchAssetRequest = serde_json::from_str(r#"{"name":"New Name"}"#).unwrap();
+/// assert_eq!(body.name.as_deref(), Some("New Name"));
+/// assert_eq!(body.folder_id, None); // absent field stays unchanged
+/// ```
 #[derive(Debug, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct PatchAssetRequest {
@@ -144,6 +224,48 @@ pub struct PatchAssetRequest {
 /// `PATCH /api/assets/{uuid}` — GM-gated rename / move / retag in one
 /// transaction; derived tags are recomputed and a `Moved` notice (version
 /// unchanged) is broadcast so open listings refresh.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::assets::mutate::PatchAssetRequest;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let body = axum::Json(PatchAssetRequest {
+///     name: Some("New Name".into()),
+///     folder_id: None,
+///     tags: None,
+/// });
+/// let _ = shadowcat::http::assets::mutate::patch(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+///     body,
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn patch(
     State(state): State<AppState>,
     user: AuthUser,
@@ -182,6 +304,19 @@ pub async fn patch(
 }
 
 /// `POST /api/worlds/{world}/assets/bulk` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::mutate::BulkAssetRequest;
+///
+/// let body: BulkAssetRequest = serde_json::from_str(
+///     r#"{"ids":["3fa85f64-5717-4562-b3fc-2c963f66afa6"],"add_tags":["npc"]}"#,
+/// )
+/// .unwrap();
+/// assert_eq!(body.add_tags, vec!["npc".to_string()]);
+/// assert!(body.remove_tags.is_empty()); // omitted key defaults to empty
+/// ```
 #[derive(Debug, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct BulkAssetRequest {
@@ -202,6 +337,49 @@ pub struct BulkAssetRequest {
 /// `POST /api/worlds/{world}/assets/bulk` — GM-gated multi-select move /
 /// tag edit in one transaction (404 if any id is not this world's asset;
 /// nothing is applied then). One `Moved` notice per asset.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::assets::mutate::BulkAssetRequest;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let body = axum::Json(BulkAssetRequest {
+///     ids: vec![Uuid::new_v4()],
+///     folder_id: None,
+///     add_tags: vec!["npc".into()],
+///     remove_tags: vec![],
+/// });
+/// let _ = shadowcat::http::assets::mutate::bulk(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+///     body,
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn bulk(
     State(state): State<AppState>,
     user: AuthUser,
@@ -235,6 +413,15 @@ pub async fn bulk(
 }
 
 /// `?assets=` on `DELETE /api/asset-folders/{id}`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::mutate::FolderDeleteQuery;
+///
+/// let q = FolderDeleteQuery { assets: Some("delete".into()) };
+/// assert_eq!(q.assets.as_deref(), Some("delete"));
+/// ```
 #[derive(Debug, Deserialize)]
 pub struct FolderDeleteQuery {
     /// `reparent` (default): contained assets move to the folder's parent;
@@ -249,6 +436,43 @@ pub struct FolderDeleteQuery {
 /// asset in the subtree is first removed through the shared asset-delete
 /// tail (files + `Deleted` broadcasts). A failure mid-purge leaves the
 /// already-deleted assets gone and the folder intact — the client re-issues.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::assets::mutate::FolderDeleteQuery;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::mutate::delete_folder(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+///     axum::extract::Query(FolderDeleteQuery { assets: Some("reparent".into()) }),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn delete_folder(
     State(state): State<AppState>,
     user: AuthUser,

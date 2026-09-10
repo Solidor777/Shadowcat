@@ -3,6 +3,24 @@
 /**
  * An animated visual's frame source: an ordered list of individually
  * uploaded assets, or one grid-sliced sheet asset.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::AnimatedSource;
+ *
+ * let source = AnimatedSource::Sheet {
+ *     asset: "sheet.png".to_string(),
+ *     rows: 4,
+ *     cols: 4,
+ *     count: Some(12),
+ * };
+ * let json = serde_json::to_value(&source).unwrap();
+ * // Internally tagged on `type`, lowercase.
+ * assert_eq!(json["type"], "sheet");
+ * assert_eq!(json["count"], 12);
+ * assert_eq!(serde_json::from_value::<AnimatedSource>(json).unwrap(), source);
+ * ```
  */
 export type AnimatedSource = { "type": "frames", 
 /**

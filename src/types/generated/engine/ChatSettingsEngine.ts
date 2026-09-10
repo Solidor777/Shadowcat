@@ -3,6 +3,16 @@
 /**
  * GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).
  * Every field optional/absent-safe; a partial body is a valid engine band.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::ChatSettingsEngine;
+ *
+ * let policy = ChatSettingsEngine { markdown: Some(true), ..Default::default() };
+ * assert_eq!(policy.markdown, Some(true));
+ * assert!(policy.html.is_none()); // absent-safe: falls through to server default
+ * ```
  */
 export type ChatSettingsEngine = { 
 /**

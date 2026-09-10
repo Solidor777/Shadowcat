@@ -4,6 +4,15 @@
  * An aura emission: a colored disc radiating `radius` grid cells from the
  * token's center, drawn UNDER its art. Purely presentational — nothing
  * server-side consumes it.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::token::AuraEmission;
+ *
+ * let aura = AuraEmission { color: "#ff00ff".to_string(), opacity: 0.5, radius: 2.0, enabled: true };
+ * assert_eq!(aura.radius, 2.0);
+ * ```
  */
 export type AuraEmission = { 
 /**

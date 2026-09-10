@@ -54,6 +54,21 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
 ];
 
 /// Auth-facing projection of a user row.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::data::sqlite::UserRecord;
+///
+/// let record = UserRecord {
+///     id: uuid::Uuid::nil(),
+///     username: "MOCK_USER".into(),
+///     password_hash: None,
+///     server_role: ServerRole::User,
+/// };
+/// assert_eq!(record.username, "MOCK_USER");
+/// ```
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     /// Account id.
@@ -71,6 +86,25 @@ pub struct UserRecord {
 /// columns are read-only context for the GM's listing — they are NOT the
 /// redemption gate, which lives entirely in `consume_invite`'s single guarded
 /// UPDATE (see [[two-query-guard-needs-tx]]).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::sqlite::InviteRecord;
+///
+/// let invite = InviteRecord {
+///     id: uuid::Uuid::nil(),
+///     world_id: uuid::Uuid::nil(),
+///     secret_hash: "mock-hash".into(),
+///     role: WorldRole::Player,
+///     created_at: 0,
+///     expires_at: 1_000,
+///     revoked_at: None,
+///     consumed_at: None,
+/// };
+/// assert!(invite.consumed_at.is_none());
+/// ```
 #[derive(Debug, Clone)]
 pub struct InviteRecord {
     /// Selector half of the invite code (also the row id).
@@ -95,6 +129,20 @@ pub struct InviteRecord {
 /// of and the role they actually hold there (which is their PRE-EXISTING role
 /// when they were already a member — redemption grants access, never changes
 /// standing). Every field is read inside `consume_invite`'s transaction.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::sqlite::SeatedByInvite;
+///
+/// let seated = SeatedByInvite {
+///     world: uuid::Uuid::nil(),
+///     world_name: "MOCK_WORLD".into(),
+///     role: WorldRole::Player,
+/// };
+/// assert_eq!(seated.role, WorldRole::Player);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatedByInvite {
     /// The world the caller is now a member of.
@@ -106,6 +154,24 @@ pub struct SeatedByInvite {
 }
 
 /// The fields of an invite row at mint time.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::sqlite::NewInvite;
+///
+/// let invite = NewInvite {
+///     id: uuid::Uuid::nil(),
+///     world: uuid::Uuid::nil(),
+///     secret_hash: "mock-hash",
+///     role: WorldRole::Player,
+///     created_by: uuid::Uuid::nil(),
+///     now: 0,
+///     expires_at: 1_000,
+/// };
+/// assert_eq!(invite.secret_hash, "mock-hash");
+/// ```
 pub struct NewInvite<'a> {
     /// Selector half of the minted code — the row id and the code must agree.
     pub id: Uuid,
@@ -137,6 +203,19 @@ type DocumentRowColumns = (
 
 /// SQLite-backed storage. Holds a connection pool; migrations are embedded
 /// from `migrations/` and run at connect time.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), shadowcat::data::DataError> {
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+/// assert!(repo.get_world(uuid::Uuid::nil()).await?.is_none());
+/// # Ok(())
+/// # }
+/// ```
 pub struct SqliteRepository {
     /// Single-connection pool: the one writer serializing every transaction.
     pool: SqlitePool,
@@ -153,6 +232,20 @@ impl SqliteRepository {
     /// [`crate::db::parse_connect_options`] and the resulting options open
     /// the pool through [`crate::db::connect_pool_with_options`] — never
     /// restated here.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// // Migrations already ran: the `worlds` table exists and is empty.
+    /// assert!(repo.get_world(uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn connect(url: &str) -> Result<Self, DataError> {
         let connect_options = crate::db::parse_connect_options(url)?;
         let pool = crate::db::connect_pool_with_options(connect_options.clone()).await?;
@@ -172,7 +265,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -209,6 +302,18 @@ impl SqliteRepository {
     }
 
     /// See `Repository::get_link_preview_cache`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_link_preview_cache("https://example.com").await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_link_preview_cache(
         &self,
         url: &str,
@@ -237,6 +342,20 @@ impl SqliteRepository {
     }
 
     /// See `Repository::upsert_link_preview_cache`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.upsert_link_preview_cache("https://example.com", Some("MOCK_TITLE"), None, 0).await?;
+    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn upsert_link_preview_cache(
         &self,
         url: &str,
@@ -260,6 +379,40 @@ impl SqliteRepository {
     }
 
     /// See `Repository::set_link_preview_cache_image`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let asset = uuid::Uuid::new_v4();
+    /// repo.insert_asset(&Asset {
+    ///     id: asset,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{asset}", world.id),
+    ///     original_name: "preview.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// })
+    /// .await?;
+    /// repo.upsert_link_preview_cache("https://example.com", None, None, 0).await?;
+    /// repo.set_link_preview_cache_image("https://example.com", asset).await?;
+    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// assert_eq!(row.image_asset_id, Some(asset));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_link_preview_cache_image(
         &self,
         url: &str,

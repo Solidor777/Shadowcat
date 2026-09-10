@@ -4,6 +4,15 @@
  * A region's vector geometry. `points` layout by
  * kind: rect: `[x0,y0,x1,y1]`; circle: `[cx,cy,r]`; polygon:
  * `[x0,y0,x1,y1,...]` (>=3 vertices, even length).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::RegionShape;
+ *
+ * let circle = RegionShape { kind: "circle".to_string(), points: vec![5.0, 5.0, 2.0] };
+ * assert_eq!(circle.points.len(), 3);
+ * ```
  */
 export type RegionShape = { 
 /**

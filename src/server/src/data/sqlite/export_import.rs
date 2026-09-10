@@ -12,6 +12,21 @@ impl SqliteRepository {
     /// portable usernames inline (one `LEFT JOIN`/`JOIN` per table, no N+1
     /// lookups) exactly as documented on each `data::world_bundle::Exported*Row`
     /// type. `NotFound` if `world` does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// let export = repo.export_world_rows(world.id).await?;
+    /// assert_eq!(export.manifest.world_id, world.id);
+    /// assert!(export.documents.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn export_world_rows(&self, world: Uuid) -> Result<WorldExportData, DataError> {
         let world_row =
             sqlx::query("SELECT name, seq, created_at, updated_at FROM worlds WHERE id = ?")
@@ -304,6 +319,44 @@ impl SqliteRepository {
     /// loop — every other server write (chat, moves, document edits) blocks
     /// for the whole import, the same trade-off `POST /api/admin/backup`
     /// already accepts for its snapshot.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::data::world_bundle::{BundleManifest, WorldImportData, BUNDLE_SCHEMA_VERSION};
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world_id = uuid::Uuid::new_v4();
+    /// let data = WorldImportData {
+    ///     manifest: BundleManifest {
+    ///         schema_version: BUNDLE_SCHEMA_VERSION,
+    ///         world_id,
+    ///         world_name: "MOCK_WORLD".into(),
+    ///         world_seq: 0,
+    ///         world_created_at: 0,
+    ///         world_updated_at: 0,
+    ///         exported_at_unix_ms: 0,
+    ///         row_counts: Default::default(),
+    ///     },
+    ///     documents: vec![],
+    ///     events: vec![],
+    ///     members: vec![],
+    ///     invites: vec![],
+    ///     assets: vec![],
+    ///     fog: vec![],
+    ///     settings: vec![],
+    ///     staged_assets: vec![],
+    ///     staged_siblings: vec![],
+    /// };
+    /// let summary = repo.import_world(data).await?;
+    /// assert_eq!(summary.world_id, world_id);
+    /// assert!(repo.get_world(world_id).await?.is_some());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn import_world(&self, data: WorldImportData) -> Result<ImportSummary, DataError> {
         let mut tx = self.pool.begin().await?;
         let world = data.manifest.world_id;

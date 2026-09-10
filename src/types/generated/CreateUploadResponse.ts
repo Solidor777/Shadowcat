@@ -2,6 +2,20 @@
 
 /**
  * `POST /api/worlds/{world}/assets/uploads` response.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::http::assets::uploads::CreateUploadResponse;
+ * use uuid::Uuid;
+ *
+ * let resp = CreateUploadResponse {
+ *     upload_id: Uuid::nil(),
+ *     chunk_size: 8 * 1024 * 1024,
+ * };
+ * let json = serde_json::to_string(&resp).unwrap();
+ * assert!(json.contains("\"chunk_size\":8388608"));
+ * ```
  */
 export type CreateUploadResponse = { 
 /**

@@ -3,6 +3,15 @@
 /**
  * A generated token visual's background fill (`RenderVisual::Generated`),
  * drawn behind the cropped art in the crop shape.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::GeneratedBackground;
+ *
+ * let background = GeneratedBackground { color: "#ffffff".to_string() };
+ * assert_eq!(background.color, "#ffffff");
+ * ```
  */
 export type GeneratedBackground = { 
 /**

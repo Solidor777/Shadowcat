@@ -3,6 +3,15 @@ import type { DiagonalRule } from "./DiagonalRule";
 
 /**
  * `Option`-lifted twin of `Pathfinding`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::system_defaults::PathfindingOverlay;
+ *
+ * let overlay = PathfindingOverlay::default();
+ * assert!(overlay.diagonal_rule.is_none()); // falls through to the enclosing layer
+ * ```
  */
 export type PathfindingOverlay = { 
 /**

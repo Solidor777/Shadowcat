@@ -7,6 +7,24 @@ import type { CombatantResource } from "./CombatantResource";
  * `CombatantEngine`). Always a child of a `combat` (`parent_id`); hidden
  * combatants are simply unreadable documents (`permissions.default: none`),
  * so this band carries nothing a non-GM must not see.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::{CombatantEngine, CombatantKind};
+ * use std::collections::BTreeMap;
+ *
+ * let engine = CombatantEngine {
+ *     kind: CombatantKind::Event {
+ *         lifespan: None,
+ *         message: None,
+ *     },
+ *     initiative: Some(14.0),
+ *     tiebreak: 0.0,
+ *     resources: BTreeMap::new(),
+ * };
+ * assert_eq!(engine.initiative, Some(14.0));
+ * ```
  */
 export type CombatantEngine = { 
 /**

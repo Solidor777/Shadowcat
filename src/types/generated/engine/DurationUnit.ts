@@ -2,5 +2,15 @@
 
 /**
  * What a duration counts.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::DurationUnit;
+ *
+ * assert_ne!(DurationUnit::Rounds, DurationUnit::Turns);
+ * let json = serde_json::to_value(DurationUnit::Turns).unwrap();
+ * assert_eq!(json, serde_json::json!("turns"));
+ * ```
  */
 export type DurationUnit = "rounds" | "turns";

@@ -8,6 +8,16 @@ use serde::Serialize;
 
 /// Handler error mapped to a clean status code. 5xx detail is logged, never
 /// returned in the body.
+///
+/// # Examples
+///
+/// ```
+/// use axum::response::IntoResponse;
+/// use shadowcat::http::error::AppError;
+///
+/// let resp = AppError::NotFound.into_response();
+/// assert_eq!(resp.status(), axum::http::StatusCode::NOT_FOUND);
+/// ```
 #[derive(Debug)]
 pub enum AppError {
     /// 401: no valid session.

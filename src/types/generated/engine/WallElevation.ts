@@ -7,6 +7,18 @@
  * field is absent occludes every elevation, and a malformed interval
  * (`bottom > top`, or a non-finite endpoint) fails closed to occluding
  * everything — see `scene::elevation::wall_occludes`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::WallElevation;
+ *
+ * let unbounded = WallElevation { bottom: None, top: None };
+ * assert!(unbounded.bottom.is_none());
+ *
+ * let band = WallElevation { bottom: Some(0.0), top: Some(10.0) };
+ * assert_eq!(band.top, Some(10.0));
+ * ```
  */
 export type WallElevation = { 
 /**

@@ -16,6 +16,18 @@ use super::lexer::{tokenize, Tok};
 use super::types::{FormulaError, FormulaErrorKind, MAX_AST_NODES, MAX_PARSE_DEPTH};
 
 /// A binary arithmetic operator.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::parser::{parse, BinOp, Expr};
+///
+/// let ast = parse("1 + 2").unwrap();
+/// match ast {
+///     Expr::Bin { op, .. } => assert_eq!(op, BinOp::Add),
+///     _ => panic!("expected a binary node"),
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
     /// `+`
@@ -31,6 +43,18 @@ pub enum BinOp {
 }
 
 /// A builtin function. Arity: `Min`/`Max` at least 1; the rest exactly 1.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::parser::{parse, Expr, FnName};
+///
+/// let ast = parse("floor(1.5)").unwrap();
+/// match ast {
+///     Expr::Call { func, .. } => assert_eq!(func, FnName::Floor),
+///     _ => panic!("expected a call node"),
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FnName {
     /// The least argument.
@@ -71,6 +95,15 @@ impl FnName {
 }
 
 /// The parsed expression AST — one node per grammar production.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::parser::{parse, Expr};
+///
+/// let ast = parse("hp.max").unwrap();
+/// assert_eq!(ast, Expr::Ref(vec!["hp".to_string(), "max".to_string()]));
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// A numeric literal.
@@ -329,6 +362,15 @@ fn check_arity(func: FnName, argc: usize, pos: usize) -> Result<(), FormulaError
 }
 
 /// Lexes and parses `src`. Never panics; every failure is a value.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::parser::parse;
+///
+/// assert!(parse("2 + 2").is_ok());
+/// assert!(parse("2 +").is_err()); // unexpected end of formula
+/// ```
 pub fn parse(src: &str) -> Result<Expr, FormulaError> {
     let toks = tokenize(src)?;
     let mut p = Parser {

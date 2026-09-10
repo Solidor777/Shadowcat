@@ -14,6 +14,22 @@
  * cannot distinguish "was absent" from "was explicitly null", so a set-creating-a-
  * key is not re-derived as a removal. `invert` has no live caller (undo/redo is
  * not wired), so this asymmetry is inert today.
+ *
+ * # Examples
+ *
+ * ```
+ * use serde_json::json;
+ * use shadowcat::data::command::FieldChange;
+ *
+ * let change = FieldChange {
+ *     path: "/system/hp".into(),
+ *     old: json!(10),
+ *     new: json!(7),
+ *     remove: false,
+ * };
+ * assert_eq!(change.path, "/system/hp");
+ * assert!(!change.remove);
+ * ```
  */
 export type FieldChange = { 
 /**

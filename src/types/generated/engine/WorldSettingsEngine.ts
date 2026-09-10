@@ -12,6 +12,16 @@ import type { SceneDefaultsOverlay } from "./SceneDefaultsOverlay";
  * `WorldSceneDefaults::default`/`Pathfinding::default`/
  * `AnimationSettings::default`. Derived `Default` is the empty overlay —
  * what the world-config seed authors.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::WorldSettingsEngine;
+ *
+ * let overlay = WorldSettingsEngine::default();
+ * assert!(overlay.scene.is_none());
+ * assert!(overlay.active_scene.is_none());
+ * ```
  */
 export type WorldSettingsEngine = { 
 /**

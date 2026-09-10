@@ -5,6 +5,19 @@ import type { PushInstanceOutcome } from "./PushInstanceOutcome";
 
 /**
  * The outcome of a merge intent, reported by `ServerMsg::MergeResult`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::{MergeOutcome, MergeRevertStatus};
+ *
+ * let outcome = MergeOutcome::Revert {
+ *     child_id: uuid::Uuid::nil(),
+ *     status: MergeRevertStatus::Applied,
+ * };
+ * let json = serde_json::to_value(&outcome).unwrap();
+ * assert_eq!(json["kind"], "revert");
+ * ```
  */
 export type MergeOutcome = { "kind": "pull", 
 /**

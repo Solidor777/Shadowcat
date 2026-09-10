@@ -2,5 +2,14 @@
 
 /**
  * How the executor treats a move that exceeds the turn owner's budget.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::combat::Enforcement;
+ *
+ * assert_eq!(Enforcement::default(), Enforcement::None);
+ * assert_ne!(Enforcement::Hard, Enforcement::Warn);
+ * ```
  */
 export type Enforcement = "none" | "warn" | "hard";

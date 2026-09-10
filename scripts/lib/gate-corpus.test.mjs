@@ -1,7 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 import { test, expect } from "vitest";
 import { EXAMPLE_EXEMPT, defaultSkillsRoot, listSkillDirs, norm, sources, under } from "./gate-corpus.mjs";
+import { scrubGitEnv } from "./run-git.mjs";
 
 const COMMENT_GATE = "scripts/check-comment-refs.mjs";
 const SYMBOL_GATE = "scripts/check-skill-symbol-refs.mjs";
@@ -79,5 +82,47 @@ test.skipIf(!existsSync(SKILLS_ROOT))(
   "sources() finds real markdown files under the skill corpus root",
   () => {
     expect(sources(SKILLS_ROOT, [".md"]).length).toBeGreaterThan(0);
+  },
+);
+
+// Regression: git exports GIT_INDEX_FILE into every process it spawns a hook or script from (e.g.
+// mid `git commit -- <paths>`), and `-C skillsRoot` does not override it — an unrelated repository
+// pointed at by that variable silently supplies `listSkillDirs`'s answer instead of the skills
+// checkout. This mutates the real `process.env` (no mocked `execFile`) with GIT_INDEX_FILE
+// pointing at an unrelated scratch repository's index and asserts the enumeration this process
+// actually gets back is unchanged — the same shape as the measured 32-vs-1490-file discrepancy
+// the fix responds to, reproduced against the real corpus this gate runs against.
+test.skipIf(!existsSync(SKILLS_ROOT))(
+  "listSkillDirs is immune to an inherited GIT_INDEX_FILE pointing at an unrelated repository",
+  () => {
+    const before = listSkillDirs(SKILLS_ROOT);
+    expect(before).not.toBeNull();
+
+    // This file runs from `gate:commit`'s own pre-commit hook when a partial `git commit --
+    // <paths>` triggers it, which means THIS process inherits GIT_INDEX_FILE from the enclosing
+    // commit before the test below ever mutates it — so these fixture-setup calls carry the same
+    // scrub `runGit` applies, or they contend for a lock on the enclosing commit's own temporary
+    // index file.
+    const cleanEnv = scrubGitEnv();
+
+    const scratchRepo = mkdtempSync(join(tmpdir(), "gate-corpus-index-"));
+    execFileSync("git", ["init", "-q"], { cwd: scratchRepo, env: cleanEnv });
+    execFileSync("git", ["config", "user.email", "test@example.com"], {
+      cwd: scratchRepo,
+      env: cleanEnv,
+    });
+    execFileSync("git", ["config", "user.name", "Test"], { cwd: scratchRepo, env: cleanEnv });
+    writeFileSync(join(scratchRepo, "unrelated.txt"), "unrelated\n");
+    execFileSync("git", ["add", "-A"], { cwd: scratchRepo, env: cleanEnv });
+
+    const savedIndexFile = process.env.GIT_INDEX_FILE;
+    process.env.GIT_INDEX_FILE = join(scratchRepo, ".git", "index");
+    try {
+      const after = listSkillDirs(SKILLS_ROOT);
+      expect(after).toEqual(before);
+    } finally {
+      if (savedIndexFile === undefined) delete process.env.GIT_INDEX_FILE;
+      else process.env.GIT_INDEX_FILE = savedIndexFile;
+    }
   },
 );

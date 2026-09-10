@@ -2,6 +2,15 @@
 
 /**
  * Ambient scene light for `LightMode::EnvironmentLight`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::EnvironmentLight;
+ *
+ * let light = EnvironmentLight { color: "#0a0e1a".to_string(), intensity: 0.2 };
+ * assert_eq!(light.intensity, 0.2);
+ * ```
  */
 export type EnvironmentLight = { 
 /**

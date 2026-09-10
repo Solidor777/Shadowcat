@@ -19,6 +19,21 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 /// How a movement budget converts into grid cells.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::Interpretation;
+///
+/// let budget = 30.0_f64;
+/// let per_cell = 5.0_f64;
+/// let cells = match Interpretation::PerCell {
+///     Interpretation::PerCell => budget / per_cell,
+///     Interpretation::Spaces => budget,
+/// };
+/// assert_eq!(cells, 6.0);
+/// assert_eq!(Interpretation::default(), Interpretation::PerCell);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +46,15 @@ pub enum Interpretation {
 }
 
 /// How the executor treats a move that exceeds the turn owner's budget.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::Enforcement;
+///
+/// assert_eq!(Enforcement::default(), Enforcement::None);
+/// assert_ne!(Enforcement::Hard, Enforcement::Warn);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +69,15 @@ pub enum Enforcement {
 }
 
 /// Who may end the current turn.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::TurnControl;
+///
+/// assert_eq!(TurnControl::default(), TurnControl::OwnerMayEnd);
+/// assert_ne!(TurnControl::OwnerMayEnd, TurnControl::GmOnly);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +91,21 @@ pub enum TurnControl {
 
 /// The movement rules a running combat snapshots at start (mirrors the
 /// client's `MovementRules`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{Enforcement, Interpretation, MovementRules};
+///
+/// let rules = MovementRules {
+///     resource: Some("movement".to_string()),
+///     interpretation: Interpretation::PerCell,
+///     enforcement: Enforcement::Hard,
+/// };
+/// let json = serde_json::to_value(&rules).unwrap();
+/// let round_tripped: MovementRules = serde_json::from_value(json).unwrap();
+/// assert_eq!(round_tripped, rules);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -76,6 +124,24 @@ pub struct MovementRules {
 /// `null`/absent both mean "unset — fall through". `movement_resource` is
 /// doubly optional: `Some(None)` explicitly CLEARS an inherited resource,
 /// `None` inherits.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{CombatDefaults, Enforcement};
+///
+/// let defaults = CombatDefaults {
+///     enforcement: Some(Enforcement::Warn),
+///     ..Default::default()
+/// };
+/// let json = serde_json::to_value(&defaults).unwrap();
+/// // `movementResource` alone is omitted when unset (its inner `None` is an explicit
+/// // clear, so absence must stay distinguishable); every other unset leaf is an explicit null.
+/// assert!(json.get("movementResource").is_none());
+/// assert_eq!(json["turnControl"], serde_json::Value::Null);
+/// let round_tripped: CombatDefaults = serde_json::from_value(json).unwrap();
+/// assert_eq!(round_tripped.enforcement, Some(Enforcement::Warn));
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -135,6 +201,30 @@ where
 
 /// The rules a `combat` document snapshots at start: the resolved
 /// engine literal < system-defaults < world < scene chain.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{
+///     EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules, ResolvedCombatRules,
+///     TurnControl,
+/// };
+///
+/// let rules = ResolvedCombatRules {
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     turn_control: TurnControl::OwnerMayEnd,
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// assert_eq!(rules.turn_control, TurnControl::OwnerMayEnd);
+/// assert!(rules.rewind_restore);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedCombatRules {
     /// Resolved movement rules.
@@ -239,6 +329,37 @@ pub fn resolve_combat_rules(
 /// `CombatEngine`). World-level, bound to one scene; at most one combat per
 /// scene is `active` at a time, enforced at the `apply_intent` Create/Update
 /// chokepoints via `SqliteRepository::active_combat_owner`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+///     TurnControl,
+/// };
+/// use uuid::Uuid;
+///
+/// let combatant = Uuid::new_v4();
+/// let engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: Some(combatant),
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![combatant],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// assert_eq!(engine.order, vec![combatant]);
+/// assert_eq!(engine.turn, Some(combatant));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -295,6 +416,21 @@ impl CombatEngine {
 /// What a combatant is: a token/actor that acts, or a named event in the
 /// order. Internally tagged on `type`, so serde cannot `deny_unknown_fields`
 /// here; `normalize_engine`'s re-serialization drops any unknown key.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::CombatantKind;
+///
+/// let kind = CombatantKind::Event {
+///     lifespan: Some(1),
+///     message: None,
+/// };
+/// let json = serde_json::to_value(&kind).unwrap();
+/// assert_eq!(json["type"], "event");
+/// let round_tripped: CombatantKind = serde_json::from_value(json).unwrap();
+/// assert_eq!(round_tripped, kind);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -320,6 +456,17 @@ pub enum CombatantKind {
 /// resource intents move it, clamped to the binding's evaluated `max`. An
 /// ABSENT entry means untouched — the server reads it as full (`current`
 /// equal to the evaluated `max`) and materializes the entry on first change.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::CombatantResource;
+///
+/// let resource = CombatantResource { current: 12.0 };
+/// let json = serde_json::to_value(&resource).unwrap();
+/// let round_tripped: CombatantResource = serde_json::from_value(json).unwrap();
+/// assert_eq!(round_tripped.current, 12.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -332,6 +479,24 @@ pub struct CombatantResource {
 /// `CombatantEngine`). Always a child of a `combat` (`parent_id`); hidden
 /// combatants are simply unreadable documents (`permissions.default: none`),
 /// so this band carries nothing a non-GM must not see.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{CombatantEngine, CombatantKind};
+/// use std::collections::BTreeMap;
+///
+/// let engine = CombatantEngine {
+///     kind: CombatantKind::Event {
+///         lifespan: None,
+///         message: None,
+///     },
+///     initiative: Some(14.0),
+///     tiebreak: 0.0,
+///     resources: BTreeMap::new(),
+/// };
+/// assert_eq!(engine.initiative, Some(14.0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -376,6 +541,18 @@ impl CombatantEngine {
 /// A number or a formula source. Untagged on the wire (`30` or `"speed"`).
 /// `Text` is `crate::formula` source: parsed at ingress by `validate`, and
 /// evaluated server-side through the same module.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::Formula;
+///
+/// let n = Formula::Number(5.0);
+/// let t = Formula::Text("1".to_string());
+/// assert_eq!(serde_json::to_value(&n).unwrap(), serde_json::json!(5.0));
+/// assert_eq!(serde_json::to_value(&t).unwrap(), serde_json::json!("1"));
+/// assert_ne!(n, t);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(untagged)]
@@ -403,6 +580,16 @@ impl Formula {
 
 /// Amounts a tracked resource recovers at each clock boundary; each defaults
 /// to `0`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{Formula, Recovery};
+///
+/// let recovery = Recovery::default();
+/// assert_eq!(recovery.turn_start, Formula::Number(0.0));
+/// assert_eq!(recovery.round_end, Formula::Number(0.0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
@@ -429,6 +616,21 @@ impl Default for Recovery {
 }
 
 /// How a resource's value relates to the combatant's actor.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{Formula, Recovery, ResourceBinding};
+///
+/// let binding = ResourceBinding::Tracked {
+///     max: Formula::Number(10.0),
+///     recover: Recovery::default(),
+/// };
+/// let json = serde_json::to_value(&binding).unwrap();
+/// assert_eq!(json["kind"], "tracked");
+/// let round_tripped: ResourceBinding = serde_json::from_value(json).unwrap();
+/// assert_eq!(round_tripped, binding);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -450,6 +652,21 @@ pub enum ResourceBinding {
 }
 
 /// One turn-resource definition (mirrors the client's `Resource`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{Formula, Resource, ResourceBinding};
+///
+/// let resource = Resource {
+///     name: "Movement".to_string(),
+///     order: 0,
+///     binding: ResourceBinding::Mirror {
+///         value: Formula::Number(30.0),
+///     },
+/// };
+/// assert_eq!(resource.name, "Movement");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -466,6 +683,15 @@ pub struct Resource {
 /// (`RESOURCE_REGISTRY_DOC_TYPE` is in `SINGLETON_DOC_TYPES`), EMPTY by
 /// default (the engine hooks up no resource, not even movement). Keyed by
 /// resource id — a MAP for the single-key-Update reason every registry uses.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::ResourceRegistryEngine;
+///
+/// let registry = ResourceRegistryEngine::default();
+/// assert!(registry.resources.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -503,6 +729,16 @@ impl ResourceRegistryEngine {
 }
 
 /// What a duration counts.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::DurationUnit;
+///
+/// assert_ne!(DurationUnit::Rounds, DurationUnit::Turns);
+/// let json = serde_json::to_value(DurationUnit::Turns).unwrap();
+/// assert_eq!(json, serde_json::json!("turns"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -514,6 +750,16 @@ pub enum DurationUnit {
 }
 
 /// The clock boundary an effect expires on.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::ExpiryPoint;
+///
+/// let json = serde_json::to_value(ExpiryPoint::TurnStart).unwrap();
+/// assert_eq!(json, serde_json::json!("turn_start"));
+/// assert_ne!(ExpiryPoint::TurnStart, ExpiryPoint::TurnEnd);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -529,6 +775,22 @@ pub enum ExpiryPoint {
 }
 
 /// A clock-bound lifetime for an effect.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{Duration, DurationUnit, ExpiryPoint, Formula};
+///
+/// let duration = Duration {
+///     amount: Formula::Number(3.0),
+///     remaining: None,
+///     unit: DurationUnit::Rounds,
+///     anchor: None,
+///     expires: ExpiryPoint::RoundEnd,
+/// };
+/// assert!(duration.remaining.is_none());
+/// assert_eq!(duration.expires, ExpiryPoint::RoundEnd);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -553,6 +815,16 @@ pub struct Duration {
 /// Authored lifecycle policy, evaluated server-side at each boundary. Every
 /// formula is optional and falls through the combat-defaults chain to the
 /// engine fallbacks (expire at combat end, keep at turn end, decrement).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::EffectLifecycle;
+///
+/// let lifecycle = EffectLifecycle::default();
+/// assert!(lifecycle.on_combat_end.is_none());
+/// assert!(lifecycle.on_advance.is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
@@ -569,6 +841,19 @@ pub struct EffectLifecycle {
 }
 
 /// The three lifecycle formulas as chain-level defaults (no `resolved`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{EffectLifecycleDefaults, Formula};
+///
+/// let defaults = EffectLifecycleDefaults {
+///     on_combat_end: Some(Formula::Number(1.0)),
+///     ..Default::default()
+/// };
+/// assert_eq!(defaults.on_combat_end, Some(Formula::Number(1.0)));
+/// assert!(defaults.on_advance.is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -606,6 +891,21 @@ impl EffectLifecycleDefaults {
 /// `EffectEngine`). Modifiers stay in the system band; the engine owns only
 /// activation, transfer and the clock-bound lifetime. Absent `transfer` and
 /// `duration` read as `false` / `None`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::EffectEngine;
+///
+/// let effect = EffectEngine {
+///     active: true,
+///     transfer: false,
+///     duration: None,
+///     lifecycle: None,
+/// };
+/// assert!(effect.active);
+/// assert!(!effect.transfer);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -655,6 +955,25 @@ impl EffectEngine {
 pub const MAX_TURN_HISTORY: usize = 200;
 
 /// One anchored effect as it stood at a turn boundary.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::{EffectEngine, EffectSnapshot};
+/// use uuid::Uuid;
+///
+/// let snapshot = EffectSnapshot {
+///     host: Uuid::new_v4(),
+///     path: "/embedded/effect/0".to_string(),
+///     engine: EffectEngine {
+///         active: true,
+///         transfer: false,
+///         duration: None,
+///         lifecycle: None,
+///     },
+/// };
+/// assert_eq!(snapshot.path, "/embedded/effect/0");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -681,6 +1000,33 @@ pub struct EffectSnapshot {
 /// fields alone, with its `scope`/`doc_type`/`parent_id` derived from the
 /// combat it belongs to and an empty `embedded` map — the record restores the
 /// CLOCK's state, never a general document backup.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::PermissionSet;
+/// use shadowcat::data::engine::combat::{CapturedCombatant, CombatantEngine, CombatantKind};
+/// use std::collections::BTreeMap;
+/// use uuid::Uuid;
+///
+/// let captured = CapturedCombatant {
+///     id: Uuid::new_v4(),
+///     name: Some("Goblin".to_string()),
+///     permissions: PermissionSet::default(),
+///     owner: None,
+///     engine: CombatantEngine {
+///         kind: CombatantKind::Event {
+///             lifespan: None,
+///             message: None,
+///         },
+///         initiative: None,
+///         tiebreak: 0.0,
+///         resources: BTreeMap::new(),
+///     },
+///     system: serde_json::json!({}),
+/// };
+/// assert_eq!(captured.name.as_deref(), Some("Goblin"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -703,6 +1049,23 @@ pub struct CapturedCombatant {
 }
 
 /// Every combatant and anchored effect as they stood when `turn` began.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::TurnRecord;
+/// use uuid::Uuid;
+///
+/// let turn = Uuid::new_v4();
+/// let record = TurnRecord {
+///     round: 1,
+///     turn,
+///     combatants: Vec::new(),
+///     effects: Vec::new(),
+/// };
+/// assert_eq!(record.turn, turn);
+/// assert!(record.combatants.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -723,6 +1086,16 @@ pub struct TurnRecord {
 /// independently, to a serialized-byte ceiling `combat::history::append_record`
 /// enforces by evicting oldest-first (record COUNT alone does not bound
 /// serialized SIZE, and only size is what `validate_system_size` refuses on).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::combat::CombatHistoryEngine;
+///
+/// let history = CombatHistoryEngine::default();
+/// assert!(history.records.is_empty());
+/// assert_eq!(history.cursor, 0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]

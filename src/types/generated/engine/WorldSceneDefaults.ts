@@ -7,6 +7,15 @@ import type { MovementRestriction } from "./MovementRestriction";
 /**
  * The full set of world-level scene defaults that individual scenes may
  * override (mirrors the client's `WorldSceneDefaults`).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::WorldSceneDefaults;
+ *
+ * let defaults = WorldSceneDefaults::default();
+ * assert!(defaults.los_restriction);
+ * ```
  */
 export type WorldSceneDefaults = { 
 /**

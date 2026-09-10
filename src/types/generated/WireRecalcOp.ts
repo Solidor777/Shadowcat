@@ -6,6 +6,17 @@
  * `dice`'s crate doc) -- this type exists solely so a `RecalcOp` can ride
  * `ClientMsg`, converted via `into_recalc_op` before it ever reaches
  * `dice::recalc::recalculate`.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::chat::WireRecalcOp;
+ *
+ * let op = WireRecalcOp::ReplaceDie { id: 0, natural: 6 };
+ * let json = serde_json::to_value(&op).unwrap();
+ * assert_eq!(json["kind"], "replace_die");
+ * assert_eq!(json["natural"], 6);
+ * ```
  */
 export type WireRecalcOp = { "kind": "reroll_dice", 
 /**

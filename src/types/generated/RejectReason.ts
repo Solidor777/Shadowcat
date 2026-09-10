@@ -3,5 +3,14 @@
 /**
  * Why an `Intent` was rejected. Mirrors the write-path `DataError` categories
  * the client can act on: re-auth, re-read+retry, or fix the payload.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::RejectReason;
+ *
+ * let json = serde_json::to_value(RejectReason::Conflict).unwrap();
+ * assert_eq!(json, serde_json::json!("conflict"));
+ * ```
  */
 export type RejectReason = "forbidden" | "conflict" | "invalid";

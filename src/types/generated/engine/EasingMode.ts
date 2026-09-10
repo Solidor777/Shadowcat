@@ -2,5 +2,13 @@
 
 /**
  * Token move-animation easing.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::EasingMode;
+ *
+ * assert_ne!(EasingMode::EaseInOut, EasingMode::Linear);
+ * ```
  */
 export type EasingMode = "easeInOut" | "linear";

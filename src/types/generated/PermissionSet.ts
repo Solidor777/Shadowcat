@@ -6,6 +6,17 @@ import type { Visibility } from "./Visibility";
 /**
  * Document-level permissions: default role, per-user overrides, property-level
  * visibility keyed by JSON pointer, and additive capability grants.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::{DocRole, PermissionSet};
+ *
+ * // Fail-closed default: no role, so PermissionSet::default() denies access.
+ * let perms = PermissionSet::default();
+ * assert_eq!(perms.default, DocRole::None);
+ * assert!(perms.gm_role.is_none()); // GM's usual unconditional access is preserved
+ * ```
  */
 export type PermissionSet = { 
 /**

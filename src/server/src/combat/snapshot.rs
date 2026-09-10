@@ -26,6 +26,42 @@ use super::CombatError;
 
 /// One combatant: its document and parsed `CombatantEngine`, kept together
 /// so a transition never re-parses the same JSON twice.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::Combatant;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{CombatantEngine, CombatantKind};
+/// use std::collections::BTreeMap;
+/// use uuid::Uuid;
+///
+/// let engine = CombatantEngine {
+///     kind: CombatantKind::Event { lifespan: None, message: None },
+///     initiative: Some(10.0),
+///     tiebreak: 0.0,
+///     resources: BTreeMap::new(),
+/// };
+/// let doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id: Uuid::new_v4() },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: Some("Goblin".to_string()),
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(Uuid::new_v4()),
+///     engine: Some(serde_json::to_value(&engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let combatant = Combatant { doc, engine };
+/// assert_eq!(combatant.engine.initiative, Some(10.0));
+/// ```
 #[derive(Clone)]
 pub struct Combatant {
     /// The stored document.
@@ -36,6 +72,66 @@ pub struct Combatant {
 
 /// Everything a pure `transition` needs for one command against one combat,
 /// read once.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::CombatSnapshot;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+///     TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id: Uuid::new_v4() },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let snapshot = CombatSnapshot {
+///     combat,
+///     engine,
+///     combatants: Vec::new(),
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+/// assert!(snapshot.combatants.is_empty());
+/// assert!(!snapshot.engine.active);
+/// ```
 pub struct CombatSnapshot {
     /// The combat document.
     pub combat: Document,
@@ -64,6 +160,86 @@ pub struct CombatSnapshot {
 /// document is absent, is not a `combat`, or is scoped to a different world
 /// — the three cases collapse to one variant so a caller can never use the
 /// distinction to probe existence of a combat outside its own world.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::combat::load_snapshot;
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope, WorldRole};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+///     TurnControl,
+/// };
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use uuid::Uuid;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo
+///     .create_user("gm", None, ServerRole::User, 0)
+///     .await
+///     .unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+///
+/// let engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_id = Uuid::new_v4();
+/// let doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id: world.id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let ctx = PermissionContext {
+///     user_id: gm,
+///     world_role: WorldRole::Gm,
+/// };
+/// repo.apply_intent(
+///     &ctx,
+///     world.id,
+///     vec![Operation::Create { doc }],
+///     0,
+///     WriteOrigin::Client,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let snapshot = load_snapshot(&repo, world.id, combat_id).await.unwrap();
+/// assert_eq!(snapshot.combat.id, combat_id);
+/// assert!(snapshot.combatants.is_empty());
+/// # }
+/// ```
 pub async fn load_snapshot(
     repo: &dyn Repository,
     world: Uuid,

@@ -13,6 +13,18 @@ use crate::dice::spec::Direction;
 /// Which `Mode` a notation string should parse into when the string itself
 /// carries no explicit `cs`/`cf`/`t<N>` disambiguator. An explicit `cs`/`cf`
 /// modifier always forces `SuccessCount` regardless of this ambient setting.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ModeKind, ParseContext};
+/// use shadowcat::dice::spec::{Direction, Mode};
+///
+/// // A bare `t<N>` under SuccessCount-ambient context resolves to a per-die target.
+/// let ctx = ParseContext { mode: ModeKind::SuccessCount, direction: Direction::HighWins };
+/// let spec = parse("5d10t7", ctx).unwrap();
+/// assert!(matches!(spec.mode, Mode::SuccessCount(_)));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModeKind {
     /// Fold arithmetic to a total.
@@ -25,6 +37,16 @@ pub enum ModeKind {
 /// `mode` resolves a bare `t<N>` target's
 /// `Mode`, `direction` resolves its comparator (`HighWins` => `Gte`, `LowWins`
 /// => `Lte`) and seeds `RollSpec::direction`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ParseContext};
+///
+/// // The default context is Total mode, HighWins.
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// assert_eq!(spec.direction, shadowcat::dice::spec::Direction::HighWins);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParseContext {
     /// Ambient mode a bare `t<N>` resolves against.
@@ -43,6 +65,15 @@ impl Default for ParseContext {
 }
 
 /// Why a notation string was refused. Messages are player-presentable.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ParseContext, ParseError};
+/// let err = parse("1d0", ParseContext::default()).unwrap_err();
+/// assert_eq!(err, ParseError::InvalidDieSides(0));
+/// assert_eq!(err.to_string(), "a die must have at least 1 side (got 0)");
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParseError {
     /// The input was empty/whitespace.

@@ -4,6 +4,20 @@ import type { TableRow } from "./TableRow";
 
 /**
  * The engine body of a rollable table. Envelope `name` is the table's name.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::table::{DrawRule, TableEngine, TableRow};
+ *
+ * let table = TableEngine {
+ *     draw: DrawRule::Weighted,
+ *     rows: vec![TableRow { weight: 1, range: None, label: "Miss".into(), results: vec![] }],
+ *     description: "A simple hit table.".into(),
+ * };
+ * assert_eq!(table.rows.len(), 1);
+ * assert!(table.validate().is_ok());
+ * ```
  */
 export type TableEngine = { 
 /**

@@ -2,5 +2,13 @@
 
 /**
  * Cardinality of a UI surface contract: one provider or many.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::document::Cardinality;
+ *
+ * assert_ne!(Cardinality::Singleton, Cardinality::Multi);
+ * ```
  */
 export type Cardinality = "singleton" | "multi";

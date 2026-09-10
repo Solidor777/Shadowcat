@@ -33,6 +33,33 @@ use crate::http::AppState;
 use crate::ws::room::RoomStatsSnapshot;
 
 /// Liveness + DB connectivity probe.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::health;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let status = health(State(state)).await;
+/// assert!(status.0.db_connected);
+/// # }
+/// ```
 pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
     let connected = sqlx::query("SELECT 1")
         .fetch_one(state.repo.pool())
@@ -42,6 +69,36 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthStatus> {
 }
 
 /// Admin-only snapshot of live room telemetry.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::debug_rooms;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
+/// let rooms = debug_rooms(admin, State(state)).await;
+/// assert!(rooms.0.is_empty());
+/// # }
+/// ```
 pub async fn debug_rooms(
     _admin: AdminUser,
     State(state): State<AppState>,
@@ -55,6 +112,37 @@ pub async fn debug_rooms(
 /// backup's DB metadata and file bytes are mutually consistent. DB writers
 /// need no gating: `VACUUM INTO` is transactionally consistent against a live
 /// writer by itself.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::admin_backup;
+/// use shadowcat::http::AppState;
+///
+/// // `no_run`: writes a real `VACUUM INTO` snapshot + asset copy to disk.
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
+/// let manifest = admin_backup(admin, State(state)).await.unwrap();
+/// assert!(manifest.0.db_bytes > 0);
+/// # }
+/// ```
 pub async fn admin_backup(
     _admin: AdminUser,
     State(state): State<AppState>,
@@ -82,6 +170,16 @@ pub async fn admin_backup(
 }
 
 /// `POST /api/login` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::LoginRequest;
+///
+/// let body: LoginRequest =
+///     serde_json::from_str(r#"{"username":"gm","password":"pw"}"#).unwrap();
+/// assert_eq!(body.username, "gm");
+/// ```
 #[derive(Deserialize)]
 pub struct LoginRequest {
     /// Account username.
@@ -91,6 +189,17 @@ pub struct LoginRequest {
 }
 
 /// `GET /api/me` response: the session's identity.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::http::routes::MeResponse;
+///
+/// let body = MeResponse { id: uuid::Uuid::new_v4(), username: "gm".into(), server_role: ServerRole::User };
+/// let value = serde_json::to_value(&body).unwrap();
+/// assert_eq!(value["username"], "gm");
+/// ```
 #[derive(Serialize)]
 pub struct MeResponse {
     /// Account id.
@@ -102,6 +211,20 @@ pub struct MeResponse {
 }
 
 /// Current session identity, or 401.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::http::routes::me;
+///
+/// let user = AuthUser { id: uuid::Uuid::new_v4(), username: "gm".into(), role: ServerRole::User };
+/// let resp = me(user).await;
+/// assert_eq!(resp.0.username, "gm");
+/// # }
+/// ```
 pub async fn me(user: AuthUser) -> Json<MeResponse> {
     Json(MeResponse {
         id: user.id,
@@ -116,6 +239,38 @@ pub async fn me(user: AuthUser) -> Json<MeResponse> {
 const MAX_UI_STATE_BYTES: usize = 64 * 1024;
 
 /// The caller's opaque UI-state object, or `{}` when unset.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_ui_state;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let uid = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
+/// let val = get_ui_state(user, State(state)).await.unwrap();
+/// assert_eq!(val.0, serde_json::json!({}));
+/// # }
+/// ```
 pub async fn get_ui_state(
     user: AuthUser,
     State(state): State<AppState>,
@@ -144,6 +299,39 @@ pub async fn get_ui_state(
 /// changed slices/keys is the concurrency control: concurrent sessions of
 /// one account contend only on the individual keys both write, instead of
 /// last-writer-wins on the whole blob.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::put_ui_state;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let uid = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: uid, username: "gm".into(), role: ServerRole::User };
+/// let result = put_ui_state(user, State(state), Json(serde_json::json!({"theme": "dark"}))).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn put_ui_state(
     user: AuthUser,
     State(state): State<AppState>,
@@ -179,6 +367,15 @@ pub async fn put_ui_state(
 /// Public server bootstrap info for the SPA's first-load routing (setup vs
 /// login). Exposes nothing beyond the `initialized` bit the setup-409 already
 /// reveals.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::ServerConfig;
+///
+/// let cfg = ServerConfig { initialized: true };
+/// assert_eq!(serde_json::to_value(&cfg).unwrap(), serde_json::json!({"initialized": true}));
+/// ```
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ServerConfig {
@@ -187,6 +384,33 @@ pub struct ServerConfig {
 }
 
 /// Whether a first admin exists. Unauthenticated; reachable before init.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::config;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let resp = config(State(state)).await;
+/// assert!(resp.0.initialized);
+/// # }
+/// ```
 pub async fn config(State(state): State<AppState>) -> Json<ServerConfig> {
     Json(ServerConfig {
         initialized: state.initialized.load(Ordering::Relaxed),
@@ -205,6 +429,42 @@ fn anti_enumeration_phc() -> &'static str {
 
 /// Verify credentials and establish a session. Uniform 401 on unknown user or
 /// wrong password — no enumeration. Always runs a verify to keep timing flat.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::password::hash_password;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::{router, AppState};
+///
+/// // The `Session` extractor needs the router's session layer, so this route
+/// // is exercised through the real router rather than called directly.
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let hash = hash_password("pw-correct").unwrap();
+/// repo.create_user("gm", Some(&hash), ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let server = axum_test::TestServer::new(router(state).await).unwrap();
+/// let resp = server
+///     .post("/api/login")
+///     .json(&serde_json::json!({"username": "gm", "password": "pw-correct"}))
+///     .await;
+/// assert_eq!(resp.status_code(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn login(
     State(state): State<AppState>,
     session: Session,
@@ -275,12 +535,51 @@ pub async fn login(
 
 /// Destroy the session. Propagates store errors so a failed flush is not
 /// reported as a successful logout — the cookie would otherwise still authenticate.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::{router, AppState};
+///
+/// // The `Session` extractor needs the router's session layer, so this route
+/// // is exercised through the real router rather than called directly.
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let server = axum_test::TestServer::new(router(state).await).unwrap();
+/// let resp = server.post("/api/logout").await;
+/// assert_eq!(resp.status_code(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn logout(session: Session) -> Result<axum::http::StatusCode, AppError> {
     session.flush().await.map_err(|_| AppError::Internal)?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/setup` body: first-admin creation.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::SetupRequest;
+///
+/// let body: SetupRequest =
+///     serde_json::from_str(r#"{"username":"admin","password":"pw"}"#).unwrap();
+/// assert_eq!(body.username, "admin");
+/// assert_eq!(body.token, None);
+/// ```
 #[derive(Deserialize)]
 pub struct SetupRequest {
     /// First admin's username.
@@ -293,6 +592,35 @@ pub struct SetupRequest {
 
 /// First-run admin creation. Gated: 409 once initialized; 403 on token mismatch
 /// when a token is required. Flips `initialized` so the gate opens.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{setup, SetupRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let body = SetupRequest { username: "admin".into(), password: "pw-admin".into(), token: None };
+/// let result = setup(State(state), Json(body)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn setup(
     State(state): State<AppState>,
     Json(body): Json<SetupRequest>,
@@ -362,6 +690,17 @@ pub(crate) fn validate_username(raw: &str) -> Result<String, AppError> {
 }
 
 /// `POST /api/users` body (admin-only route).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::CreateUserRequest;
+///
+/// let body: CreateUserRequest =
+///     serde_json::from_str(r#"{"username":"pl","password":"pw-player"}"#).unwrap();
+/// assert_eq!(body.username, "pl");
+/// assert_eq!(body.server_role, None);
+/// ```
 #[derive(Deserialize)]
 pub struct CreateUserRequest {
     /// New account's username (validated length/uniqueness).
@@ -377,6 +716,17 @@ pub struct CreateUserRequest {
 
 /// An account as exposed to the admin surface. Carries no credential material:
 /// the password hash is neither a field here nor selected by `list_users`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::http::routes::UserEntry;
+///
+/// let entry = UserEntry { id: uuid::Uuid::new_v4(), username: "gm".into(), server_role: ServerRole::User };
+/// let value = serde_json::to_value(&entry).unwrap();
+/// assert!(value.get("password_hash").is_none());
+/// ```
 #[derive(Serialize)]
 pub struct UserEntry {
     /// Account id.
@@ -390,6 +740,38 @@ pub struct UserEntry {
 /// Create an account. Admin-only via the `AdminUser` extractor, which gates on
 /// `ServerRole::Admin` alone — never on world role, which `permission_context`
 /// would resolve to GM for an admin and which no world-tier grant can confer.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{create_user, CreateUserRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
+/// let body = CreateUserRequest { username: "player1".into(), password: "pw-player".into(), server_role: None };
+/// let entry = create_user(admin, State(state), Json(body)).await.unwrap();
+/// assert_eq!(entry.0.username, "player1");
+/// # }
+/// ```
 pub async fn create_user(
     _admin: AdminUser,
     State(state): State<AppState>,
@@ -426,6 +808,38 @@ pub async fn create_user(
 
 /// Every account. Admin-only: a world GM manages world membership by username
 /// and is deliberately never handed a server-wide user directory.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::list_users;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let admin = AdminUser(AuthUser { id: uuid::Uuid::new_v4(), username: "admin".into(), role: ServerRole::Admin });
+/// let users = list_users(admin, State(state)).await.unwrap();
+/// assert_eq!(users.0.len(), 1);
+/// # }
+/// ```
 pub async fn list_users(
     _admin: AdminUser,
     State(state): State<AppState>,
@@ -450,6 +864,43 @@ pub async fn list_users(
 /// (repo) remains the structural backstop. After commit, live connections
 /// are kicked across every room; the account's cookies died inside the same
 /// transaction, so a reconnect fails authentication.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::delete_user;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let admin_id = repo.create_user("admin", None, ServerRole::Admin, 0).await.unwrap();
+/// let target = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// // `delete_user` also clears the caller's session-store row, so the
+/// // `tower_sessions` table must exist first — the same migration the real
+/// // router runs via its session layer.
+/// let _ = shadowcat::http::router(state.clone()).await;
+/// let admin_user = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
+/// let result = delete_user(admin_user, State(state), Path(target)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn delete_user(
     admin: AdminUser,
     State(state): State<AppState>,
@@ -534,6 +985,15 @@ pub(crate) async fn require_gm(
 }
 
 /// `POST /api/worlds` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::CreateWorldRequest;
+///
+/// let body: CreateWorldRequest = serde_json::from_str(r#"{"name":"Curse of Strahd"}"#).unwrap();
+/// assert_eq!(body.name, "Curse of Strahd");
+/// ```
 #[derive(Deserialize)]
 pub struct CreateWorldRequest {
     /// Display name for the new world.
@@ -542,6 +1002,17 @@ pub struct CreateWorldRequest {
 
 /// A world the caller can access, with their effective role. The client's
 /// world-select list item.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::http::routes::WorldEntry;
+///
+/// let entry = WorldEntry { id: uuid::Uuid::new_v4(), name: "Curse of Strahd".into(), role: WorldRole::Gm };
+/// let value = serde_json::to_value(&entry).unwrap();
+/// assert_eq!(value["name"], "Curse of Strahd");
+/// ```
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct WorldEntry {
@@ -554,6 +1025,39 @@ pub struct WorldEntry {
 }
 
 /// Worlds the authenticated caller may access.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::list_worlds;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let worlds = list_worlds(user, State(state)).await.unwrap();
+/// assert_eq!(worlds.0.len(), 1);
+/// # }
+/// ```
 pub async fn list_worlds(
     user: AuthUser,
     State(state): State<AppState>,
@@ -572,6 +1076,40 @@ pub async fn list_worlds(
 }
 
 /// Any authenticated user may create a world; the creator is seated as its GM.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{create_world, CreateWorldRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let body = CreateWorldRequest { name: "Curse of Strahd".into() };
+/// let world = create_world(user, State(state), Json(body)).await.unwrap();
+/// assert_eq!(world.0.name, "Curse of Strahd");
+/// # }
+/// ```
 pub async fn create_world(
     user: AuthUser,
     State(state): State<AppState>,
@@ -610,6 +1148,40 @@ pub async fn create_world(
 /// delete convention: rows first, files second, so a crash orphans files on
 /// disk rather than leaving a live world missing them. The barrier read side
 /// spans the commit + dir removal so a backup never snapshots half a delete.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::delete_world;
+/// use shadowcat::http::AppState;
+///
+/// // `no_run`: removes the world's real assets directory tree from disk.
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let result = delete_world(user, State(state), Path(world.id)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn delete_world(
     user: AuthUser,
     State(state): State<AppState>,
@@ -641,6 +1213,17 @@ pub async fn delete_world(
 }
 
 /// A roster row of `GET /api/worlds/{id}/members`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::http::routes::MemberEntry;
+///
+/// let entry = MemberEntry { user: uuid::Uuid::new_v4(), username: "pl".into(), role: WorldRole::Player };
+/// let value = serde_json::to_value(&entry).unwrap();
+/// assert_eq!(value["username"], "pl");
+/// ```
 #[derive(Serialize)]
 pub struct MemberEntry {
     /// Member's user id.
@@ -655,6 +1238,39 @@ pub struct MemberEntry {
 /// names); non-members get 403 Forbidden — the world id is caller-supplied, so
 /// a membership denial leaks nothing (contrast `by_id_not_found`'s by-id
 /// routes, where 403-vs-404 would confirm existence).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::list_members;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let members = list_members(user, State(state), Path(world.id)).await.unwrap();
+/// assert_eq!(members.0.len(), 1);
+/// # }
+/// ```
 pub async fn list_members(
     user: AuthUser,
     State(state): State<AppState>,
@@ -695,6 +1311,19 @@ pub async fn list_members(
 /// `role` is a [`WorldRole`] — a closed enum of `gm`/`player`/`spectator`. No
 /// server-tier value is representable here, so this GM-reachable route cannot
 /// express, let alone grant, a `ServerRole`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::AddMemberRequest;
+///
+/// let body: AddMemberRequest = serde_json::from_str(&format!(
+///     r#"{{"user":"{}","role":"player"}}"#,
+///     uuid::Uuid::nil()
+/// ))
+/// .unwrap();
+/// assert_eq!(body.user, uuid::Uuid::nil());
+/// ```
 #[derive(Deserialize)]
 pub struct AddMemberRequest {
     /// The account to seat.
@@ -708,6 +1337,43 @@ pub struct AddMemberRequest {
 /// as a 404 rather than surfacing as a constraint violation (a 500) —
 /// `upsert_member` proves existence atomically with the write, so a user
 /// deleted mid-request cannot resurface the FK path.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{add_member, AddMemberRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let pl = repo.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let body = AddMemberRequest { user: pl, role: WorldRole::Player };
+/// let result = add_member(user, State(state), Path(world.id), Json(body)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn add_member(
     user: AuthUser,
     State(state): State<AppState>,
@@ -733,6 +1399,15 @@ const INVITE_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const MAX_ACTIVE_INVITES_PER_WORLD: i64 = 64;
 
 /// `POST /api/worlds/{id}/invites` body (GM-only route).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::CreateInviteRequest;
+///
+/// let body: CreateInviteRequest = serde_json::from_str(r#"{"role":"player"}"#).unwrap();
+/// assert_eq!(body.role, shadowcat::data::document::WorldRole::Player);
+/// ```
 #[derive(Deserialize)]
 pub struct CreateInviteRequest {
     /// The world role the redeemer is seated at. A [`WorldRole`], so no
@@ -743,6 +1418,22 @@ pub struct CreateInviteRequest {
 /// A freshly minted invite. `code` is the bearer credential and appears here
 /// once and nowhere else: the server stores only a hash of its secret half, so
 /// it cannot be re-read from the listing or recovered from the database.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::http::routes::MintedInvite;
+///
+/// let invite = MintedInvite {
+///     id: uuid::Uuid::new_v4(),
+///     code: "abc123".into(),
+///     role: WorldRole::Player,
+///     expires_at: 1_700_000_000_000,
+/// };
+/// let value = serde_json::to_value(&invite).unwrap();
+/// assert_eq!(value["code"], "abc123");
+/// ```
 #[derive(Serialize)]
 pub struct MintedInvite {
     /// Invite id (the code's selector half).
@@ -757,6 +1448,24 @@ pub struct MintedInvite {
 
 /// An invite as the minting GM's listing sees it. Carries no credential
 /// material — neither the code nor its hash is a field here.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::http::routes::InviteEntry;
+///
+/// let entry = InviteEntry {
+///     id: uuid::Uuid::new_v4(),
+///     role: WorldRole::Player,
+///     created_at: 0,
+///     expires_at: 1_700_000_000_000,
+///     revoked_at: None,
+///     consumed_at: None,
+/// };
+/// let value = serde_json::to_value(&entry).unwrap();
+/// assert!(value.get("code").is_none());
+/// ```
 #[derive(Serialize)]
 pub struct InviteEntry {
     /// Invite id.
@@ -788,6 +1497,42 @@ impl From<crate::data::sqlite::InviteRecord> for InviteEntry {
 }
 
 /// Mint a single-use invite for this world. GM of THIS world only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{create_invite, CreateInviteRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let body = CreateInviteRequest { role: WorldRole::Player };
+/// let minted = create_invite(user, State(state), Path(world.id), Json(body)).await.unwrap();
+/// assert!(!minted.0.code.is_empty());
+/// # }
+/// ```
 pub async fn create_invite(
     user: AuthUser,
     State(state): State<AppState>,
@@ -827,6 +1572,39 @@ pub async fn create_invite(
 }
 
 /// This world's invites. GM of THIS world only; codes are not recoverable here.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::list_invites;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let invites = list_invites(user, State(state), Path(world.id)).await.unwrap();
+/// assert!(invites.0.is_empty());
+/// # }
+/// ```
 pub async fn list_invites(
     user: AuthUser,
     State(state): State<AppState>,
@@ -841,6 +1619,40 @@ pub async fn list_invites(
 /// its consume statement). GM of THIS world only, and the revoke is scoped to
 /// the world in SQL — a GM of another world gets the same 404 for an id that
 /// exists elsewhere as for one that exists nowhere.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::revoke_invite;
+/// use shadowcat::http::AppState;
+/// use shadowcat::http::error::AppError;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let result = revoke_invite(user, State(state), Path((world.id, uuid::Uuid::new_v4()))).await;
+/// assert!(matches!(result, Err(AppError::NotFound)));
+/// # }
+/// ```
 pub async fn revoke_invite(
     user: AuthUser,
     State(state): State<AppState>,
@@ -858,6 +1670,15 @@ pub async fn revoke_invite(
 }
 
 /// `POST /api/invites/accept` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::AcceptInviteRequest;
+///
+/// let body: AcceptInviteRequest = serde_json::from_str(r#"{"code":"abc123"}"#).unwrap();
+/// assert_eq!(body.code, "abc123");
+/// ```
 #[derive(Deserialize)]
 pub struct AcceptInviteRequest {
     /// The bearer code. Carried in the BODY, never the path: a request line is
@@ -876,6 +1697,59 @@ pub struct AcceptInviteRequest {
 /// timing. Nothing about a world the caller holds no valid code for is
 /// disclosed: the world's identity is read inside the consume transaction and
 /// returned only on success.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::State;
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{accept_invite, AcceptInviteRequest};
+/// use shadowcat::http::throttle::ClientIp;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let pl = repo.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let minted = shadowcat::auth::invite::mint().unwrap();
+/// repo.create_invite(
+///     shadowcat::data::sqlite::NewInvite {
+///         id: minted.id,
+///         world: world.id,
+///         secret_hash: &minted.secret_hash,
+///         role: WorldRole::Player,
+///         created_by: gm,
+///         now: 0,
+///         expires_at: i64::MAX,
+///     },
+///     64,
+/// )
+/// .await
+/// .unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: pl, username: "pl".into(), role: ServerRole::User };
+/// let body = AcceptInviteRequest { code: minted.code };
+/// let entry = accept_invite(user, State(state), ClientIp(None), Json(body)).await.unwrap();
+/// assert_eq!(entry.0.id, world.id);
+/// # }
+/// ```
 pub async fn accept_invite(
     user: AuthUser,
     State(state): State<AppState>,
@@ -950,6 +1824,42 @@ pub async fn accept_invite(
 
 /// Unseat a member. GM-only (`require_gm`); refuses to remove the last GM
 /// (surfaces the repository's Conflict).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::remove_member;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let pl = repo.create_user("pl", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// repo.upsert_member(world.id, pl, WorldRole::Player).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let result = remove_member(user, State(state), Path((world.id, pl))).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn remove_member(
     user: AuthUser,
     State(state): State<AppState>,
@@ -962,6 +1872,66 @@ pub async fn remove_member(
 
 /// Create a document over HTTP: same authoritative write path as a WS intent
 /// (`write_ops` -> `apply_intent`), same authz and validation.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::create_document;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let doc = Document {
+///     id: uuid::Uuid::new_v4(),
+///     scope: Scope::World { world_id: world.id },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: Some("Player Dragon".into()),
+///     source: None,
+///     base: None,
+///     owner: Some(gm),
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::json!({
+///         "displayName": "Player Dragon",
+///         "visual": { "kind": "image", "asset": "dragon.png" },
+///         "size": { "w": 1.0, "h": 1.0 },
+///         "shape": "square",
+///         "faction": null,
+///         "conditions": [],
+///         "prototype": true
+///     })),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let cmd = create_document(user, State(state), Path(world.id), Json(doc)).await.unwrap();
+/// assert_eq!(cmd.0.ops.len(), 1);
+/// # }
+/// ```
 pub async fn create_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -972,6 +1942,15 @@ pub async fn create_document(
 }
 
 /// Query string of `GET /api/worlds/{id}/documents`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::DocQuery;
+///
+/// let q: DocQuery = serde_json::from_str(r#"{"type":"actor"}"#).unwrap();
+/// assert_eq!(q.r#type, "actor");
+/// ```
 #[derive(Deserialize)]
 pub struct DocQuery {
     /// The doc_type to list.
@@ -980,6 +1959,40 @@ pub struct DocQuery {
 
 /// List documents of one type, per-recipient filtered (READ-gated per doc,
 /// properties redacted via `filter_properties`; tokens join effective owners).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, Query, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{list_documents, DocQuery};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let q = DocQuery { r#type: "actor".into() };
+/// let docs = list_documents(user, State(state), Path(world.id), Query(q)).await.unwrap();
+/// assert!(docs.0.is_empty());
+/// # }
+/// ```
 pub async fn list_documents(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1033,6 +2046,16 @@ pub async fn list_documents(
 /// per-recipient filtered exactly like `list_documents`, plus the room's `current_seq` at read
 /// time — the client uses this to initialize its own sequence watermark
 /// (`next_expected = seq + 1`) without replaying history it does not need.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::routes::WorldSnapshot;
+///
+/// let snapshot = WorldSnapshot { documents: Vec::new(), seq: 0 };
+/// let value = serde_json::to_value(&snapshot).unwrap();
+/// assert_eq!(value["seq"], 0);
+/// ```
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct WorldSnapshot {
@@ -1047,6 +2070,39 @@ pub struct WorldSnapshot {
 /// tokens joined to their effective owner) but across EVERY `doc_type` in one call, plus the
 /// seq this snapshot was read as-of. This is the client's cold-start bootstrap source — it
 /// replaces full event replay from seq 1 for a fresh session.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::world_snapshot;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let snapshot = world_snapshot(user, State(state), Path(world.id)).await.unwrap();
+/// assert_eq!(snapshot.0.seq, 0);
+/// # }
+/// ```
 pub async fn world_snapshot(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1121,6 +2177,39 @@ fn by_id_not_found(e: crate::data::DataError) -> AppError {
 /// Fetch one document by id: world derived from the doc (`world_of`),
 /// READ-gated, redacted via `filter_properties`; absent and forbidden are both
 /// 404 (existence-hiding).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_document;
+/// use shadowcat::http::error::AppError;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let result = get_document(user, State(state), Path(uuid::Uuid::new_v4())).await;
+/// assert!(matches!(result, Err(AppError::NotFound)));
+/// # }
+/// ```
 pub async fn get_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1160,6 +2249,23 @@ pub async fn get_document(
 }
 
 /// `PATCH /api/documents/{id}` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::FieldChange;
+/// use shadowcat::http::routes::PatchRequest;
+///
+/// let body = PatchRequest {
+///     changes: vec![FieldChange {
+///         path: "/system/hp".into(),
+///         old: serde_json::json!(10),
+///         new: serde_json::json!(8),
+///         remove: false,
+///     }],
+/// };
+/// assert_eq!(body.changes.len(), 1);
+/// ```
 #[derive(Deserialize)]
 pub struct PatchRequest {
     /// Field-level changes, each with its OCC pre-image.
@@ -1168,6 +2274,81 @@ pub struct PatchRequest {
 
 /// Field-level update by id: same authoritative write path as a WS intent;
 /// world derived from the doc; refusals surface as 404/409/422 per `AppError`.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::command::{FieldChange, Operation, WriteOrigin};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::{patch_document, PatchRequest};
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let doc_id = uuid::Uuid::new_v4();
+/// let doc = Document {
+///     id: doc_id,
+///     scope: Scope::World { world_id: world.id },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: Some("Player Dragon".into()),
+///     source: None,
+///     base: None,
+///     owner: Some(gm),
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::json!({
+///         "displayName": "Player Dragon",
+///         "visual": { "kind": "image", "asset": "dragon.png" },
+///         "size": { "w": 1.0, "h": 1.0 },
+///         "shape": "square",
+///         "faction": null,
+///         "conditions": [],
+///         "prototype": true
+///     })),
+///     system: serde_json::json!({ "hp": 10 }),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let gm_ctx = PermissionContext { user_id: gm, world_role: shadowcat::data::document::WorldRole::Gm };
+/// repo.apply_intent(&gm_ctx, world.id, vec![Operation::Create { doc }], 0, WriteOrigin::Client)
+///     .await
+///     .unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let body = PatchRequest {
+///     changes: vec![FieldChange {
+///         path: "/system/hp".into(),
+///         old: serde_json::json!(10),
+///         new: serde_json::json!(8),
+///         remove: false,
+///     }],
+/// };
+/// let cmd = patch_document(user, State(state), Path(doc_id), Json(body)).await.unwrap();
+/// assert_eq!(cmd.0.ops.len(), 1);
+/// # }
+/// ```
 pub async fn patch_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1204,6 +2385,72 @@ pub async fn patch_document(
 
 /// Delete by id through the authoritative write path (carries the full
 /// pre-image for invertibility; cascades handled by `delete_document_tx`).
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::delete_document;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let doc_id = uuid::Uuid::new_v4();
+/// let doc = Document {
+///     id: doc_id,
+///     scope: Scope::World { world_id: world.id },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: Some("Player Dragon".into()),
+///     source: None,
+///     base: None,
+///     owner: Some(gm),
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::json!({
+///         "displayName": "Player Dragon",
+///         "visual": { "kind": "image", "asset": "dragon.png" },
+///         "size": { "w": 1.0, "h": 1.0 },
+///         "shape": "square",
+///         "faction": null,
+///         "conditions": [],
+///         "prototype": true
+///     })),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let gm_ctx = PermissionContext { user_id: gm, world_role: shadowcat::data::document::WorldRole::Gm };
+/// repo.apply_intent(&gm_ctx, world.id, vec![Operation::Create { doc }], 0, WriteOrigin::Client)
+///     .await
+///     .unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let cmd = delete_document(user, State(state), Path(doc_id)).await.unwrap();
+/// assert_eq!(cmd.0.ops.len(), 1);
+/// # }
+/// ```
 pub async fn delete_document(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1270,6 +2517,39 @@ fn validate_grants(defaults: &WorldCapDefaults) -> Result<(), AppError> {
 }
 
 /// A world's capability configuration. GM/admin only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_world_capability_defaults;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let defaults = get_world_capability_defaults(user, State(state), Path(world.id)).await.unwrap();
+/// assert!(defaults.0.by_type.is_empty());
+/// # }
+/// ```
 pub async fn get_world_capability_defaults(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1280,6 +2560,41 @@ pub async fn get_world_capability_defaults(
 }
 
 /// Replace a world's capability configuration. GM/admin only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::WorldCapDefaults;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::set_world_capability_defaults;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let result = set_world_capability_defaults(user, State(state), Path(world.id), Json(WorldCapDefaults::default())).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn set_world_capability_defaults(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1298,6 +2613,39 @@ pub async fn set_world_capability_defaults(
 const MAX_CAPABILITY_REQUIREMENTS: usize = 256;
 
 /// A world's declarative capability requirements. GM/admin only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_world_capability_requirements;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let reqs = get_world_capability_requirements(user, State(state), Path(world.id)).await.unwrap();
+/// assert!(reqs.0.is_empty());
+/// # }
+/// ```
 pub async fn get_world_capability_requirements(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1308,6 +2656,45 @@ pub async fn get_world_capability_requirements(
 }
 
 /// Replace a world's declarative capability requirements. GM/admin only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::CapabilityRequirement;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::set_world_capability_requirements;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let reqs = vec![CapabilityRequirement {
+///     path_prefix: "/system".into(),
+///     caps: ["dnd5e:gm_vision".to_string()].into_iter().collect(),
+/// }];
+/// let result = set_world_capability_requirements(user, State(state), Path(world.id), Json(reqs)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn set_world_capability_requirements(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1443,6 +2830,39 @@ fn validate_contract_declarations(decls: &[ContractDeclaration]) -> Result<(), A
 }
 
 /// A world's UI contract declarations. GM/admin only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_world_contract_declarations;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let decls = get_world_contract_declarations(user, State(state), Path(world.id)).await.unwrap();
+/// assert!(decls.0.is_empty());
+/// # }
+/// ```
 pub async fn get_world_contract_declarations(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1453,6 +2873,47 @@ pub async fn get_world_contract_declarations(
 }
 
 /// Replace a world's UI contract declarations. GM/admin only; validated.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::ContractDeclaration;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::set_world_contract_declarations;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let decls = vec![ContractDeclaration {
+///     module_id: "dnd5e".into(),
+///     version: "1.0.0".into(),
+///     provides: Vec::new(),
+///     requires: Vec::new(),
+/// }];
+/// let result = set_world_contract_declarations(user, State(state), Path(world.id), Json(decls)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn set_world_contract_declarations(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1617,6 +3078,39 @@ fn validate_schema_declarations(decls: &[SchemaDeclaration]) -> Result<(), AppEr
 }
 
 /// A world's structural schema declarations. GM/admin only.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::get_world_schema_declarations;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let decls = get_world_schema_declarations(user, State(state), Path(world.id)).await.unwrap();
+/// assert!(decls.0.is_empty());
+/// # }
+/// ```
 pub async fn get_world_schema_declarations(
     user: AuthUser,
     State(state): State<AppState>,
@@ -1627,6 +3121,49 @@ pub async fn get_world_schema_declarations(
 }
 
 /// Replace a world's structural schema declarations. GM/admin only; validated.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use axum::Json;
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::data::document::{Schema, SchemaDeclaration, SchemaType};
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::routes::set_world_schema_declarations;
+/// use shadowcat::http::AppState;
+///
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", gm, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: gm, username: "gm".into(), role: ServerRole::User };
+/// let decls = vec![SchemaDeclaration {
+///     module_id: "dnd5e".into(),
+///     version: "1.0.0".into(),
+///     schema_format: 1,
+///     doc_type: "actor".into(),
+///     subtree_pointer: "/system/stats".into(),
+///     schema: Schema { ty: Some(SchemaType::Object), ..Default::default() },
+/// }];
+/// let result = set_world_schema_declarations(user, State(state), Path(world.id), Json(decls)).await;
+/// assert_eq!(result.unwrap(), axum::http::StatusCode::NO_CONTENT);
+/// # }
+/// ```
 pub async fn set_world_schema_declarations(
     user: AuthUser,
     State(state): State<AppState>,

@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach } from "vitest";
+import { basename, join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   findSkillFiles,
   extractApiRefs,
@@ -9,15 +10,20 @@ import {
   checkSkillApiRefs,
 } from "./check-skill-api-refs.mjs";
 
+// One fixture root per describe block below, at a FIXED path rewritten in place rather than a
+// fresh temp directory per run: this repo permits no permanent-deletion call, so a per-run
+// directory would accumulate forever. Every test writes deterministic content into a fixed
+// subdirectory, so re-running only ever overwrites what an earlier run left there.
+const FIXTURE_ROOT = join(
+  tmpdir(),
+  `shadowcat-${basename(fileURLToPath(import.meta.url), ".test.mjs")}-fixture`,
+);
+
 describe("findSkillFiles", () => {
-  let root;
   const skills = (r) => join(r, ".claude", "skills");
-  afterEach(() => {
-    if (root) rmSync(root, { recursive: true, force: true });
-  });
 
   it("finds every SKILL.md recursively, ignoring same-named-differently files", () => {
-    root = mkdtempSync(join(tmpdir(), "skills-find-"));
+    const root = join(FIXTURE_ROOT, "find-basic");
     mkdirSync(join(skills(root), "a"), { recursive: true });
     mkdirSync(join(skills(root), "b"), { recursive: true });
     writeFileSync(join(skills(root), "a", "SKILL.md"), "");
@@ -34,7 +40,7 @@ describe("findSkillFiles", () => {
   // The corpus rule both gates now share: an untracked directory is vendored prose, and a
   // `/api/...` pointer inside one is not this repo's to fail CI on.
   it("skips an untracked skill directory and reports it as excluded", () => {
-    root = mkdtempSync(join(tmpdir(), "skills-find-"));
+    const root = join(FIXTURE_ROOT, "find-untracked");
     mkdirSync(join(skills(root), "tracked"), { recursive: true });
     mkdirSync(join(skills(root), "vendored"), { recursive: true });
     writeFileSync(join(skills(root), "tracked", "SKILL.md"), "");
@@ -48,7 +54,7 @@ describe("findSkillFiles", () => {
   });
 
   it("returns an empty array for a scope with no SKILL.md files", () => {
-    root = mkdtempSync(join(tmpdir(), "skills-find-"));
+    const root = join(FIXTURE_ROOT, "find-empty");
     mkdirSync(join(skills(root), "empty"), { recursive: true });
     expect(findSkillFiles(skills(root), { trackedDirs: new Set(["empty"]) }).files).toEqual([]);
   });
@@ -79,15 +85,13 @@ describe("extractApiRefs", () => {
 });
 
 describe("apiRefResolves", () => {
-  let root;
+  const root = join(FIXTURE_ROOT, "api-ref-resolves");
   beforeEach(() => {
-    root = mkdtempSync(join(tmpdir(), "dist-docs-"));
     mkdirSync(join(root, "api", "ts", "modules"), { recursive: true });
     writeFileSync(join(root, "api", "ts", "modules", "_shadowcat_core.html"), "<html></html>");
     mkdirSync(join(root, "api", "rust", "shadowcat", "data"), { recursive: true });
     writeFileSync(join(root, "api", "rust", "shadowcat", "data", "index.html"), "<html></html>");
   });
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   it("resolves a TypeDoc .html page path", () => {
     expect(apiRefResolves(root, "/api/ts/modules/_shadowcat_core.html")).toBe(true);
@@ -104,21 +108,14 @@ describe("apiRefResolves", () => {
 });
 
 describe("checkSkillApiRefs", () => {
-  let repoRoot;
-  let skillsRoot;
-  let distDocsRoot;
+  const repoRoot = join(FIXTURE_ROOT, "check-api-refs-repo");
+  const skillsRoot = join(repoRoot, ".claude", "skills");
+  const distDocsRoot = join(FIXTURE_ROOT, "check-api-refs-dist-docs");
   const scoped = { trackedDirs: new Set(["shadowcat-codebase-example"]) };
   beforeEach(() => {
-    repoRoot = mkdtempSync(join(tmpdir(), "skills-"));
-    skillsRoot = join(repoRoot, ".claude", "skills");
     mkdirSync(skillsRoot, { recursive: true });
-    distDocsRoot = mkdtempSync(join(tmpdir(), "dist-docs-"));
     mkdirSync(join(distDocsRoot, "api", "ts", "modules"), { recursive: true });
     writeFileSync(join(distDocsRoot, "api", "ts", "modules", "_shadowcat_core.html"), "<html></html>");
-  });
-  afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true });
-    rmSync(distDocsRoot, { recursive: true, force: true });
   });
 
   it("stamps the result with what was scanned and reports zero broken pointers when every citation resolves", () => {

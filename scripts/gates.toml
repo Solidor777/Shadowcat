@@ -1,0 +1,272 @@
+# Classifies every `run:` step in every workflow under .github/workflows/ so a workflow step and
+# a manifest entry can be checked against each other rather than trusted to stay in sync by hand.
+# `pnpm lint:gate-manifest` (scripts/check-gate-manifest.mjs) enforces this: every step in every
+# workflow file needs exactly one entry here, keyed by (workflow, job, normalised command), and
+# every entry needs a step. A `setup` or `ci-only` entry additionally needs a non-empty `reason`.
+#
+# A `commit`/`push` entry is one the local tier runner executes VERBATIM, so it must be a plain
+# one-line `run:` with no `${{ }}` expression, no runner-injected `GITHUB_*`/`RUNNER_*` variable,
+# and no `env:` block on the step, its job, or the workflow — the runner applies no per-step
+# environment, so environment carried outside the command string is environment the local gate
+# silently drops. A step that needs any of those is extracted into a script both CI and the
+# local runner invoke (scripts/check-binary-size.mjs, scripts/cargo-doc-strict.mjs), and the
+# one-line invocation is what gets tiered.
+#
+# Tiers:
+#   setup    — not a gate: installs a toolchain or dependency set, or builds a prerequisite a
+#              later step consumes; `reason` names what it prepares.
+#   commit   — fast, deterministic, run before every commit.
+#   push     — slower or environment-sensitive; run before every push. Cost, contention or
+#              flakiness never moves an entry out of this tier.
+#   ci-only  — cannot run on a developer machine; `reason` says why.
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "pnpm build"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "n=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo \"${NUMBER_OF_PROCESSORS:-2}\") echo \"runner parallelism: $n\" echo \"CARGO_BUILD_JOBS=$n\" >> \"$GITHUB_ENV\""
+tier = "setup"
+reason = "Exports the runner's own core count as CARGO_BUILD_JOBS for the cargo steps after it; a developer machine builds under the repo's own parallelism budget instead."
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo fmt --all -- --check"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo clippy --all-targets -- -D warnings"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo test --all"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "git diff --exit-code src/types/generated"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo build --release"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "pnpm lint:binary-size"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "bash scripts/package.sh \"${{ runner.os == 'macOS' && 'macos' || 'linux' }}\""
+tier = "ci-only"
+reason = "Packages per runner OS through a runner.os expression; one desktop cannot produce the macOS and Linux bundles the matrix legs build."
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm -r typecheck"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm -r test"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm run test:scripts"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm docs:check-examples"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm lint"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm build"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm --filter \"shadowcat-example-*\" build"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "web"
+command = "pnpm run check:svelte-runtime"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e"
+command = "pnpm build"
+tier = "setup"
+reason = "Builds dist/ so the server's rust-embed can compile; the identical command is a push gate in the rust and web jobs, and the local runner dedupes it to that one run."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e"
+command = "cargo build -p shadowcat --bin test_server"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e"
+command = "pnpm --filter @shadowcat/core test:e2e"
+tier = "ci-only"
+reason = "The cross-runtime end-to-end job, one of the two end-to-end jobs that stay in CI outside the local tiers. It spawns its own test_server per test file on an OS-assigned port, so nothing about a developer machine makes it impossible; that placement, not an impossibility, is what holds it here."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e"
+command = "pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium"
+tier = "setup"
+reason = "Installs the Chromium build the browser e2e step drives; a prerequisite, not a check in its own right."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e"
+command = "pnpm --filter @shadowcat/shell e2e"
+tier = "ci-only"
+reason = "The browser end-to-end job, one of the two end-to-end jobs that stay in CI outside the local tiers. playwright.config.ts reuses any server already holding fixed port 31999 outside CI, so on a developer machine the run can drive another session's binary and its result cannot be attributed to this tree; only CI's isolated runner binds the port to the tree under test."
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm install --frozen-lockfile"
+tier = "setup"
+reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm build:all"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:docs"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:props"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:comments"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:allowances"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:file-size"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:inline-tests"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:aria-labels"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:gate-manifest"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm lint:settings-privacy"
+tier = "commit"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm docs:check-examples"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "cargo clippy --manifest-path src/server/Cargo.toml --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "pnpm docs:check-rust-examples"
+tier = "push"

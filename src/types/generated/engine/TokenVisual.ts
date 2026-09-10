@@ -9,6 +9,19 @@ import type { RenderVisual } from "./RenderVisual";
  * The client-owned token/actor visual union. Internally tagged on
  * `kind`; serde does not support `deny_unknown_fields` on an internally
  * tagged enum (a documented limitation — NOT applied here).
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::data::engine::TokenVisual;
+ *
+ * let visual = TokenVisual::Image { asset: "token-goblin.png".to_string() };
+ * let json = serde_json::to_value(&visual).unwrap();
+ * // Internally tagged on `kind`, lowercase.
+ * assert_eq!(json["kind"], "image");
+ * assert_eq!(json["asset"], "token-goblin.png");
+ * assert_eq!(serde_json::from_value::<TokenVisual>(json).unwrap(), visual);
+ * ```
  */
 export type TokenVisual = { "kind": "image", 
 /**

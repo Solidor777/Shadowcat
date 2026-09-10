@@ -11,5 +11,13 @@ import type { MergeConflict } from "./MergeConflict";
  * `Applied` instead means "the merge is CURRENTLY conflict-free; the rejected call
  * wrote nothing" — the outcome always describes the merge as recomputed from live
  * documents at reply time.
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::MergePullStatus;
+ *
+ * let json = serde_json::to_value(MergePullStatus::Applied).unwrap();
+ * assert_eq!(json, serde_json::json!("applied"));
+ * ```
  */
 export type MergePullStatus = "applied" | { "conflicts": Array<MergeConflict> };

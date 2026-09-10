@@ -3,6 +3,16 @@
 /**
  * How `ClientMsg::CombatResource` adjusts a tracked resource. The server clamps the
  * resulting value to `[0, max]` in both cases.
+ *
+ * # Examples
+ *
+ * ```
+ * use shadowcat::ws::protocol::ResourceOp;
+ *
+ * let op = ResourceOp::Delta { amount: -2.5 };
+ * let json = serde_json::to_value(&op).unwrap();
+ * assert_eq!(json, serde_json::json!({ "kind": "delta", "amount": -2.5 }));
+ * ```
  */
 export type ResourceOp = { "kind": "delta", 
 /**

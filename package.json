@@ -5,6 +5,7 @@
   "type": "module",
   "packageManager": "pnpm@9",
   "scripts": {
+    "prepare": "node scripts/install-git-hooks.mjs",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "lint": "eslint .",
@@ -18,6 +19,7 @@
     "build:all": "pnpm build && pnpm docs:generate",
     "docs:build": "pnpm build:all",
     "docs:check-examples": "node scripts/extract-ts-examples.mjs",
+    "docs:check-rust-examples": "node scripts/cargo-doc-strict.mjs examples",
     "docs:dev": "vitepress dev docs/site",
     "docs:build:portal": "vitepress build docs/site",
     "docs:serve": "node scripts/serve-docs.mjs",
@@ -27,6 +29,11 @@
     "lint:file-size": "node scripts/check-file-lines.mjs",
     "lint:inline-tests": "node scripts/check-inline-tests.mjs",
     "lint:aria-labels": "node scripts/check-aria-label-keys.mjs",
+    "lint:binary-size": "node scripts/check-binary-size.mjs",
+    "lint:gate-manifest": "node scripts/check-gate-manifest.mjs",
+    "lint:settings-privacy": "node scripts/check-tracked-settings-privacy.mjs",
+    "gate:commit": "node scripts/run-gate-tier.mjs commit",
+    "gate:push": "node scripts/run-gate-tier.mjs push",
     "test:scripts": "vitest run scripts/"
   },
   "devDependencies": {
