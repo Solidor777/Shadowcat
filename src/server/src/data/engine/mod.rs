@@ -85,8 +85,40 @@ pub const COMBAT_HISTORY_DOC_TYPE: &str = "combat-history";
 /// Doc_type for an asset folder (`assets.folder_id` names one); parent = `parent_id`.
 pub const ASSET_FOLDER_DOC_TYPE: &str = "asset_folder";
 
+/// Every doc_type carrying a typed `engine` band, the single data source
+/// `is_engine_doc_type` and `search_text` both dispatch from — so the
+/// registry and either function can never drift apart.
+pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
+    "token",
+    "scene",
+    "wall",
+    "region",
+    "light",
+    "drawing",
+    "template",
+    "actor",
+    "message",
+    "world-settings",
+    "vision-modes",
+    "light-gradation",
+    "chat-settings",
+    "dice-settings",
+    "channel-registry",
+    "faction-registry",
+    "condition-registry",
+    "combat",
+    "combatant",
+    "resource-registry",
+    "effect",
+    "system-defaults",
+    "combat-history",
+    "asset_folder",
+    "table",
+    "note",
+];
+
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
-/// hardcoded match — there is no dynamic registration (the server runs no
+/// hardcoded list — there is no dynamic registration (the server runs no
 /// third-party code).
 ///
 /// # Examples
@@ -100,35 +132,7 @@ pub const ASSET_FOLDER_DOC_TYPE: &str = "asset_folder";
 /// assert!(!is_engine_doc_type("item")); // client-only doc_type: opaque system band only
 /// ```
 pub fn is_engine_doc_type(doc_type: &str) -> bool {
-    matches!(
-        doc_type,
-        "token"
-            | "scene"
-            | "wall"
-            | "region"
-            | "light"
-            | "drawing"
-            | "template"
-            | "actor"
-            | "message"
-            | "world-settings"
-            | "vision-modes"
-            | "light-gradation"
-            | "chat-settings"
-            | "dice-settings"
-            | "channel-registry"
-            | "faction-registry"
-            | "condition-registry"
-            | "combat"
-            | "combatant"
-            | "resource-registry"
-            | "effect"
-            | "system-defaults"
-            | "combat-history"
-            | "asset_folder"
-            | "table"
-            | "note"
-    )
+    ENGINE_DOC_TYPES.contains(&doc_type)
 }
 
 /// `Ok(())` iff `engine` is valid for `doc_type`: engine doc types must carry
@@ -403,6 +407,112 @@ pub fn engine_of<T: serde::de::DeserializeOwned + Default>(
             }
         },
     }
+}
+
+/// Space-joins the non-empty items of `names`, so a registry with no
+/// entries (or entries with empty display names) contributes an empty
+/// string rather than stray separators.
+fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
+    names
+        .filter(|n| !n.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Reader-facing text over one table's rows: `description`, then per row
+/// `label` and every `TableEntry::Text`/`Doc`/`Image`'s reader-facing field.
+/// Excludes `DrawRule`/`TableEntry` discriminants and every id (`asset_id`,
+/// `table_id`) — a nested `Draw` entry contributes nothing here (its own
+/// draw-time text is captured separately, on the executed `Segment::TableDraw`).
+fn table_search_text(table: &TableEngine) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if !table.description.is_empty() {
+        parts.push(&table.description);
+    }
+    for row in &table.rows {
+        if !row.label.is_empty() {
+            parts.push(&row.label);
+        }
+        for entry in &row.results {
+            match entry {
+                TableEntry::Text { text } if !text.is_empty() => parts.push(text),
+                TableEntry::Doc { label, .. } if !label.is_empty() => parts.push(label),
+                TableEntry::Image { alt, .. } if !alt.is_empty() => parts.push(alt),
+                TableEntry::Text { .. } | TableEntry::Doc { .. } | TableEntry::Image { .. } => {}
+                TableEntry::Draw { .. } => {}
+            }
+        }
+    }
+    parts.join(" ")
+}
+
+/// Best-effort typed deserialize for the write-path `search_text` posture:
+/// a body that fails to parse contributes no text rather than failing the
+/// index write (mirrors `index_content_public`'s redaction-failure
+/// posture — see that function's doc).
+fn typed_or_none<T: serde::de::DeserializeOwned>(engine: &serde_json::Value) -> Option<T> {
+    serde_json::from_value(engine.clone()).ok()
+}
+
+/// The reader-facing text projection for one engine band, keyed by
+/// `doc_type`. Feeds `data::search::index_content`, replacing a leaf sweep
+/// of the engine band that would otherwise surface discriminants
+/// (`kind`/`stance`), ids (`asset_id`/`table_id`), colors and notation as
+/// indexable content. `Some(text)` for every registered engine doc type
+/// (`Some(String::new())` for one with no reader-facing text), `None` for a
+/// non-engine `doc_type`. Mirrors `normalize_engine`'s exhaustive-match
+/// shape so the two dispatch tables are reviewed side by side; a doc_type
+/// added to `ENGINE_DOC_TYPES` without a corresponding arm here panics via
+/// the `unreachable!` fallback rather than silently indexing nothing.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use shadowcat::data::engine::search_text;
+///
+/// assert_eq!(search_text("item", &json!({})), None);
+/// assert_eq!(search_text("token", &json!({})), Some(String::new()));
+/// ```
+pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String> {
+    if !is_engine_doc_type(doc_type) {
+        return None;
+    }
+    Some(match doc_type {
+        "actor" => typed_or_none::<ActorEngine>(engine)
+            .map(|a| a.display_name)
+            .unwrap_or_default(),
+        "note" => typed_or_none::<NoteEngine>(engine)
+            .map(|n| crate::chat::segments_search_text(&n.body))
+            .unwrap_or_default(),
+        "table" => typed_or_none::<TableEngine>(engine)
+            .map(|t| table_search_text(&t))
+            .unwrap_or_default(),
+        "message" => typed_or_none::<crate::chat::MessageEngine>(engine)
+            .map(|m| crate::chat::segments_search_text(&m.content))
+            .unwrap_or_default(),
+        "channel-registry" => typed_or_none::<ChannelRegistryEngine>(engine)
+            .map(|r| join_names(r.channels.values().map(|c| c.name.as_str())))
+            .unwrap_or_default(),
+        "faction-registry" => typed_or_none::<FactionRegistryEngine>(engine)
+            .map(|r| join_names(r.factions.values().map(|f| f.name.as_str())))
+            .unwrap_or_default(),
+        "condition-registry" => typed_or_none::<ConditionRegistryEngine>(engine)
+            .map(|r| join_names(r.conditions.values().map(|c| c.name.as_str())))
+            .unwrap_or_default(),
+        "resource-registry" => typed_or_none::<ResourceRegistryEngine>(engine)
+            .map(|r| join_names(r.resources.values().map(|res| res.name.as_str())))
+            .unwrap_or_default(),
+        "vision-modes" => typed_or_none::<VisionModesEngine>(engine)
+            .map(|r| join_names(r.modes.values().map(|m| m.name.as_str())))
+            .unwrap_or_default(),
+        "token" | "scene" | "wall" | "region" | "light" | "drawing" | "template"
+        | "world-settings" | "light-gradation" | "chat-settings" | "dice-settings" | "combat"
+        | "combatant" | "effect" | "system-defaults" | "combat-history" | "asset_folder" => {
+            String::new()
+        }
+        _ => unreachable!("ENGINE_DOC_TYPES and this match must stay in sync"),
+    })
 }
 
 #[cfg(test)]
