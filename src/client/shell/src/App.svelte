@@ -1,5 +1,6 @@
 <script lang="ts">
   import { webSocketConnect } from "@shadowcat/core";
+  import { notifications, t } from "@shadowcat/ui-kit";
   import { Entry } from "@shadowcat/module-entry";
   import { getMe, listWorlds, withRetry, type Me } from "./lib/api";
   import {
@@ -174,7 +175,13 @@
     const wsUrl =
       (location.protocol === "https:" ? "wss:" : "ws:") +
       "//" + location.host + "/ws?world=" + worldId;
-    const s = new WorldSession({ selfId: me.id, connect: webSocketConnect(wsUrl), modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem], onEvicted: () => leaveWorld() });
+    const s = new WorldSession({
+      selfId: me.id,
+      connect: webSocketConnect(wsUrl),
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem],
+      onEvicted: () => leaveWorld(),
+      onReject: (reason) => notifications.push("warning", t(`intent.rejected.${reason}`)),
+    });
     session = s;
     void s.enter(worldId);
     setLastWorld(worldId);

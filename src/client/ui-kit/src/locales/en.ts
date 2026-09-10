@@ -615,4 +615,7 @@ export const en: Messages = {
   "sheetItem.title": "Item",
   "sheetItem.name": "Name",
   "sheetItem.system": "All data",
+  "intent.rejected.forbidden": "You don't have permission to do that.",
+  "intent.rejected.conflict": "That change conflicted with a more recent update and was not applied.",
+  "intent.rejected.invalid": "That action wasn't valid and was not applied.",
 };

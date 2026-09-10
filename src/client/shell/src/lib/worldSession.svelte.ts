@@ -54,7 +54,7 @@ import {
   getEnabledModules,
   listWorldMembers,
 } from "@shadowcat/core";
-import type { WorldRole, InstalledModuleInfo } from "@shadowcat/types";
+import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
 import { SvelteMap } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
@@ -99,6 +99,10 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+  /** Called after every rejected intent, with the server's reason — the optimistic prediction
+   * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
+   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
+  onReject?: (reason: RejectReason) => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -1004,7 +1008,10 @@ export class WorldSession {
             this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
           }
         },
-        onReject: (id) => this.#optimistic.reject(id),
+        onReject: (id, reason) => {
+          this.#optimistic.reject(id);
+          this.opts.onReject?.(reason);
+        },
         onWelcome: (w) => {
           void this.#onWelcome(w);
         },

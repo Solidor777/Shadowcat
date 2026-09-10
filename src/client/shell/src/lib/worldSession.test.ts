@@ -245,6 +245,38 @@ test("evicted frame surfaces through onEvicted", async () => {
   await vi.waitFor(() => expect(onEvicted).toHaveBeenCalledOnce());
 });
 
+test("a reject frame calls onReject with the reason AND rolls back the optimistic prediction", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({
+      send: (frame: string) => sent.push(JSON.parse(frame) as Record<string, unknown>),
+      close: () => handlers.onClose(),
+    });
+  };
+  const onReject = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onReject,
+  });
+  await session.enter("w1");
+
+  const doc = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null });
+  session.dispatchIntent([{ op: "create", doc }]);
+  expect(session.documents.get(doc.id)).toBeDefined(); // optimistic prediction applied
+
+  const intent = sent.find((f) => f.type === "intent") as { intent_id: string };
+  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden" });
+
+  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden"));
+  expect(session.documents.get(doc.id)).toBeUndefined(); // rolled back
+});
+
 function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
   return sent.filter(
     (m) =>
