@@ -316,9 +316,14 @@ test("captureFileTable carries bigint mtimeNs and sees a sub-millisecond mtime m
   const before = captureFileTable([f]);
   expect(typeof before[f].mtimeNs).toBe("bigint");
   expect(typeof before[f].size).toBe("bigint");
-  // One microsecond later: representable in the filesystem's own units on NTFS (100 ns), APFS and
-  // ext4 (1 ns), and below the 1 ms a millisecond comparison would fold together.
-  utimesSync(f, base, base + 1e-6);
+  // Half a millisecond later: below the 1 ms a millisecond comparison would fold together, and
+  // far above the two resolutions the step has to survive on the way to the filesystem. Node
+  // hands libuv a double in seconds, whose spacing at epoch scale is roughly 0.5 µs, and libuv's
+  // Unix conversion then truncates the fractional part to whole microseconds — a 1 µs step lands
+  // as ~950 ns and truncates to zero on Linux, while the Windows conversion (100 ns FILETIME
+  // units) keeps it. The filesystems themselves (NTFS 100 ns, APFS and ext4 1 ns) are not the
+  // binding constraint.
+  utimesSync(f, base, base + 0.0005);
   const after = captureFileTable([f]);
   expect(after[f].mtimeNs - before[f].mtimeNs).toBeGreaterThan(0n);
   expect(after[f].mtimeNs - before[f].mtimeNs).toBeLessThan(1_000_000n);
