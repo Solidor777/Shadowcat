@@ -7,13 +7,17 @@
 //
 // This inspects the literal command STRING the harness is about to run; it does not run a shell.
 // It cannot see a git invocation reached through a shell wrapper (`sh -c "..."`, `env NAME=value
-// git ...`), command substitution, `eval`, an alias, or a shell function, because classifying an
-// arbitrary shell string reliably would require executing one. Its purpose is to make the casual
-// and accidental bypass impossible and the rule visible at the point of temptation, not to stop a
-// determined caller working around the string match itself. Two other layers carry the actual
-// guarantee: the git hooks (core.hooksPath) enforce on everything that reaches git through the
-// normal path regardless of what this guard decides, and the remote enforces branch protection
-// with required status checks, which is server-side and unaffected by anything local.
+// git ...`, `command git`, `exec git`), command substitution, `eval`, an alias, or a shell
+// function, because classifying an arbitrary shell string reliably would require executing one.
+// For the same reason it recognises a command word only at the START of a segment (after any
+// leading `NAME=value` assignments): a git word behind a subshell `(`, a brace group `{`, or a
+// reserved word (`then`, `do`, `!`, `time`) is a wrapper of the same family and is not seen. Its
+// purpose is to make the casual and accidental bypass impossible and the rule visible at the
+// point of temptation, not to stop a determined caller working around the string match itself.
+// Two other layers carry the actual guarantee: the git hooks (core.hooksPath) enforce on
+// everything that reaches git through the normal path regardless of what this guard decides, and
+// the remote enforces branch protection with required status checks, which is server-side and
+// unaffected by anything local.
 //
 // The unarmed-repository denial is what makes the git-hook layer non-optional rather than
 // best-effort: without it, a fresh clone with no hooks installed permits every commit and push
@@ -22,14 +26,21 @@
 // Quoted content (a commit message, most plainly) is one opaque token throughout: it is never
 // read as a flag, a config key, or an environment override, and a `;`/`&`/`|` inside it is never
 // a chain separator — a message that happens to quote `core.hooksPath` or a bypass flag as prose
-// must stay an ordinary commit, and must not manufacture a fake segment either. Quoting follows
-// the POSIX shell grammar exactly, not a quote-matching approximation of it: inside single quotes
-// every character is literal with no escapes; inside double quotes a backslash escapes only
-// `"`, `\`, `$`, and a backtick and is otherwise literal; outside quotes a backslash escapes
-// whatever character follows it. An escaped quote inside a quoted span therefore never closes the
-// span early — the one shape that DOES let content past it read as flags again is genuinely
-// unterminated input (a quote with no matching close at all), which a real shell also refuses to
-// run, so it is not a bypass this guard's decision on it can actually affect.
+// must stay an ordinary commit, and must not manufacture a fake segment either. The tokenizer
+// implements the POSIX Shell Command Language's quoting and token-recognition rules as a
+// grammar, enumerated at `segmentAndTokenize`; a false denial here blocks real work with no
+// switch to turn it off, so every rule that decides where a quoted span ENDS is implemented,
+// including the ones that only matter for the innocent direction. What it does NOT do is
+// EXPAND: `$var`, `$(…)`, `` `…` ``, `${…}` and `$((…))` are tracked only for their extent, so the
+// enclosing quote state stays correct across them, and their text is kept verbatim as opaque
+// content — a flag produced by an expansion is the command-substitution boundary above. Named
+// bash extensions outside the POSIX grammar, deliberately not implemented: `$'…'` (ANSI-C
+// quoting — the `$` is read as a literal and the quote after it as an ordinary single quote, so
+// a word built with it is misread), `$"…"` (locale translation), brace expansion (`{a,b}`),
+// and a `case` pattern's unbalanced `)` inside `$(…)`, whose extent is found by parenthesis
+// balance. The one shape that lets content past a quote read as flags again is genuinely
+// unterminated input (a quote with no matching close at all), which a real shell also refuses
+// to run, so it is not a bypass this guard's decision on it can actually affect.
 //
 // Runs as a PreToolUse hook on every Bash call, so the common path stays cheap: nothing is parsed
 // as a git invocation unless the command word's basename is `git`/`git.exe`/`git.cmd` (so a
@@ -54,29 +65,86 @@ const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)=/;
 // value's presence differs, never whether the override applies.
 const GIT_CONFIG_EXPORT_ARG_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)(=.*)?$/;
 
-// Inside double quotes, a backslash escapes only these four characters (POSIX shell grammar); a
-// backslash before anything else inside double quotes is a literal backslash, and the following
-// character is processed normally rather than consumed as part of an escape.
+// Inside double quotes a backslash escapes exactly these four characters plus <newline> (which
+// is a line continuation, handled separately because the pair is REMOVED rather than replaced);
+// before anything else it is a literal backslash and the following character is processed
+// normally rather than consumed as part of an escape.
 const DOUBLE_QUOTE_ESCAPABLE = new Set(['"', "\\", "$", "`"]);
 
+// Characters that end an unquoted word: whitespace, and the operator characters. `(`/`)` are
+// listed because they delimit a here-document delimiter word; at the top level they are kept as
+// ordinary word characters (a subshell is the command-position boundary in the header).
+const HEREDOC_DELIMITER_END = /[\s;&|<>()]/;
+
 /**
- * Splits `command` into shell segments at an unquoted `;`, `&`, `&&`, `|`, `||`, or a newline, and
- * each segment into argv-style word tokens, implementing the POSIX shell quoting grammar rather
- * than approximating it: single quotes make every character literal with no escapes; double
- * quotes recognise only the four escapes above and are otherwise literal; outside quotes a
- * backslash escapes the next character verbatim, including whitespace, a quote character, or a
- * chain separator. A quoted span is therefore opaque end to end — no character inside one, escaped
- * or not, is ever read as a word boundary or a chain separator.
+ * Splits `command` into shell segments and each segment into argv-style word tokens, following
+ * the POSIX Shell Command Language (IEEE Std 1003.1-2017, XCU chapter 2: Quoting, Token
+ * Recognition, Command Substitution, Here-Document). The rules, each of which the
+ * test suite exercises in both the denied and the allowed direction:
+ *
+ *   Escape Character — Outside quotes a backslash preserves the literal value of the next character, which
+ *           may be a quote, whitespace, or an operator. Backslash-<newline> is a line
+ *           continuation: both characters are removed and nothing is inserted, so it neither
+ *           ends a word nor separates two. A trailing backslash at end of input is literal.
+ *   Single-Quotes — Inside single quotes every character is literal, including backslash and newline;
+ *           a single quote cannot occur inside single quotes.
+ *   Double-Quotes — Inside double quotes every character is literal except `$`, backquote and
+ *           backslash. Backslash escapes only `$`, backquote, `"`, backslash and <newline> (the
+ *           last as a line continuation, removed); before any other character it is literal.
+ *           A `${…}` inside double quotes carries its own balanced quoting, and a `$(…)` or
+ *           backquoted substitution is parsed by the shell grammar in its own right (Command Substitution), so
+ *           a double quote inside either never closes the enclosing span.
+ *   Token Recognition — Adjacent quoted and unquoted parts form one word; empty quotes form an empty word.
+ *           An unquoted `#` at the start of a word begins a comment that runs to the newline and
+ *           is discarded whole — nothing inside it, a quote character or a backslash-<newline>
+ *           included, has any effect. Unquoted `;`, `&`, `&&`, `|`, `||` and <newline> end a
+ *           segment; `>&`, `<&`, `>|` (and bash's `&>`, `&>>`) are redirection operators, not
+ *           separators, so the arguments after them still belong to the same command.
+ *   Here-Document — `<<` or `<<-` followed by a delimiter word (quoted or not) opens a here-document
+ *           whose body starts after the next unquoted <newline> and ends at the first line equal
+ *           to the delimiter (leading tabs stripped under `<<-`); with an unquoted delimiter a
+ *           body line ending in backslash joins the next line before the comparison. The body is
+ *           data, never a segment. `<<<` is a here-string and opens nothing.
+ *
+ * A substitution's extent is tracked so quote state survives it; its text is kept verbatim in
+ * the word and is never expanded (see the header for the named exclusions).
  *
  * @returns {string[][]} one array of tokens per segment.
  */
-function segmentAndTokenize(command) {
+export function segmentAndTokenize(command) {
+  const text = String(command);
+  const n = text.length;
   const segments = [];
   let tokens = [];
   let cur = "";
   let has = false;
-  let quote = null; // null | '"' | "'"
 
+  // Enclosing contexts, innermost last. `single`/`double`/`backtick` are quote spans; `paren`
+  // (`$(`, balanced to its `)`) and `brace` (`${`, to its `}`) are substitutions whose interior
+  // is read under the unquoted rules again. `substDepth` counts the substitution frames
+  // (`paren`/`brace`/`backtick`) so the word-building code knows to keep text verbatim.
+  const stack = [];
+  let substDepth = 0;
+  const top = () => stack[stack.length - 1];
+  const push = (frame) => {
+    stack.push(frame);
+    if (frame.kind !== "single" && frame.kind !== "double") substDepth++;
+  };
+  const pop = () => {
+    const frame = stack.pop();
+    if (frame.kind !== "single" && frame.kind !== "double") substDepth--;
+  };
+  // The unquoted rules apply at the top level and directly inside a `$(`/`${` frame.
+  const mode = () => {
+    const t = top();
+    if (!t || t.kind === "paren" || t.kind === "brace") return "unquoted";
+    return t.kind;
+  };
+
+  const add = (s) => {
+    cur += s;
+    has = true;
+  };
   const flushToken = () => {
     if (has) {
       tokens.push(cur);
@@ -90,63 +158,296 @@ function segmentAndTokenize(command) {
     tokens = [];
   };
 
-  const text = String(command);
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+  // True at a position where an unquoted `#` starts a comment: the start of a word.
+  let atWordStart = true;
+  // True when the last character added to the current top-level word is an unquoted `>` or `<`,
+  // so a following `&` or `|` completes a redirection operator instead of separating segments.
+  let prevRedir = false;
+  // Here-documents opened on the current line, consumed in order after its unquoted newline.
+  let pendingHeredocs = [];
 
-    if (quote === "'") {
-      if (ch === "'") quote = null;
-      else {
-        cur += ch;
-        has = true;
+  /**
+   * Reads the delimiter word after a `<<`/`<<-` at `i`; returns the index past it. Any quoting
+   * in the word marks the body literal (no line joining), and the quotes themselves are not
+   * part of the delimiter.
+   */
+  const readHeredocOperator = (i) => {
+    let j = i + 2;
+    let stripTabs = false;
+    if (text[j] === "-") {
+      stripTabs = true;
+      j++;
+    }
+    while (j < n && (text[j] === " " || text[j] === "\t")) j++;
+    let delimiter = "";
+    let quoted = false;
+    while (j < n) {
+      const c = text[j];
+      if (c === "'") {
+        quoted = true;
+        const close = text.indexOf("'", j + 1);
+        const end = close === -1 ? n : close;
+        delimiter += text.slice(j + 1, end);
+        j = end + 1;
+        continue;
       }
+      if (c === '"') {
+        quoted = true;
+        j++;
+        while (j < n && text[j] !== '"') {
+          if (text[j] === "\\" && j + 1 < n) {
+            if (text[j + 1] === "\n") {
+              j += 2;
+              continue;
+            }
+            if (DOUBLE_QUOTE_ESCAPABLE.has(text[j + 1])) {
+              delimiter += text[j + 1];
+              j += 2;
+              continue;
+            }
+          }
+          delimiter += text[j];
+          j++;
+        }
+        j++;
+        continue;
+      }
+      if (c === "\\") {
+        if (j + 1 < n && text[j + 1] === "\n") {
+          j += 2;
+          continue;
+        }
+        quoted = true;
+        if (j + 1 < n) delimiter += text[j + 1];
+        j += 2;
+        continue;
+      }
+      if (HEREDOC_DELIMITER_END.test(c)) break;
+      delimiter += c;
+      j++;
+    }
+    if (delimiter) pendingHeredocs.push({ delimiter, quoted, stripTabs });
+    return j;
+  };
+
+  /** Consumes every pending here-document body starting at line index `start`; returns the index after the last one. */
+  const consumeHeredocBodies = (start) => {
+    let pos = start;
+    for (const { delimiter, quoted, stripTabs } of pendingHeredocs) {
+      let logical = "";
+      while (pos < n) {
+        const nl = text.indexOf("\n", pos);
+        const lineEnd = nl === -1 ? n : nl;
+        const line = text.slice(pos, lineEnd);
+        pos = nl === -1 ? n : nl + 1;
+        const trailing = /\\*$/.exec(line)[0].length;
+        if (!quoted && trailing % 2 === 1) {
+          logical += line.slice(0, -1);
+          continue; // joined with the next line before the comparison
+        }
+        logical += line;
+        if ((stripTabs ? logical.replace(/^\t+/, "") : logical) === delimiter) break;
+        logical = "";
+      }
+    }
+    pendingHeredocs = [];
+    if (substDepth > 0) add(text.slice(start, pos));
+    return pos;
+  };
+
+  let i = 0;
+  while (i < n) {
+    const ch = text[i];
+    const m = mode();
+    const verbatim = substDepth > 0;
+
+    if (m === "single") {
+      if (ch === "'") {
+        pop();
+        if (verbatim) add("'");
+      } else add(ch);
+      i++;
       continue;
     }
 
-    if (quote === '"') {
-      if (ch === "\\" && i + 1 < text.length && DOUBLE_QUOTE_ESCAPABLE.has(text[i + 1])) {
-        cur += text[i + 1];
-        has = true;
+    if (m === "double") {
+      if (ch === "\\" && i + 1 < n) {
+        const nx = text[i + 1];
+        if (nx === "\n") {
+          i += 2; // line continuation: removed outright
+          continue;
+        }
+        if (DOUBLE_QUOTE_ESCAPABLE.has(nx)) {
+          add(verbatim ? ch + nx : nx);
+          i += 2;
+          continue;
+        }
+        add(ch); // literal backslash; `nx` is processed on the next iteration
         i++;
         continue;
       }
       if (ch === '"') {
-        quote = null;
+        pop();
+        if (verbatim) add('"');
+        i++;
         continue;
       }
-      cur += ch;
-      has = true;
+      if (ch === "$" && (text[i + 1] === "(" || text[i + 1] === "{")) {
+        push({ kind: text[i + 1] === "(" ? "paren" : "brace", depth: 1 });
+        add(ch + text[i + 1]);
+        atWordStart = text[i + 1] === "(";
+        i += 2;
+        continue;
+      }
+      if (ch === "`") {
+        push({ kind: "backtick" });
+        add(ch);
+        i++;
+        continue;
+      }
+      add(ch);
+      i++;
       continue;
     }
 
-    // Outside any quote.
-    if (ch === "\\") {
-      if (i + 1 < text.length) {
-        cur += text[i + 1];
-        has = true;
-        i++;
-      } else {
-        cur += "\\"; // a trailing backslash with nothing to escape stays literal
-        has = true;
+    if (m === "backtick") {
+      if (ch === "\\" && i + 1 < n) {
+        add(ch + text[i + 1]);
+        i += 2;
+        continue;
       }
+      if (ch === "`") pop();
+      add(ch);
+      i++;
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      has = true;
+
+    // Unquoted rules: the top level, or the interior of a `$(`/`${` frame.
+    const frame = top();
+    if (ch === "\\") {
+      if (i + 1 < n) {
+        const nx = text[i + 1];
+        if (nx === "\n") {
+          i += 2; // line continuation: removed, and not a word boundary
+          continue;
+        }
+        add(verbatim ? ch + nx : nx);
+        i += 2;
+      } else {
+        add(ch); // a trailing backslash with nothing to escape stays literal
+        i++;
+      }
+      atWordStart = false;
+      prevRedir = false;
       continue;
     }
-    if (ch === "\n" || ch === ";" || ch === "&" || ch === "|") {
-      flushSegment();
-      while (i + 1 < text.length && ";&|".includes(text[i + 1])) i++;
+    if (ch === "'" || ch === '"') {
+      push({ kind: ch === "'" ? "single" : "double" });
+      if (verbatim) add(ch);
+      else has = true; // an empty quoted span is still a (possibly empty) word
+      atWordStart = false;
+      prevRedir = false;
+      i++;
       continue;
+    }
+    if (ch === "`") {
+      push({ kind: "backtick" });
+      add(ch);
+      atWordStart = false;
+      prevRedir = false;
+      i++;
+      continue;
+    }
+    if (ch === "$") {
+      if (text[i + 1] === "(" || text[i + 1] === "{") {
+        push({ kind: text[i + 1] === "(" ? "paren" : "brace", depth: 1 });
+        add(ch + text[i + 1]);
+        atWordStart = text[i + 1] === "(";
+        i += 2;
+      } else {
+        add(ch);
+        atWordStart = false;
+        i++;
+      }
+      prevRedir = false;
+      continue;
+    }
+    if (ch === "#" && atWordStart && (!frame || frame.kind === "paren")) {
+      const nl = text.indexOf("\n", i);
+      const end = nl === -1 ? n : nl;
+      if (verbatim) add(text.slice(i, end));
+      i = end; // the newline itself is handled below on the next iteration
+      continue;
+    }
+    if (ch === "\n") {
+      if (verbatim) add(ch);
+      else flushSegment();
+      atWordStart = true;
+      prevRedir = false;
+      i = pendingHeredocs.length ? consumeHeredocBodies(i + 1) : i + 1;
+      continue;
+    }
+    if (frame && frame.kind === "paren" && (ch === "(" || ch === ")")) {
+      if (ch === "(") frame.depth++;
+      else if (--frame.depth === 0) pop();
+      add(ch);
+      atWordStart = frame.depth > 0; // a closed substitution continues the enclosing word
+      i++;
+      continue;
+    }
+    if (frame && frame.kind === "brace" && ch === "}") {
+      pop();
+      add(ch);
+      atWordStart = false;
+      i++;
+      continue;
+    }
+    if (ch === "<" && text[i + 1] === "<" && text[i + 2] === "<") {
+      flushToken();
+      add("<<<"); // here-string operator: its operand is an ordinary word, not a body
+      flushToken();
+      atWordStart = true;
+      prevRedir = false;
+      i += 3;
+      continue;
+    }
+    if (ch === "<" && text[i + 1] === "<") {
+      const j = readHeredocOperator(i);
+      if (verbatim) add(text.slice(i, j));
+      else flushToken();
+      atWordStart = true;
+      prevRedir = false;
+      i = j;
+      continue;
+    }
+    if (verbatim) {
+      add(ch);
+      atWordStart = HEREDOC_DELIMITER_END.test(ch);
+      i++;
+      continue;
+    }
+    if (ch === ";" || ch === "&" || ch === "|") {
+      const redirection = ch !== ";" && (prevRedir || (ch === "&" && text[i + 1] === ">"));
+      if (!redirection) {
+        flushSegment();
+        while (i + 1 < n && ";&|".includes(text[i + 1])) i++;
+        atWordStart = true;
+        prevRedir = false;
+        i++;
+        continue;
+      }
     }
     if (/\s/.test(ch)) {
       flushToken();
+      atWordStart = true;
+      prevRedir = false;
+      i++;
       continue;
     }
-    cur += ch;
-    has = true;
+    add(ch);
+    atWordStart = false;
+    prevRedir = ch === ">" || ch === "<";
+    i++;
   }
   flushSegment();
   return segments;
@@ -161,10 +462,21 @@ function isGitWord(token) {
   return base === "git";
 }
 
-/** Index of the git command word in `tokens`, skipping leading `NAME=value` env assignments; -1 if absent. */
-function gitTokenIndex(tokens) {
+/**
+ * Index of the segment's command word — the first token after the leading run of `NAME=value`
+ * assignments — or `tokens.length` when the segment is assignments only. Every check that asks
+ * "is this segment's command X" reads this, so a word appearing anywhere else in the segment
+ * (an argument to `printf`, say) is never mistaken for the command.
+ */
+function commandWordIndex(tokens) {
   let i = 0;
   while (i < tokens.length && ENV_ASSIGNMENT.test(tokens[i])) i++;
+  return i;
+}
+
+/** Index of the git command word in `tokens`, skipping leading `NAME=value` env assignments; -1 if absent. */
+function gitTokenIndex(tokens) {
+  const i = commandWordIndex(tokens);
   return i < tokens.length && isGitWord(tokens[i]) ? i : -1;
 }
 
@@ -285,20 +597,24 @@ function hasGitConfigEnvOverride(tokens, gi) {
 }
 
 /**
- * True when `tokens` contains an `export` naming a GIT_CONFIG_* variable — either `export
- * NAME=value` (assigns and exports together) or a bare `export NAME` (exports a variable a prior
- * segment already assigned). Unlike a bare `VAR=value` prefix, `export` marks the variable in the
- * shell's own environment table, which every command the shell spawns AFTER it inherits — so this
- * is checked across every segment preceding the git invocation, not just the one containing it.
+ * True when this segment's COMMAND is `export` and it names a GIT_CONFIG_* variable — either
+ * `export NAME=value` (assigns and exports together) or a bare `export NAME` (exports a variable
+ * a prior segment already assigned). The command position is the same one `gitTokenIndex` uses,
+ * so `export` appearing as another command's argument (`printf export ...`) is never read as
+ * one. Unlike a bare `VAR=value` prefix, `export` marks the variable in the shell's own
+ * environment table, which every command the shell spawns AFTER it inherits — so this is checked
+ * across every segment preceding the git invocation, not just the one containing it. A `--`
+ * ends the options and is skipped; any other option stops the scan, since `-n` removes the
+ * export attribute, `-p` prints, and `-f` names functions — none of them exports a variable.
  */
 function segmentExportsGitConfigVar(tokens) {
-  for (let i = 0; i < tokens.length; i++) {
-    if (tokens[i] !== "export") continue;
-    for (let j = i + 1; j < tokens.length; j++) {
-      const t = tokens[j];
-      if (GIT_CONFIG_EXPORT_ARG_RE.test(t)) return true;
-      if (!/^[A-Za-z_][A-Za-z0-9_]*(=.*)?$/.test(t)) break; // end of this export's argument list
-    }
+  const ci = commandWordIndex(tokens);
+  if (ci >= tokens.length || tokens[ci] !== "export") return false;
+  for (let j = ci + 1; j < tokens.length; j++) {
+    const t = tokens[j];
+    if (t === "--") continue;
+    if (GIT_CONFIG_EXPORT_ARG_RE.test(t)) return true;
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(=.*)?$/.test(t)) break; // an option, or the end of the argument list
   }
   return false;
 }
