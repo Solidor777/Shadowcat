@@ -109,10 +109,9 @@ test("scrubGitEnv returns a scrubbed copy and leaves its input untouched", () =>
 });
 
 // Source-scanning regression test, same precedent as run-gate-tier.test.mjs's GIT-CALL-BUDGET
-// check: the git-hook installer, the sequencer probe, and the tier runner each fixed one
-// unguarded `execFileSync` git call at their own entry point separately, one file at a time — the
-// site was never the cause, so a check that only re-verifies the site already fixed proves nothing
-// about a further one recurring somewhere else.
+// check: an unguarded `execFileSync` git call is a per-entry-point mistake, not a property of any
+// one file, so fixing the call at one entry point proves nothing about a further one recurring
+// at another — the check enumerates every tracked entry point instead of re-verifying named ones.
 //
 // Enumerates via `git ls-files` rather than walking a named directory tree: a directory-walk scan
 // root is itself an include-list one level up from the file-level exclude-list below it — it sees

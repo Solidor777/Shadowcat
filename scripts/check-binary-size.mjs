@@ -1,11 +1,10 @@
-// Enforces the release binary's size budget. Runs identically in CI and locally: the CI workflow
-// used to inline this as a `run: |` bash block naming the binary through a GitHub Actions
-// expression (`${{ runner.os == 'Windows' && '.exe' || '' }}`). That expression resolves only
-// inside Actions, and the gate manifest's whitespace normalisation of a `run: |` block collapses
-// its statement separators, so the block is not one command a local tier could ever execute — it
-// is unclassifiable as `commit` or `push` by construction. Extracting the check into a script both
-// sides call is the fix: the platform branch runs in Node (`process.platform`), portable to every
-// runner and to a developer machine alike.
+// Enforces the release binary's size budget. Runs identically in CI and locally, as one script
+// both sides call: the platform branch runs in Node (`process.platform`), portable to every CI
+// runner and to a developer machine alike. A GitHub Actions expression naming the binary (e.g.
+// `${{ runner.os == 'Windows' && '.exe' || '' }}`) resolves only inside Actions, and a `run: |`
+// bash block is not one command a local tier could ever execute — the gate manifest's whitespace
+// normalisation of such a block collapses its statement separators, making it unclassifiable as
+// `commit` or `push` by construction. A single portable script sidesteps both constraints at once.
 //
 // 60 MiB guardrail; tighten as the binary's real baseline settles.
 

@@ -10,27 +10,39 @@
 # at push time, when the receipt's tree-hash check covers exactly what gets pushed.
 #
 # EXEMPTION, reasoned rather than a convenience carve-out — this is the one place in the project
-# where the tier is deliberately skipped rather than run: while git has this repository mid a
-# rebase, cherry-pick, revert, or merge, git invokes this hook once per replayed commit,
-# multiplying the ~70s tier by the commit count — with an agent's shell cap, a multi-commit
-# sequence can exceed the available time with no permitted escape. None of the replayed commits
-# is ever pushed in isolation: the sequencer produces ordinary commits inside one operation, and
-# `pre-push`'s tree-keyed receipt still gates the eventual push and independently refuses on a
-# dirty tree, so skipping here removes redundant intermediate work without letting anything
-# unverified reach the remote. The skip requires the git dir's own filesystem markers to match the
-# SHAPE of a real sequencer operation, validated by `git-sequencer-state.mjs`: a `*_HEAD` file
-# must contain an id that resolves to a real object in this repository, and a rebase directory
-# must carry the sibling files git itself writes there, one of which is checked the same way.
-# There is no flag, environment variable, or plain marker file that triggers this by itself. HONEST
-# LIMIT: git's own sequencer state is filesystem-trust-based, so this cannot be absolute either —
-# a deliberate, informed forgery (writing a real, resolvable object id into the right paths) is not
-# something any detector reading only the working tree can rule out. What this guarantees is that
-# the skip is not reachable casually or by accident, not that it is unforgeable.
+# where the tier is deliberately skipped rather than run, and only while one of a rebase,
+# cherry-pick, revert, or merge is GENUINELY unfinished: a queued step still in that operation's own
+# todo file, or an unresolved conflict sitting in the index. A sequencer marker with neither of
+# those — a clean `git merge --no-commit --no-ff` about to be concluded by an ordinary `git commit`,
+# or a cherry-pick/revert whose conflict is already resolved and staged — is NOT exempted; that
+# commit gates normally like any other. The narrower case still matters: while genuinely mid a
+# multi-commit rebase/cherry-pick/revert, git can invoke this hook once per replayed commit,
+# multiplying the ~70s tier by the commit count — with an agent's shell cap, that can exceed the
+# available time with no permitted escape. None of the replayed commits is ever pushed in
+# isolation: the sequencer produces ordinary commits inside one operation, and `pre-push`'s
+# tree-keyed receipt still gates the eventual push and independently refuses on a dirty tree, so
+# skipping here removes redundant intermediate work without letting anything unverified reach the
+# remote. The skip requires the git dir's own filesystem markers to match the SHAPE of a real
+# sequencer operation that ACTUALLY has work left, validated by `git-sequencer-state.mjs`: a
+# `*_HEAD` file must contain an id that resolves to a real object in this repository, a rebase
+# directory must carry the sibling files git itself writes there (one of which is checked the same
+# way), and the remaining-work signal (a todo file's queued lines, `rebase-apply`'s `next`/`last`
+# counters, or the index's own unmerged entries) is read from files git itself writes, never
+# inferred. There is no flag, environment variable, or plain marker file that triggers this by
+# itself. HONEST LIMIT: git's own sequencer state is filesystem-trust-based, so this cannot be
+# absolute either — a deliberate, informed forgery (writing a real, resolvable object id and a
+# plausible todo/counter file into the right paths) is not something any detector reading only the
+# working tree can rule out. Nor is the skip rare under ordinary use: a real conflict left
+# unresolved for a while reaches it with no forgery at all — an abandoned conflicted operation
+# keeps skipping for as long as it sits there, which is why `git-sequencer-state.mjs` prints a loud,
+# specific stderr message naming the state and the exact command to conclude it every time this
+# fires, rather than the single quiet line below. What this guarantees is that the skip requires
+# reproducing the SHAPE of a real, unfinished sequencer state, not that it is unforgeable or hard to
+# reach by accident.
 set -e
 
 sequencer_state=$(node scripts/git-sequencer-state.mjs)
 if [ -n "$sequencer_state" ]; then
-    echo "gate: skipping the commit tier — a $sequencer_state is in progress." >&2
     exit 0
 fi
 

@@ -15,10 +15,10 @@
 //
 // A pre-run check alone still leaves a ~19-minute TOCTOU window open: a commit landing, or a
 // tree edit, between the pre-run check and `writeReceipt` produces the exact same defect — the
-// receipt names a tree the gates never ran against as a whole. Two other windows in this repo's
-// own history record edits landing under a backgrounded gate chain, so this is not hypothetical.
-// The fix is symmetric: capture `git status --porcelain` and `git rev-parse HEAD` BEFORE the
-// run, and re-check both immediately before `writeReceipt` — refusing if either moved.
+// receipt names a tree the gates never ran against as a whole. A long-running backgrounded gate
+// chain is exactly the shape that leaves this window open in practice, not merely in theory. The
+// fix is symmetric: capture `git status --porcelain` and `git rev-parse HEAD` BEFORE the run, and
+// re-check both immediately before `writeReceipt` — refusing if either moved.
 //
 // A per-field check is not enough either: `sha` and `tree` were each read by their OWN
 // `git rev-parse` call, so even with the dirty/HEAD-moved checks passing, the two values could
@@ -33,23 +33,36 @@
 // Sampling `sha`/`tree`/status/HEAD at two points is still not the general answer: any tracked
 // file that is edited and REVERTED entirely between the pre-run and post-run samples is invisible
 // to every point-in-time check above — HEAD never moves, `git status --porcelain` reads clean at
-// both samples, and the receipt certifies a tree some gate command never actually ran against.
-// This repo's own history records that exact operational shape twice. No amount of additional
-// point sampling closes this; the fix is a continuous-coverage check instead: capture every
-// tracked file's `(path, size, mtime)` before the run and again before `writeReceipt`, and refuse
-// if anything changed — a revert still moves the file's mtime even though its final content
-// matches. One family of tracked files needs a DERIVED exemption: the push tier itself
-// regenerates `src/types/generated` (`cargo test --all` runs ts-rs) while leaving `git status`
-// clean, so a naive table refuses every real push. The exemption is read out of the manifest's
-// own `git diff --exit-code <path>` entry (the bindings-sync gate already asserts that path stays
-// generated-and-clean) rather than hardcoded, so it tracks that entry automatically and an absent
-// entry yields an EMPTY exemption set — failing toward stricter, never toward permissive.
+// both samples, and the receipt certifies a tree some gate command never actually ran against. A
+// long-running backgrounded gate chain is the recurring shape this happens under, not a one-off.
+// No amount of additional point sampling closes this; the fix is a continuous-coverage check
+// instead: capture every tracked file's `(path, size, mtime)` before the run and again before
+// `writeReceipt`, and refuse if anything changed — a revert still moves the file's mtime even
+// though its final content matches. One family of tracked files needs a DERIVED exemption: the
+// push tier itself regenerates `src/types/generated` (`cargo test --all` runs ts-rs) while leaving
+// `git status` clean, so a naive table refuses every real push. The exemption is read out of the
+// manifest's own `git diff --exit-code <path>` entry (the bindings-sync gate already asserts that
+// path stays generated-and-clean) rather than hardcoded, so it tracks that entry automatically and
+// an absent entry yields an EMPTY exemption set — failing toward stricter, never toward permissive.
 //
 // Order is workflow order, so the client build precedes the cargo steps that embed dist/:
 // `tierCommands` never reorders `entries`, it only filters and dedupes, so INCLUDED's ordering
 // guarantee reduces to `parseGateManifest`'s own emission order — the manifest already lists
 // `pnpm build` before every cargo step in the push tier (pinned by a test against the real
 // manifest, not just synthetic fixtures, so a future reordering in `gates.toml` fails the suite).
+//
+// HONEST LIMIT: the receipt itself is a plain JSON file, and its two load-bearing fields (`tree`
+// from `git rev-parse HEAD^{tree}`, `manifest` from this module's own `manifestHash`) are both
+// computable without running a single gate command — nothing here stops a single `writeFileSync`
+// at `receiptPath` from producing a receipt `pre-push` honours just as readily as one this module
+// wrote after a real green run. Every check above (the dirty-tree refusals, the HEAD-moved
+// refusal, the tracked-file table, the atomic sha/tree capture) hardens the receipt AGAINST THIS
+// MODULE's OWN RUN going wrong, not against a receipt written by hand. The receipt is a local
+// artifact under the operator's own authority, exactly like the sequencer-state markers
+// `scripts/git-sequencer-state.mjs` reads and documents the same way: the backstop for a forged
+// receipt is the remote's own branch protection, never this file. Owner ruling: the remote is the
+// authoritative gate, and every local layer here — this receipt included — is defense-in-depth in
+// front of it, not a substitute for it.
 
 import { readFileSync, writeFileSync, existsSync, lstatSync } from "node:fs";
 import { createHash } from "node:crypto";

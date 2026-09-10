@@ -616,10 +616,13 @@ function applyOptimistic(op) {
 Do not pause to ask for permission. Commit logical work-units immediately once local CI passes. Push to remote *only* when a FULL milestone is completed. Do not batch unrelated concerns into a single commit.
 
 The commit and push tiers described here are mechanically enforced, not left to discipline.
-`core.hooksPath` points at tracked git hooks that run `pnpm gate:commit` on every commit and
-verify a tree-keyed `pnpm gate:push` receipt on every push; there is no `--no-verify` bypass.
-Run `pnpm gate:push` before pushing — a commit made after the last successful run invalidates
-the receipt.
+`core.hooksPath` points at tracked git hooks that run `pnpm gate:commit` on every commit — except
+while a rebase, cherry-pick, revert, or merge is genuinely mid-operation (a queued step in its own
+todo file, or an unresolved conflict in the index), which the hook skips rather than multiplying
+the tier by the replayed-commit count; a stale or abandoned operation still prints a loud message
+naming the command to conclude it — and verify a tree-keyed `pnpm gate:push` receipt on every
+push; there is no `--no-verify` bypass. Run `pnpm gate:push` before pushing — a commit made after
+the last successful run invalidates the receipt.
 
 #### ❌ Bad (Pausing / Batching / Premature Push)
 ```text

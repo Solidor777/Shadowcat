@@ -3,7 +3,13 @@
 #
 # The push tier costs ~19 minutes and cannot run here: an agent's shell tool caps at 600s, and a
 # killed push is the pressure that produces --no-verify. Verifying a receipt keeps the push
-# instant while keeping the guarantee exact.
+# instant, at the cost of two measured residuals `run-gate-tier.mjs` documents at its own
+# receipt-writing site: an edit reverted within one filesystem clock step (~0.3 ms measured on
+# NTFS) is invisible to the mtime table a receipt run checks, and this loop verifies exactly one
+# receipt against exactly one ref's tree — a multi-ref push is checked ref-by-ref against that same
+# single receipt (see LIMITATION below). The receipt is a tree-keyed local artifact under the
+# operator's own authority, not an unconditional guarantee; the remote's own branch protection is
+# the authoritative backstop, and this hook is defense-in-depth in front of it.
 #
 # INVARIANT: a dirty working tree fails, because the receipt describes HEAD's tree and an unclean
 # tree means the gated content is not what the commit contains. This check is scoped to the WHOLE
