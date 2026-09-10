@@ -37,6 +37,28 @@ test("detects an in-progress merge via a MERGE_HEAD holding a resolvable object 
   expect(state).toBe("merge");
 });
 
+test("detects a two-parent (octopus) merge: MERGE_HEAD holding two newline-separated resolvable ids", () => {
+  const twoParents = `${SHA}\n${OTHER_SHA}\n`;
+  const { exists, readFile } = fsFrom({ "/repo/.git/MERGE_HEAD": twoParents });
+  const state = detectSequencerState("/repo/.git", { exists, readFile, resolves: alwaysResolves });
+  expect(state).toBe("merge");
+});
+
+test("detects a three-parent (octopus) merge: MERGE_HEAD holding three newline-separated resolvable ids", () => {
+  const thirdParent = "c".repeat(40);
+  const threeParents = `${SHA}\n${OTHER_SHA}\n${thirdParent}\n`;
+  const { exists, readFile } = fsFrom({ "/repo/.git/MERGE_HEAD": threeParents });
+  const state = detectSequencerState("/repo/.git", { exists, readFile, resolves: alwaysResolves });
+  expect(state).toBe("merge");
+});
+
+test("an octopus MERGE_HEAD is rejected if even ONE of its parent lines does not resolve — the forgery bar is per line, not relaxed", () => {
+  const oneBadParent = `${SHA}\nnot-a-sha-at-all\n`;
+  const { exists, readFile } = fsFrom({ "/repo/.git/MERGE_HEAD": oneBadParent });
+  const state = detectSequencerState("/repo/.git", { exists, readFile, resolves: alwaysResolves });
+  expect(state).toBe(null);
+});
+
 test("detects an in-progress cherry-pick via a CHERRY_PICK_HEAD holding a resolvable object id", () => {
   const { exists, readFile } = fsFrom({ "/repo/.git/CHERRY_PICK_HEAD": SHA });
   const state = detectSequencerState("/repo/.git", { exists, readFile, resolves: alwaysResolves });

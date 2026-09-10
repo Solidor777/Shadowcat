@@ -12,13 +12,13 @@
 // full reasoning.
 //
 // HONEST LIMIT: git's own sequencer state is filesystem-trust-based, so nothing built on top of
-// it can be absolute either. Each marker below is validated for shape and — for the `*_HEAD`
-// files — resolved as a real object in this repository, which rules out a bare `touch` or an
-// empty directory triggering the skip casually or by accident. It does not rule out a deliberate,
-// informed forgery: writing an actual, resolvable commit id into the right path is still writing
-// to the working tree, and no detector reading only the working tree can distinguish that from
-// git's own write. What the validation buys is that the skip requires reproducing the SHAPE of a
-// real sequencer state, not just its filename.
+// it can be absolute either. Every `*_HEAD` marker, AND the rebase directories' own `onto` file,
+// is validated for shape and resolved as a real object in this repository — which rules out a
+// bare `touch` or an empty directory triggering the skip casually or by accident. It does not
+// rule out a deliberate, informed forgery: writing an actual, resolvable commit id into the right
+// path is still writing to the working tree, and no detector reading only the working tree can
+// distinguish that from git's own write. What the validation buys is that the skip requires
+// reproducing the SHAPE of a real sequencer state, not just its filename.
 
 import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -28,8 +28,11 @@ import { isDirectEntry } from "./lib/is-main.mjs";
 import { runGit } from "./lib/run-git.mjs";
 
 // A git object id: 40 hex characters in a SHA-1 repository, 64 in a SHA-256 one. Shape alone is
-// not proof — `resolvesObject` below additionally confirms the id names a real object here — but
-// a marker whose content fails even this shape check was not written by git.
+// not proof — `isResolvableObjectId` below additionally confirms the id names a real object here
+// — but a line failing even this shape check was not written by git. Tested per LINE, never
+// against a whole multi-line file at once: an octopus merge (three or more parents) writes
+// multiple newline-separated object ids into `MERGE_HEAD`, and anchoring this against the whole
+// trimmed content would fail the shape check on every real octopus merge.
 const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 
 /**
@@ -44,17 +47,28 @@ function readTrimmed(path, readFile) {
   }
 }
 
+/** True when `line` has the shape of a git object id AND resolves to a real object via `resolves`. */
+function isResolvableObjectId(line, resolves) {
+  return OBJECT_ID_RE.test(line) && resolves(line);
+}
+
 /**
- * A `*_HEAD`-style marker: valid only when the file exists, its content has the shape of a git
- * object id, AND that id resolves to a real object in this repository (via `resolves`). Rules out
- * both an empty/missing file and a file containing arbitrary non-git text with the right name.
+ * A `*_HEAD`-style marker: valid only when the file exists and EVERY non-blank line resolves to a
+ * real object in this repository (via `resolves`). Checked per line, not as one block, so a
+ * multi-parent `MERGE_HEAD` (an octopus merge) is covered — each parent id still has to
+ * independently pass the same shape-and-resolution bar a single-parent id does, so the forgery
+ * bar is identical to the single-line case, just applied per line. Rules out an empty/missing
+ * file, a file containing arbitrary non-git text, and a file with even one line that does not
+ * resolve.
  */
 function headMarkerCheck(relativePath) {
   return (gitDir, { exists, readFile, resolves }) => {
     const p = join(gitDir, relativePath);
     if (!exists(p)) return false;
     const content = readTrimmed(p, readFile);
-    return content !== null && OBJECT_ID_RE.test(content) && resolves(content);
+    if (content === null) return false;
+    const lines = content.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+    return lines.length > 0 && lines.every((line) => isResolvableObjectId(line, resolves));
   };
 }
 
@@ -77,8 +91,10 @@ function rebaseDirCheck(dirName, markerFile) {
     // the directory does, and testing it separately would just be a second, redundant way for a
     // forger to satisfy half the condition (an empty directory) without the other half.
     if (!exists(join(dir, markerFile))) return false;
+    // `onto` is always a single object id — no octopus-rebase concept exists — so this stays a
+    // one-line check rather than `headMarkerCheck`'s per-line loop.
     const ontoContent = readTrimmed(join(dir, "onto"), readFile);
-    return ontoContent !== null && OBJECT_ID_RE.test(ontoContent) && resolves(ontoContent);
+    return ontoContent !== null && isResolvableObjectId(ontoContent, resolves);
   };
 }
 
