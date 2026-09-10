@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { execPath } from "node:process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { classify, looksLikeCommitOrPush } from "../.claude/hooks/guard-git.mjs";
+import { classify, looksLikeCommitOrPush, bestEffortCommand } from "../.claude/hooks/guard-git.mjs";
 
 const armed = { hooksPathSet: true };
 const HOOK_PATH = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".claude", "hooks", "guard-git.mjs");
@@ -161,6 +161,88 @@ test("a malformed payload naming a commit or push fails closed at the real entry
 test("a malformed payload with no git commit/push in it fails open at the real entry point", () => {
   const result = spawnSync(execPath, [HOOK_PATH], {
     input: "not json at all",
+    encoding: "utf8",
+  });
+  expect(result.stdout.trim()).toBe("");
+});
+
+// The tokenizer implements the POSIX shell quoting grammar as a specification, not as a patch over
+// the one case that exposed a gap: inside single quotes every character is literal with no
+// escapes; inside double quotes a backslash escapes only " \ $ and a backtick and is otherwise
+// literal; outside quotes a backslash escapes whatever follows. Every case below is derived from
+// that grammar, not from a specific reported bypass, and asserts both the bypass form (denied) and
+// the innocent form (allowed) where the two differ.
+
+test("an escaped double quote inside a double-quoted message does not close the span early", () => {
+  // CRITICAL regression: with naive quote-matching, \" closes the string early, the real closing
+  // quote then opens a new unterminated span, and --no-verify is swallowed into one opaque token
+  // that no exact-match flag test can see.
+  expect(classify('git commit -m "fix: escape \\" test" --no-verify', armed).deny).toBe(true);
+  // An even number of escaped quotes happened to still work under the old naive implementation;
+  // asserted here as a named case of the same grammar, not an accident of parity.
+  expect(classify('git commit -m "a \\" b \\" c" --no-verify', armed).deny).toBe(true);
+});
+
+test("double-quote escapes: \\\" \\\\ \\$ and \\` all stay inside the span, and --no-verify after it is still seen", () => {
+  expect(classify('git commit -m "path\\\\dir" --no-verify', armed).deny).toBe(true);
+  expect(classify('git commit -m "cost \\$5" --no-verify', armed).deny).toBe(true);
+  expect(classify("git commit -m \"run \\`x\\`\" --no-verify", armed).deny).toBe(true);
+});
+
+test("a backslash before a NON-escapable character inside double quotes is literal, not an escape", () => {
+  expect(classify('git commit -m "path\\ndir" --no-verify', armed).deny).toBe(true);
+  expect(classify('git commit -m "path\\ndir"', armed).deny).toBe(false); // innocent direction
+});
+
+test("single quotes make every character literal, including a backslash that would otherwise escape", () => {
+  expect(classify("git commit -m 'raw \\n text' --no-verify", armed).deny).toBe(true);
+  expect(classify("git commit -m 'raw \\n text'", armed).deny).toBe(false); // innocent direction
+});
+
+test("an apostrophe inside a double-quoted message does not toggle quote state", () => {
+  expect(classify("git commit -m \"it's fine\" --no-verify", armed).deny).toBe(true);
+  expect(classify("git commit -m \"it's fine\"", armed).deny).toBe(false); // innocent direction
+});
+
+test("outside quotes, a backslash escapes the next character, keeping an escaped space in one word", () => {
+  expect(classify("git commit -m fix\\ this --no-verify", armed).deny).toBe(true);
+});
+
+test("an unterminated quote does not throw, and a flag visible before it is still caught", () => {
+  // A genuinely unterminated quote is malformed input a real shell also refuses to execute (syntax
+  // error), so this guard's decision on content trapped inside it cannot itself enable a bypass;
+  // what matters is that the tokenizer does not crash, and does not lose a flag that was never
+  // inside the broken span to begin with.
+  expect(() => classify('git commit --no-verify -m "unterminated', armed)).not.toThrow();
+  expect(classify('git commit --no-verify -m "unterminated', armed).deny).toBe(true);
+});
+
+// A bare `VAR=value` prefix applies only to the command it directly prefixes; it must not leak
+// across a `;`/`&&` chain to deny an unrelated later command.
+test("a GIT_CONFIG_* prefix is scoped to its own segment, not the whole command", () => {
+  expect(
+    classify('GIT_CONFIG_COUNT=1 echo hi; git commit -m "unrelated"', armed).deny,
+  ).toBe(false);
+  expect(classify("GIT_CONFIG_COUNT=1 git commit -m x", armed).deny).toBe(true); // same segment: still denied
+});
+
+test("bestEffortCommand recovers only the command field, not an unrelated field in the same payload", () => {
+  const payload =
+    '{"tool_input":{"command":"pnpm test"},"description":"needs git commit hooks enabled"';
+  expect(bestEffortCommand(payload)).toBe("pnpm test");
+  expect(looksLikeCommitOrPush(bestEffortCommand(payload))).toBe(false);
+});
+
+test("bestEffortCommand returns null when no command field is present at all", () => {
+  expect(bestEffortCommand("not json, no command key here")).toBe(null);
+});
+
+test("a parse failure with an unrelated field naming git commit does not deny the real command", () => {
+  const result = spawnSync(execPath, [HOOK_PATH], {
+    // Truncated JSON (no closing braces) so JSON.parse throws, but the command field itself is
+    // harmless; only the description names a commit.
+    input:
+      '{"tool_input":{"command":"pnpm test"},"description":"needs git commit hooks enabled"',
     encoding: "utf8",
   });
   expect(result.stdout.trim()).toBe("");

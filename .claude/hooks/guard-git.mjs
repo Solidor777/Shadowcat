@@ -22,13 +22,20 @@
 // Quoted content (a commit message, most plainly) is one opaque token throughout: it is never
 // read as a flag, a config key, or an environment override, and a `;`/`&`/`|` inside it is never
 // a chain separator — a message that happens to quote `core.hooksPath` or a bypass flag as prose
-// must stay an ordinary commit, and must not manufacture a fake segment either.
+// must stay an ordinary commit, and must not manufacture a fake segment either. Quoting follows
+// the POSIX shell grammar exactly, not a quote-matching approximation of it: inside single quotes
+// every character is literal with no escapes; inside double quotes a backslash escapes only
+// `"`, `\`, `$`, and a backtick and is otherwise literal; outside quotes a backslash escapes
+// whatever character follows it. An escaped quote inside a quoted span therefore never closes the
+// span early — the one shape that DOES let content past it read as flags again is genuinely
+// unterminated input (a quote with no matching close at all), which a real shell also refuses to
+// run, so it is not a bypass this guard's decision on it can actually affect.
 //
 // Runs as a PreToolUse hook on every Bash call, so the common path stays cheap: nothing is parsed
-// as a git invocation unless the command word's basename is `git`/`git.exe` (so a path-qualified
-// or `.exe`-suffixed git is still recognised), and the one git subprocess this script itself
-// spawns — to read core.hooksPath — is called lazily, only once classification actually reaches a
-// commit or push with no bypass flag already found.
+// as a git invocation unless the command word's basename is `git`/`git.exe`/`git.cmd` (so a
+// path-qualified or Windows-suffixed git is still recognised), and the one git subprocess this
+// script itself spawns — to read core.hooksPath — is called lazily, only once classification
+// actually reaches a commit or push with no bypass flag already found.
 //
 // An internal error fails OPEN for every command except one that plausibly names a git commit or
 // push — --no-verify and the unarmed-repository check are the only two cases this guard uniquely
@@ -42,11 +49,19 @@ import { runGit } from "../../scripts/lib/run-git.mjs";
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 const GIT_CONFIG_ENV_RE = /^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)=/;
 
+// Inside double quotes, a backslash escapes only these four characters (POSIX shell grammar); a
+// backslash before anything else inside double quotes is a literal backslash, and the following
+// character is processed normally rather than consumed as part of an escape.
+const DOUBLE_QUOTE_ESCAPABLE = new Set(['"', "\\", "$", "`"]);
+
 /**
  * Splits `command` into shell segments at an unquoted `;`, `&`, `&&`, `|`, `||`, or a newline, and
- * each segment into argv-style word tokens — both splits are quote-aware, so a quoted span (a
- * commit message) is opaque: its whitespace is not a word boundary and its punctuation is not a
- * chain separator, matching how a real shell treats a quoted argument.
+ * each segment into argv-style word tokens, implementing the POSIX shell quoting grammar rather
+ * than approximating it: single quotes make every character literal with no escapes; double
+ * quotes recognise only the four escapes above and are otherwise literal; outside quotes a
+ * backslash escapes the next character verbatim, including whitespace, a quote character, or a
+ * chain separator. A quoted span is therefore opaque end to end — no character inside one, escaped
+ * or not, is ever read as a word boundary or a chain separator.
  *
  * @returns {string[][]} one array of tokens per segment.
  */
@@ -55,7 +70,7 @@ function segmentAndTokenize(command) {
   let tokens = [];
   let cur = "";
   let has = false;
-  let quote = null;
+  let quote = null; // null | '"' | "'"
 
   const flushToken = () => {
     if (has) {
@@ -73,9 +88,42 @@ function segmentAndTokenize(command) {
   const text = String(command);
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
+
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else {
+        cur += ch;
+        has = true;
+      }
+      continue;
+    }
+
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < text.length && DOUBLE_QUOTE_ESCAPABLE.has(text[i + 1])) {
+        cur += text[i + 1];
+        has = true;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        quote = null;
+        continue;
+      }
+      cur += ch;
+      has = true;
+      continue;
+    }
+
+    // Outside any quote.
+    if (ch === "\\") {
+      if (i + 1 < text.length) {
+        cur += text[i + 1];
+        has = true;
+        i++;
+      } else {
+        cur += "\\"; // a trailing backslash with nothing to escape stays literal
+        has = true;
+      }
       continue;
     }
     if (ch === '"' || ch === "'") {
@@ -99,7 +147,7 @@ function segmentAndTokenize(command) {
   return segments;
 }
 
-/** True when `token`'s basename (either slash style, minus a Windows .exe/.cmd suffix) is `git`. */
+/** True when `token`'s basename (either slash style, minus a trailing .exe or .cmd suffix) is `git`. */
 function isGitWord(token) {
   const base = token
     .split(/[\\/]/)
@@ -215,16 +263,17 @@ function configPositionalArgs(scanArgs) {
 }
 
 /**
- * True when ANY segment's non-message tokens set a `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/
- * `GIT_CONFIG_VALUE_<n>` environment variable — git 2.31+ honours these for a single invocation,
- * so they redirect core.hooksPath exactly like `-c core.hooksPath=...` without that string ever
- * appearing as a `-c` token.
+ * True when a leading `NAME=value` assignment in THIS segment, immediately before the git word at
+ * `gi`, sets a `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` environment variable
+ * — git 2.31+ honours these for a single invocation, so they redirect core.hooksPath exactly like
+ * `-c core.hooksPath=...` without that string ever appearing as a `-c` token. Scoped to the same
+ * segment as `gitTokenIndex` already scopes the assignments themselves: a bare `VAR=value` prefix
+ * applies only to the command it directly prefixes, never to a later command in a `;`/`&&` chain,
+ * so checking other segments would deny an unrelated command that merely follows one.
  */
-function hasGitConfigEnvOverride(segments) {
-  for (const tokens of segments) {
-    for (const t of argsExcludingMessageValue(tokens)) {
-      if (GIT_CONFIG_ENV_RE.test(t)) return true;
-    }
+function hasGitConfigEnvOverride(tokens, gi) {
+  for (let i = 0; i < gi; i++) {
+    if (GIT_CONFIG_ENV_RE.test(tokens[i])) return true;
   }
   return false;
 }
@@ -243,7 +292,6 @@ const deny = (reason) => ({ deny: true, reason });
 /** Whether this command must be refused, and what to tell the agent. */
 export function classify(command, { hooksPathSet }) {
   const segments = segmentAndTokenize(command);
-  const envOverride = hasGitConfigEnvOverride(segments);
 
   // `hooksPathSet` may be a plain boolean (every existing test) or a lazy accessor (the real
   // entry point below, which must not spawn a git subprocess for a command that never reaches
@@ -289,7 +337,7 @@ export function classify(command, { hooksPathSet }) {
 
     if (sub !== "commit" && sub !== "push") continue;
 
-    if (envOverride) return deny(GIT_CONFIG_ENV_REFUSAL);
+    if (hasGitConfigEnvOverride(tokens, gi)) return deny(GIT_CONFIG_ENV_REFUSAL);
     if (hasBypassFlag(scanArgs, sub)) return deny(NO_VERIFY_REFUSAL);
     if (!isArmed()) return deny(UNARMED_REFUSAL);
   }
@@ -322,14 +370,37 @@ export function looksLikeCommitOrPush(text) {
   return /\bgit\b[\s\S]*\b(commit|push)\b/.test(String(text));
 }
 
+/**
+ * Recovers just the `command` field's value from raw, possibly-truncated or malformed JSON text,
+ * without requiring the payload to parse as a whole — used only on the fail-closed path, where the
+ * coarse commit/push match must be scoped to the command, never to an unrelated field (a
+ * `description` mentioning "git commit hooks" must not deny a `pnpm test` invocation). Returns
+ * `null` when no `"command"` key is found at all, the only case the caller falls back to scanning
+ * the whole payload.
+ */
+export function bestEffortCommand(raw) {
+  const match = /"command"\s*:\s*"((?:[^"\\]|\\.)*)"?/.exec(String(raw));
+  if (!match) return null;
+  try {
+    // The regex already captured a well-formed JSON string body (or the un-terminated remainder of
+    // one); re-parsing it through JSON's own escape rules is simpler and more correct than
+    // reimplementing them, and a truncated payload's missing closing quote is supplied here.
+    return JSON.parse('"' + match[1] + '"');
+  } catch {
+    return match[1]; // an escape sequence too broken to parse; the raw captured text is still
+    // narrower than the whole payload, which is what this function exists to guarantee.
+  }
+}
+
 if (isMainEntry()) {
   let raw = "";
   process.stdin.on("data", (chunk) => {
     raw += chunk;
   });
   process.stdin.on("end", () => {
+    let command;
     try {
-      const command = JSON.parse(raw)?.tool_input?.command ?? "";
+      command = JSON.parse(raw)?.tool_input?.command ?? "";
       const verdict = classify(command, { hooksPathSet: queryHooksPathSet });
       if (verdict.deny) {
         process.stdout.write(
@@ -343,7 +414,12 @@ if (isMainEntry()) {
         );
       }
     } catch {
-      if (looksLikeCommitOrPush(raw)) {
+      // `command` may already hold the real value if JSON.parse succeeded but classify() itself
+      // threw; otherwise recover it best-effort from the raw text, and only scan the whole payload
+      // when no command field can be found in it at all.
+      const recovered = command ?? bestEffortCommand(raw);
+      const scanTarget = recovered ?? raw;
+      if (looksLikeCommitOrPush(scanTarget)) {
         process.stdout.write(
           JSON.stringify({
             hookSpecificOutput: {
