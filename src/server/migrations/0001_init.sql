@@ -157,6 +157,7 @@ CREATE VIRTUAL TABLE documents_fts_public USING fts5(
   content,
   doc_id UNINDEXED,
   world_id UNINDEXED,
+  doc_type UNINDEXED,
   tokenize = 'unicode61'
 );
 
@@ -164,6 +165,7 @@ CREATE VIRTUAL TABLE documents_fts_gm USING fts5(
   content_all,
   doc_id UNINDEXED,
   world_id UNINDEXED,
+  doc_type UNINDEXED,
   tokenize = 'unicode61'
 );
 

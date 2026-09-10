@@ -455,7 +455,7 @@ async fn handle_socket(
                                         }
                                     } else {
                                         let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
-                                        let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
+                                        let frame = match repo.search(&ctx, world_id, &query, limit, from, &[]).await {
                                             Ok(page) => ServerMsg::SearchResult {
                                                 request_id,
                                                 hits: page.hits,
@@ -1836,7 +1836,7 @@ async fn egress_loop<S>(
                         let f = ServerMsg::SearchError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
-                        match repo.search(&ctx, world_id, &query, limit, None).await {
+                        match repo.search(&ctx, world_id, &query, limit, None, &[]).await {
                             Ok(page) => {
                                 let fp = search_fingerprint(&page.hits);
                                 let f = ServerMsg::SearchResult { request_id, hits: page.hits, next_cursor: None };
@@ -2076,7 +2076,7 @@ async fn egress_loop<S>(
                 reeval_deadline = None;
                 let mut dead: Vec<Uuid> = Vec::new();
                 for (id, sub) in subs.iter_mut() {
-                    match repo.search(&ctx, world_id, &sub.query, sub.limit, None).await {
+                    match repo.search(&ctx, world_id, &sub.query, sub.limit, None, &[]).await {
                         Ok(page) => {
                             let fp = search_fingerprint(&page.hits);
                             if fp != sub.fingerprint {

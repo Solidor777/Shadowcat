@@ -10,6 +10,11 @@ use ts_rs::TS;
 
 use crate::data::document::Document;
 
+/// Maximum number of entries `Repository::search`'s `doc_types` filter
+/// accepts; an over-cap list is refused (`DataError::OpFailed`), never
+/// silently truncated to a different question than the caller asked.
+pub const MAX_SEARCH_DOC_TYPES: usize = 16;
+
 /// One search result: the per-recipient-filtered document, its BM25 relevance
 /// (lower = more relevant, as SQLite returns it), and a highlighted snippet.
 ///

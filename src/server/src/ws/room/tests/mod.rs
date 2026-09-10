@@ -183,8 +183,11 @@ impl Repository for DeleteMidHydration<'_> {
         query: &str,
         limit: u32,
         cursor: Option<i64>,
+        doc_types: &[String],
     ) -> Result<crate::data::search::SearchPage, DataError> {
-        self.inner.search(ctx, world_id, query, limit, cursor).await
+        self.inner
+            .search(ctx, world_id, query, limit, cursor, doc_types)
+            .await
     }
     async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError> {
         self.inner.get_explored(scene, user).await
