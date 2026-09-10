@@ -35,8 +35,18 @@ Reconnaissance against `main` (`826b9b15`):
   `resolveCaps`/`canWritePath` over the Welcome's `world_default_grants`, but the Welcome does not
   carry the world's `role_caps` (`WorldCapDefaults.role_caps`, the `core:create` policy
   `apply_intent` consults through `role_has`), and `capabilities.ts` carries a `TODO` for exactly
-  this mirror. Panels therefore gate creation on `ctx.role === "gm"`, hiding the control from a
-  player the GM has granted `core:create`.
+  this mirror. `ActorsPanel`'s create `<form>` is UNCONDITIONAL today — every member sees it,
+  and an ungranted player's submit is refused server-side with `forbidden` (silently, per the
+  bullet above). Only the carried-light control inside the form is `role === "gm"`-gated.
+- **A non-GM author cannot manage their own note or table.** `DocRole::Owner`'s floor
+  (`data::permission::role_floor`) is `core:read` + `core:write_fields` ONLY; every `/permissions/*`
+  path and `/owner` require `core:edit_permissions` (`required_cap_for_path`) and
+  `Operation::Delete` requires `core:delete` — neither is in the floor, and `WorldCapDefaults` is
+  empty on every world (`create_world` never seeds it). `buildNoteDoc` stamps `users[owner] =
+  "owner"` and nothing more; `buildTableDoc` stamps no owner at all (`envelope`'s `owner: null`,
+  `default: "observer"`, empty `capabilities`). So a private note's audience switch would be
+  GM-only in practice, and a player granted `core:create` on tables would create a table they can
+  never edit or delete. The client has no delete mirror either — `canEdit` covers write paths only.
 - **Two shared decisions are module-local copies.** `firstChannel(documents)` lives in
   `module-combat-tracker`'s `model.ts` while `ItemSheet.roll` hardcodes `"general"`; `buildMoveOp`
   lives in `module-asset-browser`'s `folderOps.ts`. Each new consumer (a note tree, a table sheet's
@@ -105,7 +115,9 @@ unchanged — a pure move, proven by the moved test suite passing without edits 
 `WorldSession`'s `WsClient` handler `onReject: (id, reason) => …` gains one line beside
 `this.#optimistic.reject(id)`: a notification through the same sink `Table.svelte` wires
 `AppContext.notify` to (`notifications.push("warning", text)`). `WorldSession` receives the sink as
-a constructor dependency (`onReject?: (reason: RejectReason) => void` in its opts, wired by
+a constructor dependency (`onReject?: (reason: RejectReason) => void` in its opts — `RejectReason`
+is the EXISTING ts-rs type from `@shadowcat/types`, already pinned to `RejectReasonSchema` by
+`wire.test.ts`; no second name is introduced — wired by
 `App.svelte` to `notifications.push` with the resolved i18n text), keeping `WorldSession` free of
 Svelte. Text: `t("intent.rejected.<reason>")` — three keys (`forbidden`, `conflict`, `invalid`),
 player-presentable ("The server refused that edit: you may not change this." / "…someone else
@@ -130,7 +142,41 @@ changed it first — reload the field and try again." / "…the value was invali
   (the server re-checks at `apply_intent`); every `setAppContext` fixture defaults it to
   `() => false`... EXCEPT that a fixture whose `role` is `"gm"` defaults it to `() => true`, so
   existing GM-flow tests keep their affordances. `ActorsPanel`'s create form and the two new
-  panels gate on it.
+  panels gate on it. For `ActorsPanel` this is a NEW restriction (§0: the form is unconditional
+  today), and intended: the mirror's purpose is to hide exactly what the server would refuse.
+- `WorldSession.canDelete(doc)` beside `canEdit`: `role === "gm"` ⇒ true; else the SAME
+  `resolveCaps` call `canEdit` makes (one private `#capsFor(doc)` feeds both — never two
+  resolver calls) contains `"core:delete"`, mirroring the `Operation::Delete` arm's
+  `resolve_access_world(...).has(cap::DELETE)`. `AppContext.canDelete(doc: WireDocument):
+  boolean` beside `canEdit`/`canCreate`, advisory; fixtures default it by the `canCreate` rule.
+  Raw `doc.owner === ctx.selfId` is never a delete gate (the sheets skill's gotcha: ownership is
+  not write capability on any doc_type but `token`).
+
+### 2.6 Author grants — `grantAuthor`
+
+The permission model already has the mechanism the `/owner` gate names ("only a GM, or an
+explicit `EDIT_PERMISSIONS` grant"): per-document `permissions.capabilities.by_role`, which
+`resolve_access_world` (server) and `resolveCaps` (client) both union over the role floor. The
+rule "what the author of a document may do to it" is stated ONCE, in `@shadowcat/core`
+`scene-docs.ts`:
+
+- `export const AUTHOR_CAPS: readonly string[] = ["core:delete", "core:edit_permissions"]`.
+- `export function grantAuthor(doc: WireDocument, owner: string): WireDocument` — sets
+  `permissions.users[owner] = "owner"` and unions `AUTHOR_CAPS` into
+  `permissions.capabilities.by_role.owner`; returns the same object. `doc.owner` stays `null`
+  (the ownership OVERRIDE field is for effective-owner re-targeting, GM-written).
+- `buildNoteDoc` calls it when `opts.owner` is given (replacing its hand-written `users`
+  stamp); `buildTableDoc(worldId, name, engine, opts?: BuildTableDocOptions)` gains
+  `{ id?, owner? }` (the positional `id` becomes `opts.id`; every caller updated) and calls it
+  likewise. Both panels' Create pass `owner: ctx.selfId`; the GM is stamped too (harmless —
+  a GM holds every capability — and the document records who wrote it).
+- Consequence: `ctx.canEdit(doc, "/permissions/default")` and `ctx.canDelete(doc)` resolve
+  `true` for the author on both sides with NO server change; the author may also share the
+  note with named users or hand it over (`/permissions/users`, `/owner`) — their document.
+- Actors are NOT covered (§11 M16): an actor's `owner` drives token control, vision and chat
+  attribution (`actor_owner`), and the GM assigns it deliberately through the panel's owner
+  select; a GM-created NPC stays unowned. A player's created actor stays unowned until the GM
+  assigns it, as today.
 
 ## 3. `@shadowcat/module-sheet-note` — `NoteSheet.svelte`
 
@@ -141,7 +187,8 @@ stripping the trailing `/system` (the sheets pattern); every `$derived.by` readi
 as OCC `old`. Root `<div role="dialog">`.
 
 - **Header:** title input over `namePrefix` (`setField` on change), close.
-- **Visibility** (rendered when `ctx.canEdit(doc, "/permissions/default")`): a `<select>` —
+- **Visibility** (rendered when `ctx.canEdit(doc, "/permissions/default")` — true for the
+  author through `grantAuthor`'s `core:edit_permissions`, §2.6, and for a GM): a `<select>` —
   `private` (`permissions.default: "none"`) / `shared` (`"observer"`) — writing
   `/permissions/default` with the raw current value as `old`. This is the note's whole-document
   audience; the author's own `Owner` entry in `users` is untouched, so sharing never demotes the
@@ -212,7 +259,7 @@ Requires `PANEL_CONTRACT`; depends on `core-ui ^0.1.0`.
 - **Create** (when `ctx.canCreate(NOTE_DOC_TYPE)`): name input + "New note" →
   `buildNoteDoc(ctx.world, name, "", { owner: ctx.selfId })` Create, then open. Private by
   default; the sheet's visibility control shares it.
-- **Row actions:** Delete (rendered when GM, or the note's `owner === ctx.selfId`) →
+- **Row actions:** Delete (rendered when `ctx.canDelete(doc)` — never raw ownership) →
   `{ op: "delete", doc }`; Move-to (GM only — `Operation::Move` is GM-only server-side) → a select
   of every other visible note plus "root" → `buildMoveOp(doc, parentId)`; the server's
   `check_note_parent`/`check_move_acyclic` refuse a bad target and the toast reports it.
@@ -225,9 +272,11 @@ launcher-closed, NOT `gmOnly` (a player draws from a table they can read).
 - **List:** every `table` in `ctx.documents`, ordered by name; live search with `docTypes:
   [TABLE_DOC_TYPE]` replacing the list while non-empty.
 - **Row:** name → open sheet; **Draw** (count 1, `firstChannel`, rejection → `ctx.notify`);
-  Delete (GM, or owner).
+  Delete (when `ctx.canDelete(doc)`).
 - **Create** (when `ctx.canCreate(TABLE_DOC_TYPE)`): name → `buildTableDoc(ctx.world, name,
-  { draw: { kind: "weighted" }, rows: [], description: "" })` Create, then open — a table with no
+  { draw: { kind: "weighted" }, rows: [], description: "" }, { owner: ctx.selfId })` Create,
+  then open — the creator holds `write_fields` (Owner floor) + `AUTHOR_CAPS` (§2.6), so a
+  granted player edits and deletes the table they made; a table with no
   rows is valid at ingress (`TableEngine::validate` bounds row count, it does not require one) and
   refuses to draw (`EmptyTable`), which the toast reports.
 
@@ -274,8 +323,10 @@ live-update cases, never the plain-store fixture alone):
 - `NoteSheet.test.ts` — renders the parsed body through `SegmentList`; Edit → Save dispatches
   exactly one Update whose `old` is the draft BASE (assert with a store mutated between Edit and
   Save); Cancel dispatches nothing; visibility select writes `/permissions/default` with the raw
-  old; children listed and ordered; "New child note" builds a private note owned by `selfId` with
-  `parentId`; read-only for a non-writer; a remote edit re-renders (the frozen-at-mount trap);
+  old, AND renders for a NON-GM author (fixture `role: "player"`, `canEdit` wired to the real
+  `resolveCaps` over a `buildNoteDoc(…, { owner: selfId })` document — the case the GM
+  short-circuit masks); children listed and ordered; "New child note" builds a private note owned
+  by `selfId` with `parentId`; read-only for a non-writer; a remote edit re-renders (the frozen-at-mount trap);
   `null` body → unrenderable text.
 - `TableSheet.test.ts`/`RowEditor.test.ts`/`EntryEditor.test.ts` — each edit writes the whole
   `rows` array with the raw old; draw-rule switch writes the whole `draw` object; range inputs only
@@ -284,14 +335,23 @@ live-update cases, never the plain-store fixture alone):
   kind's fields; doc/table pickers call `searchDocuments` with the right `docTypes`.
 - `NotesPanel.test.ts`/`NoteTree.test.ts` — tree shape, hidden-parent root promotion, sibling
   ordering, search sends `docTypes: ["note"]` and replaces the tree, create builds the private note,
-  Delete/Move-to gating and the `buildMoveOp` payload.
-- `TablesPanel.test.ts` — list, search, create shape, Draw, gating.
+  Delete gated on `canDelete` (shown for a player whose fixture `canDelete` says so, never on
+  raw `owner`), Move-to gating and the `buildMoveOp` payload.
+- `TablesPanel.test.ts` — list, search, create shape (`owner: selfId` reaches `grantAuthor`),
+  Draw, `canCreate`/`canDelete` gating.
 - `ActorSheet.test.ts` — the three emission editors' commits and clears.
 - ui-kit `EmissionEditor.test.ts` (moved, unchanged assertions).
 - core `chat-docs.test.ts` (`firstChannel`), `move-op.test.ts` (`buildMoveOp`),
-  `capabilities.test.ts` (`canCreateDoc`: GM, `all`, `by_type`, neither).
+  `capabilities.test.ts` (`canCreateDoc`: GM, `all`, `by_type`, neither), `scene-docs.test.ts`
+  (`grantAuthor`: users entry + `by_role.owner` ⊇ `AUTHOR_CAPS`, existing grants preserved,
+  `resolveCaps` for that user then contains `core:delete` and `core:edit_permissions`),
+  `note-docs.test.ts`/`table-docs.test.ts` (the builders stamp through `grantAuthor`; no owner
+  ⇒ no grant).
 - shell `worldSession.test.ts` (reject → one notification per frame, rollback still runs;
-  `canCreate` reads the Welcome projection), `defaultModuleOrder.test.ts`.
+  `canCreate` reads the Welcome projection; `canDelete`: GM true, author of a `grantAuthor`
+  document true, observer false), `defaultModuleOrder.test.ts` (both describe blocks: the panel
+  register-lists AND the "sheet modules contribute sheets, not panels" block gain the new
+  modules).
 - server: `project_role_caps_for` (only the caller's role crosses; both `all` and `by_type`),
   the Welcome field's ts-rs shape.
 
@@ -306,8 +366,11 @@ gestures — panels and sheets only; test ids on every driven control):
   only after the GM shares it too.
 - `tables.spec.ts` — the GM opens the tables panel, creates "Loot", the sheet opens; adds two rows
   with labels through the row editor; Draw; both the GM's and the player's chat panels show a
-  `table_draw` card carrying one of the two labels; the GM's card exposes the roll tooltip trigger,
-  the player's does not (no `spec`); the panel's quick Draw posts a second card.
+  `table_draw` card carrying one of the two labels; BOTH cards render the roll tooltip trigger —
+  `SegmentList`'s `table_draw` branch renders `<RollTooltip outcome recalcHistory={null}>`
+  unconditionally and `RollTooltip` takes only `outcome`/`recalc_history`, which every recipient
+  receives (`spec`/`raw` are GM-only server-side and never rendered), so there is NO GM/player
+  markup difference to assert on; the panel's quick Draw posts a second card.
 Both specs are written by the implementer and RUN ONLY by the dispatcher (port 31999 is
 dispatcher-serialized); a spec is not done until it has been observed to pass.
 
@@ -340,6 +403,10 @@ One branch (`m20-module-suite`), in this order — the first five need nothing f
 | M12 | Draw count cap on the client | none; the server's refusal is surfaced | a client constant mirroring `MAX_TOP_LEVEL_DRAWS` is a second statement of the cap with no fixture pinning it |
 | M13 | Hidden-parent notes | promoted to root in the tree | hiding a readable note because its ancestor is private makes shared child notes unreachable |
 | M14 | Note visibility control | `permissions.default` none/observer | a per-user share list is a permissions editor (a later, general surface); default is the audience switch the M19 design named |
+| M15 | What a note/table author may do to their document | one core `grantAuthor` stamping `users[owner]="owner"` + `by_role.owner ⊇ AUTHOR_CAPS` (`core:delete`, `core:edit_permissions`) at build time | the `Owner` floor is read+write_fields by design (an owner must not be able to steal ownership elsewhere), so the author's delete/share needs an EXPLICIT grant — the mechanism the `/owner` gate itself names; a world-level `by_type` default would need a seed at `create_world`, a migration for existing worlds, and would not travel with an exported document; a client-side "owner === self" gate is the ownership-is-not-capability defect the sheets skill names |
+| M16 | Actors under `grantAuthor` | no — actor ownership stays GM-assigned through the panel's owner select | an actor's `owner` drives token control, vision and chat attribution (`actor_owner`); stamping the GM as owner of every NPC changes attribution on every GM roll, and a player's PC ownership is the GM's deliberate assignment today |
+| M17 | Delete affordance gate | `AppContext.canDelete(doc)` mirroring the server's `Operation::Delete` gate through the one resolver `canEdit` uses | raw ownership is not `core:delete` on any doc_type; a second resolver call forks the capability decision |
+| M18 | `ActorsPanel` create form | wrapped in `canCreate(ACTOR_DOC_TYPE)` — a NEW restriction on a form that is unconditional today | showing a form whose submit the server refuses is the silent-rejection defect §2.4 exists to surface; the mirror hides exactly what would be refused |
 
 ## 12. Open questions for the user
 

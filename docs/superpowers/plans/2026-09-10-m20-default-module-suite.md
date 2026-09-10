@@ -120,8 +120,9 @@ the full gate list, the browser suite DISPATCHER-ONLY). Additionally:
 
 **Files:**
 - Modify: `src/client/shell/src/lib/worldSession.svelte.ts` (`WorldSessionOpts.onReject?:
-  (reason: WireRejectReason) => void` — export `type WireRejectReason =
-  z.infer<typeof RejectReasonSchema>` from `wire.ts` if no named type exists; the `WsClient`
+  (reason: RejectReason) => void` — `RejectReason` is the EXISTING ts-rs type from
+  `@shadowcat/types` that `ws-client.ts`'s `onReject?(intentId, reason: RejectReason)` already
+  uses and `wire.test.ts` pins to `RejectReasonSchema`; introduce NO second name; the `WsClient`
   handler `onReject: (id, reason) => { this.#optimistic.reject(id); this.opts.onReject?.(reason); }`),
   `src/client/shell/src/App.svelte` (`onReject: (reason) => notifications.push("warning",
   t(\`intent.rejected.${reason}\`))` — `notifications` from `@shadowcat/ui-kit`'s
@@ -129,14 +130,13 @@ the full gate list, the browser suite DISPATCHER-ONLY). Additionally:
   `src/client/ui-kit/src/locales/en.ts` (`intent.rejected.forbidden`, `intent.rejected.conflict`,
   `intent.rejected.invalid` — player-presentable sentences from spec §2.4),
   `src/client/shell/src/lib/worldSession.test.ts` (a `reject` frame → `onReject` called once with
-  the reason AND `#optimistic.reject` still ran — assert the prediction rolled back), `src/client/core/src/index.ts`
-  (export the type).
+  the reason AND `#optimistic.reject` still ran — assert the prediction rolled back).
 
 - [ ] **Step 1:** failing test; implement; `pnpm --filter @shadowcat/shell test`, `pnpm -r
   typecheck`, `pnpm lint:docs`/`props` PASS.
 - [ ] **Step 2:** `git commit -m "feat(shell): every rejected intent surfaces as a notification" -- src/client/`
 
-### Task 4: `role_capabilities` on Welcome + `canCreateDoc` + `AppContext.canCreate`
+### Task 4: `role_capabilities` on Welcome + `canCreateDoc`/`canCreate` + `canDelete` + `grantAuthor`
 
 **Files:**
 - Modify: `src/server/src/data/document.rs` (`pub struct RoleCapabilities { pub all:
@@ -165,21 +165,53 @@ the full gate list, the browser suite DISPATCHER-ONLY). Additionally:
   `src/client/ui-kit/src/appContext.ts` (`canCreate(docType: string): boolean` — doc: advisory
   mirror of the server's Create gate, `role_has`-shaped; the baseline-message exemption is not
   mirrored), `src/client/shell/src/lib/Table.svelte` (`canCreate: (t) => session.canCreate(t)`),
-  `src/client/ui-kit/src/__fixtures__/appContextTest.ts` (`canCreate: over.canCreate ?? (() =>
-  (over.role ?? "player") === "gm")` — read the fixture's existing `role` default first and match
-  it), every OTHER `setAppContext(`/`AppContext` literal site (`rg "setAppContext\(|: AppContext =" src --type ts --type svelte -l`,
-  excluding node_modules) gains the field, `src/modules/actors/src/ActorsPanel.svelte` (the create
-  form's `{#if ctx.role === "gm"}` around the create `<form>` — locate it — becomes
-  `{#if ctx.canCreate(ACTOR_DOC_TYPE)}`; the other GM-only controls (hide-name, ownership) stay
-  role-gated, they are Update-path GM affordances), `src/modules/actors/src/ActorsPanel.test.ts`,
+  `src/client/ui-kit/src/__fixtures__/appContextTest.ts` (the fixture's `role` default IS
+  `over.role ?? "gm"` — so: `canCreate: over.canCreate ?? (() => (over.role ?? "gm") === "gm")`
+  and `canDelete: over.canDelete ?? (() => (over.role ?? "gm") === "gm")`; anything else makes
+  a default-role fixture a GM whose create/delete affordances are hidden), every OTHER
+  `setAppContext(`/`AppContext` literal site (`rg "setAppContext\(|: AppContext =" src --type ts --type svelte -l`,
+  excluding node_modules) gains BOTH fields, `src/modules/actors/src/ActorsPanel.svelte` (the create
+  `<form onsubmit=…>` is UNCONDITIONAL today — there is no `{#if ctx.role === "gm"}` around it;
+  the only role gate inside it is the carried-light control. Wrap the WHOLE `<form>` in
+  `{#if ctx.canCreate(ACTOR_DOC_TYPE)}` — a NEW restriction, intended (spec §11 M18); the
+  carried-light gate and the other GM-only controls (hide-name, ownership) stay role-gated, they
+  are Update-path GM affordances), `src/modules/actors/src/ActorsPanel.test.ts` (a player
+  without a grant no longer sees the form — update any existing test that submits it under the
+  fixture's defaults by passing `canCreate: () => true`),
   `docs/site/protocol.md` (`welcome` row names `role_capabilities`).
+- Modify (delete mirror, spec §2.5): `src/client/shell/src/lib/worldSession.svelte.ts` (extract
+  `canEdit`'s owner-floor + `resolveCaps` lines into a private `#capsFor(doc): Set<string>`;
+  `canEdit` and the new `canDelete(doc): boolean` — `role === "gm"` ⇒ true, `!role` ⇒ false,
+  else `#capsFor(doc).has("core:delete")` — both call it), `src/client/ui-kit/src/appContext.ts`
+  (`canDelete(doc: WireDocument): boolean` beside `canEdit`, doc: advisory mirror of the
+  `Operation::Delete` gate; never derive a delete affordance from `doc.owner`),
+  `src/client/shell/src/lib/Table.svelte` (`canDelete: (d) => session.canDelete(d)`),
+  `src/client/shell/src/lib/worldSession.test.ts` (GM true; the author of a `grantAuthor`
+  document true; a plain observer false).
+- Modify (author grants, spec §2.6): `src/client/core/src/scene-docs.ts` (`export const
+  AUTHOR_CAPS: readonly string[] = ["core:delete", "core:edit_permissions"]`; `export function
+  grantAuthor(doc: WireDocument, owner: string): WireDocument` — `permissions.users[owner] =
+  "owner"`, `permissions.capabilities.by_role.owner` = existing ∪ `AUTHOR_CAPS` (a `by_role` map
+  keyed by the snake_case `DocRole` wire names — read `WireDocument`'s permissions type in
+  `wire.ts`), returns `doc`; doc comment states WHY the floor is not enough and that `doc.owner`
+  is deliberately untouched), `src/client/core/src/scene-docs.test.ts`, `src/client/core/src/note-docs.ts`
+  (`buildNoteDoc`: replace the hand-written `users` stamp with `grantAuthor(doc, opts.owner)`
+  when `opts.owner` is given; the `default: "none"` stamp stays; update the option's doc),
+  `src/client/core/src/note-docs.test.ts`, `src/client/core/src/table-docs.ts` (`export interface
+  BuildTableDocOptions { id?: string; owner?: string }`; `buildTableDoc(worldId, name, engine,
+  opts?)` — positional `id` becomes `opts.id`; `grantAuthor` when `opts.owner`; update the doc +
+  example), `src/client/core/src/table-docs.test.ts`, every `buildTableDoc(` caller
+  (`rg "buildTableDoc\(" src` — today only the core test), `src/client/core/src/index.ts`
+  (export `AUTHOR_CAPS`, `grantAuthor`, `BuildTableDocOptions`), `src/client/core/src/capabilities.test.ts`
+  (a `grantAuthor`'d document resolves `core:delete` + `core:edit_permissions` for the owner
+  through `resolveCaps` and nothing extra for an observer).
 
 - [ ] **Step 1:** failing tests (server projection; client `canCreateDoc`; `worldSession.canCreate`
-  reads the Welcome; `ActorsPanel` shows the form for a player with a `by_type.actor` grant and
-  hides it without); implement; `cargo test --all` (background + log) regenerates the bindings;
+  reads the Welcome; `worldSession.canDelete` three cases; `grantAuthor` + both builders;
+  `ActorsPanel` shows the form for a player with a `by_type.actor` grant and hides it without); implement; `cargo test --all` (background + log) regenerates the bindings;
   `git diff --exit-code src/types/generated` FAILS as expected — stage them; `pnpm -r typecheck`,
   `pnpm -r test` (background + log), `pnpm lint:docs`/`props`, clippy (both invocations), fmt PASS.
-- [ ] **Step 2:** `git commit -m "feat(permissions): Welcome carries the caller's world-level capabilities; canCreate advisory mirror" -- src/server/ src/types/ src/client/ src/modules/actors/ docs/site/protocol.md`
+- [ ] **Step 2:** `git commit -m "feat(permissions): Welcome carries the caller's world-level capabilities; canCreate/canDelete advisory mirrors; author grants on notes and tables" -- src/server/ src/types/ src/client/ src/modules/actors/ docs/site/protocol.md`
 
 ### Task 5: emitter editors on the actor sheet
 
@@ -217,8 +249,11 @@ the full gate list, the browser suite DISPATCHER-ONLY). Additionally:
   component tests).
 - Modify: `src/client/shell/src/App.svelte` (import + module list, after `sheetItem`),
   `src/client/shell/package.json` (two workspace deps), `pnpm-lock.yaml` (via `pnpm install`),
-  `src/client/shell/src/lib/defaultModuleOrder.test.ts` (no change needed unless it enumerates
-  sheet modules — read it; it lists panel modules only), `src/client/ui-kit/src/locales/en.ts`
+  `src/client/shell/src/lib/defaultModuleOrder.test.ts` (its SECOND describe block, "sheet
+  modules contribute sheets, not panels", registers `sheetFallback`/`sheetActor`/`sheetItem` and
+  asserts one `sheetContract(...)` entry each and zero `PANEL_CONTRACT` entries — add `sheetNote`
+  and `sheetTable` to that list and assert `sheetContract("note")`/`sheetContract("table")`
+  each have length 1; rename the test title's "three" to "five"), `src/client/ui-kit/src/locales/en.ts`
   (`sheetNote.*`: `title`, `untitled`, `edit`, `save`, `cancel`, `reload`, `changedRemotely`,
   `unrenderable`, `visibility`, `visibilityPrivate`, `visibilityShared`, `sort`, `children`,
   `newChild`, `upTo`; `sheetTable.*`: `title`, `description`, `draw`, `drawCount`, `drawRule`,
@@ -236,7 +271,10 @@ inside a `<fieldset disabled={channel === ""}>`; the draft: `let draft = $state<
 + `let draftBase = $state("")`; Save → `setField(ctx, docId, \`${enginePrefix}/source\`, draftBase,
 draft)`; the remote-change banner shows when `draft !== null && storedSource !== draftBase`;
 Reload re-seeds both from the store. Visibility: `setField(ctx, docId, "/permissions/default",
-doc.permissions.default, value)`. Children: `ctx.documents.query(NOTE_DOC_TYPE)` filtered by
+doc.permissions.default, value)`, rendered under `ctx.canEdit(doc, "/permissions/default")` — the
+non-GM-author test (spec §9) wires the fixture's `canEdit` to the REAL `resolveCaps` +
+`canWritePath` from `@shadowcat/core` over a `buildNoteDoc(…, { owner: selfId })` document with
+`role: "player"`, so the test fails if `grantAuthor` stops granting `core:edit_permissions`. Children: `ctx.documents.query(NOTE_DOC_TYPE)` filtered by
 `parent_id === docId`, sorted by `(engine.sort ?? 0, created_at)`; each row is a `<button>` whose
 visible text is the child's name (no static aria-label). "New child note" (when
 `ctx.canCreate(NOTE_DOC_TYPE)`) → `const child = buildNoteDoc(ctx.world, t("sheetNote.untitled"),
@@ -301,22 +339,31 @@ full gate list green; `git commit` (a merge commit carries its own message — a
   `moveTo`, `root`, `empty`, `expand`, `collapse`; `tables.*`: `tab`, `search`, `create`,
   `name`, `newTable`, `draw`, `delete`, `empty`), `docs/site/modules/notes.md`,
   `docs/site/modules/tables.md`, `docs/site/modules/index.md`, `docs/site/.vitepress/config.mts`
-  (sidebar entries after `combat-tracker`), `src/modules/sheet-table/src/EntryEditor.svelte`
+  (the `/modules/` "Gameplay" group has NO `combat-tracker` entry today although
+  `docs/site/modules/combat-tracker.md` exists and `index.md` lists it — a pre-existing
+  navigation gap; add `combat-tracker` after `chat-card`, then `notes` and `tables` after it, in
+  this same edit), `src/modules/sheet-table/src/EntryEditor.svelte`
   (switch the table picker to `docTypes: [TABLE_DOC_TYPE]` and delete the interim client filter +
   its `TODO:`).
 
 Panel behaviour per spec §5/§6. Live search: copy `ActorsPanel`'s `$effect` subscription block
 (cancel guard, `.then` handle capture) with `docTypes: [NOTE_DOC_TYPE]` / `[TABLE_DOC_TYPE]`.
-Delete: `ctx.dispatchIntent([{ op: "delete", doc }])` (the wire delete carries the whole doc —
-see `ToolRail.svelte`'s delete). Move-to: `ctx.dispatchIntent([buildMoveOp(doc.id, target,
+Delete: rendered under `ctx.canDelete(doc)` (never `doc.owner === ctx.selfId`);
+`ctx.dispatchIntent([{ op: "delete", doc }])` (the wire delete carries the whole doc — see
+`ToolRail.svelte`'s delete). Create: notes `buildNoteDoc(ctx.world, name, "", { owner:
+ctx.selfId })`, tables `buildTableDoc(ctx.world, name, { draw: { kind: "weighted" }, rows: [],
+description: "" }, { owner: ctx.selfId })`. Move-to: `ctx.dispatchIntent([buildMoveOp(doc.id, target,
 doc.parent_id ?? null)])`. Test ids: `notes-panel`, `notes-search`, `notes-name`, `notes-create`,
 `note-row` (+ `data-note-id`), `note-open`, `note-delete`, `note-move-target`, `note-move`,
 `note-toggle`; `tables-panel`, `tables-search`, `tables-name`, `tables-create`, `table-row`,
 `table-open`, `table-quick-draw`, `table-delete`.
 
 - [ ] **Step 1:** failing tests per spec §9 (tree helper cases incl. hidden-parent promotion;
-  panel search sends the right `docTypes`; create builds the private note with `owner: selfId`;
-  gating on `canCreate`/role/owner; Move-to payload).
+  panel search sends the right `docTypes`; create builds the private note / the table with
+  `owner: selfId` (assert the dispatched doc's `permissions.capabilities.by_role.owner` ⊇
+  `AUTHOR_CAPS`); gating on `canCreate`/`canDelete` (Delete shown when the fixture's `canDelete`
+  returns true for a `role: "player"` context, hidden when false — never keyed on `owner`);
+  Move-to on role; Move-to payload).
 - [ ] **Step 2:** implement; `pnpm install`; the same gate set as Task 6 Step 2.
 - [ ] **Step 3:** `git commit -m "feat(modules): notes and tables panels" -- src/modules/notes/ src/modules/tables/ src/modules/sheet-table/ src/client/shell/ src/client/ui-kit/src/locales/en.ts pnpm-lock.yaml docs/site/`
 
@@ -330,9 +377,12 @@ doc.parent_id ?? null)])`. Test ids: `notes-panel`, `notes-search`, `notes-name`
   `launcher-trigger` + `launcher-item-notes:panel` / `launcher-item-tables:panel`, every control
   driven by the test ids above, chat cards located as `chat-media.spec.ts` does
   (`page.locator(".card").filter({ hasText: … })`; the roll tooltip trigger is the element
-  `SegmentList` renders for a `table_draw` segment's roll — read `SegmentList.svelte` and assert
-  on its ACTUAL markup: a GM card has it, a player card does not). Every behavioural claim in a
-  spec comment must be verified against the component before it is written.
+  `SegmentList` renders for a `table_draw` segment's roll — `RollTooltip` under
+  `.table-draw-header`, rendered UNCONDITIONALLY for every recipient (it takes only
+  `outcome`/`recalc_history`; `spec`/`raw` are GM-only server-side and never rendered), so BOTH
+  the GM's and the player's card show it — assert its presence on both, and the row label on
+  both; there is no GM/player markup difference). Every behavioural claim in a spec comment must
+  be verified against the component before it is written.
 
 - [ ] **Step 1:** write both; `pnpm --filter @shadowcat/shell typecheck` PASS; `pnpm lint` PASS.
   Do NOT run the suite. Commit subjects say `(written; dispatcher runs)`.

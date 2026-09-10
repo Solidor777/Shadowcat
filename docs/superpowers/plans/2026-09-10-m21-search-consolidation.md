@@ -87,8 +87,8 @@ reader-facing text per spec §2.3. Read `Segment`'s definition in `chat/mod.rs` 
 `TableDraw(TableDrawSegment)`) and `TableDrawSegment`/`DrawnRow`/`OEmbedSegment` for exact field
 names. Rules: `Html` → `strip_tags_and_decode(&sanitized_html)` (remove every `<…>` run —
 ammonia has escaped every literal `<` in text, state that on the helper's doc; then decode
-`&amp;`/`&lt;`/`&gt;`/`&quot;`/`&#39;` and numeric `&#NNN;`/`&#xHH;`); `RollEmbed` → `label`
-(if any) + `formula`, never `spec`/`raw`/`recalc_history`; `RollButton` → `label` + `formula`;
+`&amp;`/`&lt;`/`&gt;`/`&quot;`/`&#39;` and numeric `&#NNN;`/`&#xHH;`); `RollEmbed` → `formula`
+ONLY (the struct has NO `label` field), never `outcome`/`roll_id`/`spec`/`raw`/`recalc_history`; `RollButton` → `label` + `formula`;
 `LinkPreview` → its title/description/url text fields; `OEmbed` → title and author/provider
 name fields, never ids; `DocLink` → `label`; `Image` → `alt`; `TableDraw` → `table_name` +
 (when `row` is `Some`) the row's `label`, `segments_search_text(&row.content)` and every
@@ -115,7 +115,8 @@ never carries doubled spaces or a leading space.
 
 **Interface (spec §2.2):** an explicit `match doc_type` arm for EVERY name `is_engine_doc_type`
 accepts (read that function; today 26 names) — `Some(text)` for each, `None` in the `_` arm
-(non-engine type). Text-bearing arms: `"actor"` → `ActorEngine.displayName`; `"note"` →
+(non-engine type). Text-bearing arms: `"actor"` → `ActorEngine.display_name` (the Rust field —
+`displayName` is only its serde wire name); `"note"` →
 `chat::segments_search_text(&NoteEngine.body)`; `"table"` → `description` then per row `label`,
 `TableEntry::Text.text`, `TableEntry::Doc.label`, `TableEntry::Image.alt`; `"message"` →
 `chat::segments_search_text(&MessageEngine.content)`. Each deserializes its typed struct with
@@ -159,10 +160,14 @@ functions' doc comments and doc examples (they must keep passing `cargo test --d
 
 **Behaviour (spec §3.1):** `doc_types.len() > MAX_SEARCH_DOC_TYPES` ⇒
 `Err(DataError::OpFailed("too many doc types".into()))` before any SQL. Non-empty ⇒ the ranked
-SQL gains ` AND doc_type IN (?, ?, …)` built with one `?` per entry (a `QueryBuilder`, or a
-`format!` of placeholders — NEVER interpolated values) — inside the partition table's query so
-`MAX_SCAN` counts only candidates of the requested types; bind order documented beside the
-existing `?1..?4` binds.
+SQL gains ` AND doc_type IN (?, ?, …)` built with one `?` per entry — NEVER interpolated values —
+inside the partition table's query so `MAX_SCAN` counts only candidates of the requested types.
+SQLite numbering subtlety: the existing statement is a `&'static str` with explicit `?1..?4`, and
+a bare `?` after them continues from the highest number used so far (no precedent in this crate
+mixes the two). Do not mix: move the whole statement to a `sqlx::QueryBuilder` that `push_bind`s
+EVERY value (the four existing ones included) in textual order, so bind order is the push order
+and no numbered placeholder remains; the `search_filters_by_doc_types` test is the guard that
+the binds line up.
 
 - [ ] **Step 1:** failing tests in `search_and_worlds.rs` — `search_filters_by_doc_types` (a GM
   searches "dragon" over an actor + a note + a table all named "…dragon…"; `["note"]` returns
@@ -238,8 +243,11 @@ existing `?1..?4` binds.
   (`query_assets`: delete the LIKE branch; add `if let Some(q) = &filter.query { match
   build_match(q) { None => return Ok(Vec::new()), Some(expr) => { qb.push(" AND a.id IN (SELECT
   asset_id FROM assets_fts WHERE assets_fts MATCH "); qb.push_bind(expr); qb.push(")"); } } }`),
-  `src/server/src/data/world_bundle.rs` (extend the "search state is rebuilt" sentence to name
-  `assets_fts`), the sqlite asset tests file (`rg "query_assets" src/server/src/data/sqlite -l`
+  `src/server/src/data/sqlite/export_import.rs` (the "search state is rebuilt from `doc`'s
+  content, never carried across servers" sentence on `insert_imported_document`'s doc comment —
+  extend it to name `assets_fts`; it is NOT in `world_bundle.rs`) and
+  `src/server/src/data/world_bundle.rs` (its module doc, which that comment points at, states
+  nothing about search today — add the same one-sentence statement so the pointer resolves), the sqlite asset tests file (`rg "query_assets" src/server/src/data/sqlite -l`
   for the sibling test file).
 
 - [ ] **Step 1:** failing tests — `query_assets_full_text_matches_name_word`, `…_explicit_tag`,

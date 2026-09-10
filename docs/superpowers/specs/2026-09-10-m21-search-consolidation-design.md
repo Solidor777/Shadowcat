@@ -67,9 +67,9 @@ Reconnaissance against `main` (`826b9b15`):
   stemming — closes M6c's open decision 1).
 - No search panel of its own; consumers are the existing actors panel, the composer's `@doc`
   picker, and M20's notes/tables panels.
-- No live WS subscription for assets — the browser already re-queries on `AssetChanged`, and
-  assets carry no per-recipient partition (`serve` is membership-gated, nothing else). `SearchHit`
-  stays document-only.
+- No live WS subscription for assets (D11) — the browser already re-queries on `AssetChanged`,
+  and assets carry no per-recipient partition (`serve` is membership-gated, nothing else).
+  `SearchHit` stays document-only.
 - No snippet or BM25 rank for assets: FTS is a FILTER inside the keyset-paginated listing; the
   browser's sort control stays authoritative.
 - No compendium / cross-world search.
@@ -108,7 +108,7 @@ as `index_content_public`'s redaction failure):
 
 | doc_type | contributes |
 |---|---|
-| `actor` | `ActorEngine.displayName` |
+| `actor` | `ActorEngine.display_name` (the Rust field; serde-renamed `displayName` on the wire) |
 | `note` | `chat::segments_search_text(&NoteEngine.body)` — the derived body, never `source` (§10 D2) |
 | `table` | `TableEngine.description`, then per row: `label`, every `TableEntry::Text.text`, `TableEntry::Doc.label`, `TableEntry::Image.alt` |
 | `message` | `chat::segments_search_text(&MessageEngine.content)` (never `source`, `channel`, `user_owner`) |
@@ -131,7 +131,7 @@ enum), the ONE text extraction over a segment list, shared by the `note` and `me
 |---|---|
 | `Text { text }` | `text` |
 | `Html { sanitized_html }` | the text content: every `<…>` run removed, then the named entities ammonia emits (`&amp;` `&lt;` `&gt;` `&quot;` `&#39;` and numeric `&#NNN;`/`&#xHH;`) decoded. Safe because ammonia has already escaped every literal `<` in text, so every remaining `<…>` run is a real element. |
-| `RollEmbed { formula, label, .. }` | `label` (when present) and `formula` (a searcher typing `2d6` finds rolls of it); never `spec`/`raw`/`recalc_history` |
+| `RollEmbed { formula, .. }` | `formula` only (a searcher typing `2d6` finds rolls of it) — the struct has NO `label` field; never `outcome`/`roll_id`/`spec`/`raw`/`recalc_history` |
 | `RollButton { formula, label }` | `label` and `formula` |
 | `LinkPreview { .. }` | title, description, and the URL (a domain is a natural query); never the image asset id |
 | `OEmbed(seg)` | title, author/provider names; never ids |
@@ -177,8 +177,12 @@ INSERT INTO assets_fts (content, asset_id, world_id)
 Cost is bounded by `MAX_TAGS` per asset per statement; `set_asset_tags`'s delete-all-then-insert
 fires one refresh per tag row, each a single-row subquery — acceptable at VTT scale, and stated on
 the trigger comment. Bundle import inserts assets and tags through ordinary `INSERT`s, so the
-triggers rebuild the index on import; `assets_fts` is never exported (extend `data::world_bundle`'s
-"search state is rebuilt" sentence to name it). A `VACUUM INTO` backup copies the table.
+triggers rebuild the index on import; `assets_fts` is never exported. The "search state is rebuilt from `doc`'s content, never
+carried across servers" sentence lives on `insert_imported_document`'s doc comment in
+`data::sqlite::export_import` — NOT in `data::world_bundle`, whose module doc that comment points
+at but which states nothing about search today. Extend that `export_import` sentence to name
+`assets_fts`, and add the same statement to `data::world_bundle`'s module doc so the pointer
+resolves. A `VACUUM INTO` backup copies the table.
 
 ### 2.5 FTS document tables gain `doc_type`
 
@@ -342,3 +346,4 @@ None. Every fork resolves under "best long-term shape in keeping with our plans 
 | D8 | Asset ranking | FTS as a filter under the caller's keyset sort | BM25 ranking would break keyset pagination and fight the browser's explicit sort control |
 | D9 | Tokenizer | `unicode61` unchanged | porter stemming is English-only and rebuilds the index; nothing has shown BM25 quality to be the problem — content was |
 | D10 | `TableDraw` in messages | indexed by table name, row label and content, recursively | excluding draws makes a rolled result unsearchable; including `spec`/`raw` would put GM-only data in the projection before redaction (excluded structurally, not only by redaction) |
+| D11 | Assets and PLAN.md's "index + live subscriptions … (assets by tag)" | assets join the FTS index (`assets_fts`, D5) but get NO WS search subscription; `AssetChanged` is their liveness channel | a document-stream subscription re-runs a ranked document query per egress task and ships `SearchHit { Document }` rows — assets are not documents, have no per-recipient partition, and the browser already re-lists on every `AssetChanged`; a second subscription kind would be a second liveness model for the same list. PLAN.md's clause is read as "one index for every type, live where a document stream exists" |
