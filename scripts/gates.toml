@@ -191,6 +191,16 @@ tier = "commit"
 
 [[gate]]
 job = "docs"
+command = "pnpm lint:gate-manifest"
+tier = "commit"
+
+[[gate]]
+job = "docs"
+command = "pnpm lint:settings-privacy"
+tier = "commit"
+
+[[gate]]
+job = "docs"
 command = "pnpm docs:check-examples"
 tier = "push"
 

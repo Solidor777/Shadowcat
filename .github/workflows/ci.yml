@@ -198,6 +198,10 @@ jobs:
         run: pnpm lint:inline-tests
       - name: No i18n keys as accessible text
         run: pnpm lint:aria-labels
+      - name: Gate manifest matches CI
+        run: pnpm lint:gate-manifest
+      - name: No personal data in tracked agent settings
+        run: pnpm lint:settings-privacy
       - name: Doc examples typecheck (TS)
         run: pnpm docs:check-examples
       - name: Doc coverage (Rust)

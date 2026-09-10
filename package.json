@@ -30,6 +30,7 @@
     "lint:aria-labels": "node scripts/check-aria-label-keys.mjs",
     "lint:binary-size": "node scripts/check-binary-size.mjs",
     "lint:gate-manifest": "node scripts/check-gate-manifest.mjs",
+    "lint:settings-privacy": "node scripts/check-tracked-settings-privacy.mjs",
     "gate:commit": "node scripts/run-gate-tier.mjs commit",
     "gate:push": "node scripts/run-gate-tier.mjs push",
     "test:scripts": "vitest run scripts/"

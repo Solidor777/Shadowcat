@@ -615,6 +615,12 @@ function applyOptimistic(op) {
 ### 5. Autonomous Commits & Milestone Pushes
 Do not pause to ask for permission. Commit logical work-units immediately once local CI passes. Push to remote *only* when a FULL milestone is completed. Do not batch unrelated concerns into a single commit.
 
+The commit and push tiers described here are mechanically enforced, not left to discipline.
+`core.hooksPath` points at tracked git hooks that run `pnpm gate:commit` on every commit and
+verify a tree-keyed `pnpm gate:push` receipt on every push; there is no `--no-verify` bypass.
+Run `pnpm gate:push` before pushing — a commit made after the last successful run invalidates
+the receipt.
+
 #### ❌ Bad (Pausing / Batching / Premature Push)
 ```text
 // Agent Output:
