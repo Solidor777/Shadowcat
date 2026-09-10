@@ -2894,6 +2894,32 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
     off by one, which matters because module authors place layers at a fractional order relative to
     them. **Nothing routinely checks skills against code** — this was caught incidentally.
   Plan: `docs/superpowers/plans/2026-07-31-docs-sweep8-client-render.md`.
+- **Sweep 14 — Rust doc examples, server crate: COMPLETE (2026-09-10, `local-gate-enforcement`
+  branch).** The docs job's "Doc examples present (Rust)" step had never enforced anything:
+  rustdoc's `missing_doc_code_examples` lint is unstable, and denied without its feature gate it
+  is reported as an unknown lint and the run exits 0. `scripts/cargo-doc-strict.mjs`'s examples
+  mode now prepends `-Zcrate-attr=feature(rustdoc_missing_doc_code_examples)` to the deny, so the
+  stable-built crate carries no `#![feature]` and the step goes red for real. Measured with the
+  gate live: 695 public items (342 fns, 244 structs, 105 enums, 4 traits across 97 files) had no
+  Rust code block in their docs; eleven carried a ` ```text ` fence, which the lint does not count.
+  Every one now carries a single fenced example under `# Examples` that uses the item visibly and,
+  wherever it can run, asserts an outcome that follows from the item's contract — in-memory
+  `SqliteRepository::connect("sqlite::memory:")` for the persistence and handler examples,
+  serde wire shapes for the engine-band types, real-socket `axum_test` transport for the WS
+  upgrade. `no_run` survives only where running needs a live server, a listening socket, a real
+  on-disk tree or a multipart body. Twelve implementers worked disjoint file sets in one tree;
+  twelve read-only reviewers then failed seven batches for the shapes the brief predicted —
+  `no_run` on examples whose assertions already passed without disk state (54 sites in two
+  batches, one of which had never executed its examples at all and hid ten genuine failures
+  behind the fence), `matches!` of a value against the variant it was just built from, a value
+  asserted equal to the literal the example itself assigned, and one comment generalising a
+  `skip_serializing_if` on one field to the whole struct. All fixed and re-run. The crate's
+  doctest count went from 94 to ~790; the full pass measures ~6.5 min at 8 threads locally and
+  runs on every matrix leg. Two rulings and one detector gap are recorded in
+  `POST_WORK_FINDINGS.md` (the `RingBuffer` construction-only examples; the comment-reference gate
+  reading a doctest's `spec: None` field as prose). Lesson recorded: a gate that has never gone red
+  is not known to be a gate — positive-control every new check, and measure the count before
+  enabling one that has been "on" for a long time.
 - **Sweep 12 — chat/entry/settings/sheets/topbar/assets, then the repo-wide ratchet: COMPLETE
   (2026-08-05).** 154-item backlog → 0 across 7 content tasks (chat + chat-card + chat-composer;
   entry; settings + topbar; sheet-actor + sheet-item + game-settings + assets; a `docs:check-examples`
@@ -3035,3 +3061,39 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
   ("no test covers a negative substitution" — the test "negative values emit parenthesized
   zero-minus form (no label)" covers exactly that).
   Plan: `docs/superpowers/plans/2026-08-01-docs-sweep9-shell-uikit-formula.md`.
+
+## Gate enforcement — the local tiers, the push receipt, and the authoritative remote
+
+- **Local gate enforcement: COMPLETE (2026-09-10, `local-gate-enforcement` branch).** Spec:
+  `docs/superpowers/specs/2026-09-08-local-gate-enforcement-design.md`; plan:
+  `docs/superpowers/plans/2026-09-08-local-gate-enforcement.md`. Origin: CI went red on a push that
+  had never run the local gates, and discipline alone was ruled insufficient. The shape that landed:
+  `scripts/gates.toml` classifies every `run:` step of every workflow under `.github/workflows/`
+  as `setup`/`commit`/`push`/`ci-only`, keyed by (workflow, job, command) with a step's `env:`
+  modelled, and `pnpm lint:gate-manifest` fails when manifest and workflow diverge (a step with
+  runner-only environment cannot be tiered `commit`/`push` — it is extracted into a script both
+  sides invoke, which is how `scripts/cargo-doc-strict.mjs` and `check-binary-size.mjs` came to
+  exist). `scripts/run-gate-tier.mjs` runs a tier verbatim and, for `push`, writes a tree-keyed
+  receipt (`{tree, sha, manifest, finishedAt}`) after sampling a clean tree before and after, a
+  stable `HEAD`, and a tracked-file `{size, mtimeNs}` table that catches an edit reverted to
+  identical bytes. Tracked git hooks under `core.hooksPath` run the commit tier on every commit
+  — skipped only while a rebase, cherry-pick, revert or merge has genuine remaining work, measured
+  from the sequencer's own todo/conflict state rather than a marker file's presence — and verify
+  the receipt on every push; `.claude/hooks/guard-git.mjs`, registered for every tool, denies
+  `--no-verify`, `-c core.hooksPath=…`, `GIT_CONFIG_*` overrides and any commit or push into an
+  unarmed repository, tokenising by the POSIX quoting grammar and git's own option grammar (six
+  review rounds, nine critical findings, every one a spelling the model had not anticipated —
+  the reason the guard is documented as a pre-filter, not a guarantee). Every git child the
+  tooling spawns runs through `scripts/lib/run-git.mjs`, which scrubs git's pointer environment
+  (`GIT_DIR`, `GIT_INDEX_FILE`, …) so a hook cannot inherit a caller's index; a corpus test holds
+  production code to zero direct git calls and test code to explicit environments. Owner rulings
+  recorded during the work: the remote is the authoritative gate — branch protection on `main`
+  requires all seven CI checks with `strict` and `enforce_admins` set and force-pushes and
+  deletions refused, so a guard miss costs a slow CI failure rather than an escaped merge, and
+  the local layers are fast feedback; `fs.rmSync`/`unlinkSync`/`rmdirSync` on a test's own temp
+  directory fall under the permanent-deletion ban (nine sites fixed, `scripts/lib/no-fs-delete-calls.test.mjs`
+  holds the tree to zero); `.claude/settings.json` is tracked, gated for personal data by
+  `pnpm lint:settings-privacy`. Known, documented boundary: under PowerShell a backslash is not an
+  escape, so a `-m "C:\path\"` argument can carry a `--no-verify` past the POSIX tokenizer — the
+  remote is the backstop for that class.
+
