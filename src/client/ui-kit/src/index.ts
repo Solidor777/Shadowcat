@@ -23,6 +23,7 @@ export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
 export { setField } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
 export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
+export { default as EmissionEditor } from "./EmissionEditor.svelte";
 export { default as VisionAssignmentsEditor } from "./VisionAssignmentsEditor.svelte";
 export { default as MovementTagsEditor } from "./MovementTagsEditor.svelte";
 export { SheetsController } from "./sheetsController.svelte";

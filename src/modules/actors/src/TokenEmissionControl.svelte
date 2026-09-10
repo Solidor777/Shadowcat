@@ -1,8 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext } from "@shadowcat/ui-kit";
+  import { getAppContext, EmissionEditor } from "@shadowcat/ui-kit";
   import type { WireDocument, TokenEngine, TokenOverrides, AuraEmission, SoundEmission, VfxEmission } from "@shadowcat/core";
-  import EmissionEditor from "./EmissionEditor.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;

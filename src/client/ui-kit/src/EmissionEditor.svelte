@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Asset } from "@shadowcat/types";
-  import { getAppContext } from "@shadowcat/ui-kit";
   import { listAssets, type AuraEmission, type SoundEmission, type VfxEmission, type VfxAnchor } from "@shadowcat/core";
+  import { getAppContext } from "./appContext";
 
   const ctx = getAppContext();
   const t = ctx.t;
