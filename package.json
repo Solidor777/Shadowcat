@@ -19,6 +19,7 @@
     "build:all": "pnpm build && pnpm docs:generate",
     "docs:build": "pnpm build:all",
     "docs:check-examples": "node scripts/extract-ts-examples.mjs",
+    "docs:check-rust-examples": "node scripts/cargo-doc-strict.mjs examples",
     "docs:dev": "vitepress dev docs/site",
     "docs:build:portal": "vitepress build docs/site",
     "docs:serve": "node scripts/serve-docs.mjs",
