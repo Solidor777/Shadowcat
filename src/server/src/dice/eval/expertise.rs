@@ -126,6 +126,45 @@ fn run_dp(
 /// successes tie and the objective degenerates to pure counter-maximization — a second
 /// pass with the first key dropped. Both passes use the same lowest-index-first
 /// tie-break, so the result matches the brute-force oracle exactly.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::expertise::allocate;
+/// use shadowcat::dice::outcome::{DieRecord, RawRoll};
+/// use shadowcat::dice::spec::{Comparator, DieKind, Direction, SuccessConfig, SuccessRule};
+///
+/// let kind = DieKind::Numeric { min: 1, max: 6 };
+/// let mut raws = RawRoll::default();
+/// let id = raws.push(kind.clone(), 3); // a natural 3, one short of a target of 4
+/// let mut records = vec![DieRecord {
+///     id,
+///     group_index: 0,
+///     natural: 3,
+///     value: 3,
+///     kept: true,
+///     exploded: false,
+///     rerolled_from: None,
+///     crit_success: false,
+///     crit_fail: false,
+///     expertise: 0,
+///     label: None,
+///     symbols: vec![],
+///     ordered: true,
+/// }];
+/// let cfg = SuccessConfig {
+///     success: SuccessRule::Numeric { comp: Comparator::Gte, target: 4 },
+///     required_successes: None,
+///     tiers: vec![],
+///     crit_success: None,
+///     crit_fail: None,
+///     expertise: 1,
+/// };
+/// allocate(Direction::HighWins, &cfg, &raws, &mut records);
+/// // One expertise point moves the face from 3 to 4, turning the miss into a hit.
+/// assert_eq!(records[0].value, 4);
+/// assert_eq!(records[0].expertise, 1);
+/// ```
 pub fn allocate(
     direction: Direction,
     cfg: &SuccessConfig,

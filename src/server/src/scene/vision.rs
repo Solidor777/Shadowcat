@@ -14,6 +14,13 @@
 pub type P = (f64, f64);
 
 /// An occluding segment.
+///
+/// # Examples
+///
+/// ```
+/// let wall = shadowcat::scene::vision::Seg { a: (0.0, 0.0), b: (1.0, 0.0) };
+/// assert_eq!(wall.a, (0.0, 0.0));
+/// ```
 #[derive(Clone, Copy, PartialEq)]
 pub struct Seg {
     /// First endpoint, scene units.
@@ -23,6 +30,13 @@ pub struct Seg {
 }
 
 /// An axis-aligned bound whose edges terminate rays that hit no wall.
+///
+/// # Examples
+///
+/// ```
+/// let bound = shadowcat::scene::vision::Rect { minx: -5.0, miny: -5.0, maxx: 5.0, maxy: 5.0 };
+/// assert!(bound.maxx > bound.minx);
+/// ```
 #[derive(Clone, Copy)]
 pub struct Rect {
     /// Left edge.
@@ -74,6 +88,17 @@ impl Rect {
 /// on the box when it hits no wall). A wall-less scene yields a tiny box around the viewpoint —
 /// callers computing vision for a specific scene should use `bound_for_scene` instead so a
 /// wall-less (or near-wall-less) scene reveals its own full extent rather than this small box.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::vision::{bound_for, Seg};
+///
+/// let wall = Seg { a: (2.0, 0.0), b: (2.0, 4.0) };
+/// let bound = bound_for((0.0, 0.0), &[wall], 1.0);
+/// assert_eq!(bound.maxx, 3.0);
+/// assert_eq!(bound.miny, -1.0);
+/// ```
 pub fn bound_for(viewpoint: P, walls: &[Seg], margin: f64) -> Rect {
     let mut minx = viewpoint.0;
     let mut miny = viewpoint.1;
@@ -203,6 +228,17 @@ pub(crate) fn point_in_poly(poly: &[P], p: P) -> bool {
 
 /// The visibility polygon from `viewpoint`, occluded by `walls`, terminated by `bound`.
 /// Vertices are in ascending-angle order (a star-shaped polygon around the viewpoint).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::vision::{visibility_polygon, Rect};
+///
+/// // No walls: the polygon is bounded by `bound` alone (a box around the viewpoint).
+/// let bound = Rect { minx: -1.0, miny: -1.0, maxx: 1.0, maxy: 1.0 };
+/// let poly = visibility_polygon((0.0, 0.0), &[], bound);
+/// assert!(!poly.is_empty());
+/// ```
 pub fn visibility_polygon(viewpoint: P, walls: &[Seg], bound: Rect) -> Vec<P> {
     let mut segs: Vec<Seg> = walls.to_vec();
     segs.extend(bound.edges());

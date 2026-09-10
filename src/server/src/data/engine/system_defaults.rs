@@ -16,6 +16,16 @@ use super::scene::{
 
 /// `Option`-lifted twin of `WorldSceneDefaults`; a field added there without
 /// a twin here fails `world_scene_defaults_and_overlay_share_a_field_set`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::system_defaults::SceneDefaultsOverlay;
+///
+/// let overlay = SceneDefaultsOverlay { fog: Some(true), ..Default::default() };
+/// assert_eq!(overlay.fog, Some(true));
+/// assert!(overlay.light_mode.is_none()); // absent: falls through to the next layer
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -50,6 +60,15 @@ pub struct SceneDefaultsOverlay {
 }
 
 /// `Option`-lifted twin of `Pathfinding`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::system_defaults::PathfindingOverlay;
+///
+/// let overlay = PathfindingOverlay::default();
+/// assert!(overlay.diagonal_rule.is_none()); // falls through to the enclosing layer
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -60,6 +79,15 @@ pub struct PathfindingOverlay {
 }
 
 /// `Option`-lifted twin of `AnimationSettings`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::system_defaults::AnimationOverlay;
+///
+/// let overlay = AnimationOverlay { speed_cells_per_sec: Some(4.0), easing: None };
+/// assert!(overlay.speed_cells_per_sec.unwrap() > 0.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -77,6 +105,19 @@ pub struct AnimationOverlay {
 /// package's manifest declaration (the world-config seed path — no client
 /// origin may author it); `active_scene` is world state, not a setting, and
 /// has no overlay.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::system_defaults::{AnimationOverlay, SystemDefaultsEngine};
+///
+/// let engine = SystemDefaultsEngine {
+///     animation: Some(AnimationOverlay { speed_cells_per_sec: Some(4.0), easing: None }),
+///     ..Default::default()
+/// };
+/// assert!(engine.animation.is_some());
+/// assert!(engine.combat.is_none()); // no combat-rule overlay declared
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]

@@ -22,6 +22,15 @@ use ts_rs::TS;
 use super::MAX_CHANNEL_CHARS;
 
 /// A chat channel's display config (mirrors the client's `Channel`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Channel;
+///
+/// let channel = Channel { name: "Out of Character".into() };
+/// assert_eq!(channel.name, "Out of Character");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -33,6 +42,15 @@ pub struct Channel {
 /// The world's channel registry: a singleton config document. Keyed by
 /// channel id — a MAP, not an array, so add/rename/remove are single-key
 /// field Updates (`set_pointer` cannot grow arrays).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::ChannelRegistryEngine;
+///
+/// let registry = ChannelRegistryEngine::seed();
+/// assert!(registry.channels.contains_key("general"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -69,6 +87,17 @@ impl ChannelRegistryEngine {
     /// `MessageEngine.channel` against membership — every channel needs a
     /// non-empty name, and a key longer than `MAX_CHANNEL_CHARS` could never
     /// be posted to.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::ChannelRegistryEngine;
+    ///
+    /// assert!(ChannelRegistryEngine::seed().validate().is_ok());
+    ///
+    /// let empty = ChannelRegistryEngine { channels: Default::default() };
+    /// assert!(empty.validate().is_err()); // would wedge all chat
+    /// ```
     pub fn validate(&self) -> Result<(), String> {
         if self.channels.is_empty() {
             return Err("channel-registry must declare at least one channel".to_string());
@@ -88,6 +117,15 @@ impl ChannelRegistryEngine {
 }
 
 /// A faction's stance toward the party (mirrors the client's `FactionStance`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FactionStance;
+///
+/// let stance = FactionStance::Hostile;
+/// assert_ne!(stance, FactionStance::Friendly);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -102,6 +140,20 @@ pub enum FactionStance {
 
 /// A faction's display + stance (mirrors the client's `Faction`). `color`
 /// is "#rrggbb" (the token border color).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{Faction, FactionStance};
+///
+/// let faction = Faction {
+///     name: "Thieves' Guild".into(),
+///     color: "#3fb950".into(),
+///     stance: FactionStance::Neutral,
+///     movement: vec![],
+/// };
+/// assert_eq!(faction.stance, FactionStance::Neutral);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -123,6 +175,15 @@ pub struct Faction {
 /// The world's faction registry: a singleton config document. Keyed by
 /// faction id — an actor's `faction` field references a key. A MAP, not an
 /// array, for the same single-key-Update reason as `ChannelRegistryEngine`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FactionRegistryEngine;
+///
+/// let registry = FactionRegistryEngine::seed();
+/// assert!(registry.factions.contains_key("hostile"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -180,6 +241,15 @@ impl FactionRegistryEngine {
 
 /// A status condition's display (mirrors the client's `Condition`). `icon`
 /// is a short glyph (emoji) rendered as a token badge.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Condition;
+///
+/// let condition = Condition { name: "Prone".into(), icon: "🛌".into(), fx: None };
+/// assert!(condition.fx.is_none()); // no built-in token-art effect declared
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -215,6 +285,15 @@ impl Condition {
 
 /// A condition's built-in token-art effects (css colors), folded by the
 /// client's `TokenView.toSpec` into the token's render fx.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::registries::ConditionFx;
+///
+/// let fx = ConditionFx { tint: Some("#f85149".into()), desaturate: Some(true), highlight: None };
+/// assert!(fx.desaturate.unwrap());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -245,6 +324,16 @@ fn validate_fx_color(color: &str) -> Result<(), String> {
 /// The world's condition registry: a singleton config document. Keyed by
 /// condition id — an actor's `conditions` array holds keys. A MAP, not an
 /// array, for the same single-key-Update reason as `ChannelRegistryEngine`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::ConditionRegistryEngine;
+///
+/// let registry = ConditionRegistryEngine::seed();
+/// assert!(registry.conditions.contains_key("unconscious"));
+/// assert_eq!(registry.conditions.len(), 9);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -306,6 +395,16 @@ impl ConditionRegistryEngine {
 
 /// GM-configured chat content policy (mirrors the client's `ChatSettingsEngine`).
 /// Every field optional/absent-safe; a partial body is a valid engine band.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::ChatSettingsEngine;
+///
+/// let policy = ChatSettingsEngine { markdown: Some(true), ..Default::default() };
+/// assert_eq!(policy.markdown, Some(true));
+/// assert!(policy.html.is_none()); // absent-safe: falls through to server default
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]
@@ -327,6 +426,14 @@ pub struct ChatSettingsEngine {
 }
 
 /// World-default dice aggregation mode (`DiceSettingsEngine.mode`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::DiceModeSetting;
+///
+/// assert_eq!(DiceModeSetting::default(), DiceModeSetting::Total);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -339,6 +446,14 @@ pub enum DiceModeSetting {
 }
 
 /// World-default roll direction (`DiceSettingsEngine.direction`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::DiceDirectionSetting;
+///
+/// assert_eq!(DiceDirectionSetting::default(), DiceDirectionSetting::HighWins);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -357,6 +472,18 @@ pub enum DiceDirectionSetting {
 /// always carries BOTH fields, so a channel either fully overrides the
 /// world default or (absent from the map) fully inherits it; there is no
 /// "override just mode, inherit direction" state to resolve.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{ChannelDiceOverride, DiceDirectionSetting, DiceModeSetting};
+///
+/// let over = ChannelDiceOverride {
+///     mode: DiceModeSetting::SuccessCount,
+///     direction: DiceDirectionSetting::LowWins,
+/// };
+/// assert_eq!(over.mode, DiceModeSetting::SuccessCount);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -371,6 +498,15 @@ pub struct ChannelDiceOverride {
 /// `DiceSettingsEngine`). `#[serde(default)]` on the struct means a partial
 /// or absent body fills the rest with the safe default (Total + HighWins,
 /// empty `channel_overrides`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::DiceSettingsEngine;
+///
+/// let settings = DiceSettingsEngine::default();
+/// assert!(settings.channel_overrides.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, default)]

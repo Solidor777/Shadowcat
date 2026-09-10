@@ -48,6 +48,16 @@ pub use transition::{
 /// Why a combat intent was refused. `Display` yields ONE wording for every
 /// variant that could disclose a hidden combatant (`NotFound`, `Forbidden`,
 /// `NotRunning`, `Data`): "combat rejected".
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::CombatError;
+///
+/// assert_eq!(CombatError::NotFound.to_string(), "combat rejected");
+/// assert_eq!(CombatError::Forbidden.to_string(), "combat rejected");
+/// assert_eq!(CombatError::Unrewindable.to_string(), "cannot rewind further");
+/// ```
 #[derive(Debug, thiserror::Error)]
 pub enum CombatError {
     /// Combat, combatant, resource or host not found (or not readable).
@@ -114,6 +124,136 @@ pub enum CombatError {
 /// counter the chat handlers use: a combat intent costs one snapshot doc
 /// read plus a commit, the same order of cost, so the budget is read from
 /// its single declaration rather than restated here.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::combat::handle_combat_intent;
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope, WorldRole};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectLifecycleDefaults, Enforcement,
+///     Interpretation, MovementRules, TurnControl,
+/// };
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::ws::protocol::{ClientMsg, ServerMsg};
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+/// use uuid::Uuid;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo
+///     .create_user("gm", None, ServerRole::User, 0)
+///     .await
+///     .unwrap();
+/// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+/// let room = RoomRegistry::new()
+///     .get_or_create(&repo, world.id)
+///     .await
+///     .unwrap()
+///     .unwrap();
+///
+/// let combat_id = Uuid::new_v4();
+/// let event_id = Uuid::new_v4();
+/// let event_engine = CombatantEngine {
+///     kind: CombatantKind::Event {
+///         lifespan: Some(3),
+///         message: None,
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     resources: Default::default(),
+/// };
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![event_id],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id: world.id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let event_doc = Document {
+///     id: event_id,
+///     scope: Scope::World { world_id: world.id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: Some("Trap".to_string()),
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(serde_json::to_value(&event_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let gm_ctx = PermissionContext {
+///     user_id: gm,
+///     world_role: WorldRole::Gm,
+/// };
+/// repo.apply_intent(
+///     &gm_ctx,
+///     world.id,
+///     vec![
+///         Operation::Create { doc: combat_doc },
+///         Operation::Create { doc: event_doc },
+///     ],
+///     0,
+///     WriteOrigin::Client,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let rate = PingRateLimiter::new();
+/// let reply = handle_combat_intent(
+///     room.as_ref(),
+///     &repo,
+///     &gm_ctx,
+///     ClientMsg::CombatStart {
+///         request_id: Uuid::new_v4(),
+///         combat_id,
+///     },
+///     1,
+///     &rate,
+/// )
+/// .await;
+/// assert!(matches!(reply, Some(ServerMsg::CombatResult { .. })));
+/// # }
+/// ```
 pub async fn handle_combat_intent(
     room: &Room,
     repo: &dyn Repository,

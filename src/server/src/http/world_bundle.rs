@@ -86,6 +86,41 @@ impl std::io::Write for ChannelWriter {
 /// the response body stream — bytes reach the client as `write_bundle`
 /// produces them, and memory usage stays bounded by
 /// `EXPORT_CHANNEL_CAPACITY` regardless of the world's total asset size.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{Path, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::world_bundle::export_world;
+/// use shadowcat::http::AppState;
+///
+/// // The response is built before any asset byte is read: `write_bundle` runs on a
+/// // detached blocking task that feeds the body stream, so the status is observable here.
+/// let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let admin_id = repo.create_user("admin", None, ServerRole::Admin, 0).await.unwrap();
+/// let world = repo.create_world_owned("test", admin_id, 0).await.unwrap();
+/// let state = AppState {
+///     repo,
+///     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+///     setup_token: None,
+///     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// };
+/// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
+/// let response = export_world(State(state), admin, Path(world.id)).await.unwrap();
+/// assert_eq!(response.status(), axum::http::StatusCode::OK);
+/// # }
+/// ```
 pub async fn export_world(
     State(state): State<AppState>,
     _admin: AdminUser,
@@ -305,6 +340,41 @@ async fn stream_bundle_upload(
 /// `assets::upload` does) — the same protection `assets::upload`/
 /// `assets::replace` already give that operation, so a concurrent backup
 /// snapshot can't interleave with import's asset writes either.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use axum::extract::{FromRequest, State};
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::world_bundle::import_world;
+/// use shadowcat::http::AppState;
+///
+/// // `no_run`: reads a real multipart upload body and writes a staged temp file to disk.
+/// # let repo = std::sync::Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// # let state = AppState {
+/// #     repo,
+/// #     config: std::sync::Arc::new(shadowcat::config::Config::default()),
+/// #     setup_token: None,
+/// #     initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+/// #     ws: shadowcat::ws::WsState::new(),
+/// #     upload_rate: std::sync::Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+/// #     uploads: std::sync::Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+/// #     auth_throttle: std::sync::Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+/// #     write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+/// #     preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+/// # };
+/// let admin_id = uuid::Uuid::new_v4();
+/// let admin = AdminUser(AuthUser { id: admin_id, username: "admin".into(), role: ServerRole::Admin });
+/// // Real multipart construction needs a live request body; only shown compiling here.
+/// let request = axum::http::Request::new(axum::body::Body::empty());
+/// let multipart = axum::extract::Multipart::from_request(request, &state).await.unwrap();
+/// let summary = import_world(admin, State(state), multipart).await;
+/// assert!(summary.is_err());
+/// # }
+/// ```
 pub async fn import_world(
     _admin: AdminUser,
     State(state): State<AppState>,

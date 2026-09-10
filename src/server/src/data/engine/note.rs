@@ -30,6 +30,20 @@ pub const MAX_NOTE_SOURCE_CHARS: usize = 65_536;
 pub const MAX_NOTE_SPANS: usize = 64;
 
 /// The engine body of a rich-text note. Envelope `name` is the note's title.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::note::NoteEngine;
+///
+/// let note = NoteEngine {
+///     source: "# Session recap".into(),
+///     body: vec![],
+///     sort: 0,
+/// };
+/// assert_eq!(note.source, "# Session recap");
+/// assert!(note.body.is_empty()); // server-derived; overwritten by derive_body
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -82,6 +96,16 @@ impl NoteEngine {
     /// formula) maps to the composer's `RollError`'s player-presentable
     /// `Display` text, surfaced to the client through `DataError::BadEngine`
     /// on the rejected intent.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::note::NoteEngine;
+    ///
+    /// let mut note = NoteEngine { source: "plain text".into(), body: vec![], sort: 0 };
+    /// note.derive_body().unwrap();
+    /// assert!(!note.body.is_empty()); // derived from source, never client-supplied
+    /// ```
     pub fn derive_body(&mut self) -> Result<(), String> {
         self.body = compose_static(&self.source, &NOTE_CONTENT_POLICY, MAX_NOTE_SPANS)
             .map_err(|e| e.to_string())?;

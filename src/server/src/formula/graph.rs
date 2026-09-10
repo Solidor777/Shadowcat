@@ -22,6 +22,24 @@ use super::types::{finite, FormulaError, FormulaErrorKind, FormulaValue, MAX_GRA
 /// Resolves every key in `keys` plus every transitive dependency discovered.
 /// A dependency a node short-circuits past is never requested and never
 /// appears in the map. Never panics.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::graph::resolve_all;
+/// use shadowcat::formula::types::FormulaValue;
+///
+/// // "b" depends on "a"; resolving "b" alone discovers "a" too.
+/// let results = resolve_all(&["b".to_string()], |key, get| -> FormulaValue {
+///     match key {
+///         "a" => Ok(2.0),
+///         "b" => Ok(get("a")? * 3.0),
+///         _ => unreachable!(),
+///     }
+/// });
+/// assert_eq!(results.get("a"), Some(&Ok(2.0)));
+/// assert_eq!(results.get("b"), Some(&Ok(6.0)));
+/// ```
 pub fn resolve_all<F>(keys: &[String], mut eval_node: F) -> BTreeMap<String, FormulaValue>
 where
     F: FnMut(&str, &mut dyn FnMut(&str) -> FormulaValue) -> FormulaValue,

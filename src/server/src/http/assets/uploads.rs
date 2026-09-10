@@ -39,6 +39,31 @@ const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const MAX_NAME_CHARS: usize = 255;
 
 /// Why `UploadSession::accept_chunk` refused a chunk.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::uploads::{ChunkReject, UploadSession};
+/// use uuid::Uuid;
+///
+/// let mut session = UploadSession {
+///     id: Uuid::new_v4(),
+///     world: Uuid::new_v4(),
+///     user: Uuid::new_v4(),
+///     name: "art.png".into(),
+///     content_type: "image/png".into(),
+///     byte_size: 4,
+///     received: 4,
+///     folder_id: None,
+///     tags: vec![],
+///     staged: std::path::PathBuf::from("staged.tmp"),
+///     rate_hit_ms: 0,
+///     last_touch_ms: 0,
+///     busy: false,
+/// };
+/// // The session already holds all 4 declared bytes; one more overflows it.
+/// assert_eq!(session.accept_chunk(4, 1), Err(ChunkReject::Overflow));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChunkReject {
     /// Another chunk of this session is being written right now.
@@ -53,6 +78,31 @@ pub enum ChunkReject {
 }
 
 /// One in-flight chunked upload.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::uploads::UploadSession;
+/// use uuid::Uuid;
+///
+/// let session = UploadSession {
+///     id: Uuid::new_v4(),
+///     world: Uuid::new_v4(),
+///     user: Uuid::new_v4(),
+///     name: "art.png".into(),
+///     content_type: "image/png".into(),
+///     byte_size: 16,
+///     received: 0,
+///     folder_id: None,
+///     tags: vec![],
+///     staged: std::path::PathBuf::from("staged.tmp"),
+///     rate_hit_ms: 0,
+///     last_touch_ms: 0,
+///     busy: false,
+/// };
+/// assert_eq!(session.received, 0);
+/// assert!(!session.is_idle(0)); // just touched
+/// ```
 #[derive(Debug, Clone)]
 pub struct UploadSession {
     /// Session id (the `{id}` path segment).
@@ -88,6 +138,32 @@ impl UploadSession {
     /// Admit a chunk of `len` bytes at `offset`: it must be the next byte,
     /// nothing else may be writing, and it must fit the declared size. On
     /// success the session is marked busy; `finish_chunk` releases it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::{ChunkReject, UploadSession};
+    /// use uuid::Uuid;
+    ///
+    /// let mut session = UploadSession {
+    ///     id: Uuid::new_v4(),
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: false,
+    /// };
+    /// assert_eq!(session.accept_chunk(0, 8), Ok(())); // exactly the next byte, fits
+    /// // The first accept left the session busy.
+    /// assert_eq!(session.accept_chunk(0, 8), Err(ChunkReject::Busy));
+    /// ```
     pub fn accept_chunk(&mut self, offset: u64, len: u64) -> Result<(), ChunkReject> {
         if self.busy {
             return Err(ChunkReject::Busy);
@@ -106,6 +182,32 @@ impl UploadSession {
 
     /// Record a written chunk (or a failed write with `len == 0`) and release
     /// the busy mark.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::UploadSession;
+    /// use uuid::Uuid;
+    ///
+    /// let mut session = UploadSession {
+    ///     id: Uuid::new_v4(),
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: true,
+    /// };
+    /// session.finish_chunk(8, 1_000);
+    /// assert_eq!(session.received, 8);
+    /// assert!(!session.busy); // released after the write completes
+    /// ```
     pub fn finish_chunk(&mut self, len: u64, now_ms: i64) {
         self.received += len;
         self.last_touch_ms = now_ms;
@@ -113,12 +215,46 @@ impl UploadSession {
     }
 
     /// Whether the session has gone idle past `SESSION_IDLE_MS` at `now_ms`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::{UploadSession, SESSION_IDLE_MS};
+    /// use uuid::Uuid;
+    ///
+    /// let session = UploadSession {
+    ///     id: Uuid::new_v4(),
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: false,
+    /// };
+    /// assert!(!session.is_idle(0)); // just touched
+    /// assert!(session.is_idle(SESSION_IDLE_MS + 1));
+    /// ```
     pub fn is_idle(&self, now_ms: i64) -> bool {
         !self.busy && now_ms - self.last_touch_ms > SESSION_IDLE_MS
     }
 }
 
 /// The in-memory session table (one per `AppState`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::uploads::UploadSessions;
+///
+/// let sessions = UploadSessions::new();
+/// assert!(sessions.is_empty());
+/// ```
 pub struct UploadSessions {
     /// Sessions by id.
     inner: Mutex<HashMap<Uuid, UploadSession>>,
@@ -126,6 +262,15 @@ pub struct UploadSessions {
 
 impl UploadSessions {
     /// An empty table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::UploadSessions;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// assert_eq!(sessions.len(), 0);
+    /// ```
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
@@ -139,16 +284,96 @@ impl UploadSessions {
     }
 
     /// Register a fresh session.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::{UploadSession, UploadSessions};
+    /// use uuid::Uuid;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// sessions.insert(UploadSession {
+    ///     id: Uuid::new_v4(),
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: false,
+    /// });
+    /// assert_eq!(sessions.len(), 1);
+    /// ```
     pub fn insert(&self, session: UploadSession) {
         self.lock().insert(session.id, session);
     }
 
     /// Run `f` against the session `id`, or `None` if there is none.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::{UploadSession, UploadSessions};
+    /// use uuid::Uuid;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// let id = Uuid::new_v4();
+    /// sessions.insert(UploadSession {
+    ///     id,
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: false,
+    /// });
+    /// assert_eq!(sessions.with(id, |s| s.received), Some(0));
+    /// assert_eq!(sessions.with(Uuid::new_v4(), |s| s.received), None);
+    /// ```
     pub fn with<R>(&self, id: Uuid, f: impl FnOnce(&mut UploadSession) -> R) -> Option<R> {
         self.lock().get_mut(&id).map(f)
     }
 
     /// Remove and return the session `id`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::{UploadSession, UploadSessions};
+    /// use uuid::Uuid;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// let id = Uuid::new_v4();
+    /// sessions.insert(UploadSession {
+    ///     id,
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: false,
+    /// });
+    /// let removed = sessions.remove(id);
+    /// assert_eq!(removed.map(|s| s.id), Some(id));
+    /// assert!(sessions.is_empty());
+    /// ```
     pub fn remove(&self, id: Uuid) -> Option<UploadSession> {
         self.lock().remove(&id)
     }
@@ -156,6 +381,33 @@ impl UploadSessions {
     /// Remove and return every session idle at `now_ms` (see
     /// `UploadSession::is_idle`); the caller removes their files and refunds
     /// their rate slots.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::{UploadSession, UploadSessions, SESSION_IDLE_MS};
+    /// use uuid::Uuid;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// sessions.insert(UploadSession {
+    ///     id: Uuid::new_v4(),
+    ///     world: Uuid::new_v4(),
+    ///     user: Uuid::new_v4(),
+    ///     name: "art.png".into(),
+    ///     content_type: "image/png".into(),
+    ///     byte_size: 8,
+    ///     received: 0,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     staged: std::path::PathBuf::from("staged.tmp"),
+    ///     rate_hit_ms: 0,
+    ///     last_touch_ms: 0,
+    ///     busy: false,
+    /// });
+    /// let expired = sessions.sweep(SESSION_IDLE_MS + 1);
+    /// assert_eq!(expired.len(), 1);
+    /// assert!(sessions.is_empty()); // swept sessions leave the table
+    /// ```
     pub fn sweep(&self, now_ms: i64) -> Vec<UploadSession> {
         let mut map = self.lock();
         let expired: Vec<Uuid> = map
@@ -170,11 +422,29 @@ impl UploadSessions {
     }
 
     /// Number of live sessions.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::UploadSessions;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// assert_eq!(sessions.len(), 0);
+    /// ```
     pub fn len(&self) -> usize {
         self.lock().len()
     }
 
     /// Whether no session is live.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::http::assets::uploads::UploadSessions;
+    ///
+    /// let sessions = UploadSessions::new();
+    /// assert!(sessions.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.lock().is_empty()
     }
@@ -194,6 +464,47 @@ async fn discard(session: &UploadSession, rate: &UploadRateLimiter) {
 
 /// Spawn the idle-session sweeper: every `SWEEP_INTERVAL`, expired sessions
 /// lose their staging file and get their rate slot refunded.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::http::assets::uploads::{spawn_sweeper, UploadSessions};
+/// use shadowcat::http::assets::UploadRateLimiter;
+/// use std::sync::Arc;
+///
+/// # use shadowcat::http::assets::uploads::UploadSession;
+/// # use uuid::Uuid;
+/// let uploads = Arc::new(UploadSessions::new());
+/// let rate = Arc::new(UploadRateLimiter::new());
+/// // A session last touched at epoch 0 is idle by any wall clock; its staging path
+/// // was never written, and discarding a missing file is tolerated.
+/// uploads.insert(UploadSession {
+///     id: Uuid::new_v4(),
+///     world: Uuid::new_v4(),
+///     user: Uuid::new_v4(),
+///     name: "art.png".into(),
+///     content_type: "image/png".into(),
+///     byte_size: 8,
+///     received: 0,
+///     folder_id: None,
+///     tags: vec![],
+///     staged: std::env::temp_dir().join("shadowcat-doc-sweeper-never-written.tmp"),
+///     rate_hit_ms: 0,
+///     last_touch_ms: 0,
+///     busy: false,
+/// });
+/// spawn_sweeper(uploads.clone(), rate);
+/// // The interval's first tick fires at once; wait a bounded time for the reap.
+/// let reaped = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+///     while !uploads.is_empty() {
+///         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+///     }
+/// })
+/// .await;
+/// assert!(reaped.is_ok(), "the sweeper reaped the idle session");
+/// # }
+/// ```
 pub fn spawn_sweeper(uploads: Arc<UploadSessions>, rate: Arc<UploadRateLimiter>) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(SWEEP_INTERVAL);
@@ -233,6 +544,19 @@ pub(crate) async fn validate_folder(
 }
 
 /// `POST /api/worlds/{world}/assets/uploads` body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::uploads::CreateUploadRequest;
+///
+/// let body: CreateUploadRequest = serde_json::from_str(
+///     r#"{"name":"art.png","content_type":"image/png","byte_size":1024}"#,
+/// )
+/// .unwrap();
+/// assert_eq!(body.name, "art.png");
+/// assert!(body.folder_id.is_none()); // omitted key = world root
+/// ```
 #[derive(Debug, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CreateUploadRequest {
@@ -251,6 +575,20 @@ pub struct CreateUploadRequest {
 }
 
 /// `POST /api/worlds/{world}/assets/uploads` response.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::uploads::CreateUploadResponse;
+/// use uuid::Uuid;
+///
+/// let resp = CreateUploadResponse {
+///     upload_id: Uuid::nil(),
+///     chunk_size: 8 * 1024 * 1024,
+/// };
+/// let json = serde_json::to_string(&resp).unwrap();
+/// assert!(json.contains("\"chunk_size\":8388608"));
+/// ```
 #[derive(Debug, Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CreateUploadResponse {
@@ -264,6 +602,50 @@ pub struct CreateUploadResponse {
 /// Takes the rate slot and checks the declared size against the GM cap up
 /// front, so a session that could never complete is refused before any
 /// bytes flow.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::assets::uploads::CreateUploadRequest;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let body = axum::Json(CreateUploadRequest {
+///     name: "art.png".into(),
+///     content_type: "image/png".into(),
+///     byte_size: 1024,
+///     folder_id: None,
+///     tags: vec![],
+/// });
+/// let _ = shadowcat::http::assets::uploads::create_session(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+///     body,
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn create_session(
     State(state): State<AppState>,
     user: AuthUser,
@@ -361,6 +743,42 @@ async fn owned_session(
 /// bytes received so far (409 otherwise — a retry of a LOST chunk carries
 /// exactly that offset; a duplicate of an accepted one does not). A chunk
 /// that would overflow the declared size aborts the session (413).
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::uploads::put_chunk(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path((Uuid::new_v4(), 0u64)),
+///     axum::body::Bytes::from_static(b"chunk bytes"),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn put_chunk(
     State(state): State<AppState>,
     user: AuthUser,
@@ -430,6 +848,41 @@ pub async fn put_chunk(
 /// exactly `byte_size` bytes (409 otherwise). Removes the session first so a
 /// concurrent complete finds nothing, then sniffs, converts, derives tags and
 /// commits through the shared `commit_staged_asset` path.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::uploads::complete_session(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn complete_session(
     State(state): State<AppState>,
     user: AuthUser,
@@ -550,6 +1003,41 @@ async fn read_head(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
 
 /// `DELETE /api/assets/uploads/{id}` — abort: drop the session, remove the
 /// staging file, refund the rate slot.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "gm-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::uploads::abort_session(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
 pub async fn abort_session(
     State(state): State<AppState>,
     user: AuthUser,

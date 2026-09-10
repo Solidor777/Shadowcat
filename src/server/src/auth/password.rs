@@ -8,6 +8,16 @@ use argon2::Argon2;
 
 /// Hash a plaintext password with Argon2id (default params), returning a PHC
 /// string that embeds the random salt. Source: Argon2 RFC 9106 via the `argon2` crate.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::password::{hash_password, verify_password};
+///
+/// let phc = hash_password("correct horse battery staple").unwrap();
+/// assert!(verify_password("correct horse battery staple", &phc));
+/// assert!(!verify_password("wrong password", &phc));
+/// ```
 pub fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default().hash_password(plain.as_bytes(), &salt)?;
@@ -16,6 +26,16 @@ pub fn hash_password(plain: &str) -> Result<String, argon2::password_hash::Error
 
 /// Verify a plaintext password against a stored PHC string. Returns false on
 /// any parse or mismatch error — callers must not distinguish the two.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::password::{hash_password, verify_password};
+///
+/// let phc = hash_password("correct horse battery staple").unwrap();
+/// assert!(verify_password("correct horse battery staple", &phc));
+/// assert!(!verify_password("correct horse battery staple", "not-a-valid-phc-string"));
+/// ```
 pub fn verify_password(plain: &str, phc: &str) -> bool {
     match PasswordHash::new(phc) {
         Ok(parsed) => Argon2::default()
@@ -28,6 +48,19 @@ pub fn verify_password(plain: &str, phc: &str) -> bool {
 /// Async wrapper: runs the CPU-bound Argon2 hash on a blocking thread so the
 /// async worker is not stalled for the ~tens of ms each hash costs. Owned
 /// `String` because `spawn_blocking` requires a `'static` closure.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::password::{hash_password_async, verify_password_async};
+///
+/// # #[tokio::main] async fn main() {
+/// let phc = hash_password_async("correct horse battery staple".to_string())
+///     .await
+///     .unwrap();
+/// assert!(verify_password_async("correct horse battery staple".to_string(), phc).await);
+/// # }
+/// ```
 pub async fn hash_password_async(plain: String) -> Result<String, argon2::password_hash::Error> {
     tokio::task::spawn_blocking(move || hash_password(&plain))
         .await
@@ -59,6 +92,17 @@ pub(crate) fn verify_count() -> usize {
 /// Async wrapper for the CPU-bound verify. A `spawn_blocking` join failure
 /// (panic) is treated as a verification failure — the safe default on the auth
 /// path. Owned `String`s for the `'static` closure.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::password::{hash_password_async, verify_password_async};
+///
+/// # #[tokio::main] async fn main() {
+/// let phc = hash_password_async("s3cr3t".to_string()).await.unwrap();
+/// assert!(!verify_password_async("wrong".to_string(), phc).await);
+/// # }
+/// ```
 pub async fn verify_password_async(plain: String, phc: String) -> bool {
     #[cfg(test)]
     VERIFY_COUNT.with(|c| c.set(c.get() + 1));

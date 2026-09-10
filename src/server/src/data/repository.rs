@@ -15,6 +15,20 @@ use crate::data::DataError;
 
 /// One row from the persisted `link_preview_cache` table
 /// (`Repository::get_link_preview_cache`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::repository::LinkPreviewCacheRow;
+///
+/// let row = LinkPreviewCacheRow {
+///     title: Some("MOCK_TITLE".into()),
+///     description: None,
+///     image_asset_id: None,
+///     fetched_at_ms: 0,
+/// };
+/// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPreviewCacheRow {
     /// Server-extracted title, or `None` for a cached negative-outcome row
@@ -31,6 +45,21 @@ pub struct LinkPreviewCacheRow {
 
 /// Storage contract. The only implementation today is `SqliteRepository`;
 /// the trait exists so Postgres can be added later behind the same surface.
+///
+/// # Examples
+///
+/// ```
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), shadowcat::data::DataError> {
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+///
+/// // `SqliteRepository` is the trait's sole implementor today.
+/// let repo: Box<dyn Repository> = Box::new(SqliteRepository::connect("sqlite::memory:").await?);
+/// assert!(repo.get_document(uuid::Uuid::nil()).await?.is_none());
+/// # Ok(())
+/// # }
+/// ```
 #[async_trait]
 pub trait Repository: Send + Sync {
     /// Allocate the next per-world seq, append the command to the log, and
@@ -44,6 +73,49 @@ pub trait Repository: Send + Sync {
     /// or absent engine body on an engine-defined `doc_type` is rejected
     /// with `DataError::BadEngine`. Returns the commit-time redaction snapshot alongside the
     /// command — see StoredCommand.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::command::{Operation, UnsequencedCommand};
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope};
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let author = repo.create_user("mock_author", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", author, 0).await?;
+    /// let doc = Document {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: world.id },
+    ///     doc_type: "item".into(),
+    ///     schema_version: 1,
+    ///     name: Some("MOCK_ITEM".into()),
+    ///     source: None,
+    ///     base: None,
+    ///     owner: Some(author),
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let cmd = UnsequencedCommand {
+    ///     world_id: world.id,
+    ///     author,
+    ///     ts: 0,
+    ///     ops: vec![Operation::Create { doc }],
+    /// };
+    /// let stored = repo.apply_command(cmd).await?;
+    /// assert_eq!(stored.command.ops.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn apply_command(
         &self,
         cmd: UnsequencedCommand,
@@ -60,6 +132,47 @@ pub trait Repository: Send + Sync {
     /// set exclusively by the server edit/delete handlers — re-opens it, and
     /// only for that call's sanitized authoritative revision.
     /// Returns the commit-time redaction snapshot alongside the command — see StoredCommand.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::command::{Operation, WriteOrigin};
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope, WorldRole};
+    /// use shadowcat::data::membership::PermissionContext;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// let doc = Document {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: world.id },
+    ///     doc_type: "item".into(),
+    ///     schema_version: 1,
+    ///     name: Some("MOCK_ITEM".into()),
+    ///     source: None,
+    ///     base: None,
+    ///     owner: Some(gm),
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+    /// let stored = repo
+    ///     .apply_intent(&ctx, world.id, vec![Operation::Create { doc }], 0, WriteOrigin::Client)
+    ///     .await?;
+    /// assert_eq!(stored.command.seq, 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn apply_intent(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -74,7 +187,7 @@ pub trait Repository: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::repository::Repository;
@@ -91,6 +204,19 @@ pub trait Repository: Send + Sync {
     /// (`permission::load_current_docs`, called once per recipient per event), where a second
     /// separate `created_seq` query would double an already-hot per-recipient cost. Unredacted,
     /// like `get_document` — callers gate egress themselves.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_document_with_created_seq(uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_document_with_created_seq(
         &self,
         id: Uuid,
@@ -101,6 +227,40 @@ pub trait Repository: Send + Sync {
     /// linked actor with one pool read when `doc` is a linked token. For egress
     /// read routes and search; the ws broadcast hot path joins through the room's
     /// in-memory actor table instead (zero pool reads per recipient).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope};
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let owner = uuid::Uuid::new_v4();
+    /// let doc = Document {
+    ///     id: uuid::Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: uuid::Uuid::nil() },
+    ///     doc_type: "item".into(),
+    ///     schema_version: 1,
+    ///     name: None,
+    ///     source: None,
+    ///     base: None,
+    ///     owner: Some(owner),
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// // "item" is not the linked-token doc_type, so ownership is just `doc.owner`.
+    /// assert_eq!(repo.effective_owner_of(&doc).await?, Some(owner));
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn effective_owner_of(&self, doc: &Document) -> Result<Option<Uuid>, DataError>;
 
     /// All documents of one `doc_type` in `world_id` (unredacted; egress-gated
@@ -108,7 +268,7 @@ pub trait Repository: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::repository::Repository;
@@ -129,6 +289,20 @@ pub trait Repository: Send + Sync {
     /// query. Equivalent to unioning `query_documents` per type, but halves DB
     /// round-trips when a caller needs several independent doc_type singletons
     /// at once (e.g. room cold-hydration's four config/actor doc_types).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let docs = repo.query_documents_by_types(uuid::Uuid::nil(), &["actor", "scene"]).await?;
+    /// assert!(docs.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn query_documents_by_types(
         &self,
         world_id: Uuid,
@@ -141,15 +315,57 @@ pub trait Repository: Send + Sync {
     /// type(s) it wants, a snapshot needs every document a recipient might have
     /// access to, including arbitrary community-module-defined `system`-band doc_types
     /// this server has no fixed enum of.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let docs = repo.query_all_documents(uuid::Uuid::nil()).await?;
+    /// assert!(docs.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn query_all_documents(&self, world_id: Uuid) -> Result<Vec<Document>, DataError>;
 
     /// All documents whose `parent_id` equals `parent` (a scene's direct
     /// children). Ordered by id for determinism.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let children = repo.query_children(uuid::Uuid::nil()).await?;
+    /// assert!(children.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn query_children(&self, parent: Uuid) -> Result<Vec<Document>, DataError>;
 
     /// All scene-entity documents in `world` — scenes plus anything with a
     /// parent. Mirrors `scene::is_scene_entity` so initial ECS hydration and the
     /// live `apply_op` path share one definition of "scene entity".
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let entities = repo.query_scene_entities(uuid::Uuid::nil()).await?;
+    /// assert!(entities.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn query_scene_entities(&self, world: Uuid) -> Result<Vec<Document>, DataError>;
 
     /// Instances stamped from a given source (`source.id` + optional pack) —
@@ -157,7 +373,7 @@ pub trait Repository: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::repository::Repository;
@@ -180,6 +396,20 @@ pub trait Repository: Send + Sync {
     /// (compendium/cross-world push is out of scope), so a template id that
     /// resolves here is one the caller's world genuinely stamped from. Ordered by
     /// id for determinism.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let instances = repo.instances_of(uuid::Uuid::nil(), uuid::Uuid::nil()).await?;
+    /// assert!(instances.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn instances_of(
         &self,
         world_id: Uuid,
@@ -191,7 +421,7 @@ pub trait Repository: Send + Sync {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::repository::Repository;
@@ -211,16 +441,56 @@ pub trait Repository: Send + Sync {
     ) -> Result<Vec<crate::data::snapshot::StoredCommand>, DataError>;
 
     /// Fetch a world row by id, or `None` if it does not exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_world(uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_world(&self, id: Uuid) -> Result<Option<World>, DataError>;
 
     /// A user's role within `world`, or `None` if they are not a member.
     /// Lets a `dyn Repository` caller (e.g. `chat::handle_send_message`)
     /// validate candidate uuids — a whisper's recipients — actually belong to
     /// the world before trusting them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.member_role(uuid::Uuid::nil(), uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn member_role(&self, world: Uuid, user: Uuid) -> Result<Option<WorldRole>, DataError>;
 
     /// The UUID of a member of `world` whose username matches exactly, or
     /// `None`. Used to resolve a `/w @name` whisper target server-side.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.member_id_by_username(uuid::Uuid::nil(), "no-such-member").await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn member_id_by_username(
         &self,
         world: Uuid,
@@ -229,16 +499,58 @@ pub trait Repository: Send + Sync {
 
     /// A world's default capability grants (additive over the per-document
     /// `DocRole` floor). Empty when unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let defaults = repo.world_cap_defaults(uuid::Uuid::nil()).await?;
+    /// assert!(defaults.all.by_role.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError>;
 
     /// A world's declarative capability requirements (additive over the
     /// structural base capability for each field path). Empty when unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let reqs = repo.world_cap_requirements(uuid::Uuid::nil()).await?;
+    /// assert!(reqs.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn world_cap_requirements(
         &self,
         world: Uuid,
     ) -> Result<Vec<CapabilityRequirement>, DataError>;
 
     /// A world's UI contract declarations (GM-published). Empty when unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let decls = repo.world_contract_declarations(uuid::Uuid::nil()).await?;
+    /// assert!(decls.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn world_contract_declarations(
         &self,
         world: Uuid,
@@ -246,17 +558,62 @@ pub trait Repository: Send + Sync {
 
     /// A world's declarative structural schema declarations (GM-committed on
     /// module enable). Empty when unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let decls = repo.world_schema_declarations(uuid::Uuid::nil()).await?;
+    /// assert!(decls.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn world_schema_declarations(
         &self,
         world: Uuid,
     ) -> Result<Vec<SchemaDeclaration>, DataError>;
 
     /// A world's enabled installed-module ids (GM-set). Empty when unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let ids = repo.world_enabled_modules(uuid::Uuid::nil()).await?;
+    /// assert!(ids.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError>;
 
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a
     /// prior page (`None` for the first). Returns up to `limit` readable hits.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::membership::PermissionContext;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let ctx = PermissionContext { user_id: uuid::Uuid::nil(), world_role: WorldRole::Gm };
+    /// let page = repo.search(&ctx, uuid::Uuid::nil(), "dragon", 10, None).await?;
+    /// assert!(page.hits.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -269,6 +626,19 @@ pub trait Repository: Send + Sync {
     /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
     /// Per-(scene, user) secret memory — never broadcast; used by the movement gate's
     /// `Revealed` mode to union the explored set with the live visibility mask.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_explored(uuid::Uuid::nil(), uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError>;
 
     /// A persisted `link_preview_cache` row for `url`, or `None` if absent.
@@ -276,6 +646,19 @@ pub trait Repository: Send + Sync {
     /// path — consulted on an in-memory miss so a cold-started process can
     /// reuse a still-fresh row rather than re-fetching every URL seen since
     /// the process last started (see `chat::link_preview::cached_or_fetch`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_link_preview_cache("https://example.com").await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_link_preview_cache(
         &self,
         url: &str,
@@ -285,6 +668,26 @@ pub trait Repository: Send + Sync {
     /// existing `image_asset_id` untouched on conflict — an already
     /// asset-ified image (set by `set_link_preview_cache_image`) must survive
     /// a later title/description refresh of the same URL.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.upsert_link_preview_cache(
+    ///     "https://example.com",
+    ///     Some("MOCK_TITLE"),
+    ///     None,
+    ///     0,
+    /// ).await?;
+    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// assert_eq!(row.title.as_deref(), Some("MOCK_TITLE"));
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn upsert_link_preview_cache(
         &self,
         url: &str,
@@ -297,6 +700,41 @@ pub trait Repository: Send + Sync {
     /// absent — an image is only ever attached to a URL whose
     /// title/description scrape, or the oEmbed thumbnail pipeline's own
     /// placeholder upsert, already created the row).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::asset::{Asset, AssetMeta};
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("w", 0).await?;
+    /// let asset = uuid::Uuid::new_v4();
+    /// repo.insert_asset(&Asset {
+    ///     id: asset,
+    ///     world_id: world.id,
+    ///     storage_key: format!("{}/{asset}", world.id),
+    ///     original_name: "preview.png".into(),
+    ///     content_type: "image/webp".into(),
+    ///     byte_size: 10,
+    ///     created_by: None,
+    ///     created_at: 0,
+    ///     version: 1,
+    ///     folder_id: None,
+    ///     tags: vec![],
+    ///     derived_tags: vec![],
+    ///     meta: AssetMeta::unprocessed("image/png", 10),
+    /// })
+    /// .await?;
+    /// repo.upsert_link_preview_cache("https://example.com", None, None, 0).await?;
+    /// repo.set_link_preview_cache_image("https://example.com", asset).await?;
+    /// let row = repo.get_link_preview_cache("https://example.com").await?.unwrap();
+    /// assert_eq!(row.image_asset_id, Some(asset));
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn set_link_preview_cache_image(
         &self,
         url: &str,
@@ -308,5 +746,18 @@ pub trait Repository: Send + Sync {
     /// routes are GM-only; reads are member-visible with no finer-grained
     /// redaction), so a caller resolving a chat `[[asset:...]]` span must
     /// independently check `Asset.world_id` against the sending room's world.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_asset(uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     async fn get_asset(&self, id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError>;
 }

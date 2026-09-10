@@ -9,6 +9,15 @@ use super::chars::{is_digit, is_word_char, is_word_start};
 use super::types::{FormulaError, FormulaErrorKind, MAX_FORMULA_LENGTH};
 
 /// A lexed token. `pos` is the UTF-16 offset of the token's first character.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::lexer::{tokenize, Tok};
+///
+/// let toks = tokenize("12").unwrap();
+/// assert_eq!(toks, vec![Tok::Num { value: 12.0, pos: 0 }]);
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub enum Tok {
     /// A numeric literal, already finite-checked.
@@ -43,6 +52,16 @@ fn is_op(c: char) -> bool {
 /// Single left-to-right scan into tokens. Never panics; unrecognized input
 /// is a `Parse` error value, an over-long source or an overflowing literal a
 /// `Cap`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::lexer::{tokenize, Tok};
+///
+/// let toks = tokenize("hp + 1").unwrap();
+/// assert_eq!(toks.len(), 3);
+/// assert_eq!(toks[0], Tok::Word { value: "hp".to_string(), pos: 0 });
+/// ```
 pub fn tokenize(src: &str) -> Result<Vec<Tok>, FormulaError> {
     if src.encode_utf16().count() > MAX_FORMULA_LENGTH {
         return Err(FormulaError::new(

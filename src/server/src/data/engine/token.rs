@@ -18,6 +18,26 @@ use crate::data::engine::scene::LightEmission;
 /// A token's transform + visual (mirrors the client's `TokenEngine`). `(x,y)`
 /// is the token CENTER. `visual` is set only on raw (actorless) tokens —
 /// actor-backed tokens resolve their visual via the linked/embedded actor.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TokenEngine;
+///
+/// let token = TokenEngine {
+///     x: 0.0,
+///     y: 0.0,
+///     w: 50.0,
+///     h: 50.0,
+///     rotation: 0.0,
+///     visual: None,
+///     actor_id: None,
+///     overrides: None,
+///     face: None,
+///     elevation: None,
+/// };
+/// assert_eq!(token.w, 50.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -102,6 +122,14 @@ impl TokenEngine {
 mod tests;
 
 /// Where a token-anchored VFX emission renders relative to the token's art.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::token::VfxAnchor;
+///
+/// assert_ne!(VfxAnchor::Above, VfxAnchor::Below);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
@@ -117,6 +145,15 @@ pub enum VfxAnchor {
 /// An aura emission: a colored disc radiating `radius` grid cells from the
 /// token's center, drawn UNDER its art. Purely presentational — nothing
 /// server-side consumes it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::token::AuraEmission;
+///
+/// let aura = AuraEmission { color: "#ff00ff".to_string(), opacity: 0.5, radius: 2.0, enabled: true };
+/// assert_eq!(aura.radius, 2.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -149,6 +186,21 @@ impl AuraEmission {
 /// A sound emission: a looping or one-shot audio asset audible within
 /// `radius` grid cells. Playback-ready data only — no playback consumer exists
 /// yet, so nothing server-side or client-side reads it beyond storage.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::token::SoundEmission;
+///
+/// let sound = SoundEmission {
+///     asset: "asset-001".to_string(),
+///     radius: 6.0,
+///     volume: 0.7,
+///     loop_: true,
+///     enabled: true,
+/// };
+/// assert!(sound.loop_);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -183,6 +235,20 @@ impl SoundEmission {
 /// A VFX emission: a visual effect asset anchored to the token. Playback-ready
 /// data only — no playback consumer exists yet, so nothing server-side or
 /// client-side reads it beyond storage.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::token::{VfxAnchor, VfxEmission};
+///
+/// let vfx = VfxEmission {
+///     asset: "fx-glow".to_string(),
+///     anchor: VfxAnchor::Above,
+///     loop_: false,
+///     enabled: true,
+/// };
+/// assert_eq!(vfx.anchor, VfxAnchor::Above);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -254,6 +320,26 @@ fn validate_emission_asset(asset: &str) -> Result<(), String> {
 }
 
 /// The per-token override whitelist for a linked token.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TokenOverrides;
+///
+/// let overrides = TokenOverrides {
+///     name: Some("Goblin Scout".to_string()),
+///     visual: None,
+///     size: None,
+///     shape: None,
+///     vision: None,
+///     light: None,
+///     movement: None,
+///     aura: None,
+///     sound: None,
+///     vfx: None,
+/// };
+/// assert_eq!(overrides.name.as_deref(), Some("Goblin Scout"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -330,6 +416,15 @@ impl TokenOverrides {
 }
 
 /// A width/height pair in GRID UNITS (cells) — an actor's occupied block, not a pixel box.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Size;
+///
+/// let size = Size { w: 2.0, h: 2.0 };
+/// assert_eq!(size.w, 2.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -352,6 +447,15 @@ pub struct Size {
 
 /// A per-actor or per-token vision assignment: which mode (by id, referencing
 /// a `vision-modes` registry entry) + effective range in grid cells.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::VisionAssignment;
+///
+/// let assignment = VisionAssignment { mode: "darkvision".to_string(), range: Some(12.0) };
+/// assert_eq!(assignment.range, Some(12.0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -370,6 +474,19 @@ pub struct VisionAssignment {
 /// The client-owned token/actor visual union. Internally tagged on
 /// `kind`; serde does not support `deny_unknown_fields` on an internally
 /// tagged enum (a documented limitation — NOT applied here).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::TokenVisual;
+///
+/// let visual = TokenVisual::Image { asset: "token-goblin.png".to_string() };
+/// let json = serde_json::to_value(&visual).unwrap();
+/// // Internally tagged on `kind`, lowercase.
+/// assert_eq!(json["kind"], "image");
+/// assert_eq!(json["asset"], "token-goblin.png");
+/// assert_eq!(serde_json::from_value::<TokenVisual>(json).unwrap(), visual);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -420,6 +537,19 @@ pub enum TokenVisual {
 /// The kinds the render layer actually draws — the render/resolution
 /// boundary. A face's own visual is always one of these — no `faces` nesting
 /// (a face can never itself be `{kind:"faces"}`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::RenderVisual;
+///
+/// let visual = RenderVisual::Image { asset: "token-goblin.png".to_string() };
+/// let json = serde_json::to_value(&visual).unwrap();
+/// assert_eq!(json["kind"], "image");
+/// // A face's visual is a leaf kind: the `faces` discriminant is refused here.
+/// let nested = serde_json::json!({ "kind": "faces", "faces": [] });
+/// assert!(serde_json::from_value::<RenderVisual>(nested).is_err());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -461,6 +591,14 @@ pub enum RenderVisual {
 }
 
 /// The crop shape of a generated token visual (`RenderVisual::Generated`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::GeneratedCrop;
+///
+/// assert_ne!(GeneratedCrop::Circle, GeneratedCrop::Square);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -473,6 +611,15 @@ pub enum GeneratedCrop {
 
 /// A generated token visual's decorative border ring
 /// (`RenderVisual::Generated`), distinct from the faction ring.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::GeneratedBorder;
+///
+/// let border = GeneratedBorder { color: "#000000".to_string(), width: 0.1 };
+/// assert_eq!(border.width, 0.1);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -485,6 +632,15 @@ pub struct GeneratedBorder {
 
 /// A generated token visual's background fill (`RenderVisual::Generated`),
 /// drawn behind the cropped art in the crop shape.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::GeneratedBackground;
+///
+/// let background = GeneratedBackground { color: "#ffffff".to_string() };
+/// assert_eq!(background.color, "#ffffff");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -495,6 +651,24 @@ pub struct GeneratedBackground {
 
 /// An animated visual's frame source: an ordered list of individually
 /// uploaded assets, or one grid-sliced sheet asset.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::AnimatedSource;
+///
+/// let source = AnimatedSource::Sheet {
+///     asset: "sheet.png".to_string(),
+///     rows: 4,
+///     cols: 4,
+///     count: Some(12),
+/// };
+/// let json = serde_json::to_value(&source).unwrap();
+/// // Internally tagged on `type`, lowercase.
+/// assert_eq!(json["type"], "sheet");
+/// assert_eq!(json["count"], 12);
+/// assert_eq!(serde_json::from_value::<AnimatedSource>(json).unwrap(), source);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "type", rename_all = "lowercase")]
@@ -522,6 +696,29 @@ pub enum AnimatedSource {
 /// An actor's engine-owned body (mirrors the client's `ActorEngine`, minus
 /// `name` which moves to the envelope). Every other field of `ActorEngine`
 /// (inventory, stats, …) lives in `system` — this is a SPLIT type.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{ActorEngine, Size, TokenVisual};
+///
+/// let actor = ActorEngine {
+///     display_name: "Goblin Scout".to_string(),
+///     visual: TokenVisual::Image { asset: "token-goblin.png".to_string() },
+///     size: Size { w: 1.0, h: 1.0 },
+///     shape: "square".to_string(),
+///     faction: None,
+///     conditions: Vec::new(),
+///     prototype: false,
+///     vision: None,
+///     light: None,
+///     movement: Vec::new(),
+///     aura: None,
+///     sound: None,
+///     vfx: None,
+/// };
+/// assert_eq!(actor.display_name, "Goblin Scout");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]

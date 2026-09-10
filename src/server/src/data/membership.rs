@@ -12,6 +12,16 @@ use crate::data::document::WorldRole;
 
 /// A resolved per-user authority within one world. Built once per WS
 /// connection and per HTTP request; gates writes/reads and filters broadcasts.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+///
+/// let ctx = PermissionContext { user_id: uuid::Uuid::nil(), world_role: WorldRole::Gm };
+/// assert_eq!(ctx.world_role, WorldRole::Gm);
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct PermissionContext {
     /// The authenticated user this context authorizes.

@@ -20,6 +20,18 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// All fallible backup/restore operations return this.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::backup::BackupError;
+///
+/// let err = BackupError::DestinationNotEmpty("assets".to_string());
+/// assert_eq!(
+///     err.to_string(),
+///     "refusing to write into non-empty directory assets without --force"
+/// );
+/// ```
 #[derive(Debug, Error)]
 pub enum BackupError {
     /// Filesystem operation failed (copy, rename, read_dir, ...).
@@ -43,6 +55,24 @@ pub enum BackupError {
 
 /// Written to `<out_dir>/manifest.json` by [`create_backup`] and validated by
 /// `restore_backup` before any destination file is touched.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::backup::BackupManifest;
+///
+/// let manifest = BackupManifest {
+///     shadowcat_version: "0.1.0".to_string(),
+///     created_at_unix_ms: 0,
+///     source_db: "shadowcat.db".to_string(),
+///     source_assets_dir: "assets".to_string(),
+///     asset_file_count: 3,
+///     db_bytes: 4096,
+/// };
+/// let json = serde_json::to_string(&manifest).unwrap();
+/// let round_tripped: BackupManifest = serde_json::from_str(&json).unwrap();
+/// assert_eq!(round_tripped, manifest);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BackupManifest {
     /// Server version that wrote the backup (shown when restoring later).

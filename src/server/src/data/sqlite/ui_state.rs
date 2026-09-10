@@ -49,6 +49,20 @@ fn merge_one_level(
 
 impl SqliteRepository {
     /// The user's stored opaque UI-state JSON string, or `None` when unset.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let user = repo.create_user("mock_user", None, ServerRole::User, 0).await?;
+    /// assert!(repo.get_ui_state(user).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_ui_state(&self, user: Uuid) -> Result<Option<String>, DataError> {
         let row = sqlx::query("SELECT ui_state FROM users WHERE id = ?")
             .bind(user.to_string())
@@ -86,6 +100,25 @@ impl SqliteRepository {
     /// `patch` is an object and `patch.worlds`, when present, is an object
     /// (the HTTP boundary rejects other shapes; violations here surface as
     /// `OpFailed`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let user = repo.create_user("mock_user", None, ServerRole::User, 0).await?;
+    /// let patch = serde_json::json!({ "global": { "theme": "dark" } });
+    /// repo.merge_ui_state(user, &patch, 4096).await?;
+    /// assert_eq!(
+    ///     repo.get_ui_state(user).await?,
+    ///     Some(r#"{"global":{"theme":"dark"}}"#.to_string())
+    /// );
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn merge_ui_state(
         &self,
         user: Uuid,

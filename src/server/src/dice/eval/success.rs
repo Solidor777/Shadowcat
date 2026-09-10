@@ -19,6 +19,26 @@ use crate::dice::spec::{RollSpec, SuccessConfig};
 /// `eval::classify`. Unlike Total mode, this margin is NOT run through
 /// `oriented_margin`/direction: more successes is always better, and `direction`
 /// was already applied per-die inside `crit::score_die`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::success::evaluate_success;
+/// use shadowcat::dice::eval::roll;
+/// use shadowcat::dice::notation::{parse, ModeKind, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::spec::{Direction, Mode};
+///
+/// let ctx = ParseContext { mode: ModeKind::SuccessCount, direction: Direction::HighWins };
+/// let spec = parse("5d10cs>=7", ctx).unwrap();
+/// let mut rng = NoiseRng::from_seed(42);
+/// let raws = roll(&spec, &mut rng);
+/// let Mode::SuccessCount(cfg) = &spec.mode else { unreachable!() };
+/// let outcome = evaluate_success(&spec, cfg, &raws);
+/// // Net successes never go negative without an explicit crit_fail::allow_negative.
+/// assert!(outcome.successes.unwrap() >= 0);
+/// assert_eq!(outcome.records.len(), 5);
+/// ```
 pub fn evaluate_success(spec: &RollSpec, cfg: &SuccessConfig, raws: &RawRoll) -> RollOutcome {
     let mut records = raws.records.clone();
     if cfg.expertise > 0 {

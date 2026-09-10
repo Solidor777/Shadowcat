@@ -135,9 +135,22 @@ pub fn effective_owner(doc: &Document, linked_actor: Option<&Document>) -> Optio
 ///
 /// # Examples
 ///
-/// ```text
-/// // WS hot path: join through the room's in-memory actor table.
-/// let owner = effective_owner_via(&token, |id| ecs.actor(id));
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::permission::effective_owner_via;
+///
+/// let token: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "token",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// // No in-memory actor table entries: `|_| None` -- no link, no owner.
+/// assert_eq!(effective_owner_via(&token, &|_: &uuid::Uuid| None), None);
 /// ```
 pub fn effective_owner_via<'a>(
     doc: &Document,
@@ -151,6 +164,25 @@ pub fn effective_owner_via<'a>(
 /// `documents.created_seq` generation marker. The marker is compared against
 /// `OpSnapshot::created_seq_at_commit` to detect a document id reused since a replayed
 /// command's commit (the id was deleted and a new document created at the same id).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::Document;
+/// use shadowcat::data::permission::CurrentDoc;
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "item",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+/// let current = CurrentDoc { doc, created_seq: 1 };
+/// assert_eq!(current.created_seq, 1);
+/// ```
 pub struct CurrentDoc {
     /// The document's current envelope.
     pub doc: Document,
@@ -166,6 +198,28 @@ pub struct CurrentDoc {
 /// just as `Update` does — the gate cannot be evaluated for any of the three without one. Hoisted
 /// out of the redaction core so it can be awaited ONCE, before any scene-guard scope is entered —
 /// one pool read per distinct doc_id in `cmd`, per recipient.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::{Command, Operation};
+/// use shadowcat::data::permission::load_current_docs;
+/// use shadowcat::data::sqlite::SqliteRepository;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let missing_id = uuid::Uuid::new_v4();
+/// let cmd = Command {
+///     seq: 1,
+///     world_id: uuid::Uuid::new_v4(),
+///     author: uuid::Uuid::new_v4(),
+///     ts: 0,
+///     ops: vec![Operation::Update { doc_id: missing_id, changes: vec![] }],
+/// };
+/// let current = load_current_docs(&repo, &cmd).await;
+/// assert!(!current.contains_key(&missing_id)); // no such document exists
+/// # }
+/// ```
 pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<Uuid, CurrentDoc> {
     let mut out = HashMap::new();
     for op in &cmd.ops {
@@ -204,6 +258,29 @@ pub async fn load_current_docs(repo: &dyn Repository, cmd: &Command) -> HashMap<
 /// `by_role` without `cap::READ` alongside it — an author whose own write flips their OWN READ
 /// from denied to granted would see their read-back silently no-op client-side once, since no
 /// transition is synthesized here. No shipped grant creates this configuration today.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::{Command, Operation};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::permission::mirror_current_snapshot;
+///
+/// let missing_id = uuid::Uuid::new_v4();
+/// let cmd = Command {
+///     seq: 1,
+///     world_id: uuid::Uuid::new_v4(),
+///     author: uuid::Uuid::new_v4(),
+///     ts: 0,
+///     ops: vec![Operation::Update { doc_id: missing_id, changes: vec![] }],
+/// };
+/// let ctx = PermissionContext { user_id: uuid::Uuid::new_v4(), world_role: WorldRole::Gm };
+/// let current = std::collections::HashMap::new();
+/// let snapshot = mirror_current_snapshot(&cmd, &ctx, &current, &|_: &uuid::Uuid| None);
+/// // No current document at that id -> no snapshot recorded for the op.
+/// assert!(snapshot.per_op[0].is_none());
+/// ```
 pub fn mirror_current_snapshot<'a>(
     cmd: &Command,
     ctx: &PermissionContext,
@@ -513,6 +590,15 @@ pub fn carried_light_in_body(doc_type: &str, doc_json: &serde_json::Value) -> bo
 }
 
 /// What a `property_overrides` pointer targets, and therefore how egress removes it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::{redaction_target, RedactionTarget};
+///
+/// assert_eq!(redaction_target("/system"), Some(RedactionTarget::Band));
+/// assert_eq!(redaction_target("/system/hp"), Some(RedactionTarget::Within));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedactionTarget {
     /// A whole band. Nulled in place: dropping the key would fail re-deserialization
@@ -708,6 +794,21 @@ pub fn declared_caps_for_document<'a>(
 /// whole-document capability cap. `is_owner` additionally admits the
 /// `OwnerOrGm` tier (a player still sees their own hidden PC's name) WITHOUT
 /// widening to `GmOnly`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::{cap, Access};
+///
+/// let access = Access {
+///     caps: [cap::READ.to_string()].into(),
+///     all: false,
+///     see_gm_only: false,
+///     is_owner: false,
+/// };
+/// assert!(access.has(cap::READ));
+/// assert!(!access.has(cap::WRITE_FIELDS));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Access {
     /// Capabilities this user holds on the document (unioned role + user grants).
@@ -1017,6 +1118,15 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
 /// A redaction input the classifier could not place in a content band. Egress
 /// withholds rather than guessing: the alternatives are shipping a document whose
 /// structural envelope was silently rewritten, or panicking the request.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::permission::RedactionError;
+///
+/// let err = RedactionError { pointer: "/permissions/default".to_string() };
+/// assert_eq!(err.to_string(), "unclassifiable redaction pointer /permissions/default");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactionError {
     /// The pointer that could not be classified.
@@ -1277,6 +1387,27 @@ fn collect_band_policy(
 /// an owner assigned later is re-resolved by the next merge write. Both
 /// writers of a stored base call this — `apply_intent`'s Create arm and
 /// `ws::conn::merge_intents` — so the standing is decided in one place.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{CapabilityGrants, Document, OwnerStanding};
+/// use shadowcat::data::permission::owner_standing;
+///
+/// let template: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "actor",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// // No effective owner: fail-closed to Stranger.
+/// let standing = owner_standing(None, &template, &CapabilityGrants::default(), None);
+/// assert_eq!(standing, OwnerStanding::Stranger);
+/// ```
 pub fn owner_standing(
     owner: Option<(Uuid, WorldRole)>,
     template: &Document,
@@ -1398,6 +1529,41 @@ pub(crate) fn touches_permissions(path: &str) -> bool {
 /// differing only in the document state, owner, and world ROLE (`world_role_commit` vs
 /// `ctx.world_role`) each half carries. World ROLE (GM standing) IS snapshotted, via
 /// `world_role_commit`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::command::{Command, Operation};
+/// use shadowcat::data::document::{Document, WorldCapDefaults, WorldRole};
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::permission::{filter_command, mirror_current_snapshot};
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "item",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+/// let doc_id = doc.id;
+/// let cmd = Command {
+///     seq: 1,
+///     world_id: uuid::Uuid::new_v4(),
+///     author: uuid::Uuid::new_v4(),
+///     ts: 0,
+///     ops: vec![Operation::Create { doc }],
+/// };
+/// let ctx = PermissionContext { user_id: uuid::Uuid::new_v4(), world_role: WorldRole::Gm };
+/// let current = std::collections::HashMap::new();
+/// let snapshot = mirror_current_snapshot(&cmd, &ctx, &current, &|_: &uuid::Uuid| None);
+///
+/// let filtered = filter_command(&cmd, &snapshot, &ctx, &WorldCapDefaults::default(), &current, |_| None);
+/// // A GM's unconditional access admits the op at both commit and now.
+/// assert_eq!(filtered.ops.len(), 1);
+/// assert!(matches!(&filtered.ops[0], Operation::Create { doc } if doc.id == doc_id));
+/// ```
 pub fn filter_command<'a>(
     cmd: &Command,
     snapshot: &CommandSnapshot,

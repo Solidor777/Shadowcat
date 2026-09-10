@@ -11,7 +11,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -44,6 +44,22 @@ impl SqliteRepository {
     /// Create a world and seat its creator as the first GM, atomically.
     /// Reuses the `world_members` table from 0001 (column `role`, serde-encoded
     /// WorldRole), matching the existing `add_member`/`member_role` methods.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::document::WorldRole;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let gm = repo.create_user("mock_gm", None, ServerRole::User, 0).await?;
+    /// let world = repo.create_world_owned("MOCK_WORLD", gm, 0).await?;
+    /// assert_eq!(repo.member_role(world.id, gm).await?, Some(WorldRole::Gm));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_world_owned(
         &self,
         name: &str,
@@ -84,6 +100,18 @@ impl SqliteRepository {
 
     /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
     /// Per-(scene, user) SECRET memory — never broadcast; dispatched per-recipient over `vision`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// assert!(repo.get_explored(uuid::Uuid::nil(), uuid::Uuid::nil()).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn get_explored(
         &self,
         scene: Uuid,
@@ -103,6 +131,21 @@ impl SqliteRepository {
     /// `explored_fog` and the per-world `settings` blobs have no FK and are
     /// purged explicitly. Files on disk are the caller's concern — delete
     /// ordering is rows-first, files-second (`http::assets` delete convention).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// repo.delete_world(world.id).await?;
+    /// assert!(repo.get_world(world.id).await?.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn delete_world(&self, world: Uuid) -> Result<(), DataError> {
         let mut tx = self.pool.begin().await?;
         let res = sqlx::query("DELETE FROM worlds WHERE id = ?")
@@ -134,6 +177,21 @@ impl SqliteRepository {
     /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
     /// re-marks the next time vision covers it) and the live `visible` mask is always exact, so a
     /// transient loss never reveals more than it should — only delays a memory cell.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = uuid::Uuid::nil();
+    /// let (scene, user) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    /// repo.set_explored(world, scene, user, &[1, 2, 3]).await?;
+    /// assert_eq!(repo.get_explored(scene, user).await?, Some(vec![1, 2, 3]));
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_explored(
         &self,
         world: Uuid,
@@ -182,7 +240,7 @@ impl SqliteRepository {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```
     /// # #[tokio::main]
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
@@ -205,6 +263,22 @@ impl SqliteRepository {
 
     /// Set a world's capability configuration (per-document defaults + world-level
     /// role_caps). Stored as JSON in the settings table.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::document::WorldCapDefaults;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// repo.set_world_cap_defaults(world.id, &WorldCapDefaults::default()).await?;
+    /// assert!(repo.world_cap_defaults(world.id).await?.all.by_role.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_world_cap_defaults(
         &self,
         world: Uuid,
@@ -215,6 +289,26 @@ impl SqliteRepository {
     }
 
     /// Replace a world's declarative capability requirements (stored as JSON).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::document::CapabilityRequirement;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// let reqs = vec![CapabilityRequirement {
+    ///     path_prefix: "/engine/vision".into(),
+    ///     caps: ["mock:gm_vision".to_string()].into_iter().collect(),
+    /// }];
+    /// repo.set_world_cap_requirements(world.id, &reqs).await?;
+    /// assert_eq!(repo.world_cap_requirements(world.id).await?.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_world_cap_requirements(
         &self,
         world: Uuid,
@@ -225,6 +319,28 @@ impl SqliteRepository {
     }
 
     /// Replace a world's UI contract declarations (stored as JSON in settings).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::document::ContractDeclaration;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// let decls = vec![ContractDeclaration {
+    ///     module_id: "mock-module".into(),
+    ///     version: "1.0.0".into(),
+    ///     provides: vec![],
+    ///     requires: vec![],
+    /// }];
+    /// repo.set_world_contract_declarations(world.id, &decls).await?;
+    /// assert_eq!(repo.world_contract_declarations(world.id).await?.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_world_contract_declarations(
         &self,
         world: Uuid,
@@ -236,6 +352,30 @@ impl SqliteRepository {
 
     /// Replace a world's structural schema declarations (stored as JSON in
     /// settings, beside cap requirements / contract declarations).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::document::{Schema, SchemaDeclaration};
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// let decls = vec![SchemaDeclaration {
+    ///     module_id: "mock-module".into(),
+    ///     version: "1.0.0".into(),
+    ///     schema_format: 1,
+    ///     doc_type: "actor".into(),
+    ///     subtree_pointer: "/system".into(),
+    ///     schema: Schema::default(),
+    /// }];
+    /// repo.set_world_schema_declarations(world.id, &decls).await?;
+    /// assert_eq!(repo.world_schema_declarations(world.id).await?.len(), 1);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_world_schema_declarations(
         &self,
         world: Uuid,
@@ -250,6 +390,21 @@ impl SqliteRepository {
     /// — enable/disable never mutates either of those; `welcome_capability_requirements` unions
     /// the enabled modules' declared requirements with the stored GM-authored record fresh on
     /// every `Welcome`, leaving the stored record the GM's own edit alone).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// repo.set_world_enabled_modules(world.id, &["mock-module".to_string()]).await?;
+    /// assert_eq!(repo.world_enabled_modules(world.id).await?, vec!["mock-module".to_string()]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn set_world_enabled_modules(
         &self,
         world: Uuid,

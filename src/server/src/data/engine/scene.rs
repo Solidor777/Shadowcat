@@ -17,6 +17,14 @@ use uuid::Uuid;
 
 /// Which movement engine a scene uses — the dispatch axis between the grid
 /// A* pathfinder and the continuous/navmesh router (`SceneEcs::pathfind`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::MovementModel;
+///
+/// assert_ne!(MovementModel::GridStepped, MovementModel::Continuous);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "kebab-case")]
@@ -31,6 +39,16 @@ pub enum MovementModel {
 /// `scene::move_exec::execute_move`/`gate_walk` (the sole traversal decision);
 /// `Room::publish` additionally consults this for its Create-placement gate
 /// (center cell only).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::MovementRestriction;
+///
+/// let restriction = MovementRestriction::Visible;
+/// assert_eq!(restriction, MovementRestriction::Visible);
+/// assert_ne!(restriction, MovementRestriction::Unrestricted);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -44,6 +62,14 @@ pub enum MovementRestriction {
 }
 
 /// Scene lighting mode.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::LightMode;
+///
+/// assert_ne!(LightMode::GlobalIllumination, LightMode::EnvironmentLight);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 pub enum LightMode {
@@ -57,6 +83,15 @@ pub enum LightMode {
 }
 
 /// Diagonal-step cost rule for the grid pathfinder (`pathfinding::find`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::DiagonalRule;
+///
+/// let rule = DiagonalRule::Euclidean;
+/// assert_eq!(rule, DiagonalRule::Euclidean);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -73,6 +108,14 @@ pub enum DiagonalRule {
 }
 
 /// Token move-animation easing.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::EasingMode;
+///
+/// assert_ne!(EasingMode::EaseInOut, EasingMode::Linear);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 pub enum EasingMode {
@@ -85,6 +128,15 @@ pub enum EasingMode {
 }
 
 /// Ambient scene light for `LightMode::EnvironmentLight`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::EnvironmentLight;
+///
+/// let light = EnvironmentLight { color: "#0a0e1a".to_string(), intensity: 0.2 };
+/// assert_eq!(light.intensity, 0.2);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -96,6 +148,15 @@ pub struct EnvironmentLight {
 }
 
 /// A scene's authored dimensions in GRID UNITS (width × height cells).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::SceneDimensions;
+///
+/// let dims = SceneDimensions { width: 30.0, height: 20.0 };
+/// assert_eq!(dims.width * dims.height, 600.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -108,6 +169,15 @@ pub struct SceneDimensions {
 
 /// Distance-per-cell scale for a scene grid. `unit` is a display label
 /// (e.g. "ft", "m").
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::GridDistance;
+///
+/// let distance = GridDistance { per_cell: 5.0, unit: "ft".to_string() };
+/// assert_eq!(distance.per_cell, 5.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -121,6 +191,15 @@ pub struct GridDistance {
 /// A scene's grid geometry. There is NO fallback size anywhere downstream:
 /// consumers refuse (`None`/empty) on an absent grid rather than synthesizing
 /// a default (`scene_grid_sizes` is the sole defaulting source).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Grid;
+///
+/// let grid = Grid { kind: "square".to_string(), size: 50.0, distance: None };
+/// assert!(grid.distance.is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -141,6 +220,21 @@ pub struct Grid {
 /// override); resolvers use `??`, so `null`/absent are semantically
 /// identical — a stored explicit null re-serializes as absent, which is
 /// semantically lossless.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::SceneVisionOverrides;
+///
+/// let overrides = SceneVisionOverrides {
+///     los_restriction: Some(true),
+///     fog: None,
+///     observer_vision: None,
+///     movement_restriction: None,
+///     movement_model: None,
+/// };
+/// assert_eq!(overrides.los_restriction, Some(true));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -164,6 +258,15 @@ pub struct SceneVisionOverrides {
 
 /// Per-scene overrides for lighting; same null-vs-absent equivalence as
 /// `SceneVisionOverrides`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::SceneLightingOverrides;
+///
+/// let overrides = SceneLightingOverrides { enabled: Some(false), mode: None, environment: None };
+/// assert_eq!(overrides.enabled, Some(false));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -183,6 +286,23 @@ pub struct SceneLightingOverrides {
 /// `bounds` = the authored play-area rectangle in grid units, which the
 /// continuous router and the per-player vision/lighting path both read;
 /// absent ⇒ `DEFAULT_SCENE_BOUNDS_UNITS` (read-side backstop, unchanged).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{Grid, SceneEngine};
+///
+/// let scene = SceneEngine {
+///     grid: Grid { kind: "square".to_string(), size: 50.0, distance: None },
+///     background: None,
+///     bounds: None,
+///     snap_to_grid: None,
+///     vision: None,
+///     lighting: None,
+///     combat: None,
+/// };
+/// assert_eq!(scene.grid.size, 50.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -220,6 +340,15 @@ pub struct SceneEngine {
 
 /// The full set of world-level scene defaults that individual scenes may
 /// override (mirrors the client's `WorldSceneDefaults`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::WorldSceneDefaults;
+///
+/// let defaults = WorldSceneDefaults::default();
+/// assert!(defaults.los_restriction);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -245,6 +374,15 @@ pub struct WorldSceneDefaults {
 }
 
 /// World pathfinding settings.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{DiagonalRule, Pathfinding};
+///
+/// let pf = Pathfinding::default();
+/// assert_eq!(pf.diagonal_rule, DiagonalRule::Chebyshev);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -254,6 +392,15 @@ pub struct Pathfinding {
 }
 
 /// Token move-animation settings.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::AnimationSettings;
+///
+/// let anim = AnimationSettings::default();
+/// assert_eq!(anim.speed_cells_per_sec, 6.0);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -281,6 +428,16 @@ impl SceneEngine {
 /// `WorldSceneDefaults::default`/`Pathfinding::default`/
 /// `AnimationSettings::default`. Derived `Default` is the empty overlay —
 /// what the world-config seed authors.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::WorldSettingsEngine;
+///
+/// let overlay = WorldSettingsEngine::default();
+/// assert!(overlay.scene.is_none());
+/// assert!(overlay.active_scene.is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase", default)]
@@ -367,6 +524,27 @@ impl Default for AnimationSettings {
 /// (mirrors the client's `LightEngine`). The emission shape lives exactly
 /// once, in `LightEmission` — a carried emission is the same payload resolved
 /// at a token's live position.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{LightEmission, LightEngine};
+///
+/// let light = LightEngine {
+///     x: 10.0,
+///     y: 10.0,
+///     elevation: None,
+///     emission: LightEmission {
+///         color: "#ffffff".to_string(),
+///         intensity: 1.0,
+///         bright_radius: 5.0,
+///         dim_radius: 10.0,
+///         falloff: None,
+///         enabled: true,
+///     },
+/// };
+/// assert_eq!(light.emission.bright_radius, 5.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -389,6 +567,22 @@ pub struct LightEngine {
 /// and token/actor-carried emissions (`ActorEngine.light`,
 /// `TokenOverrides.light`). `brightRadius`/`dimRadius` are in grid cells.
 /// Every carrier validates it at ingress through `LightEmission::validate`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::LightEmission;
+///
+/// let emission = LightEmission {
+///     color: "#ffcc88".to_string(),
+///     intensity: 0.8,
+///     bright_radius: 4.0,
+///     dim_radius: 8.0,
+///     falloff: None,
+///     enabled: true,
+/// };
+/// assert!(emission.enabled);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -463,6 +657,15 @@ impl LightEngine {
 
 /// A falloff curve wrapper. `curve` defaults to `FalloffCurve::Linear`
 /// (read-side) when the whole `falloff` key is absent from `LightEmission`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{Falloff, FalloffCurve};
+///
+/// let falloff = Falloff { curve: FalloffCurve::Quadratic };
+/// assert_eq!(falloff.curve, FalloffCurve::Quadratic);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -473,6 +676,14 @@ pub struct Falloff {
 
 /// Photometric falloff curve identifier across the dim band
 /// `(brightRadius, dimRadius]`, mirroring `lighting::Falloff`'s variants.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FalloffCurve;
+///
+/// assert_ne!(FalloffCurve::Linear, FalloffCurve::None);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "camelCase")]
@@ -492,6 +703,14 @@ pub enum FalloffCurve {
 /// range, ignoring illumination and — when `VisionMode::requires_los` is
 /// false — walls. The lit-mask pipeline reads terrain senses only; creature
 /// senses feed the `perceived` token list (`SceneEcs::player_perceived_tokens`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::Perception;
+///
+/// assert_eq!(Perception::default(), Perception::Terrain);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "lowercase")]
@@ -514,6 +733,23 @@ fn default_requires_los() -> bool {
 /// with this mode can see into (inert for creature senses — creature
 /// perception never reads the illumination field). `defaultRange`: effective
 /// sight distance in grid cells (0 = unlimited).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::{Perception, VisionMode};
+///
+/// let mode = VisionMode {
+///     id: "normal".to_string(),
+///     name: "Normal".to_string(),
+///     illumination_floor: "dim".to_string(),
+///     default_range: 0.0,
+///     perceives: Perception::Terrain,
+///     requires_los: true,
+///     render_hint: None,
+/// };
+/// assert_eq!(mode.perceives, Perception::Terrain);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -542,6 +778,15 @@ pub struct VisionMode {
 }
 
 /// The engine body of a "vision-modes" config document.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::VisionModesEngine;
+///
+/// let engine = VisionModesEngine::seed();
+/// assert!(engine.modes.contains_key("normal"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
@@ -612,6 +857,15 @@ impl VisionModesEngine {
 /// A named illumination band (mirrors the client's `GradationBand`).
 /// `minIllumination` is the minimum light level `[0,1]` a cell must reach to
 /// qualify; bands are sorted brightest-first at resolution time.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::scene::GradationBand;
+///
+/// let band = GradationBand { name: "bright".to_string(), min_illumination: 0.67 };
+/// assert_eq!(band.min_illumination, 0.67);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -623,6 +877,15 @@ pub struct GradationBand {
 }
 
 /// The engine body of a "light-gradation" config document.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::LightGradationEngine;
+///
+/// let engine = LightGradationEngine::seed();
+/// assert_eq!(engine.bands[0].name, "bright");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]

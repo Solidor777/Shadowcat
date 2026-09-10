@@ -26,6 +26,16 @@ fn default_draw_count() -> u32 {
 }
 
 /// Client -> server frames.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::ClientMsg;
+///
+/// // Internally tagged on `type`, matching the TS client's discriminated union.
+/// let json = serde_json::to_value(ClientMsg::Pong).unwrap();
+/// assert_eq!(json, serde_json::json!({ "type": "pong" }));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -375,6 +385,19 @@ pub enum ClientMsg {
 }
 
 /// One initiative roll within a `ClientMsg::CombatRoll` request.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::CombatRollEntry;
+///
+/// let entry = CombatRollEntry {
+///     combatant_id: uuid::Uuid::nil(),
+///     notation: "1d20+3".into(),
+/// };
+/// let json = serde_json::to_value(&entry).unwrap();
+/// assert_eq!(json["notation"], "1d20+3");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CombatRollEntry {
@@ -391,6 +414,16 @@ pub struct CombatRollEntry {
 
 /// How `ClientMsg::CombatResource` adjusts a tracked resource. The server clamps the
 /// resulting value to `[0, max]` in both cases.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::ResourceOp;
+///
+/// let op = ResourceOp::Delta { amount: -2.5 };
+/// let json = serde_json::to_value(&op).unwrap();
+/// assert_eq!(json, serde_json::json!({ "kind": "delta", "amount": -2.5 }));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -408,6 +441,15 @@ pub enum ResourceOp {
 }
 
 /// Which tier served a resync.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::ResyncSource;
+///
+/// let json = serde_json::to_value(ResyncSource::Buffer).unwrap();
+/// assert_eq!(json, serde_json::json!("buffer"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -419,6 +461,15 @@ pub enum ResyncSource {
 }
 
 /// Error categories surfaced over the socket.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::WsErrorCode;
+///
+/// let json = serde_json::to_value(WsErrorCode::Forbidden).unwrap();
+/// assert_eq!(json, serde_json::json!("forbidden"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -437,6 +488,15 @@ pub enum WsErrorCode {
 
 /// Why an `Intent` was rejected. Mirrors the write-path `DataError` categories
 /// the client can act on: re-auth, re-read+retry, or fix the payload.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::RejectReason;
+///
+/// let json = serde_json::to_value(RejectReason::Conflict).unwrap();
+/// assert_eq!(json, serde_json::json!("conflict"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -451,6 +511,15 @@ pub enum RejectReason {
 }
 
 /// The kind of asset mutation an `AssetChanged` frame reports.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::AssetOp;
+///
+/// let json = serde_json::to_value(AssetOp::Replaced).unwrap();
+/// assert_eq!(json, serde_json::json!("replaced"));
+/// ```
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, PartialEq, Eq)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -469,6 +538,16 @@ pub enum AssetOp {
 /// A single position sample in a `MoveStream` timeline.
 /// `t_ms` is elapsed milliseconds from `start_server_ms`; `pos` is the scene-coord
 /// cell-center at that instant. INVARIANT: `t_ms >= 0`; samples are ordered by ascending `t_ms`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::PosSample;
+///
+/// let sample = PosSample { t_ms: 250.0, pos: [3.0, 4.0] };
+/// let json = serde_json::to_value(&sample).unwrap();
+/// assert_eq!(json["pos"], serde_json::json!([3.0, 4.0]));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct PosSample {
@@ -481,6 +560,19 @@ pub struct PosSample {
 /// A single vision-polygon sample in a `MoveStream` timeline, paired with a `PosSample` by `t_ms`.
 /// Ordered `[x,y]` vertices of a visible region at this instant; multiple polygons cover
 /// non-contiguous visible regions. Not necessarily convex. Sent only for the mover.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::VisionSample;
+///
+/// let sample = VisionSample {
+///     t_ms: 0.0,
+///     polygons: vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]],
+/// };
+/// let json = serde_json::to_value(&sample).unwrap();
+/// assert_eq!(json["polygons"][0].as_array().unwrap().len(), 3);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct VisionSample {
@@ -506,6 +598,26 @@ pub struct VisionSample {
 /// Within an admitted timeline the polygons are NOT clipped to the recipient's line of sight —
 /// the client intersects them with its own fog, and the glow geometry outside it is the
 /// accepted disclosure bounded by the emission's own reach.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::FalloffCurve;
+/// use shadowcat::ws::protocol::LightSample;
+///
+/// let sample = LightSample {
+///     t_ms: 0.0,
+///     pos: [1.0, 1.0],
+///     bright: 5.0,
+///     dim: 10.0,
+///     intensity: 1.0,
+///     falloff: FalloffCurve::Linear,
+///     color: 0xffcc00,
+///     polygons: vec![],
+/// };
+/// let json = serde_json::to_value(&sample).unwrap();
+/// assert_eq!(json["dim"], 10.0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct LightSample {
@@ -537,6 +649,14 @@ pub struct LightSample {
 /// `Applied` instead means "the merge is CURRENTLY conflict-free; the rejected call
 /// wrote nothing" — the outcome always describes the merge as recomputed from live
 /// documents at reply time.
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::MergePullStatus;
+///
+/// let json = serde_json::to_value(MergePullStatus::Applied).unwrap();
+/// assert_eq!(json, serde_json::json!("applied"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -550,6 +670,15 @@ pub enum MergePullStatus {
 /// How a `MergeRevert` resolved. Revert never conflicts (the child's local diffs
 /// are discarded outright), so the only outcome is `Applied`; the variant exists so
 /// the wire shape of `MergeOutcome::Revert` cannot claim otherwise.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::MergeRevertStatus;
+///
+/// let json = serde_json::to_value(MergeRevertStatus::Applied).unwrap();
+/// assert_eq!(json, serde_json::json!("applied"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -563,6 +692,15 @@ pub enum MergeRevertStatus {
 /// per-path derivation. An instance the pusher cannot see at all is omitted
 /// from the outcome — no entry, name, or count — mirroring redaction's
 /// existence-hiding.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::PushInstanceStatus;
+///
+/// let json = serde_json::to_value(PushInstanceStatus::Excluded).unwrap();
+/// assert_eq!(json, serde_json::json!("excluded"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -579,6 +717,20 @@ pub enum PushInstanceStatus {
 }
 
 /// One instance's entry in a `MergeOutcome::Push` report.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::{PushInstanceOutcome, PushInstanceStatus};
+///
+/// let outcome = PushInstanceOutcome {
+///     instance_id: uuid::Uuid::nil(),
+///     name: Some("example-token".into()),
+///     status: PushInstanceStatus::Applied,
+/// };
+/// let json = serde_json::to_value(&outcome).unwrap();
+/// assert_eq!(json["status"], "applied");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct PushInstanceOutcome {
@@ -594,6 +746,19 @@ pub struct PushInstanceOutcome {
 }
 
 /// The outcome of a merge intent, reported by `ServerMsg::MergeResult`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::{MergeOutcome, MergeRevertStatus};
+///
+/// let outcome = MergeOutcome::Revert {
+///     child_id: uuid::Uuid::nil(),
+///     status: MergeRevertStatus::Applied,
+/// };
+/// let json = serde_json::to_value(&outcome).unwrap();
+/// assert_eq!(json["kind"], "revert");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -641,6 +806,14 @@ pub enum MergeOutcome {
 /// live documents, so an instance committed before the failure reads as
 /// `Applied` (in sync, nothing left to write) and the remainder carry their
 /// current conflicts. Re-sending the intent commits what remains.
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::MergeErrorKind;
+///
+/// let json = serde_json::to_value(MergeErrorKind::Internal).unwrap();
+/// assert_eq!(json, serde_json::json!("internal"));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -678,6 +851,16 @@ pub enum MergeErrorKind {
 }
 
 /// Server -> client frames.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::ServerMsg;
+///
+/// // Internally tagged on `type`, matching the TS client's discriminated union.
+/// let json = serde_json::to_value(ServerMsg::Ping).unwrap();
+/// assert_eq!(json, serde_json::json!({ "type": "ping" }));
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "type", rename_all = "snake_case")]

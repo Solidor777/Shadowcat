@@ -419,6 +419,16 @@ const BROADCAST_CAPACITY: usize = 256;
 
 /// Recent `Event` frames for hot resync, bounded by count and age. Age is
 /// measured relative to the newest buffered event's `ts`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::room::RingBuffer;
+///
+/// // `push`/`range_from` are crate-internal (`Room` is the sole owner, behind
+/// // `Mutex<RingBuffer>`); externally only construction is observable.
+/// let _ring = RingBuffer::default();
+/// ```
 pub struct RingBuffer {
     /// Buffered frames, ascending seq; every entry is a `RoomEvent::Event`.
     events: VecDeque<RoomEvent>,
@@ -429,9 +439,12 @@ impl RingBuffer {
     ///
     /// # Examples
     ///
-    /// ```text
-    /// // An empty ring cannot serve any range — the caller falls to the log tier.
-    /// assert!(RingBuffer::new().range_from(1).is_none());
+    /// ```
+    /// use shadowcat::ws::room::RingBuffer;
+    ///
+    /// // `push`/`range_from` are crate-internal; externally only construction
+    /// // is observable (see `Room`, the sole owner, for the buffer in use).
+    /// let _ring = RingBuffer::new();
     /// ```
     pub fn new() -> Self {
         Self {
@@ -515,6 +528,18 @@ impl RoomEvent {
 }
 
 /// Per-room telemetry counters (lock-free).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::room::RoomStats;
+/// use std::sync::atomic::Ordering;
+///
+/// let stats = RoomStats::default();
+/// assert_eq!(stats.connections.load(Ordering::Relaxed), 0);
+/// stats.connections.fetch_add(1, Ordering::Relaxed);
+/// assert_eq!(stats.connections.load(Ordering::Relaxed), 1);
+/// ```
 #[derive(Default)]
 pub struct RoomStats {
     /// Live connection count.
@@ -532,6 +557,24 @@ pub struct RoomStats {
 }
 
 /// Serializable snapshot of a room's telemetry for the admin debug endpoint.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::room::RoomStatsSnapshot;
+///
+/// let snap = RoomStatsSnapshot {
+///     world_id: uuid::Uuid::nil(),
+///     connections: 1,
+///     current_seq: 5,
+///     events_published: 5,
+///     gaps_detected: 0,
+///     resyncs_hot: 0,
+///     resyncs_cold: 0,
+///     lagged_drops: 0,
+/// };
+/// assert_eq!(snap.current_seq, 5);
+/// ```
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct RoomStatsSnapshot {
@@ -555,6 +598,31 @@ pub struct RoomStatsSnapshot {
 
 /// A per-world fan-out room. The `broadcast` channel is intentionally lossy —
 /// a lagging receiver gets `Lagged(n)` and resyncs from the ring/log tiers.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::data::repository::Repository;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::ws::room::RoomRegistry;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+///
+/// // `Room::new` is private; `RoomRegistry::get_or_create` is the sole public
+/// // constructor, hydrating the room from persisted world/scene state.
+/// let room = RoomRegistry::new()
+///     .get_or_create(&repo, world.id)
+///     .await
+///     .unwrap()
+///     .unwrap();
+/// assert_eq!(room.world_id, world.id);
+/// # }
+/// ```
 pub struct Room {
     /// The world this room fans out for.
     pub world_id: Uuid,
@@ -645,6 +713,30 @@ impl Room {
 
     /// Read access to the derived scene ECS for the per-connection derived
     /// recompute. Writes happen only in `publish` under `publish_guard`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// // A freshly hydrated world has no scene documents yet.
+    /// assert!(room.scene().read().await.scene_grid_sizes().is_empty());
+    /// # }
+    /// ```
     pub fn scene(&self) -> &RwLock<SceneEcs> {
         &self.scene
     }
@@ -662,8 +754,26 @@ impl Room {
     ///
     /// # Examples
     ///
-    /// ```text
-    /// let seq = room.current_seq(); // compare against a client's last_seq
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// // Seeded from the freshly created world's own seq.
+    /// assert_eq!(room.current_seq(), 0);
+    /// # }
     /// ```
     pub fn current_seq(&self) -> i64 {
         self.current_seq.load(Ordering::Acquire)
@@ -677,6 +787,32 @@ impl Room {
     /// frame carries the asset's authoritative `version`, and `AssetResolver.reconcile`
     /// re-syncs any uuid still stale the next time a listing (e.g. `Assets`'s
     /// own `reload`) fetches the true value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::protocol::ServerMsg;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// // Out-of-band: never bumps `current_seq`, unlike `publish`.
+    /// room.broadcast_aux(ServerMsg::Ping);
+    /// assert_eq!(room.current_seq(), 0);
+    /// # }
+    /// ```
     pub fn broadcast_aux(&self, msg: ServerMsg) {
         self.broadcast_aux_shared(std::sync::Arc::new(msg));
     }
@@ -695,6 +831,60 @@ impl Room {
     /// forwarded to `apply_intent` to gate the message-Update exemption; every
     /// caller other than the server's own edit/delete revision path passes
     /// `WriteOrigin::Client`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::command::{Operation, WriteOrigin};
+    /// use shadowcat::data::document::{Document, PermissionSet, Scope, WorldRole};
+    /// use shadowcat::data::membership::PermissionContext;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use uuid::Uuid;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let ctx = PermissionContext {
+    ///     user_id: gm,
+    ///     world_role: WorldRole::Gm,
+    /// };
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// let doc = Document {
+    ///     id: Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: world.id },
+    ///     // A client-only doc_type (opaque `system` band, no `engine` body required).
+    ///     doc_type: "item".into(),
+    ///     schema_version: 1,
+    ///     name: Some("example".into()),
+    ///     source: None,
+    ///     base: None,
+    ///     owner: None,
+    ///     permissions: PermissionSet::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let cmd = room
+    ///     .publish(&repo, &ctx, vec![Operation::Create { doc }], 0, WriteOrigin::Client)
+    ///     .await
+    ///     .unwrap();
+    /// assert_eq!(cmd.seq, 1);
+    /// assert_eq!(room.current_seq(), 1);
+    /// # }
+    /// ```
     pub async fn publish(
         &self,
         repo: &dyn Repository,
@@ -2026,6 +2216,31 @@ impl Room {
     /// each call simply advances the floor to whatever `current_seq` is at that moment, which
     /// can only move forward over time (a later cold start never legitimately needs an
     /// EARLIER floor than one already established).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// room.establish_resync_floor(gm).await;
+    /// // Inclusive floor = current_seq + 1, matching `ResyncRequest.from_seq`.
+    /// assert_eq!(room.resync_floor(gm).await, room.current_seq() + 1);
+    /// # }
+    /// ```
     pub async fn establish_resync_floor(&self, user_id: Uuid) {
         let seq = self.current_seq();
         self.session_floors.lock().await.insert(user_id, seq);
@@ -2035,6 +2250,32 @@ impl Room {
     /// `ClientMsg::ResyncRequest.from_seq`'s own inclusive semantics). A `user_id` with no
     /// recorded floor (never sent a cold-start `Hello` this room's lifetime) fails closed to
     /// `current_seq() + 1` — an EMPTY resync, not an unbounded one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use uuid::Uuid;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// // No cold-start `Hello` recorded for this user yet: fails closed to an
+    /// // empty resync rather than an unbounded one.
+    /// assert_eq!(room.resync_floor(Uuid::new_v4()).await, room.current_seq() + 1);
+    /// # }
+    /// ```
     pub async fn resync_floor(&self, user_id: Uuid) -> i64 {
         match self.session_floors.lock().await.get(&user_id) {
             Some(&floor) => floor + 1,
@@ -2045,6 +2286,30 @@ impl Room {
     /// Whether an explicit `ClientMsg::ResyncRequest` should be clamped against
     /// `resync_floor`. See the `resync_floor_enforced_flag` field doc for why this is `true`
     /// for every production constructor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let room = RoomRegistry::new()
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// // Always true for a production `RoomRegistry` constructor.
+    /// assert!(room.resync_floor_enforced());
+    /// # }
+    /// ```
     pub fn resync_floor_enforced(&self) -> bool {
         self.resync_floor_enforced_flag
     }
@@ -2074,6 +2339,15 @@ impl Room {
 /// World -> room map. The stable abstraction boundary: the broadcast internals
 /// can later be swapped for an actor or an external broker without touching
 /// callers or connections.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::room::RoomRegistry;
+///
+/// let registry = RoomRegistry::default();
+/// assert!(registry.get(uuid::Uuid::nil()).is_none()); // no room until a join hydrates one
+/// ```
 pub struct RoomRegistry {
     /// Live rooms by world id.
     rooms: DashMap<Uuid, Arc<Room>>,
@@ -2117,6 +2391,15 @@ impl RoomRegistry {
     /// A registry whose rooms use a custom broadcast ring capacity. Test-only: a
     /// tiny capacity lets a non-reading client deterministically overflow the ring
     /// and exercise the `Lagged` → resync path.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// let registry = RoomRegistry::with_capacity(4);
+    /// assert!(registry.get(uuid::Uuid::nil()).is_none());
+    /// ```
     pub fn with_capacity(broadcast_capacity: usize) -> Self {
         Self {
             rooms: DashMap::new(),
@@ -2129,6 +2412,28 @@ impl RoomRegistry {
     /// Get the room for an existing world, creating it (seeded from the world's
     /// current seq) on first join. `None` when the world does not exist or is
     /// mid-deletion (tombstoned).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    /// use uuid::Uuid;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    ///
+    /// assert!(registry.get_or_create(&repo, world.id).await.unwrap().is_some());
+    /// // An absent world hydrates nothing.
+    /// assert!(registry.get_or_create(&repo, Uuid::new_v4()).await.unwrap().is_none());
+    /// # }
+    /// ```
     pub async fn get_or_create(
         &self,
         repo: &dyn Repository,
@@ -2248,11 +2553,54 @@ impl RoomRegistry {
     }
 
     /// The live room for `world_id`, or `None` if nobody has joined it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    ///
+    /// assert!(registry.get(world.id).is_none()); // nobody has joined yet
+    /// registry.get_or_create(&repo, world.id).await.unwrap();
+    /// assert!(registry.get(world.id).is_some());
+    /// # }
+    /// ```
     pub fn get(&self, world_id: Uuid) -> Option<Arc<Room>> {
         self.rooms.get(&world_id).map(|r| r.clone())
     }
 
     /// Telemetry snapshots for every live room (admin debug endpoint).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap();
+    ///
+    /// let snaps = registry.snapshot();
+    /// assert_eq!(snaps.len(), 1);
+    /// assert_eq!(snaps[0].world_id, world.id);
+    /// # }
+    /// ```
     pub fn snapshot(&self) -> Vec<RoomStatsSnapshot> {
         self.rooms.iter().map(|r| r.snapshot()).collect()
     }
@@ -2260,6 +2608,28 @@ impl RoomRegistry {
     /// Best-effort removal of a room whose last subscriber has left. A racing
     /// re-join re-creates the room seeded from the world's current seq, so a
     /// reaped buffer only forces the rejoining client onto the cold tier.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap();
+    ///
+    /// // `RoomStats::connections` is 0 by default (no live connection tracked here).
+    /// registry.reap_if_empty(world.id);
+    /// assert!(registry.get(world.id).is_none());
+    /// # }
+    /// ```
     pub fn reap_if_empty(&self, world_id: Uuid) {
         self.rooms.remove_if(&world_id, |_, r| {
             r.stats.connections.load(Ordering::Acquire) <= 0
@@ -2271,6 +2641,29 @@ impl RoomRegistry {
     /// broadcast the eviction frame. Every cache the world holds (navmesh,
     /// engine, visible-cells, hecs world, ring) is Room-owned, so dropping the
     /// last Arc frees them all. Pair with `finish_delete` on ALL exit paths.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap();
+    ///
+    /// let room = registry.begin_delete(world.id);
+    /// assert!(room.is_some(), "the live room, for the caller's eviction broadcast");
+    /// // Tombstoned: re-creation is refused even though the world row still exists.
+    /// assert!(registry.get_or_create(&repo, world.id).await.unwrap().is_none());
+    /// # }
+    /// ```
     pub fn begin_delete(&self, world_id: Uuid) -> Option<Arc<Room>> {
         self.deleting.insert(world_id);
         self.rooms.remove(&world_id).map(|(_, room)| room)
@@ -2279,6 +2672,28 @@ impl RoomRegistry {
     /// End a world deletion (success or failure), lifting the tombstone. After
     /// a committed delete, re-creation is refused by the missing world row;
     /// after a failure the world is live again and re-creation is legitimate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// registry.get_or_create(&repo, world.id).await.unwrap();
+    ///
+    /// registry.begin_delete(world.id); // failed delete: the world row survives
+    /// registry.finish_delete(world.id);
+    /// assert!(registry.get_or_create(&repo, world.id).await.unwrap().is_some());
+    /// # }
+    /// ```
     pub fn finish_delete(&self, world_id: Uuid) {
         self.deleting.remove(&world_id);
     }
@@ -2286,6 +2701,32 @@ impl RoomRegistry {
     /// Address every connection of `user` across all live rooms with a terminal
     /// eviction frame (account deletion). Rooms without that user's connections
     /// skip the frame in their egress loops.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::role::ServerRole;
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+    /// let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+    /// let registry = RoomRegistry::new();
+    /// let room = registry
+    ///     .get_or_create(&repo, world.id)
+    ///     .await
+    ///     .unwrap()
+    ///     .unwrap();
+    ///
+    /// // Out-of-band, like `broadcast_aux`: never bumps `current_seq`.
+    /// registry.evict_user(gm);
+    /// assert_eq!(room.current_seq(), 0);
+    /// # }
+    /// ```
     pub fn evict_user(&self, user: Uuid) {
         for entry in self.rooms.iter() {
             entry

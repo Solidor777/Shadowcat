@@ -22,6 +22,22 @@ use crate::data::world_bundle::{
 };
 
 /// All fallible bundle read/write operations return this.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::world_bundle::WorldBundleError;
+///
+/// let err = WorldBundleError::RowCountMismatch {
+///     table: "documents".to_string(),
+///     expected: 3,
+///     actual: 2,
+/// };
+/// assert_eq!(
+///     err.to_string(),
+///     "row count mismatch for 'documents': manifest promised 3, extracted 2"
+/// );
+/// ```
 #[derive(Debug, Error)]
 pub enum WorldBundleError {
     /// A filesystem or tar-stream operation failed.
@@ -96,9 +112,32 @@ fn to_jsonl<T: serde::Serialize>(rows: &[T]) -> Result<Vec<u8>, WorldBundleError
 ///
 /// # Examples
 ///
-/// ```text
-/// let bytes = write_bundle(&data, Path::new("/srv/shadowcat/assets"), Vec::new())?;
-/// std::fs::write("world.tar", bytes)?;
+/// ```
+/// use shadowcat::data::world_bundle::{BundleManifest, WorldExportData};
+/// use shadowcat::world_bundle::write_bundle;
+///
+/// let data = WorldExportData {
+///     manifest: BundleManifest {
+///         schema_version: shadowcat::data::world_bundle::BUNDLE_SCHEMA_VERSION,
+///         world_id: uuid::Uuid::new_v4(),
+///         world_name: "W".to_string(),
+///         world_seq: 0,
+///         world_created_at: 0,
+///         world_updated_at: 0,
+///         exported_at_unix_ms: 0,
+///         row_counts: Default::default(),
+///     },
+///     documents: Vec::new(),
+///     events: Vec::new(),
+///     members: Vec::new(),
+///     invites: Vec::new(),
+///     assets: Vec::new(), // no assets: no on-disk asset bytes need reading
+///     fog: Vec::new(),
+///     settings: Vec::new(),
+/// };
+/// // No asset rows means the assets_dir is never touched.
+/// let bytes = write_bundle(&data, std::path::Path::new("unused-assets-dir"), Vec::new()).unwrap();
+/// assert!(!bytes.is_empty());
 /// ```
 pub fn write_bundle<W: std::io::Write>(
     data: &WorldExportData,
@@ -181,8 +220,17 @@ pub fn write_bundle<W: std::io::Write>(
 ///
 /// # Examples
 ///
-/// ```text
-/// let data = read_bundle(Path::new("/tmp/upload.tar"), Path::new("/srv/shadowcat/assets"))?;
+/// ```no_run
+/// use shadowcat::world_bundle::read_bundle;
+///
+/// // `tar_path` must already be staged to disk (see `http::world_bundle::import_world`),
+/// // and `assets_dir` is the server's real asset root -- both are on-disk directory trees.
+/// let data = read_bundle(
+///     std::path::Path::new("upload.tar"),
+///     std::path::Path::new("assets"),
+/// )
+/// .unwrap();
+/// assert!(data.documents.is_empty());
 /// ```
 pub fn read_bundle(
     tar_path: &Path,

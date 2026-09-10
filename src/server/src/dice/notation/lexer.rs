@@ -5,6 +5,20 @@ use crate::dice::notation::ParseError;
 use crate::dice::spec::Comparator;
 
 /// One lexed notation token.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::lexer::{lex, Token};
+/// let toks = lex("2d6+1").unwrap();
+/// assert_eq!(toks, vec![
+///     Token::Int(2),
+///     Token::D,
+///     Token::Int(6),
+///     Token::Plus,
+///     Token::Int(1),
+/// ]);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
     /// An integer literal.
@@ -82,6 +96,14 @@ fn comparator_symbol(c: Comparator) -> &'static str {
 
 /// Player-presentable rendering of an optional token (`None` = end of input),
 /// used at every "found `X`, expected `Y`" `ParseError` construction site.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::lexer::{describe_token, Token};
+/// assert_eq!(describe_token(Some(&Token::Plus)), "'+'");
+/// assert_eq!(describe_token(None), "end of input");
+/// ```
 pub fn describe_token(tok: Option<&Token>) -> String {
     match tok {
         Some(t) => t.to_string(),
@@ -98,6 +120,14 @@ pub fn describe_token(tok: Option<&Token>) -> String {
 /// a multi-byte UTF-8 sequence. This is enforced up front rather than relied
 /// on implicitly, so a future non-ASCII operator arm can't reintroduce a
 /// slice-at-non-char-boundary panic.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::lexer::{lex, Token};
+/// assert_eq!(lex("1d20").unwrap(), vec![Token::Int(1), Token::D, Token::Int(20)]);
+/// assert!(lex("café").is_err()); // non-ASCII input is rejected
+/// ```
 pub fn lex(input: &str) -> Result<Vec<Token>, ParseError> {
     if !input.is_ascii() {
         return Err(ParseError::Unexpected(

@@ -41,6 +41,16 @@ pub(crate) use crate::chat::rolls::TABLE_PARSE_CONTEXT;
 /// mirrors `SendMessageError`'s own rule: `Forbidden`/`NotFound`/`Data`
 /// collapse to one generic, existence-hiding string; every other variant is
 /// specific and player-presentable.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::tables::DrawTableError;
+///
+/// // Forbidden and NotFound are deliberately identical (no existence oracle).
+/// assert_eq!(DrawTableError::Forbidden.to_string(), DrawTableError::NotFound.to_string());
+/// assert_eq!(DrawTableError::EmptyTable.to_string(), "That table has no rows.");
+/// ```
 #[derive(Debug)]
 pub enum DrawTableError {
     /// The caller's per-minute chat flood budget is exhausted.
@@ -139,6 +149,45 @@ impl From<SendMessageError> for DrawTableError {
 
 /// Borrowed dependencies `handle_draw_table` needs, the `MessageRequestCtx`
 /// shape.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{LinkPreviewCache, LinkPreviewDeps, PreviewRateLimiter};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::tables::DrawTableRequestCtx;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// let rate = PingRateLimiter::new();
+/// let client = shadowcat::chat::build_link_preview_client();
+///
+/// let req = DrawTableRequestCtx {
+///     room: &room,
+///     repo: &repo,
+///     ctx: &ctx,
+///     rate: &rate,
+///     preview: LinkPreviewDeps {
+///         client: &client,
+///         cache: &LinkPreviewCache::new(),
+///         rate: &PreviewRateLimiter::new(),
+///     },
+///     now: 0,
+///     budget_per_min: 30,
+/// };
+/// assert_eq!(req.budget_per_min, 30);
+/// # }
+/// ```
 pub struct DrawTableRequestCtx<'a> {
     /// The world's room -- the authoritative publish path.
     pub room: &'a Room,

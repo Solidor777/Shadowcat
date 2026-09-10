@@ -23,6 +23,38 @@ pub const MAX_SYSTEM_BYTES: usize = 256 * 1024;
 /// stored inline in the parent JSON, so each body is bounded independently;
 /// the recursion mirrors `embedded`'s finite stored depth (a document cannot
 /// embed itself).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::validation::validate_system_size;
+///
+/// fn doc(system: serde_json::Value) -> Document {
+///     Document {
+///         id: uuid::Uuid::new_v4(),
+///         scope: Scope::Compendium { pack: "core".into() },
+///         doc_type: "note".into(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: PermissionSet::default(),
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system,
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// assert!(validate_system_size(&doc(serde_json::json!({ "hp": 10 }))).is_ok());
+///
+/// let oversized = serde_json::json!({ "text": "x".repeat(300_000) });
+/// assert!(validate_system_size(&doc(oversized)).is_err());
+/// ```
 pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
     let bytes = serde_json::to_vec(&doc.system)?.len();
     if bytes > MAX_SYSTEM_BYTES {
@@ -84,6 +116,33 @@ pub fn validate_system_size(doc: &Document) -> Result<(), DataError> {
 /// historical, so it is shape-checked only, never normalized). A legacy row
 /// predating this walk still READS — validation is ingest-time only, as
 /// everywhere else — and is re-validated only when rewritten.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::validation::validate_engine_tree;
+///
+/// let mut doc = Document {
+///     id: uuid::Uuid::new_v4(),
+///     scope: Scope::Compendium { pack: "core".into() },
+///     doc_type: "asset_folder".into(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::json!({ "sort": 0 })),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// assert!(validate_engine_tree(&mut doc).is_ok());
+/// assert_eq!(doc.engine, Some(serde_json::json!({ "sort": 0 })));
+/// ```
 pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     doc.engine = engine::normalize_engine_opt(&doc.doc_type, doc.engine.as_ref())?;
     if let Some(mut base) = doc.base.take() {
@@ -342,6 +401,18 @@ fn validate_base_node(
 /// A structural mismatch: the JSON pointer (relative to the validated value's
 /// root) of the offending location plus a shape-only reason. Never carries a
 /// value's content.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::validation::SchemaMismatch;
+///
+/// let mismatch = SchemaMismatch {
+///     pointer: "/hp".into(),
+///     reason: "expected number, got string".into(),
+/// };
+/// assert_eq!(mismatch.pointer, "/hp");
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct SchemaMismatch {
     /// JSON pointer (relative to the validated root) of the offending node.
@@ -389,6 +460,19 @@ fn escape_token(key: &str) -> String {
 /// Shape-only match of a JSON value against a schema type-tree node.
 /// NEVER inspects a value's magnitude/content: scalars
 /// match on JSON type alone. `additionalProperties` defaults to closed.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Schema, SchemaType};
+/// use shadowcat::data::validation::validate_value_against_schema;
+///
+/// let schema = Schema { ty: Some(SchemaType::Number), ..Default::default() };
+/// assert!(validate_value_against_schema(&serde_json::json!(3), &schema).is_ok());
+///
+/// let mismatch = validate_value_against_schema(&serde_json::json!("nope"), &schema).unwrap_err();
+/// assert_eq!(mismatch.reason, "expected number, got string");
+/// ```
 pub fn validate_value_against_schema(
     value: &serde_json::Value,
     schema: &Schema,
@@ -510,6 +594,40 @@ fn check_value(
 /// compels presence). `subtree_pointer` is a strict `/system/…` descendant
 /// (guaranteed at set-time by `validate_schema_declarations`), so the leading
 /// `/system` is stripped and the remainder resolved within `doc.system`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Schema, SchemaDeclaration, SchemaType, Scope};
+/// use shadowcat::data::validation::validate_system_schema_tree;
+///
+/// let doc = Document {
+///     id: uuid::Uuid::new_v4(),
+///     scope: Scope::Compendium { pack: "core".into() },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({ "hp": 10 }),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let decl = SchemaDeclaration {
+///     module_id: "example-module".into(),
+///     version: "1.0.0".into(),
+///     schema_format: 1,
+///     doc_type: "actor".into(),
+///     subtree_pointer: "/system/hp".into(),
+///     schema: Schema { ty: Some(SchemaType::Number), ..Default::default() },
+/// };
+/// assert!(validate_system_schema_tree(&doc, &[decl]).is_ok());
+/// ```
 pub fn validate_system_schema_tree(
     doc: &Document,
     schemas: &[SchemaDeclaration],
@@ -540,6 +658,16 @@ pub fn validate_system_schema_tree(
 }
 
 /// A valid JSON pointer is empty or a sequence of "/"-prefixed tokens.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::validation::validate_field_path;
+///
+/// assert!(validate_field_path("/system/hp").is_ok());
+/// assert!(validate_field_path("").is_ok()); // the root pointer
+/// assert!(validate_field_path("system/hp").is_err()); // missing leading `/`
+/// ```
 pub fn validate_field_path(path: &str) -> Result<(), DataError> {
     if path.is_empty() {
         return Ok(());
@@ -564,6 +692,20 @@ pub fn validate_field_path(path: &str) -> Result<(), DataError> {
 /// rule, called by every authoritative path and every mirror. Denying the shape at
 /// ingress means no future mirror can be forked this way even if it re-introduces the
 /// same mistake.
+///
+/// # Examples
+///
+/// ```
+/// use serde_json::json;
+/// use shadowcat::data::command::FieldChange;
+/// use shadowcat::data::validation::validate_field_change;
+///
+/// let removal = FieldChange { path: "/system/hp".into(), old: json!(10), new: json!(null), remove: true };
+/// assert!(validate_field_change(&removal).is_ok());
+///
+/// let malformed = FieldChange { path: "/system/hp".into(), old: json!(10), new: json!(7), remove: true };
+/// assert!(validate_field_change(&malformed).is_err()); // a removal must not carry `new`
+/// ```
 pub fn validate_field_change(ch: &crate::data::command::FieldChange) -> Result<(), DataError> {
     validate_field_path(&ch.path)?;
     if ch.remove && !ch.new.is_null() {
@@ -593,6 +735,42 @@ pub fn validate_field_change(ch: &crate::data::command::FieldChange) -> Result<(
 ///
 /// Recurses into every embedded descendant's own `property_overrides`,
 /// mirroring `validate_system_size`'s embedded-tree walk.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope, Visibility};
+/// use shadowcat::data::validation::validate_property_overrides;
+///
+/// fn doc(overrides: std::collections::BTreeMap<String, Visibility>) -> Document {
+///     let mut permissions = PermissionSet::default();
+///     permissions.property_overrides = overrides;
+///     Document {
+///         id: uuid::Uuid::new_v4(),
+///         scope: Scope::Compendium { pack: "core".into() },
+///         doc_type: "note".into(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions,
+///         embedded: Default::default(),
+///         parent_id: None,
+///         engine: None,
+///         system: serde_json::json!({}),
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// let ok = [("/system/secret".to_string(), Visibility::GmOnly)].into_iter().collect();
+/// assert!(validate_property_overrides(&doc(ok)).is_ok());
+///
+/// // `/owner` is structural, not a redactable content band.
+/// let bad = [("/owner".to_string(), Visibility::GmOnly)].into_iter().collect();
+/// assert!(validate_property_overrides(&doc(bad)).is_err());
+/// ```
 pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
     for key in doc.permissions.property_overrides.keys() {
         if key.is_empty() || !key.starts_with('/') || key.ends_with('/') {
@@ -619,6 +797,36 @@ pub fn validate_property_overrides(doc: &Document) -> Result<(), DataError> {
 /// `SqliteRepository::check_asset_folder_parent`; the ancestor cycle walk
 /// for a Move is `SqliteRepository::check_move_acyclic`). Recurses into
 /// every embedded descendant.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::validation::validate_containment;
+///
+/// fn doc(doc_type: &str, parent_id: Option<uuid::Uuid>) -> Document {
+///     Document {
+///         id: uuid::Uuid::new_v4(),
+///         scope: Scope::Compendium { pack: "core".into() },
+///         doc_type: doc_type.into(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: PermissionSet::default(),
+///         embedded: Default::default(),
+///         parent_id,
+///         engine: None,
+///         system: serde_json::json!({}),
+///         created_at: 0,
+///         updated_at: 0,
+///     }
+/// }
+///
+/// assert!(validate_containment(&doc("combat", None)).is_ok());
+/// assert!(validate_containment(&doc("combat", Some(uuid::Uuid::new_v4()))).is_err());
+/// ```
 pub fn validate_containment(doc: &Document) -> Result<(), DataError> {
     match doc.doc_type.as_str() {
         t if t == engine::COMBAT_DOC_TYPE && doc.parent_id.is_some() => {

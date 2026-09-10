@@ -41,6 +41,15 @@ pub use asset::Asset;
 use thiserror::Error;
 
 /// All fallible operations in the data layer return this.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::DataError;
+///
+/// let err = DataError::BadPath("/tags/0".into());
+/// assert_eq!(err.to_string(), "invalid field path: /tags/0");
+/// ```
 #[derive(Debug, Error)]
 pub enum DataError {
     /// The underlying SQLite operation failed.

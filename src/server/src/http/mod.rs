@@ -32,6 +32,33 @@ use crate::data::sqlite::SqliteRepository;
 /// Shared handler state. `initialized` caches "an admin exists" so the init
 /// gate avoids a DB hit per request; `setup_token`, when `Some`, is the value
 /// `/api/setup` requires.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(false)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// assert!(!state.initialized.load(std::sync::atomic::Ordering::Relaxed));
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct AppState {
     /// The SQLite repository (single-writer pool).
@@ -63,6 +90,19 @@ pub struct AppState {
 
 impl AppState {
     /// Resolve the token `/api/setup` will require. `None` = open window.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::config::Config;
+    /// use shadowcat::http::AppState;
+    ///
+    /// let cfg = Config {
+    ///     setup_token: "the-token".into(),
+    ///     ..Config::default()
+    /// };
+    /// assert_eq!(AppState::resolve_setup_token(&cfg), Some("the-token".to_string()));
+    /// ```
     pub fn resolve_setup_token(config: &Config) -> Option<String> {
         use crate::config::SetupTokenPolicy;
         match config.setup_token_policy() {
@@ -89,8 +129,32 @@ impl AppState {
 ///
 /// # Examples
 ///
-/// ```text
-/// let app = http::router(state).await; // axum::serve(listener, app...)
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::{router, AppState};
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let app = router(state).await;
+/// // `no_run`: binding a real listener needs a live socket.
+/// let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+/// axum::serve(listener, app.into_make_service()).await.unwrap();
+/// # }
 /// ```
 pub async fn router(state: AppState) -> Router {
     use tower::ServiceBuilder;

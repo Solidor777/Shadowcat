@@ -69,6 +69,18 @@ pub use visibility::{AllVisible, MergeVisibility, RequesterView, Side};
 /// A merge computation that refused to run. Wire-level errors (missing
 /// documents, authorization, stale resolutions) live in the protocol layer,
 /// not here.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::MergeError;
+///
+/// let err = MergeError::CorruptBase;
+/// assert_eq!(
+///     err.to_string(),
+///     "the stored merge base does not parse as a StoredBase snapshot"
+/// );
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MergeError {
     /// The child's stored `base` snapshot is present but does not parse as a
@@ -108,6 +120,14 @@ impl std::error::Error for MergeError {}
 
 /// How `take_template` resolves a conflict: `"set"` writes the parent value,
 /// `"delete"` removes the key.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::ParentKind;
+///
+/// assert_ne!(ParentKind::Set, ParentKind::Delete);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]
@@ -124,6 +144,21 @@ pub enum ParentKind {
 /// child's side deleted it, or neither side's snapshot contained it — so the
 /// client's Zod mirror (`WireMergeConflict`) reads a missing side as an
 /// absent key, distinct from an explicit `null` value.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::merge::{MergeConflict, ParentKind};
+///
+/// let conflict = MergeConflict {
+///     path: "/system/hp".to_string(),
+///     base: Some(serde_json::json!(5)),
+///     parent: Some(serde_json::json!(20)),
+///     child: Some(serde_json::json!(10)),
+///     parent_kind: ParentKind::Set,
+/// };
+/// assert_eq!(conflict.path, "/system/hp");
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]

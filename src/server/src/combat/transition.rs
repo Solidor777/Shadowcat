@@ -50,6 +50,17 @@ use super::ops::{set_engine, whole_engine_replace};
 use super::{CombatError, CombatSnapshot, Combatant};
 
 /// A resource mutation intent for `resource`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::ResourceOp;
+///
+/// let delta = ResourceOp::Delta { amount: -3.0 };
+/// let set = ResourceOp::Set { value: 5.0 };
+/// assert!(matches!(delta, ResourceOp::Delta { amount } if amount == -3.0));
+/// assert!(matches!(set, ResourceOp::Set { value } if value == 5.0));
+/// ```
 pub enum ResourceOp {
     /// Add (or, with a negative amount, subtract) from the current value.
     Delta {
@@ -66,6 +77,26 @@ pub enum ResourceOp {
 /// A single already-executed roll result to post via `roll`. `formula` is
 /// the display formula; `outcome`/`spec`/`raw` are the full deterministic
 /// result, kept so a GM can later recalculate it (mirrors `Segment::RollEmbed`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::RollPost;
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::{evaluate, parse, roll, ParseContext};
+///
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raw = roll(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raw);
+/// let post = RollPost {
+///     formula: "1d20".to_string(),
+///     outcome,
+///     spec,
+///     raw,
+/// };
+/// assert_eq!(post.formula, "1d20");
+/// ```
 pub struct RollPost {
     /// The formula as the caller wrote it.
     pub formula: String,
@@ -920,6 +951,109 @@ fn settle_turn(
 /// first `combat-history` record. A combat that already has a turn (a
 /// pause/resume) is resumed as-is: no re-snapshot, no recovery, just
 /// `active = true`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::start;
+/// use shadowcat::combat::{CombatSnapshot, Combatant};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectLifecycleDefaults, Enforcement,
+///     Interpretation, MovementRules, TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let event_id = Uuid::new_v4();
+///
+/// let event_engine = CombatantEngine {
+///     kind: CombatantKind::Event {
+///         lifespan: Some(2),
+///         message: None,
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     resources: Default::default(),
+/// };
+/// let event_doc = Document {
+///     id: event_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: Some("Trap".to_string()),
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(serde_json::to_value(&event_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: false,
+///     round: 0,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![event_id],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![Combatant {
+///         doc: event_doc,
+///         engine: event_engine,
+///     }],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let ops = start(&snapshot, 0, world_id, Uuid::new_v4()).unwrap();
+/// assert!(ops
+///     .iter()
+///     .any(|op| matches!(op, Operation::Create { doc } if doc.doc_type == "combat-history")));
+/// assert!(ops
+///     .iter()
+///     .any(|op| matches!(op, Operation::Update { doc_id, .. } if *doc_id == combat_id)));
+/// ```
 pub fn start(
     snap: &CombatSnapshot,
     now: i64,
@@ -1044,6 +1178,107 @@ fn advance_impl(
 /// Ends the current turn, advances to the next combatant (wrapping the
 /// round when the order is exhausted), and settles the new turn — see the
 /// module doc for the auto-resolve/termination guarantee.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::advance;
+/// use shadowcat::combat::{CombatSnapshot, Combatant};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectLifecycleDefaults, Enforcement,
+///     Interpretation, MovementRules, TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let event_id = Uuid::new_v4();
+///
+/// let event_engine = CombatantEngine {
+///     kind: CombatantKind::Event {
+///         lifespan: Some(3),
+///         message: None,
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     resources: Default::default(),
+/// };
+/// let event_doc = Document {
+///     id: event_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: Some("Trap".to_string()),
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(serde_json::to_value(&event_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: Some(event_id),
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![event_id],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![Combatant {
+///         doc: event_doc,
+///         engine: event_engine,
+///     }],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let ops = advance(&snapshot, world_id, Uuid::new_v4(), 0).unwrap();
+/// // Wrapping the single-entry order bumps the round and re-settles the same turn.
+/// assert!(ops
+///     .iter()
+///     .any(|op| matches!(op, Operation::Update { doc_id, .. } if *doc_id == combat_id)));
+/// ```
 pub fn advance(
     snap: &CombatSnapshot,
     world: Uuid,
@@ -1070,6 +1305,78 @@ pub(crate) fn advance_with_step_count(
 
 /// Pauses a running combat: clears `active` only. `NotRunning` if it is not
 /// currently active.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::pause;
+/// use shadowcat::combat::CombatSnapshot;
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+///     TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: Vec::new(),
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let ops = pause(&snapshot).unwrap();
+/// assert_eq!(ops.len(), 1);
+/// match &ops[0] {
+///     Operation::Update { doc_id, changes } => {
+///         assert_eq!(*doc_id, combat_id);
+///         assert_eq!(changes[0].new, serde_json::json!(false));
+///     }
+///     _ => panic!("expected an Update"),
+/// }
+/// ```
 pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
     if !snap.engine.active {
         return Err(CombatError::NotRunning);
@@ -1108,6 +1415,70 @@ pub fn pause(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
 /// rebuilding `order` without restoring the document would leave a phantom
 /// entry naming a document that does not exist, and clamping or skipping the
 /// `/engine/turn` write would move the clock somewhere the GM never asked for.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::rewind;
+/// use shadowcat::combat::{CombatError, CombatSnapshot};
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+///     TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// // No `combat-history` document yet: rewinding refuses rather than guessing a boundary.
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: Vec::new(),
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let result = rewind(&snapshot, 0);
+/// assert!(matches!(result, Err(CombatError::Unrewindable)));
+/// ```
 pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatError> {
     let Some((history_doc, history_engine)) = &snap.history else {
         return Err(CombatError::Unrewindable);
@@ -1182,6 +1553,73 @@ pub fn rewind(snap: &CombatSnapshot, now: i64) -> Result<Vec<Operation>, CombatE
 /// itself). Effect expiry ops always precede the `Delete`; an evaluation
 /// failure skips its one effect and surfaces as a GM-only notice in the same
 /// command (`world`/`author`/`now` exist for that notice).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::end;
+/// use shadowcat::combat::CombatSnapshot;
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, EffectLifecycleDefaults, Enforcement, Interpretation, MovementRules,
+///     TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: Vec::new(),
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     // No effect cleanup: `end` skips the effect-expiry pass entirely.
+///     effect_cleanup: false,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: Vec::new(),
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let ops = end(&snapshot, world_id, Uuid::new_v4(), 0).unwrap();
+/// assert_eq!(ops.len(), 1);
+/// assert!(matches!(&ops[0], Operation::Delete { doc } if doc.id == combat_id));
+/// ```
 pub fn end(
     snap: &CombatSnapshot,
     world: Uuid,
@@ -1222,6 +1660,131 @@ pub fn end(
 /// the combatant is hidden), and rebuilds `order` from the updated
 /// initiatives. Authorization (who may roll for whom) is the caller's
 /// concern, not this function's.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::MESSAGE_DOC_TYPE;
+/// use shadowcat::combat::transition::roll;
+/// use shadowcat::combat::{CombatSnapshot, Combatant, RollPost};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectLifecycleDefaults, Enforcement,
+///     Interpretation, MovementRules, TurnControl,
+/// };
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::{evaluate, parse, roll as roll_dice, ParseContext};
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let combatant_id = Uuid::new_v4();
+///
+/// let combatant_engine = CombatantEngine {
+///     kind: CombatantKind::Event {
+///         lifespan: None,
+///         message: None,
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     resources: Default::default(),
+/// };
+/// let combatant_doc = Document {
+///     id: combatant_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(serde_json::to_value(&combatant_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![combatant_id],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![Combatant {
+///         doc: combatant_doc,
+///         engine: combatant_engine,
+///     }],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raw = roll_dice(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raw);
+/// let post = RollPost {
+///     formula: "1d20".to_string(),
+///     outcome,
+///     spec,
+///     raw,
+/// };
+///
+/// let ops = roll(
+///     &snapshot,
+///     &[(combatant_id, post)],
+///     world_id,
+///     Uuid::new_v4(),
+///     "combat",
+///     0,
+/// )
+/// .unwrap();
+/// assert!(ops
+///     .iter()
+///     .any(|op| matches!(op, Operation::Update { doc_id, .. } if *doc_id == combatant_id)));
+/// assert!(ops
+///     .iter()
+///     .any(|op| matches!(op, Operation::Create { doc } if doc.doc_type == MESSAGE_DOC_TYPE)));
+/// ```
 pub fn roll(
     snap: &CombatSnapshot,
     results: &[(Uuid, RollPost)],
@@ -1329,6 +1892,128 @@ pub fn roll(
 /// clock. `Forbidden` when the requested amount/value is non-finite (never
 /// silently truncated/ignored); an evaluation failure refuses with the same
 /// uniform wording rather than guessing a ceiling.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::{resource, ResourceOp};
+/// use shadowcat::combat::{CombatSnapshot, Combatant};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectLifecycleDefaults, Enforcement,
+///     Formula, Interpretation, MovementRules, Recovery, Resource, ResourceBinding,
+///     ResourceRegistryEngine, TurnControl,
+/// };
+/// use std::collections::{BTreeMap, HashMap};
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let combatant_id = Uuid::new_v4();
+///
+/// let combatant_engine = CombatantEngine {
+///     kind: CombatantKind::Event {
+///         lifespan: None,
+///         message: None,
+///     },
+///     initiative: None,
+///     tiebreak: 0.0,
+///     // No stored entry for "hp" yet: an absent entry reads as full.
+///     resources: BTreeMap::new(),
+/// };
+/// let combatant_doc = Document {
+///     id: combatant_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combatant".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: Some(combat_id),
+///     engine: Some(serde_json::to_value(&combatant_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let mut resources = BTreeMap::new();
+/// resources.insert(
+///     "hp".to_string(),
+///     Resource {
+///         name: "HP".to_string(),
+///         order: 0,
+///         binding: ResourceBinding::Tracked {
+///             max: Formula::Number(10.0),
+///             recover: Recovery::default(),
+///         },
+///     },
+/// );
+/// let registry = ResourceRegistryEngine { resources };
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     order: vec![combatant_id],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![Combatant {
+///         doc: combatant_doc,
+///         engine: combatant_engine,
+///     }],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: Some(registry),
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let ops = resource(&snapshot, combatant_id, "hp", ResourceOp::Delta { amount: -3.0 }).unwrap();
+/// assert_eq!(ops.len(), 1);
+/// match &ops[0] {
+///     Operation::Update { doc_id, changes } => {
+///         assert_eq!(*doc_id, combatant_id);
+///         // Absent entry reads as full (max 10.0), so a -3.0 delta lands at 7.0.
+///         assert_eq!(changes[0].new, serde_json::json!(7.0));
+///     }
+///     _ => panic!("expected an Update"),
+/// }
+/// ```
 pub fn resource(
     snap: &CombatSnapshot,
     combatant_id: Uuid,
@@ -1379,6 +2064,115 @@ pub fn resource(
 
 /// Re-sorts `order` by `rebuild_order` and writes it back, or emits nothing
 /// when the recomputed order is unchanged.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::sort;
+/// use shadowcat::combat::{CombatSnapshot, Combatant};
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{
+///     CombatEngine, CombatantEngine, CombatantKind, EffectLifecycleDefaults, Enforcement,
+///     Interpretation, MovementRules, TurnControl,
+/// };
+/// use std::collections::HashMap;
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let low_id = Uuid::new_v4();
+/// let high_id = Uuid::new_v4();
+///
+/// let build_combatant = |id: Uuid, initiative: f64| {
+///     let engine = CombatantEngine {
+///         kind: CombatantKind::Event {
+///             lifespan: None,
+///             message: None,
+///         },
+///         initiative: Some(initiative),
+///         tiebreak: 0.0,
+///         resources: Default::default(),
+///     };
+///     let doc = Document {
+///         id,
+///         scope: Scope::World { world_id },
+///         doc_type: "combatant".to_string(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: PermissionSet::default(),
+///         embedded: Default::default(),
+///         parent_id: Some(combat_id),
+///         engine: Some(serde_json::to_value(&engine).unwrap()),
+///         system: serde_json::json!({}),
+///         created_at: 0,
+///         updated_at: 0,
+///     };
+///     Combatant { doc, engine }
+/// };
+/// let low = build_combatant(low_id, 5.0);
+/// let high = build_combatant(high_id, 15.0);
+///
+/// let combat_engine = CombatEngine {
+///     scene_id: Uuid::new_v4(),
+///     active: true,
+///     round: 1,
+///     turn: None,
+///     turn_control: TurnControl::OwnerMayEnd,
+///     // Stored in ASCENDING initiative order — `sort` re-orders descending.
+///     order: vec![low_id, high_id],
+///     movement: MovementRules {
+///         resource: None,
+///         interpretation: Interpretation::PerCell,
+///         enforcement: Enforcement::None,
+///     },
+///     effect_cleanup: true,
+///     rewind_restore: true,
+///     forward_restore: false,
+///     effect_lifecycle: EffectLifecycleDefaults::default(),
+/// };
+/// let combat_doc = Document {
+///     id: combat_id,
+///     scope: Scope::World { world_id },
+///     doc_type: "combat".to_string(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: PermissionSet::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: Some(serde_json::to_value(&combat_engine).unwrap()),
+///     system: serde_json::json!({}),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+///
+/// let snapshot = CombatSnapshot {
+///     combat: combat_doc,
+///     engine: combat_engine,
+///     combatants: vec![low, high],
+///     hosts: HashMap::new(),
+///     history: None,
+///     registry: None,
+///     other_active: Vec::new(),
+///     chain: (None, None, None),
+/// };
+///
+/// let ops = sort(&snapshot).unwrap();
+/// assert_eq!(ops.len(), 1);
+/// match &ops[0] {
+///     Operation::Update { doc_id, changes } => {
+///         assert_eq!(*doc_id, combat_id);
+///         assert_eq!(changes[0].new, serde_json::json!([high_id, low_id]));
+///     }
+///     _ => panic!("expected an Update"),
+/// }
+/// ```
 pub fn sort(snap: &CombatSnapshot) -> Result<Vec<Operation>, CombatError> {
     let new_order = rebuild_order(&snap.combatants, &snap.engine.order);
     if new_order == snap.engine.order {
@@ -1428,6 +2222,56 @@ fn reconcile_membership(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid
 /// (`sort`, `roll` after assigning fresh initiatives, a restoring
 /// `rewind`) — see `heal_order` for the membership-only reconciliation
 /// every transition applies unconditionally.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::transition::rebuild_order;
+/// use shadowcat::combat::Combatant;
+/// use shadowcat::data::document::{Document, PermissionSet, Scope};
+/// use shadowcat::data::engine::combat::{CombatantEngine, CombatantKind};
+/// use uuid::Uuid;
+///
+/// let world_id = Uuid::new_v4();
+/// let combat_id = Uuid::new_v4();
+/// let build = |id: Uuid, initiative: f64| {
+///     let engine = CombatantEngine {
+///         kind: CombatantKind::Event {
+///             lifespan: None,
+///             message: None,
+///         },
+///         initiative: Some(initiative),
+///         tiebreak: 0.0,
+///         resources: Default::default(),
+///     };
+///     let doc = Document {
+///         id,
+///         scope: Scope::World { world_id },
+///         doc_type: "combatant".to_string(),
+///         schema_version: 1,
+///         name: None,
+///         source: None,
+///         base: None,
+///         owner: None,
+///         permissions: PermissionSet::default(),
+///         embedded: Default::default(),
+///         parent_id: Some(combat_id),
+///         engine: Some(serde_json::to_value(&engine).unwrap()),
+///         system: serde_json::json!({}),
+///         created_at: 0,
+///         updated_at: 0,
+///     };
+///     Combatant { doc, engine }
+/// };
+/// let low_id = Uuid::new_v4();
+/// let high_id = Uuid::new_v4();
+/// let combatants = vec![build(low_id, 5.0), build(high_id, 15.0)];
+///
+/// // `existing` is empty: both combatants are new arrivals, appended in the
+/// // input's own order before the descending-initiative sort runs.
+/// let order = rebuild_order(&combatants, &[]);
+/// assert_eq!(order, vec![high_id, low_id]);
+/// ```
 pub fn rebuild_order(combatants: &[Combatant], existing: &[Uuid]) -> Vec<Uuid> {
     let mut ids = reconcile_membership(combatants, existing);
     let lookup = |id: &Uuid| combatants.iter().find(|c| c.doc.id == *id);

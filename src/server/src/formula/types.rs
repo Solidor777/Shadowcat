@@ -22,6 +22,16 @@ pub const MAX_GRAPH_VISITS: usize = 2048;
 
 /// Which failure category occurred. Serialized as the client's kebab-case
 /// tags (`"unknown-ref"`, `"div-zero"`, …).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::parser::parse;
+/// use shadowcat::formula::types::FormulaErrorKind;
+///
+/// let err = parse("1 /").unwrap_err();
+/// assert_eq!(err.error, FormulaErrorKind::Parse);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FormulaErrorKind {
@@ -51,6 +61,15 @@ pub enum FormulaErrorKind {
 
 /// A failure value. `detail` is player-presentable and never carries an
 /// internal dump.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::types::{FormulaError, FormulaErrorKind};
+///
+/// let err = FormulaError::new(FormulaErrorKind::DivZero, "division by zero ('/')");
+/// assert_eq!(err.detail, "division by zero ('/')");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormulaError {
     /// The failure category.
@@ -61,6 +80,16 @@ pub struct FormulaError {
 
 impl FormulaError {
     /// Builds an error of `kind` with `detail`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::formula::types::{FormulaError, FormulaErrorKind};
+    ///
+    /// let err = FormulaError::new(FormulaErrorKind::Cap, "too many nodes");
+    /// assert_eq!(err.error, FormulaErrorKind::Cap);
+    /// assert_eq!(err.detail, "too many nodes");
+    /// ```
     pub fn new(kind: FormulaErrorKind, detail: impl Into<String>) -> Self {
         Self {
             error: kind,

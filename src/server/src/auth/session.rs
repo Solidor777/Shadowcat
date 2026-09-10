@@ -32,6 +32,30 @@ const SESSION_KEY_SETTING: &str = "session_key";
 /// `tower-sessions-sqlx-store` is not used: it pins sqlx 0.8, which would
 /// duplicate the driver and require a second pool — breaking the single-writer
 /// invariant. Sharing the existing pool keeps one writer and one sqlx version.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::session::SqlxSqliteStore;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use tower_sessions::cookie::time::{Duration, OffsetDateTime};
+/// use tower_sessions::session::Record;
+/// use tower_sessions::session_store::SessionStore;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let store = SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone());
+/// store.migrate().await.unwrap();
+///
+/// let record = Record {
+///     id: Default::default(),
+///     data: Default::default(),
+///     expiry_date: OffsetDateTime::now_utc() + Duration::days(1),
+/// };
+/// store.save(&record).await.unwrap();
+/// assert!(store.load(&record.id).await.unwrap().is_some());
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct SqlxSqliteStore {
     /// The shared single-writer pool — every write (`create`/`save`/
@@ -52,14 +76,47 @@ impl SqlxSqliteStore {
     ///
     /// # Examples
     ///
-    /// ```text
-    /// let store = SqlxSqliteStore::new(repo.pool().clone(), repo.open_read_pool().await?); // session_layer wires this
+    /// ```
+    /// use shadowcat::auth::session::SqlxSqliteStore;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use tower_sessions::cookie::time::{Duration, OffsetDateTime};
+    /// use tower_sessions::session::Record;
+    /// use tower_sessions::session_store::SessionStore;
+    ///
+    /// # #[tokio::main] async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let read_pool = repo.open_read_pool().await.unwrap(); // session_layer wires this
+    /// let store = SqlxSqliteStore::new(repo.pool().clone(), read_pool);
+    /// store.migrate().await.unwrap();
+    ///
+    /// let record = Record {
+    ///     id: Default::default(),
+    ///     data: Default::default(),
+    ///     expiry_date: OffsetDateTime::now_utc() + Duration::days(1),
+    /// };
+    /// store.save(&record).await.unwrap();
+    /// assert!(store.load(&record.id).await.unwrap().is_some());
+    /// # }
     /// ```
     pub fn new(pool: SqlitePool, read_pool: SqlitePool) -> Self {
         Self { pool, read_pool }
     }
 
     /// Create the session table if absent. Run once at startup.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::auth::session::SqlxSqliteStore;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    ///
+    /// # #[tokio::main] async fn main() {
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    /// let store = SqlxSqliteStore::new(repo.pool().clone(), repo.pool().clone());
+    /// assert!(store.migrate().await.is_ok());
+    /// assert!(store.migrate().await.is_ok()); // idempotent: CREATE TABLE IF NOT EXISTS
+    /// # }
+    /// ```
     pub async fn migrate(&self) -> Result<(), sqlx::Error> {
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS tower_sessions (\
@@ -188,6 +245,22 @@ pub(crate) async fn sweep_spent_invites(
 /// are already unloadable/unredeemable; the sweep bounds unbounded table
 /// growth. Sweeps once at startup, then every `SESSION_SWEEP_PERIOD`. A
 /// failed sweep is logged and retried next tick — it never aborts the server.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::session::spawn_session_sweep;
+/// use shadowcat::data::sqlite::SqliteRepository;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// spawn_session_sweep(&repo); // background task; does not block the caller
+///
+/// // The async runtime keeps serving other work while the sweep task is live.
+/// repo.set_setting("probe", "ok").await.unwrap();
+/// assert_eq!(repo.get_setting("probe").await.unwrap().as_deref(), Some("ok"));
+/// # }
+/// ```
 pub fn spawn_session_sweep(repo: &SqliteRepository) {
     // Synchronous fn (no `open_read_pool().await` available here) and this
     // sweep only ever calls `delete_expired` (a write), never `load`/
@@ -214,6 +287,23 @@ pub fn spawn_session_sweep(repo: &SqliteRepository) {
 }
 
 /// Identity persisted in the session store after login.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::SessionUser;
+/// use uuid::Uuid;
+///
+/// let user = SessionUser {
+///     id: Uuid::new_v4(),
+///     username: "alice".to_string(),
+///     role: ServerRole::User,
+/// };
+/// let json = serde_json::to_string(&user).unwrap();
+/// let round_tripped: SessionUser = serde_json::from_str(&json).unwrap();
+/// assert_eq!(round_tripped.username, "alice");
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionUser {
     /// Account id.
@@ -225,6 +315,21 @@ pub struct SessionUser {
 }
 
 /// Any authenticated user.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use uuid::Uuid;
+///
+/// let user = AuthUser {
+///     id: Uuid::new_v4(),
+///     username: "alice".to_string(),
+///     role: ServerRole::User,
+/// };
+/// assert_eq!(user.role, ServerRole::User);
+/// ```
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     /// Account id.
@@ -236,6 +341,21 @@ pub struct AuthUser {
 }
 
 /// An authenticated user whose server role is Admin.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::{AdminUser, AuthUser};
+/// use uuid::Uuid;
+///
+/// let admin = AdminUser(AuthUser {
+///     id: Uuid::new_v4(),
+///     username: "root".to_string(),
+///     role: ServerRole::Admin,
+/// });
+/// assert_eq!(admin.0.role, ServerRole::Admin);
+/// ```
 pub struct AdminUser(pub AuthUser);
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -273,6 +393,23 @@ impl FromRequestParts<AppState> for AdminUser {
 
 /// Load the persisted session signing key, or generate + persist one. An
 /// explicit `config.session_key` (base64) overrides storage.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::session::load_or_create_key;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let config = Config::default();
+/// let key = load_or_create_key(&repo, &config).await.unwrap();
+/// // A second call reads the same persisted key back.
+/// let again = load_or_create_key(&repo, &config).await.unwrap();
+/// assert_eq!(key.master(), again.master());
+/// # }
+/// ```
 pub async fn load_or_create_key(repo: &SqliteRepository, config: &Config) -> anyhow::Result<Key> {
     if let Some(explicit) = &config.session_key {
         let raw = base64::engine::general_purpose::STANDARD.decode(explicit)?;
@@ -292,6 +429,21 @@ pub async fn load_or_create_key(repo: &SqliteRepository, config: &Config) -> any
 
 /// Build the signed, DB-backed session layer. Cookie is `Secure` only on a
 /// non-loopback bind (so loopback dev over http still works).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::session::session_layer;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let config = Config::default();
+/// let layer = session_layer(&repo, &config).await;
+/// assert!(layer.is_ok());
+/// # }
+/// ```
 pub async fn session_layer(
     repo: &SqliteRepository,
     config: &Config,

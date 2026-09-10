@@ -13,6 +13,17 @@ use uuid::Uuid;
 
 /// The whole `"combat"` derived-channel payload: every combat `ctx` may read, sorted by id for a
 /// stable fingerprint (the egress loop's change detection compares whole payloads).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::channel::CombatsPayload;
+///
+/// let payload = CombatsPayload { combats: Vec::new() };
+/// let json = serde_json::to_value(&payload).unwrap();
+/// let round_tripped: CombatsPayload = serde_json::from_value(json).unwrap();
+/// assert!(round_tripped.combats.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CombatsPayload {
@@ -21,6 +32,20 @@ pub struct CombatsPayload {
 }
 
 /// One combat's resolved view: identity plus every combatant `ctx` may read, sorted by id.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::channel::CombatView;
+/// use uuid::Uuid;
+///
+/// let view = CombatView {
+///     id: Uuid::new_v4(),
+///     scene_id: Uuid::new_v4(),
+///     combatants: Vec::new(),
+/// };
+/// assert!(view.combatants.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CombatView {
@@ -33,6 +58,20 @@ pub struct CombatView {
 }
 
 /// One combatant's resolved numbers.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::channel::CombatantView;
+/// use uuid::Uuid;
+///
+/// let view = CombatantView {
+///     id: Uuid::new_v4(),
+///     resources: None,
+///     movement_cells: Some(6.0),
+/// };
+/// assert_eq!(view.movement_cells, Some(6.0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct CombatantView {
@@ -47,6 +86,21 @@ pub struct CombatantView {
 }
 
 /// One resource's resolved numbers for one combatant.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::channel::{ResolvedResourceView, ResourceBindingKind};
+///
+/// let view = ResolvedResourceView {
+///     binding: ResourceBindingKind::Tracked,
+///     current: Some(8.0),
+///     max: Some(10.0),
+///     error: None,
+/// };
+/// assert_eq!(view.current, Some(8.0));
+/// assert!(view.error.is_none());
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct ResolvedResourceView {
@@ -62,6 +116,16 @@ pub struct ResolvedResourceView {
 
 /// Discriminates `ResolvedResourceView`'s source binding kind, mirroring
 /// `data::engine::combat::ResourceBinding`'s own wire tag.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::combat::channel::ResourceBindingKind;
+///
+/// let json = serde_json::to_value(ResourceBindingKind::Mirror).unwrap();
+/// assert_eq!(json, serde_json::json!("mirror"));
+/// assert_ne!(ResourceBindingKind::Mirror, ResourceBindingKind::Tracked);
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "snake_case")]

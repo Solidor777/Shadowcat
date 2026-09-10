@@ -46,6 +46,17 @@ const ORIGINAL_SUFFIX: &str = ".orig";
 pub const SIBLING_SUFFIXES: [&str; 3] = [ORIGINAL_SUFFIX, ".thumb.webp", ".preview.webp"];
 
 /// A derivative size class.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::{derivative_path, Variant};
+/// use std::path::Path;
+///
+/// let canonical = Path::new("assets").join("uuid");
+/// let thumb = derivative_path(&canonical, Variant::Thumb);
+/// assert!(thumb.to_string_lossy().ends_with(".thumb.webp"));
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Variant {
     /// Grid tile (`THUMB_PX`).
@@ -82,11 +93,32 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// Path of the `variant` derivative beside `canonical`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::{derivative_path, Variant};
+/// use std::path::Path;
+///
+/// let canonical = Path::new("data").join("uuid");
+/// let preview = derivative_path(&canonical, Variant::Preview);
+/// assert_eq!(preview, Path::new("data").join("uuid.preview.webp"));
+/// ```
 pub fn derivative_path(canonical: &Path, variant: Variant) -> PathBuf {
     with_suffix(canonical, variant.suffix())
 }
 
 /// Path of the retained original beside `canonical`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::original_path;
+/// use std::path::Path;
+///
+/// let canonical = Path::new("data").join("uuid");
+/// assert_eq!(original_path(&canonical), Path::new("data").join("uuid.orig"));
+/// ```
 pub fn original_path(canonical: &Path) -> PathBuf {
     with_suffix(canonical, ORIGINAL_SUFFIX)
 }
@@ -94,11 +126,45 @@ pub fn original_path(canonical: &Path) -> PathBuf {
 /// Every artifact that can sit beside a canonical: the retained original and
 /// the two derivatives. The single statement of the sibling set — commit,
 /// replace, delete and export all iterate this rather than re-spelling it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::sibling_paths;
+/// use std::path::Path;
+///
+/// let canonical = Path::new("data").join("uuid");
+/// let siblings = sibling_paths(&canonical);
+/// assert_eq!(siblings.len(), 3);
+/// assert!(siblings[0].to_string_lossy().ends_with(".orig"));
+/// ```
 pub fn sibling_paths(canonical: &Path) -> [PathBuf; 3] {
     SIBLING_SUFFIXES.map(|suffix| with_suffix(canonical, suffix))
 }
 
 /// What `process_staged` decided about one upload.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::{process_staged, Processed};
+/// use std::io::Cursor;
+///
+/// // A directory outside the repo tree — never written to source control.
+/// let dir = tempfile::tempdir().unwrap();
+/// let staged = dir.path().join("upload");
+/// let mut png = Vec::new();
+/// image::RgbaImage::new(2, 2)
+///     .write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png)
+///     .unwrap();
+/// std::fs::write(&staged, &png).unwrap();
+/// // A real PNG decodes and re-encodes: `converted`/`content_type` come from the
+/// // pipeline's own decision, not from a literal.
+/// let processed: Processed =
+///     process_staged(&staged, "image/png", png.len() as i64, false).unwrap();
+/// assert!(processed.converted);
+/// assert_eq!(processed.content_type, "image/webp");
+/// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct Processed {
     /// MIME type of the canonical file now at the staged path.
@@ -186,6 +252,17 @@ fn write_derivatives_of(img: &DynamicImage, canonical: &Path, transparent: bool)
 
 /// Regenerate both derivatives from the canonical file (the on-demand path
 /// for a missing derivative). Fails when the canonical does not decode.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::write_derivatives;
+/// use std::path::Path;
+///
+/// // A canonical that isn't on disk fails to decode rather than panicking.
+/// let err = write_derivatives(Path::new("no-such-canonical.webp")).unwrap_err();
+/// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+/// ```
 pub fn write_derivatives(canonical: &Path) -> io::Result<()> {
     let mut reader = ImageReader::open(canonical)?.with_guessed_format()?;
     reader.limits(decode_limits());
@@ -266,6 +343,18 @@ fn pass_through(
 /// (nothing to gain), and any decode failure. A conversion failure after a
 /// successful decode also falls back to pass-through with the reason in
 /// `conversion_note` — an upload is never rejected for conversion reasons.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::process_staged;
+/// use std::path::Path;
+///
+/// // A missing staged file fails to open rather than panicking.
+/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true)
+///     .unwrap_err();
+/// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+/// ```
 pub fn process_staged(
     staged: &Path,
     original_content_type: &str,

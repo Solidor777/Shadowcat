@@ -13,6 +13,20 @@ use axum::response::{IntoResponse, Response};
 struct StaticAssets;
 
 /// Serve an embedded asset by request path; `/` maps to `index.html`.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use axum::http::Uri;
+/// use shadowcat::http::embed::static_handler;
+///
+/// // Reads the embedded/dist-relative bundle, so this is `no_run`: it needs
+/// // the built `dist/` tree on disk (release) or embedded at compile time.
+/// let uri: Uri = "/index.html".parse().unwrap();
+/// let _response = static_handler(uri).await;
+/// # }
+/// ```
 pub async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };

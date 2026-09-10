@@ -10,6 +10,16 @@ pub type DieId = u32;
 /// participates numerically (ordering, totals); `None` for a face whose only
 /// payload is `symbols`. A `Faces` die is "ordered" (see `eval::classify` /
 /// `is_ordered`) iff EVERY face has `value: Some`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::Face;
+/// let numeric = Face { value: Some(3), symbols: vec![] };
+/// assert_eq!(numeric.value, Some(3));
+/// let symbolic = Face { value: None, symbols: vec!["triumph".to_string()] };
+/// assert_eq!(symbolic.value, None);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Face {
     /// Numeric worth, or `None` for a symbols-only face (makes the die
@@ -25,6 +35,21 @@ pub type Symbol = String;
 
 /// A die's face space. `Numeric`: an ordered inclusive range. `Faces`: an
 /// explicit, possibly-unordered, possibly-symbolic list.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::{DieKind, Face};
+/// let d6 = DieKind::Numeric { min: 1, max: 6 };
+/// assert!(d6.is_ordered());
+/// let coin = DieKind::Faces {
+///     faces: vec![
+///         Face { value: Some(1), symbols: vec![] },
+///         Face { value: Some(0), symbols: vec![] },
+///     ],
+/// };
+/// assert!(coin.validate().is_ok());
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DieKind {
     /// An ordered inclusive integer range.
@@ -45,6 +70,14 @@ pub enum DieKind {
 /// invalid state representable by this type (`sides >= 1` is enforced by the
 /// notation parser's `ParseError::InvalidDieSides`, since only the notation
 /// path constructs `Numeric` from untrusted input today).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::{DieKind, DieKindError};
+/// let err = DieKind::Faces { faces: vec![] }.validate().unwrap_err();
+/// assert_eq!(err, DieKindError::EmptyFaces);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DieKindError {
     /// `Faces { faces: [] }` — `roll_uniform(0, faces.len() - 1)` requires a
@@ -85,6 +118,17 @@ impl DieKind {
     /// `Numeric` is always ordered. `Faces` is ordered iff EVERY face has
     /// `value: Some` — a single unordered face makes the whole die unrankable
     /// against a valued sibling.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::dice::spec::{DieKind, Face};
+    /// assert!(DieKind::Numeric { min: 1, max: 20 }.is_ordered());
+    /// let symbolic = DieKind::Faces {
+    ///     faces: vec![Face { value: None, symbols: vec!["success".to_string()] }],
+    /// };
+    /// assert!(!symbolic.is_ordered());
+    /// ```
     pub fn is_ordered(&self) -> bool {
         match self {
             DieKind::Numeric { .. } => true,
@@ -95,6 +139,15 @@ impl DieKind {
 
 /// A binary comparison operator used by explode/reroll triggers and success
 /// rules. Defaults to `Gte` (the common "meets or beats" reading).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::Comparator;
+/// assert_eq!(Comparator::default(), Comparator::Gte);
+/// assert!(Comparator::Gt.test(10, 5));
+/// assert!(!Comparator::Lt.test(10, 5));
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Comparator {
     /// `value == target`.
@@ -135,6 +188,15 @@ impl Comparator {
 }
 
 /// How an explode trigger spawns/merges extra rolls.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::ExplodeKind;
+/// let kind = ExplodeKind::Penetrate;
+/// assert_eq!(kind, ExplodeKind::Penetrate);
+/// assert_ne!(kind, ExplodeKind::Standard);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExplodeKind {
     /// Roll an extra die per trigger; each extra can itself trigger.
@@ -147,6 +209,14 @@ pub enum ExplodeKind {
 
 /// One dice-group modifier. Applied in `DiceGroup.modifiers` vec order:
 /// reroll/explode alter the die set, keep/drop select from it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::GroupModifier;
+/// let modifier = GroupModifier::KeepHighest(3);
+/// assert!(matches!(modifier, GroupModifier::KeepHighest(n) if n == 3));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GroupModifier {
     /// Keep only the N highest dice.
@@ -178,6 +248,20 @@ pub enum GroupModifier {
 }
 
 /// One rolled dice group (`NdX` plus modifiers).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::{DiceGroup, DieKind, GroupModifier};
+/// let group = DiceGroup {
+///     count: 4,
+///     kind: DieKind::Numeric { min: 1, max: 6 },
+///     modifiers: vec![GroupModifier::KeepHighest(3)],
+///     label: Some("attack".to_string()),
+/// };
+/// assert_eq!(group.count, 4);
+/// assert_eq!(group.modifiers.len(), 1);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiceGroup {
     /// Number of base dice rolled.
@@ -194,6 +278,15 @@ pub struct DiceGroup {
 }
 
 /// Arithmetic operator of an `Expr::Bin` node (Sum mode only).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::BinOp;
+/// let op = BinOp::Add;
+/// assert_eq!(op, BinOp::Add);
+/// assert_ne!(BinOp::Add, BinOp::Sub);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
     /// `lhs + rhs`.
@@ -211,6 +304,14 @@ pub enum BinOp {
 /// Fixed arity per variant (`FnName::arity`): `Floor`/`Ceil`/`Round`/`Abs` take exactly 1
 /// argument, `Min`/`Max` take exactly 2 — checked at parse time
 /// (`dice::notation::parser::P::fn_call`), never at evaluation.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::FnName;
+/// assert_eq!(FnName::Abs.arity(), 1);
+/// assert_eq!(FnName::Max.arity(), 2);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FnName {
     /// Round toward negative infinity.
@@ -255,6 +356,15 @@ impl FnName {
 /// NEVER threaded into `RollOutcome::by_label`/`compare_labels` — those are
 /// SuccessCount-mode dice-pool comparison features; a labeled `Const` is purely
 /// a Sum-mode display/provenance decoration (see `RollOutcome::labeled_consts`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::ConstTerm;
+/// let term = ConstTerm { value: 3, label: Some("dex".to_string()) };
+/// assert_eq!(term.value, 3);
+/// assert_eq!(term.label.as_deref(), Some("dex"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstTerm {
     /// The constant's numeric value.
@@ -266,6 +376,15 @@ pub struct ConstTerm {
 
 /// Roll expression AST. Sum mode folds this to a total; SuccessCount mode ignores
 /// the arithmetic and pools the dice reachable from `Dice` nodes.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::spec::Expr;
+/// let spec = parse("1d6+2", ParseContext::default()).unwrap();
+/// assert!(matches!(spec.expr, Expr::Bin { .. }));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expr {
     /// A rolled dice group.
@@ -302,6 +421,15 @@ pub enum Expr {
 /// SuccessCount dimension 1: the per-die predicate a die must satisfy to score
 /// a success. Defaults to `Numeric` (comp: Gte, target: 0) so any `Default`- or
 /// serde-defaulted `SuccessConfig` never silently becomes symbol-driven.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::{Comparator, SuccessRule};
+/// assert_eq!(SuccessRule::default(), SuccessRule::Numeric { comp: Comparator::Gte, target: 0 });
+/// let symbolic = SuccessRule::HasSymbol("success".to_string());
+/// assert_ne!(symbolic, SuccessRule::default());
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SuccessRule {
     /// A die succeeds when its value passes the comparison.
@@ -329,6 +457,15 @@ impl Default for SuccessRule {
 /// Which end of a margin/comparison is "better". `HighWins` (default): a higher
 /// total/success-count beats a lower one. `LowWins`: the inverse (e.g. roll-under
 /// systems). Global to `RollSpec` — orients every margin/tier/crit computation.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::classify::oriented_margin;
+/// use shadowcat::dice::spec::Direction;
+/// assert_eq!(Direction::default(), Direction::HighWins);
+/// assert_eq!(oriented_margin(Direction::LowWins, 3, 10), 7);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Direction {
     /// Higher totals/success counts are better (the default).
@@ -340,6 +477,16 @@ pub enum Direction {
 
 /// One rung of a classification ladder, evaluated on an oriented margin
 /// (higher = better). `margin_offset` is the threshold the margin must reach.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::classify::classify;
+/// use shadowcat::dice::spec::Tier;
+/// let tiers = vec![Tier { margin_offset: 0, label: Some("hit".to_string()), tier_value: Some(1) }];
+/// let c = classify(2, &tiers);
+/// assert_eq!(c.tier_label.as_deref(), Some("hit"));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tier {
     /// Oriented-margin threshold this rung requires. Unique per ladder
@@ -356,6 +503,16 @@ pub struct Tier {
 /// What makes a die's crit event fire. `AtLeast` is direction-aware: it flips
 /// under `LowWins`. `HasSymbol` is direction-INSENSITIVE — a symbol is present
 /// or absent, there is no "better end" to flip.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::CritTrigger;
+/// let trigger = CritTrigger::AtLeast(6);
+/// assert_eq!(trigger, CritTrigger::AtLeast(6));
+/// let symbol_trigger = CritTrigger::HasSymbol("triumph".to_string());
+/// assert_ne!(symbol_trigger, trigger);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CritTrigger {
     /// Fires at-or-past this die value (orientation-flipped under `LowWins`).
@@ -367,6 +524,26 @@ pub enum CritTrigger {
 /// A crit-success event (SuccessCount mode). Fires when a kept die's value or
 /// symbols satisfy `trigger`. Adds `extra_successes` beyond the die's base
 /// success and `positive_counter` to the positive tally.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::crit::score_die;
+/// use shadowcat::dice::spec::{CritSuccess, CritTrigger, Direction, SuccessConfig, SuccessRule, Comparator};
+/// let cfg = SuccessConfig {
+///     success: SuccessRule::Numeric { comp: Comparator::Gte, target: 4 },
+///     required_successes: None,
+///     tiers: vec![],
+///     crit_success: Some(CritSuccess {
+///         trigger: CritTrigger::AtLeast(6),
+///         extra_successes: 1,
+///         positive_counter: 1,
+///     }),
+///     crit_fail: None,
+///     expertise: 0,
+/// };
+/// assert!(score_die(Direction::HighWins, 6, &[], &cfg).is_success);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritSuccess {
     /// What fires the event.
@@ -380,6 +557,27 @@ pub struct CritSuccess {
 /// A crit-fail event (SuccessCount mode). Fires when a kept die's value or
 /// symbols satisfy `trigger`. Subtracts `lost` from net successes (clamped at
 /// 0 unless `allow_negative`) and adds `negative_counter`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::crit::score_die;
+/// use shadowcat::dice::spec::{CritFail, CritTrigger, Direction, SuccessConfig, SuccessRule, Comparator};
+/// let cfg = SuccessConfig {
+///     success: SuccessRule::Numeric { comp: Comparator::Gte, target: 4 },
+///     required_successes: None,
+///     tiers: vec![],
+///     crit_success: None,
+///     crit_fail: Some(CritFail {
+///         trigger: CritTrigger::AtLeast(1),
+///         lost: 1,
+///         negative_counter: 1,
+///         allow_negative: false,
+///     }),
+///     expertise: 0,
+/// };
+/// assert!(score_die(Direction::HighWins, 1, &[], &cfg).is_fail);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CritFail {
     /// What fires the event.
@@ -393,6 +591,15 @@ pub struct CritFail {
 }
 
 /// Total-mode config: fold the expression to a total, optionally classify it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::TotalConfig;
+/// let cfg = TotalConfig { difficulty: Some(15), tiers: vec![] };
+/// assert_eq!(cfg.difficulty, Some(15));
+/// assert!(cfg.tiers.is_empty()); // empty tiers => default 2-rung pass/fail
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TotalConfig {
     /// Margin reference; `None` => report the bare total, no classification.
@@ -403,6 +610,21 @@ pub struct TotalConfig {
 }
 
 /// SuccessCount-mode config: count net successes across the pooled kept dice.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::spec::{Comparator, SuccessConfig, SuccessRule};
+/// let cfg = SuccessConfig {
+///     success: SuccessRule::Numeric { comp: Comparator::Gte, target: 7 },
+///     required_successes: Some(2),
+///     tiers: vec![],
+///     crit_success: None,
+///     crit_fail: None,
+///     expertise: 0,
+/// };
+/// assert_eq!(cfg.required_successes, Some(2));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SuccessConfig {
     /// Per-die target (comparator + threshold) — REQUIRED in this mode.
@@ -425,6 +647,15 @@ pub struct SuccessConfig {
 }
 
 /// The roll's scoring mode.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::spec::Mode;
+/// let spec = parse("1d20", ParseContext::default()).unwrap();
+/// assert!(matches!(spec.mode, Mode::Total(_)));
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
     /// Fold the expression arithmetic to a total.
@@ -434,6 +665,15 @@ pub enum Mode {
 }
 
 /// Canonical roll parameters. Notation parses INTO this; recalculation re-runs it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::spec::Direction;
+/// let spec = parse("1d20+5", ParseContext::default()).unwrap();
+/// assert_eq!(spec.direction, Direction::HighWins);
+/// ```
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollSpec {
     /// The roll expression AST.

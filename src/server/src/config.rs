@@ -12,6 +12,16 @@ use serde::{Deserialize, Serialize};
 
 /// CLI flags. Every field is optional so it only overrides lower layers when
 /// explicitly provided.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::{Cli, Config};
+///
+/// let cli = Cli { bind: Some("0.0.0.0:9000".into()), ..Default::default() };
+/// let cfg = Config::load(cli).expect("config layering");
+/// assert_eq!(cfg.bind, "0.0.0.0:9000");
+/// ```
 #[derive(Parser, Debug, Default)]
 #[command(name = "shadowcat")]
 pub struct Cli {
@@ -65,6 +75,16 @@ pub struct Cli {
 
 /// Effective server configuration after layering. Precedence (high→low):
 /// CLI flag > SHADOWCAT_* env > TOML file > built-in default.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::Config;
+///
+/// let cfg = Config { bind: "0.0.0.0:9000".into(), ..Default::default() };
+/// assert_eq!(cfg.bind, "0.0.0.0:9000");
+/// assert_eq!(cfg.db, "./shadowcat.db"); // untouched fields keep the default
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Listen address (`host:port`). Default `127.0.0.1:30000`; non-loopback
@@ -159,6 +179,16 @@ impl Default for Config {
 
 /// Resolved setup-window policy. `Required(None)` means a token is required but
 /// none was supplied — the server generates one at boot.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::config::SetupTokenPolicy;
+///
+/// let policy = SetupTokenPolicy::Required(Some("secret".to_string()));
+/// assert!(matches!(policy, SetupTokenPolicy::Required(Some(_))));
+/// assert!(matches!(SetupTokenPolicy::Open, SetupTokenPolicy::Open));
+/// ```
 #[derive(Debug, Clone)]
 pub enum SetupTokenPolicy {
     /// `/api/setup` accepts the first admin without a token.

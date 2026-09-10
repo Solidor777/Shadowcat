@@ -20,6 +20,16 @@ use crate::scene::vision::P;
 pub const MAX_ENV_LIGHT_SAMPLES: usize = 256;
 
 /// Photometric falloff curve across the dim band `(bright_radius, dim_radius]`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::Falloff;
+///
+/// let f = Falloff::Linear;
+/// assert_eq!(f, Falloff::Linear);
+/// assert_ne!(f, Falloff::None);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Falloff {
     /// Smooth linear taper from full intensity at the bright edge to 0 at the dim edge.
@@ -38,6 +48,25 @@ pub enum Falloff {
 /// or the carrying token's live position); `elevation` is the source's height above the ground
 /// plane (decides which wall elevation bands occlude it — see
 /// `crate::scene::elevation::wall_occludes`; never read by the illumination math itself).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{Falloff, Light};
+///
+/// let torch = Light {
+///     pos: (0.0, 0.0),
+///     elevation: 0.0,
+///     color: 0xff8800,
+///     intensity: 1.0,
+///     bright_radius: 1.0,
+///     dim_radius: 3.0,
+///     falloff: Falloff::Linear,
+///     enabled: true,
+/// };
+/// assert!(torch.enabled);
+/// assert!(torch.bright_radius < torch.dim_radius);
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Light {
     /// Position in scene units.
@@ -69,6 +98,25 @@ pub struct Light {
 /// Returns a value in `[0, intensity]`. A caller composing multiple lights clamps the summed
 /// result to `[0, 1]` before band lookup. `intensity` must be finite (the document→`Light` parser
 /// clamps it to `[0, 1]`).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{light_illumination, Falloff, Light};
+///
+/// let torch = Light {
+///     pos: (0.0, 0.0),
+///     elevation: 0.0,
+///     color: 0xff8800,
+///     intensity: 1.0,
+///     bright_radius: 1.0,
+///     dim_radius: 3.0,
+///     falloff: Falloff::Linear,
+///     enabled: true,
+/// };
+/// assert_eq!(light_illumination(&torch, 0.5), 1.0);
+/// assert_eq!(light_illumination(&torch, 10.0), 0.0);
+/// ```
 pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
     if !light.enabled
         || !light.dim_radius.is_finite()
@@ -93,6 +141,15 @@ pub fn light_illumination(light: &Light, dist_cells: f64) -> f64 {
 
 /// A named illumination band. `min_illumination` is the minimum `[0,1]` light level a cell must reach
 /// to qualify for this band. Mirrors the client `GradationBand`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::Band;
+///
+/// let bright = Band { name: "bright".into(), min_illumination: 0.67 };
+/// assert_eq!(bright.name, "bright");
+/// ```
 #[derive(Clone, Debug, PartialEq)]
 pub struct Band {
     /// Band name (matched against `VisionMode::illumination_floor`).
@@ -102,6 +159,14 @@ pub struct Band {
 }
 
 /// Built-in three-band gradation (bright → dim → dark). Mirrors `DEFAULT_GRADATION` in the `scene-docs` module.
+///
+/// # Examples
+///
+/// ```
+/// let bands = shadowcat::scene::lighting::default_bands();
+/// assert_eq!(bands.len(), 3);
+/// assert_eq!(bands[0].name, "bright");
+/// ```
 pub fn default_bands() -> Vec<Band> {
     vec![
         Band {
@@ -121,6 +186,18 @@ pub fn default_bands() -> Vec<Band> {
 
 /// Bands sorted brightest-first (descending `min_illumination`). Non-finite bands are dropped
 /// before sorting. Fail-closed: empty input (or all-non-finite) → defaults.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{sorted_bands, Band};
+///
+/// let bands = sorted_bands(vec![
+///     Band { name: "dark".into(), min_illumination: 0.0 },
+///     Band { name: "bright".into(), min_illumination: 0.67 },
+/// ]);
+/// assert_eq!(bands[0].name, "bright");
+/// ```
 pub fn sorted_bands(mut bands: Vec<Band>) -> Vec<Band> {
     bands.retain(|b| b.min_illumination.is_finite());
     if bands.is_empty() {
@@ -137,6 +214,16 @@ pub fn sorted_bands(mut bands: Vec<Band>) -> Vec<Band> {
 /// Index (brightest=0) of the band a given illumination falls into.
 /// `bands` MUST be non-empty and brightest-first (always true for `sorted_bands` output).
 /// Clamps to the darkest band if nothing matched (defensive; the darkest floor is normally 0.0).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{band_index, default_bands};
+///
+/// let bands = default_bands();
+/// assert_eq!(band_index(&bands, 0.9), 0);
+/// assert_eq!(band_index(&bands, 0.0), 2);
+/// ```
 pub fn band_index(bands: &[Band], illumination: f64) -> usize {
     debug_assert!(
         !bands.is_empty(),
@@ -153,6 +240,16 @@ pub fn band_index(bands: &[Band], illumination: f64) -> usize {
 /// Minimum illumination to perceive a cell at the named floor band. A token whose vision floor is
 /// `floor_name` perceives a cell iff `illumination >= floor_min`. Fail-closed: an unknown floor
 /// resolves to the brightest band's min (most restrictive → under-reveal).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{floor_min, default_bands};
+///
+/// let bands = default_bands();
+/// assert_eq!(floor_min(&bands, "dim"), 0.34);
+/// assert_eq!(floor_min(&bands, "unknown-floor"), 0.67);
+/// ```
 pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
     bands
         .iter()
@@ -164,6 +261,14 @@ pub fn floor_min(bands: &[Band], floor_name: &str) -> f64 {
 /// A composed per-cell illumination result: a `[0,1]` `level` (the saturated sum of every
 /// contributor's level) and a packed-RGB `tint` (the illuminance-weighted mix of the
 /// contributors' colors; `0x000000` when nothing contributes).
+///
+/// # Examples
+///
+/// ```
+/// let dark = shadowcat::scene::lighting::CellLight { level: 0.0, tint: 0 };
+/// assert_eq!(dark.level, 0.0);
+/// assert_eq!(dark.tint, 0);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CellLight {
     /// Composed illumination level, `[0, 1]` — `clamp01(Σ contributor levels)`.
@@ -296,6 +401,25 @@ fn env_lit(env_polys: &[Vec<P>], center: P) -> bool {
 /// shared cell even when a brighter source dominates the LEVEL — the per-cell tint in the
 /// `vision` payload is the only place this reaches, and it is display metadata, not a position
 /// or identity disclosure.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{cell_illumination, Falloff, Light};
+///
+/// let torch = Light {
+///     pos: (0.0, 0.0),
+///     elevation: 0.0,
+///     color: 0xff8800,
+///     intensity: 1.0,
+///     bright_radius: 1.0,
+///     dim_radius: 3.0,
+///     falloff: Falloff::Linear,
+///     enabled: true,
+/// };
+/// let lit = cell_illumination((0.0, 0.0), 0.0, 0, &[torch], &[], &[], 1.0);
+/// assert_eq!(lit.level, 1.0);
+/// ```
 pub fn cell_illumination(
     center: P,
     env_intensity: f64,
@@ -326,6 +450,25 @@ pub fn cell_illumination(
 /// answered once. An empty occluder means "no occluder computed" and never occludes. A
 /// non-finite or non-positive level reads as `0.0` (fail-closed per source; a NaN reaching a
 /// running sum would poison the saturation clamp, which panics on NaN).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{source_level, Falloff, Light};
+///
+/// let torch = Light {
+///     pos: (0.0, 0.0),
+///     elevation: 0.0,
+///     color: 0xff8800,
+///     intensity: 1.0,
+///     bright_radius: 1.0,
+///     dim_radius: 3.0,
+///     falloff: Falloff::Linear,
+///     enabled: true,
+/// };
+/// // No occluder polygon: the light reaches its center unobstructed.
+/// assert_eq!(source_level(&torch, &[], (0.0, 0.0), 1.0), 1.0);
+/// ```
 pub fn source_level(light: &Light, occluder: &[P], center: P, world_units_per_cell: f64) -> f64 {
     if !occluder.is_empty() && !point_in_poly(occluder, center) {
         return 0.0;
@@ -350,6 +493,26 @@ pub fn source_level(light: &Light, occluder: &[P], center: P, world_units_per_ce
 /// light at its instant position, read by `SceneEcs::recipient_sight`) without restating the
 /// additive-with-saturation rule a second time. An empty occluder polygon means "no occluder
 /// computed" and never occludes (the same reading `cell_illumination` gives an absent entry).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::scene::lighting::{cell_illumination_from, Falloff, Light};
+///
+/// let torch = Light {
+///     pos: (0.0, 0.0),
+///     elevation: 0.0,
+///     color: 0xff8800,
+///     intensity: 1.0,
+///     bright_radius: 1.0,
+///     dim_radius: 3.0,
+///     falloff: Falloff::Linear,
+///     enabled: true,
+/// };
+/// let sources = [(&torch, &[][..])];
+/// let lit = cell_illumination_from((0.0, 0.0), 0.0, 0, sources, &[], 1.0);
+/// assert_eq!(lit.level, 1.0);
+/// ```
 pub fn cell_illumination_from<'a>(
     center: P,
     env_intensity: f64,

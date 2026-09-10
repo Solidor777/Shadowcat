@@ -15,6 +15,37 @@ use super::types::{FormulaError, FormulaErrorKind, FormulaValue};
 use crate::data::document::Document;
 
 /// Resolves references against one document's `system` band.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{Document, Scope};
+/// use shadowcat::formula::evaluate::evaluate;
+/// use shadowcat::formula::parser::parse;
+/// use shadowcat::formula::resolver::SystemLeafResolver;
+/// use uuid::Uuid;
+///
+/// let doc = Document {
+///     id: Uuid::new_v4(),
+///     scope: Scope::World { world_id: Uuid::new_v4() },
+///     doc_type: "actor".into(),
+///     schema_version: 1,
+///     name: None,
+///     source: None,
+///     base: None,
+///     owner: None,
+///     permissions: Default::default(),
+///     embedded: Default::default(),
+///     parent_id: None,
+///     engine: None,
+///     system: serde_json::json!({ "hp": { "max": 10 } }),
+///     created_at: 0,
+///     updated_at: 0,
+/// };
+/// let resolver = SystemLeafResolver::new(&doc);
+/// let ast = parse("hp.max").unwrap();
+/// assert_eq!(evaluate(&ast, &resolver), Ok(10.0));
+/// ```
 pub struct SystemLeafResolver<'a> {
     /// The document whose `system` band is read.
     doc: &'a Document,
@@ -22,6 +53,35 @@ pub struct SystemLeafResolver<'a> {
 
 impl<'a> SystemLeafResolver<'a> {
     /// A resolver over `doc.system`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::document::{Document, Scope};
+    /// use shadowcat::formula::evaluate::Resolve;
+    /// use shadowcat::formula::resolver::SystemLeafResolver;
+    /// use uuid::Uuid;
+    ///
+    /// let doc = Document {
+    ///     id: Uuid::new_v4(),
+    ///     scope: Scope::World { world_id: Uuid::new_v4() },
+    ///     doc_type: "actor".into(),
+    ///     schema_version: 1,
+    ///     name: None,
+    ///     source: None,
+    ///     base: None,
+    ///     owner: None,
+    ///     permissions: Default::default(),
+    ///     embedded: Default::default(),
+    ///     parent_id: None,
+    ///     engine: None,
+    ///     system: serde_json::json!({}),
+    ///     created_at: 0,
+    ///     updated_at: 0,
+    /// };
+    /// let resolver = SystemLeafResolver::new(&doc);
+    /// assert!(resolver.resolve(&["missing".to_string()]).is_err());
+    /// ```
     pub fn new(doc: &'a Document) -> Self {
         Self { doc }
     }

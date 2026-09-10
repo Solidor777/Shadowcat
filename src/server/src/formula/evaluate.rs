@@ -13,8 +13,38 @@ use super::types::{finite, FormulaError, FormulaErrorKind, FormulaValue};
 
 /// Resolves a dotted reference path to a value. The library assigns the path
 /// no meaning; an implementation does.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::evaluate::{evaluate, Resolve};
+/// use shadowcat::formula::parser::parse;
+/// use shadowcat::formula::types::FormulaValue;
+///
+/// struct Fixed(f64);
+/// impl Resolve for Fixed {
+///     fn resolve(&self, _path: &[String]) -> FormulaValue {
+///         Ok(self.0)
+///     }
+/// }
+///
+/// let ast = parse("hp + 1").unwrap();
+/// assert_eq!(evaluate(&ast, &Fixed(9.0)), Ok(10.0));
+/// ```
 pub trait Resolve {
     /// The value at `path`, or a `FormulaError` (typically `UnknownRef`/`Type`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::formula::evaluate::Resolve;
+    /// use shadowcat::formula::types::FormulaValue;
+    ///
+    /// // The blanket `impl<F: Fn(&[String]) -> FormulaValue> Resolve for F`
+    /// // lets a plain closure serve as a resolver.
+    /// let resolver = |path: &[String]| -> FormulaValue { Ok(path.len() as f64) };
+    /// assert_eq!(resolver.resolve(&["a".to_string(), "b".to_string()]), Ok(2.0));
+    /// ```
     fn resolve(&self, path: &[String]) -> FormulaValue;
 }
 
@@ -37,6 +67,18 @@ pub(crate) fn js_round(x: f64) -> f64 {
 }
 
 /// Evaluates `expr` against `resolve`. Never panics.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::evaluate::evaluate;
+/// use shadowcat::formula::parser::parse;
+/// use shadowcat::formula::types::FormulaValue;
+///
+/// let ast = parse("2 * (3 + 4)").unwrap();
+/// let resolver = |_: &[String]| -> FormulaValue { Ok(0.0) }; // no references in this AST
+/// assert_eq!(evaluate(&ast, &resolver), Ok(14.0));
+/// ```
 pub fn evaluate(expr: &Expr, resolve: &dyn Resolve) -> FormulaValue {
     match expr {
         Expr::Num(v) => Ok(*v),

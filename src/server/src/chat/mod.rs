@@ -95,6 +95,29 @@ pub const MESSAGE_DOC_TYPE: &str = "message";
 /// — the legitimate message-edit/-delete path
 /// (`handle_edit_message`/`handle_delete_message`), unreachable from any
 /// client transport.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::ops_target_message;
+/// use shadowcat::data::command::Operation;
+/// use shadowcat::data::document::Document;
+///
+/// let doc: Document = serde_json::from_value(serde_json::json!({
+///     "id": "00000000-0000-0000-0000-000000000001",
+///     "scope": { "kind": "world", "world_id": "00000000-0000-0000-0000-0000000000aa" },
+///     "doc_type": "message",
+///     "schema_version": 1,
+///     "system": {},
+///     "created_at": 0,
+///     "updated_at": 0
+/// })).unwrap();
+///
+/// assert!(ops_target_message(&[Operation::Create { doc: doc.clone() }]));
+///
+/// let item = Document { doc_type: "item".to_string(), ..doc };
+/// assert!(!ops_target_message(&[Operation::Create { doc: item }]));
+/// ```
 pub fn ops_target_message(ops: &[Operation]) -> bool {
     ops.iter().any(|op| match op {
         Operation::Create { doc } | Operation::Delete { doc } => doc.doc_type == MESSAGE_DOC_TYPE,
@@ -109,6 +132,16 @@ pub fn ops_target_message(ops: &[Operation]) -> bool {
 /// or an instanced actor resolved through its token. Carried on the
 /// `SendMessage` frame and stored in `MessageEngine`. No ID newtypes exist —
 /// identifiers are bare `Uuid` (rendered `string` in TS).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::ActorOwnerRef;
+///
+/// let owner = ActorOwnerRef::Actor { actor_id: uuid::Uuid::nil() };
+/// let json = serde_json::to_value(&owner).unwrap();
+/// assert_eq!(json["kind"], "actor");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -132,6 +165,17 @@ pub enum ActorOwnerRef {
 /// stays a purely client-chosen label — the server never validates it or
 /// derives audience from it; a client module choosing to post into a "GM"
 /// channel is what sets `Audience::GmOnly`, not the channel string itself.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::Audience;
+///
+/// let audience = Audience::Whisper { recipients: vec![uuid::Uuid::nil()] };
+/// let json = serde_json::to_value(&audience).unwrap();
+/// assert_eq!(json["kind"], "whisper");
+/// assert_eq!(Audience::default(), Audience::Public);
+/// ```
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -155,6 +199,17 @@ pub enum Audience {
 /// `dice`'s crate doc) -- this type exists solely so a `RecalcOp` can ride
 /// `ClientMsg`, converted via `into_recalc_op` before it ever reaches
 /// `dice::recalc::recalculate`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::WireRecalcOp;
+///
+/// let op = WireRecalcOp::ReplaceDie { id: 0, natural: 6 };
+/// let json = serde_json::to_value(&op).unwrap();
+/// assert_eq!(json["kind"], "replace_die");
+/// assert_eq!(json["natural"], 6);
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -192,6 +247,16 @@ impl WireRecalcOp {
 /// Message subtype, orthogonal to channel. Rides the opaque body (no ts-rs).
 /// `Emote`/`Roll` are set by `parse_command`, `System` by server-authored
 /// notices; a message carrying no command prefix stays `Normal`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::MessageKind;
+///
+/// assert_eq!(MessageKind::default(), MessageKind::Normal);
+/// let json = serde_json::to_value(MessageKind::Emote).unwrap();
+/// assert_eq!(json, "emote");
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageKind {
@@ -210,6 +275,17 @@ pub enum MessageKind {
 /// message's `engine` body (no ts-rs — the client declares its own Zod
 /// mirror). Extensible: a new content type is added as a new `Segment`
 /// variant.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::Segment;
+///
+/// let seg = Segment::Text { text: "hello".to_string() };
+/// let json = serde_json::to_value(&seg).unwrap();
+/// assert_eq!(json["kind"], "text");
+/// assert_eq!(json["text"], "hello");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Segment {
@@ -359,6 +435,34 @@ pub enum Segment {
 
 /// One executed table draw. See `Segment::TableDraw`'s doc for the recursion
 /// and visibility rules.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::TableDrawSegment;
+/// use shadowcat::dice::eval::{evaluate, roll};
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+///
+/// let spec = parse("1d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raws = roll(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raws);
+///
+/// let spec = None; // field-init shorthand below
+/// let draw = TableDrawSegment {
+///     table_id: uuid::Uuid::nil(),
+///     table_name: "Loot".to_string(),
+///     roll_id: uuid::Uuid::new_v4(),
+///     formula: "1d6".to_string(),
+///     outcome,
+///     spec,
+///     raw: None,
+///     row: None,
+/// };
+/// assert_eq!(draw.table_name, "Loot");
+/// assert!(draw.row.is_none()); // no matching row
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableDrawSegment {
     /// The table drawn from.
@@ -387,6 +491,21 @@ pub struct TableDrawSegment {
 }
 
 /// The row a table draw matched, and everything it yielded.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{DrawnRow, Segment};
+///
+/// let row = DrawnRow {
+///     index: 2,
+///     label: "Gold coin".to_string(),
+///     content: vec![Segment::Text { text: "Gold coin".to_string() }],
+///     nested: Vec::new(),
+/// };
+/// assert_eq!(row.index, 2);
+/// assert!(row.nested.is_empty());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DrawnRow {
     /// The matched row's index into `TableEngine.rows` at draw time.
@@ -416,6 +535,16 @@ pub const MAX_IMAGE_ALT_CHARS: usize = 200;
 /// as `data::engine::table::TableEntry::Doc`'s target — the ts-rs export lives here (this type
 /// itself, not `Segment`/`MessageEngine`, which stay opaque and unexported) since the table
 /// engine body crosses the wire boundary and needs a generated mirror.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::DocLinkTarget;
+///
+/// let target = DocLinkTarget::Token { token_id: uuid::Uuid::nil() };
+/// let json = serde_json::to_value(&target).unwrap();
+/// assert_eq!(json["kind"], "token");
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -444,6 +573,30 @@ pub enum DocLinkTarget {
 /// entry's OUTPUT, which is either the (N+1)th entry's
 /// `previous_raw`/`previous_outcome` or, for the last entry, the current
 /// `RollEmbed.raw`/`RollEmbed.outcome`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::RecalcEntry;
+/// use shadowcat::dice::eval::{evaluate, roll};
+/// use shadowcat::dice::notation::{parse, ParseContext};
+/// use shadowcat::dice::rng::NoiseRng;
+/// use shadowcat::dice::RecalcOp;
+///
+/// let spec = parse("1d6", ParseContext::default()).unwrap();
+/// let mut rng = NoiseRng::from_seed(1);
+/// let raws = roll(&spec, &mut rng);
+/// let outcome = evaluate(&spec, &raws);
+///
+/// let entry = RecalcEntry {
+///     ops: vec![RecalcOp::RerollDice(vec![])],
+///     previous_raw: raws,
+///     previous_outcome: outcome,
+///     recalculated_by: uuid::Uuid::nil(),
+///     recalculated_at: 0,
+/// };
+/// assert_eq!(entry.recalculated_at, 0);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecalcEntry {
     /// The targeted mutation(s) applied this recalculation.
@@ -535,6 +688,15 @@ fn push_draw_overrides(
 
 /// The plain-text producer: wraps raw input as a single literal-text segment.
 /// A richer producer (markdown/HTML) feeds this same content model.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{plain_text_content, Segment};
+///
+/// let segs = plain_text_content("hello <b>world</b>");
+/// assert!(matches!(&segs[..], [Segment::Text { text }] if text == "hello <b>world</b>"));
+/// ```
 pub fn plain_text_content(raw: &str) -> Vec<Segment> {
     vec![Segment::Text {
         text: raw.to_string(),
@@ -545,6 +707,28 @@ pub fn plain_text_content(raw: &str) -> Vec<Segment> {
 /// client declares its own Zod mirror, `ChatMessageEngine`/`parseMessageEngine`),
 /// but ingress-validated server-side same as every other engine-defined
 /// doc_type: `deny_unknown_fields` rejects any unknown key on this body.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{Audience, MessageEngine, MessageKind, Segment};
+///
+/// let engine = MessageEngine {
+///     channel: "general".to_string(),
+///     user_owner: uuid::Uuid::nil(),
+///     actor_owner: None,
+///     kind: MessageKind::Normal,
+///     audience: Audience::Public,
+///     content: vec![Segment::Text { text: "hi".to_string() }],
+///     source: Some("hi".to_string()),
+///     edited_at: None,
+///     deleted_at: None,
+/// };
+/// let json = serde_json::to_value(&engine).unwrap();
+/// assert!(json.get("edited_at").is_none()); // absent, not null, when unedited
+/// let round_tripped: MessageEngine = serde_json::from_value(json).unwrap();
+/// assert_eq!(round_tripped, engine);
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageEngine {
@@ -599,6 +783,22 @@ pub struct MessageEngine {
 /// A message's own fields, grouped apart from the writer identity
 /// (`world_id`/`user`) and the moment (`now`) that `build_message_doc` takes
 /// as separate parameters.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{Audience, MessageDraft, MessageKind, Segment};
+///
+/// let draft = MessageDraft {
+///     channel: "general".to_string(),
+///     actor_owner: None,
+///     audience: Audience::Public,
+///     kind: MessageKind::Normal,
+///     content: vec![Segment::Text { text: "hi".to_string() }],
+///     source: Some("hi".to_string()),
+/// };
+/// assert_eq!(draft.channel, "general");
+/// ```
 pub struct MessageDraft {
     /// Client-chosen display label; the server never validates or branches
     /// on it (see `Audience`'s doc for how a "GM" channel is actually
@@ -633,6 +833,29 @@ pub struct MessageDraft {
 /// In every case `owner` is inserted into `users` LAST, so a `Whisper` that
 /// redundantly names the sender as their own recipient can never downgrade
 /// them from `Owner` to `Observer` via map-insertion order.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{Audience, MessageDraft, MessageKind, Segment, build_message_doc};
+///
+/// let user = uuid::Uuid::new_v4();
+/// let doc = build_message_doc(
+///     uuid::Uuid::new_v4(),
+///     user,
+///     MessageDraft {
+///         channel: "general".to_string(),
+///         actor_owner: None,
+///         audience: Audience::Public,
+///         kind: MessageKind::Normal,
+///         content: vec![Segment::Text { text: "hi".to_string() }],
+///         source: Some("hi".to_string()),
+///     },
+///     0,
+/// );
+/// assert_eq!(doc.doc_type, "message");
+/// assert_eq!(doc.owner, Some(user));
+/// ```
 pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i64) -> Document {
     let MessageDraft {
         channel,
@@ -749,6 +972,16 @@ pub use crate::data::engine::MAX_CHANNEL_CHARS;
 pub const MAX_WHISPER_RECIPIENTS: usize = 128;
 
 /// Why `handle_send_message` refused to ingest a `SendMessage` frame.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::SendMessageError;
+///
+/// // NotFound and Forbidden are deliberately identical (no existence oracle).
+/// assert_eq!(SendMessageError::NotFound.to_string(), SendMessageError::Forbidden.to_string());
+/// assert_eq!(SendMessageError::Empty.to_string(), "Message cannot be empty.");
+/// ```
 #[derive(Debug)]
 pub enum SendMessageError {
     /// Content is empty after trimming whitespace, or `channel` is empty
@@ -857,6 +1090,19 @@ impl std::fmt::Display for SendMessageError {
 }
 
 /// Why `handle_recalc_roll` refused a `RecalcRoll` frame.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::RecalcRollError;
+///
+/// // Forbidden/NotFound/RollNotFound are deliberately identical (no existence oracle).
+/// assert_eq!(RecalcRollError::Forbidden.to_string(), RecalcRollError::NotFound.to_string());
+/// assert_eq!(
+///     RecalcRollError::NoStoredState.to_string(),
+///     "This roll has no stored state to recalculate."
+/// );
+/// ```
 #[derive(Debug)]
 pub enum RecalcRollError {
     /// The requester holds no GM role in this world. Recalc is GM-only,
@@ -999,6 +1245,44 @@ pub(crate) async fn validate_actor_owner(
 /// Shared request-scoped dependencies for `handle_send_message`/
 /// `handle_edit_message`: what the two entry points hold in common, grouped
 /// the same way `LinkPreviewDeps` groups its own bundle of borrowed deps.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{LinkPreviewCache, LinkPreviewDeps, MessageRequestCtx, PreviewRateLimiter};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// let rate = PingRateLimiter::new();
+/// let client = shadowcat::chat::build_link_preview_client();
+///
+/// let req = MessageRequestCtx {
+///     room: &room,
+///     repo: &repo,
+///     ctx: &ctx,
+///     rate: &rate,
+///     preview: LinkPreviewDeps {
+///         client: &client,
+///         cache: &LinkPreviewCache::new(),
+///         rate: &PreviewRateLimiter::new(),
+///     },
+///     now: 0,
+///     budget_per_min: 30,
+/// };
+/// assert_eq!(req.budget_per_min, 30);
+/// # }
+/// ```
 pub struct MessageRequestCtx<'a> {
     /// The world's room — the authoritative publish path.
     pub room: &'a Room,
@@ -1020,6 +1304,69 @@ pub struct MessageRequestCtx<'a> {
 /// message doc, and publish it via the authoritative path. The sole message-
 /// authoring entry point (see module-level INVARIANT comment) — a client can
 /// only ever reach a stored `message` doc through this function.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{
+///     build_link_preview_client, handle_send_message, Audience, LinkPreviewCache,
+///     LinkPreviewDeps, MessageRequestCtx, PreviewRateLimiter,
+/// };
+/// use shadowcat::data::command::WriteOrigin;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::missing_config_ops;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+///
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// // Seed the world's config singletons, including the "general" channel.
+/// room.publish(
+///     &repo,
+///     &ctx,
+///     missing_config_ops(&[], world.id, None, 0),
+///     0,
+///     WriteOrigin::ConfigSeed,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let rate = PingRateLimiter::new();
+/// let client = build_link_preview_client();
+/// let (cmd, pending) = handle_send_message(
+///     MessageRequestCtx {
+///         room: &room,
+///         repo: &repo,
+///         ctx: &ctx,
+///         rate: &rate,
+///         preview: LinkPreviewDeps {
+///             client: &client,
+///             cache: &LinkPreviewCache::new(),
+///             rate: &PreviewRateLimiter::new(),
+///         },
+///         now: 0,
+///         budget_per_min: 30,
+///     },
+///     "general".to_string(),
+///     "hello world".to_string(),
+///     None,
+///     Audience::Public,
+/// )
+/// .await
+/// .unwrap();
+/// assert!(pending.is_empty());
+/// assert_eq!(cmd.ops.len(), 1);
+/// # }
+/// ```
 pub async fn handle_send_message(
     req: MessageRequestCtx<'_>,
     channel: String,
@@ -1298,6 +1645,77 @@ pub async fn handle_send_message(
 /// The sole place this function may reach `Room::publish` uses
 /// `WriteOrigin::ServerMessageRevision`, the ONLY origin that re-opens the
 /// `apply_intent` Update blanket-rejection for a stored `message` doc.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{
+///     build_link_preview_client, handle_edit_message, handle_send_message, Audience,
+///     LinkPreviewCache, LinkPreviewDeps, MessageRequestCtx, PreviewRateLimiter,
+/// };
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::missing_config_ops;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+///
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// room.publish(
+///     &repo,
+///     &ctx,
+///     missing_config_ops(&[], world.id, None, 0),
+///     0,
+///     WriteOrigin::ConfigSeed,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let rate = PingRateLimiter::new();
+/// let client = build_link_preview_client();
+/// let cache = LinkPreviewCache::new();
+/// let preview_rate = PreviewRateLimiter::new();
+/// let make_req = || MessageRequestCtx {
+///     room: &room,
+///     repo: &repo,
+///     ctx: &ctx,
+///     rate: &rate,
+///     preview: LinkPreviewDeps {
+///         client: &client,
+///         cache: &cache,
+///         rate: &preview_rate,
+///     },
+///     now: 0,
+///     budget_per_min: 30,
+/// };
+///
+/// let (sent, _) = handle_send_message(
+///     make_req(),
+///     "general".to_string(),
+///     "hello world".to_string(),
+///     None,
+///     Audience::Public,
+/// )
+/// .await
+/// .unwrap();
+/// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
+/// let message_id = doc.id;
+///
+/// let (edited, _) = handle_edit_message(make_req(), message_id, "goodbye world".to_string())
+///     .await
+///     .unwrap();
+/// assert_eq!(edited.ops.len(), 1);
+/// # }
+/// ```
 pub async fn handle_edit_message(
     req: MessageRequestCtx<'_>,
     message_id: Uuid,
@@ -1491,6 +1909,36 @@ pub async fn handle_edit_message(
 /// Extracts the message doc id a `Command` from `handle_send_message` (a
 /// `Create`) or `handle_edit_message` (an `Update`) targeted — the id the
 /// post-publish background pipeline republishes against.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::{build_message_doc, command_message_id, Audience, MessageDraft, MessageKind, Segment};
+/// use shadowcat::data::command::{Command, Operation};
+///
+/// let doc = build_message_doc(
+///     uuid::Uuid::new_v4(),
+///     uuid::Uuid::new_v4(),
+///     MessageDraft {
+///         channel: "general".to_string(),
+///         actor_owner: None,
+///         audience: Audience::Public,
+///         kind: MessageKind::Normal,
+///         content: vec![Segment::Text { text: "hi".to_string() }],
+///         source: None,
+///     },
+///     0,
+/// );
+/// let expected_id = doc.id;
+/// let cmd = Command {
+///     seq: 1,
+///     world_id: uuid::Uuid::new_v4(),
+///     author: uuid::Uuid::new_v4(),
+///     ts: 0,
+///     ops: vec![Operation::Create { doc }],
+/// };
+/// assert_eq!(command_message_id(&cmd), Some(expected_id));
+/// ```
 pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
     match cmd.ops.first()? {
         Operation::Create { doc } => Some(doc.id),
@@ -1514,6 +1962,73 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
 /// `DeleteMessage` the same message — each call consuming a real seq number,
 /// broadcasting to every world member, and re-writing the FTS index — an
 /// unbounded write/broadcast amplification from one cheap authenticated frame.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{
+///     build_link_preview_client, handle_delete_message, handle_send_message, Audience,
+///     LinkPreviewCache, LinkPreviewDeps, MessageRequestCtx, PreviewRateLimiter,
+/// };
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::missing_config_ops;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+///
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// room.publish(
+///     &repo,
+///     &ctx,
+///     missing_config_ops(&[], world.id, None, 0),
+///     0,
+///     WriteOrigin::ConfigSeed,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let rate = PingRateLimiter::new();
+/// let client = build_link_preview_client();
+/// let (sent, _) = handle_send_message(
+///     MessageRequestCtx {
+///         room: &room,
+///         repo: &repo,
+///         ctx: &ctx,
+///         rate: &rate,
+///         preview: LinkPreviewDeps {
+///             client: &client,
+///             cache: &LinkPreviewCache::new(),
+///             rate: &PreviewRateLimiter::new(),
+///         },
+///         now: 0,
+///         budget_per_min: 30,
+///     },
+///     "general".to_string(),
+///     "hello world".to_string(),
+///     None,
+///     Audience::Public,
+/// )
+/// .await
+/// .unwrap();
+/// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
+/// let message_id = doc.id;
+///
+/// let deleted = handle_delete_message(&room, &repo, &ctx, &rate, message_id, 0, 30)
+///     .await
+///     .unwrap();
+/// assert_eq!(deleted.ops.len(), 1);
+/// # }
+/// ```
 pub async fn handle_delete_message(
     room: &Room,
     repo: &dyn Repository,
@@ -1572,6 +2087,31 @@ pub async fn handle_delete_message(
 /// field. Grouped (instead of nine positional parameters) to stay under
 /// `clippy::too_many_arguments` by restructuring the signature, never by
 /// suppressing the lint.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::RecalcRollRequestCtx;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// let rate = PingRateLimiter::new();
+///
+/// let req = RecalcRollRequestCtx { room: &room, repo: &repo, ctx: &ctx, rate: &rate, now: 0, budget_per_min: 30 };
+/// assert_eq!(req.budget_per_min, 30);
+/// # }
+/// ```
 pub struct RecalcRollRequestCtx<'a> {
     /// The world's room -- the authoritative publish path.
     pub room: &'a Room,
@@ -1600,6 +2140,84 @@ pub struct RecalcRollRequestCtx<'a> {
 /// exact-path admission) -- needed because a freshly-appended
 /// `RecalcEntry.previous_raw` pointer must be added to the GM-only override
 /// set on every recalc.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::chat::{
+///     build_link_preview_client, handle_recalc_roll, handle_send_message, Audience,
+///     LinkPreviewCache, LinkPreviewDeps, MessageRequestCtx, PreviewRateLimiter,
+///     RecalcRollRequestCtx, Segment,
+/// };
+/// use shadowcat::data::command::{Operation, WriteOrigin};
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::missing_config_ops;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+/// let ctx = PermissionContext { user_id: gm, world_role: WorldRole::Gm };
+///
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, world.id).await.unwrap().unwrap();
+/// room.publish(
+///     &repo,
+///     &ctx,
+///     missing_config_ops(&[], world.id, None, 0),
+///     0,
+///     WriteOrigin::ConfigSeed,
+/// )
+/// .await
+/// .unwrap();
+///
+/// let rate = PingRateLimiter::new();
+/// let client = build_link_preview_client();
+/// let (sent, _) = handle_send_message(
+///     MessageRequestCtx {
+///         room: &room,
+///         repo: &repo,
+///         ctx: &ctx,
+///         rate: &rate,
+///         preview: LinkPreviewDeps {
+///             client: &client,
+///             cache: &LinkPreviewCache::new(),
+///             rate: &PreviewRateLimiter::new(),
+///         },
+///         now: 0,
+///         budget_per_min: 30,
+///     },
+///     "general".to_string(),
+///     "/roll 1d6".to_string(),
+///     None,
+///     Audience::Public,
+/// )
+/// .await
+/// .unwrap();
+/// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
+/// let message_id = doc.id;
+/// let engine = doc.engine.clone().unwrap();
+/// let content: Vec<Segment> = serde_json::from_value(engine["content"].clone()).unwrap();
+/// let Segment::RollEmbed { roll_id, .. } = &content[0] else { unreachable!() };
+///
+/// let recalc_rate = PingRateLimiter::new();
+/// let recalced = handle_recalc_roll(
+///     RecalcRollRequestCtx { room: &room, repo: &repo, ctx: &ctx, rate: &recalc_rate, now: 1, budget_per_min: 30 },
+///     message_id,
+///     *roll_id,
+///     vec![shadowcat::dice::RecalcOp::RerollDice(vec![])],
+/// )
+/// .await
+/// .unwrap();
+/// let Operation::Update { changes, .. } = &recalced.ops[0] else { unreachable!() };
+/// assert_eq!(changes.len(), 2); // /engine and /permissions/property_overrides
+/// # }
+/// ```
 pub async fn handle_recalc_roll(
     req: RecalcRollRequestCtx<'_>,
     message_id: Uuid,

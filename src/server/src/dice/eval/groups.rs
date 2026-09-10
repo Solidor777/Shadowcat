@@ -35,6 +35,40 @@ fn face_value_and_symbols(kind: &DieKind, natural: i32) -> (i32, Vec<crate::dice
 /// by the caller in AST left-to-right order); it is stamped onto every `DieRecord`
 /// produced here, including exploded/penetrated children, so Total-mode evaluation
 /// can fold per-group without positional heuristics.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::dice::eval::groups::resolve_group;
+/// use shadowcat::dice::outcome::RawRoll;
+/// use shadowcat::dice::rng::RngSource;
+/// use shadowcat::dice::spec::{DiceGroup, DieKind};
+///
+/// // No modifiers means the pipeline never redraws, so this stub is never called.
+/// struct NoRng;
+/// impl RngSource for NoRng {
+///     fn next_u32(&mut self) -> u32 {
+///         unreachable!("a modifier-free group never draws randomness")
+///     }
+/// }
+///
+/// let group = DiceGroup {
+///     count: 2,
+///     kind: DieKind::Numeric { min: 1, max: 6 },
+///     modifiers: vec![],
+///     label: None,
+/// };
+/// let mut raws = RawRoll::default();
+/// raws.push(group.kind.clone(), 3);
+/// raws.push(group.kind.clone(), 5);
+/// let naturals = raws.dice.clone();
+/// let mut rng = NoRng;
+/// let recs = resolve_group(&group, 0, &naturals, &mut rng, &mut raws);
+/// assert_eq!(recs.len(), 2);
+/// assert_eq!(recs[0].value, 3);
+/// assert_eq!(recs[1].value, 5);
+/// assert!(recs.iter().all(|r| r.kept));
+/// ```
 pub fn resolve_group(
     group: &DiceGroup,
     group_index: usize,

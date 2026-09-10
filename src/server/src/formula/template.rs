@@ -338,6 +338,23 @@ fn substitute_identifier(text: &str, resolve: &dyn Resolve) -> Result<String, Fo
 /// (unlike the formula grammar's lowercasing lexer). A template longer than
 /// `MAX_FORMULA_LENGTH` UTF-16 code units is refused before any recognizer
 /// runs.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::formula::template::resolve_notation_template;
+/// use shadowcat::formula::types::FormulaValue;
+///
+/// let resolver = |path: &[String]| -> FormulaValue {
+///     if path.first().map(String::as_str) == Some("str") {
+///         Ok(3.0)
+///     } else {
+///         unreachable!()
+///     }
+/// };
+/// let notation = resolve_notation_template("1d20 + str", &resolver).unwrap();
+/// assert_eq!(notation, "1d20 + 3[str]");
+/// ```
 pub fn resolve_notation_template(src: &str, resolve: &dyn Resolve) -> Result<String, FormulaError> {
     if src.encode_utf16().count() > MAX_FORMULA_LENGTH {
         return Err(FormulaError::new(

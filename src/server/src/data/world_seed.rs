@@ -157,9 +157,20 @@ fn config_doc(world_id: Uuid, doc_type: &str, engine: serde_json::Value, now: i6
 ///
 /// # Examples
 ///
-/// ```text
-/// // async; exercised by this module's own tests over an in-memory repo.
-/// let sd = enabled_system_defaults(&repo, world_id, modules_dir).await;
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::enabled_system_defaults;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+///
+/// // No modules enabled/installed: no system layer.
+/// let sd = enabled_system_defaults(&repo, world.id, std::path::Path::new("no-such-modules-dir")).await;
+/// assert!(sd.is_none());
+/// # }
 /// ```
 pub async fn enabled_system_defaults(
     repo: &dyn Repository,
@@ -224,9 +235,21 @@ pub(crate) async fn seed_test_channel_registry(
 ///
 /// # Examples
 ///
-/// ```text
-/// // async; exercised by this module's own tests over an in-memory repo.
-/// let ctx = seed_author(&repo, world_id).await;
+/// ```
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::data::world_seed::seed_author;
+///
+/// # #[tokio::main] async fn main() {
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let gm = repo.create_user("gm", None, ServerRole::User, 0).await.unwrap();
+/// let world = repo.create_world_owned("W", gm, 0).await.unwrap();
+///
+/// let ctx = seed_author(&repo, world.id).await.unwrap();
+/// assert_eq!(ctx.user_id, gm);
+/// assert_eq!(ctx.world_role, WorldRole::Gm);
+/// # }
 /// ```
 pub async fn seed_author(repo: &SqliteRepository, world_id: Uuid) -> Option<PermissionContext> {
     let members = match repo.list_members(world_id).await {
