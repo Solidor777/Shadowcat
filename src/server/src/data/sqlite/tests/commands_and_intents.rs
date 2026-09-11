@@ -4176,3 +4176,185 @@ async fn apply_intent_update_surfaces_note_body_derived_side_effect() {
     assert_eq!(body_change.old, serde_json::json!([]));
     assert_ne!(body_change.new, serde_json::json!([]));
 }
+
+#[tokio::test]
+async fn apply_intent_denies_a_derived_engine_path_without_its_declared_capability() {
+    // A world `CapabilityRequirement` on `/engine/body` must gate the
+    // SERVER-DERIVED `/engine/body` change a note's `/engine/source` edit
+    // produces, exactly as it would an ordinary direct write to that path --
+    // never bypassable by writing the field the derivation reads instead of
+    // the field it rewrites.
+    use crate::data::document::{CapabilityGrants, CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    r.set_world_cap_requirements(
+        w.id,
+        &[CapabilityRequirement {
+            path_prefix: "/engine/body".into(),
+            caps: ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    let mut note = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::None,
+            users: [(player, DocRole::Owner)].into_iter().collect(),
+            capabilities: CapabilityGrants::default(),
+            ..Default::default()
+        },
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let denied = r
+        .apply_intent(
+            &player_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player holding document write but not the declared /engine/body \
+         capability must be denied a source edit that derives it: {denied:?}"
+    );
+
+    let row = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    assert_eq!(
+        row.engine.unwrap().pointer("/source").unwrap(),
+        &serde_json::json!(""),
+        "the row must be unchanged after the denial"
+    );
+}
+
+#[tokio::test]
+async fn apply_intent_permits_a_derived_engine_path_once_the_capability_is_granted() {
+    use crate::data::document::{CapabilityGrants, CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    r.set_world_cap_requirements(
+        w.id,
+        &[CapabilityRequirement {
+            path_prefix: "/engine/body".into(),
+            caps: ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    let mut grants = CapabilityGrants::default();
+    grants.by_user.insert(
+        player,
+        ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+    );
+    let mut note = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::None,
+            users: [(player, DocRole::Owner)].into_iter().collect(),
+            capabilities: grants,
+            ..Default::default()
+        },
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let stored = r
+        .apply_intent(
+            &player_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected Update");
+    };
+    let body_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/body")
+        .expect("derived body change surfaced once the capability is granted");
+    assert_ne!(body_change.new, serde_json::json!([]));
+}

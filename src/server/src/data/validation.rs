@@ -160,25 +160,36 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
     Ok(())
 }
 
-/// Every additional `/engine/<key>` change a normalize-time derivation made
-/// beyond the paths an Update's own `changes` named — e.g.
-/// `NoteEngine::derive_body` recomputing `body` from an edited `source`.
-/// `validate_engine_tree` re-derives the SAME requested path in place (a
-/// `/engine/source` write comes back re-normalized at `/engine/source`), so a
-/// normalize-time side effect on a DIFFERENT top-level engine key never
-/// otherwise reaches the broadcast, the `world_events` log, or the author's
-/// own optimistic store — it would sit correctly in the database row while
-/// every live view of the document keeps showing the pre-derivation value.
+/// Every `/engine/<key>` change a normalize-time derivation made beyond the
+/// paths an Update's own `changes` named — e.g. `NoteEngine::derive_body`
+/// recomputing `body` from an edited `source`. `validate_engine_tree`
+/// re-derives the SAME requested path in place (a `/engine/source` write
+/// comes back re-normalized at `/engine/source`), so a normalize-time side
+/// effect on a DIFFERENT top-level engine key never otherwise reaches the
+/// broadcast, the `world_events` log, or the author's own optimistic store —
+/// it would sit correctly in the database row while every live view of the
+/// document keeps showing the pre-derivation value.
 ///
-/// Diffs `pre_engine`/`post_engine` at the top level only — an engine's own
-/// struct fields, the same granularity every other engine `FieldChange` in
-/// this codebase already writes at, never recursing into a field's own
-/// substructure. A key already present in `requested_paths` (as
-/// `/engine/<key>`) is skipped: that path's own change is already carried by
-/// the caller's re-derivation, and diffing it again here would double it.
-/// `requested_paths` containing the whole-band path `/engine` short-circuits
-/// to no output: a whole-band replacement already carries every field by
-/// construction, so no key can hide a side effect behind it.
+/// Iterates ONLY `engine::derived_engine_paths(doc_type)` — the registry
+/// naming every path a `doc_type`'s `normalize_engine` arm can rewrite beyond
+/// what it was asked to write — rather than diffing every top-level key
+/// against every other. A generic diff over the whole engine band is wrong
+/// on two counts a registry-scoped walk avoids: (a) it would treat an
+/// unrelated key that happens to differ (nothing derives it; the caller's own
+/// `changes` are the only source of truth for it) as a spurious derived
+/// change; (b) it would compare with raw `Value` equality, so normalization
+/// noise (an integer round-tripping to its typed `f64` form) would register
+/// as a change that never happened. `pre_engine`/`post_engine`'s values are
+/// therefore read by pointer (`/body`, not the whole object) and compared
+/// with `values_semantically_eq` (`command::values_semantically_eq`), the
+/// same numeric-variant-aware comparator OCC pre-image checks use — an
+/// absent pointer on either side reads as `Null`.
+///
+/// A derived path is skipped when it OVERLAPS any requested path — equal,
+/// ancestor, or descendant (`permission::paths_overlap`) — not merely an
+/// exact match: a nested request naming `/engine/body/0`, or a whole-band
+/// `/engine` replacement, already carries the derived key by construction,
+/// and diffing it again here would double it.
 ///
 /// # Examples
 ///
@@ -189,38 +200,42 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
 /// let pre = serde_json::json!({ "source": "old", "body": [], "sort": 0 });
 /// let post = serde_json::json!({ "source": "new", "body": ["derived"], "sort": 0 });
 /// let requested: HashSet<String> = ["/engine/source".to_string()].into_iter().collect();
-/// let extra = derive_engine_side_effects(Some(&pre), Some(&post), &requested);
+/// let extra = derive_engine_side_effects("note", Some(&pre), Some(&post), &requested);
 /// assert_eq!(extra.len(), 1);
 /// assert_eq!(extra[0].path, "/engine/body");
 /// assert_eq!(extra[0].new, serde_json::json!(["derived"]));
 /// ```
 pub fn derive_engine_side_effects(
-    pre_engine: Option<&serde_json::Value>,
+    doc_type: &str,
+    pre_engine_stored: Option<&serde_json::Value>,
     post_engine: Option<&serde_json::Value>,
     requested_paths: &std::collections::HashSet<String>,
 ) -> Vec<FieldChange> {
-    if requested_paths.contains("/engine") {
-        return Vec::new();
-    }
-    let (Some(pre_obj), Some(post_obj)) = (
-        pre_engine.and_then(|v| v.as_object()),
-        post_engine.and_then(|v| v.as_object()),
-    ) else {
-        return Vec::new();
-    };
     let mut out = Vec::new();
-    for (key, post_value) in post_obj {
-        let path = format!("/engine/{key}");
-        if requested_paths.contains(&path) {
+    for derived_path in engine::derived_engine_paths(doc_type) {
+        if requested_paths
+            .iter()
+            .any(|req| crate::data::permission::paths_overlap(req, derived_path))
+        {
             continue;
         }
-        let old = pre_obj.get(key).cloned().unwrap_or(serde_json::Value::Null);
-        if &old != post_value {
+        let pointer = derived_path
+            .strip_prefix("/engine")
+            .expect("derived_engine_paths entries are /engine-rooted");
+        let old = pre_engine_stored
+            .and_then(|v| v.pointer(pointer))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let new = post_engine
+            .and_then(|v| v.pointer(pointer))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        if !crate::data::command::values_semantically_eq(&old, &new) {
             out.push(FieldChange {
                 remove: false,
-                path,
+                path: (*derived_path).to_string(),
                 old,
-                new: post_value.clone(),
+                new,
             });
         }
     }
