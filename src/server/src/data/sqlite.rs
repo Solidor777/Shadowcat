@@ -1494,6 +1494,15 @@ impl Repository for SqliteRepository {
                     update_access.push(access.clone());
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
+                    // INVARIANT: `cur` is this op's OWN `load_document` read of
+                    // the not-yet-written transaction, never a simulation of an
+                    // earlier same-batch op's changes — a second `Update` to the
+                    // same document whose `old` names an earlier op's `new` in
+                    // this batch reads the pre-batch stored value and Conflicts.
+                    // The client's `buildUpdate` is the intended single-Update
+                    // shape for same-document edits: it coalesces every field
+                    // into one `FieldEdit[]` batch rather than issuing several
+                    // Updates to the same doc in one command.
                     let whole = serde_json::to_value(&cur)?;
                     for ch in &*changes {
                         validation::validate_field_change(ch)?;
