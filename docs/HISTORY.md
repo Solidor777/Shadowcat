@@ -2945,8 +2945,9 @@ Branch `m20-module-suite`, cut from `main`, executed from the approved plan
   only `NoteEngine::derive_body`'s `/engine/body`) rides an Update's
   returned `Command`, the `world_events` log, and the broadcast as an extra
   `FieldChange` alongside the caller's own requested changes
-  (`data::validation::derive_engine_side_effects`), and — for a
-  client-origin write — is checked against the same declared
+  (`data::validation::derive_engine_side_effects`), and — for every origin
+  that does not skip capability gates (`WriteOrigin::skips_capability_gates`)
+  — is checked against the same declared
   `CapabilityRequirement`s (`data::permission::declared_caps_for_path`) any
   other write to that path would need, using the SAME `Access` Phase 1
   already resolved for the actor rather than re-resolving it in Phase 2.
