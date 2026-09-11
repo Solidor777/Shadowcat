@@ -81,4 +81,16 @@ describe("EmissionEditor", () => {
     await fireEvent.click(screen.getByLabelText("actors.vfxLoop"));
     expect(onVfx).toHaveBeenCalledWith({ ...vfx, loop: false });
   });
+
+  it("disables every toggle and field control when disabled is true", () => {
+    const aura: AuraEmission = { color: "#ffcc66", opacity: 0.4, radius: 2, enabled: true };
+    render(EmissionEditor, {
+      context: setAppContextForTest({}),
+      props: { aura, sound: null, vfx: null, onAura: vi.fn(), onSound: vi.fn(), onVfx: vi.fn(), disabled: true },
+    });
+    expect((screen.getByLabelText("actors.aura") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("actors.sound") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("actors.vfx") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("actors.auraColor") as HTMLInputElement).disabled).toBe(true);
+  });
 });

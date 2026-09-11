@@ -13,6 +13,7 @@
     onAura,
     onSound,
     onVfx,
+    disabled = false,
   }: {
     /** The current aura emission, or `null` for none (the section renders collapsed). */
     aura: AuraEmission | null;
@@ -27,6 +28,11 @@
     onSound: (v: SoundEmission | null) => void;
     /** Called with the replacement VFX payload (or `null` when the section toggles off). */
     onVfx: (v: VfxEmission | null) => void;
+    /** Disables every control this component renders. A wrapping `<fieldset disabled>`
+     * cascades to descendant form controls per the HTML spec, but jsdom's test environment
+     * does not honor that cascade — callers that need disabled-state coverage in tests
+     * (e.g. `ActorSheet`) pass this explicitly rather than relying on the fieldset alone. */
+    disabled?: boolean;
   } = $props();
 
   let audioAssets = $state<Asset[]>([]);
@@ -101,6 +107,7 @@
       type="checkbox"
       aria-label={t("actors.aura")}
       checked={aura !== null}
+      {disabled}
       onchange={(e) => onAura(e.currentTarget.checked ? defaultAura() : null)}
     />
     {t("actors.aura")}
@@ -108,17 +115,17 @@
   {#if aura}
     <div class="emission-fields">
       <label>{t("actors.auraColor")}
-        <input type="color" aria-label={t("actors.auraColor")} value={aura.color} onchange={(e) => onAura({ ...aura, color: e.currentTarget.value })} oninput={(e) => onAura({ ...aura, color: e.currentTarget.value })} />
+        <input type="color" aria-label={t("actors.auraColor")} value={aura.color} {disabled} onchange={(e) => onAura({ ...aura, color: e.currentTarget.value })} oninput={(e) => onAura({ ...aura, color: e.currentTarget.value })} />
       </label>
       <!-- value + onchange/oninput (not bind:value): bind:value on a number input reacts only to
            input events; explicit handlers keep this in sync with fireEvent.change in tests too. -->
       <label>{t("actors.emissionOpacity")}
-        <input type="number" min="0" max="1" step="0.05" aria-label={t("actors.emissionOpacity")} value={aura.opacity} onchange={(e) => onAura({ ...aura, opacity: Number(e.currentTarget.value) })} oninput={(e) => onAura({ ...aura, opacity: Number(e.currentTarget.value) })} />
+        <input type="number" min="0" max="1" step="0.05" aria-label={t("actors.emissionOpacity")} value={aura.opacity} {disabled} onchange={(e) => onAura({ ...aura, opacity: Number(e.currentTarget.value) })} oninput={(e) => onAura({ ...aura, opacity: Number(e.currentTarget.value) })} />
       </label>
       <label>{t("actors.auraRadius")}
-        <input type="number" min="0" step="0.5" aria-label={t("actors.auraRadius")} value={aura.radius} onchange={(e) => onAura({ ...aura, radius: Number(e.currentTarget.value) })} oninput={(e) => onAura({ ...aura, radius: Number(e.currentTarget.value) })} />
+        <input type="number" min="0" step="0.5" aria-label={t("actors.auraRadius")} value={aura.radius} {disabled} onchange={(e) => onAura({ ...aura, radius: Number(e.currentTarget.value) })} oninput={(e) => onAura({ ...aura, radius: Number(e.currentTarget.value) })} />
       </label>
-      <label><input type="checkbox" aria-label={t("actors.emissionEnabled")} checked={aura.enabled} onchange={(e) => onAura({ ...aura, enabled: e.currentTarget.checked })} /> {t("actors.emissionEnabled")}</label>
+      <label><input type="checkbox" aria-label={t("actors.emissionEnabled")} checked={aura.enabled} {disabled} onchange={(e) => onAura({ ...aura, enabled: e.currentTarget.checked })} /> {t("actors.emissionEnabled")}</label>
     </div>
   {/if}
 
@@ -127,6 +134,7 @@
       type="checkbox"
       aria-label={t("actors.sound")}
       checked={sound !== null}
+      {disabled}
       onchange={(e) => onSound(e.currentTarget.checked ? defaultSound() : null)}
     />
     {t("actors.sound")}
@@ -134,19 +142,19 @@
   {#if sound}
     <div class="emission-fields">
       <label>{t("actors.emissionAsset")}
-        <select aria-label={t("actors.emissionAsset")} value={sound.asset} onchange={(e) => onSound({ ...sound, asset: e.currentTarget.value })}>
+        <select aria-label={t("actors.emissionAsset")} value={sound.asset} {disabled} onchange={(e) => onSound({ ...sound, asset: e.currentTarget.value })}>
           <option value="">—</option>
           {#each audioAssets as a (a.id)}<option value={a.id}>{a.original_name}</option>{/each}
         </select>
       </label>
       <label>{t("actors.emissionRadius")}
-        <input type="number" min="0" step="0.5" aria-label={t("actors.soundRadius")} value={sound.radius} onchange={(e) => onSound({ ...sound, radius: Number(e.currentTarget.value) })} oninput={(e) => onSound({ ...sound, radius: Number(e.currentTarget.value) })} />
+        <input type="number" min="0" step="0.5" aria-label={t("actors.soundRadius")} value={sound.radius} {disabled} onchange={(e) => onSound({ ...sound, radius: Number(e.currentTarget.value) })} oninput={(e) => onSound({ ...sound, radius: Number(e.currentTarget.value) })} />
       </label>
       <label>{t("actors.emissionVolume")}
-        <input type="number" min="0" max="1" step="0.05" aria-label={t("actors.emissionVolume")} value={sound.volume} onchange={(e) => onSound({ ...sound, volume: Number(e.currentTarget.value) })} oninput={(e) => onSound({ ...sound, volume: Number(e.currentTarget.value) })} />
+        <input type="number" min="0" max="1" step="0.05" aria-label={t("actors.emissionVolume")} value={sound.volume} {disabled} onchange={(e) => onSound({ ...sound, volume: Number(e.currentTarget.value) })} oninput={(e) => onSound({ ...sound, volume: Number(e.currentTarget.value) })} />
       </label>
-      <label><input type="checkbox" aria-label={t("actors.animLoop")} checked={sound.loop} onchange={(e) => onSound({ ...sound, loop: e.currentTarget.checked })} /> {t("actors.animLoop")}</label>
-      <label><input type="checkbox" aria-label={t("actors.soundEnabled")} checked={sound.enabled} onchange={(e) => onSound({ ...sound, enabled: e.currentTarget.checked })} /> {t("actors.emissionEnabled")}</label>
+      <label><input type="checkbox" aria-label={t("actors.animLoop")} checked={sound.loop} {disabled} onchange={(e) => onSound({ ...sound, loop: e.currentTarget.checked })} /> {t("actors.animLoop")}</label>
+      <label><input type="checkbox" aria-label={t("actors.soundEnabled")} checked={sound.enabled} {disabled} onchange={(e) => onSound({ ...sound, enabled: e.currentTarget.checked })} /> {t("actors.emissionEnabled")}</label>
     </div>
   {/if}
 
@@ -155,6 +163,7 @@
       type="checkbox"
       aria-label={t("actors.vfx")}
       checked={vfx !== null}
+      {disabled}
       onchange={(e) => onVfx(e.currentTarget.checked ? defaultVfx() : null)}
     />
     {t("actors.vfx")}
@@ -162,20 +171,20 @@
   {#if vfx}
     <div class="emission-fields">
       <label>{t("actors.vfxAsset")}
-        <select aria-label={t("actors.vfxAsset")} value={vfx.asset} onchange={(e) => onVfx({ ...vfx, asset: e.currentTarget.value })}>
+        <select aria-label={t("actors.vfxAsset")} value={vfx.asset} {disabled} onchange={(e) => onVfx({ ...vfx, asset: e.currentTarget.value })}>
           <option value="">—</option>
           {#each visualAssets as a (a.id)}<option value={a.id}>{a.original_name}</option>{/each}
         </select>
       </label>
       <label>{t("actors.vfxAnchor")}
-        <select aria-label={t("actors.vfxAnchor")} value={vfx.anchor} onchange={(e) => onVfx({ ...vfx, anchor: e.currentTarget.value as VfxAnchor })}>
+        <select aria-label={t("actors.vfxAnchor")} value={vfx.anchor} {disabled} onchange={(e) => onVfx({ ...vfx, anchor: e.currentTarget.value as VfxAnchor })}>
           <option value="token">{t("actors.vfxAnchorToken")}</option>
           <option value="above">{t("actors.vfxAnchorAbove")}</option>
           <option value="below">{t("actors.vfxAnchorBelow")}</option>
         </select>
       </label>
-      <label><input type="checkbox" aria-label={t("actors.vfxLoop")} checked={vfx.loop} onchange={(e) => onVfx({ ...vfx, loop: e.currentTarget.checked })} /> {t("actors.animLoop")}</label>
-      <label><input type="checkbox" aria-label={t("actors.vfxEnabled")} checked={vfx.enabled} onchange={(e) => onVfx({ ...vfx, enabled: e.currentTarget.checked })} /> {t("actors.emissionEnabled")}</label>
+      <label><input type="checkbox" aria-label={t("actors.vfxLoop")} checked={vfx.loop} {disabled} onchange={(e) => onVfx({ ...vfx, loop: e.currentTarget.checked })} /> {t("actors.animLoop")}</label>
+      <label><input type="checkbox" aria-label={t("actors.vfxEnabled")} checked={vfx.enabled} {disabled} onchange={(e) => onVfx({ ...vfx, enabled: e.currentTarget.checked })} /> {t("actors.emissionEnabled")}</label>
     </div>
   {/if}
 </div>

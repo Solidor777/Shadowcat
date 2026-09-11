@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, SystemTreeEditor, setField, LightEmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
+  import { getAppContext, SystemTreeEditor, setField, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
   import { getPointer, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type WireDocument, type ActorEngine, type FactionRegistryEngine, type VisionMode } from "@shadowcat/core";
 
   // Actor sheet: envelope `name` + engine-known fields (displayName, faction, shape, size)
@@ -177,6 +177,20 @@
              above. -->
         <LightEmissionEditor value={engine.light} disabled={readOnly || ctx.role !== "gm"} onCommit={(next) => setEngine("light", next)} />
       {/if}
+      <!-- Aura/sound/VFX emissions: owner-writable like the fields above — unlike `light`
+           just above (a shared, GM-only field), `aura`/`sound`/`vfx` carry no GM gate. -->
+      <fieldset class="emissions" disabled={readOnly}>
+        <legend>{t("sheetActor.emissions")}</legend>
+        <EmissionEditor
+          aura={engine.aura ?? null}
+          sound={engine.sound ?? null}
+          vfx={engine.vfx ?? null}
+          onAura={(v) => setEngine("aura", v)}
+          onSound={(v) => setEngine("sound", v)}
+          onVfx={(v) => setEngine("vfx", v)}
+          disabled={readOnly}
+        />
+      </fieldset>
     </div>
 
     {#if inventory.length > 0}
@@ -203,6 +217,7 @@
   .close { min-width: 44px; min-height: 44px; border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); }
   .close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .fields { display: flex; flex-direction: column; gap: var(--space-1); }
+  .emissions { border: 1px solid var(--border); border-radius: var(--radius-1); padding: var(--space-1); }
   label, .vision-field, .movement-field { display: flex; flex-direction: column; gap: 2px; }
   .inventory { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-1); }
   .inventory button { min-height: 44px; text-align: left; border: 1px solid var(--border); border-radius: var(--radius-1); background: var(--surface-raised); }

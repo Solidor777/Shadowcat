@@ -611,6 +611,7 @@ export const en: Messages = {
   "sheetActor.sizeH": "Height (cells)",
   "sheetActor.inventory": "Inventory",
   "sheetActor.unnamedItem": "Item",
+  "sheetActor.emissions": "Aura, sound & VFX",
   "sheetActor.system": "All data",
   "sheetItem.title": "Item",
   "sheetItem.name": "Name",
