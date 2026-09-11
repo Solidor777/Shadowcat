@@ -24,11 +24,12 @@ export async function login(
 }
 
 /** Idempotently opens a launcher panel by its contribution id: checks the launcher item's
- * `aria-pressed` (driven by `LauncherMenu`'s live `ctx.panels.isOpen` read) and clicks only when
- * the panel is not already open — a second call with the panel already open is a no-op, unlike
- * clicking the launcher item unconditionally (`activate`'s `ctx.panels.toggle` would instead
- * CLOSE it). Shared by every spec that reaches a launcher-closed panel (in place of each file's
- * own duplicated copy — see `combat-settings.spec.ts`'s `activateTool` for the same
+ * `aria-checked` (driven by `LauncherMenu`'s live `ctx.panels.isOpen` read — the item is a
+ * `role="menuitemcheckbox"` toggle, since `aria-pressed` is invalid ARIA on `role="menuitem"`)
+ * and clicks only when the panel is not already open — a second call with the panel already open
+ * is a no-op, unlike clicking the launcher item unconditionally (`activate`'s `ctx.panels.toggle`
+ * would instead CLOSE it). Shared by every spec that reaches a launcher-closed panel (in place of
+ * each file's own duplicated copy — see `combat-settings.spec.ts`'s `activateTool` for the same
  * check-before-click idiom applied to a tool-rail button).
  * @param page - The page to drive.
  * @param contributionId - The panel contribution's id (e.g. `"notes:panel"`).
@@ -41,7 +42,7 @@ export async function login(
 export async function openPanel(page: Page, contributionId: string): Promise<void> {
   await page.getByTestId("launcher-trigger").click();
   const item = page.getByTestId(`launcher-item-${contributionId}`);
-  if ((await item.getAttribute("aria-pressed")) !== "true") {
+  if ((await item.getAttribute("aria-checked")) !== "true") {
     await item.click();
   } else {
     // Already open: dismiss the menu we just opened via Escape rather than re-clicking the

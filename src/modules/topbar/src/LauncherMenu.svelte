@@ -183,10 +183,10 @@
       {#each panels as p, i (p.id)}
         <button
           type="button"
-          role="menuitem"
+          role="menuitemcheckbox"
           class="sc-launcher-item"
           data-testid="launcher-item-{p.id}"
-          aria-pressed={ctx.panels.isOpen(p.id)}
+          aria-checked={ctx.panels.isOpen(p.id)}
           bind:this={itemEls[i]}
           onclick={() => activate(p.id)}
           onkeydown={(e) => onItemKeydown(e, i)}

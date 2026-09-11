@@ -58,7 +58,9 @@ test("opening lists every gmOnly-filtered panel from metaMap as a menuitem", asy
   await fireEvent.click(screen.getByTestId("launcher-trigger"));
   const menu = screen.getByTestId("launcher-menu");
   expect(menu.getAttribute("role")).toBe("menu");
-  expect(screen.getByTestId("launcher-item-chat:panel").getAttribute("role")).toBe("menuitem");
+  expect(screen.getByTestId("launcher-item-chat:panel").getAttribute("role")).toBe(
+    "menuitemcheckbox",
+  );
   expect(screen.getByTestId("launcher-item-assets:panel")).toBeTruthy();
   expect(screen.getByTestId("launcher-trigger").getAttribute("aria-expanded")).toBe("true");
 });
@@ -181,22 +183,22 @@ test("removing a DIFFERENT (non-focused) item's panel leaves the menu open and f
   expect(document.activeElement).toBe(chatItem);
 });
 
-test("a launcher item's aria-pressed reflects the bridge's live open state", async () => {
+test("a launcher item's aria-checked reflects the bridge's live open state", async () => {
   const { bridge, openIds } = bridgeWith(META);
   render(LauncherMenu, { context: setAppContextForTest({ panels: bridge }) });
   await fireEvent.click(screen.getByTestId("launcher-trigger"));
   const item = screen.getByTestId("launcher-item-chat:panel");
-  expect(item.getAttribute("aria-pressed")).toBe("false");
+  expect(item.getAttribute("aria-checked")).toBe("false");
 
   // Mutating the bridge's open-state directly (no click) proves the attribute reads
   // `ctx.panels.isOpen` reactively, not a locally-tracked click count.
   openIds.add("chat:panel");
   await tick();
-  expect(item.getAttribute("aria-pressed")).toBe("true");
+  expect(item.getAttribute("aria-checked")).toBe("true");
 
   openIds.delete("chat:panel");
   await tick();
-  expect(item.getAttribute("aria-pressed")).toBe("false");
+  expect(item.getAttribute("aria-checked")).toBe("false");
 });
 
 test("the trigger's aria-controls references the open menu's id", async () => {
