@@ -695,3 +695,39 @@ test("the controller binds itself into the supplied bridge at construction", () 
   expect(bridge.bind).toHaveBeenCalledTimes(1);
   expect(bridge.bind).toHaveBeenCalledWith(ctrl);
 });
+
+test("isOpen tracks every PanelLocation the layout can produce, driven through the controller's own operations", () => {
+  const ctrl = new PanelsController({
+    contributions: registry(),
+    role: "gm",
+    getPanelLayout: () => null,
+    setPanelLayout: () => {},
+    bridge: fakeBridge(),
+    logger: silentLogger,
+  });
+
+  // Docked: "a:panel"'s defaultPlacement, already in effect at construction.
+  expect(locate(ctrl.layout, "a:panel").where).toBe("docked");
+  expect(ctrl.isOpen("a:panel")).toBe(true);
+
+  // Floating.
+  const rect: Rect = { x: 10, y: 10, w: 300, h: 300 };
+  ctrl.dispatch({ op: "float", id: "a:panel", rect });
+  expect(locate(ctrl.layout, "a:panel").where).toBe("floating");
+  expect(ctrl.isOpen("a:panel")).toBe(true);
+
+  // Popped-out.
+  ctrl.dispatch({ op: "popOut", id: "a:panel", key: "w-a", rect: null });
+  expect(locate(ctrl.layout, "a:panel").where).toBe("popped-out");
+  expect(ctrl.isOpen("a:panel")).toBe(true);
+
+  // Minimized.
+  ctrl.dispatch({ op: "minimize", id: "a:panel" });
+  expect(locate(ctrl.layout, "a:panel").where).toBe("minimized");
+  expect(ctrl.isOpen("a:panel")).toBe(false);
+
+  // Closed.
+  ctrl.close("a:panel");
+  expect(locate(ctrl.layout, "a:panel").where).toBe("closed");
+  expect(ctrl.isOpen("a:panel")).toBe(false);
+});
