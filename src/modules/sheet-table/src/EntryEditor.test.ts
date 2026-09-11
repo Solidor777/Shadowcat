@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
-import { buildTableDoc, type TableEngine, type WireSearchHit } from "@shadowcat/core";
+import { buildTableDoc, TABLE_DOC_TYPE, type TableEngine, type WireSearchHit } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import EntryEditor from "./EntryEditor.svelte";
 
@@ -55,6 +55,11 @@ describe("EntryEditor disabled", () => {
     for (const b of hitButtons) {
       expect((b as HTMLButtonElement).disabled).toBe(true);
     }
+    expect(searchDocuments).toHaveBeenCalledWith(
+      "loot",
+      expect.objectContaining({ docTypes: [TABLE_DOC_TYPE] }),
+      expect.any(Function),
+    );
   });
 
   it("disables the kind select, entry-kind-specific controls, and the remove button", () => {

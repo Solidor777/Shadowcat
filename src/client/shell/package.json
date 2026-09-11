@@ -18,6 +18,8 @@
     "@shadowcat/module-chat": "workspace:*",
     "@shadowcat/module-chat-composer": "workspace:*",
     "@shadowcat/module-chat-card": "workspace:*",
+    "@shadowcat/module-notes": "workspace:*",
+    "@shadowcat/module-tables": "workspace:*",
     "@shadowcat/module-conditions": "workspace:*",
     "@shadowcat/module-combat-tracker": "workspace:*",
     "@shadowcat/module-factions": "workspace:*",

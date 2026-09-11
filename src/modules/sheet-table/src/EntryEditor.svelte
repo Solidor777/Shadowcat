@@ -43,17 +43,14 @@
     return () => { cancelled = true; };
   });
 
-  // Live table picker for a "draw" entry. `searchDocuments` has no `docTypes` filter on this
-  // branch yet — filter the hits client-side.
-  // TODO: switch to `ctx.searchDocuments(q, { limit: 20, docTypes: [TABLE_DOC_TYPE] })` once
-  // that option lands, and drop the client-side filter below.
+  // Live table picker for a "draw" entry, narrowed server-side to table documents.
   $effect(() => {
     if (entry.kind !== "draw") { tableHits = []; return; }
     const q = tableQuery.trim();
     if (!q) { tableHits = []; return; }
     let cancelled = false;
-    void ctx.searchDocuments(q, { limit: 20 }, (hits) => {
-      if (!cancelled) tableHits = hits.filter((h) => h.document.doc_type === TABLE_DOC_TYPE);
+    void ctx.searchDocuments(q, { limit: 20, docTypes: [TABLE_DOC_TYPE] }, (hits) => {
+      if (!cancelled) tableHits = hits;
     })
       .then((h) => { if (cancelled) h.unsubscribe(); })
       .catch(() => { /* no transport: leave last hits, re-subscribe on next keystroke */ });

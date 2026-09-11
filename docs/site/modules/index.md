@@ -32,6 +32,8 @@ Community modules follow the same model — see
 | [chat](/modules/chat) | Chat panel: channels, messages, rolls |
 | [chat-composer](/modules/chat-composer) | Message composer contribution |
 | [chat-card](/modules/chat-card) | Message rendering contribution |
+| [notes](/modules/notes) | Note tree + search panel |
+| [tables](/modules/tables) | Rollable-table list + quick-draw panel |
 | [sheet-actor](/modules/sheet-actor) | Generic actor sheet (priority 0) |
 | [sheet-item](/modules/sheet-item) | Generic item sheet (priority 0) |
 | [sheet-note](/modules/sheet-note) | Note sheet: title/visibility/body/tree (priority 0) |

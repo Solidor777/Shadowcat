@@ -28,6 +28,8 @@
   import { chat } from "@shadowcat/module-chat";
   import { chatComposer } from "@shadowcat/module-chat-composer";
   import { chatCard } from "@shadowcat/module-chat-card";
+  import { notes } from "@shadowcat/module-notes";
+  import { tables } from "@shadowcat/module-tables";
   import { sheetFallback } from "@shadowcat/module-sheet-fallback";
   import { sheetActor } from "@shadowcat/module-sheet-actor";
   import { sheetItem } from "@shadowcat/module-sheet-item";
@@ -180,7 +182,7 @@
     const s = new WorldSession({
       selfId: me.id,
       connect: webSocketConnect(wsUrl),
-      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable],
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable],
       onEvicted: () => leaveWorld(),
       onReject: (reason) => notifications.push("warning", t(`intent.rejected.${reason}`)),
     });
