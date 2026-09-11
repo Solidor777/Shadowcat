@@ -73,7 +73,7 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
     await openPanel(gm, "notes:panel");
     await gm.getByTestId("notes-name").fill("Session 1");
     await gm.getByTestId("notes-create").click();
-    const gmSheet = gm.locator('[role="dialog"]').filter({ hasText: "Session 1" });
+    const gmSheet = gm.getByRole("dialog", { name: "Sheet", exact: true }).filter({ hasText: "Session 1" });
     await expect(gmSheet).toBeVisible({ timeout: 15_000 });
 
     // Edit the body: bold markdown plus an inline roll button, then Save.
@@ -95,7 +95,9 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
     // Opening it shows the body with NO textarea/Edit control (the player is a reader, not the
     // author, and never granted `core:edit_permissions`/write on the source).
     await player.getByTestId("note-open").click();
-    const playerSheet = player.locator('[role="dialog"]').filter({ hasText: "Session 1" });
+    const playerSheet = player
+      .getByRole("dialog", { name: "Sheet", exact: true })
+      .filter({ hasText: "Session 1" });
     await expect(playerSheet).toBeVisible({ timeout: 15_000 });
     await expect(playerSheet.getByTestId("note-edit")).toHaveCount(0);
     await expect(playerSheet.getByTestId("note-source")).toHaveCount(0);
@@ -110,7 +112,9 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
     // the player's tree under "Session 1" (no toggle renders: this recipient's view of the
     // parent has no children).
     await gmSheet.getByTestId("note-new-child").click();
-    const gmChildSheet = gm.locator('[role="dialog"]').filter({ hasText: "Untitled note" });
+    const gmChildSheet = gm
+      .getByRole("dialog", { name: "Sheet", exact: true })
+      .filter({ hasText: "Untitled note" });
     await expect(gmChildSheet).toBeVisible({ timeout: 15_000 });
     await openPanel(player, "notes:panel");
     await expect(player.getByTestId("note-toggle")).toHaveCount(0);

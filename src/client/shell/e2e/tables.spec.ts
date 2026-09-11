@@ -86,7 +86,7 @@ test("tables: create, add rows, draw, and the panel's quick-draw both post cards
     await openPanel(gm, "tables:panel");
     await gm.getByTestId("tables-name").fill("Loot");
     await gm.getByTestId("tables-create").click();
-    const sheet = gm.locator('[role="dialog"]').filter({ hasText: "Loot" });
+    const sheet = gm.getByRole("dialog", { name: "Sheet", exact: true }).filter({ hasText: "Loot" });
     await expect(sheet).toBeVisible({ timeout: 15_000 });
 
     // Two rows, through the row editor. Weighted draw needs no lo/hi; `row-label` commits on
