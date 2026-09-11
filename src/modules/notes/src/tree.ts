@@ -114,7 +114,7 @@ export function buildNoteTree(notes: WireDocument[]): NoteTreeNode[] {
     };
   };
 
-  const result = roots.sort(bySortThenCreated).map(build);
+  const result = roots.map(build);
 
   // Every note not yet visited is unreachable from a real root, so (per the invariant above) it
   // must sit on a parent-pointer cycle. Group the remaining notes into their weakly-connected
