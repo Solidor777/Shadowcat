@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { addRow, removeRow, moveRow, setRow, defaultEntry } from "./rowOps";
+import { addRow, removeRow, moveRow, setRow, defaultEntry, normalizeRowsForDraw } from "./rowOps";
 import type { TableRow } from "@shadowcat/core";
 
 function row(label: string): TableRow {
@@ -70,6 +70,35 @@ describe("setRow", () => {
 
   it("throws on an out-of-range index", () => {
     expect(() => setRow([row("a")], 3, row("z"))).toThrow(RangeError);
+  });
+});
+
+describe("normalizeRowsForDraw", () => {
+  it("clears every row's range when switching to weighted", () => {
+    const rows: TableRow[] = [
+      { weight: 1, range: { lo: 1, hi: 10 }, label: "a", results: [] },
+      { weight: 1, range: { lo: 11, hi: 20 }, label: "b", results: [] },
+    ];
+    const next = normalizeRowsForDraw(rows, { kind: "weighted" });
+    expect(next.every((r) => r.range === null)).toBe(true);
+  });
+
+  it("preserves an existing valid range when switching to formula", () => {
+    const rows: TableRow[] = [{ weight: 1, range: { lo: 5, hi: 9 }, label: "a", results: [] }];
+    const next = normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
+    expect(next[0].range).toEqual({ lo: 5, hi: 9 });
+  });
+
+  it("seeds the addRow placeholder range for a null-range row switching to formula", () => {
+    const rows: TableRow[] = [{ weight: 1, range: null, label: "a", results: [] }];
+    const next = normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
+    expect(next[0].range).toEqual({ lo: 1, hi: 1 });
+  });
+
+  it("never mutates the input array or its rows", () => {
+    const rows: TableRow[] = [{ weight: 1, range: null, label: "a", results: [] }];
+    normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
+    expect(rows[0].range).toBeNull();
   });
 });
 

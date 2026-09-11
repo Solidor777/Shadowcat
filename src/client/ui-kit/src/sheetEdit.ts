@@ -21,6 +21,42 @@ export function setField(ctx: AppContext, docId: string, path: string, old: unkn
 }
 
 /**
+ * One field's change within a {@link setFields} batch.
+ */
+export interface FieldEdit {
+  /** The field's JSON-pointer path within the document. */
+  path: string;
+  /** The real current stored value at `path` (OCC pre-image); `undefined` for a genuinely
+   * absent field. */
+  old: unknown;
+  /** The new value to write. */
+  value: unknown;
+}
+
+/**
+ * Dispatches ONE atomic Update carrying MULTIPLE `FieldChange`s — either all apply or none does.
+ * Same OCC INVARIANT as {@link setField} (`old ?? null` collapses only a genuinely absent
+ * pre-image), applied per edit. Use this whenever two or more fields of one document must move
+ * together as a single post-image (e.g. a table's `draw` rule and its `rows` array, which the
+ * server validates jointly) — a sheet must never fork that into two separate `setField` calls,
+ * since the server could then accept one write and reject the other, leaving an inconsistent
+ * post-image the sheet never intended.
+ * @param ctx - The AppContext to dispatch the intent through.
+ * @param docId - The target document's id.
+ * @param edits - The fields to change, all as one Update.
+ * @example setFields(ctx, docId, [{ path: "/engine/draw", old, value: next }]);
+ */
+export function setFields(ctx: AppContext, docId: string, edits: FieldEdit[]): void {
+  ctx.dispatchIntent([
+    {
+      op: "update",
+      doc_id: docId,
+      changes: edits.map(({ path, old, value }) => ({ path, old: old ?? null, new: value })),
+    },
+  ]);
+}
+
+/**
  * Remove the object key at `path`, making it GENUINELY ABSENT (`null` != absent).
  * `old` is the OCC pre-image of the value being removed (same INVARIANT as `setField`).
  * Server-side `remove_pointer` handles object keys only — array-element removal still

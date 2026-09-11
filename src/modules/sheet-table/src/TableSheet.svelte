@@ -1,8 +1,8 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, setField } from "@shadowcat/ui-kit";
+  import { getAppContext, setField, setFields } from "@shadowcat/ui-kit";
   import { getPointer, firstChannel, type WireDocument, type TableEngine, type TableRow, type DrawRule } from "@shadowcat/core";
-  import { addRow, removeRow, moveRow, setRow } from "./rowOps";
+  import { addRow, removeRow, moveRow, setRow, normalizeRowsForDraw } from "./rowOps";
   import RowEditor from "./RowEditor.svelte";
 
   // Rollable-table sheet: name/description/draw-rule fields, a rows editor (whole-array
@@ -76,7 +76,12 @@
     setField(ctx, docId, descriptionPath, engine.description, value);
   }
 
-  /** Update `engine/draw` (the whole rule object).
+  /** Update `engine/draw` (the whole rule object) together with `engine/rows`, reshaped for
+   * the new rule via `normalizeRowsForDraw` — `TableEngine::validate` requires `range: None`
+   * under `Weighted` and `range: Some` under `Formula` for EVERY row, checked against the
+   * whole post-image, so switching rules while an existing row's `range` disagrees would be
+   * rejected by the server. Dispatched as ONE atomic Update (`setFields`) carrying both
+   * `FieldChange`s so the post-image is never a rule/rows mismatch.
    * @param value The replacement draw rule.
    * @example
    * ```
@@ -86,7 +91,10 @@
    */
   function setDraw(value: DrawRule): void {
     if (!doc || !engine) return;
-    setField(ctx, docId, drawPath, engine.draw, value);
+    setFields(ctx, docId, [
+      { path: drawPath, old: engine.draw, value },
+      { path: rowsPath, old: engine.rows, value: normalizeRowsForDraw(engine.rows, value) },
+    ]);
   }
 
   /** Update `engine/rows` (the whole array).

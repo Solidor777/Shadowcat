@@ -55,7 +55,7 @@ describe("TableSheet header", () => {
     expect(calls).toEqual([[{ op: "update", doc_id: "t1", changes: [{ path: "/engine/description", old: "", new: "New description" }] }]]);
   });
 
-  it("switching the draw rule to formula writes the WHOLE draw object and reveals the notation input", async () => {
+  it("switching the draw rule to formula writes the WHOLE draw object plus the reshaped rows, atomically, and reveals the notation input", async () => {
     const calls: unknown[] = [];
     const doc = buildTableDoc("w1", "Loot", engine(), { id: "t1" });
     const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
@@ -63,8 +63,66 @@ describe("TableSheet header", () => {
     const { getByTestId, queryByTestId } = render(TableSheet, { props: { docId: "t1", systemPrefix: "/system", close: () => {} }, context });
     expect(queryByTestId("table-notation")).toBeNull();
     await fireEvent.change(getByTestId("table-draw-rule"), { target: { value: "formula" } });
-    expect(calls).toEqual([[{ op: "update", doc_id: "t1", changes: [{ path: "/engine/draw", old: { kind: "weighted" }, new: { kind: "formula", notation: "1d20" } }] }]]);
+    expect(calls).toEqual([[{
+      op: "update", doc_id: "t1",
+      changes: [
+        { path: "/engine/draw", old: { kind: "weighted" }, new: { kind: "formula", notation: "1d20" } },
+        { path: "/engine/rows", old: [], new: [] },
+      ],
+    }]]);
     expect(getByTestId("table-notation")).toBeTruthy();
+  });
+
+  it("switching weighted to formula with existing rows dispatches ONE Update reshaping every row's range", async () => {
+    const weightedRows = [
+      { weight: 1, range: null, label: "a", results: [] },
+      { weight: 2, range: null, label: "b", results: [] },
+    ];
+    const calls: unknown[] = [];
+    const doc = buildTableDoc("w1", "Loot", engine(weightedRows), { id: "t1" });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(TableSheet, { props: { docId: "t1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.change(getByTestId("table-draw-rule"), { target: { value: "formula" } });
+    expect(calls).toEqual([[{
+      op: "update", doc_id: "t1",
+      changes: [
+        { path: "/engine/draw", old: { kind: "weighted" }, new: { kind: "formula", notation: "1d20" } },
+        {
+          path: "/engine/rows", old: weightedRows,
+          new: [
+            { weight: 1, range: { lo: 1, hi: 1 }, label: "a", results: [] },
+            { weight: 2, range: { lo: 1, hi: 1 }, label: "b", results: [] },
+          ],
+        },
+      ],
+    }]]);
+  });
+
+  it("switching formula to weighted with existing rows dispatches ONE Update clearing every row's range", async () => {
+    const formulaRows = [
+      { weight: 1, range: { lo: 1, hi: 10 }, label: "a", results: [] },
+      { weight: 2, range: { lo: 11, hi: 20 }, label: "b", results: [] },
+    ];
+    const calls: unknown[] = [];
+    const doc = buildTableDoc("w1", "Loot", { draw: { kind: "formula" as const, notation: "1d20" }, rows: formulaRows, description: "" }, { id: "t1" });
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByTestId } = render(TableSheet, { props: { docId: "t1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.change(getByTestId("table-draw-rule"), { target: { value: "weighted" } });
+    expect(calls).toEqual([[{
+      op: "update", doc_id: "t1",
+      changes: [
+        { path: "/engine/draw", old: { kind: "formula", notation: "1d20" }, new: { kind: "weighted" } },
+        {
+          path: "/engine/rows", old: formulaRows,
+          new: [
+            { weight: 1, range: null, label: "a", results: [] },
+            { weight: 2, range: null, label: "b", results: [] },
+          ],
+        },
+      ],
+    }]]);
   });
 
   it("draws to chat over the resolved channel with the count input's value", async () => {
