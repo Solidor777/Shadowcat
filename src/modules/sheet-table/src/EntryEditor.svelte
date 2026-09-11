@@ -103,7 +103,7 @@
     {#if docHits.length > 0}
       <ul class="hits">
         {#each docHits as hit (hit.document.id)}
-          <li><button type="button" onclick={() => { onChange({ kind: "doc", target: { kind: "doc", doc_id: hit.document.id, embedded_path: null }, label: entry.label || (hit.document.name ?? "") }); docQuery = ""; }}>{hit.document.name ?? hit.document.id}</button></li>
+          <li><button type="button" {disabled} onclick={() => { onChange({ kind: "doc", target: { kind: "doc", doc_id: hit.document.id, embedded_path: null }, label: entry.label || (hit.document.name ?? "") }); docQuery = ""; }}>{hit.document.name ?? hit.document.id}</button></li>
         {/each}
       </ul>
     {/if}
@@ -118,7 +118,7 @@
     {#if tableHits.length > 0}
       <ul class="hits">
         {#each tableHits as hit (hit.document.id)}
-          <li><button type="button" onclick={() => { onChange({ ...entry, table_id: hit.document.id }); tableQuery = ""; }}>{hit.document.name ?? hit.document.id}</button></li>
+          <li><button type="button" {disabled} onclick={() => { onChange({ ...entry, table_id: hit.document.id }); tableQuery = ""; }}>{hit.document.name ?? hit.document.id}</button></li>
         {/each}
       </ul>
     {/if}

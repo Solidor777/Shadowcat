@@ -1,4 +1,6 @@
 import { test, expect, vi } from "vitest";
+import { render } from "@testing-library/svelte";
+import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
   ContributionRegistry,
   silentLogger,
@@ -665,6 +667,40 @@ test("canCreate: a GM may create regardless of role_capabilities", async () => {
   push({ ...welcomeFrame, user_role: "gm", role_capabilities: { all: [], by_type: {} } });
   await vi.waitFor(() => expect(session.role).toBe("gm"));
   expect(session.canCreate("note")).toBe(true);
+});
+
+test("canCreate: a capability-only Welcome (same role, no other reactive field changing) refreshes a reactive read of it", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "player", role_capabilities: { all: [], by_type: {} } });
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const { getByTestId } = render(CanCheckProbe, { props: { session, docType: "note" } });
+  expect(getByTestId("probe-can-create").textContent).toBe("false");
+
+  // Second Welcome, SAME role, widening role_capabilities — nothing else about the
+  // session changes (role stays "player").
+  push({ ...welcomeFrame, user_role: "player", role_capabilities: { all: [], by_type: { note: ["core:create"] } } });
+  await vi.waitFor(() => expect(getByTestId("probe-can-create").textContent).toBe("true"));
+});
+
+test("canEdit: a capability-only Welcome (same role, no other reactive field changing) refreshes a reactive read of it", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player", empty world_default_grants
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const doc = actorWith({ default: "observer" });
+  const { getByTestId } = render(CanCheckProbe, { props: { session, doc, path: "/system/hp" } });
+  expect(getByTestId("probe-can-edit").textContent).toBe("false");
+
+  // Second Welcome, SAME role, widening world_default_grants for the document's resolved
+  // DocRole ("observer" — `worldGrants.by_role` is keyed by DocRole, not WorldRole) —
+  // nothing else about the session changes (role stays "player").
+  push({ ...welcomeFrame, user_role: "player", world_default_grants: { by_role: { observer: ["core:write_fields"] }, by_user: {} } });
+  await vi.waitFor(() => expect(getByTestId("probe-can-edit").textContent).toBe("true"));
 });
 
 test("canDelete: a GM may always delete; the author of a grantAuthor'd document may; a plain observer may not", async () => {

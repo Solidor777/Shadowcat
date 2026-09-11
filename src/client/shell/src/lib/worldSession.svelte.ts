@@ -233,14 +233,18 @@ export class WorldSession {
    * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
-   * to the advisory `canEdit` gate. Re-set on every (re)connect. */
-  #worldGrants: WireWelcome["world_default_grants"] = { by_role: {}, by_user: {} };
+   * to the advisory `canEdit` gate. Re-set on every (re)connect. `$state` so a capability-only
+   * Welcome (no other reactive field changing) still refreshes every `canEdit`-gated
+   * `{#if}` reading through it. */
+  #worldGrants: WireWelcome["world_default_grants"] = $state({ by_role: {}, by_user: {} });
   /** Module-declared write-capability requirements from the latest Welcome; the
-   * advisory-only half of `canEdit`'s `#requirements` caveat — see `canEdit`'s doc. */
-  #requirements: WireCapabilityRequirement[] = [];
+   * advisory-only half of `canEdit`'s `#requirements` caveat — see `canEdit`'s doc. `$state`
+   * for the same reactivity reason as `#worldGrants`. */
+  #requirements: WireCapabilityRequirement[] = $state([]);
   /** This connection's own projected world-level capabilities from the latest Welcome
-   * (`role_capabilities`); input to `canCreate`. Re-set on every (re)connect. */
-  #roleCaps: WireWelcome["role_capabilities"] = { all: [], by_type: {} };
+   * (`role_capabilities`); input to `canCreate`. Re-set on every (re)connect. `$state` so a
+   * capability-only Welcome refreshes every `canCreate`-gated `{#if}` reading through it. */
+  #roleCaps: WireWelcome["role_capabilities"] = $state({ all: [], by_type: {} });
 
   /** The live transport, constructed fresh in `enter()` and dropped in `leave()`;
    * `null` before the first `enter()` and after `leave()`. */

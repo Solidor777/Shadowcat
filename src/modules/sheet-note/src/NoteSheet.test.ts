@@ -121,6 +121,18 @@ describe("NoteSheet draft-base edit flow", () => {
   });
 });
 
+describe("NoteSheet read-only for a non-writer", () => {
+  it("hides the Edit control for a non-writer while still rendering the body", () => {
+    const doc = buildNoteDoc("w1", "Session 1", "# Hi", { id: "n1", owner: SELF });
+    doc.engine = { ...(doc.engine as object), body: [{ kind: "text", text: "Hello world" }] };
+    const documents = storeWith(doc, buildChannelRegistryDoc("w1", { general: { name: "General" } }));
+    const context = setAppContextForTest({ documents, canEdit: () => false });
+    const { queryByTestId, getByText } = render(NoteSheet, { props: { docId: "n1", systemPrefix: "/system", close: () => {} }, context });
+    expect(queryByTestId("note-edit")).toBeNull();
+    expect(getByText("Hello world")).toBeTruthy();
+  });
+});
+
 describe("NoteSheet visibility", () => {
   it("shows the visibility select for the author (grantAuthor's core:edit_permissions), gated by the REAL resolveCaps + canWritePath", async () => {
     const calls: unknown[] = [];
