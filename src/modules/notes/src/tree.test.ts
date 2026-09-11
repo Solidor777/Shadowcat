@@ -53,6 +53,17 @@ describe("buildNoteTree", () => {
     expect(tree[0].children).toEqual([]);
   });
 
+  it("interleaves a cycle-promoted root among ordinary roots by (engine.sort, created_at)", () => {
+    const before = buildNoteDoc("w1", "Before", "", { id: "a", sort: 0 });
+    const after = buildNoteDoc("w1", "After", "", { id: "c2", sort: 2 });
+    const cycleA = buildNoteDoc("w1", "CycleA", "", { id: "x", parentId: "y", sort: 1 });
+    cycleA.created_at = 0;
+    const cycleB = buildNoteDoc("w1", "CycleB", "", { id: "y", parentId: "x" });
+    cycleB.created_at = 1;
+    const tree = buildNoteTree([before, after, cycleA, cycleB]);
+    expect(tree.map((n) => n.doc.id)).toEqual(["a", "x", "c2"]);
+  });
+
   it("renders every note exactly once when a cycle coexists with a normal tree", () => {
     const root = buildNoteDoc("w1", "Root", "", { id: "r" });
     const child = buildNoteDoc("w1", "Child", "", { id: "c", parentId: "r" });
