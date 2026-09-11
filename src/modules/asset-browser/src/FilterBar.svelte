@@ -33,20 +33,20 @@
 
 <div class="filter-bar">
   <input
-    data-testid="filter-name"
+    data-testid="filter-query"
     type="search"
-    placeholder={filter.nameIsRegex ? t("assetBrowser.filterRegex") : t("assetBrowser.filterName")}
-    value={filter.name}
-    oninput={(e) => onChange({ ...filter, name: e.currentTarget.value })}
+    placeholder={filter.queryIsRegex ? t("assetBrowser.filterRegex") : t("assetBrowser.filterQuery")}
+    value={filter.query}
+    oninput={(e) => onChange({ ...filter, query: e.currentTarget.value })}
   />
   <button
     type="button"
     data-testid="filter-regex-toggle"
     class="regex"
-    class:active={filter.nameIsRegex}
-    aria-pressed={filter.nameIsRegex}
+    class:active={filter.queryIsRegex}
+    aria-pressed={filter.queryIsRegex}
     title={t("assetBrowser.filterRegex")}
-    onclick={() => onChange({ ...filter, nameIsRegex: !filter.nameIsRegex })}
+    onclick={() => onChange({ ...filter, queryIsRegex: !filter.queryIsRegex })}
   >.*</button>
 
   <span class="tags">

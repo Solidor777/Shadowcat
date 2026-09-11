@@ -47,7 +47,7 @@ fn parse_validates_every_parameter() {
         kind: Some("other".into()),
         sort: Some("size".into()),
         limit: Some(2),
-        name: Some("".into()),
+        q: Some("".into()),
         ..AssetQuery::default()
     };
     assert!(!q.is_bare());
@@ -55,7 +55,7 @@ fn parse_validates_every_parameter() {
     assert_eq!(p.filter.folder, Some(FolderFilter::Root));
     assert_eq!(p.filter.tags, vec!["hero".to_string(), "image".to_string()]);
     assert_eq!(p.filter.kind, Some(AssetKind::Other));
-    assert_eq!(p.filter.query, None, "empty name is no filter");
+    assert_eq!(p.filter.query, None, "empty query is no filter");
     assert_eq!(p.sort, AssetSort::Size);
     assert_eq!(p.limit, 2);
 
@@ -87,4 +87,17 @@ fn parse_validates_every_parameter() {
     ] {
         assert!(matches!(parse(bad), Err(AppError::BadRequest(_))));
     }
+}
+
+#[test]
+fn q_reaches_the_filter() {
+    // `AssetQuery` has no `name` field at all (the LIKE substring parameter
+    // is gone, not merely renamed) — `AssetQuery::default()` below, with
+    // only `q` set, is itself the compile-time proof.
+    let parsed = parse(AssetQuery {
+        q: Some("dragon".into()),
+        ..AssetQuery::default()
+    })
+    .unwrap();
+    assert_eq!(parsed.filter.query.as_deref(), Some("dragon"));
 }
