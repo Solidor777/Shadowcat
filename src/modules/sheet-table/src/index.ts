@@ -1,7 +1,7 @@
 import { sheetContract, TABLE_DOC_TYPE, type Module } from "@shadowcat/core";
 import TableSheet from "./TableSheet.svelte";
 
-export { addRow, removeRow, moveRow, setRow, defaultEntry } from "./rowOps";
+export { addRow, removeRow, moveRow, setRow, defaultEntry, nextFreeRange } from "./rowOps";
 
 /** Rollable-table sheet: registers `sheetContract(TABLE_DOC_TYPE)` at priority 0 — the
  * reference (and only, on this branch) sheet for the `table` doc_type. Draw/rows/entry

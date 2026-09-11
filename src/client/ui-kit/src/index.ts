@@ -20,7 +20,7 @@ export { sizeClass } from "./sizeClass.svelte";
 export type { SizeClass } from "./sizeClass.svelte";
 export { PanelsBridge } from "./panelsBridge.svelte";
 export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
-export { setField, setFields } from "./sheetEdit";
+export { setField, setFields, unsetField } from "./sheetEdit";
 export type { FieldEdit } from "./sheetEdit";
 export { default as SystemTreeEditor } from "./SystemTreeEditor.svelte";
 export { default as LightEmissionEditor } from "./LightEmissionEditor.svelte";
