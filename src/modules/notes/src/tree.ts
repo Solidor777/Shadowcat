@@ -146,5 +146,5 @@ export function buildNoteTree(notes: WireDocument[]): NoteTreeNode[] {
     result.push(build(component[0]));
   }
 
-  return result.sort(bySortThenCreated);
+  return result.sort((a, b) => bySortThenCreated(a.doc, b.doc));
 }
