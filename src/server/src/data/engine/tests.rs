@@ -1731,11 +1731,76 @@ fn search_text_message_contributes_content_not_kinds() {
         "user_owner": "44444444-4444-4444-4444-444444444444",
         "kind": "normal",
         "content": [ { "kind": "text", "text": "hail and well met" } ],
-        "source": "hail and well met",
+        "source": "/w @x hail and well met",
     });
     let text = search_text("message", &v).unwrap();
     assert!(text.contains("hail and well met"));
     assert!(!text.contains("normal"));
+    assert!(!text.contains("/w"));
+    assert!(!text.contains("general"));
+    assert!(!text.contains("44444444-4444-4444-4444-444444444444"));
+}
+
+#[test]
+fn search_text_light_gradation_contributes_band_names() {
+    let v = json!({
+        "bands": [
+            { "name": "bright", "minIllumination": 0.67 },
+            { "name": "dim", "minIllumination": 0.34 },
+        ]
+    });
+    let text = search_text("light-gradation", &v).unwrap();
+    assert!(text.contains("bright"));
+    assert!(text.contains("dim"));
+    assert!(!text.contains("0.67"));
+}
+
+#[test]
+fn search_text_token_contributes_override_name_not_other_fields() {
+    let v = json!({
+        "x": 1.0, "y": 2.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "overrides": {
+            "name": "Renamed Goblin",
+            "shape": "circle",
+        },
+    });
+    let text = search_text("token", &v).unwrap();
+    assert!(text.contains("Renamed Goblin"));
+    assert!(!text.contains("circle"));
+}
+
+#[test]
+fn search_text_combat_history_contributes_combatant_names_not_ids_or_permissions() {
+    let combatant_id = "55555555-5555-5555-5555-555555555555";
+    let v = json!({
+        "records": [
+            {
+                "round": 1,
+                "turn": "66666666-6666-6666-6666-666666666666",
+                "combatants": [
+                    {
+                        "id": combatant_id,
+                        "name": "Captured Goblin",
+                        "permissions": { "default": "none", "users": {}, "property_overrides": {} },
+                        "owner": null,
+                        "engine": {
+                            "kind": { "type": "event", "lifespan": null, "message": null },
+                            "initiative": null,
+                            "tiebreak": 0.0,
+                            "resources": {},
+                        },
+                        "system": {},
+                    }
+                ],
+                "effects": [],
+            }
+        ],
+        "cursor": 0,
+    });
+    let text = search_text("combat-history", &v).unwrap();
+    assert!(text.contains("Captured Goblin"));
+    assert!(!text.contains(combatant_id));
+    assert!(!text.contains("none"));
 }
 
 #[test]
@@ -1743,6 +1808,7 @@ fn search_text_channel_registry_contributes_display_names() {
     let v = json!({ "channels": { "general": { "name": "General Chat" } } });
     let text = search_text("channel-registry", &v).unwrap();
     assert!(text.contains("General Chat"));
+    assert!(!text.contains("general"));
 }
 
 #[test]
@@ -1762,6 +1828,7 @@ fn search_text_condition_registry_contributes_display_names_not_icons() {
     });
     let text = search_text("condition-registry", &v).unwrap();
     assert!(text.contains("Prone"));
+    assert!(!text.contains('🛌'));
 }
 
 #[test]
@@ -1773,6 +1840,7 @@ fn search_text_resource_registry_contributes_display_names() {
     });
     let text = search_text("resource-registry", &v).unwrap();
     assert!(text.contains("Hit Points"));
+    assert!(!text.contains("mirror"));
 }
 
 #[test]
@@ -1789,6 +1857,8 @@ fn search_text_vision_modes_contributes_display_names_not_ids() {
     });
     let text = search_text("vision-modes", &v).unwrap();
     assert!(text.contains("Darkvision"));
+    assert!(!text.contains("darkvision"));
+    assert!(!text.contains("dark"));
 }
 
 #[test]

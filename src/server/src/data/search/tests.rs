@@ -127,11 +127,14 @@ fn message_indexes_content_not_kinds() {
         "user_owner": "44444444-4444-4444-4444-444444444444",
         "kind": "normal",
         "content": [ { "kind": "text", "text": "hail and well met" } ],
-        "source": "hail and well met",
+        "source": "/w @x hail and well met",
     }));
     let c = index_content(&d);
     assert!(c.contains("hail and well met"));
     assert!(!c.contains("normal"));
+    assert!(!c.contains("/w"));
+    assert!(!c.contains("general"));
+    assert!(!c.contains("44444444-4444-4444-4444-444444444444"));
 }
 
 #[test]
@@ -164,24 +167,40 @@ fn name_gm_only_hides_from_public_index_but_gm_index_retains_it() {
 #[test]
 fn engine_leaf_gm_only_hides_from_public_index_but_gm_index_retains_it() {
     // A redacted NESTED engine leaf (not the whole `/engine` band) must
-    // still be absent from the public index — proves `index_content_public`'s
-    // redaction-first property covers the engine projection, not just the
-    // band root. `/engine/displayName` is the one field `search_text`'s
-    // `actor` arm reads, so overriding it is the direct probe.
-    let mut d = doc("actor", serde_json::json!({}));
-    d.engine = Some(actor_engine("Strahd"));
+    // still be absent from the public index, while a SIBLING engine leaf
+    // `search_text` also reads survives — proves `index_content_public`'s
+    // redaction covers the engine projection FIELD BY FIELD, not the band
+    // as an all-or-nothing unit. `table`'s `description` (`#[serde(default)]`,
+    // so removing the key still deserializes) and its `rows[].label` are two
+    // independently-addressable fields `search_text`'s `table` arm reads.
+    let mut d = doc("table", serde_json::json!({}));
+    d.engine = Some(serde_json::json!({
+        "draw": { "kind": "weighted" },
+        "description": "A pile of loot",
+        "rows": [
+            { "weight": 1, "label": "Treasure Chest", "results": [] }
+        ],
+    }));
     d.permissions
         .property_overrides
-        .insert("/engine/displayName".into(), Visibility::GmOnly);
+        .insert("/engine/description".into(), Visibility::GmOnly);
 
     let public = index_content_public(&d);
     assert!(
-        !public.contains("Strahd"),
+        !public.contains("A pile of loot"),
         "gm-only engine leaf leaked into the public index: {public}"
+    );
+    assert!(
+        public.contains("Treasure Chest"),
+        "a sibling, non-hidden engine leaf must still surface: {public}"
     );
 
     let full = index_content(&d);
-    assert!(full.contains("Strahd"), "GM index must retain the leaf");
+    assert!(
+        full.contains("A pile of loot"),
+        "GM index must retain the leaf"
+    );
+    assert!(full.contains("Treasure Chest"));
 }
 
 #[test]

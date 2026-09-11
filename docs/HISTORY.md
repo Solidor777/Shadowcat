@@ -2801,10 +2801,14 @@ text, never ids/kinds/`spec`/`raw`); `data::engine::search_text` (an explicit,
 exhaustive per-doc_type match mirroring `normalize_engine`'s shape and pinned
 by the same `ENGINE_DOC_TYPES` list `is_engine_doc_type` now reads from —
 `actor.displayName`, a note's derived `body`, a table's `description`/row
-`label`/`Text`/`Doc`/`Image` fields, a message's `content`, plus the
+`label`/`Text`/`Doc`/`Image` fields, a message's `content` (including an
+`OEmbed` segment's `provider_name` alongside its title/author), plus the
 config-singleton registries' own display-name fields the field-by-field
 audit surfaced: `Channel.name`, `Faction.name`, `Condition.name`,
-`Resource.name`, `VisionMode.name` — every other registered type empty);
+`Resource.name`, `VisionMode.name`, `GradationBand.name`,
+`TokenOverrides.name` (a token's own override, when present), and
+`CapturedCombatant.name` across a `CombatHistoryEngine` record's
+`combatants` — every other registered type empty);
 `data::search::index_content` now composes `name` + `search_text` + the
 `system` leaf sweep, with `doc_type` itself no longer indexed (D1); both FTS
 document tables gain a `doc_type UNINDEXED` column and `Repository::search`/
