@@ -2938,9 +2938,18 @@ Branch `m20-module-suite`, cut from `main`, executed from the approved plan
   GM and an invited player; the tables flow's row-add/draw/quick-draw with
   both the GM's and the player's chat cards asserted, including the roll
   tooltip trigger `SegmentList` renders unconditionally for a `table_draw`
-  segment on every recipient) are WRITTEN, TYPECHECKED and LINTED but NOT
-  RUN by this branch — port 31999 is dispatcher-serialized; they are not
-  "done" until the dispatcher has observed them pass.
+  segment on every recipient) PASS under the dispatcher-serialized run on
+  port 31999.
+- **Derived engine paths are capability-gated like any other write.** A
+  server-derived engine path (`data::engine::derived_engine_paths`, today
+  only `NoteEngine::derive_body`'s `/engine/body`) rides an Update's
+  returned `Command`, the `world_events` log, and the broadcast as an extra
+  `FieldChange` alongside the caller's own requested changes
+  (`data::validation::derive_engine_side_effects`), and — for a
+  client-origin write — is checked against the same declared
+  `CapabilityRequirement`s (`data::permission::declared_caps_for_path`) any
+  other write to that path would need, using the SAME `Access` Phase 1
+  already resolved for the actor rather than re-resolving it in Phase 2.
 Decisions taken (full log: design doc §11, M1–M18): four packages, one per
 doc family/sheet type (M1); markdown + server-derived-body rendering, no
 second `{@html}` sink (M2); the draft's BASE as the note-save OCC pre-image
