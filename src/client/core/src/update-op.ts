@@ -1,6 +1,6 @@
 // Shared field-level Update operation builder for any document editor (sheets, combat, scene
 // tools, ...). Consumers own their own field paths and OCC pre-images; this only shapes the wire
-// frame, mirroring `move-op.ts`'s role for the `move` operation.
+// frame, mirroring `buildMoveOp`'s role for the `move` operation.
 import type { WireOperation } from "./wire";
 
 /**

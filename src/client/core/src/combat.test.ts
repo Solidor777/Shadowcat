@@ -341,6 +341,9 @@ describe("CombatController document helpers", () => {
     expect(defaultOp.changes[0].new).toBe("none");
     const usersOp = ops[1] as Extract<WireOperation, { op: "update" }>;
     expect(usersOp.changes[0].remove).toBe(true);
+    // INVARIANT: a remove change still carries `new: null` because `FieldChange.new` is a
+    // required wire field with no serde default -- an omitted `new` fails deserialization.
+    expect(usersOp.changes[0].new).toBeNull();
 
     dispatchIntent.mockClear();
     combat.setHidden("cc-1", false);

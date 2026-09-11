@@ -60,4 +60,12 @@ describe("buildUpdate", () => {
       changes: [{ path: "/system/tempFlag", old: true, new: null, remove: true }],
     });
   });
+
+  it("builds a remove-shaped change with old absent", () => {
+    expect(buildUpdate("doc-1", [{ path: "/system/tempFlag", remove: true }])).toEqual({
+      op: "update",
+      doc_id: "doc-1",
+      changes: [{ path: "/system/tempFlag", old: null, new: null, remove: true }],
+    });
+  });
 });
