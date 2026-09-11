@@ -31,6 +31,8 @@
   import { sheetFallback } from "@shadowcat/module-sheet-fallback";
   import { sheetActor } from "@shadowcat/module-sheet-actor";
   import { sheetItem } from "@shadowcat/module-sheet-item";
+  import { sheetNote } from "@shadowcat/module-sheet-note";
+  import { sheetTable } from "@shadowcat/module-sheet-table";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -178,7 +180,7 @@
     const s = new WorldSession({
       selfId: me.id,
       connect: webSocketConnect(wsUrl),
-      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem],
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable],
       onEvicted: () => leaveWorld(),
       onReject: (reason) => notifications.push("warning", t(`intent.rejected.${reason}`)),
     });

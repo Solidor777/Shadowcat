@@ -195,6 +195,12 @@ importers:
       '@shadowcat/module-sheet-item':
         specifier: workspace:*
         version: link:../../modules/sheet-item
+      '@shadowcat/module-sheet-note':
+        specifier: workspace:*
+        version: link:../../modules/sheet-note
+      '@shadowcat/module-sheet-table':
+        specifier: workspace:*
+        version: link:../../modules/sheet-table
       '@shadowcat/module-stage':
         specifier: workspace:*
         version: link:../../modules/stage
@@ -624,6 +630,50 @@ importers:
         version: 1.101.0
 
   src/modules/sheet-item:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/sheet-note:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/sheet-table:
     dependencies:
       '@shadowcat/core':
         specifier: workspace:*

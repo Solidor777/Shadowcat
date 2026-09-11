@@ -58,6 +58,8 @@ export default defineConfig({
             { text: "chat-card", link: "/modules/chat-card" },
             { text: "sheet-actor", link: "/modules/sheet-actor" },
             { text: "sheet-item", link: "/modules/sheet-item" },
+            { text: "sheet-note", link: "/modules/sheet-note" },
+            { text: "sheet-table", link: "/modules/sheet-table" },
           ],
         },
       ],

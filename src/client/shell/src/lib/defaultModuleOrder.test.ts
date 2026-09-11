@@ -18,6 +18,8 @@ import { defaultLayout } from "@shadowcat/module-panels";
 import { sheetFallback } from "@shadowcat/module-sheet-fallback";
 import { sheetActor } from "@shadowcat/module-sheet-actor";
 import { sheetItem } from "@shadowcat/module-sheet-item";
+import { sheetNote } from "@shadowcat/module-sheet-note";
+import { sheetTable } from "@shadowcat/module-sheet-table";
 import { SHEET_FALLBACK_CONTRACT, sheetContract } from "@shadowcat/core";
 
 // Every panel-contributing module in `App`'s default set, registered in the
@@ -58,13 +60,15 @@ describe("default module set — default docked panel", () => {
 });
 
 describe("sheet modules contribute sheets, not panels", () => {
-  it("the three sheet modules register sheet contracts and no shadowcat.panel", () => {
+  it("the five sheet modules register sheet contracts and no shadowcat.panel", () => {
     const contributions = new ContributionRegistry();
     const ctx = { contributions, hooks: { on: () => () => {} } } as never;
-    for (const m of [sheetFallback, sheetActor, sheetItem]) m.register(ctx);
+    for (const m of [sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable]) m.register(ctx);
     expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
     expect(contributions.entriesFor(SHEET_FALLBACK_CONTRACT)).toHaveLength(1);
     expect(contributions.entriesFor(sheetContract("actor"))).toHaveLength(1);
     expect(contributions.entriesFor(sheetContract("item"))).toHaveLength(1);
+    expect(contributions.entriesFor(sheetContract("note"))).toHaveLength(1);
+    expect(contributions.entriesFor(sheetContract("table"))).toHaveLength(1);
   });
 });

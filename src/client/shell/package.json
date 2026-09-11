@@ -28,6 +28,8 @@
     "@shadowcat/module-sheet-fallback": "workspace:*",
     "@shadowcat/module-sheet-actor": "workspace:*",
     "@shadowcat/module-sheet-item": "workspace:*",
+    "@shadowcat/module-sheet-note": "workspace:*",
+    "@shadowcat/module-sheet-table": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },
