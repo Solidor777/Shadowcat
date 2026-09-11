@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { buildNoteDoc, parseNoteBody, NOTE_DOC_TYPE } from "./note-docs";
+import { AUTHOR_CAPS } from "./scene-docs";
 import type { WireDocument } from "./wire";
 
 describe("buildNoteDoc", () => {
@@ -19,10 +20,13 @@ describe("buildNoteDoc", () => {
     expect(doc.permissions.users).toEqual({});
   });
 
-  test("grants the author Owner when opts.owner is given", () => {
+  test("grants the author Owner plus AUTHOR_CAPS when opts.owner is given", () => {
     const doc = buildNoteDoc("w1", null, "hello", { owner: "gm-1" });
     expect(doc.permissions.default).toBe("none");
     expect(doc.permissions.users).toEqual({ "gm-1": "owner" });
+    for (const cap of AUTHOR_CAPS) {
+      expect(doc.permissions.capabilities.by_role.owner).toContain(cap);
+    }
   });
 
   test("carries parentId and sort into the engine body and envelope", () => {

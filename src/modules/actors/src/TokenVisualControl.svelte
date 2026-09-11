@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { resolveTokenActor, type WireDocument, type TokenEngine, type TokenOverrides, type TokenVisual, type Condition, type ConditionRegistryEngine } from "@shadowcat/core";
+  import { resolveTokenActor, buildUpdate, type WireDocument, type TokenEngine, type TokenOverrides, type TokenVisual, type Condition, type ConditionRegistryEngine } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
 
   const ctx = getAppContext();
@@ -98,7 +98,7 @@
     const visual = $state.snapshot(pendingVisual);
     if (!visual) return;
     const old = rawOverrides(tok)?.visual ?? null;
-    ctx.dispatchIntent([{ op: "update", doc_id: tok.id, changes: [{ path: "/engine/overrides/visual", old, new: visual }] }]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/overrides/visual", old, value: visual }])]);
   }
 
   /**
@@ -117,7 +117,7 @@
     const tok = linkedToken;
     if (!tok || !ctx.canEdit(tok, "/engine/overrides")) return;
     const old = rawOverrides(tok)?.visual ?? null;
-    ctx.dispatchIntent([{ op: "update", doc_id: tok.id, changes: [{ path: "/engine/overrides/visual", old, new: null }] }]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/overrides/visual", old, value: null }])]);
   }
 </script>
 

@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
 import { buildTableDoc, TABLE_DOC_TYPE } from "./table-docs";
+import { AUTHOR_CAPS } from "./scene-docs";
 import type { TableEngine } from "@shadowcat/types";
 
 const engine: TableEngine = {
@@ -21,8 +22,16 @@ describe("buildTableDoc", () => {
   });
 
   test("uses the explicit id when given", () => {
-    const doc = buildTableDoc("w1", "Loot", engine, "t1");
+    const doc = buildTableDoc("w1", "Loot", engine, { id: "t1" });
     expect(doc.id).toBe("t1");
+  });
+
+  test("grants the author Owner plus AUTHOR_CAPS when opts.owner is given", () => {
+    const doc = buildTableDoc("w1", "Loot", engine, { owner: "gm-1" });
+    expect(doc.permissions.users).toEqual({ "gm-1": "owner" });
+    for (const cap of AUTHOR_CAPS) {
+      expect(doc.permissions.capabilities.by_role.owner).toContain(cap);
+    }
   });
 
   test("a Formula table's RowRange bounds are plain numbers that survive JSON.stringify", () => {

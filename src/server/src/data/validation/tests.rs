@@ -1106,3 +1106,91 @@ fn normalized_engine_pre_image_declines_non_engine_paths_and_unparseable_pre_ima
     )
     .is_none());
 }
+
+#[test]
+fn derive_engine_side_effects_reports_an_unrequested_key_that_changed() {
+    let pre = serde_json::json!({ "source": "old", "body": [], "sort": 0 });
+    let post = serde_json::json!({ "source": "new", "body": ["derived"], "sort": 0 });
+    let requested: std::collections::HashSet<String> =
+        ["/engine/source".to_string()].into_iter().collect();
+    let extra = derive_engine_side_effects("note", Some(&pre), Some(&post), &requested);
+    assert_eq!(extra.len(), 1);
+    assert_eq!(extra[0].path, "/engine/body");
+    assert_eq!(extra[0].old, serde_json::json!([]));
+    assert_eq!(extra[0].new, serde_json::json!(["derived"]));
+    assert!(!extra[0].remove);
+}
+
+#[test]
+fn derive_engine_side_effects_skips_a_key_already_covered_by_requested_paths() {
+    let pre = serde_json::json!({ "source": "old", "body": [] });
+    let post = serde_json::json!({ "source": "old", "body": ["derived"] });
+    let requested: std::collections::HashSet<String> =
+        ["/engine/body".to_string()].into_iter().collect();
+    assert!(derive_engine_side_effects("note", Some(&pre), Some(&post), &requested).is_empty());
+}
+
+#[test]
+fn derive_engine_side_effects_skips_a_nested_overlapping_request() {
+    // A nested request naming `/engine/body/0` overlaps the whole derived
+    // `/engine/body` path -- the same three-way overlap rule
+    // `declared_caps_for_path` uses, not an exact-match skip.
+    let pre = serde_json::json!({ "source": "old", "body": ["a"] });
+    let post = serde_json::json!({ "source": "old", "body": ["b"] });
+    let requested: std::collections::HashSet<String> =
+        ["/engine/body/0".to_string()].into_iter().collect();
+    assert!(derive_engine_side_effects("note", Some(&pre), Some(&post), &requested).is_empty());
+}
+
+#[test]
+fn derive_engine_side_effects_short_circuits_on_a_whole_band_request() {
+    let pre = serde_json::json!({ "source": "old", "body": [] });
+    let post = serde_json::json!({ "source": "new", "body": ["derived"] });
+    let requested: std::collections::HashSet<String> =
+        ["/engine".to_string()].into_iter().collect();
+    assert!(derive_engine_side_effects("note", Some(&pre), Some(&post), &requested).is_empty());
+}
+
+#[test]
+fn derive_engine_side_effects_reports_nothing_when_nothing_changed() {
+    let engine = serde_json::json!({ "source": "same", "body": ["x"] });
+    let requested: std::collections::HashSet<String> = std::collections::HashSet::new();
+    assert!(
+        derive_engine_side_effects("note", Some(&engine), Some(&engine), &requested).is_empty()
+    );
+}
+
+#[test]
+fn derive_engine_side_effects_ignores_semantically_equal_numeric_noise() {
+    // `values_semantically_eq`, not raw `Value` equality: a whole-number
+    // round trip through the typed normalizer must never register as a
+    // derived change. `note` is the only doc_type registering a derived
+    // path today, so the registry itself is exercised with a stand-in
+    // shape rather than a real `NoteEngine` (whose `body` is a segment
+    // list, not a bare number) to isolate the comparator behavior.
+    let pre = serde_json::json!({ "body": 30 });
+    let post = serde_json::json!({ "body": 30.0 });
+    let requested: std::collections::HashSet<String> = std::collections::HashSet::new();
+    assert!(derive_engine_side_effects("note", Some(&pre), Some(&post), &requested).is_empty());
+}
+
+#[test]
+fn derive_engine_side_effects_handles_absent_engine_bands() {
+    let requested: std::collections::HashSet<String> = std::collections::HashSet::new();
+    assert!(derive_engine_side_effects("note", None, None, &requested).is_empty());
+    let post = serde_json::json!({ "source": "new" });
+    assert!(derive_engine_side_effects("note", None, Some(&post), &requested).is_empty());
+}
+
+#[test]
+fn derive_engine_side_effects_reports_nothing_for_a_doc_type_with_no_registered_derivation() {
+    // A token Update naming a nested path whose normalization coerces an
+    // int to a float must surface ZERO extra changes -- `token` registers
+    // no derived paths at all, so the registry-scoped walk never touches
+    // its band regardless of what changed in it.
+    let pre = serde_json::json!({ "size": { "w": 1 } });
+    let post = serde_json::json!({ "size": { "w": 1.0 } });
+    let requested: std::collections::HashSet<String> =
+        ["/engine/size/w".to_string()].into_iter().collect();
+    assert!(derive_engine_side_effects("token", Some(&pre), Some(&post), &requested).is_empty());
+}

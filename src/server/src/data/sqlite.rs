@@ -649,6 +649,16 @@ impl Repository for SqliteRepository {
                         let pre_owner = Self::load_effective_owner(&mut *tx, &pre_doc).await?;
                         pre_owners.insert(*doc_id, pre_owner);
                     }
+                    // Captured before this op's own `changes` apply — the
+                    // TRUE stored pre-image `derive_engine_side_effects`
+                    // diffs against below, to surface a normalize-time side
+                    // effect on an engine key none of this op's own `changes`
+                    // named (e.g. `NoteEngine::derive_body`). Capturing after
+                    // the `apply_field_change` loop would compare the
+                    // post-`changes`, pre-normalize value against itself,
+                    // reporting the wrong `old` for a nested request this
+                    // op's own change already applied.
+                    let pre_engine = value.get("engine").cloned();
                     for ch in changes {
                         // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
@@ -693,7 +703,9 @@ impl Repository for SqliteRepository {
                     // identical normalized value the row was stored with
                     // -- never the raw submitted JSON.
                     let normalized_doc_json = serde_json::to_value(&doc)?;
-                    let normalized_changes: Vec<FieldChange> = changes
+                    let requested_paths: std::collections::HashSet<String> =
+                        changes.iter().map(|ch| ch.path.clone()).collect();
+                    let mut normalized_changes: Vec<FieldChange> = changes
                         .iter()
                         .map(|ch| {
                             if ch.path == "/engine" || ch.path.starts_with("/engine/") {
@@ -709,6 +721,20 @@ impl Repository for SqliteRepository {
                             ch.clone()
                         })
                         .collect();
+                    // A normalize-time derivation (e.g. `NoteEngine::derive_body`) can change
+                    // an engine key none of this op's own `changes` named — surface those too,
+                    // or the broadcast/log/author's own optimistic store never see them.
+                    // apply_command is the trusted substrate (undo/replay) and skips
+                    // capability/schema/size checks by design (zero production callers), so a
+                    // derived path's declared capability requirements are not re-checked here
+                    // either -- the same trust-level rationale as every other check this arm
+                    // skips.
+                    normalized_changes.extend(crate::data::validation::derive_engine_side_effects(
+                        &doc.doc_type,
+                        pre_engine.as_ref(),
+                        doc.engine.as_ref(),
+                        &requested_paths,
+                    ));
                     normalized_ops.push(Operation::Update {
                         doc_id: *doc_id,
                         changes: normalized_changes,
@@ -940,6 +966,15 @@ impl Repository for SqliteRepository {
         // captured", its `None` value means "captured, no owner".
         let mut pre_owners: std::collections::HashMap<Uuid, Option<Uuid>> =
             std::collections::HashMap::new();
+        // Phase 1's resolved `Access` for each `Operation::Update`, ONE entry
+        // per Update op, pushed in the same relative order those ops appear
+        // in `ops` (an id may recur across several Update ops; each gets its
+        // own entry). Phase 2 threads this through to gate a normalize-time
+        // derived engine change (`derive_engine_side_effects`) against the
+        // world's declared capability requirements — reusing the capability
+        // set Phase 1 already resolved for this exact actor/document/origin,
+        // never re-resolving access in Phase 2.
+        let mut update_access: Vec<Access> = Vec::new();
         // A stamp whose template is CREATED in this same batch cannot load it
         // from the store yet (nothing is written before the loop below), so
         // the batch's own Creates are consulted first, by id — only the ones
@@ -1174,9 +1209,7 @@ impl Repository for SqliteRepository {
                     // unborn same-command parent is left to the FK at apply
                     // time, so batched scene+children creates still pass.
                     if doc.parent_id == Some(doc.id) {
-                        return Err(DataError::OpFailed(
-                            "document cannot be its own parent".into(),
-                        ));
+                        return Err(Self::self_parent_error());
                     }
                     // `system-defaults` is server-authored: its content mirrors
                     // the installed system package's declaration, so every
@@ -1454,8 +1487,22 @@ impl Repository for SqliteRepository {
                             upd_owner,
                         )
                     };
+                    // Recorded for Phase 2's derived-path capability check
+                    // before any per-change validation below can reject this
+                    // op -- an error return here never reaches Phase 2, so
+                    // pushing early does not desync the two phases' op order.
+                    update_access.push(access.clone());
                     // Field-level OCC: every change's pre-image must equal the
                     // current value at its pointer (absent reads as Null).
+                    // INVARIANT: `cur` is this op's OWN `load_document` read of
+                    // the not-yet-written transaction, never a simulation of an
+                    // earlier same-batch op's changes — a second `Update` to the
+                    // same document whose `old` names an earlier op's `new` in
+                    // this batch reads the pre-batch stored value and Conflicts.
+                    // The client's `buildUpdate` is the intended single-Update
+                    // shape for same-document edits: it coalesces every field
+                    // into one `FieldEdit[]` batch rather than issuing several
+                    // Updates to the same doc in one command.
                     let whole = serde_json::to_value(&cur)?;
                     for ch in &*changes {
                         validation::validate_field_change(ch)?;
@@ -1724,6 +1771,12 @@ impl Repository for SqliteRepository {
 
         // Phase 2 — allocate seq, apply, log. Identical machinery to
         // apply_command; authorization above has already cleared every op.
+        // Consumes `update_access` in order: `authoritative_ops` preserves
+        // the relative order of every `Operation::Update` from `ops`
+        // (Delete expansion is the only reordering, and it never touches
+        // Update), so the Nth Update encountered here is always the Nth
+        // entry Phase 1 pushed.
+        let mut update_access_iter = update_access.into_iter();
         let seq: i64 = sqlx::query("UPDATE worlds SET seq = seq + 1 WHERE id = ? RETURNING seq")
             .bind(world_id.to_string())
             .fetch_optional(&mut *tx)
@@ -1799,6 +1852,16 @@ impl Repository for SqliteRepository {
                         .ok_or(DataError::NotFound)?;
                     let mut value: serde_json::Value =
                         serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    // Captured before this op's own `changes` apply — the
+                    // TRUE stored pre-image `derive_engine_side_effects`
+                    // diffs against below, to surface a normalize-time side
+                    // effect on an engine key none of this op's own `changes`
+                    // named (e.g. `NoteEngine::derive_body`). Capturing after
+                    // the `apply_field_change` loop would compare the
+                    // post-`changes`, pre-normalize value against itself,
+                    // reporting the wrong `old` for a nested request this
+                    // op's own change already applied.
+                    let pre_engine = value.get("engine").cloned();
                     for ch in changes {
                         // THE `apply_field_change` mutation rule. Never
                         // re-derive the remove/set branch here: the derived scene ECS
@@ -1848,6 +1911,52 @@ impl Repository for SqliteRepository {
                     // covers both the merged and the derived shape.
                     validation::validate_system_size(&doc)?;
                     validation::validate_containment(&doc)?;
+                    // The doc is already fully normalized at this point (the
+                    // second `validate_system_size` above ran against the
+                    // SAME post-`validate_engine_tree` value), so the true
+                    // derived side effects can be computed and capability-
+                    // gated here, BEFORE anything is written -- fail closed,
+                    // nothing stored, on a denial.
+                    let requested_paths_for_derived: std::collections::HashSet<String> =
+                        changes.iter().map(|ch| ch.path.clone()).collect();
+                    let derived_changes_preview =
+                        crate::data::validation::derive_engine_side_effects(
+                            &doc.doc_type,
+                            pre_engine.as_ref(),
+                            doc.engine.as_ref(),
+                            &requested_paths_for_derived,
+                        );
+                    // Phase 1's resolved `Access` for this exact Update op —
+                    // never re-resolved here (see `update_access`'s doc
+                    // comment). Absent only for a capability-skipping origin
+                    // (`CombatTransition`/`TemplateMerge`/`ConfigSeed`), which
+                    // this check exempts the same way `declared_caps_for_path`
+                    // is exempted for every other write path in Phase 1 above
+                    // — a capability-skipping origin's authorization is
+                    // vetted entirely elsewhere (see the Phase-1 doc comments
+                    // beside `origin.skips_capability_gates()`), and a
+                    // derived engine path is no exception to that trust.
+                    if !origin.skips_capability_gates() {
+                        let access_for_derived = update_access_iter
+                            .next()
+                            .expect("one Access recorded per Update op in Phase 1");
+                        for extra in &derived_changes_preview {
+                            for cap_needed in declared_caps_for_path(&extra.path, &world_reqs) {
+                                if !access_for_derived.has(cap_needed) {
+                                    tracing::debug!(
+                                        user = %ctx.user_id, path = %extra.path, capability = cap_needed,
+                                        "intent denied: missing declared capability on a derived engine path"
+                                    );
+                                    return Err(DataError::Forbidden);
+                                }
+                            }
+                        }
+                    } else {
+                        // Keep the iterator in lockstep with Phase 1's push
+                        // order even when this op's check is skipped — Phase
+                        // 1 still pushed an entry for it.
+                        update_access_iter.next();
+                    }
                     // One-active-combat-per-scene is validated ONLY in Phase
                     // 1 (see `apply_intent`'s Update arm there, and the
                     // `scene_owner` doc comment) -- this phase trusts that
@@ -1884,7 +1993,7 @@ impl Repository for SqliteRepository {
                     // untouched: only the structurally-typed engine band goes
                     // through `validate_engine_tree`.
                     let normalized_doc_json = serde_json::to_value(&doc)?;
-                    let normalized_changes: Vec<FieldChange> = changes
+                    let mut normalized_changes: Vec<FieldChange> = changes
                         .iter()
                         .map(|ch| {
                             if ch.path == "/engine" || ch.path.starts_with("/engine/") {
@@ -1900,6 +2009,12 @@ impl Repository for SqliteRepository {
                             ch.clone()
                         })
                         .collect();
+                    // A normalize-time derivation (e.g. `NoteEngine::derive_body`) can change
+                    // an engine key none of this op's own `changes` named — surface those too,
+                    // or the broadcast/log/author's own optimistic store never see them.
+                    // Reuses `derived_changes_preview`, already computed and
+                    // capability-gated above — never recomputed here.
+                    normalized_changes.extend(derived_changes_preview);
                     normalized_ops.push(Operation::Update {
                         doc_id: *doc_id,
                         changes: normalized_changes,

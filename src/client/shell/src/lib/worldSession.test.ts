@@ -1,4 +1,6 @@
 import { test, expect, vi } from "vitest";
+import { render } from "@testing-library/svelte";
+import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
   ContributionRegistry,
   silentLogger,
@@ -12,6 +14,8 @@ import {
   buildCombatDoc,
   newCombatEngine,
   COMBAT_SERVICE,
+  grantAuthor,
+  buildNoteDoc,
   type Connect,
   type WireDocument,
   type Module,
@@ -243,6 +247,38 @@ test("evicted frame surfaces through onEvicted", async () => {
   await session.enter("w1");
   push({ type: "evicted", user: null });
   await vi.waitFor(() => expect(onEvicted).toHaveBeenCalledOnce());
+});
+
+test("a reject frame calls onReject with the reason AND rolls back the optimistic prediction", async () => {
+  let push!: (frame: unknown) => void;
+  const sent: Array<Record<string, unknown>> = [];
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({
+      send: (frame: string) => sent.push(JSON.parse(frame) as Record<string, unknown>),
+      close: () => handlers.onClose(),
+    });
+  };
+  const onReject = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onReject,
+  });
+  await session.enter("w1");
+
+  const doc = buildActorDoc("w1", "G", { displayName: "G", visual: { kind: "image", asset: "a" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: null });
+  session.dispatchIntent([{ op: "create", doc }]);
+  expect(session.documents.get(doc.id)).toBeDefined(); // optimistic prediction applied
+
+  const intent = sent.find((f) => f.type === "intent") as { intent_id: string };
+  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden" });
+
+  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden"));
+  expect(session.documents.get(doc.id)).toBeUndefined(); // rolled back
 });
 
 function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
@@ -607,6 +643,88 @@ test("canEdit: a GM bypasses the capability check", async () => {
   await vi.waitFor(() => expect(session.role).toBe("gm"));
   const locked = actorWith({ default: "observer" });
   expect(session.canEdit(locked, "/system/conditions")).toBe(true);
+});
+
+test("canCreate: a GM may always create; a player needs a matching role_capabilities grant", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({
+    ...welcomeFrame,
+    user_role: "player",
+    role_capabilities: { all: [], by_type: { note: ["core:create"] } },
+  });
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(session.canCreate("note")).toBe(true);
+  expect(session.canCreate("table")).toBe(false);
+});
+
+test("canCreate: a GM may create regardless of role_capabilities", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm", role_capabilities: { all: [], by_type: {} } });
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+  expect(session.canCreate("note")).toBe(true);
+});
+
+test("canCreate: a capability-only Welcome (same role, no other reactive field changing) refreshes a reactive read of it", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "player", role_capabilities: { all: [], by_type: {} } });
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const { getByTestId } = render(CanCheckProbe, { props: { session, docType: "note" } });
+  expect(getByTestId("probe-can-create").textContent).toBe("false");
+
+  // Second Welcome, SAME role, widening role_capabilities — nothing else about the
+  // session changes (role stays "player").
+  push({ ...welcomeFrame, user_role: "player", role_capabilities: { all: [], by_type: { note: ["core:create"] } } });
+  await vi.waitFor(() => expect(getByTestId("probe-can-create").textContent).toBe("true"));
+});
+
+test("canEdit: a capability-only Welcome (same role, no other reactive field changing) refreshes a reactive read of it", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player", empty world_default_grants
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const doc = actorWith({ default: "observer" });
+  const { getByTestId } = render(CanCheckProbe, { props: { session, doc, path: "/system/hp" } });
+  expect(getByTestId("probe-can-edit").textContent).toBe("false");
+
+  // Second Welcome, SAME role, widening world_default_grants for the document's resolved
+  // DocRole ("observer" — `worldGrants.by_role` is keyed by DocRole, not WorldRole) —
+  // nothing else about the session changes (role stays "player").
+  push({ ...welcomeFrame, user_role: "player", world_default_grants: { by_role: { observer: ["core:write_fields"] }, by_user: {} } });
+  await vi.waitFor(() => expect(getByTestId("probe-can-edit").textContent).toBe("true"));
+});
+
+test("canDelete: a GM may always delete; the author of a grantAuthor'd document may; a plain observer may not", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player"
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const doc = grantAuthor(buildNoteDoc("w1", "N", ""), "u-self");
+  expect(session.canDelete(doc)).toBe(true);
+
+  const observed = { ...doc, permissions: { ...doc.permissions, users: {} } };
+  expect(session.canDelete(observed)).toBe(false);
+});
+
+test("canDelete: a GM bypasses the capability check", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+  const doc = actorWith({ default: "observer" });
+  expect(session.canDelete(doc)).toBe(true);
 });
 
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {

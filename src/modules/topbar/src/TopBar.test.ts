@@ -16,6 +16,7 @@ function boundBridge(): { bridge: PanelsBridge; toggles: string[] } {
     close: () => {},
     focus: () => {},
     toggle: (id) => toggles.push(id),
+    isOpen: () => false,
     restore: () => {},
     minimized: [],
     metaMap: new Map([["chat:panel", { icon: "💬", labelKey: "chat.tab" }]]),

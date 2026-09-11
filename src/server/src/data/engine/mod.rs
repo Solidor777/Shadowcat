@@ -123,6 +123,35 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "note",
 ];
 
+/// Every `/engine/<key>` path a `doc_type`'s `normalize_engine` arm can
+/// rewrite BEYOND the path a caller's own `FieldChange`s named — the single
+/// source `data::validation::derive_engine_side_effects` consults to decide
+/// which top-level engine keys to diff at all. The only such derivation
+/// today is `NoteEngine::derive_body` (the `"note"` arm of `normalize_engine`
+/// above), which rewrites `/engine/body` from `/engine/source`; every other
+/// registered doc_type derives nothing beyond what it was asked to write, so
+/// it names an empty slice. INVARIANT: any `derive_*` call added to
+/// `normalize_engine`'s match MUST register the path(s) it rewrites here —
+/// this registry is what surfaces a server-derived value to the broadcast,
+/// the `world_events` log, and the author's own optimistic store; a
+/// derivation absent from it would sit correctly in the stored row while
+/// every live view of the document keeps showing the pre-derivation value.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::derived_engine_paths;
+///
+/// assert_eq!(derived_engine_paths("note"), &["/engine/body"]);
+/// assert!(derived_engine_paths("token").is_empty());
+/// ```
+pub fn derived_engine_paths(doc_type: &str) -> &'static [&'static str] {
+    match doc_type {
+        "note" => &["/engine/body"],
+        _ => &[],
+    }
+}
+
 /// Whether `doc_type` carries a typed `engine` band. The registry is a
 /// hardcoded list — there is no dynamic registration (the server runs no
 /// third-party code).

@@ -8,7 +8,7 @@
   // senses" (wholesale replacement with no entries).
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, VisionAssignmentsEditor } from "@shadowcat/ui-kit";
-  import { resolveTokenActor, resolveVisionModes, type WireDocument, type TokenEngine, type TokenOverrides, type VisionAssignment, type VisionMode } from "@shadowcat/core";
+  import { resolveTokenActor, resolveVisionModes, buildUpdate, type WireDocument, type TokenEngine, type TokenOverrides, type VisionAssignment, type VisionMode } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -74,9 +74,7 @@
     if (!tok || !editable) return;
     const cur = engine?.overrides ?? null;
     const base: TokenOverrides = cur ?? { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null , aura: null, sound: null, vfx: null };
-    ctx.dispatchIntent([
-      { op: "update", doc_id: tok.id, changes: [{ path: "/engine/overrides", old: cur, new: { ...base, vision: next } }] },
-    ]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/overrides", old: cur, value: { ...base, vision: next } }])]);
   }
 
   /** The mode select's commit: inherit clears the override; custom seeds from the stored

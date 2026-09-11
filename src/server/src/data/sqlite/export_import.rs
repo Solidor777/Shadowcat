@@ -315,7 +315,12 @@ impl SqliteRepository {
     /// live `Create`/`Update` write paths use
     /// (`validation::validate_system_size`/`validate_property_overrides`/
     /// `validate_engine_tree`/`validate_system_schema_tree`) before it
-    /// reaches storage — an
+    /// reaches storage, and — once every row is inserted — through the same
+    /// placement rules the `Operation::Create` arm of `apply_intent` runs
+    /// (`validation::validate_containment`, `check_parent_placement`, and
+    /// the self-parent rejection `Self::self_parent_error`), against the
+    /// full imported set so a parent inserted later in the loop still
+    /// resolves regardless of id order — an
     /// imported bundle is untrusted input to THIS server even when it was
     /// exported by a trusted admin from another one. Holds the pool's single
     /// writer connection for the entire call, including the asset-rename
@@ -423,7 +428,98 @@ impl SqliteRepository {
         // singleton doc_type both landing in one import.
         let mut claimed_singletons: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        for row in &data.documents {
+        // Every inserted document's normalized post-image, kept for the
+        // post-loop placement pass below — `document`, not `row.document`,
+        // since `validate_engine_tree` re-normalizes `engine` in place and
+        // this is the form actually persisted.
+        let mut inserted_documents: Vec<Document> = Vec::with_capacity(data.documents.len());
+        // `export_world_rows` orders `documents` by id, which carries no
+        // relationship to parent/child structure, and `documents.parent_id`
+        // is an immediate (non-`DEFERRABLE`) foreign key — inserting a child
+        // row before its not-yet-existing in-bundle parent fails that FK
+        // regardless of whether the tree is valid. Reorder to a parent-
+        // before-child insertion order wherever the bundle's OWN documents
+        // make that possible (a parent outside the bundle, or absent, is
+        // "ready" immediately; the FK still governs it), via Kahn's
+        // algorithm (source: Kahn 1962): `indegree[i]` counts row `i`'s own
+        // not-yet-placed in-bundle parent (0 or 1, since a document has at
+        // most one parent), `queue` holds every currently-ready row index,
+        // and placing a row decrements its recorded children's indegree via
+        // `children`, at most once per row — O(n) rather than the repeated
+        // full-remaining-set scan a naive parent-before-child reorder would
+        // do (each earlier pass there frees only one document on a linear
+        // chain). A document whose parent chain never resolves inside the
+        // bundle is a cycle: none of its members ever reach indegree 0, so
+        // none ever enters `queue`, and they are left in their original
+        // `ORDER BY id` position at the tail — their `INSERT` still fails
+        // the same immediate FK exactly as without this reordering, which is
+        // what `import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk`
+        // pins.
+        let doc_ids: std::collections::HashSet<Uuid> =
+            data.documents.iter().map(|r| r.document.id).collect();
+        // `documents.id TEXT PRIMARY KEY` is unique per server, so a bundle
+        // naming the same document id twice can never be placed as two
+        // distinct rows; the Kahn pass below also relies on each id
+        // decrementing exactly one `children` entry per occurrence, so two
+        // rows sharing an id would double-decrement a shared child's
+        // indegree and underflow it. Rejected here, before that pass ever
+        // runs, rather than let either failure mode surface.
+        if doc_ids.len() != data.documents.len() {
+            let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+            let mut duplicate_ids: Vec<Uuid> = Vec::new();
+            let mut reported: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+            for row in &data.documents {
+                if !seen.insert(row.document.id) && reported.insert(row.document.id) {
+                    duplicate_ids.push(row.document.id);
+                }
+            }
+            let names = duplicate_ids
+                .iter()
+                .map(Uuid::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(DataError::OpFailed(format!(
+                "bundle contains duplicate document id(s): {names}"
+            )));
+        }
+        let row_count = data.documents.len();
+        let mut indegree: Vec<u8> = Vec::with_capacity(row_count);
+        let mut children: std::collections::HashMap<Uuid, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (i, row) in data.documents.iter().enumerate() {
+            match row.document.parent_id {
+                Some(pid) if doc_ids.contains(&pid) => {
+                    indegree.push(1);
+                    children.entry(pid).or_default().push(i);
+                }
+                _ => indegree.push(0),
+            }
+        }
+        let mut queue: std::collections::VecDeque<usize> =
+            (0..row_count).filter(|&i| indegree[i] == 0).collect();
+        let mut ordered_rows: Vec<&ExportedDocumentRow> = Vec::with_capacity(row_count);
+        while let Some(i) = queue.pop_front() {
+            ordered_rows.push(&data.documents[i]);
+            if let Some(kids) = children.get(&data.documents[i].document.id) {
+                for &child_idx in kids {
+                    indegree[child_idx] -= 1;
+                    if indegree[child_idx] == 0 {
+                        queue.push_back(child_idx);
+                    }
+                }
+            }
+        }
+        if ordered_rows.len() < row_count {
+            ordered_rows.extend(
+                data.documents
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| indegree[i] != 0)
+                    .map(|(_, row)| row),
+            );
+        }
+
+        for row in ordered_rows {
             let owner = Self::resolve_username_tx(&mut tx, row.owner_username.as_deref()).await?;
             let mut document = row.document.clone();
             document.owner = owner;
@@ -435,6 +531,16 @@ impl SqliteRepository {
                     document.doc_type
                 )));
             }
+            // A document's OWN scope must name the target world before
+            // anything else about it is trusted — `document_row_columns`
+            // (called by `insert_imported_document` below) persists
+            // `world_id`/`scope_kind` straight from `document.scope`, and
+            // `check_parent_placement`'s scope check below only ever runs
+            // against a document's PARENT, never against the document
+            // itself. Without this, a leaf/root document whose `scope`
+            // names another existing world (or a compendium) would insert
+            // with no scope check anywhere in this function.
+            check_command_scope(&document, world)?;
             // Same ingress-validation chokepoint every live `Create`/`Update`
             // runs before a document reaches storage (see e.g. the
             // `Operation::Update` handler in `apply_intent`) — an imported
@@ -447,6 +553,46 @@ impl SqliteRepository {
             validation::validate_engine_tree(&mut document)?;
             validation::validate_system_schema_tree(&document, &world_schemas)?;
             Self::insert_imported_document(&mut tx, &document, row.seq, row.created_seq).await?;
+            inserted_documents.push(document);
+        }
+
+        // Placement checks the live `Operation::Create` arm of `apply_intent`
+        // also runs, deferred to ONE pass after every row above is already
+        // inserted: `validate_containment` (parent-shape rules — a `combat`/
+        // `table` never parented, a `combatant`/`combat-history` always
+        // parented), `check_parent_placement` (parent-TYPE rules — an
+        // `asset_folder`/`note` parent must be same-type same-scope, a
+        // `combatant`/`combat-history` parent must be a combat), and the
+        // explicit self-parent rejection (`Self::self_parent_error`), in the
+        // same order the Create arm applies them so a doubly-invalid
+        // document reports the same error on both paths. Deferred rather
+        // than run inside the loop above because `export_world_rows` orders
+        // documents by id, so a per-row check would spuriously reject a
+        // valid tree whose child sorts before its parent. Every imported
+        // document is already committed to `tx` by this point, so
+        // `check_parent_placement` is called exactly as the trusted
+        // `apply_command` Move arm calls it: earlier ops in this command are
+        // already applied, so the batch bookkeeping maps are empty by
+        // construction — a stored parent resolves through `Self::
+        // load_document` inside `check_parent_placement` itself, not
+        // through a batch map. No general multi-hop cycle walk runs here:
+        // `documents.parent_id`'s foreign key is enforced immediately (no
+        // `DEFERRABLE`, `PRAGMA foreign_keys = ON` in `db.rs`), so a ≥2-node
+        // `parent_id` cycle's first `INSERT` above already fails before this
+        // pass is reached.
+        for document in &inserted_documents {
+            validation::validate_containment(document)?;
+            Self::check_parent_placement(
+                &mut tx,
+                world,
+                document,
+                &Default::default(),
+                &Default::default(),
+            )
+            .await?;
+            if document.parent_id == Some(document.id) {
+                return Err(Self::self_parent_error());
+            }
         }
 
         for row in &data.events {

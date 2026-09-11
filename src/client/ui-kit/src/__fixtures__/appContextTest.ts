@@ -69,6 +69,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     serverRole: over.serverRole ?? "user",
     selfId: over.selfId ?? "u-self",
     canEdit: over.canEdit ?? (() => true),
+    canCreate: over.canCreate ?? (() => (over.role ?? "gm") === "gm"),
+    canDelete: over.canDelete ?? (() => (over.role ?? "gm") === "gm"),
     openDocument: over.openDocument ?? (() => {}),
     notify: over.notify ?? (() => {}),
     members: over.members ?? new Map(),

@@ -566,6 +566,26 @@ export class PanelsController implements PanelsApi, PanelsChipsView {
     }
   }
 
+  /** Whether `id` is placed anywhere visible in `#layout` — docked, floating, or
+   * popped-out — rather than minimized or closed. Reads `#layout` directly (`$state`),
+   * so a caller reading this inside a Svelte `$derived`/template tracks layout changes.
+   * @param id The panel id to query.
+   * @returns `true` iff `locate` resolves `id` to a visible location.
+   * @example
+   * ```ts
+   * import { PanelsController } from "@shadowcat/module-panels";
+   * import type { PanelsControllerDeps } from "@shadowcat/module-panels";
+   *
+   * declare const deps: PanelsControllerDeps;
+   * const controller = new PanelsController(deps);
+   * controller.isOpen("chat");
+   * ```
+   */
+  isOpen(id: string): boolean {
+    const where = locate(this.#layout, id).where;
+    return where !== "minimized" && where !== "closed";
+  }
+
   // --- PanelsChipsView ---
 
   /** Restores a minimized panel (docks it to a new "right" group, mirroring

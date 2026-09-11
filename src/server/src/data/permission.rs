@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::data::command::{Command, FieldChange, Operation};
 use crate::data::document::{
     CapabilityGrants, CapabilityRequirement, DocRole, Document, OwnerStanding, PermissionSet,
-    Visibility, WorldCapDefaults, WorldRole,
+    RoleCapabilities, RoleCaps, Visibility, WorldCapDefaults, WorldRole,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
@@ -700,6 +700,9 @@ fn is_base_content_residual(residual: &str) -> bool {
 #[cfg(test)]
 mod required_cap_tests;
 
+#[cfg(test)]
+mod role_caps_tests;
+
 /// Whether `p` is a descendant of `ancestor` on a JSON-pointer boundary
 /// (`/a/b` is a descendant of `/a`, but `/ab` is not).
 fn is_descendant(p: &str, ancestor: &str) -> bool {
@@ -1112,6 +1115,37 @@ pub fn project_grants_for(grants: &CapabilityGrants, user: Uuid) -> CapabilityGr
             .get(&user)
             .map(|caps| std::iter::once((user, caps.clone())).collect())
             .unwrap_or_default(),
+    }
+}
+
+/// Project world-level `RoleCaps` down to a single role's own capabilities — nothing about
+/// any other role crosses (a Player projection never carries the Gm's `by_type` entries).
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::{RoleCaps, WorldRole};
+/// use shadowcat::data::permission::project_role_caps_for;
+///
+/// let mut caps = RoleCaps::default();
+/// caps.all.entry(WorldRole::Player).or_default().insert("core:create".into());
+/// caps.all.entry(WorldRole::Gm).or_default().insert("core:manage_world".into());
+///
+/// let mine = project_role_caps_for(&caps, WorldRole::Player);
+/// assert!(mine.all.contains("core:create"));
+/// assert!(!mine.all.contains("core:manage_world"));
+/// ```
+pub fn project_role_caps_for(caps: &RoleCaps, role: WorldRole) -> RoleCapabilities {
+    RoleCapabilities {
+        all: caps.all.get(&role).cloned().unwrap_or_default(),
+        by_type: caps
+            .by_type
+            .iter()
+            .filter_map(|(doc_type, by_role)| {
+                by_role
+                    .get(&role)
+                    .map(|set| (doc_type.clone(), set.clone()))
+            })
+            .collect(),
     }
 }
 

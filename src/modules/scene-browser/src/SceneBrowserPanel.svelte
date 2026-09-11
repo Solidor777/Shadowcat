@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildSceneDoc, listAssets, type WireDocument, type WorldSettingsEngine, type SceneEngine } from "@shadowcat/core";
+  import { buildSceneDoc, listAssets, buildUpdate, type WireDocument, type WorldSettingsEngine, type SceneEngine } from "@shadowcat/core";
   import type { Asset } from "@shadowcat/types";
 
   const ctx = getAppContext();
@@ -91,7 +91,7 @@
   function activate(sceneId: string): void {
     if (!ws) return;
     const old = (ws.engine as WorldSettingsEngine | undefined)?.activeScene ?? null;
-    ctx.dispatchIntent([{ op: "update", doc_id: ws.id, changes: [{ path: "/engine/activeScene", old, new: sceneId }] }]);
+    ctx.dispatchIntent([buildUpdate(ws.id, [{ path: "/engine/activeScene", old, value: sceneId }])]);
   }
 
   /**
@@ -172,7 +172,7 @@
    * ```
    */
   function setBackground(scene: WireDocument, assetId: string | null): void {
-    ctx.dispatchIntent([{ op: "update", doc_id: scene.id, changes: [{ path: "/engine/background", old: bgOf(scene), new: assetId }] }]);
+    ctx.dispatchIntent([buildUpdate(scene.id, [{ path: "/engine/background", old: bgOf(scene), value: assetId }])]);
     pickerOpenFor = null;
   }
 </script>

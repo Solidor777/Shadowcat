@@ -810,7 +810,7 @@ fn combat_resource_set_op_round_trips() {
 
 #[test]
 fn welcome_carries_caps_role_and_requirements() {
-    use crate::data::document::{CapabilityGrants, WorldRole};
+    use crate::data::document::{CapabilityGrants, RoleCapabilities, WorldRole};
     let w = ServerMsg::Welcome {
         world: Uuid::from_u128(1),
         current_seq: 0,
@@ -821,6 +821,7 @@ fn welcome_carries_caps_role_and_requirements() {
         capability_requirements: Vec::new(),
         contract_declarations: Vec::new(),
         schema_declarations: Vec::new(),
+        role_capabilities: RoleCapabilities::default(),
     };
     let json = serde_json::to_value(&w).unwrap();
     assert_eq!(json["type"], "welcome");
@@ -829,5 +830,6 @@ fn welcome_carries_caps_role_and_requirements() {
     assert!(json.get("capability_requirements").is_some());
     assert!(json.get("contract_declarations").is_some());
     assert!(json.get("schema_declarations").is_some());
+    assert!(json.get("role_capabilities").is_some());
     assert_eq!(json["server_version"], "0.0.0-test");
 }

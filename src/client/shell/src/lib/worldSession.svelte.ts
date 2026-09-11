@@ -16,6 +16,7 @@ import {
   resolveCaps,
   ownerFloorApplies,
   canWritePath,
+  canCreateDoc,
   parseFootprints,
   EMPTY_FOOTPRINTS,
   type FootprintLookup,
@@ -54,7 +55,7 @@ import {
   getEnabledModules,
   listWorldMembers,
 } from "@shadowcat/core";
-import type { WorldRole, InstalledModuleInfo } from "@shadowcat/types";
+import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
 import { SvelteMap } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
@@ -99,6 +100,10 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
+  /** Called after every rejected intent, with the server's reason — the optimistic prediction
+   * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
+   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
+  onReject?: (reason: RejectReason) => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -228,11 +233,18 @@ export class WorldSession {
    * re-render when it populates on (re)connect. */
   readonly members = new SvelteMap<string, string>();
   /** World-default capability grants + declarative requirements from the latest Welcome; inputs
-   * to the advisory `canEdit` gate. Re-set on every (re)connect. */
-  #worldGrants: WireWelcome["world_default_grants"] = { by_role: {}, by_user: {} };
+   * to the advisory `canEdit` gate. Re-set on every (re)connect. `$state` so a capability-only
+   * Welcome (no other reactive field changing) still refreshes every `canEdit`-gated
+   * `{#if}` reading through it. */
+  #worldGrants: WireWelcome["world_default_grants"] = $state({ by_role: {}, by_user: {} });
   /** Module-declared write-capability requirements from the latest Welcome; the
-   * advisory-only half of `canEdit`'s `#requirements` caveat — see `canEdit`'s doc. */
-  #requirements: WireCapabilityRequirement[] = [];
+   * advisory-only half of `canEdit`'s `#requirements` caveat — see `canEdit`'s doc. `$state`
+   * for the same reactivity reason as `#worldGrants`. */
+  #requirements: WireCapabilityRequirement[] = $state([]);
+  /** This connection's own projected world-level capabilities from the latest Welcome
+   * (`role_capabilities`); input to `canCreate`. Re-set on every (re)connect. `$state` so a
+   * capability-only Welcome refreshes every `canCreate`-gated `{#if}` reading through it. */
+  #roleCaps: WireWelcome["role_capabilities"] = $state({ all: [], by_type: {} });
 
   /** The live transport, constructed fresh in `enter()` and dropped in `leave()`;
    * `null` before the first `enter()` and after `leave()`. */
@@ -370,14 +382,69 @@ export class WorldSession {
    */
   canEdit(doc: WireDocument, path: string): boolean {
     if (this.role === "gm") return true;
-    if (!this.role) return false;
-    // Effective ownership (a linked token inherits its actor's owner) floors the
-    // caller at DocRole.Owner, mirroring the server's `effective_role` — token-scoped
-    // there, so token-scoped here (`ownerFloorApplies`). Resolved from the OPTIMISTIC
-    // view so a just-reassigned owner gates controls without waiting for the echo.
+    const role = this.role;
+    if (!role) return false;
+    return canWritePath(path, this.#capsFor(doc, role), false, this.#requirements);
+  }
+
+  /** The caller's resolved capability set on `doc` — the shared resolution `canEdit` and
+   * `canDelete` both build on. Effective ownership (a linked token inherits its actor's owner)
+   * floors the caller at DocRole.Owner, mirroring the server's `effective_role` —
+   * token-scoped there, so token-scoped here (`ownerFloorApplies`). Resolved from the
+   * OPTIMISTIC view so a just-reassigned owner gates controls without waiting for the echo.
+   * @param doc The document to resolve capabilities against.
+   * @param role The caller's non-GM world role (callers have already handled the GM/unresolved
+   * cases before reaching here).
+   * @returns The resolved capability set.
+   * @example
+   * ```
+   * // private helper; not part of the public API — see canEdit/canDelete
+   * declare const doc: WireDocument;
+   * this.#capsFor(doc, "player");
+   * ```
+   */
+  #capsFor(doc: WireDocument, role: WorldRole): Set<string> {
     const owned = ownerFloorApplies(doc, this.opts.selfId, this.#optimistic);
-    const caps = resolveCaps(doc.permissions, this.opts.selfId, this.role, this.#worldGrants, owned);
-    return canWritePath(path, caps, false, this.#requirements);
+    return resolveCaps(doc.permissions, this.opts.selfId, role, this.#worldGrants, owned);
+  }
+
+  /** Advisory mirror of the server's `Operation::Delete` gate: whether this caller may
+   * delete `doc`. A GM may always delete; an unresolved role (not yet connected) may
+   * never; otherwise the resolved capability set (see `#capsFor`) must hold
+   * `core:delete` — never derived from `doc.owner` (see `grantAuthor`'s doc: the
+   * DocRole `owner` grant, not the `owner` field, is what carries delete authority).
+   * @param doc The document to check.
+   * @returns Whether this caller may delete `doc`.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare const doc: WireDocument;
+   * declare function showDeleteButton(): void;
+   * if (session.canDelete(doc)) showDeleteButton();
+   * ```
+   */
+  canDelete(doc: WireDocument): boolean {
+    if (this.role === "gm") return true;
+    const role = this.role;
+    if (!role) return false;
+    return this.#capsFor(doc, role).has("core:delete");
+  }
+
+  /** Advisory mirror of the server's `core:create` policy (`WorldCapDefaults::role_has`,
+   * consulted by `apply_intent`): whether this caller may create a document of `docType`.
+   * @param docType The document's `doc_type`.
+   * @returns Whether the create is advisory-permitted.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function showNewNoteButton(): void;
+   * if (session.canCreate("note")) showNewNoteButton();
+   * ```
+   */
+  canCreate(docType: string): boolean {
+    const role = this.role;
+    if (!role) return false;
+    return canCreateDoc(docType, role, this.#roleCaps);
   }
   /** Registry of first-party + external modules; `activate()` is called from
    * `#onWelcome`. */
@@ -1008,7 +1075,10 @@ export class WorldSession {
             this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
           }
         },
-        onReject: (id) => this.#optimistic.reject(id),
+        onReject: (id, reason) => {
+          this.#optimistic.reject(id);
+          this.opts.onReject?.(reason);
+        },
         onWelcome: (w) => {
           void this.#onWelcome(w);
         },
@@ -1107,6 +1177,7 @@ export class WorldSession {
       this.role = w.user_role;
       this.#worldGrants = w.world_default_grants;
       this.#requirements = w.capability_requirements;
+      this.#roleCaps = w.role_capabilities;
       this.#serverVersion = w.server_version;
       // Snapshot BEFORE any await below: a scene subscription added while this
       // Welcome's async chain is still in flight (module activation / external-module

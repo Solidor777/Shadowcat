@@ -1879,3 +1879,24 @@ fn search_text_malformed_body_contributes_nothing_rather_than_failing() {
         Some(String::new())
     );
 }
+
+#[test]
+fn derived_engine_paths_names_are_registered_engine_doc_types() {
+    // Every doc_type this registry names a non-empty derivation set for must
+    // itself be an engine doc_type -- a derivation on a doc_type with no
+    // typed engine band is a contradiction. `note` is the only such doc_type
+    // today; extend this assertion (not a loop -- clippy flags a single-entry
+    // one) alongside any future registration.
+    assert!(ENGINE_DOC_TYPES.contains(&"note"));
+    assert!(!derived_engine_paths("note").is_empty());
+}
+
+#[test]
+fn note_registers_its_derived_body_path() {
+    assert_eq!(derived_engine_paths("note"), &["/engine/body"]);
+}
+
+#[test]
+fn token_registers_no_derived_paths() {
+    assert!(derived_engine_paths("token").is_empty());
+}

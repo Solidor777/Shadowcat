@@ -5,7 +5,7 @@
   // normalizes 0 to `null` so the store keeps one canonical grounded representation.
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { WireDocument, TokenEngine } from "@shadowcat/core";
+  import { buildUpdate, type WireDocument, type TokenEngine } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -52,9 +52,7 @@
     if (!tok || !editable) return;
     const normalized = next === 0 ? null : next;
     if (normalized === rawElevation) return;
-    ctx.dispatchIntent([
-      { op: "update", doc_id: tok.id, changes: [{ path: "/engine/elevation", old: rawElevation, new: normalized }] },
-    ]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/elevation", old: rawElevation, value: normalized }])]);
   }
 
   /** Parse the input's raw string into an elevation: empty means ground (`null`); a finite

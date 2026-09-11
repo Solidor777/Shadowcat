@@ -9,7 +9,7 @@ import type { PanelsApi } from "./panelsBridge.svelte";
 
 function fakePanels(): PanelsApi & { opened: string[]; closed: string[]; focused: string[] } {
   const opened: string[] = [], closed: string[] = [], focused: string[] = [];
-  return { opened, closed, focused, open: (id) => opened.push(id), close: (id) => closed.push(id), focus: (id) => focused.push(id), toggle: () => {} };
+  return { opened, closed, focused, open: (id) => opened.push(id), close: (id) => closed.push(id), focus: (id) => focused.push(id), toggle: () => {}, isOpen: () => false };
 }
 
 function seed() {

@@ -294,6 +294,57 @@ describe("MessageCard — emote/roll rendering", () => {
     });
     expect(container.querySelector(".roll-pending")?.textContent).toBe("🎲 1d20");
   });
+
+  it("renders a table_draw message's row content via SegmentList, never the pending shell", () => {
+    // `tables::handle_draw_table` publishes ALSO as `MessageKind::Roll` (the same authoring
+    // chokepoint every other message goes through), but its content is `Segment::TableDraw`
+    // entries, never a lone `roll_embed` — this must not fall into the generic pending-shell
+    // fallback the tests above pin for a genuinely unrenderable roll-kind shape.
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [
+        {
+          kind: "table_draw",
+          table_id: "t1",
+          table_name: "Loot",
+          roll_id: "r1",
+          formula: "1d2",
+          outcome: rollOutcome(),
+          row: { index: 0, label: "Potion", content: [{ kind: "text", text: "A potion." }], nested: [] },
+        },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-pending")).toBeNull();
+    expect(container.querySelector(".table-draw-row-label")?.textContent).toBe("Potion");
+    expect(container.querySelector(".table-draw-header .roll-tooltip-trigger")).not.toBeNull();
+  });
+
+  it("still falls back to the pending shell for a table_draw with no matching row", () => {
+    const doc = msgDoc("m1", baseSystem({
+      kind: "roll",
+      content: [
+        {
+          kind: "table_draw",
+          table_id: "t1",
+          table_name: "Loot",
+          roll_id: "r1",
+          formula: "1d100",
+          outcome: rollOutcome(),
+          row: null,
+        },
+      ],
+    }));
+    const { container } = render(MessageCard, {
+      props: { message: doc, showChannel: false },
+      context: setAppContextForTest({ documents: storeWith(doc), t: fakeT }),
+    });
+    expect(container.querySelector(".roll-pending")).toBeNull();
+    expect(container.querySelector(".table-draw-no-row")).not.toBeNull();
+  });
 });
 
 describe("MessageCard — roll block (kind=roll, content = single roll_embed)", () => {

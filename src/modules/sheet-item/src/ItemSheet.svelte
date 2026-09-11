@@ -1,11 +1,11 @@
 <script lang="ts">
   import { getAppContext, SystemTreeEditor, setField } from "@shadowcat/ui-kit";
   import { createSubscriber } from "svelte/reactivity";
-  import { getPointer, isDiceNotation, type WireDocument, type ItemSystem } from "@shadowcat/core";
+  import { getPointer, isDiceNotation, firstChannel, type WireDocument, type ItemSystem } from "@shadowcat/core";
 
   // Item sheet: `name` control (resolved via `namePrefix`, sibling of `systemPrefix` — see
   // below) + dice-notation string values get a roll-to-chat affordance (posts `/roll <formula>`
-  // on the default "general" channel over the chat wire — the server executes it) + the
+  // on the channel-registry's first channel over the chat wire — the server executes it) + the
   // `system` tree editor. `buildItemDoc`'s contract puts an item's real display
   // name alongside `system`, same as every other doc_type — `system` carries only the opaque,
   // genuinely game-system-owned fields. Reads the OPTIMISTIC store; edits use the RAW current
@@ -50,6 +50,10 @@
   const name = $derived.by((): string | null => (doc ? (getPointer(doc, namePrefix) as string | null | undefined) ?? null : null));
   const system = $derived.by((): ItemSystem | undefined => (doc ? (getPointer(doc, systemPrefix) as ItemSystem | undefined) : undefined));
   const readOnly = $derived(!doc || !ctx.canEdit(doc, systemPrefix));
+  const channel = $derived.by((): string | null => {
+    subscribe();
+    return firstChannel(ctx.documents);
+  });
 
   // Dice-notation leaves (string values that look like `NdM`), for the roll affordance.
   const rollable = $derived.by((): {
@@ -80,14 +84,11 @@
     setField(ctx, docId, namePrefix, name, value);
   }
 
-  /** Posts `formula` to chat as a `/roll` command on the hardcoded `"general"`
-   * channel. `channel` is a purely client-chosen display label the server
-   * never validates or derives audience from (see `Audience`'s doc comment;
-   * `handle_send_message`'s channel checks only check non-empty/length).
-   * Posting to `"general"` before a GM has ever added it to the channel
-   * registry is harmless: the message still sends, and any UI resolving the
-   * channel's display name falls back to the raw id for an unregistered one
-   * (mirrors `ChatPanel`'s `channelDisplayName`).
+  /** Posts `formula` to chat as a `/roll` command on `firstChannel`'s resolved channel.
+   * `channel` is a purely client-chosen display label the server never validates or derives
+   * audience from (see `Audience`'s doc comment; `handle_send_message`'s channel checks only
+   * check non-empty/length). Never called while `channel` is `null` — the roll buttons are
+   * `disabled` in that state (see the template below).
    * @param formula The dice-notation string to roll (already filtered through
    * `isDiceNotation`; see `rollable` above).
    * @example
@@ -98,7 +99,8 @@
    * ```
    */
   function roll(formula: string): void {
-    ctx.chat.send({ channel: "general", content: `/roll ${formula}` });
+    if (channel === null) return;
+    ctx.chat.send({ channel, content: `/roll ${formula}` });
   }
 </script>
 
@@ -116,7 +118,7 @@
     {#if rollable.length > 0}
       <div class="rolls">
         {#each rollable as r (r.key)}
-          <button type="button" onclick={() => roll(r.formula)}>{r.key}: {r.formula}</button>
+          <button type="button" disabled={channel === null} onclick={() => roll(r.formula)}>{r.key}: {r.formula}</button>
         {/each}
       </div>
     {/if}

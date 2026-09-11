@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
-import { resolveCaps, canWritePath } from "./capabilities";
+import { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";
+import { grantAuthor, envelope } from "./scene-docs";
 import type { WireDocument } from "./wire";
 
 const emptyGrants = { by_role: {}, by_user: {} };
@@ -90,4 +91,34 @@ test("GM bypasses all checks", () => {
       { path_prefix: "/system/vision", caps: ["dnd5e:gm_vision"] },
     ]),
   ).toBe(true);
+});
+
+test("canCreateDoc: GM always may create", () => {
+  expect(canCreateDoc("note", "gm", { all: [], by_type: {} })).toBe(true);
+});
+
+test("canCreateDoc: an `all` grant covers every doc_type", () => {
+  expect(canCreateDoc("note", "player", { all: ["core:create"], by_type: {} })).toBe(true);
+  expect(canCreateDoc("table", "player", { all: ["core:create"], by_type: {} })).toBe(true);
+});
+
+test("canCreateDoc: a by_type[docType] grant covers only that doc_type", () => {
+  const roleCaps = { all: [], by_type: { note: ["core:create"] } };
+  expect(canCreateDoc("note", "player", roleCaps)).toBe(true);
+  expect(canCreateDoc("table", "player", roleCaps)).toBe(false);
+});
+
+test("canCreateDoc: a player with nothing granted may not create", () => {
+  expect(canCreateDoc("note", "player", { all: [], by_type: {} })).toBe(false);
+});
+
+test("grantAuthor'd document resolves core:delete + core:edit_permissions for the owner and nothing extra for an observer", () => {
+  const doc = grantAuthor(envelope("w1", "note", null, {}), "u1");
+  const owned = resolveCaps(doc.permissions, "u1", "player", emptyGrants);
+  expect(owned.has("core:delete")).toBe(true);
+  expect(owned.has("core:edit_permissions")).toBe(true);
+
+  const observed = resolveCaps(doc.permissions, "someone-else", "player", emptyGrants);
+  expect(observed.has("core:delete")).toBe(false);
+  expect(observed.has("core:edit_permissions")).toBe(false);
 });

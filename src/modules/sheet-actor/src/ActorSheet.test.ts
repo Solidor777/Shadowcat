@@ -1,9 +1,18 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/svelte";
 import { ContributionRegistry, sheetContract, DocumentStore, envelope } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import ActorSheet from "./ActorSheet.svelte";
 import { sheetActor } from "./index";
+
+// Suppress listAssets fetch: EmissionEditor calls listAssets($effect) which hits /api/... in jsdom.
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listAssets: vi.fn().mockResolvedValue([]),
+  };
+});
 
 /** Builds an actor doc on the three-band shape: `name` (envelope) is pulled out of the
  * legacy flat fixture object, the rest lands in `engine` (the actor's engine-owned body). */
@@ -181,6 +190,38 @@ describe("ActorSheet carried light", () => {
     expect(calls).toEqual([
       [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/light", old: torch, new: { ...torch, brightRadius: 3 } }] }],
     ]);
+  });
+});
+
+describe("ActorSheet emissions (aura/sound/vfx)", () => {
+  it("toggling aura on dispatches /engine/aura with the raw stored null as old", async () => {
+    const calls: unknown[] = [];
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, aura: null });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByLabelText("actors.aura"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/aura", old: null, new: { color: "#ffcc66", opacity: 0.4, radius: 2, enabled: true } }] }],
+    ]);
+  });
+
+  it("toggling an existing sound emission off dispatches null as new", async () => {
+    const calls: unknown[] = [];
+    const sound = { asset: "a1", radius: 5, volume: 0.8, loop: true, enabled: true };
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, sound });
+    const context = setAppContextForTest({ documents, dispatchIntent: (ops) => calls.push(ops), canEdit: () => true });
+    const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    await fireEvent.click(getByLabelText("actors.sound"));
+    expect(calls).toEqual([
+      [{ op: "update", doc_id: "a1", changes: [{ path: "/engine/sound", old: sound, new: null }] }],
+    ]);
+  });
+
+  it("renders the emission controls disabled for a read-only sheet", () => {
+    const documents = storeWith({ name: "Goblin", displayName: "Creature", faction: null, shape: "square", size: { w: 1, h: 1 }, conditions: [], prototype: false, visual: { kind: "image", asset: "x" }, vfx: { asset: "", anchor: "token", loop: true, enabled: true } });
+    const context = setAppContextForTest({ documents, canEdit: () => false, role: "player" });
+    const { getByLabelText } = render(ActorSheet, { props: { docId: "a1", systemPrefix: "/system", close: () => {} }, context });
+    expect((getByLabelText("actors.vfx") as HTMLInputElement).disabled).toBe(true);
   });
 });
 

@@ -900,6 +900,10 @@ pub enum ServerMsg {
         /// can mirror expectations. Informational/parity only — tier-1 Zod
         /// validates client-side; this is NOT a client enforcement gate.
         schema_declarations: Vec<crate::data::document::SchemaDeclaration>,
+        /// The connecting user's own world-level capabilities — the `core:create` policy
+        /// `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their
+        /// role via `project_role_caps_for`. Advisory mirror; the server remains authoritative.
+        role_capabilities: crate::data::document::RoleCapabilities,
     },
     /// A sequenced broadcast carrying the authoritative command. `intent_id` is
     /// the originator's correlation token; it is `None` on the shared broadcast

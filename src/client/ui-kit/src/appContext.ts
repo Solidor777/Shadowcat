@@ -135,6 +135,23 @@ export interface AppContext {
    * @param path - The field path within `doc` being edited.
    * @returns Whether write controls for that path should render as enabled. */
   canEdit(doc: WireDocument, path: string): boolean;
+  /** Advisory mirror of the server's `core:create` policy (`WorldCapDefaults::role_has`,
+   * `apply_intent`'s Create gate), `role_has`-shaped: a GM may always create; otherwise the
+   * caller's projected `role_capabilities` must name `core:create` for `docType` (or every
+   * doc_type via `all`). The server's baseline-message exemption
+   * (`chat::build_message_doc`'s server-authored Create) is not mirrored — this only ever
+   * gates a client-initiated create. Advisory-only — never treat a `true` here as authorization.
+   * @param docType - The document's `doc_type`.
+   * @returns Whether create controls for that doc_type should render as enabled. */
+  canCreate(docType: string): boolean;
+  /** Advisory mirror of the server's `Operation::Delete` gate for showing/hiding delete
+   * controls. **GM ⇒ always true, unconditionally.** Never derives a delete affordance from
+   * `doc.owner` — the `owner` field is a separate ownership OVERRIDE, distinct from the
+   * DocRole `owner` grant `grantAuthor` sets, which is what actually carries `core:delete`.
+   * Advisory-only — the server re-checks independently at `apply_intent`.
+   * @param doc - The document the caller wants to delete.
+   * @returns Whether delete controls should render as enabled. */
+  canDelete(doc: WireDocument): boolean;
   /** Open (or focus) a document as a floating sheet panel. `docId` targets a top-level
    * document (optionally one embedded child via `embeddedPath`); `tokenId` resolves to the
    * token's linked actor or embedded actor copy. Fail-closed: a dangling/raw ref opens

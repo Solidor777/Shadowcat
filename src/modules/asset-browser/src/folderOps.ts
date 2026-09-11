@@ -1,8 +1,10 @@
-// Pure helpers over `asset_folder` documents: tree queries, the Move-op
-// builder, and the folder-doc builder. The server remains authoritative for
-// every rule these mirror (placement, cycles, authz).
+// Pure helpers over `asset_folder` documents: tree queries and the
+// folder-doc builder. The server remains authoritative for every rule
+// these mirror (placement, cycles, authz). The re-parenting op builder
+// lives in `@shadowcat/core`'s `buildMoveOp` — shared with every other
+// document tree that has a `parent_id` band.
 
-import { envelope, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { envelope, type WireDocument } from "@shadowcat/core";
 
 /** The `asset_folder` doc_type string. */
 export const ASSET_FOLDER_DOC_TYPE = "asset_folder";
@@ -76,34 +78,6 @@ export function folderPathNames(docs: WireDocument[], id: string): string[] {
     cursor = doc.parent_id;
   }
   return names;
-}
-
-/**
- * The Move operation re-parenting `docId`, carrying the TRUE current parent
- * as the OCC pre-image.
- * @param docId - The document to move.
- * @param targetParentId - The new parent (`null` = top level).
- * @param currentParentId - The document's current parent (the pre-image).
- * @returns The wire operation for `dispatchIntent`.
- * @example
- * ```ts
- * import { buildMoveOp } from "@shadowcat/module-asset-browser";
- *
- * buildMoveOp("doc-1", "folder-2", null);
- * // { op: "move", doc_id: "doc-1", parent_id: "folder-2", old_parent_id: null }
- * ```
- */
-export function buildMoveOp(
-  docId: string,
-  targetParentId: string | null,
-  currentParentId: string | null,
-): WireOperation {
-  return {
-    op: "move",
-    doc_id: docId,
-    parent_id: targetParentId,
-    old_parent_id: currentParentId,
-  };
 }
 
 /**

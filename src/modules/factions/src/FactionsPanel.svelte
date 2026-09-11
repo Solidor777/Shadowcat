@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { resolveTokenActor, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
+  import { resolveTokenActor, buildUpdate, type Faction, type FactionRegistryEngine, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -43,7 +43,7 @@
     const current = eng.factions[id] as Partial<Faction> | undefined;
     for (const [k, v] of Object.entries(patch)) {
       const old = current?.[k as keyof Faction] ?? null;
-      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}/${k}`, old, new: v }] }]);
+      ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/factions/${id}/${k}`, old, value: v }])]);
     }
   }
   /** GM registry editor: appends a new faction entry under a fresh random id, with a
@@ -58,7 +58,7 @@
     if (!registry) return;
     const id = crypto.randomUUID();
     const f: Faction = { name: "New faction", color: "#9e9e9e", stance: "neutral", movement: [] };
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/factions/${id}`, old: null, new: f }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/factions/${id}`, old: null, value: f }])]);
   }
   /** GM registry editor: deletes a faction entry from the registry map.
    * @param id The faction's registry key to remove.
@@ -73,7 +73,7 @@
     if (!registry || !sys) return;
     const next = { ...sys.factions };
     delete next[id];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/factions", old: sys.factions, new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: "/engine/factions", old: sys.factions, value: next }])]);
   }
   /** GM registry editor: replaces the current token selection with every scene token whose
    * effective actor (`resolveTokenActor`) is assigned to `factionId` — a read-only selection

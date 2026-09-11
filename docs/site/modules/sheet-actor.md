@@ -3,9 +3,11 @@
 ## Purpose
 
 The generic actor sheet: engine-known fields (display name, faction, shape,
-size) as real controls, the opaque `system` band as a tree editor, and the
-embedded-items inventory. Registered for the `actor` doc_type at priority 0 —
-a game-system module takes over by registering higher (see
+size) as real controls, aura/sound/VFX emission editing (`EmissionEditor`,
+owner-writable — no GM gate, unlike the shared carried-light field), the
+opaque `system` band as a tree editor, and the embedded-items inventory.
+Registered for the `actor` doc_type at priority 0 — a game-system module
+takes over by registering higher (see
 [Creating a system](/guides/creating-a-system)).
 
 ## Contributions

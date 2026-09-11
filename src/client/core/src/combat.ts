@@ -11,6 +11,7 @@ import type { CombatEngine, CombatantEngine, CombatantKind } from "./scene-docs"
 import { buildCombatDoc, buildCombatantDoc, newCombatEngine } from "./scene-docs";
 import { effectiveOwner } from "./actor";
 import type { Logger } from "./logger";
+import { buildUpdate } from "./update-op";
 
 /** The host-provided service id `CombatController` registers under
  * (`ServiceRegistry.provide`/`ModuleContext.services.get`). */
@@ -524,11 +525,7 @@ export class CombatController implements CombatApi {
       ops.push({ op: "create", doc });
       newIds.push(doc.id);
     }
-    ops.push({
-      op: "update",
-      doc_id: combatId,
-      changes: [{ path: "/engine/order", old: oldOrder, new: [...oldOrder, ...newIds] }],
-    });
+    ops.push(buildUpdate(combatId, [{ path: "/engine/order", old: oldOrder, value: [...oldOrder, ...newIds] }]));
     this.dispatch(ops);
     return newIds;
   }
@@ -546,11 +543,7 @@ export class CombatController implements CombatApi {
     });
     this.dispatch([
       { op: "create", doc },
-      {
-        op: "update",
-        doc_id: combatId,
-        changes: [{ path: "/engine/order", old: oldOrder, new: [...oldOrder, doc.id] }],
-      },
+      buildUpdate(combatId, [{ path: "/engine/order", old: oldOrder, value: [...oldOrder, doc.id] }]),
     ]);
     return doc.id;
   }
@@ -564,13 +557,7 @@ export class CombatController implements CombatApi {
     const oldOrder = engine?.order ?? [];
     const newOrder = oldOrder.filter((id) => id !== combatantId);
     const doc = this.deps.documents.get(combatantId);
-    const ops: WireOperation[] = [
-      {
-        op: "update",
-        doc_id: combatId,
-        changes: [{ path: "/engine/order", old: oldOrder, new: newOrder }],
-      },
-    ];
+    const ops: WireOperation[] = [buildUpdate(combatId, [{ path: "/engine/order", old: oldOrder, value: newOrder }])];
     if (doc) ops.push({ op: "delete", doc });
     this.dispatch(ops);
   }
@@ -581,28 +568,16 @@ export class CombatController implements CombatApi {
     const owner = doc.owner;
     const oldDefault = doc.permissions.default;
     const ops: WireOperation[] = [
-      {
-        op: "update",
-        doc_id: combatantId,
-        changes: [{ path: "/permissions/default", old: oldDefault, new: hidden ? "none" : "observer" }],
-      },
+      buildUpdate(combatantId, [{ path: "/permissions/default", old: oldDefault, value: hidden ? "none" : "observer" }]),
     ];
     if (owner) {
       const usersPath = "/permissions/users/" + owner;
       const oldEntry = doc.permissions.users[owner];
-      if (hidden) {
-        ops.push({
-          op: "update",
-          doc_id: combatantId,
-          changes: [{ path: usersPath, old: oldEntry ?? null, remove: true }],
-        });
-      } else {
-        ops.push({
-          op: "update",
-          doc_id: combatantId,
-          changes: [{ path: usersPath, old: oldEntry ?? null, new: "owner" }],
-        });
-      }
+      ops.push(
+        hidden
+          ? buildUpdate(combatantId, [{ path: usersPath, old: oldEntry ?? null, remove: true }])
+          : buildUpdate(combatantId, [{ path: usersPath, old: oldEntry ?? null, value: "owner" }]),
+      );
     }
     this.dispatch(ops);
   }
@@ -616,18 +591,16 @@ export class CombatController implements CombatApi {
     if (oldSet.size !== newSet.size || [...oldSet].some((id) => !newSet.has(id))) {
       throw new CombatClientError("order-mismatch", "reorder must keep the same combatant id set");
     }
-    this.dispatch([
-      { op: "update", doc_id: combatId, changes: [{ path: "/engine/order", old: oldOrder, new: order }] },
-    ]);
+    this.dispatch([buildUpdate(combatId, [{ path: "/engine/order", old: oldOrder, value: order }])]);
   }
 
   setInitiative(combatantId: string, initiative: number | null, tiebreak?: number): void {
     const doc = this.deps.documents.get(combatantId);
     const engine = doc?.engine as CombatantEngine | undefined;
-    const changes = [{ path: "/engine/initiative", old: engine?.initiative ?? null, new: initiative }];
+    const edits = [{ path: "/engine/initiative", old: engine?.initiative ?? null, value: initiative }];
     if (tiebreak !== undefined) {
-      changes.push({ path: "/engine/tiebreak", old: engine?.tiebreak ?? 0, new: tiebreak });
+      edits.push({ path: "/engine/tiebreak", old: engine?.tiebreak ?? 0, value: tiebreak });
     }
-    this.dispatch([{ op: "update", doc_id: combatantId, changes }]);
+    this.dispatch([buildUpdate(combatantId, edits)]);
   }
 }

@@ -21,6 +21,11 @@ export interface PanelsApi {
   /** Open the panel `id` if closed, else close it.
    * @param id - The panel id to toggle. */
   toggle(id: string): void;
+  /** Whether panel `id` is currently placed anywhere visible (docked, floating, or
+   * popped-out) rather than minimized or closed.
+   * @param id - The panel id to query.
+   * @returns `true` iff `id` is open. */
+  isOpen(id: string): boolean;
 }
 
 /** Read-only live view of the bound panel host's layout, for a surface that
@@ -117,6 +122,19 @@ export class PanelsBridge implements PanelsApi, PanelsChipsView {
   toggle(id: string): void {
     if (!this.#impl) return this.#warnOnce();
     this.#impl.toggle(id);
+  }
+
+  /** Read-through to the bound host's live layout, like `minimized`/`metaMap` below —
+   * `false` and silent (no warning) before `bind()`, since an unbound read is the
+   * ordinary pre-bind render state rather than a misuse worth warning about. Reading
+   * this inside a Svelte `$derived`/template establishes a reactive dependency on the
+   * bound controller's layout the same way `minimized`/`metaMap` do.
+   * @param id - The panel id to query.
+   * @returns Whether `id` is open, or `false` if unbound.
+   * @example panelsBridge.isOpen("chat:panel");
+   */
+  isOpen(id: string): boolean {
+    return this.#impl?.isOpen(id) ?? false;
   }
 
   /** Live minimized-panel ids; reads through to the bound controller's `$state`

@@ -4050,3 +4050,595 @@ async fn occ_normalizes_an_embedded_child_engine_pre_image_under_the_child_doc_t
         .unwrap_err();
     assert!(matches!(stale, DataError::Conflict(_)), "got {stale:?}");
 }
+
+#[tokio::test]
+async fn apply_command_update_surfaces_note_body_derived_side_effect() {
+    let r = repo().await;
+    let w = r.create_world("W", 0).await.unwrap();
+    let author = r
+        .create_user("author", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let mut note = tests_engine_doc(
+        Default::default(),
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    r.apply_command(UnsequencedCommand {
+        world_id: w.id,
+        author,
+        ts: 1,
+        ops: vec![Operation::Create { doc: note }],
+    })
+    .await
+    .unwrap();
+
+    // Editing ONLY `/engine/source` must also surface the `/engine/body`
+    // `NoteEngine::derive_body` recomputes as a side effect — neither the
+    // broadcast, the `world_events` log, nor the author's own optimistic
+    // store would otherwise ever see the re-derived body.
+    let stored = r
+        .apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 2,
+            ops: vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+        })
+        .await
+        .unwrap();
+
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected Update");
+    };
+    assert_eq!(
+        changes.len(),
+        2,
+        "expected source + derived body: {changes:?}"
+    );
+    let body_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/body")
+        .expect("derived body change surfaced");
+    assert_eq!(body_change.old, serde_json::json!([]));
+    assert_ne!(body_change.new, serde_json::json!([]));
+    assert!(
+        body_change.new.to_string().contains("strong"),
+        "expected rendered bold markdown: {body_change:?}"
+    );
+}
+
+#[tokio::test]
+async fn apply_intent_update_surfaces_note_body_derived_side_effect() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let mut note = tests_engine_doc(
+        Default::default(),
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected Update");
+    };
+    let body_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/body")
+        .expect("derived body change surfaced");
+    assert_eq!(body_change.old, serde_json::json!([]));
+    assert_ne!(body_change.new, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn apply_intent_denies_a_derived_engine_path_without_its_declared_capability() {
+    // A world `CapabilityRequirement` on `/engine/body` must gate the
+    // SERVER-DERIVED `/engine/body` change a note's `/engine/source` edit
+    // produces, exactly as it would an ordinary direct write to that path --
+    // never bypassable by writing the field the derivation reads instead of
+    // the field it rewrites.
+    use crate::data::document::{CapabilityGrants, CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    r.set_world_cap_requirements(
+        w.id,
+        &[CapabilityRequirement {
+            path_prefix: "/engine/body".into(),
+            caps: ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    let mut note = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::None,
+            users: [(player, DocRole::Owner)].into_iter().collect(),
+            capabilities: CapabilityGrants::default(),
+            ..Default::default()
+        },
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let denied = r
+        .apply_intent(
+            &player_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await;
+    assert!(
+        matches!(denied, Err(DataError::Forbidden)),
+        "a player holding document write but not the declared /engine/body \
+         capability must be denied a source edit that derives it: {denied:?}"
+    );
+
+    let row = r.get_document(Uuid::from_u128(1)).await.unwrap().unwrap();
+    assert_eq!(
+        row.engine.unwrap().pointer("/source").unwrap(),
+        &serde_json::json!(""),
+        "the row must be unchanged after the denial"
+    );
+}
+
+#[tokio::test]
+async fn apply_intent_permits_a_derived_engine_path_once_the_capability_is_granted() {
+    use crate::data::document::{CapabilityGrants, CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    r.set_world_cap_requirements(
+        w.id,
+        &[CapabilityRequirement {
+            path_prefix: "/engine/body".into(),
+            caps: ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    let mut grants = CapabilityGrants::default();
+    grants.by_user.insert(
+        player,
+        ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+    );
+    let mut note = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::None,
+            users: [(player, DocRole::Owner)].into_iter().collect(),
+            capabilities: grants,
+            ..Default::default()
+        },
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    let stored = r
+        .apply_intent(
+            &player_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected Update");
+    };
+    let body_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/body")
+        .expect("derived body change surfaced once the capability is granted");
+    assert_ne!(body_change.new, serde_json::json!([]));
+}
+
+/// A world with a GM and player, plus two `note` documents owned by the
+/// player, with the world's `/engine/body` `CapabilityRequirement` in force.
+/// `doc_a` always carries the player's `dnd5e:edit_note_body` grant; `doc_b`
+/// carries it only when `grant_b` is true. Exercises `update_access`'s
+/// per-op pairing across a MULTI-op batch, rather than the single-Update
+/// batches
+/// `apply_intent_denies_a_derived_engine_path_without_its_declared_capability`/
+/// `apply_intent_permits_a_derived_engine_path_once_the_capability_is_granted`
+/// cover.
+async fn two_note_capability_batch_fixture(
+    grant_b: bool,
+) -> (
+    SqliteRepository,
+    Uuid,
+    crate::data::membership::PermissionContext,
+    Uuid,
+    Uuid,
+) {
+    use crate::data::document::{CapabilityGrants, CapabilityRequirement, DocRole, PermissionSet};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("player", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    r.add_member(w.id, player, WorldRole::Player).await.unwrap();
+    r.set_world_cap_requirements(
+        w.id,
+        &[CapabilityRequirement {
+            path_prefix: "/engine/body".into(),
+            caps: ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+        }],
+    )
+    .await
+    .unwrap();
+
+    let note_perms = |granted: bool| {
+        let mut grants = CapabilityGrants::default();
+        if granted {
+            grants.by_user.insert(
+                player,
+                ["dnd5e:edit_note_body".to_string()].into_iter().collect(),
+            );
+        }
+        PermissionSet {
+            default: DocRole::None,
+            users: [(player, DocRole::Owner)].into_iter().collect(),
+            capabilities: grants,
+            ..Default::default()
+        }
+    };
+
+    let mut note_a = tests_engine_doc(
+        note_perms(true),
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note_a.id = Uuid::from_u128(1);
+    note_a.scope = Scope::World { world_id: w.id };
+
+    let mut note_b = tests_engine_doc(
+        note_perms(grant_b),
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note_b.id = Uuid::from_u128(2);
+    note_b.scope = Scope::World { world_id: w.id };
+
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![
+            Operation::Create { doc: note_a },
+            Operation::Create { doc: note_b },
+        ],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    (r, w.id, player_ctx, Uuid::from_u128(1), Uuid::from_u128(2))
+}
+
+/// An `Update` op writing a note's `/engine/source` to `new`, with `old` set
+/// to the empty string every fixture note starts with.
+fn note_source_update(doc_id: Uuid, new: &str) -> Operation {
+    Operation::Update {
+        doc_id,
+        changes: vec![FieldChange {
+            remove: false,
+            path: "/engine/source".into(),
+            old: serde_json::json!(""),
+            new: serde_json::json!(new),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn apply_intent_denies_the_whole_batch_when_either_of_two_updates_derives_an_ungranted_capability_path(
+) {
+    // The ungranted doc first in the batch: the whole call is denied and
+    // neither document changes -- no partial commit of the batch's other op.
+    {
+        let (r, world, player_ctx, doc_a, doc_b) = two_note_capability_batch_fixture(false).await;
+        let denied = r
+            .apply_intent(
+                &player_ctx,
+                world,
+                vec![
+                    note_source_update(doc_b, "**b**"),
+                    note_source_update(doc_a, "**a**"),
+                ],
+                2,
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "an ungranted doc anywhere in the batch must deny the whole call: {denied:?}"
+        );
+        let a = r.get_document(doc_a).await.unwrap().unwrap();
+        let b = r.get_document(doc_b).await.unwrap().unwrap();
+        assert_eq!(
+            a.engine.unwrap().pointer("/source").unwrap(),
+            &serde_json::json!(""),
+            "the granted doc must be unchanged after the batch is denied"
+        );
+        assert_eq!(
+            b.engine.unwrap().pointer("/source").unwrap(),
+            &serde_json::json!(""),
+            "the ungranted doc must be unchanged after the batch is denied"
+        );
+    }
+    // The ungranted doc second in the batch: same outcome, regardless of
+    // position -- with the granted doc first, its `upsert_document` runs
+    // inside the still-open transaction before the second op's derived-path
+    // check rejects; nothing persists because the rejection aborts the
+    // transaction before it ever commits, regardless of that intermediate
+    // uncommitted write.
+    {
+        let (r, world, player_ctx, doc_a, doc_b) = two_note_capability_batch_fixture(false).await;
+        let denied = r
+            .apply_intent(
+                &player_ctx,
+                world,
+                vec![
+                    note_source_update(doc_a, "**a**"),
+                    note_source_update(doc_b, "**b**"),
+                ],
+                2,
+                WriteOrigin::Client,
+            )
+            .await;
+        assert!(
+            matches!(denied, Err(DataError::Forbidden)),
+            "an ungranted doc anywhere in the batch must deny the whole call: {denied:?}"
+        );
+        let a = r.get_document(doc_a).await.unwrap().unwrap();
+        let b = r.get_document(doc_b).await.unwrap().unwrap();
+        assert_eq!(
+            a.engine.unwrap().pointer("/source").unwrap(),
+            &serde_json::json!(""),
+            "the granted doc must be unchanged after the batch is denied"
+        );
+        assert_eq!(
+            b.engine.unwrap().pointer("/source").unwrap(),
+            &serde_json::json!(""),
+            "the ungranted doc must be unchanged after the batch is denied"
+        );
+    }
+}
+
+#[tokio::test]
+async fn apply_intent_permits_a_batch_of_two_updates_when_both_derive_a_granted_capability_path() {
+    let (r, world, player_ctx, doc_a, doc_b) = two_note_capability_batch_fixture(true).await;
+    let stored = r
+        .apply_intent(
+            &player_ctx,
+            world,
+            vec![
+                note_source_update(doc_a, "**a**"),
+                note_source_update(doc_b, "**b**"),
+            ],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    for (idx, id) in [doc_a, doc_b].into_iter().enumerate() {
+        let Operation::Update { changes, doc_id } = &stored.command.ops[idx] else {
+            panic!("expected Update");
+        };
+        assert_eq!(*doc_id, id);
+        let body_change = changes
+            .iter()
+            .find(|c| c.path == "/engine/body")
+            .unwrap_or_else(|| {
+                panic!("derived body change must surface for op {idx} once both docs are granted")
+            });
+        assert_ne!(body_change.new, serde_json::json!([]));
+    }
+}
+
+#[tokio::test]
+async fn apply_intent_pairs_update_access_across_two_updates_to_one_doc() {
+    // Two Updates to the SAME granted note in one batch, the second's OCC
+    // `old` chained off the first's `new` -- exercises `update_access`'s
+    // push-then-consume pairing across N>1 Update ops on one doc_id rather
+    // than N=1 ops on N docs, pinning that the
+    // `.expect("one Access recorded per Update op in Phase 1")` never panics
+    // regardless of how many ops in the batch target the same doc. Both
+    // ops' OCC `old` names the document's true stored value at the start of
+    // this call: Phase 1 validates each op's pre-image against a fresh
+    // `Self::load_document` read, never against a sibling op's `new` --
+    // there is no intra-batch simulation of a prior op's effect for OCC
+    // purposes, so a chained pre-image (this op's `old` set to the
+    // preceding op's `new`) is what the store's OCC contract calls a stale
+    // pre-image, not a valid same-doc edit chain.
+    let (r, world, player_ctx, doc_a, _doc_b) = two_note_capability_batch_fixture(true).await;
+    let stored = r
+        .apply_intent(
+            &player_ctx,
+            world,
+            vec![
+                Operation::Update {
+                    doc_id: doc_a,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine/source".into(),
+                        old: serde_json::json!(""),
+                        new: serde_json::json!("**first**"),
+                    }],
+                },
+                Operation::Update {
+                    doc_id: doc_a,
+                    changes: vec![FieldChange {
+                        remove: false,
+                        path: "/engine/source".into(),
+                        old: serde_json::json!(""),
+                        new: serde_json::json!("**second**"),
+                    }],
+                },
+            ],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    assert_eq!(stored.command.ops.len(), 2);
+    for op in &stored.command.ops {
+        let Operation::Update { changes, .. } = op else {
+            panic!("expected Update");
+        };
+        let body_changes = changes.iter().filter(|c| c.path == "/engine/body").count();
+        assert_eq!(
+            body_changes, 1,
+            "each Update op must carry exactly one derived /engine/body change: {changes:?}"
+        );
+    }
+    // Phase 2 applies both ops in order against the SAME transaction, so
+    // the second op's write lands on top of the first's -- the final stored
+    // value is the second op's `new`, not the first's.
+    let row = r.get_document(doc_a).await.unwrap().unwrap();
+    assert_eq!(
+        row.engine.unwrap().pointer("/source").unwrap(),
+        &serde_json::json!("**second**")
+    );
+}

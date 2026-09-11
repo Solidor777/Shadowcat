@@ -14,6 +14,7 @@ import {
   chatMessageEngineSchemaImpl,
   baseRollDice,
   numericBounds,
+  firstChannel,
   type DieRecord,
   type ConstTerm,
   type ChatSegment,
@@ -21,6 +22,8 @@ import {
   type ChatMessageEngine,
 } from "./chat-docs";
 import type { WireDocument } from "./wire";
+import { DocumentStore } from "./store";
+import { buildFactionRegistryDoc } from "./scene-docs";
 
 // Non-vacuous schema/type guard: asserting against the unannotated `xImpl` const, not
 // `z.infer<typeof XSchema>`, is what makes a dropped union arm or a narrowed field fail this
@@ -560,4 +563,33 @@ test("buildChatSettingsDoc builds a world-scoped parentless singleton doc", () =
   expect(d.scope).toEqual({ kind: "world", world_id: "w1" });
   expect(d.engine).toEqual({ markdown: null, html: null, images: null, hyperlinks: true, emails: null, link_previews: false });
   expect(d.system).toEqual({});
+});
+
+describe("firstChannel", () => {
+  test("returns null when no channel-registry doc exists yet", () => {
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "create", doc: buildFactionRegistryDoc("w1", {}) }],
+    });
+    expect(firstChannel(store)).toBeNull();
+  });
+
+  test("returns null when the registry doc has an empty channel map", () => {
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "create", doc: buildChannelRegistryDoc("w1", {}) }],
+    });
+    expect(firstChannel(store)).toBeNull();
+  });
+
+  test("returns the registry's first channel key in map order", () => {
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1, world_id: "w1", author: "a", ts: 0,
+      ops: [{ op: "create", doc: buildChannelRegistryDoc("w1", { general: { name: "General" }, ooc: { name: "OOC" } }) }],
+    });
+    expect(firstChannel(store)).toBe("general");
+  });
 });

@@ -4,7 +4,7 @@
 // (`normalize_engine`'s `"note"` arm) — so `buildNoteDoc` builds only `source`
 // and sends an empty placeholder `body`, and `parseNoteBody` is the fail-closed
 // reader of whatever the server actually derived and echoed back.
-import { envelope } from "./scene-docs";
+import { envelope, grantAuthor } from "./scene-docs";
 import { SegmentListSchema, type ChatSegment, type UnknownSegment } from "./chat-docs";
 import type { NoteEngine } from "@shadowcat/types";
 import type { WireDocument } from "./wire";
@@ -24,17 +24,20 @@ export interface BuildNoteDocOptions {
   sort?: number;
   /** Optional explicit document id; a fresh uuid is generated when omitted. */
   id?: string;
-  /** The authoring user's id. REQUIRED to grant that user `Owner` on the note
-   * (private-by-default: `permissions.default: "none"`) — this builder is pure and has no
+  /** The authoring user's id. REQUIRED to grant that user `Owner` PLUS `AUTHOR_CAPS`
+   * (`core:delete`, `core:edit_permissions`) on the note via `grantAuthor` — the `owner`
+   * DocRole floor alone (read + write_fields) cannot delete the note or reshare it
+   * (private-by-default: `permissions.default: "none"`). This builder is pure and has no
    * session of its own to read the caller's identity from, so the caller (which does have a
-   * session) must pass it explicitly. Omitting it produces a note nobody but a GM can read. */
+   * session) must pass it explicitly. Omitting it produces a note nobody but a GM can read,
+   * delete, or reshare. */
   owner?: string;
 }
 
 /** Builds an unsaved `note` document: `engine: { source, body: [], sort }` (the
  * placeholder `body` is discarded and re-derived by the server on Create — see this
  * module's own doc comment), `system: {}`, private-by-default permissions
- * (`default: "none"`, `users: { [owner]: "owner" }` when `opts.owner` is given).
+ * (`default: "none"`, `grantAuthor`'d to `opts.owner` when given — see `BuildNoteDocOptions.owner`).
  * @param worldId The owning world's id.
  * @param name The note's display title (envelope `name`), or `null`.
  * @param source The author's markdown.
@@ -68,11 +71,8 @@ export function buildNoteDoc(
     sort: opts?.sort ?? 0,
   } as unknown as NoteEngine;
   const doc = envelope(worldId, NOTE_DOC_TYPE, opts?.parentId ?? null, {}, opts?.id, engine, name);
-  doc.permissions = {
-    ...doc.permissions,
-    default: "none",
-    users: opts?.owner ? { [opts.owner]: "owner" } : {},
-  };
+  doc.permissions = { ...doc.permissions, default: "none" };
+  if (opts?.owner) grantAuthor(doc, opts.owner);
   return doc;
 }
 

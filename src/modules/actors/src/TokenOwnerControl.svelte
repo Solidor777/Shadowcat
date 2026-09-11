@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { effectiveOwner, type WireDocument } from "@shadowcat/core";
+  import { effectiveOwner, buildUpdate, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -78,9 +78,7 @@
   function setOverride(next: string | null): void {
     const tok = token;
     if (!tok) return;
-    ctx.dispatchIntent([
-      { op: "update", doc_id: tok.id, changes: [{ path: "/owner", old: overrideOwner, new: next }] },
-    ]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/owner", old: overrideOwner, value: next }])]);
   }
 </script>
 

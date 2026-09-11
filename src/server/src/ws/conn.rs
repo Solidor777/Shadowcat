@@ -1769,6 +1769,8 @@ async fn egress_loop<S>(
     // users' UUIDs and grants must not cross to the client.
     let actor_grants =
         crate::data::permission::project_grants_for(&world_defaults.all, ctx.user_id);
+    let role_capabilities =
+        crate::data::permission::project_role_caps_for(&world_defaults.role_caps, ctx.world_role);
     if sink
         .send(text(&ServerMsg::Welcome {
             world: world_id,
@@ -1780,6 +1782,7 @@ async fn egress_loop<S>(
             capability_requirements: world_reqs,
             contract_declarations: world_contracts,
             schema_declarations: world_schemas,
+            role_capabilities,
         }))
         .await
         .is_err()

@@ -125,6 +125,11 @@ describe("wire drift guard — message discriminants", () => {
     type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
     expectTypeOf<W["schema_declarations"]>().toEqualTypeOf<T["schema_declarations"]>();
   });
+  it("Welcome role_capabilities matches ts-rs", () => {
+    type W = Extract<ServerMsg, { type: "welcome" }>;
+    type T = Extract<Ts.ServerMsg, { type: "welcome" }>;
+    expectTypeOf<W["role_capabilities"]>().toEqualTypeOf<T["role_capabilities"]>();
+  });
   it("combat_error is a ServerMsg discriminant", () => {
     type Found = Extract<ServerMsg["type"], "combat_error">;
     expectTypeOf<Found>().toEqualTypeOf<"combat_error">();
@@ -255,6 +260,10 @@ describe("parseServerMsg", () => {
       }),
     );
     expect(m?.type).toBe("welcome");
+    // A frame missing role_capabilities entirely still parses — the .default fallback.
+    if (m?.type === "welcome") {
+      expect(m.role_capabilities).toEqual({ all: [], by_type: {} });
+    }
   });
 
   it("parses welcome capability fields", () => {

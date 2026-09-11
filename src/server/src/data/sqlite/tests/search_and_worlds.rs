@@ -1761,3 +1761,341 @@ async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_
         .count();
     assert_eq!(residue, 0);
 }
+
+/// A minimal `WorldImportData` carrying `docs` and nothing else, world
+/// metadata taken from `world_id`/`gm`. Shared by the post-loop
+/// placement-check tests below.
+fn placement_import_data(
+    world_id: Uuid,
+    gm_username: &str,
+    docs: Vec<Document>,
+) -> WorldImportData {
+    WorldImportData {
+        manifest: BundleManifest {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            world_id,
+            world_name: "Placement World".to_string(),
+            world_seq: 0,
+            world_created_at: 0,
+            world_updated_at: 0,
+            exported_at_unix_ms: 0,
+            row_counts: std::collections::BTreeMap::new(),
+        },
+        documents: docs
+            .into_iter()
+            .enumerate()
+            .map(|(i, document)| ExportedDocumentRow {
+                document,
+                owner_username: None,
+                seq: i as i64 + 1,
+                created_seq: i as i64 + 1,
+            })
+            .collect(),
+        events: vec![],
+        members: vec![ExportedMemberRow {
+            username: gm_username.to_string(),
+            role: WorldRole::Gm,
+        }],
+        invites: vec![],
+        assets: vec![],
+        fog: vec![],
+        settings: vec![],
+        staged_assets: Vec::new(),
+        staged_siblings: vec![],
+    }
+}
+
+/// A 2-note mutual cycle fails at the FIRST insert (`a`'s parent `b` does not
+/// exist yet), before the post-loop placement pass ever runs — this pins the
+/// immediate (non-`DEFERRABLE`) `documents.parent_id` foreign key as the
+/// mechanism, not an assumption. Rolled back: the world never commits.
+#[tokio::test]
+async fn import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk() {
+    let world_id = Uuid::new_v4();
+    let a_id = Uuid::from_u128(101);
+    let b_id = Uuid::from_u128(102);
+    let a = note_doc(101, world_id, "a", Some(b_id));
+    let b = note_doc(102, world_id, "b", Some(a_id));
+
+    let target = repo().await;
+    target
+        .create_user("gm-cycle", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-cycle", vec![a, b]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(matches!(err, DataError::Sqlx(_)));
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}
+
+/// Two parentless notes sharing an `id`, plus a third note parented to that
+/// id, is rejected by the up-front duplicate-id check — before the Kahn
+/// reorder ever runs a `children` decrement against the shared id twice.
+#[tokio::test]
+async fn import_world_rejects_a_bundle_with_duplicate_document_ids() {
+    let world_id = Uuid::new_v4();
+    let dup_id = Uuid::from_u128(108);
+    let first = note_doc(108, world_id, "first", None);
+    let second = note_doc(108, world_id, "second", None);
+    let child = note_doc(109, world_id, "child", Some(dup_id));
+    assert_eq!(first.id, dup_id);
+    assert_eq!(second.id, dup_id);
+
+    let target = repo().await;
+    target
+        .create_user("gm-dup-id", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-dup-id", vec![first, second, child]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    match &err {
+        DataError::OpFailed(m) => assert!(
+            m.contains(&dup_id.to_string()),
+            "error message must name the duplicate id: {m}"
+        ),
+        other => panic!("expected DataError::OpFailed, got {other:?}"),
+    }
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}
+
+/// A self-parented note is rejected by the post-loop pass's explicit
+/// `doc.parent_id == Some(doc.id)` check (both notes already inserted, so
+/// the FK alone would not catch this — the row satisfies its own FK).
+#[tokio::test]
+async fn import_world_rejects_a_self_parented_note() {
+    let world_id = Uuid::new_v4();
+    let note_id = Uuid::from_u128(103);
+    let note = note_doc(103, world_id, "self", Some(note_id));
+
+    let target = repo().await;
+    target
+        .create_user("gm-self", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-self", vec![note]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(m) if m == "document cannot be its own parent"));
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}
+
+/// A note whose parent is an actor (wrong type) is rejected by the post-loop
+/// pass's `check_parent_placement` call (`check_note_parent`'s doc_type
+/// rule), even though both documents insert successfully on their own.
+#[tokio::test]
+async fn import_world_rejects_a_note_parented_to_an_actor() {
+    let world_id = Uuid::new_v4();
+    let actor = world_doc(104, world_id, serde_json::json!({}));
+    let note = note_doc(105, world_id, "child", Some(actor.id));
+
+    let target = repo().await;
+    target
+        .create_user("gm-wrong-type", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-wrong-type", vec![actor, note]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(
+        matches!(&err, DataError::OpFailed(m) if m == "note parent must be a note in the same world")
+    );
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}
+
+/// A `combat` document carrying a `parent_id` is rejected by the post-loop
+/// pass's `validate_containment` call — a combat is never parented.
+#[tokio::test]
+async fn import_world_rejects_a_parented_combat_document() {
+    let world_id = Uuid::new_v4();
+    let scene = Uuid::new_v4();
+    let parent = world_doc(106, world_id, serde_json::json!({}));
+    let mut combat = combat_doc(107, world_id, scene, false);
+    combat.parent_id = Some(parent.id);
+
+    let target = repo().await;
+    target
+        .create_user("gm-combat", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-combat", vec![parent, combat]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(
+        matches!(&err, DataError::OpFailed(m) if m == "a combat document cannot have a parent")
+    );
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}
+
+/// A valid bundle where a child note's id sorts BEFORE its parent's id still
+/// imports successfully — the case a per-row placement check inside the
+/// insert loop would spuriously reject, since `export_world_rows` orders
+/// documents by id and a lower-id child would then be checked before its
+/// higher-id parent exists.
+#[tokio::test]
+async fn import_world_accepts_a_child_note_sorting_before_its_parent() {
+    let world_id = Uuid::new_v4();
+    // `Uuid::from_u128` orders lexicographically by value, so the child
+    // (lower id) is placed FIRST in the `documents` list below — exactly
+    // the ordering `export_world_rows`'s `ORDER BY documents.id` produces
+    // for a real export where the child happened to receive a lower id.
+    let child_id = Uuid::from_u128(1);
+    let parent_id = Uuid::from_u128(2);
+    let parent = note_doc(2, world_id, "parent", None);
+    let child = note_doc(1, world_id, "child", Some(parent_id));
+    assert!(child.id < parent.id, "child must sort before its parent");
+
+    let target = repo().await;
+    target
+        .create_user("gm-order", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-order", vec![child.clone(), parent]);
+    let summary = target.import_world(import_data).await.unwrap();
+    assert_eq!(summary.world_id, world_id);
+
+    let stored_parent: Option<String> =
+        sqlx::query_scalar("SELECT parent_id FROM documents WHERE id = ?")
+            .bind(child_id.to_string())
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored_parent, Some(parent_id.to_string()));
+}
+
+/// A valid `asset_folder` tree (parent created after its child in the
+/// documents list) round-trips through import.
+#[tokio::test]
+async fn import_world_accepts_a_valid_asset_folder_tree() {
+    let world_id = Uuid::new_v4();
+    let root_id = Uuid::from_u128(3);
+    let root = folder_doc(3, world_id, "Root", None);
+    let child = folder_doc(4, world_id, "Child", Some(root_id));
+    let child_id = child.id;
+
+    let target = repo().await;
+    target
+        .create_user("gm-folders", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    // Child listed before its parent, same ordering hazard as the note test
+    // above, over the OTHER doc_type `check_parent_placement` covers.
+    let import_data = placement_import_data(world_id, "gm-folders", vec![child, root]);
+    let summary = target.import_world(import_data).await.unwrap();
+    assert_eq!(summary.world_id, world_id);
+
+    let stored_parent: Option<String> =
+        sqlx::query_scalar("SELECT parent_id FROM documents WHERE id = ?")
+            .bind(child_id.to_string())
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+    assert_eq!(stored_parent, Some(root_id.to_string()));
+}
+
+/// A bundle whose only document — a parentless note — carries a `scope`
+/// naming a different, already-existing world is rejected outright: nothing
+/// in `document_row_columns` or `check_parent_placement` ever checks a
+/// document's OWN scope against the bundle's target world, only a document's
+/// PARENT's scope. Neither the new world nor a stray row under the other
+/// world is left behind.
+#[tokio::test]
+async fn import_world_rejects_a_document_whose_own_scope_names_a_different_world() {
+    use crate::data::document::Scope;
+
+    let target = repo().await;
+    let gm = target
+        .create_user("gm-scope-orphan", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let other_world = target.create_world_owned("Other", gm, 0).await.unwrap();
+
+    let world_id = Uuid::new_v4();
+    let mut note = note_doc(200, world_id, "orphan", None);
+    note.scope = Scope::World {
+        world_id: other_world.id,
+    };
+
+    let import_data = placement_import_data(world_id, "gm-scope-orphan", vec![note]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(
+        matches!(&err, DataError::OpFailed(m) if m == "document scope does not match the command's world")
+    );
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+    let other_world_doc_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE world_id = ?")
+            .bind(other_world.id.to_string())
+            .fetch_one(target.pool())
+            .await
+            .unwrap();
+    assert_eq!(other_world_doc_count, 0);
+}
+
+/// A bundle whose PARENT note carries a foreign `scope` while its child is
+/// correctly scoped to the bundle's target world is rejected on the parent's
+/// own scope, at the same per-row check the orphan-document case above
+/// exercises — the child being valid does not let the parent's mismatch
+/// through.
+#[tokio::test]
+async fn import_world_rejects_when_only_the_parent_document_has_a_foreign_scope() {
+    use crate::data::document::Scope;
+
+    let target = repo().await;
+    let gm = target
+        .create_user("gm-scope-parent", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let other_world = target.create_world_owned("Other2", gm, 0).await.unwrap();
+
+    let world_id = Uuid::new_v4();
+    let mut parent = note_doc(201, world_id, "parent", None);
+    parent.scope = Scope::World {
+        world_id: other_world.id,
+    };
+    let child = note_doc(202, world_id, "child", Some(parent.id));
+
+    let import_data = placement_import_data(world_id, "gm-scope-parent", vec![parent, child]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    assert!(
+        matches!(&err, DataError::OpFailed(m) if m == "document scope does not match the command's world")
+    );
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}

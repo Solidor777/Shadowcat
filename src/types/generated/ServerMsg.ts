@@ -10,6 +10,7 @@ import type { MergeOutcome } from "./MergeOutcome";
 import type { PosSample } from "./PosSample";
 import type { RejectReason } from "./RejectReason";
 import type { ResyncSource } from "./ResyncSource";
+import type { RoleCapabilities } from "./RoleCapabilities";
 import type { SchemaDeclaration } from "./SchemaDeclaration";
 import type { SearchHit } from "./SearchHit";
 import type { VisionSample } from "./VisionSample";
@@ -72,7 +73,13 @@ contract_declarations: Array<ContractDeclaration>,
  * can mirror expectations. Informational/parity only — tier-1 Zod
  * validates client-side; this is NOT a client enforcement gate.
  */
-schema_declarations: Array<SchemaDeclaration>, } | { "type": "event", 
+schema_declarations: Array<SchemaDeclaration>, 
+/**
+ * The connecting user's own world-level capabilities — the `core:create` policy
+ * `apply_intent` consults through `WorldCapDefaults::role_has` — projected for their
+ * role via `project_role_caps_for`. Advisory mirror; the server remains authoritative.
+ */
+role_capabilities: RoleCapabilities, } | { "type": "event", 
 /**
  * The committed, per-recipient-filtered command.
  */

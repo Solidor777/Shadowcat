@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { rowsFor, moveInOrder, rollTargets, firstChannel, formatResource, type Row } from "./model";
-import { buildCombatantDoc, DocumentStore, buildFactionRegistryDoc, buildChannelRegistryDoc, type CombatantEngine, type WireDocument, type CombatsView } from "@shadowcat/core";
+import { rowsFor, moveInOrder, rollTargets, formatResource, type Row } from "./model";
+import { buildCombatantDoc, type CombatantEngine, type WireDocument, type CombatsView } from "@shadowcat/core";
 
 function actorCombatant(id: string, opts: { initiative?: number | null; owner?: string | null; tokenId?: string; hidden?: boolean } = {}): WireDocument {
   const engine: CombatantEngine = {
@@ -98,35 +98,6 @@ describe("rollTargets", () => {
     const mine = actorCombatant("mine", { initiative: 3, owner: "user-1" });
     const targets = rollTargets(rows([mine]), "player", "user-1");
     expect(targets).toEqual([]);
-  });
-});
-
-describe("firstChannel", () => {
-  it("returns null when no channel-registry doc exists yet", () => {
-    const store = new DocumentStore();
-    store.applyCommand({
-      seq: 1, world_id: "w1", author: "a", ts: 0,
-      ops: [{ op: "create", doc: buildFactionRegistryDoc("w1", {}) }],
-    });
-    expect(firstChannel(store)).toBeNull();
-  });
-
-  it("returns null when the registry doc has an empty channel map", () => {
-    const store = new DocumentStore();
-    store.applyCommand({
-      seq: 1, world_id: "w1", author: "a", ts: 0,
-      ops: [{ op: "create", doc: buildChannelRegistryDoc("w1", {}) }],
-    });
-    expect(firstChannel(store)).toBeNull();
-  });
-
-  it("returns the registry's first channel key in map order", () => {
-    const store = new DocumentStore();
-    store.applyCommand({
-      seq: 1, world_id: "w1", author: "a", ts: 0,
-      ops: [{ op: "create", doc: buildChannelRegistryDoc("w1", { general: { name: "General" }, ooc: { name: "OOC" } }) }],
-    });
-    expect(firstChannel(store)).toBe("general");
   });
 });
 

@@ -14,6 +14,7 @@ import {
   type WireDocument,
 } from "./wire";
 import { envelope } from "./scene-docs";
+import type { ReadableDocuments } from "./store";
 import type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine } from "@shadowcat/types";
 export type { ChannelRegistryEngine, ChatSettingsEngine, DiceSettingsEngine };
 
@@ -733,6 +734,30 @@ export function buildChannelRegistryDoc(
   id?: string,
 ): WireDocument {
   return envelope(worldId, CHANNEL_REGISTRY_DOC_TYPE, null, {}, id, { channels } satisfies ChannelRegistryEngine, null);
+}
+
+/** Shape of `ChannelRegistryEngine`'s `channels` field, narrowed for `firstChannel`. */
+type ChannelRegistryShape = {
+  /** The registered channel keys, in map insertion order. */
+  channels?: Record<string, unknown>;
+};
+
+/** The channel-registry's first channel key, in map insertion order — the channel initiative
+ * rolls and other default-channel affordances always post to.
+ * @param documents The document view to query the singleton `channel-registry` from.
+ * @returns The first channel key, or `null` when the registry is absent or empty.
+ * @example
+ * ```
+ * declare const documents: ReadableDocuments;
+ * firstChannel(documents); // "general"
+ * ```
+ */
+export function firstChannel(documents: ReadableDocuments): string | null {
+  const doc = documents.query(CHANNEL_REGISTRY_DOC_TYPE)[0];
+  const channels = (doc?.engine as ChannelRegistryShape | undefined)?.channels;
+  if (!channels) return null;
+  const keys = Object.keys(channels);
+  return keys.length > 0 ? keys[0] : null;
 }
 
 /** Doc_type for the single per-world dice-settings config `Document`

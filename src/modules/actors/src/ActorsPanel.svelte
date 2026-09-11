@@ -1,9 +1,8 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
-  import { getAppContext, LightEmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
+  import { getAppContext, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
+  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, buildUpdate, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
-  import EmissionEditor from "./EmissionEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
   import TokenRotationControl from "./TokenRotationControl.svelte";
@@ -184,7 +183,7 @@
    * ```
    */
   function commitLight(a: WireDocument, next: LightEmission | null): void {
-    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/light", old: lightOf(a), new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/light", old: lightOf(a), value: next }])]);
   }
 
   /** The per-row carried-light toggle: on stamps the shared authoring default, off removes the
@@ -236,7 +235,7 @@
    * ```
    */
   function commitVision(a: WireDocument, next: VisionAssignment[]): void {
-    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/vision", old: visionOf(a), new: next.length > 0 ? next : null }] }]);
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/vision", old: visionOf(a), value: next.length > 0 ? next : null }])]);
   }
 
   /** The actor row's raw stored movement-type tags (`engine.movement`), or `null` when the key
@@ -268,7 +267,7 @@
    * ```
    */
   function commitMovement(a: WireDocument, next: string[]): void {
-    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/movement", old: movementOf(a), new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/movement", old: movementOf(a), value: next }])]);
   }
 
   // Rows come from two sources — a store-resolved document and a search hit
@@ -300,7 +299,7 @@
     const next = { ...cur };
     if (next["/name"] === "owner_or_gm") delete next["/name"];
     else next["/name"] = "owner_or_gm";
-    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/permissions/property_overrides", old: cur, new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/permissions/property_overrides", old: cur, value: next }])]);
   }
 
   /**
@@ -325,7 +324,7 @@
     const visual = $state.snapshot(editedVisual);
     if (!visual) return;
     const old = (a.engine as VisualEngineShape | undefined)?.visual ?? null;
-    ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/visual", old, new: visual }] }]);
+    ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/visual", old, value: visual }])]);
     editingVisualId = null;
     editedVisual = null;
   }
@@ -428,7 +427,7 @@
           <select
             aria-label={t("actors.actorOwner")}
             value={a.owner ?? ""}
-            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/owner", old: a.owner ?? null, new: e.currentTarget.value || null }] }])}
+            onchange={(e) => ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/owner", old: a.owner ?? null, value: e.currentTarget.value || null }])])}
           >
             <option value="">{t("actors.ownerNobody")}</option>
             {#each [...ctx.members.entries()] as [uid, uname] (uid)}
@@ -438,7 +437,7 @@
           <select
             aria-label={t("actors.faction")}
             value={(a.engine as FactionEngineShape | undefined)?.faction ?? ""}
-            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/faction", old: (a.engine as FactionEngineShape | undefined)?.faction ?? null, new: e.currentTarget.value || null }] }])}
+            onchange={(e) => ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/faction", old: (a.engine as FactionEngineShape | undefined)?.faction ?? null, value: e.currentTarget.value || null }])])}
           >
             <option value="">—</option>
             {#each factionOptions as [id, f] (id)}<option value={id}>{f.name}</option>{/each}
@@ -446,7 +445,7 @@
           <select
             aria-label={t("actors.shape")}
             value={(a.engine as ShapeEngineShape | undefined)?.shape ?? "square"}
-            onchange={(e) => ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/shape", old: (a.engine as ShapeEngineShape | undefined)?.shape ?? "square", new: e.currentTarget.value }] }])}
+            onchange={(e) => ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/shape", old: (a.engine as ShapeEngineShape | undefined)?.shape ?? "square", value: e.currentTarget.value }])])}
           >
             <option value="square">{t("actors.shapeSquare")}</option>
             <option value="circle">{t("actors.shapeCircle")}</option>
@@ -457,12 +456,12 @@
           <input
             type="number" min="0.5" step="0.5" class="size-edit" aria-label={t("actors.width")}
             value={(a.engine as SizeEngineShape | undefined)?.size?.w ?? 1}
-            onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: Number(e.currentTarget.value), h: sz.h } }] }]); }}
+            onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/size", old: sz, value: { w: Number(e.currentTarget.value), h: sz.h } }])]); }}
           />
           <input
             type="number" min="0.5" step="0.5" class="size-edit" aria-label={t("actors.height")}
             value={(a.engine as SizeEngineShape | undefined)?.size?.h ?? 1}
-            onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([{ op: "update", doc_id: a.id, changes: [{ path: "/engine/size", old: sz, new: { w: sz.w, h: Number(e.currentTarget.value) } }] }]); }}
+            onchange={(e) => { const sz = (a.engine as SizeEngineShape | undefined)?.size ?? { w: 1, h: 1 }; ctx.dispatchIntent([buildUpdate(a.id, [{ path: "/engine/size", old: sz, value: { w: sz.w, h: Number(e.currentTarget.value) } }])]); }}
           />
           <!-- Per-row vision-assignment list editor; commits whole-payload /engine/vision
                updates with the raw stored list as the OCC pre-image. -->
@@ -518,6 +517,7 @@
     />
     {t("actors.keepAfterPlace")}
   </label>
+  {#if ctx.canCreate(ACTOR_DOC_TYPE)}
   <form onsubmit={(e) => { e.preventDefault(); create(); }}>
     <input placeholder={t("actors.name")} aria-label={t("actors.name")} bind:value={name} />
     <input placeholder={t("actors.displayName")} aria-label={t("actors.displayName")} bind:value={displayName} />
@@ -572,6 +572,7 @@
     />
     <button type="submit" disabled={!name || !pendingVisual}>{t("actors.create")}</button>
   </form>
+  {/if}
 </section>
 
 <style lang="scss">
