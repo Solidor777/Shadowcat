@@ -28,9 +28,9 @@ describe("addRow", () => {
     expect(next[0]).toEqual(row("a")); // unchanged
   });
 
-  it("never appends an empty label — `TableEngine::validate` rejects it server-side", () => {
+  it("uses the caller's default label verbatim — `addRow` has no fallback of its own", () => {
     const next = addRow([], { kind: "weighted" }, "New row");
-    expect(next[0].label).not.toBe("");
+    expect(next[0].label).toBe("New row");
   });
 
   it("appends a formula row with a placeholder range", () => {
