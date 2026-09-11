@@ -61,6 +61,7 @@ function welcomeFrame(): ServerMsg {
     capability_requirements: [],
     contract_declarations: [],
     schema_declarations: [],
+    role_capabilities: { all: [], by_type: {} },
   };
 }
 

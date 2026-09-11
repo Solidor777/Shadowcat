@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor, EmissionEditor, VisionAssignmentsEditor, MovementTagsEditor } from "@shadowcat/ui-kit";
-  import { buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
+  import { ACTOR_DOC_TYPE, buildActorDoc, setNameHidden, actorDisplayName, resolveVisionModes, DEFAULT_LIGHT_EMISSION, type ActorEngine, type LightEmission, type VisionAssignment, type VisionMode, type WireDocument, type FactionRegistryEngine, type Faction, type TokenVisual, type ConditionRegistryEngine, type Condition, type WireSearchHit, type SubscriptionHandle, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
   import VisualKindEditor from "./VisualKindEditor.svelte";
   import FaceSwapPalette from "./FaceSwapPalette.svelte";
   import TokenOwnerControl from "./TokenOwnerControl.svelte";
@@ -515,6 +515,7 @@
     />
     {t("actors.keepAfterPlace")}
   </label>
+  {#if ctx.canCreate(ACTOR_DOC_TYPE)}
   <form onsubmit={(e) => { e.preventDefault(); create(); }}>
     <input placeholder={t("actors.name")} aria-label={t("actors.name")} bind:value={name} />
     <input placeholder={t("actors.displayName")} aria-label={t("actors.displayName")} bind:value={displayName} />
@@ -569,6 +570,7 @@
     />
     <button type="submit" disabled={!name || !pendingVisual}>{t("actors.create")}</button>
   </form>
+  {/if}
 </section>
 
 <style lang="scss">

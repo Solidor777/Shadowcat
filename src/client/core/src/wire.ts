@@ -136,6 +136,28 @@ export const capabilityGrantsSchemaImpl = z.object({
 /** Validator for a `CapabilityGrants`. */
 export const CapabilityGrantsSchema: z.ZodType<WireCapabilityGrants> = capabilityGrantsSchemaImpl;
 
+/** The connecting user's own world-level capabilities, projected for their role out of the
+ * world's `RoleCaps` (server: `project_role_caps_for`). Advisory mirror of the `core:create`
+ * gate; never derives authority — the server remains the enforcement point. Mirrors
+ * `crate::data::document::RoleCapabilities`. */
+export type WireRoleCapabilities = {
+  /** Capabilities held for every doc_type. */
+  all: string[];
+  /** Capabilities held only for the keyed doc_type. */
+  by_type: Record<string, string[]>;
+};
+
+// Unannotated impl const — see the module-level note above the `z` import. Both fields are
+// `#[serde(default)]` on the server (an older/partial frame still parses as empty), mirrored
+// with `.default(...)` here so a Welcome missing this field entirely still parses.
+export const roleCapabilitiesSchemaImpl = z.object({
+  all: z.array(z.string()).default([]),
+  by_type: z.record(z.array(z.string())).default({}),
+});
+/** Validator for a `RoleCapabilities`. */
+export const RoleCapabilitiesSchema: z.ZodType<WireRoleCapabilities, z.ZodTypeDef, unknown> =
+  roleCapabilitiesSchemaImpl;
+
 /** A declarative requirement: writing any field under `path_prefix` requires the
  * actor to additionally hold every capability in `caps` (on top of the structural
  * base capability for that path). Pure data — the server enforces possession and
@@ -821,6 +843,9 @@ export type WireWelcome = {
    * expectations. Informational/parity only — tier-1 Zod validates client-side; this is
    * NOT a client enforcement gate. */
   schema_declarations: WireSchemaDeclaration[];
+  /** The connecting user's own world-level capabilities — the `core:create` policy
+   * `apply_intent` consults — projected for their role. Advisory mirror. */
+  role_capabilities: WireRoleCapabilities;
 };
 
 /** Every frame the server sends, discriminated by `type`. Mirrors
@@ -1152,6 +1177,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     capability_requirements: z.array(CapabilityRequirementSchema),
     contract_declarations: z.array(ContractDeclarationSchema),
     schema_declarations: z.array(SchemaDeclarationSchema),
+    role_capabilities: RoleCapabilitiesSchema.default({ all: [], by_type: {} }),
   }),
   z.object({
     type: z.literal("event"),
@@ -1322,7 +1348,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
 ]);
 /** Validator for every frame the server sends, discriminated by `type`. */
-export const ServerMsgSchema: z.ZodType<ServerMsg> = serverMsgSchemaImpl;
+export const ServerMsgSchema: z.ZodType<ServerMsg, z.ZodTypeDef, unknown> = serverMsgSchemaImpl;
 
 /** The inferred TS shape of `ScopeSchema` above. */
 export type WireScope = z.infer<typeof ScopeSchema>;

@@ -3,14 +3,13 @@
 // gate module UI/actions for UX. The server remains authoritative — a bypass is
 // rejected at apply_intent.
 //
-// Mirrors the server's Update-path gate (canWritePath). The server additionally
-// gates Create against requirements present in the new body
-// (declared_caps_for_document); a client-side canCreateDoc mirror is not yet
-// provided, so the UI cannot pre-gate a create the server will reject. Advisory
-// only — the create is still enforced server-side.
-// TODO: Add a canCreateDoc advisory mirror of the server's Create-path check.
+// Mirrors the server's Update-path gate (canWritePath) and, via canCreateDoc, its
+// Create-path gate (WorldCapDefaults::role_has, consulted by apply_intent's
+// core:create policy). The server's baseline-message exemption (chat::build_message_doc's
+// server-authored Create) is not mirrored here — this function only ever sees
+// client-initiated creates.
 import type { WorldRole } from "@shadowcat/types";
-import type { WireDocument, WireCapabilityRequirement } from "./wire";
+import type { WireDocument, WireCapabilityRequirement, WireRoleCapabilities } from "./wire";
 
 /** A world's declarative additive-capability grants, keyed by `DocRole` and by user id. */
 type Grants = {
@@ -96,6 +95,30 @@ export function resolveCaps(
   for (const c of worldGrants.by_role[docRole] ?? []) caps.add(c);
   for (const c of worldGrants.by_user[userId] ?? []) caps.add(c);
   return caps;
+}
+
+/**
+ * Whether `role` may create a document of `docType`, mirroring the server's
+ * `WorldCapDefaults::role_has`: a GM may always create; otherwise `roleCaps.all` or
+ * `roleCaps.by_type[docType]` must name `"core:create"`. Advisory only — `apply_intent`
+ * enforces the real gate.
+ * @param docType The document's `doc_type`.
+ * @param role The caller's world role.
+ * @param roleCaps The caller's own projected `role_capabilities` (from `Welcome`).
+ * @returns Whether the create is advisory-permitted.
+ * @example
+ * ```ts
+ * import { canCreateDoc } from "@shadowcat/core";
+ *
+ * canCreateDoc("note", "gm", { all: [], by_type: {} }); // true
+ * canCreateDoc("note", "player", { all: [], by_type: { note: ["core:create"] } }); // true
+ * canCreateDoc("note", "player", { all: [], by_type: {} }); // false
+ * ```
+ */
+export function canCreateDoc(docType: string, role: WorldRole, roleCaps: WireRoleCapabilities): boolean {
+  if (role === "gm") return true;
+  if (roleCaps.all.includes("core:create")) return true;
+  return (roleCaps.by_type[docType] ?? []).includes("core:create");
 }
 
 /** The structural base capability for a field path (mirrors the server's

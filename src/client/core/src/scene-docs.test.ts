@@ -20,6 +20,7 @@ import {
 import { DocumentStore } from "./store";
 import { resolveTokenActor, resolveTokenBox } from "./actor";
 import { EMPTY_FOOTPRINTS, type FootprintLookup } from "./footprints";
+import { AUTHOR_CAPS, grantAuthor, envelope } from "./scene-docs";
 
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
@@ -815,5 +816,31 @@ describe("system defaults", () => {
       expect(r.value, c.name).toEqual(c.expect.value);
       expect(r.source, c.name).toBe(c.expect.source);
     }
+  });
+});
+
+describe("grantAuthor", () => {
+  it("grants the owner DocRole and AUTHOR_CAPS without touching doc.owner", () => {
+    const doc = envelope("w1", "note", null, {});
+    grantAuthor(doc, "u1");
+    expect(doc.permissions.users.u1).toBe("owner");
+    for (const cap of AUTHOR_CAPS) {
+      expect(doc.permissions.capabilities.by_role.owner).toContain(cap);
+    }
+    expect(doc.owner).toBeNull();
+  });
+
+  it("unions AUTHOR_CAPS with any pre-existing owner grant rather than replacing it", () => {
+    const doc = envelope("w1", "note", null, {});
+    doc.permissions.capabilities.by_role.owner = ["module:custom"];
+    grantAuthor(doc, "u1");
+    expect(doc.permissions.capabilities.by_role.owner).toEqual(
+      expect.arrayContaining(["module:custom", ...AUTHOR_CAPS]),
+    );
+  });
+
+  it("returns the same document instance, mutated", () => {
+    const doc = envelope("w1", "note", null, {});
+    expect(grantAuthor(doc, "u1")).toBe(doc);
   });
 });

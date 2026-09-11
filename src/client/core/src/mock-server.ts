@@ -115,6 +115,7 @@ export class MockServer {
         capability_requirements: [],
         contract_declarations: [],
         schema_declarations: [],
+        role_capabilities: { all: [], by_type: {} },
       });
       return Promise.resolve(transport);
     };

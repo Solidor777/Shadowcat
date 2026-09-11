@@ -22,6 +22,35 @@ function storeWith(...docs: WireDocument[]): DocumentStore {
   return s;
 }
 
+describe("ActorsPanel — create-form gated by canCreate", () => {
+  it("hides the create form for a player without a create grant", () => {
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "player",
+        world: "w1",
+        documents: new DocumentStore(),
+        dispatchIntent: vi.fn(),
+        canCreate: () => false,
+      }),
+    });
+    expect(screen.queryByPlaceholderText("actors.name")).toBeNull();
+    expect(screen.queryByText("actors.create")).toBeNull();
+  });
+
+  it("shows the create form for a player holding a by_type[actor] create grant", () => {
+    render(ActorsPanel, {
+      context: setAppContextForTest({
+        role: "player",
+        world: "w1",
+        documents: new DocumentStore(),
+        dispatchIntent: vi.fn(),
+        canCreate: () => true,
+      }),
+    });
+    expect(screen.getByPlaceholderText("actors.name")).toBeTruthy();
+  });
+});
+
 describe("ActorsPanel — shape + size", () => {
   it("renders a Shape select with square/circle options in the create form", async () => {
     render(ActorsPanel, {

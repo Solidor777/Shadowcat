@@ -95,6 +95,8 @@
     serverRole,
     selfId: session.selfId,
     canEdit: (doc, path) => session.canEdit(doc, path),
+    canCreate: (docType) => session.canCreate(docType),
+    canDelete: (doc) => session.canDelete(doc),
     openDocument: (ref) => sheets.openDocument(ref),
     notify: (message, level) => notifications.push(level ?? "warning", message),
     members: session.members,

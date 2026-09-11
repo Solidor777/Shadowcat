@@ -6,6 +6,7 @@ export type { Scope } from "./generated/Scope";
 export type { Source } from "./generated/Source";
 export type { PermissionSet } from "./generated/PermissionSet";
 export type { CapabilityGrants } from "./generated/CapabilityGrants";
+export type { RoleCapabilities } from "./generated/RoleCapabilities";
 export type { DocRole } from "./generated/DocRole";
 export type { Visibility } from "./generated/Visibility";
 export type { WorldRole } from "./generated/WorldRole";

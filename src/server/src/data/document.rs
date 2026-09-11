@@ -405,6 +405,31 @@ impl WorldCapDefaults {
     }
 }
 
+/// The connecting user's own world-level capabilities, projected out of `RoleCaps` for their
+/// role — never another role's entries. Sent on `Welcome` as an advisory mirror of the
+/// `core:create` gate `WorldCapDefaults::role_has` enforces; a client uses it only to decide
+/// what to render, never to bypass the server's own check.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::document::RoleCapabilities;
+///
+/// let caps = RoleCapabilities::default();
+/// assert!(caps.all.is_empty());
+/// assert!(caps.by_type.is_empty());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct RoleCapabilities {
+    /// Capabilities held for every doc_type.
+    #[serde(default)]
+    pub all: BTreeSet<String>,
+    /// Capabilities held only for the keyed doc_type.
+    #[serde(default)]
+    pub by_type: BTreeMap<String, BTreeSet<String>>,
+}
+
 /// A declarative requirement: writing any field under `path_prefix` requires the
 /// actor to additionally hold every capability in `caps` (on top of the
 /// structural base capability for that path). Pure data — the server enforces

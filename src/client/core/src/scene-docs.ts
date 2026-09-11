@@ -335,6 +335,37 @@ function defaultPermissions(): WireDocument["permissions"] {
   };
 }
 
+/** Capabilities `grantAuthor` grants an author beyond the `owner` `DocRole` floor
+ * (`core:read`, `core:write_fields`): the floor alone cannot delete a document or edit its
+ * `permissions` block (`baseCapForPath` gates both behind capabilities the floor does not
+ * carry), so a document's creator would otherwise be unable to delete or reshare their own
+ * creation. */
+export const AUTHOR_CAPS: readonly string[] = ["core:delete", "core:edit_permissions"];
+
+/**
+ * Grants `owner` the document-role AND the `AUTHOR_CAPS` capabilities on `doc`, mutating and
+ * returning it. `doc.owner` is deliberately left untouched — that field is the ownership
+ * OVERRIDE the effective-owner rule reads (see `capabilities.ts`'s `baseCapForPath`), gated
+ * behind `core:edit_permissions` itself; a document's creator becomes its `DocRole` owner via
+ * `permissions.users`, not via `owner`.
+ * @param doc The document to grant on (mutated in place).
+ * @param owner The user id to grant.
+ * @returns `doc`, for chaining into a builder's return.
+ * @example
+ * ```ts
+ * import { grantAuthor, envelope } from "@shadowcat/core";
+ *
+ * const doc = grantAuthor(envelope("world-1", "note", null, {}), "user-1");
+ * doc.permissions.users["user-1"]; // "owner"
+ * ```
+ */
+export function grantAuthor(doc: WireDocument, owner: string): WireDocument {
+  doc.permissions.users[owner] = "owner";
+  const existing = doc.permissions.capabilities.by_role.owner ?? [];
+  doc.permissions.capabilities.by_role.owner = [...new Set([...existing, ...AUTHOR_CAPS])];
+  return doc;
+}
+
 /** Package-internal document envelope builder (shared by scene-docs and chat-docs).
  * `engine` is the typed, server-validated engine body — `undefined` for a non-engine-defined
  * `doc_type` (the key is then omitted on the wire, matching the server's
@@ -639,6 +670,9 @@ export function resolveViewedScene(
   return scenes[0].id;
 }
 
+/** The `doc_type` identifying a stored actor document. */
+export const ACTOR_DOC_TYPE = "actor";
+
 /** A top-level (world-scoped, parentless) actor document. `name` is the actor's real,
  * privacy-gateable identity (envelope field); `engine` carries every other engine-owned
  * field (`displayName`, visual, size, shape, faction, conditions, prototype, vision,
@@ -662,7 +696,7 @@ export function resolveViewedScene(
  * ```
  */
 export function buildActorDoc(worldId: string, name: string | null, engine: ActorEngine, id?: string): WireDocument {
-  return envelope(worldId, "actor", null, {}, id, engine, name);
+  return envelope(worldId, ACTOR_DOC_TYPE, null, {}, id, engine, name);
 }
 
 /** Client-only `item` doc_type: NOT engine-defined (`data::engine::is_engine_doc_type`

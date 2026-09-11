@@ -63,7 +63,7 @@ Every `ServerMsg` variant:
 
 | Frame | Purpose |
 |---|---|
-| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, contract/schema declarations |
+| `welcome` | Session bootstrap: world, `current_seq`, versions, grants, role, `role_capabilities`, contract/schema declarations |
 | `event` | One sequenced, per-recipient-filtered command (ops batch), with correlating `intent_id` when it answers yours |
 | `reject` | Your intent was refused; carries `intent_id` + reason — roll back the prediction |
 | `resync_begin` | Replay window opens (`from_seq`..`to_seq`, with source) |

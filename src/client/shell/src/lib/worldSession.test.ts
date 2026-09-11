@@ -12,6 +12,8 @@ import {
   buildCombatDoc,
   newCombatEngine,
   COMBAT_SERVICE,
+  grantAuthor,
+  buildNoteDoc,
   type Connect,
   type WireDocument,
   type Module,
@@ -639,6 +641,54 @@ test("canEdit: a GM bypasses the capability check", async () => {
   await vi.waitFor(() => expect(session.role).toBe("gm"));
   const locked = actorWith({ default: "observer" });
   expect(session.canEdit(locked, "/system/conditions")).toBe(true);
+});
+
+test("canCreate: a GM may always create; a player needs a matching role_capabilities grant", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({
+    ...welcomeFrame,
+    user_role: "player",
+    role_capabilities: { all: [], by_type: { note: ["core:create"] } },
+  });
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  expect(session.canCreate("note")).toBe(true);
+  expect(session.canCreate("table")).toBe(false);
+});
+
+test("canCreate: a GM may create regardless of role_capabilities", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm", role_capabilities: { all: [], by_type: {} } });
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+  expect(session.canCreate("note")).toBe(true);
+});
+
+test("canDelete: a GM may always delete; the author of a grantAuthor'd document may; a plain observer may not", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // user_role: "player"
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  const doc = grantAuthor(buildNoteDoc("w1", "N", ""), "u-self");
+  expect(session.canDelete(doc)).toBe(true);
+
+  const observed = { ...doc, permissions: { ...doc.permissions, users: {} } };
+  expect(session.canDelete(observed)).toBe(false);
+});
+
+test("canDelete: a GM bypasses the capability check", async () => {
+  const { connect, push } = pushConnect([]);
+  const session = new WorldSession({ selfId: "u-self", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+  const doc = actorWith({ default: "observer" });
+  expect(session.canDelete(doc)).toBe(true);
 });
 
 test("subscribeScene sends scene_subscribe and re-establishes on a reconnect Welcome", async () => {
