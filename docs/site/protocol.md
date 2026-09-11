@@ -142,6 +142,25 @@ client never fetches an external image URL itself. A YouTube/Vimeo link
 similarly becomes an oEmbed card (thumbnail + link, structured fields only,
 never the provider's own embed HTML) rather than a raw hotlink.
 
+## Search
+
+Every document type shares one FTS5 backend (`data::search::index_content`):
+the envelope `name`, the engine-aware reader-facing projection of `engine`
+(`data::engine::search_text` — a note's rendered body, a table's labels and
+row text, a message's rendered content, an actor's display name; never
+discriminants, ids, markup, or dice-notation internals), and every string/
+number leaf of the content-agnostic `system` body. `doc_type` itself is not
+an index term; `search`'s `doc_types` field narrows the ranked SQL to the
+listed types instead (≤16, refused above the cap). The public/GM visibility
+partition and the per-hit `cap::READ` gate are unaffected by any of this.
+
+Assets are not documents and carry no live subscription: `GET
+/api/worlds/{world}/assets` takes a `q` parameter, matched against a
+trigger-maintained `assets_fts` table (name + every explicit/derived tag) via
+the same sanitizer `search` uses. The asset browser already re-lists on every
+`asset_changed` notice, so `q` is a plain filter under the caller's keyset
+sort — never a ranked, live-updating page.
+
 ## Rollable tables
 
 A `table` document (`TableEngine`: `draw` rule, `rows`, plain-text

@@ -2789,6 +2789,76 @@ segments, and server-derived `note` documents — plus the shared seams M20's ta
 build on (`SegmentList` moved into `@shadowcat/ui-kit`, `buildTableDoc`/`buildNoteDoc`,
 `ChatApi.drawTable`).
 
+### M21 · Search consolidation ✅
+Branch `m21-search`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-10-m21-search-consolidation.md` (design:
+`docs/superpowers/specs/2026-09-10-m21-search-consolidation-design.md`), as 10
+sequential tasks. Delivered: `chat::segments_search_text` (the one
+reader-facing text extraction over a `Segment` list, shared by the `note` and
+`message` projections — `RollEmbed`'s formula, an `Html` segment's
+tag-stripped and entity-decoded text, `TableDraw`'s recursive row/nested-draw
+text, never ids/kinds/`spec`/`raw`); `data::engine::search_text` (an explicit,
+exhaustive per-doc_type match mirroring `normalize_engine`'s shape and pinned
+by the same `ENGINE_DOC_TYPES` list `is_engine_doc_type` now reads from —
+`actor.displayName`, a note's derived `body`, a table's `description`/row
+`label`/`Text`/`Doc`/`Image` fields, a message's `content`, plus the
+config-singleton registries' own display-name fields the field-by-field
+audit surfaced: `Channel.name`, `Faction.name`, `Condition.name`,
+`Resource.name`, `VisionMode.name` — every other registered type empty);
+`data::search::index_content` now composes `name` + `search_text` + the
+`system` leaf sweep, with `doc_type` itself no longer indexed (D1); both FTS
+document tables gain a `doc_type UNINDEXED` column and `Repository::search`/
+`SqliteRepository::search` gain a `doc_types: &[String]` filter
+(`MAX_SEARCH_DOC_TYPES = 16`, refused over cap, applied inside the ranked SQL
+via a `sqlx::QueryBuilder` so `MAX_SCAN` counts only requested-type
+candidates); `ClientMsg::Search`/`ws::conn::Egress::Subscribe`/`Sub` gain
+`doc_types`, cap-checked in `conn.rs` before the repository call in both the
+one-shot and subscribe arms; the client (`WsSearchOptions`/
+`WsSubscribeSearchOptions.docTypes`, `AppContext.searchDocuments`,
+`WorldSession`) threads it through, and `ActorsPanel` sends
+`docTypes: ["actor"]` with its client-side `doc_type === "actor"` filter
+deleted; a standalone `assets_fts` FTS5 table plus five triggers on
+`assets`/`asset_tags` (`assets_fts_insert`/`_update_name`/`_delete`/
+`_tag_insert`/`_tag_delete`) maintain the asset index structurally — no Rust
+write site touches it; `AssetFilter.name`/`AssetQuery.name` become `.query`/
+`.q`, a full-text filter sanitized by the same `data::search::build_match`
+`Repository::search` uses, replacing the `lower(...) LIKE` substring; the
+client mirrors it (`asset-rest.ts`'s `AssetQuery.q`, `FilterState.query`/
+`queryIsRegex`, `FilterBar`'s `filter-query` control,
+`assetBrowser.filterQuery`/`filterRegex` locale copy).
+Decisions taken (full log: design doc §10): `doc_type` dropped from the index
+in favor of the `doc_types` filter (D1); a note indexes its rendered `body`,
+never `source` (D2); the engine band gets an explicit per-type projection
+rather than a leaf sweep, `system` stays content-agnostic (D3); the type
+filter is server-side SQL `IN`, refused over cap rather than truncated (D4);
+the asset index is trigger-maintained, not threaded through six Rust write
+sites (D5); assets stay off the WS `Search` frame — `SearchHit` carries a
+`Document`, and assets have neither a partition nor a document-stream
+liveness model (D6); `name_regex` is kept as a power filter over the listed
+page (D7); asset ranking stays the caller's keyset sort, FTS is a filter only
+(D8); the `unicode61` tokenizer is unchanged (D9); a `TableDraw` segment is
+indexed by table name, row label and content, recursively, excluding
+`spec`/`raw` (D10); assets join the FTS index but get no WS search
+subscription, `AssetChanged` remains their liveness channel (D11).
+Coverage: `data::search::tests`/`data::engine::tests` (the projection rules
+per doc_type, the exhaustiveness pin, `segments_search_text` per variant
+including the recursive `TableDraw` and entity decoding), `data::sqlite`'s
+`search_and_worlds` (`doc_types` filtering/over-cap/visibility-composition/
+pagination) and `assets` (full-text name/explicit-tag/derived-tag matches,
+rename/tag-removal refresh, delete/world-delete row removal, folder/kind/
+tags/regex composition, empty/punctuation-query empty page, bundle-import
+re-indexing), `ws::protocol`/`ws_live_search.rs` (frame parse with/without
+`doc_types`, a live subscription filtered to one type, the over-cap
+`SearchError`), `ws-client.test.ts`/`ActorsPanel.test.ts`/`asset-rest.test.ts`/
+`FilterBar.test.ts`/`AssetBrowser.test.ts` on the client side, and
+`search.e2e.test.ts`/`asset-query.e2e.test.ts` (Node↔Rust: a `doc_types`
+filter over a real server, an uploaded+tagged asset found by `?q=` over the
+real query route). Full repo gates (`cargo test`/`clippy`/`fmt`, `pnpm -r
+test`, typecheck, lint, `lint:comments`) green at every commit;
+`pnpm --filter @shadowcat/core test:e2e` run alone, green. The browser suite
+(`pnpm --filter @shadowcat/shell e2e`) is dispatcher-run, not part of this
+branch's own gate history.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference
