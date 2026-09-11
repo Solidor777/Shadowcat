@@ -106,8 +106,9 @@ export interface AssetQuery {
   tags?: string[];
   /** `"image"` (`content_type` starts with `image/`) or `"other"`. */
   kind?: "image" | "other";
-  /** Case-insensitive substring of the display name. */
-  name?: string;
+  /** Full-text query over the display name and every tag (explicit and derived),
+   * sanitized server-side. */
+  q?: string;
   /** Rust-syntax regex over the display name (server-capped at 256 bytes). */
   nameRegex?: string;
   /** Sort key (default `"created"`). */
@@ -184,7 +185,7 @@ async function restError(res: Response, what: string): Promise<Error> {
   return new Error(`${what} failed: ${res.status} ${await restErrorText(res)}`);
 }
 
-/** Query a world's assets: folder / tag / kind / name / regex filters, a sort key, and keyset
+/** Query a world's assets: folder / tag / kind / full-text `q` / regex filters, a sort key, and keyset
  * pagination. Membership-gated (`permission_context`, `http::assets::query::list`). Always the
  * page form; use `listAssets` for the bare whole-world array.
  * @param world The world id to query.
@@ -208,7 +209,7 @@ export async function queryAssets(world: string, q: AssetQuery): Promise<AssetPa
   if (q.recursive !== undefined) params.set("recursive", String(q.recursive));
   if (q.tags && q.tags.length > 0) params.set("tags", q.tags.join(","));
   if (q.kind !== undefined) params.set("kind", q.kind);
-  if (q.name !== undefined && q.name !== "") params.set("name", q.name);
+  if (q.q !== undefined && q.q !== "") params.set("q", q.q);
   if (q.nameRegex !== undefined && q.nameRegex !== "") params.set("name_regex", q.nameRegex);
   if (q.sort !== undefined) params.set("sort", q.sort);
   if (q.limit !== undefined) params.set("limit", String(q.limit));

@@ -23,8 +23,9 @@ token-visual and ownership details. Also the pick source for the place tool
 ## Contracts & seams
 
 - **Requires** `shadowcat.panel`; depends on `core-ui ^0.1.0`.
-- Uses `ctx.searchDocuments` (live FTS), `ctx.openDocument` (sheet panels),
-  and `ctx.actorSelection` (hand-off to the place tool).
+- Uses `ctx.searchDocuments` (live FTS, filtered to actors server-side via
+  `docTypes: ["actor"]` — no client-side re-filter), `ctx.openDocument` (sheet
+  panels), and `ctx.actorSelection` (hand-off to the place tool).
 
 ## Pointers
 

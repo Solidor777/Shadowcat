@@ -2796,7 +2796,10 @@ async fn posted_message_is_searchable_by_members() {
     .await
     .unwrap();
 
-    let page = r.search(&ot_ctx, w.id, "banshee", 10, None).await.unwrap();
+    let page = r
+        .search(&ot_ctx, w.id, "banshee", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(page.hits.len(), 1, "another member finds the message");
     assert!(page.hits[0].snippet.to_lowercase().contains("banshee"));
 }

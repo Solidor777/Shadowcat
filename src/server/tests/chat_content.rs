@@ -1172,7 +1172,14 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
     };
     let recipient_hits = f
         .repo
-        .search(&recipient_ctx, f.room.world_id, "phoenixnest", 10, None)
+        .search(
+            &recipient_ctx,
+            f.room.world_id,
+            "phoenixnest",
+            10,
+            None,
+            &[],
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -1184,7 +1191,7 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
     for query in ["phoenixnest", "griffonroost"] {
         let page = f
             .repo
-            .search(&non_recipient_ctx, f.room.world_id, query, 10, None)
+            .search(&non_recipient_ctx, f.room.world_id, query, 10, None, &[])
             .await
             .unwrap();
         assert!(

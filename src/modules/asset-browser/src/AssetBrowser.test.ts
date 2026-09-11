@@ -42,7 +42,7 @@ test("renders a thumb tile per queried asset", async () => {
   expect(await screen.findByTestId("asset-tile")).toBeTruthy();
 });
 
-test("filter changes map 1:1 onto queryAssets params, name vs nameRegex exclusive", async () => {
+test("filter changes map 1:1 onto queryAssets params, q vs nameRegex exclusive", async () => {
   const q = vi
     .spyOn(api, "queryAssets")
     .mockResolvedValue({ items: [], next_cursor: null } as never);
@@ -50,11 +50,11 @@ test("filter changes map 1:1 onto queryAssets params, name vs nameRegex exclusiv
   await screen.findByTestId("asset-browser-empty");
 
   const { fireEvent } = await import("@testing-library/svelte");
-  await fireEvent.input(screen.getByTestId("filter-name"), { target: { value: "drag" } });
+  await fireEvent.input(screen.getByTestId("filter-query"), { target: { value: "drag" } });
   await waitFor(() =>
     expect(q).toHaveBeenLastCalledWith(
       "w1",
-      expect.objectContaining({ name: "drag", nameRegex: undefined }),
+      expect.objectContaining({ q: "drag", nameRegex: undefined }),
     ),
   );
 
@@ -62,7 +62,7 @@ test("filter changes map 1:1 onto queryAssets params, name vs nameRegex exclusiv
   await waitFor(() =>
     expect(q).toHaveBeenLastCalledWith(
       "w1",
-      expect.objectContaining({ nameRegex: "drag", name: undefined }),
+      expect.objectContaining({ nameRegex: "drag", q: undefined }),
     ),
   );
 });

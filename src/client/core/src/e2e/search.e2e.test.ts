@@ -6,6 +6,7 @@ import { afterAll, beforeAll, expect, test } from "vitest";
 import WebSocket from "ws";
 import { WsClient } from "../ws-client";
 import type { Transport, TransportHandlers } from "../transport";
+import type { ClientMsg } from "../wire";
 import { startTestServer, login, type TestServer } from "./server-process";
 
 let server: TestServer;
@@ -48,4 +49,110 @@ test("search excludes documents the player cannot read", async () => {
   expect(blob.includes("Player Dragon")).toBe(true);
 
   client.stop();
+});
+
+/** An intent creating one `actor` document with `name` as its display name. */
+function createActorIntent(world: string, id: string, name: string): ClientMsg {
+  return {
+    type: "intent",
+    intent_id: id,
+    ops: [
+      {
+        op: "create",
+        doc: {
+          id,
+          scope: { kind: "world", world_id: world },
+          doc_type: "actor",
+          schema_version: 1,
+          name,
+          source: null,
+          owner: null,
+          permissions: {
+            default: "observer",
+            users: {},
+            property_overrides: {},
+            capabilities: { by_role: {}, by_user: {} },
+            gm_role: null,
+          },
+          embedded: {},
+          parent_id: null,
+          engine: {
+            displayName: name,
+            visual: { kind: "image", asset: "a.png" },
+            size: { w: 1, h: 1 },
+            shape: "square",
+            faction: null,
+            conditions: [],
+            prototype: true,
+          },
+          system: {},
+          created_at: 0,
+          updated_at: 0,
+        },
+      },
+    ],
+  };
+}
+
+/** An intent creating one `note` document; `source` is plain text, and the
+ * server derives `body` from it (the client-sent `body: []` is overwritten
+ * server-side by `normalize_engine`'s "note" arm — never trusted as-is). */
+function createNoteIntent(world: string, id: string, source: string): ClientMsg {
+  return {
+    type: "intent",
+    intent_id: id,
+    ops: [
+      {
+        op: "create",
+        doc: {
+          id,
+          scope: { kind: "world", world_id: world },
+          doc_type: "note",
+          schema_version: 1,
+          name: null,
+          source: null,
+          owner: null,
+          permissions: {
+            default: "observer",
+            users: {},
+            property_overrides: {},
+            capabilities: { by_role: {}, by_user: {} },
+            gm_role: null,
+          },
+          embedded: {},
+          parent_id: null,
+          engine: { source, body: [], sort: 0 },
+          system: {},
+          created_at: 0,
+          updated_at: 0,
+        },
+      },
+    ],
+  };
+}
+
+test("doc_types narrows a search to the listed types", async () => {
+  const gmCookie = await login(server.baseUrl, "gm", "pw");
+  const { world } = server.fixture;
+  const gm = new WsClient({
+    world: "w1",
+    connect: nodeConnect(server.wsUrl, world, gmCookie),
+    handlers: { onCommand: () => {} },
+  });
+  await gm.start();
+  await sleep(400);
+
+  const word = "wyverncrest";
+  gm.send(createActorIntent(world, "cccccccc-cccc-cccc-cccc-cccccccccccc", `Actor ${word}`));
+  gm.send(createNoteIntent(world, "dddddddd-dddd-dddd-dddd-dddddddddddd", `A note about ${word}`));
+  await sleep(400); // settle both creates
+
+  const notesOnly = await gm.search(word, { limit: 20, docTypes: ["note"] });
+  expect(notesOnly.hits.length).toBe(1);
+  expect(notesOnly.hits[0].document.doc_type).toBe("note");
+
+  const everyType = await gm.search(word, { limit: 20, docTypes: [] });
+  expect(everyType.hits.length).toBe(2);
+
+  gm.stop();
 });

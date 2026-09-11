@@ -76,6 +76,9 @@ enum Egress {
         query: String,
         /// Top-N size.
         limit: u32,
+        /// Narrows the live query to the listed doc_types (empty = every
+        /// type); already cap-checked by the ingress arm before this is sent.
+        doc_types: Vec<String>,
     },
     /// Cancel a live search subscription.
     Unsubscribe {
@@ -113,6 +116,8 @@ struct Sub {
     query: String,
     /// Top-N size.
     limit: u32,
+    /// Narrows the live query to the listed doc_types (empty = every type).
+    doc_types: Vec<String>,
     /// Last delivered result identity, in rank order. Used to suppress a push
     /// when re-evaluation yields an identical top-N.
     fingerprint: Vec<(Uuid, u64, i64)>,
@@ -446,16 +451,25 @@ async fn handle_socket(
                                         break;
                                     }
                                 }
-                                Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe }) => {
-                                    if subscribe {
+                                Ok(ClientMsg::Search { request_id, query, limit, cursor, subscribe, doc_types }) => {
+                                    if doc_types.len() > crate::data::search::MAX_SEARCH_DOC_TYPES {
+                                        // Checked here, before the repository call, in both the
+                                        // one-shot and subscribe arms, reading the same constant —
+                                        // the repository's own refusal (data::sqlite::SqliteRepository::search)
+                                        // stays as defense in depth rather than the only gate.
+                                        let f = ServerMsg::SearchError { request_id, message: "too many doc types".into() };
+                                        if etx.send(Egress::Frame(Arc::new(f))).await.is_err() {
+                                            break;
+                                        }
+                                    } else if subscribe {
                                         // Subscriptions are owned by the egress task (it has
                                         // the registry, the broadcast, and the sink).
-                                        if etx.send(Egress::Subscribe { request_id, query, limit }).await.is_err() {
+                                        if etx.send(Egress::Subscribe { request_id, query, limit, doc_types }).await.is_err() {
                                             break;
                                         }
                                     } else {
                                         let from = cursor.as_deref().and_then(|c| c.parse::<i64>().ok());
-                                        let frame = match repo.search(&ctx, world_id, &query, limit, from).await {
+                                        let frame = match repo.search(&ctx, world_id, &query, limit, from, &doc_types).await {
                                             Ok(page) => ServerMsg::SearchResult {
                                                 request_id,
                                                 hits: page.hits,
@@ -1830,7 +1844,7 @@ async fn egress_loop<S>(
                         Err(_) => break,
                     }
                 }
-                Some(Egress::Subscribe { request_id, query, limit }) => {
+                Some(Egress::Subscribe { request_id, query, limit, doc_types }) => {
                     if subs.contains_key(&request_id) {
                         // A duplicate id would silently orphan the prior sub.
                         let f = ServerMsg::SearchError { request_id, message: "duplicate subscription id".into() };
@@ -1839,12 +1853,12 @@ async fn egress_loop<S>(
                         let f = ServerMsg::SearchError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
-                        match repo.search(&ctx, world_id, &query, limit, None).await {
+                        match repo.search(&ctx, world_id, &query, limit, None, &doc_types).await {
                             Ok(page) => {
                                 let fp = search_fingerprint(&page.hits);
                                 let f = ServerMsg::SearchResult { request_id, hits: page.hits, next_cursor: None };
                                 if sink.send(text(&f)).await.is_err() { break; }
-                                subs.insert(request_id, Sub { query, limit, fingerprint: fp });
+                                subs.insert(request_id, Sub { query, limit, doc_types, fingerprint: fp });
                             }
                             Err(e) => {
                                 tracing::debug!(world = %world_id, %request_id, error = %e, "subscribe search failed");
@@ -2079,7 +2093,10 @@ async fn egress_loop<S>(
                 reeval_deadline = None;
                 let mut dead: Vec<Uuid> = Vec::new();
                 for (id, sub) in subs.iter_mut() {
-                    match repo.search(&ctx, world_id, &sub.query, sub.limit, None).await {
+                    match repo
+                        .search(&ctx, world_id, &sub.query, sub.limit, None, &sub.doc_types)
+                        .await
+                    {
                         Ok(page) => {
                             let fp = search_fingerprint(&page.hits);
                             if fp != sub.fingerprint {

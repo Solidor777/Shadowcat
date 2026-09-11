@@ -172,11 +172,17 @@ async fn search_ranks_and_filters_by_read_access() {
     .unwrap();
 
     // GM sees both.
-    let gm_page = r.search(&gm_ctx, w.id, "dragon", 10, None).await.unwrap();
+    let gm_page = r
+        .search(&gm_ctx, w.id, "dragon", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(gm_page.hits.len(), 2);
 
     // Player sees only the readable one — the GM-only doc is never leaked.
-    let pl_page = r.search(&pl_ctx, w.id, "dragon", 10, None).await.unwrap();
+    let pl_page = r
+        .search(&pl_ctx, w.id, "dragon", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(pl_page.hits.len(), 1);
     assert_eq!(pl_page.hits[0].document.id, readable.id);
     assert!(pl_page.hits[0].snippet.to_lowercase().contains("dragon"));
@@ -203,7 +209,10 @@ async fn search_ranks_and_filters_by_read_access() {
     )
     .await
     .unwrap();
-    let knight = r.search(&pl_ctx, w.id, "knight", 10, None).await.unwrap();
+    let knight = r
+        .search(&pl_ctx, w.id, "knight", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(knight.hits.len(), 1);
     assert!(
         knight.hits[0].document.system.get("secret").is_none(),
@@ -217,11 +226,17 @@ async fn search_ranks_and_filters_by_read_access() {
 
     // Oracle closed: a non-GM searching the GM-only term gets no hit (the
     // term is only in the GM-only `content_all` column).
-    let probe = r.search(&pl_ctx, w.id, "weakness", 10, None).await.unwrap();
+    let probe = r
+        .search(&pl_ctx, w.id, "weakness", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(probe.hits.len(), 0, "GM-only term matchable by non-GM");
 
     // A GM can still search their own GM-only field text.
-    let gm_probe = r.search(&gm_ctx, w.id, "weakness", 10, None).await.unwrap();
+    let gm_probe = r
+        .search(&gm_ctx, w.id, "weakness", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(gm_probe.hits.len(), 1);
     assert_eq!(gm_probe.hits[0].document.id, sheet.id);
 }
@@ -292,7 +307,7 @@ async fn search_admits_the_inheriting_owner_of_a_default_none_linked_token() {
     .unwrap();
 
     let owner_page = r
-        .search(&owner_ctx, w.id, "wizard", 10, None)
+        .search(&owner_ctx, w.id, "wizard", 10, None, &[])
         .await
         .unwrap();
     assert_eq!(
@@ -303,7 +318,7 @@ async fn search_admits_the_inheriting_owner_of_a_default_none_linked_token() {
     assert_eq!(owner_page.hits[0].document.id, token.id);
 
     let stranger_page = r
-        .search(&stranger_ctx, w.id, "wizard", 10, None)
+        .search(&stranger_ctx, w.id, "wizard", 10, None, &[])
         .await
         .unwrap();
     assert_eq!(
@@ -392,7 +407,10 @@ async fn search_score_unaffected_by_gm_only_match_non_gm() {
     .await
     .unwrap();
 
-    let page = r.search(&pl_ctx, w.id, "wolf", 10, None).await.unwrap();
+    let page = r
+        .search(&pl_ctx, w.id, "wolf", 10, None, &[])
+        .await
+        .unwrap();
     assert_eq!(page.hits.len(), 2);
     let plain_hit = page
         .hits
@@ -463,14 +481,304 @@ async fn search_paginates_without_underfill() {
     }
 
     // Page size 2: first page returns 2 readable hits despite interleaved secrets.
-    let p1 = r.search(&pl_ctx, w.id, "dragon", 2, None).await.unwrap();
+    let p1 = r
+        .search(&pl_ctx, w.id, "dragon", 2, None, &[])
+        .await
+        .unwrap();
     assert_eq!(p1.hits.len(), 2);
     assert!(p1.next_cursor.is_some());
     let p2 = r
-        .search(&pl_ctx, w.id, "dragon", 2, p1.next_cursor)
+        .search(&pl_ctx, w.id, "dragon", 2, p1.next_cursor, &[])
         .await
         .unwrap();
     assert_eq!(p2.hits.len(), 1); // only 3 readable total
+    assert!(p2.next_cursor.is_none());
+}
+
+/// A minimal valid `NoteEngine` body whose rendered `body` contains `text`.
+fn note_engine(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "source": text,
+        "body": [ { "kind": "text", "text": text } ],
+        "sort": 0,
+    })
+}
+
+/// A minimal valid `TableEngine` body whose `description` contains `text`.
+fn table_engine(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "draw": { "kind": "weighted" },
+        "description": text,
+        "rows": [],
+    })
+}
+
+#[tokio::test]
+async fn search_filters_by_doc_types() {
+    use crate::auth::role::ServerRole;
+    use crate::data::command::Operation;
+    use crate::data::document::{DocRole, PermissionSet, Scope};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+
+    let mut actor = tests_doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        serde_json::json!({ "name": "Ancient Dragon" }),
+    );
+    actor.scope = Scope::World { world_id: w.id };
+
+    let mut note = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        "note",
+        note_engine("a dragon sleeps here"),
+    );
+    note.scope = Scope::World { world_id: w.id };
+
+    let mut table = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::Observer,
+            ..Default::default()
+        },
+        "table",
+        table_engine("dragon hoard"),
+    );
+    table.scope = Scope::World { world_id: w.id };
+
+    for (i, doc) in [actor.clone(), note.clone(), table.clone()]
+        .into_iter()
+        .enumerate()
+    {
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc }],
+            i as i64 + 1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    let notes_only = r
+        .search(&gm_ctx, w.id, "dragon", 10, None, &["note".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(notes_only.hits.len(), 1);
+    assert_eq!(notes_only.hits[0].document.id, note.id);
+
+    let notes_and_tables = r
+        .search(
+            &gm_ctx,
+            w.id,
+            "dragon",
+            10,
+            None,
+            &["note".to_string(), "table".to_string()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(notes_and_tables.hits.len(), 2);
+
+    let every_type = r
+        .search(&gm_ctx, w.id, "dragon", 10, None, &[])
+        .await
+        .unwrap();
+    assert_eq!(every_type.hits.len(), 3);
+}
+
+#[tokio::test]
+async fn search_doc_types_over_cap_is_refused() {
+    use crate::auth::role::ServerRole;
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+
+    let too_many: Vec<String> = (0..17).map(|i| format!("type{i}")).collect();
+    let err = r
+        .search(&gm_ctx, w.id, "dragon", 10, None, &too_many)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, DataError::OpFailed(_)));
+}
+
+#[tokio::test]
+async fn search_doc_types_composes_with_visibility() {
+    use crate::auth::role::ServerRole;
+    use crate::data::command::Operation;
+    use crate::data::document::{DocRole, PermissionSet, Scope};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let pl_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+
+    let mut secret_note = tests_engine_doc(
+        PermissionSet {
+            default: DocRole::None,
+            ..Default::default()
+        },
+        "note",
+        note_engine("a dragon's secret hoard"),
+    );
+    secret_note.scope = Scope::World { world_id: w.id };
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Create { doc: secret_note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let player_search = r
+        .search(&pl_ctx, w.id, "dragon", 10, None, &["note".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(
+        player_search.hits.len(),
+        0,
+        "a default:none note leaked through a doc_types filter"
+    );
+
+    let gm_search = r
+        .search(&gm_ctx, w.id, "dragon", 10, None, &["note".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(gm_search.hits.len(), 1);
+}
+
+#[tokio::test]
+async fn search_paginates_under_a_doc_types_filter() {
+    use crate::auth::role::ServerRole;
+    use crate::data::command::Operation;
+    use crate::data::document::{DocRole, PermissionSet, Scope};
+    use crate::data::membership::PermissionContext;
+
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let player = r
+        .create_user("pl", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let gm_ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let pl_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+
+    // 3 matching actors and 3 matching notes, all readable; a doc_types
+    // filter of ["actor"] must page over the actors alone without
+    // skipping any (the cursor is a raw-rank offset into the FILTERED
+    // SQL, not a post-filter Rust-side skip). An odd actor count means the
+    // final page is genuinely exhausted (fewer rows than the fetch batch),
+    // the same shape `search_paginates_without_underfill` pins.
+    for i in 0..3 {
+        let mut d = tests_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            serde_json::json!({ "name": format!("griffin {i}") }),
+        );
+        d.scope = Scope::World { world_id: w.id };
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: d }],
+            i + 1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+        let mut n = tests_engine_doc(
+            PermissionSet {
+                default: DocRole::Observer,
+                ..Default::default()
+            },
+            "note",
+            note_engine(&format!("griffin {i} lore")),
+        );
+        n.scope = Scope::World { world_id: w.id };
+        r.apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Create { doc: n }],
+            i + 4,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    }
+
+    let p1 = r
+        .search(&pl_ctx, w.id, "griffin", 2, None, &["actor".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(p1.hits.len(), 2);
+    assert!(p1.hits.iter().all(|h| h.document.doc_type == "actor"));
+    assert!(p1.next_cursor.is_some());
+
+    let p2 = r
+        .search(
+            &pl_ctx,
+            w.id,
+            "griffin",
+            2,
+            p1.next_cursor,
+            &["actor".to_string()],
+        )
+        .await
+        .unwrap();
+    assert_eq!(p2.hits.len(), 1); // only 3 actors total under the filter
+    assert!(p2.hits.iter().all(|h| h.document.doc_type == "actor"));
     assert!(p2.next_cursor.is_none());
 }
 
@@ -813,6 +1121,9 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
     })
     .await
     .unwrap();
+    src.set_asset_tags(asset_id, &["hero-token".to_string()], &[])
+        .await
+        .unwrap();
     src.set_explored(w.id, doc.id, owner, &[1, 2, 3])
         .await
         .unwrap();
@@ -913,6 +1224,40 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
         target_setting.as_deref(),
         Some(r#"{"marker":"settings-round-trip"}"#)
     );
+
+    // assets_fts: import inserts through ordinary INSERTs, so the
+    // trigger-maintained index is rebuilt on the target and the imported
+    // asset is findable by name and by tag.
+    let by_name = target
+        .query_assets(
+            w.id,
+            &crate::data::asset::query::AssetFilter {
+                query: Some("token".to_string()),
+                ..Default::default()
+            },
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_name.len(), 1);
+    assert_eq!(by_name[0].id, asset_id);
+    let by_tag = target
+        .query_assets(
+            w.id,
+            &crate::data::asset::query::AssetFilter {
+                query: Some("hero-token".to_string()),
+                ..Default::default()
+            },
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_tag.len(), 1);
+    assert_eq!(by_tag[0].id, asset_id);
 }
 
 #[tokio::test]

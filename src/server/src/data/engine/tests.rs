@@ -1651,3 +1651,231 @@ fn region_trigger_validation_rejects_malformed_payloads() {
     )
     .is_ok());
 }
+
+// --- search_text: the engine-aware index projection ---
+
+#[test]
+fn search_text_is_none_for_a_non_engine_doc_type() {
+    assert_eq!(search_text("item", &json!({})), None);
+}
+
+#[test]
+fn search_text_is_registered_for_every_engine_doc_type() {
+    for doc_type in ENGINE_DOC_TYPES {
+        assert!(
+            search_text(doc_type, &json!({})).is_some(),
+            "search_text returned None for registered doc_type '{doc_type}'"
+        );
+    }
+}
+
+#[test]
+fn search_text_actor_contributes_display_name_not_visual_kind() {
+    let v = json!({
+        "displayName": "Gandalf the Grey",
+        "visual": { "kind": "image", "asset": "a" },
+        "size": { "w": 1.0, "h": 1.0 },
+        "shape": "circle",
+        "faction": null,
+        "conditions": [],
+        "prototype": true,
+    });
+    let text = search_text("actor", &v).unwrap();
+    assert!(text.contains("Gandalf the Grey"));
+    assert!(!text.contains("image"));
+}
+
+#[test]
+fn search_text_note_contributes_rendered_body_not_source() {
+    let v = json!({
+        "source": "look at [[doc:11111111-1111-1111-1111-111111111111|the map]]",
+        "body": [ { "kind": "text", "text": "look at the map" } ],
+        "sort": 0,
+    });
+    let text = search_text("note", &v).unwrap();
+    assert!(text.contains("the map"));
+    assert!(!text.contains("111111111111"));
+}
+
+#[test]
+fn search_text_table_contributes_description_labels_text_and_alt_not_kinds_or_ids() {
+    let v = json!({
+        "draw": { "kind": "weighted" },
+        "description": "A pile of loot",
+        "rows": [
+            {
+                "weight": 1,
+                "label": "Treasure Chest",
+                "results": [
+                    { "kind": "text", "text": "gold coins" },
+                    { "kind": "image", "asset_id": "22222222-2222-2222-2222-222222222222", "alt": "a chest" },
+                    { "kind": "draw", "table_id": "33333333-3333-3333-3333-333333333333", "count": 1 },
+                ],
+            }
+        ],
+    });
+    let text = search_text("table", &v).unwrap();
+    assert!(text.contains("A pile of loot"));
+    assert!(text.contains("Treasure Chest"));
+    assert!(text.contains("gold coins"));
+    assert!(text.contains("a chest"));
+    assert!(!text.contains("weighted"));
+    assert!(!text.contains("222222222222"));
+    assert!(!text.contains("333333333333"));
+}
+
+#[test]
+fn search_text_message_contributes_content_not_kinds() {
+    let v = json!({
+        "channel": "general",
+        "user_owner": "44444444-4444-4444-4444-444444444444",
+        "kind": "normal",
+        "content": [ { "kind": "text", "text": "hail and well met" } ],
+        "source": "/w @x hail and well met",
+    });
+    let text = search_text("message", &v).unwrap();
+    assert!(text.contains("hail and well met"));
+    assert!(!text.contains("normal"));
+    assert!(!text.contains("/w"));
+    assert!(!text.contains("general"));
+    assert!(!text.contains("44444444-4444-4444-4444-444444444444"));
+}
+
+#[test]
+fn search_text_light_gradation_contributes_band_names() {
+    let v = json!({
+        "bands": [
+            { "name": "bright", "minIllumination": 0.67 },
+            { "name": "dim", "minIllumination": 0.34 },
+        ]
+    });
+    let text = search_text("light-gradation", &v).unwrap();
+    assert!(text.contains("bright"));
+    assert!(text.contains("dim"));
+    assert!(!text.contains("0.67"));
+}
+
+#[test]
+fn search_text_token_contributes_override_name_not_other_fields() {
+    let v = json!({
+        "x": 1.0, "y": 2.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+        "overrides": {
+            "name": "Renamed Goblin",
+            "shape": "circle",
+        },
+    });
+    let text = search_text("token", &v).unwrap();
+    assert!(text.contains("Renamed Goblin"));
+    assert!(!text.contains("circle"));
+}
+
+#[test]
+fn search_text_combat_history_contributes_combatant_names_not_ids_or_permissions() {
+    let combatant_id = "55555555-5555-5555-5555-555555555555";
+    let v = json!({
+        "records": [
+            {
+                "round": 1,
+                "turn": "66666666-6666-6666-6666-666666666666",
+                "combatants": [
+                    {
+                        "id": combatant_id,
+                        "name": "Captured Goblin",
+                        "permissions": { "default": "none", "users": {}, "property_overrides": {} },
+                        "owner": null,
+                        "engine": {
+                            "kind": { "type": "event", "lifespan": null, "message": null },
+                            "initiative": null,
+                            "tiebreak": 0.0,
+                            "resources": {},
+                        },
+                        "system": {},
+                    }
+                ],
+                "effects": [],
+            }
+        ],
+        "cursor": 0,
+    });
+    let text = search_text("combat-history", &v).unwrap();
+    assert!(text.contains("Captured Goblin"));
+    assert!(!text.contains(combatant_id));
+    assert!(!text.contains("none"));
+}
+
+#[test]
+fn search_text_channel_registry_contributes_display_names() {
+    let v = json!({ "channels": { "general": { "name": "General Chat" } } });
+    let text = search_text("channel-registry", &v).unwrap();
+    assert!(text.contains("General Chat"));
+    assert!(!text.contains("general"));
+}
+
+#[test]
+fn search_text_faction_registry_contributes_display_names_not_colors() {
+    let v = json!({
+        "factions": { "hostile": { "name": "The Empire", "color": "#ff0000", "stance": "hostile" } }
+    });
+    let text = search_text("faction-registry", &v).unwrap();
+    assert!(text.contains("The Empire"));
+    assert!(!text.contains("ff0000"));
+}
+
+#[test]
+fn search_text_condition_registry_contributes_display_names_not_icons() {
+    let v = json!({
+        "conditions": { "prone": { "name": "Prone", "icon": "🛌" } }
+    });
+    let text = search_text("condition-registry", &v).unwrap();
+    assert!(text.contains("Prone"));
+    assert!(!text.contains('🛌'));
+}
+
+#[test]
+fn search_text_resource_registry_contributes_display_names() {
+    let v = json!({
+        "resources": {
+            "hp": { "name": "Hit Points", "order": 0, "binding": { "kind": "mirror", "value": "1" } }
+        }
+    });
+    let text = search_text("resource-registry", &v).unwrap();
+    assert!(text.contains("Hit Points"));
+    assert!(!text.contains("mirror"));
+}
+
+#[test]
+fn search_text_vision_modes_contributes_display_names_not_ids() {
+    let v = json!({
+        "modes": {
+            "darkvision": {
+                "id": "darkvision",
+                "name": "Darkvision",
+                "illuminationFloor": "dark",
+                "defaultRange": 12.0,
+            }
+        }
+    });
+    let text = search_text("vision-modes", &v).unwrap();
+    assert!(text.contains("Darkvision"));
+    assert!(!text.contains("darkvision"));
+    assert!(!text.contains("dark"));
+}
+
+#[test]
+fn search_text_token_without_overrides_is_empty() {
+    assert_eq!(
+        search_text(
+            "token",
+            &json!({ "x": 1.0, "y": 2.0, "w": 100.0, "h": 100.0, "rotation": 0.0 })
+        ),
+        Some(String::new())
+    );
+}
+
+#[test]
+fn search_text_malformed_body_contributes_nothing_rather_than_failing() {
+    assert_eq!(
+        search_text("actor", &json!("not an object")),
+        Some(String::new())
+    );
+}

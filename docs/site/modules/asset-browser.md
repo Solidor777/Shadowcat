@@ -3,7 +3,8 @@
 ## Purpose
 
 The GM asset browser (`@shadowcat/module-asset-browser`): folder tree, filter
-bar (name / regex / tags / kind / sort), virtualized thumbnail grid, and a
+bar (search over name and tags / regex / tags / kind / sort), virtualized
+thumbnail grid, and a
 preview pane with tag editing, rename, byte replacement, original download,
 reconvert, and delete. Uploads run through the chunked, resumable client
 (`startChunkedUpload`) with a per-file progress queue; drop files on the grid

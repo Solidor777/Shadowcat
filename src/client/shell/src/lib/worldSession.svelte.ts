@@ -319,6 +319,8 @@ export class WorldSession {
    * @param opts Subscription options.
    * @param opts.limit Maximum number of hits to return.
    * @param opts.timeoutMs Timeout for the initial subscribe round-trip.
+   * @param opts.docTypes Narrows the ranked candidates to the listed doc_types; empty/omitted
+   * = every type.
    * @param onUpdate Called with the current hit set whenever the live results change.
    * @returns A handle that resolves once the subscription is established; call
    * `unsubscribe()` on it to stop receiving updates.
@@ -337,6 +339,8 @@ export class WorldSession {
       limit?: number;
       /** See the `@param opts.timeoutMs` doc above. */
       timeoutMs?: number;
+      /** See the `@param opts.docTypes` doc above. */
+      docTypes?: string[];
     },
     onUpdate: (hits: WireSearchHit[]) => void,
   ): Promise<SubscriptionHandle> {

@@ -5,10 +5,11 @@
 
 /** The browser's listing filter, mapped 1:1 onto `queryAssets` params. */
 export interface FilterState {
-  /** Name filter text (substring, or a Rust-syntax regex when `nameIsRegex`). */
-  name: string;
-  /** Whether `name` is sent as `name_regex` instead of a substring. */
-  nameIsRegex: boolean;
+  /** Search text: a full-text query over name + tags (`q`), or a Rust-syntax
+   * regex over the display name when `queryIsRegex`. */
+  query: string;
+  /** Whether `query` is sent as `name_regex` instead of the full-text `q`. */
+  queryIsRegex: boolean;
   /** Tag chips; every listed tag must match (explicit or derived). */
   tags: string[];
   /** Kind filter, or undefined = all kinds. */

@@ -10,6 +10,11 @@ use ts_rs::TS;
 
 use crate::data::document::Document;
 
+/// Maximum number of entries `Repository::search`'s `doc_types` filter
+/// accepts; an over-cap list is refused (`DataError::OpFailed`), never
+/// silently truncated to a different question than the caller asked.
+pub const MAX_SEARCH_DOC_TYPES: usize = 16;
+
 /// One search result: the per-recipient-filtered document, its BM25 relevance
 /// (lower = more relevant, as SQLite returns it), and a highlighted snippet.
 ///
@@ -63,11 +68,16 @@ pub struct SearchPage {
     pub next_cursor: Option<i64>,
 }
 
-/// Extract indexable text from a document, content-agnostically: the
-/// `doc_type`, the envelope `name` (if present), and every string and number
-/// leaf value of the `engine` band (if present) and the `system` body
-/// (recursing objects and arrays in both). Keys, booleans, nulls, and the rest
-/// of the envelope are excluded.
+/// Extract indexable text from a document: the envelope `name` (if
+/// present), the engine-aware reader-facing projection of the `engine` band
+/// (if present — see `data::engine::search_text`, which supplies the text a
+/// reader sees for the doc_type rather than a leaf sweep of its raw JSON),
+/// and every string and number leaf value of the `system` body (recursing
+/// objects and arrays; `system` stays content-agnostic, unlike `engine` —
+/// the server never interprets a system-defined body). Keys, booleans,
+/// nulls, and `doc_type` itself are excluded (a `doc_types` filter on the
+/// search frame replaces `doc_type` as an index term — see
+/// `data::repository::Repository::search`).
 ///
 /// # Examples
 ///
@@ -89,16 +99,22 @@ pub struct SearchPage {
 /// let text = index_content(&doc);
 /// assert!(text.contains("MOCK_NOTE_A") && text.contains("cellar"));
 /// assert!(!text.contains("hidden_flag")); // keys and booleans are not indexed
+/// assert!(!text.contains("item")); // doc_type is no longer indexed
 /// ```
 pub fn index_content(doc: &Document) -> String {
     let mut out = String::new();
-    out.push_str(&doc.doc_type);
     if let Some(name) = &doc.name {
-        out.push(' ');
         out.push_str(name);
     }
     if let Some(engine) = &doc.engine {
-        collect_leaves(engine, &mut out);
+        if let Some(text) = crate::data::engine::search_text(&doc.doc_type, engine) {
+            if !text.is_empty() {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(&text);
+            }
+        }
     }
     collect_leaves(&doc.system, &mut out);
     out

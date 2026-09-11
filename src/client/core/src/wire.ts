@@ -561,10 +561,11 @@ export type WireSearchHit = {
   /** BM25 relevance as SQLite returns it (lower = more relevant). */
   score: number;
   /** Highlighted match snippet from the recipient's own index partition. `index_content` sweeps
-   * the `doc_type` unconditionally, the document's `name`, and — through `collect_leaves` —
-   * every string AND number leaf of both `engine` and `system`, so any of them can surface here
-   * and in `document`. `doc_type` is client-supplied on `Create` and no charset validation
-   * constrains it, so a consumer must render this as inert text and never as innerHTML. */
+   * the document's `name`, the engine-aware reader-facing projection of `engine`, and —
+   * through `collect_leaves` — every string AND number leaf of `system`, so any of them can
+   * surface here and in `document` (never `doc_type` itself, which a server-side `doc_types`
+   * filter narrows instead). Rendered text is still client-supplied and unvalidated for
+   * charset, so a consumer must render this as inert text and never as innerHTML. */
   snippet: string;
 };
 
@@ -1453,6 +1454,8 @@ export type ClientMsg =
       cursor?: string;
       /** True = keep a live top-N subscription pushing `search_update`s. */
       subscribe: boolean;
+      /** Narrows the ranked candidates to the listed doc_types; empty = every type. */
+      doc_types: string[];
     }
   | {
       /** Cancel a live search subscription (idempotent; unknown id ignored). */

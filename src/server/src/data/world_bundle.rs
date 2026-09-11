@@ -6,6 +6,12 @@
 //! raw id (source and target servers do not share a `users` table) — resolved
 //! back to a target-local id (or degraded to `NULL`/row-drop when
 //! unresolved) only at import time, in `SqliteRepository::import_world`.
+//!
+//! Search state is rebuilt from a document's/asset's own content, never
+//! carried across servers: `documents_fts_public`/`documents_fts_gm` and
+//! `assets_fts` are never exported or imported directly. Every FTS row a
+//! bundle produces on the target is a byproduct of the ordinary
+//! document/asset write paths this module drives.
 
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]

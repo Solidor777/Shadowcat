@@ -125,6 +125,61 @@ CREATE TABLE asset_tags (
 );
 CREATE INDEX idx_asset_tags_tag ON asset_tags(tag, asset_id);
 
+-- Trigger-maintained full-text index over asset name + tags: no Rust write
+-- site touches this table directly, so the index can never disagree with
+-- the row it derives from (unlike the document FTS tables, which need
+-- Rust's redaction pass and so are maintained by `reindex_document_fts`
+-- instead). "Refresh" is one shape, spelled once per trigger body: delete
+-- the asset's row, then reinsert it from a fresh join of `assets`/
+-- `asset_tags`. Cost is bounded by `MAX_TAGS` per asset per statement;
+-- `set_asset_tags`'s delete-all-then-insert fires one refresh per tag row,
+-- each a single-row subquery — acceptable at VTT scale.
+CREATE VIRTUAL TABLE assets_fts USING fts5(
+  content,
+  asset_id UNINDEXED,
+  world_id UNINDEXED,
+  tokenize = 'unicode61'
+);
+
+CREATE TRIGGER assets_fts_insert AFTER INSERT ON assets BEGIN
+  INSERT INTO assets_fts (content, asset_id, world_id)
+    SELECT a.original_name ||
+           COALESCE((SELECT ' ' || group_concat(t.tag, ' ') FROM asset_tags t WHERE t.asset_id = a.id), ''),
+           a.id, a.world_id
+    FROM assets a WHERE a.id = new.id;
+END;
+
+CREATE TRIGGER assets_fts_update_name AFTER UPDATE OF original_name ON assets BEGIN
+  DELETE FROM assets_fts WHERE asset_id = new.id;
+  INSERT INTO assets_fts (content, asset_id, world_id)
+    SELECT a.original_name ||
+           COALESCE((SELECT ' ' || group_concat(t.tag, ' ') FROM asset_tags t WHERE t.asset_id = a.id), ''),
+           a.id, a.world_id
+    FROM assets a WHERE a.id = new.id;
+END;
+
+CREATE TRIGGER assets_fts_delete AFTER DELETE ON assets BEGIN
+  DELETE FROM assets_fts WHERE asset_id = old.id;
+END;
+
+CREATE TRIGGER assets_fts_tag_insert AFTER INSERT ON asset_tags BEGIN
+  DELETE FROM assets_fts WHERE asset_id = new.asset_id;
+  INSERT INTO assets_fts (content, asset_id, world_id)
+    SELECT a.original_name ||
+           COALESCE((SELECT ' ' || group_concat(t.tag, ' ') FROM asset_tags t WHERE t.asset_id = a.id), ''),
+           a.id, a.world_id
+    FROM assets a WHERE a.id = new.asset_id;
+END;
+
+CREATE TRIGGER assets_fts_tag_delete AFTER DELETE ON asset_tags BEGIN
+  DELETE FROM assets_fts WHERE asset_id = old.asset_id;
+  INSERT INTO assets_fts (content, asset_id, world_id)
+    SELECT a.original_name ||
+           COALESCE((SELECT ' ' || group_concat(t.tag, ' ') FROM asset_tags t WHERE t.asset_id = a.id), ''),
+           a.id, a.world_id
+    FROM assets a WHERE a.id = old.asset_id;
+END;
+
 -- Persisted link-preview cache: the DB-backed tier behind chat::LinkPreviewCache's
 -- in-memory fast path. No world_id — same process-global, URL-keyed scope the
 -- in-memory cache already has, now durable across restarts. title/description
@@ -157,6 +212,7 @@ CREATE VIRTUAL TABLE documents_fts_public USING fts5(
   content,
   doc_id UNINDEXED,
   world_id UNINDEXED,
+  doc_type UNINDEXED,
   tokenize = 'unicode61'
 );
 
@@ -164,6 +220,7 @@ CREATE VIRTUAL TABLE documents_fts_gm USING fts5(
   content_all,
   doc_id UNINDEXED,
   world_id UNINDEXED,
+  doc_type UNINDEXED,
   tokenize = 'unicode61'
 );
 

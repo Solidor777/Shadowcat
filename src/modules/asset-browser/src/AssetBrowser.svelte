@@ -35,8 +35,8 @@
   // afterward, so capturing the initial prop value is the intended semantics.
   // svelte-ignore state_referenced_locally
   let filter = $state<FilterState>({
-    name: "",
-    nameIsRegex: false,
+    query: "",
+    queryIsRegex: false,
     tags: initialFilters?.tags ?? [],
     kind: initialFilters?.kind,
     sort: "created",
@@ -62,7 +62,7 @@
   // started must not clobber the newer listing.
   let generation = 0;
 
-  /** The `queryAssets` params for the current filter (`name` vs `name_regex`
+  /** The `queryAssets` params for the current filter (`q` vs `name_regex`
    * exclusive on the toggle).
    * @returns The mapped query for the first page.
    * @example
@@ -75,8 +75,8 @@
     return {
       folder: selectedFolder ?? undefined,
       recursive: selectedFolder ? true : undefined,
-      name: filter.nameIsRegex ? undefined : filter.name || undefined,
-      nameRegex: filter.nameIsRegex ? filter.name || undefined : undefined,
+      q: filter.queryIsRegex ? undefined : filter.query || undefined,
+      nameRegex: filter.queryIsRegex ? filter.query || undefined : undefined,
       tags: filter.tags.length > 0 ? filter.tags : undefined,
       kind: filter.kind,
       sort: filter.sort,

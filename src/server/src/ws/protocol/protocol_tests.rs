@@ -141,6 +141,7 @@ fn search_frames_round_trip() {
         limit: 20,
         cursor: None,
         subscribe: false,
+        doc_types: Vec::new(),
     };
     let s = serde_json::to_string(&req).unwrap();
     assert!(s.contains("\"type\":\"search\""));
@@ -162,7 +163,14 @@ fn subscribe_defaults_false_and_live_frames_round_trip() {
     )
     .unwrap();
     match oneshot {
-        ClientMsg::Search { subscribe, .. } => assert!(!subscribe),
+        ClientMsg::Search {
+            subscribe,
+            doc_types,
+            ..
+        } => {
+            assert!(!subscribe);
+            assert!(doc_types.is_empty());
+        }
         _ => panic!("expected Search"),
     }
     let unsub = ClientMsg::Unsubscribe {
@@ -178,6 +186,20 @@ fn subscribe_defaults_false_and_live_frames_round_trip() {
     assert!(serde_json::to_string(&upd)
         .unwrap()
         .contains("\"type\":\"search_update\""));
+}
+
+#[test]
+fn search_frame_parses_with_doc_types() {
+    let req: ClientMsg = serde_json::from_str(
+        r#"{"type":"search","request_id":"00000000-0000-0000-0000-000000000001","query":"x","limit":20,"cursor":null,"doc_types":["note","table"]}"#,
+    )
+    .unwrap();
+    match req {
+        ClientMsg::Search { doc_types, .. } => {
+            assert_eq!(doc_types, vec!["note".to_string(), "table".to_string()]);
+        }
+        _ => panic!("expected Search"),
+    }
 }
 
 #[test]

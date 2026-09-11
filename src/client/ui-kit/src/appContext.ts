@@ -234,6 +234,8 @@ export interface AppContext {
       limit?: number;
       /** Milliseconds to wait for the initial page before rejecting; server-defaulted when omitted. */
       timeoutMs?: number;
+      /** Narrows the ranked candidates to the listed doc_types; empty/omitted = every type. */
+      docTypes?: string[];
     },
     onUpdate: (hits: WireSearchHit[]) => void,
   ) => Promise<SubscriptionHandle>;

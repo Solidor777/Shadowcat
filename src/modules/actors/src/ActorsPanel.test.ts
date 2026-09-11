@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, within } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildActorDoc, buildItemDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildActorDoc, buildTokenFromActor, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { TokenSelection } from "@shadowcat/ui-kit";
 import ActorsPanel from "./ActorsPanel.svelte";
 
@@ -686,8 +686,9 @@ describe("ActorsPanel — live search + open sheet", () => {  // Real (not ident
     expect(opened).toEqual([{ docId: "a1" }]);
   });
 
-  it("runs a live search on a non-empty query and lists only actor hits", async () => {
+  it("runs a live search filtered to actors server-side, with no client-side re-filter", async () => {
     let capturedOnUpdate: ((hits: unknown[]) => void) | null = null;
+    let capturedOpts: unknown = null;
     const emptyStore = new DocumentStore();
     const { getByLabelText, findByText } = render(ActorsPanel, {
       context: setAppContextForTest({
@@ -696,16 +697,20 @@ describe("ActorsPanel — live search + open sheet", () => {  // Real (not ident
         documents: emptyStore,
         store: emptyStore,
         dispatchIntent: vi.fn(),
-        searchDocuments: (_q, _o, onUpdate) => {
+        searchDocuments: (_q, o, onUpdate) => {
+          capturedOpts = o;
           capturedOnUpdate = onUpdate as (hits: unknown[]) => void;
           return Promise.resolve({ unsubscribe() {} });
         },
       }),
     });
     await fireEvent.input(getByLabelText(/search/i), { target: { value: "gob" } });
-    capturedOnUpdate!([hit(actorDoc("a9")), hit(buildItemDoc("w1", "Gob-stopper", {}, "i9"))]);
+    expect(capturedOpts).toMatchObject({ docTypes: ["actor"] });
+    // The server already filtered to actors — the panel renders whatever it sends,
+    // with no second `doc_type === "actor"` re-filter (that would be the forked
+    // decision shape).
+    capturedOnUpdate!([hit(actorDoc("a9"))]);
     await findByText("Goblin");
-    expect(screen.queryByText("Gob-stopper")).toBeNull();
   });
 
   it("ignores a stale query's onUpdate firing after a newer query's subscription is active", async () => {

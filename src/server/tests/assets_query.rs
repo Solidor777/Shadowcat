@@ -1,7 +1,8 @@
 //! The asset query endpoint over the live HTTP surface: folder scope
-//! (root / direct / recursive), all-of tags, kind, case-insensitive name
-//! substring, size-capped regex, sorting, keyset pagination followed to the
-//! end — and the bare listing contract (no parameters ⇒ a plain array).
+//! (root / direct / recursive), all-of tags, kind, the trigger-maintained
+//! `assets_fts` full-text `q` filter, size-capped regex, sorting, keyset
+//! pagination followed to the end — and the bare listing contract (no
+//! parameters ⇒ a plain array).
 
 use common::{spawn, Harness};
 use shadowcat::data::asset::{Asset, AssetMeta};
@@ -197,7 +198,7 @@ async fn bare_listing_is_still_a_plain_array() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn folder_tag_kind_and_name_filters() {
+async fn folder_tag_kind_and_query_filters() {
     let h = spawn().await;
     let s = seed_world(&h).await;
 
@@ -227,12 +228,14 @@ async fn folder_tag_kind_and_name_filters() {
         names(&page(&h, "kind=image&folder=root").await),
         vec!["Map of Crypt.png"]
     );
-    // Case-insensitive substring; `%` in the needle is literal, not a wildcard.
+    // Full-text query over name (and tags — see the dedicated test below);
+    // case-insensitive, tokenized (word match, not a substring).
     assert_eq!(
-        names(&page(&h, "name=MAP").await),
+        names(&page(&h, "q=MAP").await),
         vec!["Map of Crypt.png", "big map.jpg"]
     );
-    assert!(names(&page(&h, "name=%25").await).is_empty());
+    // Punctuation-only reduces to no terms, mirroring `Repository::search`.
+    assert!(names(&page(&h, "q=%25").await).is_empty());
     // Regex, over the SQL-narrowed rows.
     assert_eq!(
         names(&page(&h, "name_regex=%5Ecr.pt%24").await),
@@ -253,6 +256,23 @@ async fn folder_tag_kind_and_name_filters() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn query_matches_an_explicit_and_a_derived_tag_not_just_the_name() {
+    let h = spawn().await;
+    seed_world(&h).await;
+
+    // "hero" is an explicit tag on three assets sharing no name word.
+    assert_eq!(
+        names(&page(&h, "q=hero").await),
+        vec!["Map of Crypt.png", "notes.pdf", "goblin.png"]
+    );
+    // "webp" is a derived tag, never present in either matching asset's name.
+    assert_eq!(
+        names(&page(&h, "q=webp").await),
+        vec!["Map of Crypt.png", "crypt"]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

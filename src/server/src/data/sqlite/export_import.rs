@@ -246,7 +246,10 @@ impl SqliteRepository {
     /// `reindex_document_fts` with `upsert_document` (search state is
     /// rebuilt from `doc`'s content, never carried across servers —
     /// `documents_fts_public`/`documents_fts_gm` are never exported/imported
-    /// directly, see `data::world_bundle`'s module doc). A plain `INSERT`
+    /// directly, see `data::world_bundle`'s module doc; the same is true of
+    /// `assets_fts`, whose triggers rebuild it from the imported `assets`/
+    /// `asset_tags` rows as `insert_asset`/`set_asset_tags` write them). A
+    /// plain `INSERT`
     /// (not `upsert_document`'s `ON CONFLICT(id) DO UPDATE`): a document id
     /// colliding with an existing row anywhere on the target server (a
     /// separate axis from the already-gated world-id collision) is a

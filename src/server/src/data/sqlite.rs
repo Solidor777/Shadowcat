@@ -2212,14 +2212,19 @@ impl Repository for SqliteRepository {
         query: &str,
         limit: u32,
         cursor: Option<i64>,
+        doc_types: &[String],
     ) -> Result<crate::data::search::SearchPage, DataError> {
-        use crate::data::search::{build_match, SearchHit, SearchPage};
+        use crate::data::search::{build_match, SearchHit, SearchPage, MAX_SEARCH_DOC_TYPES};
 
         // Bound the candidates examined per request: a query matching many docs
         // the actor cannot read would otherwise page to exhaustion, one
         // get_document per candidate, on the single-writer pool. On hitting the
         // budget before `limit`, return a partial page + cursor to resume.
         const MAX_SCAN: i64 = 500;
+
+        if doc_types.len() > MAX_SEARCH_DOC_TYPES {
+            return Err(DataError::OpFailed("too many doc types".into()));
+        }
 
         let limit = limit.clamp(1, 100) as usize;
         let Some(match_expr) = build_match(query) else {
@@ -2250,18 +2255,10 @@ impl Repository for SqliteRepository {
         // tables make each tier's row length genuinely isolated: a non-GM
         // query's table contains no GM-only text in any column of any row.
         let is_gm = ctx.world_role == WorldRole::Gm;
-        let sql = if is_gm {
-            "SELECT doc_id, bm25(documents_fts_gm) AS score, \
-             snippet(documents_fts_gm, 0, '<mark>', '</mark>', '…', 16) AS snippet \
-             FROM documents_fts_gm \
-             WHERE documents_fts_gm MATCH ?1 AND world_id = ?2 \
-             ORDER BY score LIMIT ?3 OFFSET ?4"
+        let table = if is_gm {
+            "documents_fts_gm"
         } else {
-            "SELECT doc_id, bm25(documents_fts_public) AS score, \
-             snippet(documents_fts_public, 0, '<mark>', '</mark>', '…', 16) AS snippet \
-             FROM documents_fts_public \
-             WHERE documents_fts_public MATCH ?1 AND world_id = ?2 \
-             ORDER BY score LIMIT ?3 OFFSET ?4"
+            "documents_fts_public"
         };
 
         // Iterate the BM25-ranked candidates from `cursor`, reading each doc and
@@ -2276,13 +2273,36 @@ impl Repository for SqliteRepository {
         let mut next_cursor: Option<i64> = None;
 
         'outer: loop {
-            let rows = sqlx::query(sql)
-                .bind(&match_expr)
-                .bind(world_id.to_string())
-                .bind(batch)
-                .bind(offset)
-                .fetch_all(&self.pool)
-                .await?;
+            // A `sqlx::QueryBuilder`, not a numbered-placeholder `&'static str`:
+            // the optional `doc_type IN (...)` clause needs a variable-length
+            // bind list, and mixing explicit `?1..?N` with trailing bare `?`
+            // placeholders in the same statement is not a pattern used
+            // elsewhere in this crate — the builder pushes every bind in
+            // textual order instead, so bind order is always the push order.
+            let mut qb: sqlx::QueryBuilder<sqlx::Sqlite> = sqlx::QueryBuilder::new(format!(
+                "SELECT doc_id, bm25({table}) AS score, \
+                 snippet({table}, 0, '<mark>', '</mark>', '…', 16) AS snippet \
+                 FROM {table} WHERE {table} MATCH "
+            ));
+            qb.push_bind(match_expr.clone());
+            qb.push(" AND world_id = ");
+            qb.push_bind(world_id.to_string());
+            if !doc_types.is_empty() {
+                qb.push(" AND doc_type IN (");
+                for (i, dt) in doc_types.iter().enumerate() {
+                    if i > 0 {
+                        qb.push(", ");
+                    }
+                    qb.push_bind(dt.clone());
+                }
+                qb.push(")");
+            }
+            qb.push(" ORDER BY score LIMIT ");
+            qb.push_bind(batch);
+            qb.push(" OFFSET ");
+            qb.push_bind(offset);
+
+            let rows = qb.build().fetch_all(&self.pool).await?;
 
             if rows.is_empty() {
                 break; // exhausted; next_cursor stays None

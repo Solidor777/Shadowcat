@@ -32,7 +32,7 @@ Phase 3, both by design.
 ### M15 · Asset pipeline + browser ✅
 Complete: M15a (pipeline) and M15b (browser module + the generic GM-only document `Move`
 operation) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M15a/M15b entries. The FTS
-integration for asset search remains deferred to M21 by design.
+integration for asset search shipped in M21 (see `HISTORY.md`'s M21 entry).
 
 ### M16 · Layout + theming completion ✅
 Complete: M16a (theme engine — token data, controller, ui-state + pre-login persistence,
@@ -67,14 +67,6 @@ Phase 3 by design (the component model landed here; the emit seams are Phase-3 a
   WS-level suite; the sheet-driven UI flows are this milestone's).
 - The suite is the second internal-module exercise of the API surface toward the Phase-4 freeze
   gate.
-
-### M21 · Search consolidation
-- One search milestone, one backend: extend the M6c FTS5 index + live subscriptions to every
-  document type the suite introduces (notes, tables, assets by tag) with the same
-  visibility-partitioned index — no three-backend split.
-- Folds M15's asset search into FTS: M15 deliberately ships `GET /api/assets` as SQL
-  substring/tag/folder filters plus a size-limited `regex` name filter (asset names are short;
-  a `LIKE` + tag join suffices) — the FTS integration was deferred here, not forgotten.
 
 ## Phase 3 — Atmosphere
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
