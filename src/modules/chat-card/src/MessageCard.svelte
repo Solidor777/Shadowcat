@@ -171,6 +171,17 @@
     return null;
   });
 
+  // A `table_draw` message is ALSO `MessageKind::Roll` (`tables::handle_draw_table` reuses
+  // chat's own authoring chokepoint), but its content is one-or-more `Segment::TableDraw`
+  // entries, never a lone `roll_embed` — `rollBlock` above
+  // never matches it. Recognized narrowly (every raw segment a KNOWN `table_draw`) so it never
+  // absorbs the genuinely-unrenderable shapes (plain text/html, an unknown segment, a roll_embed
+  // plus an extra segment) the pending-shell fallback below still exists to catch.
+  const isTableDrawContent = $derived.by((): boolean => {
+    if (!sys || sys.kind !== "roll" || sys.content.length === 0) return false;
+    return sys.content.every((s) => isKnownSegment(s) && s.kind === "table_draw");
+  });
+
   // Advisory only — the server independently re-authorizes every edit/delete against its own
   // owner-or-GM check (in `handle_edit_message` for edit, `handle_delete_message` for
   // delete); this gate only decides whether to SHOW the actions, never whether one succeeds.
@@ -410,6 +421,8 @@
               </div>
             {/if}
           </div>
+        {:else if isTableDrawContent}
+          <SegmentList segments={sys.content} channel={sys.channel} />
         {:else if sys.kind === "roll"}
           <p class="roll-pending">{t("chat.rollPending", { formula: rollFormula })}</p>
         {:else}
