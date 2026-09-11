@@ -16,7 +16,7 @@ redaction, all Bucket C follow-on sub-projects, and the debt-burndown campaign. 
 [`HISTORY.md`](HISTORY.md). `docs/OPEN_BUGS.md` is empty; `docs/TODO.md` holds only items blocked
 on unbuilt Phase-2+ infrastructure or on external circumstances.
 
-## Phase 2 — Full table
+## Phase 2 — Full table ✅
 
 Milestones in build order; each gets its own brainstorm → spec → plan cycle and may decompose
 further at design time. Numbering continues from Phase 1.
