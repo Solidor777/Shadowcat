@@ -55,7 +55,7 @@ fn parse_validates_every_parameter() {
     assert_eq!(p.filter.folder, Some(FolderFilter::Root));
     assert_eq!(p.filter.tags, vec!["hero".to_string(), "image".to_string()]);
     assert_eq!(p.filter.kind, Some(AssetKind::Other));
-    assert_eq!(p.filter.name, None, "empty name is no filter");
+    assert_eq!(p.filter.query, None, "empty name is no filter");
     assert_eq!(p.sort, AssetSort::Size);
     assert_eq!(p.limit, 2);
 

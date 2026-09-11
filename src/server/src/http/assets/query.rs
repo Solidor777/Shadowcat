@@ -249,7 +249,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
             folder,
             tags,
             kind,
-            name: q.name.filter(|n| !n.is_empty()),
+            query: q.name.filter(|n| !n.is_empty()),
         },
         sort,
         limit,

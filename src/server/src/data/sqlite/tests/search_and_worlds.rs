@@ -1121,6 +1121,9 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
     })
     .await
     .unwrap();
+    src.set_asset_tags(asset_id, &["hero-token".to_string()], &[])
+        .await
+        .unwrap();
     src.set_explored(w.id, doc.id, owner, &[1, 2, 3])
         .await
         .unwrap();
@@ -1221,6 +1224,40 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
         target_setting.as_deref(),
         Some(r#"{"marker":"settings-round-trip"}"#)
     );
+
+    // assets_fts: import inserts through ordinary INSERTs, so the
+    // trigger-maintained index is rebuilt on the target and the imported
+    // asset is findable by name and by tag.
+    let by_name = target
+        .query_assets(
+            w.id,
+            &crate::data::asset::query::AssetFilter {
+                query: Some("token".to_string()),
+                ..Default::default()
+            },
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_name.len(), 1);
+    assert_eq!(by_name[0].id, asset_id);
+    let by_tag = target
+        .query_assets(
+            w.id,
+            &crate::data::asset::query::AssetFilter {
+                query: Some("hero-token".to_string()),
+                ..Default::default()
+            },
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(by_tag.len(), 1);
+    assert_eq!(by_tag[0].id, asset_id);
 }
 
 #[tokio::test]

@@ -976,17 +976,20 @@ impl SqliteRepository {
                 qb.push(" AND a.content_type NOT LIKE 'image/%'");
             }
         }
-        if let Some(name) = &filter.name {
-            // `\` escapes LIKE's own wildcards so a literal `%`/`_` in the
-            // needle matches itself.
-            let needle = name
-                .to_lowercase()
-                .replace('\\', "\\\\")
-                .replace('%', "\\%")
-                .replace('_', "\\_");
-            qb.push(" AND lower(a.original_name) LIKE '%' || ");
-            qb.push_bind(needle);
-            qb.push(" || '%' ESCAPE '\\'");
+        if let Some(q) = &filter.query {
+            // The ONE MATCH sanitizer, shared with `Repository::search`; a
+            // `None` (empty/punctuation-only query) mirrors that seam's own
+            // posture and yields an empty page rather than reaching FTS5.
+            match crate::data::search::build_match(q) {
+                None => return Ok(Vec::new()),
+                Some(expr) => {
+                    qb.push(
+                        " AND a.id IN (SELECT asset_id FROM assets_fts WHERE assets_fts MATCH ",
+                    );
+                    qb.push_bind(expr);
+                    qb.push(")");
+                }
+            }
         }
         let key = sort.sql_key();
         if let Some(cur) = after {
