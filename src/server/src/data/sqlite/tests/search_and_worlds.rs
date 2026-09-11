@@ -1805,7 +1805,7 @@ fn placement_import_data(
     }
 }
 
-/// A 2-note mutual cycle fails at the FIRST insert (`b`'s parent `a` does not
+/// A 2-note mutual cycle fails at the FIRST insert (`a`'s parent `b` does not
 /// exist yet), before the post-loop placement pass ever runs — this pins the
 /// immediate (non-`DEFERRABLE`) `documents.parent_id` foreign key as the
 /// mechanism, not an assumption. Rolled back: the world never commits.
@@ -1825,6 +1825,42 @@ async fn import_world_rejects_a_two_note_mutual_cycle_via_the_immediate_fk() {
     let import_data = placement_import_data(world_id, "gm-cycle", vec![a, b]);
     let err = target.import_world(import_data).await.unwrap_err();
     assert!(matches!(err, DataError::Sqlx(_)));
+
+    let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
+        .bind(world_id.to_string())
+        .fetch_optional(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(world_exists, None);
+}
+
+/// Two parentless notes sharing an `id`, plus a third note parented to that
+/// id, is rejected by the up-front duplicate-id check — before the Kahn
+/// reorder ever runs a `children` decrement against the shared id twice.
+#[tokio::test]
+async fn import_world_rejects_a_bundle_with_duplicate_document_ids() {
+    let world_id = Uuid::new_v4();
+    let dup_id = Uuid::from_u128(108);
+    let first = note_doc(108, world_id, "first", None);
+    let second = note_doc(108, world_id, "second", None);
+    let child = note_doc(109, world_id, "child", Some(dup_id));
+    assert_eq!(first.id, dup_id);
+    assert_eq!(second.id, dup_id);
+
+    let target = repo().await;
+    target
+        .create_user("gm-dup-id", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let import_data = placement_import_data(world_id, "gm-dup-id", vec![first, second, child]);
+    let err = target.import_world(import_data).await.unwrap_err();
+    match &err {
+        DataError::OpFailed(m) => assert!(
+            m.contains(&dup_id.to_string()),
+            "error message must name the duplicate id: {m}"
+        ),
+        other => panic!("expected DataError::OpFailed, got {other:?}"),
+    }
 
     let world_exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worlds WHERE id = ?")
         .bind(world_id.to_string())
