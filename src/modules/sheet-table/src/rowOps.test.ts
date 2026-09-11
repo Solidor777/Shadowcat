@@ -1,7 +1,20 @@
 // @vitest-environment node
 import { describe, it, expect } from "vitest";
-import { addRow, removeRow, moveRow, setRow, defaultEntry, normalizeRowsForDraw } from "./rowOps";
+import { addRow, removeRow, moveRow, setRow, defaultEntry, normalizeRowsForDraw, nextFreeRange } from "./rowOps";
 import type { TableRow } from "@shadowcat/core";
+
+/** True iff every ranged row in `rows` is pairwise disjoint from every other (the
+ * `TableEngine::validate` invariant `nextFreeRange` exists to satisfy). */
+function pairwiseDisjoint(rows: TableRow[]): boolean {
+  const ranges = rows.map((r) => r.range).filter((r): r is NonNullable<typeof r> => r !== null);
+  for (let i = 0; i < ranges.length; i++) {
+    if (ranges[i].lo > ranges[i].hi) return false;
+    for (let j = i + 1; j < ranges.length; j++) {
+      if (ranges[i].lo <= ranges[j].hi && ranges[j].lo <= ranges[i].hi) return false;
+    }
+  }
+  return true;
+}
 
 function row(label: string): TableRow {
   return { weight: 1, range: null, label, results: [] };
@@ -18,6 +31,16 @@ describe("addRow", () => {
   it("appends a formula row with a placeholder range", () => {
     const next = addRow([], { kind: "formula", notation: "1d20" });
     expect(next[0].range).toEqual({ lo: 1, hi: 1 });
+  });
+
+  it("appends a formula row whose range is disjoint from every existing row's range", () => {
+    const rows: TableRow[] = [
+      { weight: 1, range: { lo: 1, hi: 5 }, label: "a", results: [] },
+      { weight: 1, range: { lo: 6, hi: 10 }, label: "b", results: [] },
+    ];
+    const next = addRow(rows, { kind: "formula", notation: "1d20" });
+    expect(next[2].range).toEqual({ lo: 11, hi: 11 });
+    expect(pairwiseDisjoint(next)).toBe(true);
   });
 
   it("never mutates the input array", () => {
@@ -89,16 +112,56 @@ describe("normalizeRowsForDraw", () => {
     expect(next[0].range).toEqual({ lo: 5, hi: 9 });
   });
 
-  it("seeds the addRow placeholder range for a null-range row switching to formula", () => {
+  it("seeds a placeholder range for a null-range row switching to formula", () => {
     const rows: TableRow[] = [{ weight: 1, range: null, label: "a", results: [] }];
     const next = normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
     expect(next[0].range).toEqual({ lo: 1, hi: 1 });
+  });
+
+  it("assigns pairwise-disjoint ranges to multiple rows with no range", () => {
+    const rows: TableRow[] = [
+      { weight: 1, range: null, label: "a", results: [] },
+      { weight: 1, range: null, label: "b", results: [] },
+      { weight: 1, range: null, label: "c", results: [] },
+    ];
+    const next = normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
+    expect(pairwiseDisjoint(next)).toBe(true);
+    expect(next.map((r) => r.range)).toEqual([
+      { lo: 1, hi: 1 },
+      { lo: 2, hi: 2 },
+      { lo: 3, hi: 3 },
+    ]);
+  });
+
+  it("preserves an existing range and places a missing one above the max", () => {
+    const rows: TableRow[] = [
+      { weight: 1, range: { lo: 5, hi: 9 }, label: "a", results: [] },
+      { weight: 1, range: null, label: "b", results: [] },
+    ];
+    const next = normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
+    expect(next[0].range).toEqual({ lo: 5, hi: 9 });
+    expect(next[1].range).toEqual({ lo: 10, hi: 10 });
+    expect(pairwiseDisjoint(next)).toBe(true);
   });
 
   it("never mutates the input array or its rows", () => {
     const rows: TableRow[] = [{ weight: 1, range: null, label: "a", results: [] }];
     normalizeRowsForDraw(rows, { kind: "formula", notation: "1d20" });
     expect(rows[0].range).toBeNull();
+  });
+});
+
+describe("nextFreeRange", () => {
+  it("returns {1,1} when no row carries a range", () => {
+    expect(nextFreeRange([row("a"), row("b")])).toEqual({ lo: 1, hi: 1 });
+  });
+
+  it("returns the slot immediately above the max hi across ranged rows", () => {
+    const rows: TableRow[] = [
+      { weight: 1, range: { lo: 1, hi: 3 }, label: "a", results: [] },
+      { weight: 1, range: { lo: 4, hi: 4 }, label: "b", results: [] },
+    ];
+    expect(nextFreeRange(rows)).toEqual({ lo: 5, hi: 5 });
   });
 });
 

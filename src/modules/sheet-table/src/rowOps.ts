@@ -5,18 +5,33 @@
 import type { TableRow, TableEntry, DrawRule, RowRange } from "@shadowcat/core";
 
 /**
- * The placeholder range a row gets when it needs one but has none of its own — a fresh row
- * added under `DrawRule::Formula`, or an existing row carried over from `Weighted` when the
- * table's draw rule switches to `Formula`. Server-side `TableEngine::validate` rejects a
- * `Formula` row with `range: null`, so every row-shaping site that can produce a `Formula` row
- * reads this ONE constant rather than restating `{ lo: 1, hi: 1 }`.
+ * The next range slot free of every ranged row in `rows`: `{ lo: m+1, hi: m+1 }` where `m` is
+ * the max `hi` over rows that carry a range, or `{ lo: 1, hi: 1 }` when none do. This is the
+ * client mirror of `TableEngine::validate`'s pairwise-non-overlap rule for a `Formula` table's
+ * rows — every row-shaping site that needs to seed a `Formula` row's range (a fresh row, or an
+ * existing row carried over with no range of its own) reads this ONE helper rather than
+ * restating a literal range that risks colliding with another row's.
+ * @param rows The rows to compute a free slot against.
+ * @returns A range disjoint from every ranged row in `rows`.
+ * @example
+ * ```ts
+ * import { nextFreeRange } from "@shadowcat/module-sheet-table";
+ *
+ * nextFreeRange([{ weight: 1, range: { lo: 1, hi: 3 }, label: "a", results: [] }]);
+ * // { lo: 4, hi: 4 }
+ * ```
  */
-const DEFAULT_ROW_RANGE: RowRange = { lo: 1, hi: 1 };
+export function nextFreeRange(rows: TableRow[]): RowRange {
+  const maxHi = rows.reduce((m, r) => (r.range ? Math.max(m, r.range.hi) : m), 0);
+  return { lo: maxHi + 1, hi: maxHi + 1 };
+}
 
 /**
  * A fresh, empty row appended to the end. Under `DrawRule::Formula` the row gets
- * `DEFAULT_ROW_RANGE`, since `range: null` is invalid under `formula` — server-side
- * `TableEngine::validate` rejects it; under `weighted`, `range` stays `null`.
+ * {@link nextFreeRange} computed against the existing rows, since `range: null` is invalid
+ * under `formula` — server-side `TableEngine::validate` rejects it, and a fixed placeholder
+ * would collide with any existing row already covering that slot; under `weighted`, `range`
+ * stays `null`.
  * @param rows The current rows (not mutated).
  * @param draw The table's current draw rule (decides whether the new row needs a `range`).
  * @returns A new array with the row appended.
@@ -30,22 +45,20 @@ const DEFAULT_ROW_RANGE: RowRange = { lo: 1, hi: 1 };
  */
 export function addRow(rows: TableRow[], draw: DrawRule): TableRow[] {
   const next = structuredClone(rows);
-  next.push({
-    weight: 1,
-    range: draw.kind === "formula" ? DEFAULT_ROW_RANGE : null,
-    label: "",
-    results: [],
-  });
+  const range = draw.kind === "formula" ? nextFreeRange(next) : null;
+  next.push({ weight: 1, range, label: "", results: [] });
   return next;
 }
 
 /**
  * Reshapes every row's `range` to match `draw`'s requirement, so switching a table's draw rule
  * never produces a post-image `TableEngine::validate` rejects: `TableEngine::validate` requires
- * `range: None` under `Weighted` and `range: Some` under `Formula` for EVERY row. Under
- * `Formula`, a row that already carries a valid range keeps it; a row with none gets
- * `DEFAULT_ROW_RANGE` (the same placeholder `addRow` seeds a brand-new `Formula` row with).
- * Under `Weighted`, every row's `range` is cleared to `null`.
+ * `range: None` under `Weighted` and `range: Some` under `Formula` for EVERY row, and every
+ * `Formula` row's range pairwise disjoint from every other's. Under `Formula`, a row that
+ * already carries a valid range keeps it; a row with none is assigned {@link nextFreeRange}
+ * computed sequentially against the rows already processed (so two rows both missing a range
+ * land in disjoint slots, never the same placeholder). Under `Weighted`, every row's `range` is
+ * cleared to `null`.
  * @param rows The current rows (not mutated).
  * @param draw The draw rule the rows are being reshaped for.
  * @returns A new array with every row's `range` normalized for `draw`.
@@ -59,8 +72,12 @@ export function addRow(rows: TableRow[], draw: DrawRule): TableRow[] {
  */
 export function normalizeRowsForDraw(rows: TableRow[], draw: DrawRule): TableRow[] {
   const next = structuredClone(rows);
-  for (const row of next) {
-    row.range = draw.kind === "formula" ? (row.range ?? DEFAULT_ROW_RANGE) : null;
+  if (draw.kind === "formula") {
+    for (const row of next) {
+      if (!row.range) row.range = nextFreeRange(next.filter((r) => r.range !== null));
+    }
+  } else {
+    for (const row of next) row.range = null;
   }
   return next;
 }

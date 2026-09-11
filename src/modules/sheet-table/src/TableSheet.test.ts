@@ -73,7 +73,7 @@ describe("TableSheet header", () => {
     expect(getByTestId("table-notation")).toBeTruthy();
   });
 
-  it("switching weighted to formula with existing rows dispatches ONE Update reshaping every row's range", async () => {
+  it("switching weighted to formula with existing rows dispatches ONE Update reshaping every row's range with pairwise-disjoint ranges", async () => {
     const weightedRows = [
       { weight: 1, range: null, label: "a", results: [] },
       { weight: 2, range: null, label: "b", results: [] },
@@ -88,15 +88,28 @@ describe("TableSheet header", () => {
       op: "update", doc_id: "t1",
       changes: [
         { path: "/engine/draw", old: { kind: "weighted" }, new: { kind: "formula", notation: "1d20" } },
-        {
-          path: "/engine/rows", old: weightedRows,
-          new: [
-            { weight: 1, range: { lo: 1, hi: 1 }, label: "a", results: [] },
-            { weight: 2, range: { lo: 1, hi: 1 }, label: "b", results: [] },
-          ],
-        },
+        { path: "/engine/rows", old: weightedRows, new: expect.any(Array) },
       ],
     }]]);
+    const dispatched = (calls[0] as { changes: { new: unknown }[] }[])[0].changes[1].new as {
+      weight: number;
+      range: { lo: number; hi: number } | null;
+      label: string;
+      results: unknown[];
+    }[];
+    expect(dispatched.map((r) => ({ weight: r.weight, label: r.label, results: r.results }))).toEqual([
+      { weight: 1, label: "a", results: [] },
+      { weight: 2, label: "b", results: [] },
+    ]);
+    const ranges = dispatched.map((r) => r.range);
+    expect(ranges.every((r) => r !== null && r.lo <= r.hi)).toBe(true);
+    for (let i = 0; i < ranges.length; i++) {
+      for (let j = i + 1; j < ranges.length; j++) {
+        const a = ranges[i]!;
+        const b = ranges[j]!;
+        expect(a.lo <= b.hi && b.lo <= a.hi).toBe(false);
+      }
+    }
   });
 
   it("switching formula to weighted with existing rows dispatches ONE Update clearing every row's range", async () => {

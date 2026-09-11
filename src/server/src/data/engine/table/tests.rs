@@ -273,6 +273,35 @@ fn validate_engine_rejects_a_table_body_on_a_non_engine_doc_type() {
 }
 
 #[test]
+fn sequential_ranges_mirroring_next_free_range_are_accepted_duplicates_are_rejected() {
+    // `next_free_range` in `@shadowcat/module-sheet-table`'s `rowOps.ts` is the client mirror
+    // of this rule: each defaulted row's range must sit strictly above every prior row's `hi`,
+    // so a client-normalized post-image (ranges `{1,1}`, `{2,2}`, `{3,3}`) is always accepted.
+    let sequential = TableEngine {
+        draw: DrawRule::Formula {
+            notation: "2d6".to_string(),
+        },
+        rows: vec![
+            ranged_row(1, 1, "a"),
+            ranged_row(2, 2, "b"),
+            ranged_row(3, 3, "c"),
+        ],
+        description: String::new(),
+    };
+    assert!(sequential.validate().is_ok());
+
+    let duplicated = TableEngine {
+        draw: DrawRule::Formula {
+            notation: "2d6".to_string(),
+        },
+        rows: vec![ranged_row(1, 1, "a"), ranged_row(1, 1, "b")],
+        description: String::new(),
+    };
+    let err = duplicated.validate().unwrap_err();
+    assert!(err.contains("overlap"));
+}
+
+#[test]
 fn a_table_document_cannot_have_a_parent() {
     let doc = table_doc_with_parent(Some(Uuid::new_v4()));
     assert!(crate::data::validation::validate_containment(&doc).is_err());
