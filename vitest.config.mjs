@@ -1,10 +1,13 @@
 import { defineConfig } from "vitest/config";
 
-// `pnpm run test:scripts` (`vitest run scripts/`) is the only vitest
-// invocation that reads this file: every workspace package under
-// src/modules and src/client owns its own vitest.config.ts in its own
-// directory, and Vite's config resolution searches only the invocation's
-// own root, never a parent directory, so this file never reaches them.
+// `pnpm run test:scripts` (`vitest run scripts/`) is the intended reader of
+// this file. A workspace package that owns NO vitest config of its own
+// resolves upward and matches this one instead — it then finds zero tests
+// under `scripts/**/*.test.mjs` from that package's root and fails loudly
+// ("No test files found"), rather than silently running against the wrong
+// config. `src/client/formula/vitest.config.ts` exists precisely because
+// Vite DID walk up to this file when that package had none: every package
+// that runs vitest MUST own its own config.
 export default defineConfig({
   test: {
     include: ["scripts/**/*.test.mjs"],
