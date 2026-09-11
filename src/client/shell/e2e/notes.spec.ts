@@ -104,17 +104,22 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
     await expect(playerSheet.getByTestId("note-body").locator("strong")).toBeVisible();
 
     // The player clicks the roll button; the chat panel shows a roll card.
+    // Chat is `defaultPlacement: docked` — already open at session start, unlike a panel
+    // reached only through `openPanel` — so it needs no opening here (`activate`'s
+    // `ctx.panels.toggle` would instead CLOSE it).
     await playerSheet.getByRole("button", { name: "Luck" }).click();
-    await openPanel(player, "chat:panel");
     await expect(player.locator(".roll-block")).toHaveCount(1, { timeout: 15_000 });
 
     // The GM creates a child note from the sheet — private by default, so it doesn't yet reach
     // the player's tree under "Session 1" (no toggle renders: this recipient's view of the
     // parent has no children).
     await gmSheet.getByTestId("note-new-child").click();
+    // Scoped by the sheet's own <h2> heading, not `hasText` on the whole dialog: the PARENT
+    // sheet's freshly re-rendered children list now also contains the text "Untitled note"
+    // (as a child-row button), so a `hasText` filter would match both open dialogs.
     const gmChildSheet = gm
       .getByRole("dialog", { name: "Sheet", exact: true })
-      .filter({ hasText: "Untitled note" });
+      .filter({ has: gm.getByRole("heading", { name: "Untitled note", level: 2 }) });
     await expect(gmChildSheet).toBeVisible({ timeout: 15_000 });
     await openPanel(player, "notes:panel");
     await expect(player.getByTestId("note-toggle")).toHaveCount(0);

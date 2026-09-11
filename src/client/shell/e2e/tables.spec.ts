@@ -78,8 +78,9 @@ test("tables: create, add rows, draw, and the panel's quick-draw both post cards
     await gm.getByRole("button", { name: new RegExp(worldName) }).click();
     await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
-    // Both sides watch chat for the rest of the scenario.
-    await openPanel(player, "chat:panel");
+    // Both sides watch chat for the rest of the scenario. Chat is `defaultPlacement: docked`
+    // — the ONE panel every session starts with already open — so it needs no `openPanel`
+    // call; `activate`'s `ctx.panels.toggle` would instead CLOSE it here.
 
     // The GM creates "Loot" (world-readable by default: `buildTableDoc`'s `permissions.default:
     // "observer"`) and its sheet opens.
@@ -113,8 +114,11 @@ test("tables: create, add rows, draw, and the panel's quick-draw both post cards
     await expect(drawCards(gm).locator(".table-draw-row-label")).toHaveText(/Potion|Sword/);
     await expect(drawCards(player).locator(".table-draw-row-label")).toHaveText(/Potion|Sword/);
 
-    // The panel's own quick Draw posts a second card, also visible to both.
-    await openPanel(gm, "tables:panel");
+    // The panel's own quick Draw posts a second card, also visible to both. `tables:panel`
+    // is ALREADY open (from the earlier `openPanel` above, never closed since) — a second
+    // `openPanel` here would TOGGLE it closed via `activate`'s `ctx.panels.toggle`, hiding
+    // `table-quick-draw` and hanging the click below on actionability for the rest of the
+    // test's budget.
     await gm.getByTestId("table-quick-draw").click();
     await expect(drawCards(gm)).toHaveCount(2, { timeout: 15_000 });
     await expect(drawCards(player)).toHaveCount(2, { timeout: 15_000 });
