@@ -1189,9 +1189,7 @@ impl Repository for SqliteRepository {
                     // unborn same-command parent is left to the FK at apply
                     // time, so batched scene+children creates still pass.
                     if doc.parent_id == Some(doc.id) {
-                        return Err(DataError::OpFailed(
-                            "document cannot be its own parent".into(),
-                        ));
+                        return Err(Self::self_parent_error());
                     }
                     // `system-defaults` is server-authored: its content mirrors
                     // the installed system package's declaration, so every

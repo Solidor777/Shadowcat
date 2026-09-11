@@ -9,6 +9,15 @@
 use super::*;
 
 impl SqliteRepository {
+    /// The error a self-referential `parent_id` raises: a document naming
+    /// itself as its own parent satisfies the self-FK and commits, then
+    /// poisons deletion's descendant walk (it would loop). Shared by
+    /// `apply_intent`'s Create arm and `import_world`'s post-loop placement
+    /// pass so the two checks never state the message twice.
+    pub(super) fn self_parent_error() -> DataError {
+        DataError::OpFailed("document cannot be its own parent".into())
+    }
+
     /// Load a document envelope by id on an arbitrary executor (so it can run
     /// inside a transaction). Mirrors `get_document`'s row→Document mapping.
     pub(super) async fn load_document<'e, E>(
