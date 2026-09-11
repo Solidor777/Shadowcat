@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -70,9 +70,7 @@
       /** The raw stored snap flag; absent (not merely falsy) means "use the derived default". */
       snapToGrid?: boolean;
     } | undefined)?.snapToGrid ?? null;
-    ctx.dispatchIntent([
-      { op: "update", doc_id: scene.id, changes: [{ path: "/engine/snapToGrid", old: rawSnap, new: !snapToGrid }] },
-    ]);
+    ctx.dispatchIntent([buildUpdate(scene.id, [{ path: "/engine/snapToGrid", old: rawSnap, value: !snapToGrid }])]);
   }
 
   /** `gmOnly` marks a tool that AUTHORS scene content (creates or edits a document other
@@ -237,7 +235,7 @@
   function editSelected(path: string, oldRaw: unknown, value: unknown): void {
     const doc = editingDoc;
     if (!doc) return;
-    ctx.dispatchIntent([{ op: "update", doc_id: doc.id, changes: [{ path, old: oldRaw, new: value }] }]);
+    ctx.dispatchIntent([buildUpdate(doc.id, [{ path, old: oldRaw, value }])]);
   }
 
   /** Delete the document open in the editor (full pre-image op) and clear the selection.

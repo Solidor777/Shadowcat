@@ -1,20 +1,7 @@
 import type { AppContext } from "./appContext";
+import { buildUpdate, type FieldEdit } from "@shadowcat/core";
 
-/**
- * One field's change within a {@link setFields} batch.
- */
-export interface FieldEdit {
-  /** The field's JSON-pointer path within the document. */
-  path: string;
-  /** The real current stored value at `path` (OCC pre-image); `undefined` for a genuinely
-   * absent field. */
-  old: unknown;
-  /** The new value to write. Ignored when {@link remove} is `true`. */
-  value?: unknown;
-  /** `true` to remove the object key at `path` instead of writing {@link value}, making it
-   * GENUINELY ABSENT (`null` != absent) — mirrors `unsetField`'s standalone shape. */
-  remove?: boolean;
-}
+export type { FieldEdit };
 
 /**
  * Dispatches ONE atomic Update carrying MULTIPLE `FieldChange`s — either all apply or none does.
@@ -35,16 +22,8 @@ export interface FieldEdit {
  * @param edits - The fields to change, all as one Update.
  * @example setFields(ctx, docId, [{ path: "/engine/draw", old, value: next }]);
  */
-export function setFields(ctx: AppContext, docId: string, edits: FieldEdit[]): void {
-  ctx.dispatchIntent([
-    {
-      op: "update",
-      doc_id: docId,
-      changes: edits.map(({ path, old, value, remove }) =>
-        remove ? { path, old: old ?? null, new: null, remove: true } : { path, old: old ?? null, new: value },
-      ),
-    },
-  ]);
+export function setFields(ctx: Pick<AppContext, "dispatchIntent">, docId: string, edits: FieldEdit[]): void {
+  ctx.dispatchIntent([buildUpdate(docId, edits)]);
 }
 
 /**

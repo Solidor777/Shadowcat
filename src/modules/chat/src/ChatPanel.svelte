@@ -4,6 +4,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import {
+    buildUpdate,
     type ChannelRegistryEngine,
     type WireAudience,
     type WireDocument,
@@ -143,7 +144,7 @@
     if (!registry) return;
     const id = crypto.randomUUID();
     const name = newChannelName.trim() || t("chat.channels.newName");
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/channels/${id}`, old: null, new: { name } }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/channels/${id}`, old: null, value: { name } }])]);
     newChannelName = "";
   }
   /**
@@ -163,7 +164,7 @@
     const sys = registry.engine as ChannelRegistryEngine;
     const cur = sys.channels[id];
     if (!cur) return;
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/channels/${id}`, old: cur, new: { ...cur, name } }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/channels/${id}`, old: cur, value: { ...cur, name } }])]);
   }
   /**
    * GM channel editor: removes a channel entry from the registry, and — if
@@ -200,7 +201,7 @@
     // dispatcher `unsetField` — not what this function uses.
     const next = { ...sys.channels };
     delete next[id];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/channels", old: sys.channels, new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: "/engine/channels", old: sys.channels, value: next }])]);
   }
 
   // Card + composer instantiation: read the singleton contributions directly

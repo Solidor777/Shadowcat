@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, EmissionEditor } from "@shadowcat/ui-kit";
-  import type { WireDocument, TokenEngine, TokenOverrides, AuraEmission, SoundEmission, VfxEmission } from "@shadowcat/core";
+  import { buildUpdate, type WireDocument, type TokenEngine, type TokenOverrides, type AuraEmission, type SoundEmission, type VfxEmission } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -69,7 +69,7 @@
     const tok = linkedToken;
     if (!tok || !ctx.canEdit(tok, "/engine/overrides")) return;
     const old = rawOverrides(tok)?.[kind] ?? null;
-    ctx.dispatchIntent([{ op: "update", doc_id: tok.id, changes: [{ path: `/engine/overrides/${kind}`, old, new: v }] }]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: `/engine/overrides/${kind}`, old, value: v }])]);
   }
 </script>
 

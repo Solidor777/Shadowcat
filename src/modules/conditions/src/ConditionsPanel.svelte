@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { conditionTarget, type Condition, type ConditionFx, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
+  import { conditionTarget, buildUpdate, type Condition, type ConditionFx, type ConditionRegistryEngine, type ConditionTarget, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -53,7 +53,7 @@
     const current = eng.conditions[id] as Partial<Condition> | undefined;
     for (const [k, v] of Object.entries(patch)) {
       const old = current?.[k as keyof Condition] ?? null;
-      ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}/${k}`, old, new: v }] }]);
+      ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/conditions/${id}/${k}`, old, value: v }])]);
     }
   }
   /** GM registry editor: sets or clears ONE field of a condition's authored fx, dispatching a
@@ -79,7 +79,7 @@
     else if (key === "desaturate") next.desaturate = value === true;
     else next[key] = String(value);
     const empty = !next.tint && !next.desaturate && !next.highlight;
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}/fx`, old, new: empty ? null : next }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/conditions/${id}/fx`, old, value: empty ? null : next }])]);
   }
   /** GM registry editor: appends a new condition entry under a fresh random id, with a
    * placeholder name/icon for the GM to rename in place.
@@ -93,7 +93,7 @@
     if (!registry) return;
     const id = crypto.randomUUID();
     const c: Condition = { name: "New condition", icon: "⭐" };
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/conditions/${id}`, old: null, new: c }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/conditions/${id}`, old: null, value: c }])]);
   }
   /** GM registry editor: deletes a condition entry from the registry map.
    * @param id The condition's registry key to remove.
@@ -108,7 +108,7 @@
     if (!registry || !sys) return;
     const next = { ...sys.conditions };
     delete next[id];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/conditions", old: sys.conditions, new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: "/engine/conditions", old: sys.conditions, value: next }])]);
   }
 
   /** The canEdit-gated target set both `isActive` and `toggle` read: every selected token that
@@ -167,7 +167,7 @@
       const has = tgt.conditions.includes(conditionId);
       if (active === has) {
         const next = has ? tgt.conditions.filter((c) => c !== conditionId) : [...tgt.conditions, conditionId];
-        ctx.dispatchIntent([{ op: "update", doc_id: tgt.doc.id, changes: [{ path: tgt.path, old: tgt.conditions, new: next }] }]);
+        ctx.dispatchIntent([buildUpdate(tgt.doc.id, [{ path: tgt.path, old: tgt.conditions, value: next }])]);
       }
     }
   }

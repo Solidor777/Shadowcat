@@ -6,7 +6,7 @@
   // `resolveTokenActor`'s precedence), so both render nothing here.
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveTokenActor, DEFAULT_LIGHT_EMISSION, type WireDocument, type TokenEngine, type TokenOverrides, type LightEmission } from "@shadowcat/core";
+  import { resolveTokenActor, DEFAULT_LIGHT_EMISSION, buildUpdate, type WireDocument, type TokenEngine, type TokenOverrides, type LightEmission } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -68,9 +68,7 @@
     if (!tok || !editable) return;
     const cur = engine?.overrides ?? null;
     const base: TokenOverrides = cur ?? { name: null, visual: null, size: null, shape: null, vision: null, light: null, movement: null, aura: null, sound: null, vfx: null };
-    ctx.dispatchIntent([
-      { op: "update", doc_id: tok.id, changes: [{ path: "/engine/overrides", old: cur, new: { ...base, light: next } }] },
-    ]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/overrides", old: cur, value: { ...base, light: next } }])]);
   }
 
   /** The mode select's commit: inherit clears the override; suppress writes the effective (or

@@ -5,6 +5,7 @@
     DEFAULT_WORLD_SETTINGS,
     resolveSettingProvenance,
     resolveGradation,
+    buildUpdate,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type Perception,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
@@ -152,7 +153,7 @@
    * ```
    */
   function set(docId: string, path: string, old: unknown, value: unknown): void {
-    ctx.dispatchIntent([{ op: "update", doc_id: docId, changes: [{ path, old: old ?? null, new: value }] }]);
+    ctx.dispatchIntent([buildUpdate(docId, [{ path, old, value }])]);
   }
 
   const MOVEMENT = ["visible", "revealed", "unrestricted"] as const;
@@ -210,7 +211,7 @@
    */
   function setScene(path: string, old: unknown, value: unknown): void {
     if (!scene) return;
-    ctx.dispatchIntent([{ op: "update", doc_id: scene.id, changes: [{ path, old: old ?? null, new: value }] }]);
+    ctx.dispatchIntent([buildUpdate(scene.id, [{ path, old, value }])]);
   }
 
   /**

@@ -2,7 +2,7 @@
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { parseFormula } from "@shadowcat/formula";
-  import type { WireDocument, ResourceRegistryEngine, Resource, ResourceBinding, Formula } from "@shadowcat/core";
+  import { buildUpdate, type WireDocument, type ResourceRegistryEngine, type Resource, type ResourceBinding, type Formula } from "@shadowcat/core";
 
   const ctx = getAppContext();
 
@@ -51,7 +51,7 @@
    */
   function writeField(key: string, path: string, old: unknown, value: unknown): void {
     if (!registry) return;
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/resources/${key}${path}`, old: old ?? null, new: value }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/resources/${key}${path}`, old, value }])]);
   }
 
   /** Coerces a formula-bearing input's text and writes it, or surfaces the inline error for
@@ -124,7 +124,7 @@
     addError = null;
     const order = Object.keys(eng.resources).length;
     const entry: Resource = { name: key, order, binding: { kind: "mirror", value: 0 } };
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: `/engine/resources/${key}`, old: null, new: entry }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: `/engine/resources/${key}`, old: null, value: entry }])]);
     newKey = "";
   }
 
@@ -143,7 +143,7 @@
     const eng = registry.engine as ResourceRegistryEngine;
     const next = { ...eng.resources };
     delete next[key];
-    ctx.dispatchIntent([{ op: "update", doc_id: registry.id, changes: [{ path: "/engine/resources", old: eng.resources, new: next }] }]);
+    ctx.dispatchIntent([buildUpdate(registry.id, [{ path: "/engine/resources", old: eng.resources, value: next }])]);
   }
 </script>
 

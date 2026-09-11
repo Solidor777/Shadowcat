@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
@@ -562,14 +562,10 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
         // A sub-pixel-jitter "drag" that snaps back to the origin writes nothing.
         if (target.x !== dragOrigin.x || target.y !== dragOrigin.y) {
           ctx.dispatchIntent([
-            {
-              op: "update",
-              doc_id: dragId,
-              changes: [
-                { path: "/engine/x", old: dragOrigin.x, new: target.x },
-                { path: "/engine/y", old: dragOrigin.y, new: target.y },
-              ],
-            },
+            buildUpdate(dragId, [
+              { path: "/engine/x", old: dragOrigin.x, value: target.x },
+              { path: "/engine/y", old: dragOrigin.y, value: target.y },
+            ]),
           ]);
         }
         const cur = readLight(dragId);
@@ -1592,10 +1588,10 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
           /** The token's current stored y, read RAW for the same reason as `x`. */
           y?: number;
         } | undefined;
-        ops.push({ op: "update", doc_id: id, changes: [
-          { path: "/engine/x", old: eng?.x ?? null, new: target.x },
-          { path: "/engine/y", old: eng?.y ?? null, new: target.y },
-        ] });
+        ops.push(buildUpdate(id, [
+          { path: "/engine/x", old: eng?.x ?? null, value: target.x },
+          { path: "/engine/y", old: eng?.y ?? null, value: target.y },
+        ]));
       }
       if (ops.length > 0) ctx.dispatchIntent(ops);
       return;

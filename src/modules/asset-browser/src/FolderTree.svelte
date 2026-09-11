@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { deleteAssetFolder, buildMoveOp, type WireDocument } from "@shadowcat/core";
+  import { deleteAssetFolder, buildMoveOp, buildUpdate, type WireDocument } from "@shadowcat/core";
   import {
     folderChildren,
     buildFolderDoc,
@@ -79,13 +79,7 @@
     const next = renameDraft.trim();
     renamingFor = null;
     if (!next || next === folder.name) return;
-    ctx.dispatchIntent([
-      {
-        op: "update",
-        doc_id: folder.id,
-        changes: [{ path: "/name", old: folder.name, new: next }],
-      },
-    ]);
+    ctx.dispatchIntent([buildUpdate(folder.id, [{ path: "/name", old: folder.name, value: next }])]);
   }
 
   /** Dispatches the Move op for `id` toward `target`, with the stored parent

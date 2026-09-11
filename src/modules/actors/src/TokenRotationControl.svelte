@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import type { WireDocument } from "@shadowcat/core";
+  import { buildUpdate, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -67,13 +67,7 @@
   function setRotation(next: number): void {
     const tok = token;
     if (!tok || !ctx.canEdit(tok, "/engine/rotation")) return;
-    ctx.dispatchIntent([
-      {
-        op: "update",
-        doc_id: tok.id,
-        changes: [{ path: "/engine/rotation", old: currentRotation(tok), new: next }],
-      },
-    ]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/rotation", old: currentRotation(tok), value: next }])]);
   }
 </script>
 

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { selectedFaceNamesFor, type WireDocument } from "@shadowcat/core";
+  import { selectedFaceNamesFor, buildUpdate, type WireDocument } from "@shadowcat/core";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -70,7 +70,7 @@
     const tok = selectedFaceToken;
     if (!tok || !ctx.canEdit(tok, "/engine/face")) return;
     const old = currentFace(tok);
-    ctx.dispatchIntent([{ op: "update", doc_id: tok.id, changes: [{ path: "/engine/face", old, new: faceName }] }]);
+    ctx.dispatchIntent([buildUpdate(tok.id, [{ path: "/engine/face", old, value: faceName }])]);
   }
 </script>
 

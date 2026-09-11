@@ -3,6 +3,7 @@
 // the package-default jsdom environment would be constructed per file and never touched.
 import { describe, it, expect } from "vitest";
 import { setField, setFields, unsetField } from "./sheetEdit";
+import { buildUpdate } from "@shadowcat/core";
 import type { AppContext } from "./appContext";
 
 function makeCtx(): { ctx: AppContext; calls: unknown[] } {
@@ -48,6 +49,19 @@ describe("setField / unsetField are thin wrappers over setFields", () => {
     unsetField(a.ctx, "d1", "/system/tempFlag", true);
     setFields(b.ctx, "d1", [{ path: "/system/tempFlag", old: true, remove: true }]);
     expect(a.calls).toEqual(b.calls);
+  });
+});
+
+describe("setFields dispatches exactly what buildUpdate builds", () => {
+  it("dispatches [buildUpdate(docId, edits)] verbatim", () => {
+    const { ctx, calls } = makeCtx();
+    const docId = "d1";
+    const edits = [
+      { path: "/engine/draw", old: { kind: "weighted" }, value: { kind: "formula", notation: "1d20" } },
+      { path: "/system/tempFlag", old: true, remove: true },
+    ];
+    setFields(ctx, docId, edits);
+    expect(calls).toEqual([[buildUpdate(docId, edits)]]);
   });
 });
 
