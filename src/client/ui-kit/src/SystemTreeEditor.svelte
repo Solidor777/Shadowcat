@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getAppContext } from "./appContext";
   import { getPointer, type WireDocument } from "@shadowcat/core";
-  import { setField, unsetField } from "./sheetEdit";
+  import { setField, setFields, unsetField } from "./sheetEdit";
   import Self from "./SystemTreeEditor.svelte";
 
   // `root` is the resolved value at `basePath` on `doc` (the sheet passes the live system
@@ -168,15 +168,9 @@
     const oldPath = `${basePath}/${oldKey}`;
     const newPath = `${basePath}/${newKey}`;
     const value = existing[oldKey];
-    ctx.dispatchIntent([
-      {
-        op: "update",
-        doc_id: doc.id,
-        changes: [
-          { path: oldPath, old: getPointer(doc, oldPath) ?? null, new: null, remove: true },
-          { path: newPath, old: null, new: value },
-        ],
-      },
+    setFields(ctx, doc.id, [
+      { path: oldPath, old: getPointer(doc, oldPath), remove: true },
+      { path: newPath, old: null, value },
     ]);
   }
 

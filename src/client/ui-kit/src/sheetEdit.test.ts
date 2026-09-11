@@ -2,7 +2,7 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { describe, it, expect } from "vitest";
-import { setField, setFields } from "./sheetEdit";
+import { setField, setFields, unsetField } from "./sheetEdit";
 import type { AppContext } from "./appContext";
 
 function makeCtx(): { ctx: AppContext; calls: unknown[] } {
@@ -30,6 +30,24 @@ describe("setField", () => {
     setField(ctx, "d1", "/system/flag", false, true);
     const olds = (calls as { changes: { old: unknown }[] }[][]).map((c) => c[0].changes[0].old);
     expect(olds).toEqual([0, false]);
+  });
+});
+
+describe("setField / unsetField are thin wrappers over setFields", () => {
+  it("setField produces exactly what setFields produces for the single-edit case", () => {
+    const a = makeCtx();
+    const b = makeCtx();
+    setField(a.ctx, "d1", "/system/hp", 8, 10);
+    setFields(b.ctx, "d1", [{ path: "/system/hp", old: 8, value: 10 }]);
+    expect(a.calls).toEqual(b.calls);
+  });
+
+  it("unsetField produces exactly what setFields produces for the single-edit removal case", () => {
+    const a = makeCtx();
+    const b = makeCtx();
+    unsetField(a.ctx, "d1", "/system/tempFlag", true);
+    setFields(b.ctx, "d1", [{ path: "/system/tempFlag", old: true, remove: true }]);
+    expect(a.calls).toEqual(b.calls);
   });
 });
 
