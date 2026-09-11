@@ -21,6 +21,10 @@ roll-to-chat affordance.
 
 - **Provides** `shadowcat.sheet:item` (multi; via `sheetContract(ITEM_DOC_TYPE)`).
 - Same sheet prop contract and OCC write discipline as sheet-actor.
+- Roll buttons post to `firstChannel(ctx.documents)` (`@shadowcat/core`) —
+  never a hardcoded `"general"` literal — and disable while it resolves
+  `null` (the pre-resync window before the server-seeded channel registry
+  arrives).
 
 ## Pointers
 

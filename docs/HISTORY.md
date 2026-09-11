@@ -2863,6 +2863,112 @@ test`, typecheck, lint, `lint:comments`) green at every commit;
 (`pnpm --filter @shadowcat/shell e2e`) is dispatcher-run, not part of this
 branch's own gate history.
 
+### M20 · Full default module suite ✅
+Branch `m20-module-suite`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-10-m20-default-module-suite.md` (design:
+`docs/superpowers/specs/2026-09-10-m20-default-module-suite-design.md`), as
+10 sequential tasks (task 7 a merge-forward of `main` bringing M21's
+`searchDocuments` `docTypes` filter). Delivered:
+- **Shared seams (`@shadowcat/core`/`@shadowcat/ui-kit`):** `firstChannel`
+  (`chat-docs.ts`, moved from `module-combat-tracker`'s `model.ts`) and
+  `buildMoveOp` (`move-op.ts`, moved from `module-asset-browser`'s
+  `folderOps.ts`) hoisted to core so no consumer forks either decision;
+  `EmissionEditor` moved to `@shadowcat/ui-kit` beside `LightEmissionEditor`;
+  `AUTHOR_CAPS`/`grantAuthor` (`scene-docs.ts`) — the one place "what an
+  author may do to their own document" is stated, stamping
+  `permissions.users[owner] = "owner"` plus `core:delete`/
+  `core:edit_permissions` onto `by_role.owner`; `buildNoteDoc`/
+  `buildTableDoc` call it through their `opts.owner`.
+- **Create-gate mirror:** `ServerMsg::Welcome.role_capabilities`
+  (`RoleCapabilities { all, by_type }`), projected per-connection by
+  `data::permission::project_role_caps_for` from `WorldCapDefaults.role_caps`
+  — never another role's grants cross; `@shadowcat/core`'s `canCreateDoc`
+  mirrors `apply_intent`'s Create arm, `WorldSession.canCreate`/
+  `AppContext.canCreate(docType)` expose it, closing `capabilities.ts`'s
+  pre-existing `TODO`. `AppContext.canDelete(doc)` mirrors
+  `Operation::Delete` through the SAME `#capsFor` resolver `canEdit` already
+  used — never a second resolver call, never raw `doc.owner`.
+  `ActorsPanel`'s create form gained `canCreate(ACTOR_DOC_TYPE)` gating (a
+  new restriction, intended: it hides exactly what the server would refuse).
+- **Rejected-intent toast:** `WorldSession`'s `onReject` now also calls a
+  caller-supplied sink; `App.svelte` wires it to `notifications.push` with
+  `t("intent.rejected.<forbidden|conflict|invalid>")` text — every sheet
+  built on `setField` inherits shell-wide feedback on a refused write.
+- **Actor sheet emissions:** `ActorSheet` renders one `EmissionEditor` bound
+  to `engine.aura`/`sound`/`vfx`, committed through the sheet's existing
+  `setEngine`, no GM gate (carried light alone keeps its GM gate — a vision
+  input, unlike an emitter).
+- **`@shadowcat/module-sheet-note`** (`NoteSheet.svelte`): title, a
+  visibility select over `/permissions/default` (rendered for the author via
+  `grantAuthor`'s `core:edit_permissions`), the server-derived body through
+  `SegmentList` gated on `firstChannel`, a draft-base edit flow over
+  `engine/source` (the OCC `old` is the draft's BASE, not the live stored
+  value, so a concurrent edit refuses with `conflict` instead of being
+  silently overwritten), sort, and parent/children tree navigation with a
+  `canCreate`-gated "New child note".
+- **`@shadowcat/module-sheet-table`** (`TableSheet.svelte`/`RowEditor.svelte`/
+  `EntryEditor.svelte`/`rowOps.ts`): name/description/draw-rule fields, a
+  whole-array `rows` editor (`set_pointer` cannot resize an array, so every
+  row/entry mutation replaces the whole array on `change`, never `input`),
+  Draw posting through `ctx.chat.drawTable` with the server's refusal
+  surfaced verbatim (no client-side draw-count cap). The `doc`/`draw` entry
+  pickers use `ctx.searchDocuments` with `docTypes` once task 7's
+  merge-forward landed it — no client-side re-filter.
+- **`@shadowcat/module-notes`** (`NotesPanel.svelte`/`NoteTree.svelte`/
+  `tree.ts`): `buildNoteTree` builds the parent/children tree from the
+  recipient's own redacted view, promoting a child whose parent is
+  unreadable to root rather than hiding it; live search
+  (`docTypes: ["note"]`) replaces the tree with a flat hit list through the
+  SAME row component, so a hit's Delete/Move-to/open affordances never fork
+  into a second shape; Delete gates on `canDelete(doc)`, never raw
+  ownership; Move-to (GM-only, mirroring the server's GM-only `Move`
+  operation) dispatches `buildMoveOp`.
+- **`@shadowcat/module-tables`** (`TablesPanel.svelte`): name-sorted list,
+  live search (`docTypes: ["table"]`), per-row quick Draw disabled while
+  `firstChannel` is `null`, Delete gated on `canDelete(doc)`. Create builds
+  `{ draw: { kind: "weighted" }, rows: [], description: "" }` with
+  `owner: ctx.selfId`, so a granted player edits and deletes the table they
+  made.
+- **Shell wiring:** `App.svelte`'s module list gains `notes`, `tables`,
+  `sheetNote`, `sheetTable`; `defaultModuleOrder.test.ts` covers both;
+  `docs/site/.vitepress/config.mts`'s Gameplay group gained the pre-existing
+  `combat-tracker` entry it was missing, plus `notes`/`tables`.
+- **Tests:** `notes.spec.ts`/`tables.spec.ts` (Playwright, written to spec
+  §9 — the notes flow's create/edit/share/roll/child-share sequence across a
+  GM and an invited player; the tables flow's row-add/draw/quick-draw with
+  both the GM's and the player's chat cards asserted, including the roll
+  tooltip trigger `SegmentList` renders unconditionally for a `table_draw`
+  segment on every recipient) are WRITTEN, TYPECHECKED and LINTED but NOT
+  RUN by this branch — port 31999 is dispatcher-serialized; they are not
+  "done" until the dispatcher has observed them pass.
+Decisions taken (full log: design doc §11, M1–M18): four packages, one per
+doc family/sheet type (M1); markdown + server-derived-body rendering, no
+second `{@html}` sink (M2); the draft's BASE as the note-save OCC pre-image
+(M3); whole-array rows writes (M4); table entries name only `doc` targets,
+never a placed token (M5); one shell-wide reject toast (M6); `canCreate`
+gates the create affordance rather than `role === "gm"` (M7); `EmissionEditor`
+belongs in `ui-kit` (M8); `firstChannel` over a `"general"` literal (M9);
+panels wait for the merge-forward, sheets do not (M10); neither new panel is
+`gmOnly` (M11); no client-side draw-count cap (M12); a hidden-parent note
+promotes to root (M13); `permissions.default` is the note's audience switch,
+not a per-user share list (M14); `grantAuthor` is the one place an author's
+`core:delete`/`core:edit_permissions` grant is stamped (M15); actor ownership
+stays GM-assigned, not `grantAuthor`'d (M16); `canDelete` mirrors the
+server's gate through the shared resolver, never raw ownership (M17); the
+`ActorsPanel` create form gains the `canCreate` restriction it previously
+lacked (M18).
+Full repo gates (`cargo test --all`, `cargo fmt --check`, `cargo clippy -D
+warnings`/`-D missing-docs`, `pnpm -r typecheck`, `pnpm -r test`, `pnpm
+build`, `pnpm lint`/`lint:docs`/`lint:props`/`lint:comments`/
+`lint:allowances`/`lint:file-size`/`lint:inline-tests`/`lint:aria-labels`/
+`lint:gate-manifest`/`lint:settings-privacy`, `pnpm docs:check-examples`,
+`pnpm run test:scripts`, `pnpm run check:svelte-runtime`, `pnpm --filter
+"shadowcat-example-*" build`) green at every commit; `git diff --exit-code
+src/types/generated` clean after the Welcome field's ts-rs regen. The
+browser suite (`pnpm --filter @shadowcat/shell e2e`), including the two
+specs this milestone adds, is dispatcher-run, not part of this branch's own
+gate history.
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference

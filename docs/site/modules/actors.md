@@ -26,6 +26,11 @@ token-visual and ownership details. Also the pick source for the place tool
 - Uses `ctx.searchDocuments` (live FTS, filtered to actors server-side via
   `docTypes: ["actor"]` — no client-side re-filter), `ctx.openDocument` (sheet
   panels), and `ctx.actorSelection` (hand-off to the place tool).
+- The create `<form>` is gated by `ctx.canCreate(ACTOR_DOC_TYPE)` (the
+  server's `core:create` mirror) — a restriction the form previously lacked;
+  hiding it there hides exactly what the server would refuse. Carried-light,
+  hide-name, and ownership controls stay role-gated (`ctx.role === "gm"`),
+  since those are Update-path GM affordances, not the Create gate.
 
 ## Pointers
 

@@ -55,19 +55,6 @@ per-token built-in fx (condition-driven + selection highlight), emote overlays, 
 tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX PLAYBACK remains
 Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
-### M20 · Full default module suite
-- Every table-facing default module the dogfood alpha lacks, shipped as `src/modules/*` packages
-  over the M14–M19 seams (combat tracker UI, asset browser UI, table/notes sheets, emitter
-  editors), each independently replaceable.
-- Table and notes sheets build on the seams M19 shipped: `@shadowcat/ui-kit`'s `SegmentList` (the
-  recursive segment renderer, moved out of `module-chat-card`, that a note sheet reuses to render
-  `parseNoteBody`'s output and a table sheet reuses for row previews), `@shadowcat/core`'s
-  `buildTableDoc`/`buildNoteDoc` document builders, and `ChatApi.drawTable` for the table sheet's
-  draw affordance — none of M19's own e2e exercises the sheets themselves (M19's e2e is the
-  WS-level suite; the sheet-driven UI flows are this milestone's).
-- The suite is the second internal-module exercise of the API surface toward the Phase-4 freeze
-  gate.
-
 ## Phase 3 — Atmosphere
 Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
 

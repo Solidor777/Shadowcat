@@ -18,7 +18,9 @@ repository.
 
 Folders are ordinary `asset_folder` documents. Creating, renaming, and deleting
 go through the document store; a folder move (drag, or the accessible
-"Move to…" control) rides the generic GM-only document `Move` operation, with
+"Move to…" control) rides the generic GM-only document `Move` operation
+(`buildMoveOp` from `@shadowcat/core` — shared with the notes panel's own
+Move-to, so the two never fork the op's shape), with
 the server enforcing placement and cycle rules. Deleting a folder offers a
 choice: keep its assets (re-parented to the deleted folder's parent) or purge
 them.
