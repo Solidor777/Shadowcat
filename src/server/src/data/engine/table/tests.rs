@@ -274,7 +274,7 @@ fn validate_engine_rejects_a_table_body_on_a_non_engine_doc_type() {
 
 #[test]
 fn sequential_ranges_mirroring_next_free_range_are_accepted_duplicates_are_rejected() {
-    // `next_free_range` in `@shadowcat/module-sheet-table`'s `rowOps.ts` is the client mirror
+    // `@shadowcat/module-sheet-table`'s `nextFreeRange` is the client mirror
     // of this rule: each defaulted row's range must sit strictly above every prior row's `hi`,
     // so a client-normalized post-image (ranges `{1,1}`, `{2,2}`, `{3,3}`) is always accepted.
     let sequential = TableEngine {
