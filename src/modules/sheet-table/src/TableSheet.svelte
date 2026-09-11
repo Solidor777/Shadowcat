@@ -183,7 +183,7 @@
         onMoveDown={i < engine.rows.length - 1 ? () => setRows(moveRow(engine!.rows, i, 1)) : undefined}
       />
     {/each}
-    <button type="button" data-testid="table-add-row" disabled={readOnly} onclick={() => setRows(addRow(engine!.rows, engine!.draw))}>{t("sheetTable.addRow")}</button>
+    <button type="button" data-testid="table-add-row" disabled={readOnly} onclick={() => setRows(addRow(engine!.rows, engine!.draw, t("sheetTable.newRowLabel")))}>{t("sheetTable.addRow")}</button>
   {:else}
     <p class="missing">{t("sheets.missing")}</p>
   {/if}

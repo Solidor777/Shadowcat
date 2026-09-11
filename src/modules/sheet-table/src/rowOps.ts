@@ -27,26 +27,30 @@ export function nextFreeRange(rows: TableRow[]): RowRange {
 }
 
 /**
- * A fresh, empty row appended to the end. Under `DrawRule::Formula` the row gets
- * {@link nextFreeRange} computed against the existing rows, since `range: null` is invalid
- * under `formula` — server-side `TableEngine::validate` rejects it, and a fixed placeholder
- * would collide with any existing row already covering that slot; under `weighted`, `range`
- * stays `null`.
+ * A fresh row appended to the end, labeled `defaultLabel` — server-side `TableEngine::validate`
+ * rejects an empty/whitespace-only label on every row (a row must be selectable and
+ * distinguishable in the drawn-from list), so appending with a placeholder that still commits
+ * is the only shape that round-trips: the author edits it afterward. Under `DrawRule::Formula`
+ * the row gets {@link nextFreeRange} computed against the existing rows, since `range: null` is
+ * invalid under `formula`, and a fixed placeholder range would collide with any existing row
+ * already covering that slot; under `weighted`, `range` stays `null`.
  * @param rows The current rows (not mutated).
  * @param draw The table's current draw rule (decides whether the new row needs a `range`).
+ * @param defaultLabel The new row's initial label (never empty — the caller passes a
+ * localized placeholder, e.g. `t("sheetTable.newRowLabel")`).
  * @returns A new array with the row appended.
  * @example
  * ```ts
  * import { addRow } from "@shadowcat/module-sheet-table";
  *
- * addRow([], { kind: "weighted" });
- * // [{ weight: 1, range: null, label: "", results: [] }]
+ * addRow([], { kind: "weighted" }, "New row");
+ * // [{ weight: 1, range: null, label: "New row", results: [] }]
  * ```
  */
-export function addRow(rows: TableRow[], draw: DrawRule): TableRow[] {
+export function addRow(rows: TableRow[], draw: DrawRule, defaultLabel: string): TableRow[] {
   const next = structuredClone(rows);
   const range = draw.kind === "formula" ? nextFreeRange(next) : null;
-  next.push({ weight: 1, range, label: "", results: [] });
+  next.push({ weight: 1, range, label: defaultLabel, results: [] });
   return next;
 }
 

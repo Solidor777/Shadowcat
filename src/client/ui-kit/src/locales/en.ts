@@ -641,6 +641,7 @@ export const en: Messages = {
   "sheetTable.notation": "Notation",
   "sheetTable.rows": "Rows",
   "sheetTable.addRow": "Add row",
+  "sheetTable.newRowLabel": "New row",
   "sheetTable.removeRow": "Remove row",
   "sheetTable.moveUp": "Move up",
   "sheetTable.moveDown": "Move down",

@@ -21,15 +21,20 @@ function row(label: string): TableRow {
 }
 
 describe("addRow", () => {
-  it("appends a weighted row with a null range", () => {
-    const next = addRow([row("a")], { kind: "weighted" });
+  it("appends a weighted row with a null range and the given default label", () => {
+    const next = addRow([row("a")], { kind: "weighted" }, "New row");
     expect(next).toHaveLength(2);
-    expect(next[1]).toEqual({ weight: 1, range: null, label: "", results: [] });
+    expect(next[1]).toEqual({ weight: 1, range: null, label: "New row", results: [] });
     expect(next[0]).toEqual(row("a")); // unchanged
   });
 
+  it("never appends an empty label — `TableEngine::validate` rejects it server-side", () => {
+    const next = addRow([], { kind: "weighted" }, "New row");
+    expect(next[0].label).not.toBe("");
+  });
+
   it("appends a formula row with a placeholder range", () => {
-    const next = addRow([], { kind: "formula", notation: "1d20" });
+    const next = addRow([], { kind: "formula", notation: "1d20" }, "New row");
     expect(next[0].range).toEqual({ lo: 1, hi: 1 });
   });
 
@@ -38,14 +43,14 @@ describe("addRow", () => {
       { weight: 1, range: { lo: 1, hi: 5 }, label: "a", results: [] },
       { weight: 1, range: { lo: 6, hi: 10 }, label: "b", results: [] },
     ];
-    const next = addRow(rows, { kind: "formula", notation: "1d20" });
+    const next = addRow(rows, { kind: "formula", notation: "1d20" }, "New row");
     expect(next[2].range).toEqual({ lo: 11, hi: 11 });
     expect(pairwiseDisjoint(next)).toBe(true);
   });
 
   it("never mutates the input array", () => {
     const rows = [row("a")];
-    addRow(rows, { kind: "weighted" });
+    addRow(rows, { kind: "weighted" }, "New row");
     expect(rows).toHaveLength(1);
   });
 });

@@ -198,7 +198,7 @@ describe("TableSheet rows", () => {
       changes: [{
         path: "/engine/rows",
         old: [{ weight: 1, range: null, label: "a", results: [] }],
-        new: [{ weight: 1, range: null, label: "a", results: [] }, { weight: 1, range: null, label: "", results: [] }],
+        new: [{ weight: 1, range: null, label: "a", results: [] }, { weight: 1, range: null, label: "sheetTable.newRowLabel", results: [] }],
       }],
     }]]);
   });
