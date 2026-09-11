@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+use crate::data::command::FieldChange;
 use crate::data::document::{
     AdditionalProperties, Document, OwnerStanding, Schema, SchemaDeclaration, SchemaType,
     Visibility,
@@ -157,6 +158,73 @@ pub fn validate_engine_tree(doc: &mut Document) -> Result<(), DataError> {
         }
     }
     Ok(())
+}
+
+/// Every additional `/engine/<key>` change a normalize-time derivation made
+/// beyond the paths an Update's own `changes` named — e.g.
+/// `NoteEngine::derive_body` recomputing `body` from an edited `source`.
+/// `validate_engine_tree` re-derives the SAME requested path in place (a
+/// `/engine/source` write comes back re-normalized at `/engine/source`), so a
+/// normalize-time side effect on a DIFFERENT top-level engine key never
+/// otherwise reaches the broadcast, the `world_events` log, or the author's
+/// own optimistic store — it would sit correctly in the database row while
+/// every live view of the document keeps showing the pre-derivation value.
+///
+/// Diffs `pre_engine`/`post_engine` at the top level only — an engine's own
+/// struct fields, the same granularity every other engine `FieldChange` in
+/// this codebase already writes at, never recursing into a field's own
+/// substructure. A key already present in `requested_paths` (as
+/// `/engine/<key>`) is skipped: that path's own change is already carried by
+/// the caller's re-derivation, and diffing it again here would double it.
+/// `requested_paths` containing the whole-band path `/engine` short-circuits
+/// to no output: a whole-band replacement already carries every field by
+/// construction, so no key can hide a side effect behind it.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::validation::derive_engine_side_effects;
+/// use std::collections::HashSet;
+///
+/// let pre = serde_json::json!({ "source": "old", "body": [], "sort": 0 });
+/// let post = serde_json::json!({ "source": "new", "body": ["derived"], "sort": 0 });
+/// let requested: HashSet<String> = ["/engine/source".to_string()].into_iter().collect();
+/// let extra = derive_engine_side_effects(Some(&pre), Some(&post), &requested);
+/// assert_eq!(extra.len(), 1);
+/// assert_eq!(extra[0].path, "/engine/body");
+/// assert_eq!(extra[0].new, serde_json::json!(["derived"]));
+/// ```
+pub fn derive_engine_side_effects(
+    pre_engine: Option<&serde_json::Value>,
+    post_engine: Option<&serde_json::Value>,
+    requested_paths: &std::collections::HashSet<String>,
+) -> Vec<FieldChange> {
+    if requested_paths.contains("/engine") {
+        return Vec::new();
+    }
+    let (Some(pre_obj), Some(post_obj)) = (
+        pre_engine.and_then(|v| v.as_object()),
+        post_engine.and_then(|v| v.as_object()),
+    ) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (key, post_value) in post_obj {
+        let path = format!("/engine/{key}");
+        if requested_paths.contains(&path) {
+            continue;
+        }
+        let old = pre_obj.get(key).cloned().unwrap_or(serde_json::Value::Null);
+        if &old != post_value {
+            out.push(FieldChange {
+                remove: false,
+                path,
+                old,
+                new: post_value.clone(),
+            });
+        }
+    }
+    out
 }
 
 /// The value the store would hold at `path` had `pre_image` been written

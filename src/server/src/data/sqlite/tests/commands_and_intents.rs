@@ -4050,3 +4050,129 @@ async fn occ_normalizes_an_embedded_child_engine_pre_image_under_the_child_doc_t
         .unwrap_err();
     assert!(matches!(stale, DataError::Conflict(_)), "got {stale:?}");
 }
+
+#[tokio::test]
+async fn apply_command_update_surfaces_note_body_derived_side_effect() {
+    let r = repo().await;
+    let w = r.create_world("W", 0).await.unwrap();
+    let author = r
+        .create_user("author", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let mut note = tests_engine_doc(
+        Default::default(),
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    r.apply_command(UnsequencedCommand {
+        world_id: w.id,
+        author,
+        ts: 1,
+        ops: vec![Operation::Create { doc: note }],
+    })
+    .await
+    .unwrap();
+
+    // Editing ONLY `/engine/source` must also surface the `/engine/body`
+    // `NoteEngine::derive_body` recomputes as a side effect — neither the
+    // broadcast, the `world_events` log, nor the author's own optimistic
+    // store would otherwise ever see the re-derived body.
+    let stored = r
+        .apply_command(UnsequencedCommand {
+            world_id: w.id,
+            author,
+            ts: 2,
+            ops: vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+        })
+        .await
+        .unwrap();
+
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected Update");
+    };
+    assert_eq!(
+        changes.len(),
+        2,
+        "expected source + derived body: {changes:?}"
+    );
+    let body_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/body")
+        .expect("derived body change surfaced");
+    assert_eq!(body_change.old, serde_json::json!([]));
+    assert_ne!(body_change.new, serde_json::json!([]));
+    assert!(
+        body_change.new.to_string().contains("strong"),
+        "expected rendered bold markdown: {body_change:?}"
+    );
+}
+
+#[tokio::test]
+async fn apply_intent_update_surfaces_note_body_derived_side_effect() {
+    use crate::data::membership::PermissionContext;
+    let r = repo().await;
+    let gm = r
+        .create_user("gm", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = r.create_world_owned("W", gm, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: gm,
+        world_role: WorldRole::Gm,
+    };
+    let mut note = tests_engine_doc(
+        Default::default(),
+        crate::data::engine::NOTE_DOC_TYPE,
+        serde_json::json!({ "source": "", "body": [], "sort": 0 }),
+    );
+    note.id = Uuid::from_u128(1);
+    note.scope = Scope::World { world_id: w.id };
+    r.apply_intent(
+        &ctx,
+        w.id,
+        vec![Operation::Create { doc: note }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let stored = r
+        .apply_intent(
+            &ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(1),
+                changes: vec![FieldChange {
+                    remove: false,
+                    path: "/engine/source".into(),
+                    old: serde_json::json!(""),
+                    new: serde_json::json!("**bold**"),
+                }],
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    let Operation::Update { changes, .. } = &stored.command.ops[0] else {
+        panic!("expected Update");
+    };
+    let body_change = changes
+        .iter()
+        .find(|c| c.path == "/engine/body")
+        .expect("derived body change surfaced");
+    assert_eq!(body_change.old, serde_json::json!([]));
+    assert_ne!(body_change.new, serde_json::json!([]));
+}

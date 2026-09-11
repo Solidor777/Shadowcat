@@ -655,6 +655,11 @@ impl Repository for SqliteRepository {
                         // mirrors these same changes and must land the same value.
                         apply_field_change(&mut value, ch)?;
                     }
+                    // Captured before `validate_engine_tree` normalizes/derives `doc.engine`
+                    // in place — the comparand `derive_engine_side_effects` diffs against
+                    // below, to surface a normalize-time side effect on an engine key none
+                    // of this op's own `changes` named (e.g. `NoteEngine::derive_body`).
+                    let pre_engine = value.get("engine").cloned();
                     let mut doc: Document = serde_json::from_value(value)?;
                     // Identity and world scope are immutable through an update:
                     // changing id forks a duplicate row (load key != upsert key);
@@ -693,7 +698,9 @@ impl Repository for SqliteRepository {
                     // identical normalized value the row was stored with
                     // -- never the raw submitted JSON.
                     let normalized_doc_json = serde_json::to_value(&doc)?;
-                    let normalized_changes: Vec<FieldChange> = changes
+                    let requested_paths: std::collections::HashSet<String> =
+                        changes.iter().map(|ch| ch.path.clone()).collect();
+                    let mut normalized_changes: Vec<FieldChange> = changes
                         .iter()
                         .map(|ch| {
                             if ch.path == "/engine" || ch.path.starts_with("/engine/") {
@@ -709,6 +716,14 @@ impl Repository for SqliteRepository {
                             ch.clone()
                         })
                         .collect();
+                    // A normalize-time derivation (e.g. `NoteEngine::derive_body`) can change
+                    // an engine key none of this op's own `changes` named — surface those too,
+                    // or the broadcast/log/author's own optimistic store never see them.
+                    normalized_changes.extend(crate::data::validation::derive_engine_side_effects(
+                        pre_engine.as_ref(),
+                        doc.engine.as_ref(),
+                        &requested_paths,
+                    ));
                     normalized_ops.push(Operation::Update {
                         doc_id: *doc_id,
                         changes: normalized_changes,
@@ -1805,6 +1820,11 @@ impl Repository for SqliteRepository {
                         // mirrors these same changes and must land the same value.
                         apply_field_change(&mut value, ch)?;
                     }
+                    // Captured before `validate_engine_tree` normalizes/derives `doc.engine`
+                    // in place — the comparand `derive_engine_side_effects` diffs against
+                    // below, to surface a normalize-time side effect on an engine key none
+                    // of this op's own `changes` named (e.g. `NoteEngine::derive_body`).
+                    let pre_engine = value.get("engine").cloned();
                     let mut doc: Document = serde_json::from_value(value)?;
                     if doc.id != *doc_id {
                         return Err(DataError::OpFailed(
@@ -1884,7 +1904,9 @@ impl Repository for SqliteRepository {
                     // untouched: only the structurally-typed engine band goes
                     // through `validate_engine_tree`.
                     let normalized_doc_json = serde_json::to_value(&doc)?;
-                    let normalized_changes: Vec<FieldChange> = changes
+                    let requested_paths: std::collections::HashSet<String> =
+                        changes.iter().map(|ch| ch.path.clone()).collect();
+                    let mut normalized_changes: Vec<FieldChange> = changes
                         .iter()
                         .map(|ch| {
                             if ch.path == "/engine" || ch.path.starts_with("/engine/") {
@@ -1900,6 +1922,14 @@ impl Repository for SqliteRepository {
                             ch.clone()
                         })
                         .collect();
+                    // A normalize-time derivation (e.g. `NoteEngine::derive_body`) can change
+                    // an engine key none of this op's own `changes` named — surface those too,
+                    // or the broadcast/log/author's own optimistic store never see them.
+                    normalized_changes.extend(crate::data::validation::derive_engine_side_effects(
+                        pre_engine.as_ref(),
+                        doc.engine.as_ref(),
+                        &requested_paths,
+                    ));
                     normalized_ops.push(Operation::Update {
                         doc_id: *doc_id,
                         changes: normalized_changes,
