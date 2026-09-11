@@ -1862,7 +1862,7 @@ fn search_text_vision_modes_contributes_display_names_not_ids() {
 }
 
 #[test]
-fn search_text_token_is_empty() {
+fn search_text_token_without_overrides_is_empty() {
     assert_eq!(
         search_text(
             "token",
