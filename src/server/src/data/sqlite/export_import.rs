@@ -457,18 +457,19 @@ impl SqliteRepository {
         // pins.
         let doc_ids: std::collections::HashSet<Uuid> =
             data.documents.iter().map(|r| r.document.id).collect();
-        // `document_row_columns`'s stored row is keyed by a single `id`
-        // column, unique per server, so a bundle naming the same document id
-        // twice can never be placed as two distinct rows; the Kahn pass below
-        // also relies on each id decrementing exactly one `children` entry
-        // per occurrence, so two rows sharing an id would double-decrement a
-        // shared child's indegree and underflow it. Rejected here, before
-        // that pass ever runs, rather than let either failure mode surface.
+        // `documents.id TEXT PRIMARY KEY` is unique per server, so a bundle
+        // naming the same document id twice can never be placed as two
+        // distinct rows; the Kahn pass below also relies on each id
+        // decrementing exactly one `children` entry per occurrence, so two
+        // rows sharing an id would double-decrement a shared child's
+        // indegree and underflow it. Rejected here, before that pass ever
+        // runs, rather than let either failure mode surface.
         if doc_ids.len() != data.documents.len() {
             let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
             let mut duplicate_ids: Vec<Uuid> = Vec::new();
+            let mut reported: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
             for row in &data.documents {
-                if !seen.insert(row.document.id) && !duplicate_ids.contains(&row.document.id) {
+                if !seen.insert(row.document.id) && reported.insert(row.document.id) {
                     duplicate_ids.push(row.document.id);
                 }
             }
