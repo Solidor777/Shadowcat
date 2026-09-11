@@ -64,7 +64,13 @@ cursor: string | null,
 /**
  * True = keep a live top-N subscription pushing `SearchUpdate`s.
  */
-subscribe: boolean, } | { "type": "unsubscribe", 
+subscribe: boolean, 
+/**
+ * Narrows the ranked candidates to the listed doc_types; empty (the
+ * default when a client omits the field) = every type. Refused with
+ * `SearchError` above `data::search::MAX_SEARCH_DOC_TYPES` entries.
+ */
+doc_types: Array<string>, } | { "type": "unsubscribe", 
 /**
  * The live search to cancel.
  */

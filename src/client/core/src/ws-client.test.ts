@@ -615,6 +615,7 @@ describe("WsClient", () => {
     const p = client.search("dragon", { limit: 5 });
     const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
     expect(req.query).toBe("dragon");
+    expect(req.doc_types).toEqual([]); // default when docTypes is omitted
     onMessage(
       JSON.stringify({
         type: "search_result",
@@ -624,6 +625,32 @@ describe("WsClient", () => {
       }),
     );
     await expect(p).resolves.toEqual({ hits: [], nextCursor: "7" });
+  });
+
+  it("search sends the given docTypes on the wire", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    void client.search("dragon", { limit: 5, docTypes: ["note", "table"] });
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
+    expect(req.doc_types).toEqual(["note", "table"]);
+  });
+
+  it("subscribeSearch sends the given docTypes on the wire", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    void client.subscribeSearch("dragon", { limit: 5, docTypes: ["actor"] }, () => {});
+    const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
+    expect(req.doc_types).toEqual(["actor"]);
   });
 
   it("search rejects on a search_error frame", async () => {
@@ -678,6 +705,7 @@ describe("WsClient", () => {
     });
     const req = JSON.parse(sent.find((s) => JSON.parse(s).type === "search")!);
     expect(req.subscribe).toBe(true);
+    expect(req.doc_types).toEqual([]); // default when docTypes is omitted
     onMessage(
       JSON.stringify({ type: "search_result", request_id: req.request_id, hits: [], next_cursor: null }),
     );

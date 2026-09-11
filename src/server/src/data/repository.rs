@@ -596,7 +596,10 @@ pub trait Repository: Send + Sync {
 
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a
-    /// prior page (`None` for the first). Returns up to `limit` readable hits.
+    /// prior page (`None` for the first). `doc_types` narrows the ranked
+    /// candidates to the listed doc_types (empty = every type); a list over
+    /// `data::search::MAX_SEARCH_DOC_TYPES` entries is refused. Returns up to
+    /// `limit` readable hits.
     ///
     /// # Examples
     ///
@@ -609,7 +612,7 @@ pub trait Repository: Send + Sync {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
     /// let ctx = PermissionContext { user_id: uuid::Uuid::nil(), world_role: WorldRole::Gm };
-    /// let page = repo.search(&ctx, uuid::Uuid::nil(), "dragon", 10, None).await?;
+    /// let page = repo.search(&ctx, uuid::Uuid::nil(), "dragon", 10, None, &[]).await?;
     /// assert!(page.hits.is_empty());
     /// # Ok(())
     /// # }
@@ -621,6 +624,7 @@ pub trait Repository: Send + Sync {
         query: &str,
         limit: u32,
         cursor: Option<i64>,
+        doc_types: &[String],
     ) -> Result<crate::data::search::SearchPage, DataError>;
 
     /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.

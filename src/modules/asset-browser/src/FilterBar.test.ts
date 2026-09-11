@@ -4,20 +4,20 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import FilterBar from "./FilterBar.svelte";
 import type { FilterState } from "./filterState";
 
-const BASE: FilterState = { name: "", nameIsRegex: false, tags: [], kind: undefined, sort: "created" };
+const BASE: FilterState = { query: "", queryIsRegex: false, tags: [], kind: undefined, sort: "created" };
 
-test("typing a name emits the updated filter state", async () => {
+test("typing a query emits the updated filter state", async () => {
   const onChange = vi.fn();
   render(FilterBar, { props: { filter: BASE, onChange }, context: setAppContextForTest() });
-  await fireEvent.input(screen.getByTestId("filter-name"), { target: { value: "drag" } });
-  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ name: "drag" }));
+  await fireEvent.input(screen.getByTestId("filter-query"), { target: { value: "drag" } });
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ query: "drag" }));
 });
 
-test("the regex toggle flips nameIsRegex", async () => {
+test("the regex toggle flips queryIsRegex", async () => {
   const onChange = vi.fn();
   render(FilterBar, { props: { filter: BASE, onChange }, context: setAppContextForTest() });
   await fireEvent.click(screen.getByTestId("filter-regex-toggle"));
-  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ nameIsRegex: true }));
+  expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ queryIsRegex: true }));
 });
 
 test("committing the tag input adds a chip; its remove button drops it", async () => {

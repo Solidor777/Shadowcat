@@ -559,19 +559,21 @@ impl SqliteRepository {
             .execute(&mut *conn)
             .await?;
         sqlx::query(
-            "INSERT INTO documents_fts_public (content, doc_id, world_id) VALUES (?, ?, ?)",
+            "INSERT INTO documents_fts_public (content, doc_id, world_id, doc_type) VALUES (?, ?, ?, ?)",
         )
         .bind(crate::data::search::index_content_public(doc))
         .bind(doc.id.to_string())
         .bind(world_id.clone())
+        .bind(&doc.doc_type)
         .execute(&mut *conn)
         .await?;
         sqlx::query(
-            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id) VALUES (?, ?, ?)",
+            "INSERT INTO documents_fts_gm (content_all, doc_id, world_id, doc_type) VALUES (?, ?, ?, ?)",
         )
         .bind(crate::data::search::index_content(doc))
         .bind(doc.id.to_string())
         .bind(world_id)
+        .bind(&doc.doc_type)
         .execute(&mut *conn)
         .await?;
         Ok(())

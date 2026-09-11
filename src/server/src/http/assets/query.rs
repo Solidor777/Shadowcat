@@ -44,10 +44,10 @@ const CURSOR_SEP: char = '\u{1f}';
 /// use shadowcat::http::assets::query::AssetQuery;
 ///
 /// let q = AssetQuery {
-///     name: Some("dragon".into()),
+///     q: Some("dragon".into()),
 ///     ..Default::default()
 /// };
-/// assert_eq!(q.name.as_deref(), Some("dragon"));
+/// assert_eq!(q.q.as_deref(), Some("dragon"));
 /// assert!(q.folder.is_none()); // every other field stays absent
 /// ```
 #[derive(Debug, Default, Deserialize)]
@@ -60,8 +60,9 @@ pub struct AssetQuery {
     pub tags: Option<String>,
     /// `image` | `other`.
     pub kind: Option<String>,
-    /// Case-insensitive substring of the display name.
-    pub name: Option<String>,
+    /// Full-text query over the display name and every tag (explicit and
+    /// derived), sanitized by `data::search::build_match`.
+    pub q: Option<String>,
     /// Rust-syntax regex over the display name (size-capped).
     pub name_regex: Option<String>,
     /// `name` | `created` | `size` (default `created`).
@@ -79,7 +80,7 @@ impl AssetQuery {
             && self.recursive.is_none()
             && self.tags.is_none()
             && self.kind.is_none()
-            && self.name.is_none()
+            && self.q.is_none()
             && self.name_regex.is_none()
             && self.sort.is_none()
             && self.limit.is_none()
@@ -249,7 +250,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
             folder,
             tags,
             kind,
-            name: q.name.filter(|n| !n.is_empty()),
+            query: q.q.filter(|n| !n.is_empty()),
         },
         sort,
         limit,

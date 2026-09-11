@@ -1,6 +1,7 @@
 //! Asset row + tag persistence (`data::sqlite::assets`).
 
 use super::*;
+use crate::data::asset::query::AssetFilter;
 use crate::data::asset::{Asset, AssetMeta};
 
 fn sample(world: Uuid) -> Asset {
@@ -245,4 +246,202 @@ async fn folder_delete_refreshes_moved_assets_folder_tags() {
             "webp".to_string(),
         ]
     );
+}
+
+/// One-asset query helper: builds `query`, defers folder/kind/sort/cursor
+/// to their defaults, and returns the matched ids.
+async fn query_ids(repo: &SqliteRepository, world: Uuid, query: &str) -> Vec<Uuid> {
+    repo.query_assets(
+        world,
+        &AssetFilter {
+            query: Some(query.to_string()),
+            ..Default::default()
+        },
+        Default::default(),
+        None,
+        10,
+    )
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|a| a.id)
+    .collect()
+}
+
+#[tokio::test]
+async fn query_assets_full_text_matches_a_name_word() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    assert_eq!(query_ids(&repo, world.id, "map").await, vec![a.id]);
+    assert!(query_ids(&repo, world.id, "dungeon").await.is_empty());
+}
+
+#[tokio::test]
+async fn query_assets_full_text_matches_an_explicit_tag() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    repo.set_asset_tags(a.id, &["heroic".into()], &[])
+        .await
+        .unwrap();
+    assert_eq!(query_ids(&repo, world.id, "heroic").await, vec![a.id]);
+}
+
+#[tokio::test]
+async fn query_assets_full_text_matches_a_derived_tag() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    repo.set_asset_tags(a.id, &[], &["square".into(), "webp".into()])
+        .await
+        .unwrap();
+    assert_eq!(query_ids(&repo, world.id, "square").await, vec![a.id]);
+}
+
+#[tokio::test]
+async fn query_assets_full_text_refreshes_on_rename() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    assert_eq!(query_ids(&repo, world.id, "map").await, vec![a.id]);
+    repo.update_asset_placement(a.id, Some("dungeon.png"), None, None)
+        .await
+        .unwrap();
+    assert!(query_ids(&repo, world.id, "map").await.is_empty());
+    assert_eq!(query_ids(&repo, world.id, "dungeon").await, vec![a.id]);
+}
+
+#[tokio::test]
+async fn query_assets_full_text_stops_matching_after_tag_removal() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    repo.set_asset_tags(a.id, &["heroic".into()], &[])
+        .await
+        .unwrap();
+    assert_eq!(query_ids(&repo, world.id, "heroic").await, vec![a.id]);
+    repo.set_asset_tags(a.id, &[], &[]).await.unwrap();
+    assert!(query_ids(&repo, world.id, "heroic").await.is_empty());
+}
+
+#[tokio::test]
+async fn query_assets_full_text_composes_with_folder_kind_tags_and_regex() {
+    use crate::data::asset::query::{AssetKind, FolderFilter};
+
+    let repo = repo().await;
+    let (world, ctx) = gm_world(&repo).await;
+    let folder = folder_doc(1, world, "Heroes", None);
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Create {
+            doc: folder.clone(),
+        }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    let mut a = sample(world);
+    a.folder_id = Some(folder.id);
+    repo.insert_asset(&a).await.unwrap();
+    repo.set_asset_tags(a.id, &["heroic".into()], &[])
+        .await
+        .unwrap();
+    let mut b = sample(world);
+    b.original_name = "heroic_map2.png".into();
+    repo.insert_asset(&b).await.unwrap();
+
+    // Folder scope narrows to `a` alone, even though `b` also matches the text.
+    let page = repo
+        .query_assets(
+            world,
+            &AssetFilter {
+                folder: Some(FolderFilter::In {
+                    folder: folder.id,
+                    recursive: false,
+                }),
+                query: Some("heroic".to_string()),
+                ..Default::default()
+            },
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.iter().map(|x| x.id).collect::<Vec<_>>(), vec![a.id]);
+
+    // Kind + tags + query compose (an AND of every dimension): only the
+    // folder-scoped asset carries the "heroic" tag, so the untagged one
+    // is excluded even though its name also matches "map".
+    let page = repo
+        .query_assets(
+            world,
+            &AssetFilter {
+                kind: Some(AssetKind::Image),
+                tags: vec!["heroic".to_string()],
+                query: Some("map".to_string()),
+                ..Default::default()
+            },
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(page.iter().map(|x| x.id).collect::<Vec<_>>(), vec![a.id]);
+}
+
+#[tokio::test]
+async fn query_assets_empty_or_punctuation_query_is_empty_page() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    assert!(query_ids(&repo, world.id, "").await.is_empty());
+    assert!(query_ids(&repo, world.id, "---").await.is_empty());
+}
+
+#[tokio::test]
+async fn assets_fts_row_removed_on_asset_delete() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    repo.insert_asset(&a).await.unwrap();
+    assert_eq!(query_ids(&repo, world.id, "map").await, vec![a.id]);
+    repo.delete_asset(a.id).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM assets_fts WHERE asset_id = ?")
+        .bind(a.id.to_string())
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
+}
+
+#[tokio::test]
+async fn assets_fts_rows_removed_on_world_delete() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap().id;
+    let a = sample(world);
+    repo.insert_asset(&a).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM assets_fts WHERE world_id = ?")
+        .bind(world.to_string())
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 1);
+    repo.delete_world(world).await.unwrap();
+    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM assets_fts WHERE world_id = ?")
+        .bind(world.to_string())
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(n, 0);
 }

@@ -44,6 +44,7 @@ mod post_publish;
 mod preview_cache;
 pub(crate) mod rolls;
 mod sanitize;
+mod search_text;
 mod settings;
 mod shortcodes;
 pub use commands::{parse_command, ParsedCommand};
@@ -62,6 +63,7 @@ pub use preview_cache::{
     PREVIEW_FETCH_PER_MIN,
 };
 pub use sanitize::{sanitize, ImageSource, Sanitized};
+pub use search_text::segments_search_text;
 pub use settings::{
     channel_registered, resolve_content_policy, resolve_dice_context, ChatContentPolicy,
     CHAT_SETTINGS_DOC_TYPE, DICE_SETTINGS_DOC_TYPE, NOTE_CONTENT_POLICY,
