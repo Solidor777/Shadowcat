@@ -252,6 +252,10 @@ export interface WsSearchOptions {
   cursor?: string;
   /** How long to wait for `search_result`/`search_error` before rejecting (default 10000). */
   timeoutMs?: number;
+  /** Narrows the ranked candidates to the listed doc_types, sent on the wire as
+   * `doc_types: opts.docTypes ?? []` (empty = every type; refused above
+   * `data::search::MAX_SEARCH_DOC_TYPES`). */
+  docTypes?: string[];
 }
 
 /** `WsClient.subscribeSearch` options. */
@@ -262,6 +266,10 @@ export interface WsSubscribeSearchOptions {
   limit?: number;
   /** How long to wait for the initial result before rejecting (default 10000). */
   timeoutMs?: number;
+  /** Narrows the live query to the listed doc_types, sent on the wire as
+   * `doc_types: opts.docTypes ?? []` (empty = every type; refused above
+   * `data::search::MAX_SEARCH_DOC_TYPES`). */
+  docTypes?: string[];
 }
 
 /** `WsClient.subscribeScene` options. */
@@ -1205,7 +1213,7 @@ export class WsClient {
         limit: opts.limit ?? 20,
         cursor: opts.cursor,
         subscribe: false,
-        doc_types: [],
+        doc_types: opts.docTypes ?? [],
       });
     });
   }
@@ -1271,7 +1279,7 @@ export class WsClient {
         limit: opts.limit ?? 20,
         cursor: undefined,
         subscribe: true,
-        doc_types: [],
+        doc_types: opts.docTypes ?? [],
       });
     });
   }

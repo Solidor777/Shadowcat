@@ -74,14 +74,16 @@
     let handle: SubscriptionHandle | null = null;
     let cancelled = false;
     void ctx
-      .searchDocuments(q, { limit: 20 }, (hits: WireSearchHit[]) => {
+      .searchDocuments(q, { limit: 20, docTypes: ["actor"] }, (hits: WireSearchHit[]) => {
         // INVARIANT: subscribeSearch's initial page resolves `onUpdate` SYNCHRONOUSLY, inside the
         // pending-resolve handler, BEFORE `resolve({unsubscribe})` runs — so it fires before the
         // `.then()` below (and thus before `cancelled`/`handle` teardown) ever executes. A stale
         // query's callback can therefore still fire after this effect has re-run for a newer query
         // and its own subscription is already active; guard `cancelled` here, not just in `.then()`.
         if (cancelled) return;
-        searchHits = hits.filter((h) => h.document.doc_type === "actor").map((h) => h.document);
+        // The server-side `docTypes: ["actor"]` filter is the ONE filter — no
+        // client-side re-filter, which would be the forked-decision shape.
+        searchHits = hits.map((h) => h.document);
       })
       .then((h) => { if (cancelled) h.unsubscribe(); else handle = h; })
       .catch(() => { /* no transport: leave last hits, re-subscribe on next keystroke */ });
