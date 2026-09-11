@@ -85,6 +85,11 @@ pub enum ClientMsg {
         /// True = keep a live top-N subscription pushing `SearchUpdate`s.
         #[serde(default)]
         subscribe: bool,
+        /// Narrows the ranked candidates to the listed doc_types; empty (the
+        /// default when a client omits the field) = every type. Refused with
+        /// `SearchError` above `data::search::MAX_SEARCH_DOC_TYPES` entries.
+        #[serde(default)]
+        doc_types: Vec<String>,
     },
     /// Cancel a live search subscription (idempotent; unknown id ignored).
     Unsubscribe {

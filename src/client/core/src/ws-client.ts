@@ -1205,6 +1205,7 @@ export class WsClient {
         limit: opts.limit ?? 20,
         cursor: opts.cursor,
         subscribe: false,
+        doc_types: [],
       });
     });
   }
@@ -1270,6 +1271,7 @@ export class WsClient {
         limit: opts.limit ?? 20,
         cursor: undefined,
         subscribe: true,
+        doc_types: [],
       });
     });
   }

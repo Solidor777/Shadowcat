@@ -1427,6 +1427,8 @@ export type ClientMsg =
       cursor?: string;
       /** True = keep a live top-N subscription pushing `search_update`s. */
       subscribe: boolean;
+      /** Narrows the ranked candidates to the listed doc_types; empty = every type. */
+      doc_types: string[];
     }
   | {
       /** Cancel a live search subscription (idempotent; unknown id ignored). */

@@ -150,6 +150,35 @@ fn create_intent(world: Uuid, n: u128, name: &str, default_role: &str) -> serde_
     })
 }
 
+/// An intent creating one `note` doc whose rendered body contains `word`.
+fn create_note_intent(world: Uuid, n: u128, word: &str, default_role: &str) -> serde_json::Value {
+    serde_json::json!({
+        "type": "intent",
+        "intent_id": Uuid::from_u128(n),
+        "ops": [{
+            "op": "create",
+            "doc": {
+                "id": Uuid::from_u128(2000 + n),
+                "scope": { "kind": "world", "world_id": world },
+                "doc_type": "note",
+                "schema_version": 1,
+                "permissions": { "default": default_role, "users": {}, "property_overrides": {},
+                                 "capabilities": { "by_role": {}, "by_user": {} } },
+                // The rendered `body` — not `source` — is what search
+                // matches against (`data::engine::search_text`'s "note" arm).
+                "engine": {
+                    "source": word,
+                    "body": [ { "kind": "text", "text": word } ],
+                    "sort": 0
+                },
+                "system": {},
+                "created_at": 0,
+                "updated_at": 0,
+            }
+        }],
+    })
+}
+
 /// Read frames, skipping unrelated ones, until one of `wanted` type arrives or
 /// the budget elapses.
 async fn next_of(ws: &mut Ws, wanted: &str, budget: Duration) -> Option<serde_json::Value> {
@@ -303,4 +332,76 @@ async fn live_subscription_never_pushes_unreadable_docs() {
             .is_none(),
         "a GM-only doc must not trigger a live update for the player"
     );
+}
+
+#[tokio::test]
+async fn live_subscription_with_doc_types_only_pushes_matching_types() {
+    let h = spawn().await;
+    let pl_cookie = h.add_member("pl", WorldRole::Player).await;
+
+    // Player subscribes to "griffin", filtered to notes only.
+    let mut sub = h.connect_with(&pl_cookie).await;
+    send(
+        &mut sub,
+        serde_json::json!({
+            "type": "search", "request_id": Uuid::from_u128(9),
+            "query": "griffin", "limit": 20, "cursor": null, "subscribe": true,
+            "doc_types": ["note"]
+        }),
+    )
+    .await;
+    let initial = next_of(&mut sub, "search_result", Duration::from_secs(5))
+        .await
+        .expect("initial search_result");
+    assert_eq!(initial["hits"].as_array().unwrap().len(), 0);
+
+    // GM creates a readable actor matching "griffin" — filtered out, no push.
+    let mut gm = h.connect_with(&h.cookie.clone()).await;
+    send(
+        &mut gm,
+        create_intent(h.world, 9, "Griffin Warden", "observer"),
+    )
+    .await;
+    assert!(
+        next_of(&mut sub, "search_update", Duration::from_millis(800))
+            .await
+            .is_none(),
+        "an actor must not trigger a live update for a notes-only subscription"
+    );
+
+    // GM creates a readable note matching "griffin" — the subscription pushes.
+    send(
+        &mut gm,
+        create_note_intent(h.world, 10, "griffin", "observer"),
+    )
+    .await;
+    let upd = next_of(&mut sub, "search_update", Duration::from_secs(5))
+        .await
+        .expect("search_update for the matching note");
+    assert_eq!(upd["hits"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn search_with_too_many_doc_types_is_refused() {
+    let h = spawn().await;
+    let pl_cookie = h.add_member("pl", WorldRole::Player).await;
+    let mut sub = h.connect_with(&pl_cookie).await;
+
+    let too_many: Vec<String> = (0..17).map(|i| format!("type{i}")).collect();
+    send(
+        &mut sub,
+        serde_json::json!({
+            "type": "search", "request_id": Uuid::from_u128(11),
+            "query": "griffin", "limit": 20, "cursor": null, "subscribe": true,
+            "doc_types": too_many
+        }),
+    )
+    .await;
+    let err = next_of(&mut sub, "search_error", Duration::from_secs(5))
+        .await
+        .expect("search_error for too many doc types");
+    assert!(err["message"]
+        .as_str()
+        .unwrap()
+        .contains("too many doc types"));
 }

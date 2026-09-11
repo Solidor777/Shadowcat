@@ -100,7 +100,7 @@ Every `ClientMsg` variant:
 | `resync_request` | Ask for replay from a sequence number |
 | `time_ping` | Clock-offset probe |
 | `pong` | Liveness answer |
-| `search` | Full-text query (`limit`, cursor, `subscribe` for live updates) |
+| `search` | Full-text query (`limit`, cursor, `subscribe` for live updates); `doc_types` narrows to the listed types (≤16, refused above the cap) |
 | `unsubscribe` | End a live search |
 | `scene_subscribe` | Open a scene-derived channel |
 | `scene_unsubscribe` | Close it |
