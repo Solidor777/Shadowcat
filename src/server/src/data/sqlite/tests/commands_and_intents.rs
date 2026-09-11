@@ -4508,7 +4508,11 @@ async fn apply_intent_denies_the_whole_batch_when_either_of_two_updates_derives_
         );
     }
     // The ungranted doc second in the batch: same outcome, regardless of
-    // position -- the ordinary per-op check rejects before anything writes.
+    // position -- with the granted doc first, its `upsert_document` runs
+    // inside the still-open transaction before the second op's derived-path
+    // check rejects; nothing persists because the rejection aborts the
+    // transaction before it ever commits, regardless of that intermediate
+    // uncommitted write.
     {
         let (r, world, player_ctx, doc_a, doc_b) = two_note_capability_batch_fixture(false).await;
         let denied = r
