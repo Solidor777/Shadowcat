@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 function stageHost(page: Page) {
@@ -19,15 +19,6 @@ async function enterFreshWorld(
   await page.getByLabel("New world name").fill(name);
   await page.getByRole("button", { name: "Create world" }).click();
   await expect(stageHost(page)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
-}
-
-/** Opens a launcher-closed panel by its contribution id.
- * @param page The page to drive.
- * @param contributionId The panel contribution's id (e.g. `"tables:panel"`).
- */
-async function openPanel(page: Page, contributionId: string): Promise<void> {
-  await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId(`launcher-item-${contributionId}`).click();
 }
 
 /** Locates every `table_draw` chat card on `page` carrying either row label — the same `.card`
@@ -80,7 +71,7 @@ test("tables: create, add rows, draw, and the panel's quick-draw both post cards
 
     // Both sides watch chat for the rest of the scenario. Chat is `defaultPlacement: docked`
     // — the ONE panel every session starts with already open — so it needs no `openPanel`
-    // call; `activate`'s `ctx.panels.toggle` would instead CLOSE it here.
+    // call.
 
     // The GM creates "Loot" (world-readable by default: `buildTableDoc`'s `permissions.default:
     // "observer"`) and its sheet opens.
@@ -115,10 +106,7 @@ test("tables: create, add rows, draw, and the panel's quick-draw both post cards
     await expect(drawCards(player).locator(".table-draw-row-label")).toHaveText(/Potion|Sword/);
 
     // The panel's own quick Draw posts a second card, also visible to both. `tables:panel`
-    // is ALREADY open (from the earlier `openPanel` above, never closed since) — a second
-    // `openPanel` here would TOGGLE it closed via `activate`'s `ctx.panels.toggle`, hiding
-    // `table-quick-draw` and hanging the click below on actionability for the rest of the
-    // test's budget.
+    // is already open from the earlier `openPanel` call above.
     await gm.getByTestId("table-quick-draw").click();
     await expect(drawCards(gm)).toHaveCount(2, { timeout: 15_000 });
     await expect(drawCards(player)).toHaveCount(2, { timeout: 15_000 });

@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 function stageHost(page: Page) {
@@ -19,15 +19,6 @@ async function enterFreshWorld(
   await page.getByLabel("New world name").fill(name);
   await page.getByRole("button", { name: "Create world" }).click();
   await expect(stageHost(page)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
-}
-
-/** Opens a launcher-closed panel by its contribution id.
- * @param page The page to drive.
- * @param contributionId The panel contribution's id (e.g. `"notes:panel"`).
- */
-async function openPanel(page: Page, contributionId: string): Promise<void> {
-  await page.getByTestId("launcher-trigger").click();
-  await page.getByTestId(`launcher-item-${contributionId}`).click();
 }
 
 // Dual-session (GM + invited player), the `combat-tracker.spec.ts`/`hex-movement.spec.ts`
@@ -104,9 +95,8 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
     await expect(playerSheet.getByTestId("note-body").locator("strong")).toBeVisible();
 
     // The player clicks the roll button; the chat panel shows a roll card.
-    // Chat is `defaultPlacement: docked` — already open at session start, unlike a panel
-    // reached only through `openPanel` — so it needs no opening here (`activate`'s
-    // `ctx.panels.toggle` would instead CLOSE it).
+    // Chat is `defaultPlacement: docked` — already open at session start, so it needs no
+    // `openPanel` call here.
     await playerSheet.getByRole("button", { name: "Luck" }).click();
     await expect(player.locator(".roll-block")).toHaveCount(1, { timeout: 15_000 });
 

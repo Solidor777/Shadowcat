@@ -1,7 +1,7 @@
 import { test, expect, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/svelte";
 import { tick } from "svelte";
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { PanelsBridge } from "@shadowcat/ui-kit";
 import { silentLogger, type PanelMeta } from "@shadowcat/core";
@@ -12,20 +12,32 @@ afterEach(() => cleanup());
 
 /** A bound bridge whose fake impl records toggle calls and exposes a fixed
  * metaMap — no `module-panels` import (seam boundary). */
-function bridgeWith(meta: [string, PanelMeta][]): { bridge: PanelsBridge; toggles: string[] } {
+function bridgeWith(
+  meta: [string, PanelMeta][],
+): { bridge: PanelsBridge; toggles: string[]; openIds: SvelteSet<string> } {
   const toggles: string[] = [];
   const bridge = new PanelsBridge(silentLogger);
+  // `SvelteSet`, not a plain `Set`: `isOpen`'s doc comment says a caller reading it inside a
+  // template establishes a reactive dependency the same way `metaMap` does (see
+  // `reactiveBridgeWith`'s own comment on why a plain collection does not trigger a re-render
+  // on an in-place mutation).
+  const openIds = new SvelteSet<string>();
   const impl: PanelsApi & PanelsChipsView = {
     open: () => {},
     close: () => {},
     focus: () => {},
-    toggle: (id) => toggles.push(id),
+    toggle: (id) => {
+      toggles.push(id);
+      if (openIds.has(id)) openIds.delete(id);
+      else openIds.add(id);
+    },
+    isOpen: (id) => openIds.has(id),
     restore: () => {},
     minimized: [],
     metaMap: new Map(meta),
   };
   bridge.bind(impl);
-  return { bridge, toggles };
+  return { bridge, toggles, openIds };
 }
 
 const META: [string, PanelMeta][] = [
@@ -125,6 +137,7 @@ function reactiveBridgeWith(meta: [string, PanelMeta][]): { bridge: PanelsBridge
     close: () => {},
     focus: () => {},
     toggle: () => {},
+    isOpen: () => false,
     restore: () => {},
     minimized: [],
     metaMap: live,
@@ -166,6 +179,24 @@ test("removing a DIFFERENT (non-focused) item's panel leaves the menu open and f
 
   expect(screen.queryByTestId("launcher-menu")).not.toBeNull();
   expect(document.activeElement).toBe(chatItem);
+});
+
+test("a launcher item's aria-pressed reflects the bridge's live open state", async () => {
+  const { bridge, openIds } = bridgeWith(META);
+  render(LauncherMenu, { context: setAppContextForTest({ panels: bridge }) });
+  await fireEvent.click(screen.getByTestId("launcher-trigger"));
+  const item = screen.getByTestId("launcher-item-chat:panel");
+  expect(item.getAttribute("aria-pressed")).toBe("false");
+
+  // Mutating the bridge's open-state directly (no click) proves the attribute reads
+  // `ctx.panels.isOpen` reactively, not a locally-tracked click count.
+  openIds.add("chat:panel");
+  await tick();
+  expect(item.getAttribute("aria-pressed")).toBe("true");
+
+  openIds.delete("chat:panel");
+  await tick();
+  expect(item.getAttribute("aria-pressed")).toBe("false");
 });
 
 test("the trigger's aria-controls references the open menu's id", async () => {

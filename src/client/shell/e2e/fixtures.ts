@@ -23,6 +23,37 @@ export async function login(
   await page.getByRole("button", { name: "Log in" }).click();
 }
 
+/** Idempotently opens a launcher panel by its contribution id: checks the launcher item's
+ * `aria-pressed` (driven by `LauncherMenu`'s live `ctx.panels.isOpen` read) and clicks only when
+ * the panel is not already open — a second call with the panel already open is a no-op, unlike
+ * clicking the launcher item unconditionally (`activate`'s `ctx.panels.toggle` would instead
+ * CLOSE it). Shared by every spec that reaches a launcher-closed panel (in place of each file's
+ * own duplicated copy — see `combat-settings.spec.ts`'s `activateTool` for the same
+ * check-before-click idiom applied to a tool-rail button).
+ * @param page - The page to drive.
+ * @param contributionId - The panel contribution's id (e.g. `"notes:panel"`).
+ * @example
+ * ```
+ * declare const page: import("@playwright/test").Page;
+ * await openPanel(page, "notes:panel");
+ * ```
+ */
+export async function openPanel(page: Page, contributionId: string): Promise<void> {
+  await page.getByTestId("launcher-trigger").click();
+  const item = page.getByTestId(`launcher-item-${contributionId}`);
+  if ((await item.getAttribute("aria-pressed")) !== "true") {
+    await item.click();
+  } else {
+    // Already open: dismiss the menu we just opened via Escape rather than re-clicking the
+    // trigger — the full-viewport `sc-launcher-backdrop` (`onpointerdown` dismissal) sits above
+    // the trigger while the menu is open and intercepts a second trigger click, hanging the
+    // action on actionability retries forever. `openMenu` already moved focus onto the first
+    // item, whose own `onkeydown` handles Escape (`MenuKeyboard`'s Escape branch) identically to
+    // the trigger's.
+    await page.keyboard.press("Escape");
+  }
+}
+
 /** Budget for a spec that drives TWO browser contexts (a GM plus an invited player) through a
  * full end-to-end scenario: world creation, account, invite, join, then the behaviour under test.
  * Sized for the slowest supported CI runner, which executes this suite at roughly four times a

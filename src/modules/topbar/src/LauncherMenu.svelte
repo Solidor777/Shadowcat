@@ -186,6 +186,7 @@
           role="menuitem"
           class="sc-launcher-item"
           data-testid="launcher-item-{p.id}"
+          aria-pressed={ctx.panels.isOpen(p.id)}
           bind:this={itemEls[i]}
           onclick={() => activate(p.id)}
           onkeydown={(e) => onItemKeydown(e, i)}

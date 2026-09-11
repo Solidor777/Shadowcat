@@ -15,6 +15,10 @@ function fakeImpl(): PanelsApi & PanelsChipsView & { calls: string[] } {
     close: (id) => calls.push(`close:${id}`),
     focus: (id) => calls.push(`focus:${id}`),
     toggle: (id) => calls.push(`toggle:${id}`),
+    isOpen: (id) => {
+      calls.push(`isOpen:${id}`);
+      return false;
+    },
     minimized: ["a"],
     metaMap: meta,
     restore: (id) => calls.push(`restore:${id}`),
