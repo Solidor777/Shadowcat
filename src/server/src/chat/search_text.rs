@@ -65,9 +65,13 @@ fn decode_entities(s: &str) -> String {
 
 /// Removes every `<…>` run from ammonia-sanitized HTML, then decodes the
 /// entities ammonia emits for literal `&`/`<`/`>`/`"`/`'` in text nodes.
-/// Safe because ammonia has already escaped every literal `<` in text, so
-/// every remaining `<…>` run in `html` is a real element, never author text
-/// that merely looks like a tag.
+/// Safe because html5ever's `HtmlSerializer::write_escaped` escapes `<` and
+/// `>` unconditionally, including inside attribute values, when ammonia
+/// serializes its cleaned DOM back to a string — no code path in `clean()`'s
+/// output can produce a raw `>` inside a tag, so a `<…>` run in `html` is
+/// always a real element boundary, never author text that merely looks like
+/// one. This is a toolchain-coupled invariant: re-verify it against
+/// `ammonia`'s and `html5ever`'s serializer on any version bump of either.
 fn strip_tags_and_decode(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
@@ -145,6 +149,7 @@ pub fn segments_search_text(segments: &[Segment]) -> String {
                 push_text(&mut out, url);
             }
             Segment::OEmbed(oembed) => {
+                push_text(&mut out, &oembed.provider_name);
                 if let Some(title) = &oembed.title {
                     push_text(&mut out, title);
                 }

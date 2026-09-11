@@ -87,7 +87,13 @@ pub const ASSET_FOLDER_DOC_TYPE: &str = "asset_folder";
 
 /// Every doc_type carrying a typed `engine` band, the single data source
 /// `is_engine_doc_type` and `search_text` both dispatch from — so the
-/// registry and either function can never drift apart.
+/// registry and either function can never drift apart. `search_text`'s
+/// exhaustive match has no arm the compiler can check against this list: a
+/// doc_type added here with no corresponding `search_text` arm compiles
+/// clean and panics via `unreachable!` only at runtime, the first time that
+/// doc_type is indexed. `search_text_is_registered_for_every_engine_doc_type`
+/// is the guard — it iterates this list and calls `search_text` on each
+/// entry, so the panic surfaces in CI rather than in a production write.
 pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "token",
     "scene",
@@ -506,11 +512,25 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
         "vision-modes" => typed_or_none::<VisionModesEngine>(engine)
             .map(|r| join_names(r.modes.values().map(|m| m.name.as_str())))
             .unwrap_or_default(),
-        "token" | "scene" | "wall" | "region" | "light" | "drawing" | "template"
-        | "world-settings" | "light-gradation" | "chat-settings" | "dice-settings" | "combat"
-        | "combatant" | "effect" | "system-defaults" | "combat-history" | "asset_folder" => {
-            String::new()
-        }
+        "light-gradation" => typed_or_none::<LightGradationEngine>(engine)
+            .map(|g| join_names(g.bands.iter().map(|b| b.name.as_str())))
+            .unwrap_or_default(),
+        "token" => typed_or_none::<TokenEngine>(engine)
+            .map(|t| t.overrides.and_then(|o| o.name).unwrap_or_default())
+            .unwrap_or_default(),
+        "combat-history" => typed_or_none::<CombatHistoryEngine>(engine)
+            .map(|h| {
+                join_names(
+                    h.records
+                        .iter()
+                        .flat_map(|r| r.combatants.iter())
+                        .filter_map(|c| c.name.as_deref()),
+                )
+            })
+            .unwrap_or_default(),
+        "scene" | "wall" | "region" | "light" | "drawing" | "template" | "world-settings"
+        | "chat-settings" | "dice-settings" | "combat" | "combatant" | "effect"
+        | "system-defaults" | "asset_folder" => String::new(),
         _ => unreachable!("ENGINE_DOC_TYPES and this match must stay in sync"),
     })
 }
