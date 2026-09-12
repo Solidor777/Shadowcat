@@ -1298,8 +1298,8 @@ API name elsewhere in this document is unverified until this task runs.
 
   /// Grows memory one page at a time until the `StoreLimits` ceiling denies the grow (which
   /// returns -1, never traps), then stores one byte past the last page it did obtain — the
-  /// out-of-bounds access is what traps. Bounded: the ceiling is a few pages, so the loop ends
-  /// long before the fuel budget does.
+  /// out-of-bounds access is what traps. Bounded: the ceiling (`MAX_MEMORY_BYTES`, 256 pages)
+  /// is reached in roughly 256 grow calls, far below the fuel budget.
   const MEMORY_BOMB_WAT: &str = r#"
     (module
       (memory (export "memory") 1)
