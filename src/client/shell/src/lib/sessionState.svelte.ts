@@ -1,6 +1,7 @@
 import { consoleLogger } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
+import { PERFORMANCE_STORAGE_KEY, parsePersisted, serializePersisted, type PersistedPerformance } from "@shadowcat/core";
 import { COOLDOWN_MS } from "./uiStatePersistCooldown";
 
 const logger = consoleLogger();
@@ -378,6 +379,41 @@ export function writeThemeMirror(storage: Pick<Storage, "setItem">, value: Persi
     storage.setItem(THEME_MIRROR_STORAGE_KEY, JSON.stringify(value));
   } catch (e) {
     logger.warn("theme mirror write failed", e);
+  }
+}
+
+/** Reads the performance mirror, garbage-tolerantly: an absent key is `undefined` (which
+ * `PerformanceController.load` resolves via `resolveAuto`); a present-but-garbled value still
+ * parses through `parsePersisted`'s own fail-closed validation, never `undefined`.
+ * @param storage The storage to read (injectable for tests; the app entry passes `localStorage`).
+ * @returns The mirrored value, or `undefined` when the key is absent.
+ * @example
+ * ```ts
+ * const mirror = readPerformanceMirror(localStorage);
+ * ```
+ */
+export function readPerformanceMirror(storage: Pick<Storage, "getItem">): PersistedPerformance | undefined {
+  const raw = storage.getItem(PERFORMANCE_STORAGE_KEY);
+  return raw === null ? undefined : parsePersisted(raw);
+}
+
+/** Writes the performance mirror. A throwing storage (quota, privacy mode) is swallowed with a
+ * log — the mirror is a per-device convenience and a failed write must never break the setting
+ * change that triggered it.
+ * @param storage The storage to write (injectable for tests; callers pass `localStorage`).
+ * @param value The `PerformanceController.serialize` output to mirror.
+ * @example
+ * ```ts
+ * import { performanceController } from "@shadowcat/ui-kit";
+ *
+ * writePerformanceMirror(localStorage, performanceController.serialize());
+ * ```
+ */
+export function writePerformanceMirror(storage: Pick<Storage, "setItem">, value: PersistedPerformance): void {
+  try {
+    storage.setItem(PERFORMANCE_STORAGE_KEY, serializePersisted(value));
+  } catch (e) {
+    logger.warn("performance mirror write failed", e);
   }
 }
 
