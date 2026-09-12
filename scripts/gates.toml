@@ -36,6 +36,13 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
 command = "n=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo \"${NUMBER_OF_PROCESSORS:-2}\") echo \"runner parallelism: $n\" echo \"CARGO_BUILD_JOBS=$n\" >> \"$GITHUB_ENV\""
 tier = "setup"
 reason = "Exports the runner's own core count as CARGO_BUILD_JOBS for the cargo steps after it; a developer machine builds under the repo's own parallelism budget instead."
@@ -50,6 +57,12 @@ tier = "commit"
 workflow = "ci.yml"
 job = "rust"
 command = "cargo clippy --all-targets -- -D warnings"
+tier = "push"
+
+[[gate]]
+workflow = "ci.yml"
+job = "rust"
+command = "cargo clippy --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items"
 tier = "push"
 
 [[gate]]
@@ -192,6 +205,13 @@ job = "docs"
 command = "pnpm install --frozen-lockfile"
 tier = "setup"
 reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "docs"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
 
 [[gate]]
 workflow = "ci.yml"

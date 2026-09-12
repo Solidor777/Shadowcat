@@ -63,6 +63,27 @@ regex = "1"
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
+# Phase 3: M27 (audio-monitor subcommand — per-platform OS audio-session peak level).
+# windows 0.58.0 — MIT OR Apache-2.0 (measured via `cargo metadata`).
+# core-foundation 0.10.1 — MIT OR Apache-2.0 (measured via `cargo metadata`).
+# pipewire 0.8.0 + libspa 0.8.0 — MIT (measured via `cargo metadata`); binds the system
+# libpipewire-0.3 (MIT). coreaudio-rs/coreaudio-sys (MIT) are NOT used: the latest
+# coreaudio-sys does not wrap the macOS process-tap entry points this subcommand needs,
+# so the macOS backend binds them via a small `extern "C"` block over core-foundation.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.8"
+
 [dev-dependencies]
 # The shared WS harness the integration tests drive. A path dependency rather than a
 # tests/common module include: a pub item in a library is reachable by definition, so the
