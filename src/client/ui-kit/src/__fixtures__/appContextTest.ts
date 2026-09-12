@@ -2,6 +2,7 @@ import type { AppContext } from "../appContext";
 import { __APP_CONTEXT_KEY__ } from "../appContext";
 import { DocumentStore, AssetResolver, ContributionRegistry, silentLogger, EMPTY_FOOTPRINTS, CombatController } from "@shadowcat/core";
 import { SceneInteractionBridge } from "../sceneInteraction";
+import { Dice3DBridge } from "../dice3dInteraction";
 import { ActorSelection } from "../actorSelection.svelte";
 import { TokenSelection } from "../tokenSelection.svelte";
 import { PanelsBridge } from "../panelsBridge.svelte";
@@ -104,6 +105,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setChatRead: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
+    dice3d: over.dice3d ?? new Dice3DBridge(),
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     viewedSceneId: over.viewedSceneId ?? null,
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,

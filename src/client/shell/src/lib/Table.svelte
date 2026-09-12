@@ -145,6 +145,7 @@
       setChatRead: (blob) => setChatRead(session.world!, blob),
     },
     panels,
+    dice3d: session.dice3d,
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     leaveWorld,
     logout: async () => {
