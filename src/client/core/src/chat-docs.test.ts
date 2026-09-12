@@ -12,6 +12,7 @@ import {
   chatSegmentSchemaImpl,
   rollOutcomeSchemaImpl,
   chatMessageEngineSchemaImpl,
+  rollEmbedSegmentSchemaImpl,
   baseRollDice,
   numericBounds,
   firstChannel,
@@ -20,6 +21,7 @@ import {
   type ChatSegment,
   type RollOutcome,
   type ChatMessageEngine,
+  type RollEmbedSegment,
 } from "./chat-docs";
 import type { WireDocument } from "./wire";
 import { DocumentStore } from "./store";
@@ -45,6 +47,9 @@ describe("chat-docs drift guard — non-vacuous schema/type assertions", () => {
   });
   test("ChatMessageEngine", () => {
     expectTypeOf<z.infer<typeof chatMessageEngineSchemaImpl>>().toEqualTypeOf<ChatMessageEngine>();
+  });
+  test("RollEmbedSegment", () => {
+    expectTypeOf<z.infer<typeof rollEmbedSegmentSchemaImpl>>().toEqualTypeOf<RollEmbedSegment>();
   });
 });
 

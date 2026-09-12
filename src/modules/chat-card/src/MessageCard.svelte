@@ -8,13 +8,11 @@
     baseRollDice,
     numericBounds,
     type ChatSegment,
+    type RollEmbedSegment,
     type UnknownSegment,
     type WireActorOwnerRef,
     type WireDocument,
   } from "@shadowcat/core";
-
-  /** A message's whole content narrowed to its one executed roll. */
-  type RollEmbedSegment = Extract<ChatSegment, { /** Discriminant. */ kind: "roll_embed" }>;
 
   let {
     message,

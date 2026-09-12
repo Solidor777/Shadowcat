@@ -31,6 +31,47 @@ export const MessageKindSchema = z.enum(["normal", "emote", "roll", "system"]);
 /** The inferred TS shape of `MessageKindSchema`. */
 export type MessageKind = z.infer<typeof MessageKindSchema>;
 
+/** A die's face space for the recalc picker. Mirrors `dice::spec::DieKind`
+ * (externally tagged -- the crate's plain serde default; `dice` carries no
+ * ts-rs bindings by design). Only `Numeric` bounds are read by the client
+ * (chat notation cannot produce `Faces` today); a `Faces` die still parses,
+ * but `numericBounds` returns `null` for it and the "replace this die's
+ * face" affordance simply does not render. */
+export type WireDieKind =
+  | {
+      /** A bounded numeric face space, e.g. a d6 or d20. */
+      Numeric: {
+        /** Lowest rollable face value, inclusive. */
+        min: number;
+        /** Highest rollable face value, inclusive. */
+        max: number;
+      };
+    }
+  | {
+      /** A symbolic (non-numeric) face space, e.g. a narrative dice pool. */
+      Faces: {
+        /** The die's ordered face list. */
+        faces: {
+          /** Optional numeric reference value for the face, when one exists. */
+          value?: number | null;
+          /** Symbol labels printed on this face. */
+          symbols: string[];
+        }[];
+      };
+    };
+
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note below.
+export const wireDieKindSchemaImpl = z.union([
+  z.object({ Numeric: z.object({ min: z.number(), max: z.number() }) }),
+  z.object({
+    Faces: z.object({
+      faces: z.array(z.object({ value: z.number().nullish(), symbols: z.array(z.string()) })),
+    }),
+  }),
+]);
+/** Validator for a `WireDieKind`. */
+export const WireDieKindSchema: z.ZodType<WireDieKind> = wireDieKindSchemaImpl;
+
 /** A single die's post-pipeline result within a roll outcome. Mirrors
  * `dice::outcome::DieRecord`; only the fields the roll card renders are
  * modeled here — server-only audit fields (id, rerolled_from, ordered, ...)
@@ -56,6 +97,9 @@ export type DieRecord = {
   label?: string | null;
   /** Resolved symbols for a `Faces` die's drawn face; empty for a `Numeric` die. */
   symbols: string[];
+  /** The die's face space, mirroring `dice::outcome::DieRecord.kind`. Absent for a roll
+   * stored before this field existed (dice-3d fails closed and renders no 3D dice for it). */
+  kind?: WireDieKind | null;
 };
 
 // Unannotated impl const: typed `z.ZodType<T> = expr` only requires `expr`'s inferred output be
@@ -78,6 +122,7 @@ export const dieRecordSchemaImpl = z.object({
   group_index: z.number(),
   label: z.string().nullish(),
   symbols: z.array(z.string()),
+  kind: WireDieKindSchema.nullish(),
 });
 /** Validator for a `DieRecord`. Only the fields the roll card renders are
  * validated; `.passthrough()` tolerates server-only audit fields (id,
@@ -163,47 +208,6 @@ export const rollOutcomeSchemaImpl = z.object({
  * `labeled_consts.default([])` makes that key optional on input while the
  * hand-written `RollOutcome` output type keeps it required. */
 export const RollOutcomeSchema: z.ZodType<RollOutcome, z.ZodTypeDef, unknown> = rollOutcomeSchemaImpl;
-
-/** A die's face space for the recalc picker. Mirrors `dice::spec::DieKind`
- * (externally tagged -- the crate's plain serde default; `dice` carries no
- * ts-rs bindings by design). Only `Numeric` bounds are read by the client
- * (chat notation cannot produce `Faces` today); a `Faces` die still parses,
- * but `numericBounds` returns `null` for it and the "replace this die's
- * face" affordance simply does not render. */
-export type WireDieKind =
-  | {
-      /** A bounded numeric face space, e.g. a d6 or d20. */
-      Numeric: {
-        /** Lowest rollable face value, inclusive. */
-        min: number;
-        /** Highest rollable face value, inclusive. */
-        max: number;
-      };
-    }
-  | {
-      /** A symbolic (non-numeric) face space, e.g. a narrative dice pool. */
-      Faces: {
-        /** The die's ordered face list. */
-        faces: {
-          /** Optional numeric reference value for the face, when one exists. */
-          value?: number | null;
-          /** Symbol labels printed on this face. */
-          symbols: string[];
-        }[];
-      };
-    };
-
-// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
-export const wireDieKindSchemaImpl = z.union([
-  z.object({ Numeric: z.object({ min: z.number(), max: z.number() }) }),
-  z.object({
-    Faces: z.object({
-      faces: z.array(z.object({ value: z.number().nullish(), symbols: z.array(z.string()) })),
-    }),
-  }),
-]);
-/** Validator for a `WireDieKind`. */
-export const WireDieKindSchema: z.ZodType<WireDieKind> = wireDieKindSchemaImpl;
 
 /** A roll's natural-face log, mirroring `dice::outcome::RawRoll` -- GM-visible
  * only (see `ChatSegment`'s `roll_embed.raw` doc). Only `dice`/`group_spans`
@@ -380,30 +384,7 @@ export type ChatSegment =
       /** The ammonia-sanitized run (safe for innerHTML by construction). */
       sanitized_html: string;
     }
-  | {
-      /** A completed roll: the formula plus its full deterministic outcome. */
-      kind: "roll_embed";
-      /** The formula as the author wrote it. */
-      formula: string;
-      /** The full deterministic outcome, natural faces included. */
-      outcome: RollOutcome;
-      /** Stable identity for this roll; a recalc targets it by this id, never by
-       * array index. Optional here (not `.default(...)`) purely to tolerate a
-       * malformed/legacy test fixture omitting it -- the server always emits it. */
-      roll_id?: string;
-      /** GM-visible only: the parsed spec this roll was scored from. Absent for a
-       * roll embedded before recalc-from-chat shipped, or when this recipient is
-       * not a GM. Kept opaque (`unknown`) -- the client never parses a full
-       * `RollSpec`; only `raw` powers the recalc picker. */
-      spec?: unknown;
-      /** GM-visible only: the natural-face log this roll was evaluated from.
-       * Powers the GM recalc picker (`baseRollDice`/`numericBounds`); absent for
-       * a pre-existing roll or a non-GM recipient. */
-      raw?: WireRawRoll | null;
-      /** Present iff this roll has been recalculated at least once; visible to
-       * every recipient (unlike `spec`/`raw`). */
-      recalc_history?: RecalcHistoryEntry[] | null;
-    }
+  | RollEmbedSegment
   | {
       /** An unexecuted, validated formula the client renders as a button; clicking it
        * sends a fresh `/roll <formula>` `SendMessage` (a new, independently-attributed roll). */
@@ -473,6 +454,36 @@ export type ChatSegment =
     }
   | TableDrawSegment;
 
+/** A completed roll: the formula plus its full deterministic outcome. Mirrors
+ * `chat::Segment::RollEmbed`. Declared as its own named type (rather than a `ChatSegment`
+ * union member inline) so `AppContext.dice3d.roll` can reference it directly and so a
+ * `ChatSegment` narrowed back out via `Extract<>` needs no such extraction anywhere else —
+ * the `TableDrawSegment` precedent immediately below. */
+export type RollEmbedSegment = {
+  /** Discriminant. */
+  kind: "roll_embed";
+  /** The formula as the author wrote it. */
+  formula: string;
+  /** The full deterministic outcome, natural faces included. */
+  outcome: RollOutcome;
+  /** Stable identity for this roll; a recalc targets it by this id, never by
+   * array index. Optional here (not `.default(...)`) purely to tolerate a
+   * malformed/legacy test fixture omitting it -- the server always emits it. */
+  roll_id?: string;
+  /** GM-visible only: the parsed spec this roll was scored from. Absent for a
+   * roll embedded before recalc-from-chat shipped, or when this recipient is
+   * not a GM. Kept opaque (`unknown`) -- the client never parses a full
+   * `RollSpec`; only `raw` powers the recalc picker. */
+  spec?: unknown;
+  /** GM-visible only: the natural-face log this roll was evaluated from.
+   * Powers the GM recalc picker (`baseRollDice`/`numericBounds`); absent for
+   * a pre-existing roll or a non-GM recipient. */
+  raw?: WireRawRoll | null;
+  /** Present iff this roll has been recalculated at least once; visible to
+   * every recipient (unlike `spec`/`raw`). */
+  recalc_history?: RecalcHistoryEntry[] | null;
+};
+
 /** One executed table draw, recursive through any nested draws it fanned
  * out. Produced only by a server-side `draw_table` frame. `spec`/`raw` are
  * GM-only at every depth, same redaction as `roll_embed`. Declared as its
@@ -538,6 +549,21 @@ const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unkn
   }),
 );
 
+// Unannotated impl const — see `dieRecordSchemaImpl`'s note above.
+export const rollEmbedSegmentSchemaImpl = z.object({
+  kind: z.literal("roll_embed"),
+  formula: z.string(),
+  outcome: RollOutcomeSchema,
+  roll_id: z.string().optional(),
+  spec: z.unknown().optional(),
+  raw: WireRawRollSchema.nullish(),
+  recalc_history: z.array(RecalcHistoryEntrySchema).nullish(),
+});
+/** Validator for a `RollEmbedSegment`. Input type is widened to `unknown` because the
+ * `outcome: RollOutcomeSchema` field inherits `RollOutcomeSchema`'s own widened input. */
+export const RollEmbedSegmentSchema: z.ZodType<RollEmbedSegment, z.ZodTypeDef, unknown> =
+  rollEmbedSegmentSchemaImpl;
+
 // `z.discriminatedUnion` requires every member to be a `ZodObject`; the
 // recursive `table_draw` arm is a `z.lazy(...)` `ZodType` and cannot join
 // that union directly, so it is unioned in separately over the
@@ -545,15 +571,7 @@ const tableDrawSegmentSchemaImpl: z.ZodType<TableDrawSegment, z.ZodTypeDef, unkn
 const nonRecursiveChatSegmentSchemaImpl = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("text"), text: z.string() }),
   z.object({ kind: z.literal("html"), sanitized_html: z.string() }),
-  z.object({
-    kind: z.literal("roll_embed"),
-    formula: z.string(),
-    outcome: RollOutcomeSchema,
-    roll_id: z.string().optional(),
-    spec: z.unknown().optional(),
-    raw: WireRawRollSchema.nullish(),
-    recalc_history: z.array(RecalcHistoryEntrySchema).nullish(),
-  }),
+  rollEmbedSegmentSchemaImpl,
   z.object({ kind: z.literal("roll_button"), formula: z.string(), label: z.string().nullish() }),
   z.object({
     kind: z.literal("link_preview"),
