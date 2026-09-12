@@ -145,7 +145,7 @@ impl PlaylistEngine {
     /// let empty = PlaylistEngine { tracks: vec![], mode: PlaylistMode::Sequential, channel: AudioChannel::Music, fade_ms: 0 };
     /// assert!(empty.validate().is_ok()); // an empty playlist is legal (nothing to play yet)
     /// ```
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.tracks.len() > MAX_PLAYLIST_TRACKS {
             return Err(format!(
                 "a playlist may have at most {MAX_PLAYLIST_TRACKS} tracks, got {}",
@@ -265,7 +265,7 @@ impl AudioStateEngine {
     ///
     /// assert!(AudioStateEngine::default().validate().is_ok());
     /// ```
-    pub(crate) fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.playing.len() > MAX_PLAYING_TRACKS {
             return Err(format!(
                 "at most {MAX_PLAYING_TRACKS} tracks may play at once, got {}",
