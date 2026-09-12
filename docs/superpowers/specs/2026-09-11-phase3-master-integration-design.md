@@ -104,6 +104,10 @@ export interface DuckController {
   removeSource(id: string): void;
   /** The current effective duck gain 0..=1 (1 = no ducking), reactive. */
   readonly gain: number;
+  /** Per-device ducking depth 0..=1 (how far a full demand pulls the gain down; default 0.7),
+   *  persisted with the device's audio mirror. M27's settings section drives it. */
+  readonly depth: number;
+  setDepth(depth: number): void;
 }
 export interface DuckSource {
   /** Set this source's demand 0..=1 (1 = fully ducked). The controller takes the max. */
@@ -117,10 +121,17 @@ export interface AudioApi {
   readonly duck: DuckController;
   /** Play a one-shot sfx by asset id at channel gain (M24 VFX with sound, UI cues). */
   playOneShot(asset: string, opts?: { channel?: AudioChannelId; gain?: number }): void;
+  /** The server clock (`WsClient.serverNow()`), for live playlist-position readouts. */
+  serverNow(): number;
+  /** Send a GM transport op (`AudioOp`) — the Audio panel's play/pause/seek/next controls. */
+  transport(op: AudioOp): void;
 }
 ```
 
-Exposed as `AppContext.audio`. Server-side ownership: the `playlist` and `audio-state` engine
+Exposed as `AppContext.audio` — M23's ONE `AppContext` member; every audio operation the
+panel or another module needs (clock, transport, ducking, one-shots) hangs off it, so no
+second audio-flavoured `AppContext` member ever appears. Both `serverNow` and `transport`
+are thin forwarders to `WsClient`. Server-side ownership: the `playlist` and `audio-state` engine
 doc types, the `audio-settings` world doc, the `"audibility"` derived channel, the audio
 transcode pipeline. Consumers: M24 (`playOneShot` for a VFX's paired sound), M27 (`duck`).
 
@@ -158,10 +169,13 @@ gains `elevation?: number` so the layer filters by level — M24 adds the field;
 
 ### 2.5 Roll → 3D dice seam — owner M26
 
-`DieRecord.kind: DieKind` (a public, every-recipient field on the outcome's records — the
-natural face already is). `AppContext.dice3d.roll(embed: RollEmbedSegment, messageId)` is
-driven by the chat-card module on first sight of a `RollEmbed` segment authored after the
-viewer's connection (never on history replay). No other milestone consumes it.
+`DieRecord.kind: Option<DieKind>` (a public, every-recipient field on the outcome's records —
+the natural face already is; mirrored BY HAND in `chat-docs.ts`, the `dice` crate has no
+ts-rs derives). The dice-3d module subscribes to the document store itself and plays every
+`roll_embed`/`table_draw` outcome it has not seen (seen-set seeded from the store at mount, so
+history never replays); the chat-card module has no dependency on it.
+`AppContext.dice3d.roll(outcome, rollId)` exists for a system module that rolls outside chat.
+No other milestone consumes it.
 
 ### 2.6 Sandbox seam — owner M28
 

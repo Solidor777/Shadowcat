@@ -56,11 +56,53 @@ tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX 
 Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
 ## Phase 3 — Atmosphere
-Audio (mixer, channels, playlists, world-clock sync; then spatial + wall occlusion; transcode via `symphonia` + `opus`/`vorbis_rs`) → VFX (sprite effects, concurrent SFX) → multi-level maps + portals → 3D dice (decide the rendering context up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer) → Discord audio-ducking module (OS audio-session monitoring — PipeWire / WASAPI / CoreAudio — never the proprietary Discord Game SDK; requires a dependency / licensing review before integration).
 
-Also parked for Phase 3 from Phase 1: capability Phase 3 — opt-in **sandboxed** server-side
-validators running third-party *code* (its own threat model; never the default path). Server-side
-evaluation of the engine's own grammars is not this item — it shipped in M14c-1.
+Seven milestones, designed together (master integration spec:
+`superpowers/specs/2026-09-11-phase3-master-integration-design.md` — seam ownership, shared-file
+conventions, merge order M22 → M28 → M24 → M23 → M25 → M26 → M27) and built simultaneously in
+separate worktrees. Each has its own design spec and implementation plan under
+`superpowers/specs/2026-09-11-m2X-*-design.md` / `superpowers/plans/2026-09-11-m2X-*.md`.
+
+### M22 · Performance settings + render budget
+Per-device presets (auto / mobile / balanced / quality / custom): frame-rate cap, render scale,
+antialias, token fx, lighting quality, VFX / 3D-dice / spatial-audio switches, dirty-flag idle
+rendering, `prefers-reduced-motion`; a frame-stats readout. The seam every other Phase-3
+milestone reads its budget from.
+
+### M23 · Audio
+M23a: Web Audio mixer (channels, per-device gains, duck bus), `playlist` + server-owned
+`audio-state` documents with world-clock sync (joiners hear the table), scene ambience, the
+Opus transcode derivative (`symphonia` + `opus`, original retained as the fallback), audio
+panel + playlist sheet. M23b: per-recipient `"audibility"` derived channel (distance falloff +
+elevation-banded wall occlusion computed on the server), spatial emitter playback.
+
+### M24 · VFX
+Server-derived grid sheets from animated WebP, PixiJS spritesheet pairing, the `vfx` render
+layer with `VfxView` (token emitters + concurrent one-shots), `PlayVfx`/`Vfx` frames, the FX
+scene tool through a new `SCENE_TOOL_CONTRACT`, the `/fx` chat command.
+
+### M25 · Multi-level maps + portals
+`SceneEngine.levels` (elevation bands with their own backgrounds), `ElevationBand` on walls /
+regions / drawings / templates, movement + lighting + explored fog per level, client level
+scoping + switcher, `TriggerEffect::Teleport` (same-scene and cross-scene portals through the
+server-authored `Move`).
+
+### M26 · 3D dice
+`DieRecord.kind` exposed to every recipient; a `dice-3d` module rendering rolls in a separate
+three.js WebGL overlay (rapier physics, seeded per roll, faces remapped to the server's values)
+through a new `STAGE_OVERLAY_CONTRACT`; off by default on the mobile preset.
+
+### M27 · Voice ducking
+Three `DuckSource`s behind M23's contract: an in-browser mic voice-activity detector (audio
+never leaves the worklet), a push-to-duck key, and the `shadowcat audio-monitor` subcommand
+(WASAPI / Core Audio process tap / PipeWire) serving watched-process levels over a localhost,
+origin-allowlisted WebSocket; a new `SETTINGS_SECTION_CONTRACT`.
+
+### M28 · Sandboxed third-party validators
+The parked capability Phase 3: opt-in, per-world `wasmi` validators declared by a module's
+manifest, run over the `system` band outside the write transaction with fuel / memory /
+wall-clock caps, refusal reasons on a new `Reject.detail` field, auto-disable on faults, a
+threat model and an example validator crate.
 
 ## Phase 4 — Platform & scale
 **Audit-grade point-in-time replay** — a state-as-of-sequence facility: what a document, its

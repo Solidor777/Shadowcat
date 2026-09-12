@@ -148,7 +148,9 @@ sibling handling covers `SIBLING_SUFFIXES`).
   {channel, gain})` for `AudioApi.playOneShot`.
 - `DuckController`: max over sources' demands, smoothed with attack 50 ms / release 600 ms
   through the duck GainNode: `gain = 1 − demand × depth` where `depth` is per-device (default
-  0.7) and `duckable` channels default to music + ambience.
+  0.7, exposed as `readonly depth` + `setDepth(depth)` per master §2.2, persisted in the
+  `shadowcat.audio` mirror beside the channel gains — M27's settings section drives it) and
+  `duckable` channels default to music + ambience.
 - `applyState(state: AudioStateEngine)`: diff `playing` by `id`; create/sync/stop players.
   Called from the store subscription on every `audio-state` change and on a 1 Hz tick for
   drift.

@@ -66,9 +66,13 @@ other documents, no clock, no randomness. Deterministic by construction.
   `MAX_FUEL = 50_000_000`, instantiate, `alloc` → write input (input size ≤ 1 MiB, else refuse
   as `InputTooLarge` without running), call `validate`, read the reason (≤ 512 bytes,
   `String::from_utf8_lossy`, control characters stripped). Every trap, out-of-fuel, missing
-  export, out-of-bounds pointer or non-UTF-8 reason ⇒ `Verdict::Fault(FaultKind)`. Wall clock
-  is bounded by fuel; an additional `Instant` guard aborts reporting at 250 ms (belt and
-  braces — measured per call and logged at `warn` when exceeded).
+  export, out-of-bounds pointer or non-UTF-8 reason ⇒ `Verdict::Fault(FaultKind)`. Two
+  wall-clock mechanisms, deliberately distinct and BOTH implemented: (1) the 50 ms BUDGET — the
+  call's `Instant`-measured duration on the blocking thread; a call that returns but took
+  longer is reclassified `Fault(TooSlow)` and counts toward auto-disable like any fault; (2) the
+  250 ms HANG GUARD — a `tokio::time::timeout` around the `spawn_blocking` join for a call that
+  never returns (fuel bounds wasm instructions, not a stalled host import or allocator loop),
+  which yields `Fault(Hung)`, abandons the blocking thread, and logs at `warn`.
 - **Placement.** Validators follow the tier-2 `validate_system_schema_tree` precedent
   exactly: they run in `apply_intent` ONLY — never in `apply_command` (the trusted
   undo/replay substrate) — plus ONE second call site, `SqliteRepository::import_world`'s own
@@ -80,7 +84,9 @@ other documents, no clock, no randomness. Deterministic by construction.
   is: read the pre-image `system` band through the read-only pool (`open_read_only_pool`),
   run the validators on `spawn_blocking`, then open the write transaction — whose OCC
   pre-image check (`old`) refuses the write with `Conflict` if the document changed in
-  between, so the validated post-image is the one that commits. For every touched document
+  between, so the validated post-image is the one that commits. The pre-transaction check
+  first re-runs Phase 1's own pure structural validators on the pre-image so a malformed
+  submission never reaches — or counts against — a validator. For every touched document
   whose `system` band changed (or a Create), validators of modules enabled for the world with
   `validators_enabled` whose `doc_type` matches run in module-id order; the FIRST refusal
   rejects the whole intent with `DataError::OpFailed("validator <module-id>: <reason>")` —
@@ -93,20 +99,27 @@ other documents, no clock, no randomness. Deterministic by construction.
   detail arrives as literal characters). Embedded children are validated with their own
   `doc_type`. Server-origin writes that touch `system` (imports, world seeds) are validated
   the same way — the band, not the origin, decides.
-- **Fault policy (D8) — decided in the data layer, acted on in the `ws` layer.** `data` can
+- **Fault policy (D8) — COUNTED in the data layer, ACTED ON in the `ws` layer.** `data` can
   never reach `ws::room::Room` (the dependency is one-directional), and a side-effect write
-  from inside the intent path on the 1-connection pool deadlocks. So: `sandbox::
-  validate_document` returns `ValidatorVerdict::{Accept, Refuse{module, reason},
-  Fault{module, kind}}`; `apply_intent`'s error carries the verdict (`DataError::OpFailed`
-  with a structured `ValidatorFault` attached through a new `DataError::Validator(ValidatorFault)`
-  variant that `reject_reason` maps to `Invalid` like `OpFailed`); the CALLER in `ws::conn`
-  hands a `Fault` to `Room::note_validator_fault(module)`, which owns the in-memory
-  per-(world, module) consecutive-fault counter (restart-resettable, beside `moving`/
-  `session_floors`) and, at 5, issues the disable write (`set_world_enabled_modules` with the
-  flag cleared — its own transaction, after the rejected intent is fully unwound) and posts
-  the GM-only notice through the ordinary message Create path (`build_message_doc` +
-  `Audience::GmOnly`, a second short transaction). Any accepted call resets the counter. A
-  `Fault` refuses the write with the detail `"validator <module-id> faulted"`.
+  from inside the intent path on the 1-connection pool deadlocks. The per-(world, module)
+  consecutive-fault COUNTER lives beside the code that produces faults, so it is exact per
+  module: an in-memory, restart-resettable `DashMap<(Uuid, String), u32>` owned by the
+  long-lived `ValidatorRegistryCache` the repository holds (`faults`, handed by `Arc` into
+  every rebuilt `ValidatorRegistry` so a rescan never zeroes a streak). `sandbox::
+  validate_document` maintains it itself — a module's own fault increments its entry, a
+  module's own accept OR refuse resets its entry to 0 (a refusing validator is a working
+  one), and another module's verdict never touches it
+  (the helper knows which module ran; `apply_intent`'s signature does not change). It returns
+  `ValidatorVerdict::{Accept, Refuse{module, reason}, Fault{module, kind, consecutive}}`;
+  `apply_intent` surfaces a fault as the new `DataError::Validator(ValidatorFault)` variant
+  (`ValidatorFault { module: String, kind: FaultKind, consecutive: u32 }`, which
+  `reject_reason` maps to `Invalid` like `OpFailed`). The CALLER in `ws::conn`, when
+  `consecutive >= 5`, hands it to `Room::disable_faulting_validator(module)`, which issues the
+  disable write (`set_world_enabled_modules` with the flag cleared — its own transaction, after
+  the rejected intent is fully unwound), posts the GM-only notice through the ordinary message
+  Create path (`build_message_doc` + `Audience::GmOnly`, a second short transaction), and
+  calls `ValidatorRegistryCache::reset_faults(world, module)` so a re-enable starts clean. A `Fault` refuses
+  the write with the detail `"validator <module-id> faulted"`.
   **A slow-but-under-fuel validator is a fault too:** the per-call wall-clock guard (50 ms
   budget on the blocking thread; measured, not fuel-derived) converts an over-budget call
   into `Fault(TooSlow)` — so a validator that merely drags gets auto-disabled after 5 calls
@@ -172,9 +185,14 @@ other documents, no clock, no randomness. Deterministic by construction.
   module disabled ⇒ accepted; embedded child validated by its own type; `import_world`
   refuses a bundle document a validator refuses; `apply_command` replay never runs a
   validator; two modules ⇒ module-id order and first refusal wins; a document changed between
-  the pre-image read and the transaction ⇒ `Conflict`; the wall-clock guard yields
-  `Fault(TooSlow)`. `Room::note_validator_fault`: 5 faults ⇒ flag cleared + GM notice, an
-  accept resets. `WorldModuleEntry` round-trips; a legacy string-array setting reads as all
+  the pre-image read and the transaction ⇒ `Conflict`; the 50 ms budget yields
+  `Fault(TooSlow)` and the 250 ms hang guard `Fault(Hung)` (a validator whose host import
+  blocks forever) — both tested at the runtime layer with INJECTABLE budgets (deterministic,
+  never real-time at the `apply_intent` layer). Counter exactness: module A faults 4×, module
+  B accepts ⇒ A's next fault reports `consecutive: 5`; A's own accept or refuse between them
+  ⇒ `consecutive: 1`.
+  `Room::disable_faulting_validator`: called at `consecutive >= 5` ⇒ flag cleared + GM notice
+  + counter reset; called never for `consecutive < 5`. `WorldModuleEntry` round-trips; a legacy string-array setting reads as all
   flags false. Client: the toast shows `detail` as text (a `<b>` arrives literally).
 - `tests/sandbox.rs` integration: the example validator built and installed into a temp
   `modules_dir`; GM enables module + validators; a player's `hp: -1` actor create is rejected

@@ -61,8 +61,11 @@ export const PERFORMANCE_STORAGE_KEY = "shadowcat.performance";
 ## 3. Controller — `@shadowcat/ui-kit` `src/client/ui-kit/src/performance.svelte.ts`
 
 Shape mirrors `theme.svelte.ts` EXACTLY, including its division of responsibility: the
-controller never touches `Storage`. A rune-backed singleton
-`performance = { current: PerformanceSettings ($state), preset, set(patch), setPreset(p),
+controller never touches `Storage`. A rune-backed singleton exported as
+`performanceController` (never `performance`, which would shadow the ambient `Performance`
+global in every importer; only the spec-fixed `AppContext.performance` member carries the
+bare name)
+`= { current: PerformanceSettings ($state), preset, set(patch), setPreset(p),
 stats: { fps: number; frameMs: number } ($state), load(parsed: PersistedPerformance |
 undefined, signals: DeviceSignals), serialize(): PersistedPerformance, onChange?: (p:
 PersistedPerformance) => void }`. `set(patch)` moves `preset` to `"custom"` (overrides = the
@@ -76,7 +79,7 @@ Persistence lives in the shell beside the theme mirror (`sessionState.svelte.ts`
 `readThemeMirror`/`writeThemeMirror` shape. The load call site is
 `src/client/shell/src/main.ts`, immediately after the pre-mount
 `theme.load(readThemeMirror(localStorage))` line:
-`performance.load(readPerformanceMirror(localStorage), readDeviceSignals())` — before `App`
+`performanceController.load(readPerformanceMirror(localStorage), readDeviceSignals())` — before `App`
 mounts, because the settings are per-device and never come from the server (`ui_state` is
 per-account, D1). `readDeviceSignals()` lives in `src/client/shell/src/lib/deviceSignals.ts`
 (pure; guards every global on existence so jsdom and node environments read `{}`).

@@ -50,8 +50,13 @@ after 60 s idle (context released; re-created on the next roll).
   walls; camera orthographic-ish top-down with slight tilt (dice read from above).
 - Per die a convex-hull rigid body (`rapier` `ColliderDesc.convexHull`) with the geometry for
   its shape: d4 tetra, d6 cube, d8 octa, d10 pentagonal trapezohedron, d12 dodeca, d20 icosa,
-  d100 = two d10; any other `DieKind` (a d3, a d7, `Faces`) uses the standard shape whose face
-  count is ≥ the kind's face count with unused faces blank — so EVERY kind renders.
+  d100 = two d10; any other `DieKind` with ≤ 20 faces (a d3, a d7, a `Faces` list) uses the
+  standard shape whose face count is ≥ the kind's face count with unused faces blank; a kind
+  with MORE than 20 faces (other than the d100 split) renders as a d20 body whose EVERY face
+  carries the same label — the die's final `value` — so no face ever shows a wrong label
+  (a "value chip"); so EVERY kind renders. The target face for the remap is derived from
+  `DieRecord.value`: for `Numeric` the value itself, for `Faces` the index of `value` in the
+  face list (never from `natural`, which a reroll/explode may have replaced).
 - Face labels are drawn at runtime onto a canvas texture per die (numbers or `Face` labels /
   symbols), so custom face sets need no art. Colors from the theme's accent by default;
   per-device override (`localStorage` `shadowcat.dice3d`: `{ color, labelColor, material:
