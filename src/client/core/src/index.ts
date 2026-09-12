@@ -37,7 +37,7 @@ export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from 
 export { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
-export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT } from "./contributions";
+export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, STAGE_OVERLAY_CONTRACT } from "./contributions";
 export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";

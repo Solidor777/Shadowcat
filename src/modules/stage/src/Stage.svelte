@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -423,6 +423,9 @@
 
 <div class="stage-host" bind:this={host}>
   <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+  <div class="stage-overlays">
+    <Surface contract={STAGE_OVERLAY_CONTRACT} />
+  </div>
   {#if role === "gm"}
     <select
       class="gm-view"
@@ -442,11 +445,17 @@
 
 <style lang="scss">
   .stage-host {
+    position: relative;
     height: 100%;
     width: 100%;
     overflow: hidden;
     background: var(--surface-base);
     touch-action: none; /* let pointer gestures drive pan/zoom on touch (#10) */
+  }
+  .stage-overlays {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
   }
   canvas {
     display: block;
