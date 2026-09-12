@@ -24,14 +24,19 @@ vi.mock("pixi.js", async (importActual) => {
   return { ...actual, ColorMatrixFilter: StubColorMatrixFilter };
 });
 
+/** A stub `Application` for the headless backend; callers pass the parts their test reads. */
+function fakeApp(extra: Record<string, unknown> = {}): Application {
+  return { stage: new Container(), ...extra } as unknown as Application;
+}
+
 /** A minimal stand-in satisfying `PixiBackend`'s constructor: it reads only `app.stage.addChild`.
  * `Container` is GL-free (a pure scene-graph node), so this constructs a real `PixiBackend`
  * without a WebGL context or `Application.init()`.
+ * @param app The stub `Application` to wrap — `fakeApp()` by default.
  * @returns A `PixiBackend` constructed over a stub `Application`.
  */
-function headlessBackend(): PixiBackend {
-  const fakeApp = { stage: new Container() } as unknown as Application;
-  return new PixiBackend(fakeApp);
+function headlessBackend(app: Application = fakeApp()): PixiBackend {
+  return new PixiBackend(app);
 }
 
 /** A headless backend whose `app.renderer.render` is a counting stub instead of a real GPU
@@ -443,5 +448,31 @@ describe("PixiBackend.updateTokenFx", () => {
     const fx = node.fx!;
     backend.removeToken("t1");
     expect(fx._destroyed).toBe(true);
+  });
+});
+
+describe("frame cap and render scale", () => {
+  test("setFrameCap forwards to ticker.maxFPS (0 = uncapped)", () => {
+    const app = fakeApp({ ticker: { maxFPS: 0, add: vi.fn(), remove: vi.fn() } });
+    const backend = headlessBackend(app);
+    backend.setFrameCap(30);
+    expect((app as unknown as { ticker: { maxFPS: number } }).ticker.maxFPS).toBe(30);
+    backend.setFrameCap(0);
+    expect((app as unknown as { ticker: { maxFPS: number } }).ticker.maxFPS).toBe(0);
+  });
+  test("setRenderScale sets renderer.resolution to dpr*scale and calls resize", () => {
+    const renderer = { resolution: 1, resize: vi.fn(), render: vi.fn() };
+    const backend = headlessBackend(fakeApp({ renderer }));
+    globalThis.devicePixelRatio = 2;
+    backend.setRenderScale(0.5);
+    expect(renderer.resolution).toBe(1);
+    expect(renderer.resize).toHaveBeenCalledOnce();
+  });
+  test("render() calls renderer.render once with the stage", () => {
+    const renderer = { resolution: 1, resize: vi.fn(), render: vi.fn() };
+    const app = fakeApp({ renderer });
+    const backend = headlessBackend(app);
+    backend.render();
+    expect(renderer.render).toHaveBeenCalledWith({ container: app.stage });
   });
 });

@@ -59,6 +59,9 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     setLighting() {},
     startTicker() {},
     resize() {},
+    setFrameCap() {},
+    setRenderScale() {},
+    render() {},
     destroy() { this.destroyed = true; },
   };
 }
