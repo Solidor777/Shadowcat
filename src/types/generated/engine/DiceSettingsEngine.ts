@@ -35,4 +35,12 @@ direction: DiceDirectionSetting,
  * world default itself is an unconditional pair rather than
  * independently-optional fields (see `ChannelDiceOverride`'s doc).
  */
-channel_overrides: { [key in string]: ChannelDiceOverride }, };
+channel_overrides: { [key in string]: ChannelDiceOverride }, 
+/**
+ * The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, wired
+ * through `ctx.audio.playOneShot` once `AudioApi` exists); `None` = silent.
+ * A bare `Uuid` like every other asset reference in `chat::mod` (e.g.
+ * `Segment::Image::asset_id`) — no separate existence check at this layer, the asset
+ * endpoint 404s on a dangling id the same way an image segment's would.
+ */
+sound?: string, };
