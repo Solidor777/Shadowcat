@@ -22,6 +22,9 @@ import type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SceneAmbience,
+  Occlusion,
+  AudioOverlay,
   Pathfinding,
   AnimationSettings,
   TokenEngine,
@@ -117,6 +120,9 @@ export type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SceneAmbience,
+  Occlusion,
+  AudioOverlay,
   Pathfinding,
   AnimationSettings,
   TokenEngine,
@@ -505,6 +511,7 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
     vision: engine.vision ?? null,
     lighting: engine.lighting ?? null,
     combat: engine.combat ?? null,
+    ambience: engine.ambience ?? null,
   };
   return envelope(worldId, "scene", null, {}, id, full, null);
 }
