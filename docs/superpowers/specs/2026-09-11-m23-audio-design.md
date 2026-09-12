@@ -88,6 +88,29 @@ ServerMsg::AudioError { reason: String }          // refusal (authz, cap, unknow
 
 ### 2.3 Transcode pipeline (`data::asset::process` audio arm; master §7, D9)
 
+#### Measured: canPlayType per engine (Task 1b)
+
+Measured locally via Playwright 1.61.0 (`chromium` 1228, `firefox` 1532, `webkit` 2311 —
+`@playwright/test` from `src/client/shell`, probe script discarded after the run):
+
+| Engine | audio/ogg;codecs=opus | audio/webm;codecs=opus |
+| --- | --- | --- |
+| Chromium | `probably` | `probably` |
+| Firefox | `probably` | `probably` |
+| WebKit | `""` | `probably` |
+
+**Decision (the plan's Task 1b rule, applied):** WebKit returns `""` for Ogg and every engine
+returns non-empty for WebM, so the derivative container is **WebM**, not Ogg. Every
+`.opus.ogg` / `"audio/ogg; codecs=opus"` literal in this spec and the plan (the `OPUS_SUFFIX` /
+`OPUS_CONTENT_TYPE` constants, `AssetResolver.audioUrl`'s `primaryType`, the `?variant=opus`
+sibling name, the transcode test's `OggS` magic-byte assertion) becomes `.opus.webm` /
+`"audio/webm; codecs=opus"` uniformly. **Muxer implication the plan's "suffix and MIME string
+only" note does not cover:** the `ogg` crate's `ogg::writing::PacketWriter` emits Ogg
+encapsulation, not WebM/EBML — the transcode task (plan Task 9) must swap the muxing layer to a
+WebM/EBML writer (and may drop the `ogg` dependency) when it implements the pipeline; the
+decode (`symphonia`), resample (`rubato`) and encode (`opus`) stages are container-agnostic and
+unaffected.
+
 - `AssetKind::Audio` (`content_type` starts with `audio/`); the `kind` filter and the browser's
   kind chips learn it. Assets table gains `duration_ms INTEGER NULL` and `sample_rate INTEGER
   NULL` (edit `migrations/0001_init.sql` in place — no migration files pre-customers).
