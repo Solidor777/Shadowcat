@@ -59,3 +59,5 @@ export {
 export type { ThemeDefinition, ThemeTokenName, CustomTheme, ContrastPairing } from "./theme";
 export { ThemeController, theme, activeTheme } from "./theme.svelte";
 export type { PersistedTheme, ThemeListener } from "./theme.svelte";
+export { PerformanceController, performanceController, activePerformance } from "./performance.svelte";
+export type { PerformanceStats, PerformanceListener } from "./performance.svelte";
