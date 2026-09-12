@@ -16,9 +16,9 @@ use crate::data::document::{
     World, WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
-    CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
-    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE,
-    SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    CombatEngine, AUDIO_STATE_DOC_TYPE, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE,
+    COMBAT_HISTORY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE,
+    RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::permission::{
     cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
@@ -46,6 +46,7 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     CONDITION_REGISTRY_DOC_TYPE,
     RESOURCE_REGISTRY_DOC_TYPE,
     SYSTEM_DEFAULTS_DOC_TYPE,
+    AUDIO_STATE_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
     crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
@@ -1220,6 +1221,13 @@ impl Repository for SqliteRepository {
                     {
                         return Err(DataError::Forbidden);
                     }
+                    // `audio-state` is server-authored, created exactly once by the world-seed
+                    // path: the world's singleton transport state. Reserved to `ConfigSeed` (the
+                    // same origin `system-defaults` reserves Create to) — `AudioTransport` never
+                    // creates this singleton, only updates the one `world_seed` already made.
+                    if doc.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+                        return Err(DataError::Forbidden);
+                    }
                     let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
                     let access = resolve_access_world(
                         ctx.user_id,
@@ -1347,6 +1355,11 @@ impl Repository for SqliteRepository {
                     {
                         return Err(DataError::Forbidden);
                     }
+                    // `audio-state` deletion is reserved to the config-seed path, same as
+                    // Create — against the authoritative STORED doc_type.
+                    if cur.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+                        return Err(DataError::Forbidden);
+                    }
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
                     // Capability-skipping origins (`WriteOrigin::
                     // skips_capability_gates`) skip this gate — see the Create
@@ -1406,6 +1419,16 @@ impl Repository for SqliteRepository {
                     // authoritative STORED doc_type for every origin but the
                     // world-config seed/refresh path's `ConfigSeed`.
                     if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
+                    {
+                        return Err(DataError::Forbidden);
+                    }
+                    // `audio-state` Updates are reserved to the audio transport path — rejected
+                    // against the authoritative STORED doc_type for every origin but
+                    // `audio::transport::handle_transport`'s `AudioTransport`. Unlike
+                    // `system-defaults` (whose ConfigSeed refresh also Updates it),
+                    // `audio-state`'s ConfigSeed writer only ever Creates the singleton once, so
+                    // Update is guarded to the OTHER origin, not the same one Create/Delete use.
+                    if cur.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::AudioTransport
                     {
                         return Err(DataError::Forbidden);
                     }

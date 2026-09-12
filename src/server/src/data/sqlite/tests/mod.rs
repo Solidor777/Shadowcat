@@ -1,6 +1,7 @@
 //! Repository tests, split by subject; shared fixtures live here.
 
 mod assets;
+mod audio_origin;
 mod base_ownership;
 mod combat_batches;
 mod commands_and_intents;
