@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
+use crate::data::engine::AudioChannel;
 use crate::data::search::SearchHit;
 use crate::merge::MergeConflict;
 
@@ -386,6 +387,101 @@ pub enum ClientMsg {
         request_id: Uuid,
         /// The instance to reset.
         child_id: Uuid,
+    },
+    /// GM-only audio transport control (play/pause/seek/skip/gain), applied to the world's
+    /// `audio-state` singleton under `WriteOrigin::AudioTransport`. No `request_id`: transport
+    /// ops are fire-and-forget from the wire's perspective — success is the broadcast `Event`
+    /// echo of the `audio-state` Update; failure is a connection-local `AudioError`.
+    AudioTransport {
+        /// The transport operation to apply.
+        op: AudioOp,
+    },
+}
+
+/// One audio-transport operation (`ClientMsg::AudioTransport`). GM-only; the server resolves
+/// `Play`'s effective asset/channel/gain from the named playlist (or accepts them directly
+/// when `playlist` is omitted) — see `audio::state::apply`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::AudioOp;
+///
+/// let op = AudioOp::StopAll;
+/// let json = serde_json::to_value(&op).unwrap();
+/// assert_eq!(json, serde_json::json!({ "type": "stop_all" }));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AudioOp {
+    /// Start a new playing entry, from a playlist track or a direct asset.
+    Play {
+        /// Source playlist, or `None` for a direct asset play.
+        #[serde(default)]
+        playlist: Option<Uuid>,
+        /// Direct asset id; required when `playlist` is `None`, ignored otherwise unless the
+        /// playlist resolution should be overridden (rare — normally left `None`).
+        #[serde(default)]
+        asset: Option<String>,
+        /// Track index within `playlist`; `None` lets the server resolve it (playlist mode's
+        /// natural start, e.g. index 0 for `Sequential`, the shuffle order's first pick for
+        /// `Shuffle`).
+        #[serde(default)]
+        track_index: Option<u32>,
+        /// Overrides the resolved channel; `None` uses the playlist's own channel (or `Sfx`
+        /// for a direct asset play).
+        #[serde(default)]
+        channel: Option<AudioChannel>,
+        /// Overrides the resolved gain; `None` uses the track's own gain (or `1.0` direct).
+        #[serde(default)]
+        gain: Option<f64>,
+        /// Overrides the resolved loop flag; `None` uses the track's own (or `false` direct).
+        #[serde(default, rename = "loop")]
+        loop_: Option<bool>,
+    },
+    /// Pause a playing entry in place.
+    Pause {
+        /// The entry to pause.
+        id: Uuid,
+    },
+    /// Resume a paused entry from where it paused.
+    Resume {
+        /// The entry to resume.
+        id: Uuid,
+    },
+    /// Stop and remove a playing entry.
+    Stop {
+        /// The entry to stop.
+        id: Uuid,
+    },
+    /// Stop and remove every playing entry.
+    StopAll,
+    /// Seek a playing entry to an absolute position.
+    Seek {
+        /// The entry to seek.
+        id: Uuid,
+        /// Target position, milliseconds from the track's own start.
+        position_ms: u64,
+    },
+    /// Advance to the next track per the source playlist's mode; the server verifies the
+    /// current track's elapsed duration against the asset's own `durationMs` before applying
+    /// (see `audio::transport::handle_transport`) — a client cannot skip a track early.
+    Next {
+        /// The entry to advance.
+        id: Uuid,
+    },
+    /// Step back to the previous track per the source playlist's mode.
+    Prev {
+        /// The entry to step back.
+        id: Uuid,
+    },
+    /// Adjust a playing entry's gain without restarting it.
+    SetGain {
+        /// The entry to adjust.
+        id: Uuid,
+        /// The new gain, `0..=1` (presentation range; ingress validates finiteness).
+        gain: f64,
     },
 }
 
@@ -1197,6 +1293,15 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Why it was refused.
         reason: MergeErrorKind,
+    },
+    /// An `AudioTransport` op was refused (not GM, unknown id, over cap, invalid gain, etc.).
+    /// Addressed to the originating connection only; never broadcast. Carries no `request_id`
+    /// — `ClientMsg::AudioTransport` itself carries none, since transport ops are
+    /// fire-and-forget on the wire (success is the broadcast `Event` echo).
+    AudioError {
+        /// Player-presentable failure text (`audio::state::AudioError`'s `Display`, or
+        /// "forbidden" for the not-GM case).
+        reason: String,
     },
 }
 

@@ -5,6 +5,9 @@
 //! broadcasts per-recipient-filtered events. Server-side code never executes
 //! third-party module code.
 
+/// Server-side audio: the pure transport-state engine (`audio::state::apply`)
+/// and the GM-only `AudioTransport` handler (`audio::transport`).
+pub mod audio;
 /// Accounts, sessions, password hashing, and the first-run setup flow.
 pub mod auth;
 pub mod backup;
