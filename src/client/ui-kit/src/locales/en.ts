@@ -436,6 +436,8 @@ export const en: Messages = {
   "gameSettings.dice.channelOverrideFor": "Custom settings for channel {channel}",
   "gameSettings.dice.channelModeFor": "Mode for channel {channel}",
   "gameSettings.dice.channelDirectionFor": "Direction for channel {channel}",
+  "gameSettings.dice.sound": "Dice-roll sound",
+  "gameSettings.dice.soundNone": "None",
   "gameSettings.chat.title": "Chat",
   "gameSettings.chat.hyperlinks": "Hyperlinks",
   "gameSettings.chat.linkPreviews": "Link previews",

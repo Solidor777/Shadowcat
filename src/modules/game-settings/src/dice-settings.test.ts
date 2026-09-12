@@ -4,6 +4,17 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildDiceSettingsDoc, type WireDocument } from "@shadowcat/core";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listAssets: vi.fn().mockResolvedValue([
+      { id: "snd-1", content_type: "audio/mpeg", original_name: "clatter.mp3" },
+      { id: "img-1", content_type: "image/png", original_name: "map.png" },
+    ]),
+  };
+});
+
 function gmStoreWith(...docs: WireDocument[]) {
   const s = new DocumentStore();
   s.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: docs.map((doc) => ({ op: "create", doc })) });
@@ -72,5 +83,41 @@ describe("dice settings editor", () => {
 
     expect(modeValues).toEqual(["total", "success_count"]);
     expect(dirValues).toEqual(["high_wins", "low_wins"]);
+  });
+
+  it("sound select lists only audio assets", async () => {
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice) }) });
+
+    const sel = await screen.findByLabelText("gameSettings.dice.sound") as HTMLSelectElement;
+    const values = Array.from(sel.options).map((o) => o.value);
+    expect(values).toEqual(["", "snd-1"]);
+  });
+
+  it("changing the sound select dispatches a JSON-pointer update", async () => {
+    const dispatchIntent = vi.fn();
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {} }, "dice1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
+
+    const sel = await screen.findByLabelText("gameSettings.dice.sound") as HTMLSelectElement;
+    await fireEvent.change(sel, { target: { value: "snd-1" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "dice1", changes: [{ path: "/engine/sound", old: null, new: "snd-1" }] },
+    ]);
+  });
+
+  it("clearing the sound select writes null", async () => {
+    const dispatchIntent = vi.fn();
+    const dice = buildDiceSettingsDoc("w1", { mode: "total", direction: "high_wins", channel_overrides: {}, sound: "snd-1" }, "dice1");
+    render(GameSettingsPanel, { context: setAppContextForTest({ role: "gm", world: "w1", documents: gmStoreWith(dice), dispatchIntent }) });
+
+    const sel = await screen.findByLabelText("gameSettings.dice.sound") as HTMLSelectElement;
+    expect(sel.value).toBe("snd-1");
+    await fireEvent.change(sel, { target: { value: "" } });
+
+    expect(dispatchIntent).toHaveBeenCalledWith([
+      { op: "update", doc_id: "dice1", changes: [{ path: "/engine/sound", old: "snd-1", new: null }] },
+    ]);
   });
 });
