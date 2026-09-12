@@ -168,6 +168,7 @@ fn manual_raws(values: &[i32]) -> RawRoll {
             rerolled_from: None,
             crit_success: false,
             crit_fail: false,
+            kind: None,
             expertise: 0,
             label: None,
             symbols: vec![],

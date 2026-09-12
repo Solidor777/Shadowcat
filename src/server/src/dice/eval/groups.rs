@@ -94,6 +94,7 @@ pub fn resolve_group(
                 expertise: 0,
                 label: group.label.clone(),
                 symbols,
+                kind: Some(d.kind.clone()),
                 ordered,
             }
         })
@@ -222,6 +223,7 @@ pub fn resolve_group(
                                         expertise: 0,
                                         label: group.label.clone(),
                                         symbols,
+                                        kind: Some(group.kind.clone()),
                                         // Reached only inside the `!ordered { continue }`-gated
                                         // modifier loop, so the producing group is always ordered.
                                         ordered: true,
@@ -294,6 +296,7 @@ struct ExtraDie {
 /// Push one exploded/penetrated extra die into both the raw log and the per-die
 /// record vec.
 fn push_extra(recs: &mut Vec<DieRecord>, raws: &mut RawRoll, extra: ExtraDie) {
+    let kind = extra.kind.clone();
     let id = raws.push(extra.kind, extra.natural);
     recs.push(DieRecord {
         id,
@@ -308,6 +311,7 @@ fn push_extra(recs: &mut Vec<DieRecord>, raws: &mut RawRoll, extra: ExtraDie) {
         expertise: 0,
         label: extra.label,
         symbols: vec![],
+        kind: Some(kind),
         ordered: extra.ordered,
     });
 }

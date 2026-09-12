@@ -150,6 +150,7 @@ fn run_dp(
 ///     expertise: 0,
 ///     label: None,
 ///     symbols: vec![],
+///     kind: None,
 ///     ordered: true,
 /// }];
 /// let cfg = SuccessConfig {
