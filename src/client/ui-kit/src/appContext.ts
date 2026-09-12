@@ -9,6 +9,7 @@ import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
+import type { PerformanceController } from "./performance.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -351,6 +352,10 @@ export interface AppContext {
    * render a panel-dock strip elsewhere. No-ops/empty (with a one-time console
    * warning on a write call) until the panel host binds; see `PanelsBridge`. */
   panels: PanelsApi & PanelsChipsView;
+  /** Per-device render-budget controller — effective settings, active preset, live frame
+   * stats, and the statusbar readout toggle. Per-device only: never read from or written to
+   * the server `ui_state`. */
+  performance: PerformanceController;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */
