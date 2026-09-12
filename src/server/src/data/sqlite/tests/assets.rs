@@ -28,6 +28,8 @@ fn sample(world: Uuid) -> Asset {
             original_byte_size: 20,
             original_retained: true,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
         },
     }
 }

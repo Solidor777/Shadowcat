@@ -461,6 +461,8 @@ pub fn process_staged(
             original_byte_size,
             original_retained: retain_originals,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
         },
         converted: true,
     })

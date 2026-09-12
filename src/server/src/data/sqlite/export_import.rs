@@ -680,8 +680,9 @@ impl SqliteRepository {
                 "INSERT INTO assets \
                  (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
                   created_at, version, folder_id, width, height, has_alpha, animated, \
-                  original_content_type, original_byte_size, original_retained, conversion_note) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  original_content_type, original_byte_size, original_retained, conversion_note, \
+                  duration_ms, sample_rate) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(row.id.to_string())
             .bind(world.to_string())
@@ -701,6 +702,8 @@ impl SqliteRepository {
             .bind(meta.original_byte_size)
             .bind(i64::from(meta.original_retained))
             .bind(&meta.conversion_note)
+            .bind(meta.duration_ms)
+            .bind(meta.sample_rate)
             .execute(&mut *tx)
             .await?;
             // A bundle is untrusted input: its explicit tags pass the same rule

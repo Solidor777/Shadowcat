@@ -43,6 +43,15 @@ pub struct AssetMeta {
     pub original_retained: bool,
     /// Why the upload was stored pass-through instead of converted, if it was.
     pub conversion_note: Option<String>,
+    /// Decoded audio duration, milliseconds; `None` for a non-audio asset or a decode
+    /// failure. `f64`-adjacent precision is unnecessary here — this is metadata display, not
+    /// a sync anchor (unlike `PlayingTrack.startedAt`), so a plain `i64` is fine: it is
+    /// consumed only by `AssetResolver`/display code, never round-tripped through a
+    /// client-authored write.
+    pub duration_ms: Option<i64>,
+    /// Decoded audio sample rate, Hz (the SOURCE rate, before the pipeline's 48 kHz Opus
+    /// resample); `None` for a non-audio asset or a decode failure.
+    pub sample_rate: Option<i64>,
 }
 
 impl AssetMeta {
@@ -70,6 +79,8 @@ impl AssetMeta {
             original_byte_size: byte_size,
             original_retained: false,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
         }
     }
 }

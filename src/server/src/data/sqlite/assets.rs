@@ -537,8 +537,9 @@ impl SqliteRepository {
             "INSERT INTO assets \
              (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
               created_at, version, folder_id, width, height, has_alpha, animated, \
-              original_content_type, original_byte_size, original_retained, conversion_note) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              original_content_type, original_byte_size, original_retained, conversion_note, \
+              duration_ms, sample_rate) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(a.id.to_string())
         .bind(a.world_id.to_string())
@@ -558,6 +559,8 @@ impl SqliteRepository {
         .bind(a.meta.original_byte_size)
         .bind(i64::from(a.meta.original_retained))
         .bind(&a.meta.conversion_note)
+        .bind(a.meta.duration_ms)
+        .bind(a.meta.sample_rate)
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -603,6 +606,8 @@ impl SqliteRepository {
                 original_byte_size: row.get("original_byte_size"),
                 original_retained: row.get::<i64, _>("original_retained") != 0,
                 conversion_note: row.get("conversion_note"),
+                duration_ms: row.get("duration_ms"),
+                sample_rate: row.get("sample_rate"),
             },
         })
     }
@@ -705,6 +710,7 @@ impl SqliteRepository {
             "UPDATE assets SET storage_key = ?, content_type = ?, byte_size = ?, \
              width = ?, height = ?, has_alpha = ?, animated = ?, original_content_type = ?, \
              original_byte_size = ?, original_retained = ?, conversion_note = ?, \
+             duration_ms = ?, sample_rate = ?, \
              version = version + 1 \
              WHERE id = ? RETURNING version",
         )
@@ -719,6 +725,8 @@ impl SqliteRepository {
         .bind(meta.original_byte_size)
         .bind(i64::from(meta.original_retained))
         .bind(&meta.conversion_note)
+        .bind(meta.duration_ms)
+        .bind(meta.sample_rate)
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?
