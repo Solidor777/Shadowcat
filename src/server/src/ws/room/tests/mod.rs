@@ -149,6 +149,9 @@ impl Repository for DeleteMidHydration<'_> {
     ) -> Result<Option<Uuid>, DataError> {
         self.inner.member_id_by_username(world, username).await
     }
+    async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
+        self.inner.asset_id_by_name(world, name).await
+    }
     async fn world_cap_defaults(
         &self,
         world: Uuid,

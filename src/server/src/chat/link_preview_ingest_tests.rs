@@ -141,6 +141,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|opt| opt.expect("a plain message is not a /fx command"))
         .map(|(cmd, _pending)| cmd)
     }
 
@@ -203,6 +204,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|opt| opt.expect("a plain message is not a /fx command"))
     }
 
     async fn edit(

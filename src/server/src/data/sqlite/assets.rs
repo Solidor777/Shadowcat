@@ -676,6 +676,27 @@ impl SqliteRepository {
         Ok(Some(asset))
     }
 
+    /// See `Repository::asset_id_by_name`.
+    pub async fn asset_id_by_name(
+        &self,
+        world: Uuid,
+        name: &str,
+    ) -> Result<Option<Uuid>, DataError> {
+        let row = sqlx::query(
+            "SELECT id FROM assets WHERE world_id = ? AND LOWER(original_name) = LOWER(?) \
+             ORDER BY created_at LIMIT 1",
+        )
+        .bind(world.to_string())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| {
+            Uuid::parse_str(&r.get::<String, _>("id"))
+                .map_err(|e| DataError::OpFailed(e.to_string()))
+        })
+        .transpose()
+    }
+
     /// Swap the bytes behind a stable id: rewrites the served-file columns AND
     /// every pipeline-metadata column from `meta`; bumps and returns the new
     /// version.

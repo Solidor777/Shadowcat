@@ -311,6 +311,9 @@ impl Repository for StubRepo {
     async fn get_asset(&self, _id: Uuid) -> Result<Option<crate::data::asset::Asset>, DataError> {
         unimplemented!()
     }
+    async fn asset_id_by_name(&self, _world: Uuid, _name: &str) -> Result<Option<Uuid>, DataError> {
+        unimplemented!()
+    }
 }
 
 fn ctx(role: WorldRole) -> PermissionContext {

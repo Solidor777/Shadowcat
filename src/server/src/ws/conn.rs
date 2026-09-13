@@ -658,7 +658,7 @@ async fn handle_socket(
         )
                                     .await
                                     {
-                                        Ok((cmd, pending)) => {
+                                        Ok(Some((cmd, pending))) => {
                                             if !pending.is_empty() {
                                                 if let Some(message_id) = crate::chat::command_message_id(&cmd) {
                                                     tokio::spawn(crate::chat::run_pending_enrichments(
@@ -678,6 +678,10 @@ async fn handle_socket(
                                                 }
                                             }
                                         }
+                                        // A successful `/fx`: no message document, no
+                                        // enrichment, no reply frame (the broadcast `vfx`
+                                        // echo IS the confirmation).
+                                        Ok(None) => {}
                                         Err(e) => {
                                             tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
                                             if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {

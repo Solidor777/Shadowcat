@@ -91,6 +91,7 @@ async fn seed_message(room: &Room, repo: &SqliteRepository, ctx: &PermissionCont
         Audience::Public,
     )
     .await
+    .unwrap()
     .unwrap();
     match &cmd.ops[0] {
         Operation::Create { doc } => doc.id,
