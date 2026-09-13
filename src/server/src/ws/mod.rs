@@ -18,6 +18,7 @@ pub mod room;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
+pub mod vfx;
 
 pub use room::RoomRegistry;
 
