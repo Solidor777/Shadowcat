@@ -205,6 +205,7 @@ export class AssetResolver {
    *     original_byte_size: 1n,
    *     original_retained: false,
    *     conversion_note: null,
+   *     sheet: null,
    *   },
    * ]);
    * ```

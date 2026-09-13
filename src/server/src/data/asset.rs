@@ -43,6 +43,12 @@ pub struct AssetMeta {
     pub original_retained: bool,
     /// Why the upload was stored pass-through instead of converted, if it was.
     pub conversion_note: Option<String>,
+    /// Server-derived grid-sheet geometry/timing for an animated source, or `None` for a
+    /// non-animated asset or one whose sheet generation produced nothing (fewer than 2 decoded
+    /// frames, or a write failure) — a `None` here is not itself an error; `VfxEmission`/`PlayVfx`
+    /// consumers fall back to the PixiJS-spritesheet pairing path (`vfx:sheet=` tag) or fail
+    /// closed to no playback.
+    pub sheet: Option<crate::data::asset::process::SheetMeta>,
 }
 
 impl AssetMeta {
@@ -70,6 +76,7 @@ impl AssetMeta {
             original_byte_size: byte_size,
             original_retained: false,
             conversion_note: None,
+            sheet: None,
         }
     }
 }

@@ -294,17 +294,28 @@ fn write_derivatives_regenerates_from_canonical() {
 }
 
 #[test]
-fn sibling_suffixes_are_the_variant_suffixes_plus_orig() {
+fn sibling_suffixes_are_the_variant_suffixes_plus_orig_and_sheet() {
     let c = Path::new("c");
     assert_eq!(
         sibling_paths(c).to_vec(),
         vec![
             original_path(c),
             derivative_path(c, Variant::Thumb),
-            derivative_path(c, Variant::Preview)
+            derivative_path(c, Variant::Preview),
+            with_suffix(c, ".sheet.webp"),
+            with_suffix(c, ".sheet.json"),
         ]
     );
-    assert_eq!(SIBLING_SUFFIXES, [".orig", ".thumb.webp", ".preview.webp"]);
+    assert_eq!(
+        SIBLING_SUFFIXES,
+        [
+            ".orig",
+            ".thumb.webp",
+            ".preview.webp",
+            ".sheet.webp",
+            ".sheet.json"
+        ]
+    );
 }
 
 #[test]
@@ -322,4 +333,141 @@ fn suffix_paths_keep_the_directory_and_append_to_the_file_name() {
         original_path(&canonical),
         Path::new("worlds").join("abc.orig")
     );
+}
+
+/// A 3-frame `w`×`h` GIF with distinct solid colors and delays 100/200/300 ms.
+fn gif_frames_ms(w: u32, h: u32, delays_ms: &[u32]) -> Vec<u8> {
+    use image::codecs::gif::GifEncoder;
+    use image::{Delay, Frame};
+    let colors = [
+        image::Rgba([255, 0, 0, 255]),
+        image::Rgba([0, 255, 0, 255]),
+        image::Rgba([0, 0, 255, 255]),
+    ];
+    let mut out = Cursor::new(Vec::new());
+    {
+        let mut enc = GifEncoder::new(&mut out);
+        let frames = delays_ms.iter().enumerate().map(|(i, ms)| {
+            Frame::from_parts(
+                RgbaImage::from_pixel(w, h, colors[i % colors.len()]),
+                0,
+                0,
+                Delay::from_numer_denom_ms(*ms, 1),
+            )
+        });
+        enc.encode_frames(frames).unwrap();
+    }
+    out.into_inner()
+}
+
+#[test]
+fn generate_grid_sheet_tiles_a_three_frame_gif_with_its_timings() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = gif_frames_ms(4, 4, &[100, 200, 300]);
+    let staged = stage(dir.path(), &input);
+
+    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    assert_eq!(meta.count, 3);
+    assert_eq!(meta.rows, 2);
+    assert_eq!(meta.cols, 2);
+    assert_eq!(meta.frame_ms, vec![100, 200, 300]);
+    assert_eq!((meta.width, meta.height), (4, 4));
+
+    let sheet = with_suffix(&staged, ".sheet.webp");
+    let json = with_suffix(&staged, ".sheet.json");
+    assert!(sheet.exists());
+    assert!(json.exists());
+    let round: SheetMeta = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    assert_eq!(round, meta);
+}
+
+#[test]
+fn a_still_image_produces_no_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = png_rgba(16, 16);
+    let staged = stage(dir.path(), &input);
+    let p = process_staged(&staged, "image/png", input.len() as i64, false).unwrap();
+    assert!(p.meta.sheet.is_none());
+    assert!(!with_suffix(&staged, ".sheet.webp").exists());
+    assert!(!with_suffix(&staged, ".sheet.json").exists());
+}
+
+#[test]
+fn a_grid_over_the_max_axis_downscales_every_frame_uniformly() {
+    let dir = tempfile::tempdir().unwrap();
+    // 9 frames of 1500×1500: a 3×3 tiling would reach 4500px, over the cap.
+    let input = gif_frames_ms(1500, 1500, &[100, 100, 100, 100, 100, 100, 100, 100, 100]);
+    let staged = stage(dir.path(), &input);
+
+    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    assert_eq!((meta.rows, meta.cols, meta.count), (3, 3, 9));
+    assert!(meta.width < 1500, "downscaled: {}", meta.width);
+    assert!(meta.height < 1500, "downscaled: {}", meta.height);
+    assert_eq!(
+        meta.width, meta.height,
+        "uniform downscale keeps square frames square"
+    );
+    // The written sheet's own dimensions are exactly the tiled downscaled frames.
+    assert_eq!(
+        webp_dims(&with_suffix(&staged, ".sheet.webp")),
+        (meta.width * meta.cols, meta.height * meta.rows)
+    );
+}
+
+#[test]
+fn reprocessing_the_same_animation_regenerates_an_identical_sheet() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = gif_two_frames();
+    let first = stage(dir.path(), &input);
+    let p1 = process_staged(&first, "image/gif", input.len() as i64, true).unwrap();
+    let second = stage(dir.path(), &input);
+    let p2 = process_staged(&second, "image/gif", input.len() as i64, true).unwrap();
+    let s1 = p1.meta.sheet.expect("first processing derives a sheet");
+    let s2 = p2.meta.sheet.expect("reprocessing regenerates a sheet");
+    assert_eq!(s1, s2);
+}
+
+#[test]
+fn the_committed_animated_webp_fixture_decodes_through_the_webp_arm() {
+    let bytes = include_bytes!("tests/fixtures/animated-4f-8x8.webp");
+    let dir = tempfile::tempdir().unwrap();
+    let staged = stage(dir.path(), bytes);
+
+    let meta = generate_grid_sheet(&staged, "image/webp").unwrap();
+    assert_eq!(meta.count, 4);
+    assert_eq!(meta.rows, 2);
+    assert_eq!(meta.cols, 2);
+    assert_eq!(meta.frame_ms, vec![100, 100, 100, 100]);
+    assert_eq!((meta.width, meta.height), (8, 8));
+
+    let sheet = with_suffix(&staged, ".sheet.webp");
+    let json = with_suffix(&staged, ".sheet.json");
+    assert!(sheet.exists());
+    assert!(json.exists());
+    let round: SheetMeta = serde_json::from_slice(&std::fs::read(&json).unwrap()).unwrap();
+    assert_eq!(round, meta);
+
+    // Frame index 2 tiles at (col = 2 % 2, row = 2 / 2) = (0, 1); the fixture
+    // paints frame i's rows 2i/2i+1 red/blue, so that tile's rows 4/5 are
+    // red/blue. The VP8L decode of the fixture's pure red/blue lands one
+    // channel-step off (a fixed-point color-transform inversion artifact of
+    // the decoder), so the assertion pins the decoded values.
+    let img = ImageReader::open(&sheet)
+        .unwrap()
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap()
+        .to_rgba8();
+    let (col, row) = (2 % meta.cols, 2 / meta.cols);
+    let tile = image::imageops::crop_imm(
+        &img,
+        col * meta.width,
+        row * meta.height,
+        meta.width,
+        meta.height,
+    )
+    .to_image();
+    assert_eq!(tile.get_pixel(0, 4).0, [254, 0, 0, 255]);
+    assert_eq!(tile.get_pixel(0, 5).0, [0, 0, 254, 255]);
 }

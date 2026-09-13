@@ -603,6 +603,7 @@ impl SqliteRepository {
                 original_byte_size: row.get("original_byte_size"),
                 original_retained: row.get::<i64, _>("original_retained") != 0,
                 conversion_note: row.get("conversion_note"),
+                sheet: None,
             },
         })
     }

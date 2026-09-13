@@ -6,9 +6,12 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use super::AssetMeta;
-use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageReader};
+use image::imageops::FilterType;
+use image::{AnimationDecoder, DynamicImage, Frame, ImageDecoder, ImageReader};
+use serde::{Deserialize, Serialize};
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
+use ts_rs::TS;
 
 /// Longest axis of the `thumb` derivative, in pixels.
 pub const THUMB_PX: u32 = 128;
@@ -41,9 +44,26 @@ fn decode_limits() -> image::Limits {
 
 /// File-name suffix of the retained original beside the canonical.
 const ORIGINAL_SUFFIX: &str = ".orig";
-/// Every suffix a sibling artifact may carry, in `sibling_paths` order. The
-/// world bundle accepts exactly this set under `assets/<id><suffix>`.
-pub const SIBLING_SUFFIXES: [&str; 3] = [ORIGINAL_SUFFIX, ".thumb.webp", ".preview.webp"];
+/// File-name suffix of the server-derived grid-sheet image (animated sources only).
+const SHEET_SUFFIX: &str = ".sheet.webp";
+/// File-name suffix of the server-derived grid-sheet's timing/geometry sidecar.
+const SHEET_JSON_SUFFIX: &str = ".sheet.json";
+/// Longest axis (px) the grid sheet's FULL tiled image may reach; frames are downscaled
+/// uniformly (never upscaled) when the near-square tiling would exceed it.
+const SHEET_MAX_PX: u32 = 4096;
+
+/// Every artifact that can sit beside a canonical: the retained original, the two
+/// derivatives, and the two grid-sheet siblings (animated sources only). The single
+/// statement of the sibling set — commit, replace, delete and export all iterate this
+/// rather than re-spelling it. The world bundle accepts exactly this set under
+/// `assets/<id><suffix>`.
+pub const SIBLING_SUFFIXES: [&str; 5] = [
+    ORIGINAL_SUFFIX,
+    ".thumb.webp",
+    ".preview.webp",
+    SHEET_SUFFIX,
+    SHEET_JSON_SUFFIX,
+];
 
 /// A derivative size class.
 ///
@@ -124,8 +144,9 @@ pub fn original_path(canonical: &Path) -> PathBuf {
 }
 
 /// Every artifact that can sit beside a canonical: the retained original and
-/// the two derivatives. The single statement of the sibling set — commit,
-/// replace, delete and export all iterate this rather than re-spelling it.
+/// the two derivatives, plus the two grid-sheet siblings for an animated
+/// source. The single statement of the sibling set — commit, replace, delete
+/// and export all iterate this rather than re-spelling it.
 ///
 /// # Examples
 ///
@@ -135,10 +156,10 @@ pub fn original_path(canonical: &Path) -> PathBuf {
 ///
 /// let canonical = Path::new("data").join("uuid");
 /// let siblings = sibling_paths(&canonical);
-/// assert_eq!(siblings.len(), 3);
+/// assert_eq!(siblings.len(), 5);
 /// assert!(siblings[0].to_string_lossy().ends_with(".orig"));
 /// ```
-pub fn sibling_paths(canonical: &Path) -> [PathBuf; 3] {
+pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
     SIBLING_SUFFIXES.map(|suffix| with_suffix(canonical, suffix))
 }
 
@@ -296,6 +317,154 @@ fn is_animated(path: &Path, content_type: &str) -> bool {
     }
 }
 
+/// Decode every frame of an animated GIF/WebP at `path`, honoring the same decode limits
+/// every other decode in this module runs under. Returns an empty vec for a content type
+/// this module cannot decode as an animation (the caller only reaches this after
+/// `is_animated` already confirmed one of the two supported types) or on any decode error —
+/// callers treat an empty result as "sheet generation produced nothing", never a hard
+/// failure (an upload/reconvert is never rejected for a sheet-generation reason, mirroring
+/// `process_staged`'s own pass-through-on-failure convention).
+fn decode_animation_frames(path: &Path, content_type: &str) -> Vec<Frame> {
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let reader = BufReader::new(file);
+    let frames = match content_type {
+        "image/gif" => image::codecs::gif::GifDecoder::new(reader)
+            .and_then(|mut d| d.set_limits(decode_limits()).map(|()| d))
+            .map(|d| d.into_frames().collect_frames()),
+        "image/webp" => image::codecs::webp::WebPDecoder::new(reader)
+            .and_then(|mut d| d.set_limits(decode_limits()).map(|()| d))
+            .map(|d| d.into_frames().collect_frames()),
+        _ => return Vec::new(),
+    };
+    match frames {
+        Ok(Ok(frames)) => frames,
+        _ => Vec::new(),
+    }
+}
+
+/// Server-derived grid-sheet geometry + per-frame timing, recorded on `AssetMeta.sheet` and
+/// mirrored verbatim into the `.sheet.json` sidecar. `width`/`height` are the PER-FRAME pixel
+/// dimensions after any downscale (never the full tiled sheet's dimensions) — the render
+/// client already derives per-frame size by dividing the loaded sheet texture by
+/// `cols`/`rows`, so this pair exists for tooling/documentation, not client consumption.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::SheetMeta;
+///
+/// let meta = SheetMeta { rows: 2, cols: 2, count: 3, frame_ms: vec![100, 100, 100], width: 8, height: 8 };
+/// assert_eq!(meta.count, 3);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct SheetMeta {
+    /// Grid row count.
+    pub rows: u32,
+    /// Grid column count.
+    pub cols: u32,
+    /// Frame count (`<= rows*cols`; the tiling is near-square, so the last row/col may be
+    /// partially empty).
+    pub count: u32,
+    /// Per-frame display duration in milliseconds, in playback order.
+    pub frame_ms: Vec<u32>,
+    /// Per-frame pixel width, after any uniform downscale.
+    pub width: u32,
+    /// Per-frame pixel height, after any uniform downscale.
+    pub height: u32,
+}
+
+/// Tile every decoded frame of an animated GIF/WebP into a near-square `rows`×`cols` grid
+/// (`cols = ceil(sqrt(count))`, `rows = ceil(count/cols)`), downscaling every frame UNIFORMLY
+/// (never upscaling) when the full tiled sheet's longest side would exceed `SHEET_MAX_PX`,
+/// and writes `<canonical>.sheet.webp` (always LOSSLESS — the sheet's transparency must
+/// survive exactly, unlike the lossy-when-opaque derivative thumbnails) + `<canonical>.sheet.json`
+/// (the same `SheetMeta` serialized, so a re-import can restore `AssetMeta.sheet` from the
+/// sibling file alone, without re-decoding the source animation). Returns `None` (no files
+/// written) for fewer than 2 decoded frames — nothing to tile. A write failure partway
+/// through is a best-effort no-op: the caller (`process_staged`) never fails an upload for a
+/// sheet-generation reason, matching `write_derivatives_of`'s own best-effort convention.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::generate_grid_sheet;
+/// use std::path::Path;
+///
+/// // No frames decode from a nonexistent file; nothing is written.
+/// assert!(generate_grid_sheet(Path::new("no-such-file"), "image/gif").is_none());
+/// ```
+pub fn generate_grid_sheet(canonical: &Path, content_type: &str) -> Option<SheetMeta> {
+    let frames = decode_animation_frames(canonical, content_type);
+    if frames.len() < 2 {
+        return None;
+    }
+    let count = frames.len() as u32;
+    let cols = (f64::from(count)).sqrt().ceil() as u32;
+    let rows = count.div_ceil(cols);
+    let frame_ms: Vec<u32> = frames
+        .iter()
+        .map(|f| {
+            let (numer, denom) = f.delay().numer_denom_ms();
+            numer.checked_div(denom).unwrap_or(0)
+        })
+        .collect();
+    let (fw0, fh0) = frames[0].buffer().dimensions();
+    if fw0 == 0 || fh0 == 0 {
+        return None;
+    }
+    let sheet_w = fw0.saturating_mul(cols);
+    let sheet_h = fh0.saturating_mul(rows);
+    let longest = sheet_w.max(sheet_h);
+    let scale = if longest > SHEET_MAX_PX {
+        f64::from(SHEET_MAX_PX) / f64::from(longest)
+    } else {
+        1.0
+    };
+    let fw = ((f64::from(fw0) * scale).round() as u32).max(1);
+    let fh = ((f64::from(fh0) * scale).round() as u32).max(1);
+    let mut canvas = image::RgbaImage::new(fw * cols, fh * rows);
+    for (i, frame) in frames.iter().enumerate() {
+        let img = DynamicImage::ImageRgba8(frame.buffer().clone());
+        let scaled = if scale < 1.0 {
+            img.resize_exact(fw, fh, FilterType::Triangle)
+        } else {
+            img
+        };
+        let i = i as u32;
+        let col = i % cols;
+        let row = i / cols;
+        image::imageops::overlay(
+            &mut canvas,
+            &scaled.to_rgba8(),
+            i64::from(col * fw),
+            i64::from(row * fh),
+        );
+    }
+    let sheet_bytes = encode_webp(
+        &DynamicImage::ImageRgba8(canvas),
+        Encoding {
+            lossless: true,
+            quality: LOSSY_QUALITY,
+        },
+    )
+    .ok()?;
+    write_atomic(&with_suffix(canonical, SHEET_SUFFIX), &sheet_bytes).ok()?;
+    let meta = SheetMeta {
+        rows,
+        cols,
+        count,
+        frame_ms,
+        width: fw,
+        height: fh,
+    };
+    let json_bytes = serde_json::to_vec(&meta).ok()?;
+    write_atomic(&with_suffix(canonical, SHEET_JSON_SUFFIX), &json_bytes).ok()?;
+    Some(meta)
+}
+
 /// Whether a converted canonical must be lossless: the source is transparent
 /// (alpha survives only losslessly) or belongs to a lossless family, where a
 /// lossy re-encode would degrade pixel art / line art.
@@ -403,13 +572,16 @@ pub fn process_staged(
         tracing::warn!(?e, path = %staged.display(), "derivative write failed");
     }
     if animated {
-        return Ok(pass_through(
+        let sheet = generate_grid_sheet(staged, original_content_type);
+        let mut processed = pass_through(
             original_content_type,
             original_byte_size,
             Some((&img, transparent)),
             true,
             Some("animated".into()),
-        ));
+        );
+        processed.meta.sheet = sheet;
+        return Ok(processed);
     }
     if original_content_type == WEBP_CONTENT_TYPE {
         return Ok(pass_through(
@@ -461,6 +633,7 @@ pub fn process_staged(
             original_byte_size,
             original_retained: retain_originals,
             conversion_note: None,
+            sheet: None,
         },
         converted: true,
     })
