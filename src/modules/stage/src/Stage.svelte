@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, fpsCapToTickerValue, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -10,6 +10,14 @@
   import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
 
+  /** Options every `createBackend` call carries — declared once so the prop's type annotation
+   * and its default's parameter share one shape (an inline copy in each would drift). */
+  interface CreateBackendOpts {
+    /** The per-device antialias budget at mount (`ctx.performance.current.antialias`) — fixed
+     * at Pixi init (`PixiBackendOptions.antialias`). */
+    antialias: boolean;
+  }
+
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
    * (jsdom has no WebGL — real GL is covered by Playwright).
    *
@@ -18,15 +26,15 @@
    * shipped build is multisampled. It trims a per-pixel term rather than making a canvas cheap —
    * see `PixiBackendOptions.antialias` for what it does not fix. */
   let {
-    createBackend = (canvas: HTMLCanvasElement): Promise<DisplayBackend> =>
+    createBackend = (canvas: HTMLCanvasElement, opts: CreateBackendOpts): Promise<DisplayBackend> =>
       createPixiBackend(canvas, {
         background: readColor("--surface-base", 0x101014),
-        antialias: import.meta.env.VITE_SC_ANTIALIAS !== "0",
+        antialias: import.meta.env.VITE_SC_ANTIALIAS !== "0" && opts.antialias,
       }),
     logger,
   }: {
     /** See the doc comment on the destructured default above. */
-    createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
+    createBackend?: (canvas: HTMLCanvasElement, opts: CreateBackendOpts) => Promise<DisplayBackend>;
     /** Diagnostic sink for a backend-init failure; no logger seam exists on
      * AppContext (mirrors `PanelHost`'s identical pattern), so this component
      * accepts one as an optional prop and falls back to the production
@@ -40,6 +48,15 @@
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
   const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
+
+  // Live render-budget signals are Svelte-OWNED markup attributes (never an effect writer):
+  // any re-render carries them, and there is exactly one path that can produce them.
+  const perfBudget = $derived(ctx.performance.current);
+  // The one budget Pixi cannot change post-init (`PixiBackendOptions.antialias`), read through a
+  // `$derived` so the mount $effect below re-runs only when this VALUE flips: any other
+  // performance edit re-derives `current` without changing the derived's boolean, so the
+  // backend is never torn down for a setting the engine applies live through its getter.
+  const antialiasBudget = $derived(ctx.performance.current.antialias);
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -111,6 +128,11 @@
   }
 
   $effect(() => {
+    // Tracked FIRST (the script-level `antialiasBudget` derived): antialias cannot change after
+    // Pixi init (`PixiBackendOptions.antialias`'s doc), so a flip re-runs this whole effect,
+    // tearing down and rebuilding both the engine and the backend (the destroy() path below is
+    // exercised, never leaked).
+    const antialias = antialiasBudget;
     let engine: RenderEngine | null = null;
     let disposed = false;
     let observer: ResizeObserver | null = null;
@@ -126,7 +148,7 @@
     const controller = new AbortController();
 
     void (async () => {
-      const backend = await createBackend(canvas);
+      const backend = await createBackend(canvas, { antialias });
       if (disposed) { backend.destroy(); return; } // teardown raced the async init
       engine = new RenderEngine({
         store: documents,
@@ -138,6 +160,8 @@
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
+        performance: () => ctx.performance.current,
+        onStats: (s) => ctx.performance.recordStats(s),
         onDerivedApplied: (input) => {
           host.dataset.sceneDerived = "1";
           host.dataset.visionMode = input.mode;
@@ -421,8 +445,21 @@
   }
 </script>
 
-<div class="stage-host" bind:this={host}>
-  <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+<div
+  class="stage-host"
+  bind:this={host}
+  data-fps-cap={String(fpsCapToTickerValue(perfBudget.fpsCap))}
+  data-render-scale={String(perfBudget.renderScale)}
+  data-idle-skip={perfBudget.idleSkip ? "1" : "0"}
+>
+  <!-- Keyed canvas: a WebGL context cannot be re-initialized on a canvas whose renderer was
+       destroyed (the mount effect's backend re-create on an antialias flip), so the element
+       itself is replaced and the mount effect's `canvas` binding always points at a pristine
+       element. Only the canvas is keyed — the host div (and its data-* observability
+       attributes) must remain one stable element. -->
+  {#key antialiasBudget}
+    <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+  {/key}
   {#if role === "gm"}
     <select
       class="gm-view"

@@ -67,8 +67,10 @@ function conditionFxEntries(cf: ConditionFx): TokenFx[] {
 /** Renders `doc_type:"token"` docs as backend token nodes, tweening transforms via a
  * TokenAnimator. The visual (size + image) applies immediately; the transform tweens. */
 export class TokenView {
-  /** Drives every tracked token's tween/sample-playback transform. */
-  private readonly animator = new TokenAnimator();
+  /** Drives every tracked token's tween/sample-playback transform. Constructed in the
+   * constructor body (not a field initializer) so it can take the `reducedMotion` getter as a
+   * constructor parameter — see the constructor. */
+  private readonly animator: TokenAnimator;
   /** Last resolved `TokenNodeSpec` per token id, from `toSpec` — the visual/size/border/badges
    * `push` applies immediately, distinct from the tweened transform `animator` owns. */
   private readonly specs = new Map<string, TokenNodeSpec>();
@@ -105,6 +107,11 @@ export class TokenView {
    * fresh per `toSpec`; a selected token's spec gains the selection highlight fx. Defaults to an
    * empty selection (legacy/test callers that never pass one). Selection changes carry no store
    * commit, so the host re-drives a reconcile on change (`RenderEngine.reapplyTokenSelection`).
+   * @param tokenFx Resolves the live `PerformanceSettings.tokenFx` flag; `false` drops every
+   * condition-driven fx entry in `toSpec`, keeping only the selection highlight. Defaults to
+   * always-`true`.
+   * @param reducedMotion Resolves the live `PerformanceSettings.reducedMotion` flag, forwarded
+   * to the internal `TokenAnimator`. Defaults to always-`false`.
    * @example
    * ```ts
    * import { TokenView, MockBackend } from "@shadowcat/render";
@@ -122,7 +129,11 @@ export class TokenView {
     private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
     private readonly perceived: () => ReadonlySet<string> = () => NO_PERCEIVED,
     private readonly selectedTokens: () => ReadonlySet<string> = () => EMPTY_TOKEN_SELECTION,
-  ) {}
+    private readonly tokenFx: () => boolean = () => true,
+    reducedMotion: () => boolean = () => false,
+  ) {
+    this.animator = new TokenAnimator(reducedMotion);
+  }
 
   /** Mark `id` as the locally-dragged token (its sprite snaps to the authoritative transform each
    * reconcile, no tween lag) or clear the latch with `null`.
@@ -180,6 +191,31 @@ export class TokenView {
    */
   specOf(id: string): TokenNodeSpec | undefined {
     return this.specs.get(id);
+  }
+
+  /** Whether any currently-tracked token's resolved visual is tick-driven (an `"animated"` art
+   * kind, top-level or nested inside a `"generated"` frame). Read by `RenderEngine`'s ticker
+   * alongside the dirty flag: `tickTokenAnimations` advances an animated sprite's own frame
+   * index every tick unconditionally (it is excluded from `wrapDirtyTracking`'s dirty set — see
+   * that module's doc — because it fires whether or not anything is actually animated), so this
+   * is the real "is a redraw needed for animation" signal idle-skip consults.
+   * @returns Whether at least one tracked token has an animated visual.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.hasAnimatedVisual(); // false
+   * ```
+   */
+  hasAnimatedVisual(): boolean {
+    for (const spec of this.specs.values()) {
+      if (spec.visual.kind === "animated") return true;
+      if (spec.visual.kind === "generated" && spec.visual.art.kind === "animated") return true;
+    }
+    return false;
   }
 
   /** Update the per-step world distance used to compute tween durations — the world distance
@@ -477,7 +513,12 @@ export class TokenView {
     // condition array order the face map reads (`resolveConditions` iterates it).
     const conditions = resolveConditions(doc, this.store);
     const badges = conditions.map((c) => c.icon);
-    const fx: TokenFx[] = conditions.flatMap((c) => (c.fx ? conditionFxEntries(c.fx) : []));
+    // `PerformanceSettings.tokenFx` off ⇒ every condition-driven fx entry is dropped (the
+    // per-token ColorMatrix filters scale with the token count); the selection highlight
+    // appended below is exempt (bounded by the selection size, the one signifier).
+    const fx: TokenFx[] = this.tokenFx()
+      ? conditions.flatMap((c) => (c.fx ? conditionFxEntries(c.fx) : []))
+      : [];
     // The selection signifier appends after every condition fx, so the highlight reads on top of
     // condition tints (a selected poisoned token reads as selected first).
     if (this.selectedTokens().has(doc.id)) fx.push({ kind: "highlight", color: SELECTION_HIGHLIGHT_COLOR, strength: SELECTION_HIGHLIGHT_STRENGTH });

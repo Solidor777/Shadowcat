@@ -486,3 +486,20 @@ describe("TokenAnimator.animateSamples", () => {
     expect(a.get("t1")!.x).toBeCloseTo(56, 5);
   });
 });
+
+describe("reducedMotion", () => {
+  it("startAnim (setTarget on an existing token) snaps to the end pose immediately", () => {
+    const a = new TokenAnimator(() => true);
+    a.setTarget("t1", { x: 0, y: 0, rotation: 0 });
+    a.setConfig({ speedCellsPerSec: 6, easing: "linear", worldUnitsPerCell: 100 });
+    a.setTarget("t1", { x: 100, y: 0, rotation: 0 });
+    expect(a.get("t1")).toEqual({ x: 100, y: 0, rotation: 0 });
+    expect(a.tick(16)).toEqual([]); // nothing left to animate
+  });
+
+  it("animateSamples snaps straight to the last sample", () => {
+    const a = new TokenAnimator(() => true);
+    a.animateSamples("t1", [{ tMs: 0, pos: [0, 0] }, { tMs: 500, pos: [100, 0] }], 500, 0);
+    expect(a.get("t1")).toEqual({ x: 100, y: 0, rotation: 0 });
+  });
+});

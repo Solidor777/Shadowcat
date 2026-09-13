@@ -16,6 +16,7 @@ export { Camera } from "./camera";
 export { Grid, type GridKind, type GridSpec, type DiagonalRule } from "./grid";
 export type { DisplayBackend, BackgroundSpec } from "./backend";
 export { MockBackend } from "./backend.mock";
+export { wrapDirtyTracking } from "./dirty-backend";
 export { SceneReconciler } from "./reconciler";
 export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription, type ThemeColors } from "./engine";

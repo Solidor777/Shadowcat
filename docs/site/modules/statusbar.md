@@ -16,6 +16,8 @@ surface it renders into, matching the core-ui/panel-host precedent).
 
 - `StatusBar.svelte` — the bar; renders the `panel-dock` surface for the panel
   manager's chip strip.
+- `PerfStats.svelte` — the live frame-rate/frame-time readout (`fps · ms`),
+  visible only while the performance editor's "Show frame stats" toggle is on.
 
 ## Contracts & seams
 
