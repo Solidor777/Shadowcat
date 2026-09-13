@@ -1581,6 +1581,21 @@ describe("idle-skip", () => {
     return { engine, backend, store };
   }
 
+  /** An idle-skip engine reading a MUTABLE settings object, so a test can flip one budget key
+   * mid-flight and assert the ticker reacts on that tick. */
+  function makeLiveIdleEngine(settings: import("@shadowcat/core").PerformanceSettings) {
+    const store = new DocumentStore();
+    const assets = new AssetResolver();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets, backend, grid: { kind: "square", size: 100 },
+      performance: () => settings,
+    });
+    engine.start();
+    backend.renderCount = 0; // discard start()'s own initial-reconcile render
+    return { engine, backend, store };
+  }
+
   it("N idle ticks call render() 0 times", () => {
     const { backend } = makeIdleEngine();
     backend.runTicker(16);
@@ -1632,6 +1647,39 @@ describe("idle-skip", () => {
     backend.runTicker(16);
     expect(backend.frameCap).toBe(30);
     expect(backend.renderScale).toBe(0.75);
+  });
+
+  it("a renderScale change on an idle engine renders on that tick (the backing-store realloc blanks the canvas)", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true, renderScale: 1 };
+    const { backend } = makeLiveIdleEngine(settings);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0); // idle
+    settings.renderScale = 0.75;
+    backend.runTicker(16);
+    expect(backend.renderScale).toBe(0.75);
+    expect(backend.renderCount).toBe(1);
+  });
+
+  it("a lighting-mode change on an idle engine re-applies the committed lighting on that tick", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, lighting: "full" };
+    const { backend } = makeLiveIdleEngine(settings);
+    expect(backend.lighting).toBeNull(); // nothing committed yet, nothing painted
+    settings.lighting = "off";
+    backend.runTicker(16);
+    expect(backend.lighting).toEqual({ cell: 0, cells: [], darkness: [] }); // the off branch cleared the overlay
+  });
+
+  it("a tokenFx change re-reconciles the token view and renders on that tick", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true };
+    const { backend, store } = makeLiveIdleEngine(settings);
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    backend.runTicker(16); // the create's own reconcile render
+    backend.renderCount = 0;
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0); // idle
+    settings.tokenFx = false;
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(1); // the re-reconcile's setToken marked dirty
   });
 
   it("maps fpsCap uncapped to a 0 frame cap", () => {

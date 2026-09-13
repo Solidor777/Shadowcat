@@ -331,11 +331,12 @@ export class RenderEngine implements SceneToolHost {
   /** Milliseconds accumulated since the last `onStats` push — throttles the hook to at most
    * 4×/s regardless of ticker rate. */
   private statsElapsedSinceEmit = 0;
-  /** The frame cap value last pushed to the backend (`"uncapped"` mapped to `0`); `null` before
-   * the first tick, so the very first tick always pushes. */
-  private lastFrameCap: number | null = null;
-  /** The render scale last pushed to the backend; `null` before the first tick. */
-  private lastRenderScale: number | null = null;
+  /** The budget snapshot last applied to the backend — diffed ONCE per tick so every
+   * live-applied budget key (frame cap, render scale, lighting mode, tokenFx, and any future
+   * key) reacts through this ONE comparison site rather than each growing its own
+   * change-detection field. Seeded by `start` (which pushes the initial budget itself, before
+   * the first frame); `null` only before then. */
+  private lastPerf: PerformanceSettings | null = null;
   /** The last vision payload received, re-projected onto a new viewed scene by
    * `reapplyViewedScene` (a scene switch has no new server frame — `activeScene`/roam are
    * client-local). Undefined until the first frame. */
@@ -435,15 +436,26 @@ export class RenderEngine implements SceneToolHost {
         this.emotesActive = glyphs.length > 0;
       }
       const perf = this.perf();
+      const lastPerf = this.lastPerf;
+      // Snapshot, never the getter's own reference: a host whose getter returns one cached,
+      // later-mutated object would otherwise alias `lastPerf` and every change would compare
+      // equal to itself.
+      this.lastPerf = { ...perf };
       const frameCapValue = perf.fpsCap === "uncapped" ? 0 : perf.fpsCap;
-      if (frameCapValue !== this.lastFrameCap) {
-        this.lastFrameCap = frameCapValue;
+      if (lastPerf === null || frameCapValue !== (lastPerf.fpsCap === "uncapped" ? 0 : lastPerf.fpsCap)) {
         this.backend.setFrameCap(frameCapValue);
       }
-      if (perf.renderScale !== this.lastRenderScale) {
-        this.lastRenderScale = perf.renderScale;
+      if (lastPerf === null || perf.renderScale !== lastPerf.renderScale) {
+        // `PixiBackend.setRenderScale` reallocates the canvas backing store (blanking it), and
+        // the wrapper deliberately does not dirty-track the call — mark dirty here or an idle
+        // engine would never repaint the cleared canvas.
+        this.dirty = true;
         this.backend.setRenderScale(perf.renderScale);
       }
+      // Live budget flips: the overlay and the token projection must react on THIS tick, not on
+      // the next committed frame / document commit (which may never come).
+      if (lastPerf !== null && perf.lighting !== lastPerf.lighting) this.applyCommittedLighting();
+      if (lastPerf !== null && perf.tokenFx !== lastPerf.tokenFx) this.tokens.reconcile();
       if (dt > 0) {
         const sample = 1000 / dt;
         const alpha = 2 / 31; // EMA over ~30 ticks
@@ -469,6 +481,15 @@ export class RenderEngine implements SceneToolHost {
     // the first committed lighting event to reach that branch. The `setLighting` this pushes
     // marks the dirty flag, which the initial render below consumes.
     if (this.perf().lighting === "off") this.applyCommittedLighting();
+    // Apply the initial budget BEFORE the first frame: pushing the cap and scale here (rather
+    // than on the first tick) means the initial render below already draws at the right
+    // resolution, and seeding `lastPerf` means the ticker's per-tick diff fires only on a
+    // genuine CHANGE — a redundant re-push of an unchanged render scale would needlessly
+    // reallocate (and blank) the backing store after the canvas was already painted.
+    const initialPerf = this.perf();
+    this.backend.setFrameCap(initialPerf.fpsCap === "uncapped" ? 0 : initialPerf.fpsCap);
+    this.backend.setRenderScale(initialPerf.renderScale);
+    this.lastPerf = { ...initialPerf }; // snapshot, not the getter's reference — see the ticker
     // One unconditional initial frame: the reconciles above pushed every initial draw (each one
     // marked the dirty flag through `wrapDirtyTracking`). Rendering now — rather than waiting
     // for the first ticker callback — paints the scene immediately and consumes that initial
