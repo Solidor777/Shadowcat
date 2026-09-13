@@ -76,7 +76,8 @@ other documents, no clock, no randomness. Deterministic by construction.
   (API names verified against the resolved `wasmi 0.51.5`: `Config::consume_fuel`,
   `Store::set_fuel`/`get_fuel`, `StoreLimitsBuilder::new().memory_size(..).instances(..)
   .tables(..).build()`, `Store::limiter`, `Linker::new`, `Linker::func_wrap`,
-  `Module::new`, `Linker::instantiate` → `InstancePre::start`, `Instance::get_export`/
+  `Module::new`, `Linker::instantiate_and_start` (`Linker::instantiate` → `InstancePre::start`
+  is deprecated since 0.49.0), `Instance::get_export`/
   `get_typed_func`, `Memory::data`/`data_mut`, `Caller::get_export`/`data`/`data_mut`,
   `wasmi::Error::as_trap_code` → `wasmi::TrapCode::{OutOfFuel, MemoryOutOfBounds,
   TableOutOfBounds}` — `TrapCode` lives at the crate ROOT; the `wasmi::core` re-export
