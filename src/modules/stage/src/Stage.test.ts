@@ -6,7 +6,7 @@ import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS, silentLogger } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__, theme, TokenSelection } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -754,4 +754,39 @@ test("a theme change re-reads the color tokens and pushes them into the engine",
     theme.setActive("slate-dark");
     vi.unstubAllGlobals();
   }
+});
+
+test("toggling antialias re-creates the backend once and destroys the old one", async () => {
+  const backend1 = fakeBackend();
+  const backend2 = fakeBackend();
+  const createBackend = vi.fn(async () => (createBackend.mock.calls.length === 1 ? backend1 : backend2));
+  const controller = new PerformanceController();
+  controller.setPreset("quality"); // antialias: true
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  expect(backend1.destroyed).toBe(false);
+  controller.set({ antialias: false });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledTimes(2));
+  expect(backend1.destroyed).toBe(true);
+});
+
+test("a non-antialias performance edit does NOT re-create the backend", async () => {
+  const backend1 = fakeBackend();
+  const createBackend = vi.fn(async () => backend1);
+  const controller = new PerformanceController();
+  controller.setPreset("quality");
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  controller.set({ fpsCap: 30 });
+  controller.set({ idleSkip: false });
+  // Let any effect flush settle; the backend must not have been rebuilt.
+  await new Promise((r) => setTimeout(r, 50));
+  expect(createBackend).toHaveBeenCalledOnce();
+  expect(backend1.destroyed).toBe(false);
 });
