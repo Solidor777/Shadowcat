@@ -119,6 +119,7 @@ export type {
 } from "./assets";
 export {
   listAssets,
+  getAssetMeta,
   uploadAsset,
   replaceAsset,
   deleteAsset,
@@ -131,6 +132,7 @@ export {
   deleteAssetFolder,
 } from "./asset-rest";
 export type { AssetQuery } from "./asset-rest";
+export { AssetMetaCache } from "./asset-meta";
 export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from "./asset-upload";
 export type { ChunkedUploadOptions } from "./asset-upload";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";

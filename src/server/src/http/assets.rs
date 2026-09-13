@@ -545,6 +545,58 @@ pub async fn serve(
         .into_response())
 }
 
+/// `GET /api/assets/{uuid}/meta` — membership-gated (any member of the asset's world may
+/// read), returns the `Asset` JSON (metadata only, never the bytes) — the seam a client that
+/// has never listed the world's assets uses to resolve one asset's pipeline metadata (in
+/// particular `AssetMeta.sheet`) synchronously before playing it as a VFX source.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::meta(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
+pub async fn meta(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<crate::data::asset::Asset>, AppError> {
+    let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+    state
+        .repo
+        .permission_context(asset.world_id, user.id, user.role)
+        .await?;
+    Ok(Json(asset))
+}
+
 /// Content types `serve` presents `inline`: raster images a browser can only
 /// paint. Every other stored type is served as an attachment.
 const INLINE_CONTENT_TYPES: [&str; 6] = [
