@@ -2979,6 +2979,72 @@ browser suite (`pnpm --filter @shadowcat/shell e2e`), including the two
 specs this milestone adds, is dispatcher-run, not part of this branch's own
 gate history.
 
+## Phase 3 — Atmosphere
+
+### M28 · Sandboxed third-party validators ✅
+Branch `m28-sandbox`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m28-sandboxed-validators.md` (design:
+`docs/superpowers/specs/2026-09-11-m28-sandboxed-validators-design.md`). Delivered:
+- **`wasmi` 0.51.5 + `wat` 1.259.0** (Task 1 verified the resolved crate's API against the
+  spec's assumed names; the corrections are recorded in the spec's §3). Release binary size
+  after this milestone: 13,732,864 bytes / 60 MiB cap.
+- **`src/server/src/sandbox/`**: `ValidatorVerdict`/`ValidatorFault`/`FaultKind`/`ValidatorInput`
+  (`validate_document`'s embedded-tree walk, mirroring
+  `validation::validate_system_schema_tree`'s recursion exactly, AND its own maintenance of the
+  per-(world, module) fault counter), `runtime::run_validator` (fuel/memory/instance-limited
+  per-call `wasmi` host, `env.log` the only import, a 50ms post-hoc `TooSlow` reclassification
+  plus a 250ms `Hung` hang guard around the `spawn_blocking` join), `registry::ValidatorRegistry`
+  (compiled-once, mtime-invalidated cache; also home of the per-(world, module) consecutive-
+  fault `DashMap`, surviving a rescan via `ValidatorRegistryCache`).
+- **Manifest + discovery**: `module.json`'s `validators` key, `InstalledModule.validators`,
+  the traversal guard shared with `http::module_routes::serve_module_file`.
+- **`WorldModuleEntry`** replaces the bare enabled-module-id `Vec<String>` (`Repository::
+  world_enabled_modules`/`set_world_enabled_modules`, `GET`/`PUT
+  /api/worlds/{world}/enabled-modules`, `module-rest.ts`, `ModuleManager.svelte`'s second
+  "Run sandboxed validators" toggle) — a legacy string-array setting reads as every id
+  `validators_enabled: false`.
+- **Placement**: `apply_intent`'s validator pass runs BEFORE the write transaction opens,
+  against a read-only pre-image, relying on Phase 1's existing OCC check to catch a stale
+  read; `import_world`'s runs inside its own already-exclusive transaction. Both chokepoints
+  call the SAME `sandbox::validate_document`, which first re-runs Phase 1's own pure structural
+  validators on the document and returns that error untouched on failure — a malformed
+  submission never reaches, or counts against, a validator. Never `apply_command`.
+- **Fault policy**: `DataError::Validator(ValidatorFault)` (technical fault, carrying
+  `module`/`kind`/`consecutive`) alongside the existing `DataError::OpFailed` (an authored
+  refusal); `ServerMsg::Reject.detail` (new optional wire field) carries the reason to
+  `App.svelte`'s toast as a text node. The consecutive-fault counter is COUNTED inside
+  `sandbox::validate_document` (a `DashMap` on `sandbox::registry::ValidatorRegistry`, surviving
+  a rescan via `ValidatorRegistryCache`) and ACTED ON by `ws::conn`, which calls
+  `Room::disable_faulting_validator` at `sandbox::VALIDATOR_FAULT_LIMIT` (5) — it disables the
+  module, posts a GM-only notice, and resets the streak via the new
+  `Repository::reset_validator_fault_streak`.
+- **`examples/validator-rust/`**: a `no_std`, dependency-free reference validator (refuses a
+  negative `actor.system.hp`); `src/server/tests/sandbox.rs` builds it for real on every
+  `cargo test --all` and never skips on a missing `wasm32-unknown-unknown` target; the target
+  was added to the three-OS `rust` CI job and the `docs` job.
+- **Docs**: `docs/design/sandboxed-validators.md` (threat model),
+  `docs/site/guides/creating-a-validator.md`, a cross-link from `creating-a-module.md`,
+  ARCHITECTURE.md §3/§4/§5 updated (the parked sandbox row struck, the Deno bullet rewritten
+  to record the wasmi choice). `docs/PLAN.md`'s Phase-3 section already enumerates M28 as an
+  owned milestone — the older "parked capability Phase 3" deferral paragraph the plan told
+  this task to delete was already gone when the section was restructured, so no deletion was
+  needed.
+- **Skills**: new `shadowcat-codebase-sandbox`; `module-toolchain`/`documents-permissions`
+  updated — edited in the plugin checkout, staged uncommitted for the dispatcher's
+  review-and-commit flow.
+- **Recorded design decisions** (spec gaps the amendment left implicit, not
+  re-interpretations of an explicit instruction): the fault counter lives on
+  `sandbox::registry::ValidatorRegistry`/`ValidatorRegistryCache` rather than `Room`, since a
+  compiled-module registry is rebuilt on every rescan and the counter must survive that
+  rebuild; `ValidatorVerdict::Fault` and `DataError::Validator` share one `ValidatorFault`
+  payload type rather than duplicating its three fields; a module's own `Refuse` resets its
+  streak exactly like `Accept`, since only `Fault` is evidence of a technical break. Fixed
+  forward during implementation: `CompiledValidator` carries its compiling `Engine` (a wasmi
+  `Module` is engine-bound); `TooSlow` reclassifies only completed (non-trapping) calls, so a
+  trap's precise `FaultKind` is never masked; the slow-call budget is measured on the blocking
+  thread; test fixtures use the non-engine `"item"` doc_type (an `"actor"` fixture with no
+  engine body fails the structural pre-pass before any validator runs).
+
 ## Documentation campaign — completed sweeps
 
 The campaign's open tail (buddy-check convergence, final ratchet, skills documentation-reference
