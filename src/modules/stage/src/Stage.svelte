@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, fpsCapToTickerValue, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -412,7 +412,7 @@
   // inside the commit-driven `onDocs`.
   $effect(() => {
     const perf = ctx.performance.current;
-    host.dataset.fpsCap = perf.fpsCap === "uncapped" ? "0" : String(perf.fpsCap);
+    host.dataset.fpsCap = String(fpsCapToTickerValue(perf.fpsCap));
     host.dataset.renderScale = String(perf.renderScale);
     host.dataset.idleSkip = perf.idleSkip ? "1" : "0";
   });

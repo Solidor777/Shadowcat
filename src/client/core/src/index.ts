@@ -176,5 +176,5 @@ export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placeme
 export type { Diff, MergeBase, EmbeddedBaseChild } from "./merge";
 export { snapshotBase, stampInstance, findInstances, syncState } from "./templates";
 export type { StampOpts, SyncState } from "./templates";
-export { PRESETS, resolveAuto, parsePersisted, serializePersisted, effectiveSettings, PERFORMANCE_STORAGE_KEY } from "./performance";
+export { PRESETS, resolveAuto, parsePersisted, serializePersisted, effectiveSettings, PERFORMANCE_STORAGE_KEY, fpsCapToTickerValue } from "./performance";
 export type { PerformanceSettings, PerformancePreset, DeviceSignals, PersistedPerformance } from "./performance";

@@ -1,4 +1,4 @@
-import { EMPTY_FOOTPRINTS, PRESETS } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
@@ -441,8 +441,8 @@ export class RenderEngine implements SceneToolHost {
       // later-mutated object would otherwise alias `lastPerf` and every change would compare
       // equal to itself.
       this.lastPerf = { ...perf };
-      const frameCapValue = perf.fpsCap === "uncapped" ? 0 : perf.fpsCap;
-      if (lastPerf === null || frameCapValue !== (lastPerf.fpsCap === "uncapped" ? 0 : lastPerf.fpsCap)) {
+      const frameCapValue = fpsCapToTickerValue(perf.fpsCap);
+      if (lastPerf === null || frameCapValue !== fpsCapToTickerValue(lastPerf.fpsCap)) {
         this.backend.setFrameCap(frameCapValue);
       }
       if (lastPerf === null || perf.renderScale !== lastPerf.renderScale) {
@@ -487,7 +487,7 @@ export class RenderEngine implements SceneToolHost {
     // genuine CHANGE — a redundant re-push of an unchanged render scale would needlessly
     // reallocate (and blank) the backing store after the canvas was already painted.
     const initialPerf = this.perf();
-    this.backend.setFrameCap(initialPerf.fpsCap === "uncapped" ? 0 : initialPerf.fpsCap);
+    this.backend.setFrameCap(fpsCapToTickerValue(initialPerf.fpsCap));
     this.backend.setRenderScale(initialPerf.renderScale);
     this.lastPerf = { ...initialPerf }; // snapshot, not the getter's reference — see the ticker
     // One unconditional initial frame: the reconciles above pushed every initial draw (each one

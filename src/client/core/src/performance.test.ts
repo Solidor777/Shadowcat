@@ -7,6 +7,7 @@ import {
   serializePersisted,
   effectiveSettings,
   PERFORMANCE_STORAGE_KEY,
+  fpsCapToTickerValue,
   type DeviceSignals,
   type PersistedPerformance,
 } from "./performance";
@@ -90,4 +91,13 @@ it("serializePersisted round-trips through parsePersisted", () => {
 
 it("PERFORMANCE_STORAGE_KEY is the expected literal", () => {
   expect(PERFORMANCE_STORAGE_KEY).toBe("shadowcat.performance");
+});
+
+describe("fpsCapToTickerValue", () => {
+  it("maps uncapped to 0 and passes numeric caps through", () => {
+    expect(fpsCapToTickerValue("uncapped")).toBe(0);
+    expect(fpsCapToTickerValue(30)).toBe(30);
+    expect(fpsCapToTickerValue(60)).toBe(60);
+    expect(fpsCapToTickerValue(120)).toBe(120);
+  });
 });

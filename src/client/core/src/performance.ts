@@ -214,3 +214,18 @@ export function effectiveSettings(p: PersistedPerformance, signals: DeviceSignal
 /** The `localStorage` key the shell's `readPerformanceMirror`/`writePerformanceMirror`
  * (`src/client/shell/src/lib/sessionState.svelte.ts`) read/write under. */
 export const PERFORMANCE_STORAGE_KEY = "shadowcat.performance";
+
+/** Maps a configured `PerformanceSettings.fpsCap` to the render ticker's cap value:
+ * `"uncapped"` ⇒ `0` (the renderer's own no-limit convention), a numeric cap passes through.
+ * THE one place this mapping lives — `RenderEngine`'s ticker and the stage's "data-fps-cap"
+ * host attribute both consume it, so the two can never disagree on what `"uncapped"` means.
+ * @param fpsCap The configured frame-rate cap.
+ * @returns The ticker cap value in frames per second, `0` for uncapped.
+ * @example
+ * ```ts
+ * fpsCapToTickerValue("uncapped"); // 0
+ * ```
+ */
+export function fpsCapToTickerValue(fpsCap: PerformanceSettings["fpsCap"]): number {
+  return fpsCap === "uncapped" ? 0 : fpsCap;
+}
