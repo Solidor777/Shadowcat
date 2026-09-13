@@ -10,7 +10,7 @@
   const { world, t, reconcileInstalledModules } = getAppContext();
 
   let installed = $state<InstalledModuleInfo[]>([]);
-  let enabled = $state<Set<string>>(new Set());
+  let enabled = $state<Map<string, boolean>>(new Map());
   let loaded = $state(false);
   let saving = $state(false);
   let error = $state<string | null>(null);
@@ -62,7 +62,7 @@
    * `InviteManager.refresh`'s `Promise.allSettled`. The two reads are
    * independent network calls but NOT independent state: `enabled` is the
    * payload `save()` sends as a whole-set replace
-   * (`setEnabledModules(world, [...enabled])`, below). Applying a successful
+   * (`setEnabledModules(world, entries)`, below). Applying a successful
    * `listInstalledModules()` while `getEnabledModules(world)` failed would
    * render every checkbox UNCHECKED beside a live Save button — and one click
    * would persist that empty set, disabling every module in the world. Failing
@@ -86,7 +86,7 @@
     try {
       const [inst, en] = await Promise.all([listInstalledModules(), getEnabledModules(world)]);
       installed = inst;
-      enabled = new Set(en);
+      enabled = new Map(en.map((e) => [e.id, e.validators_enabled]));
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -97,8 +97,10 @@
 
   /**
    * Flips `id`'s LOCAL membership in `enabled` (not yet persisted — `save()`
-   * sends the whole set). Assigns a new `Set` rather than mutating in place
-   * so the `$state` reassignment is what triggers reactivity.
+   * sends the whole set). Assigns a new `Map` rather than mutating in place
+   * so the `$state` reassignment is what triggers reactivity. A newly-enabled
+   * module starts with `validators_enabled: false` — opting into sandboxed
+   * validators is a separate, explicit act (`toggleValidators`).
    * @param id The module's install-folder id (`info.id`) — the same key
    *   space `save()` and the server's enabled-module set use.
    * @returns Nothing; reassigns `enabled` as a side effect.
@@ -110,15 +112,34 @@
    * ```
    */
   function toggle(id: string): void {
-    const next = new Set(enabled);
+    const next = new Map(enabled);
     if (next.has(id)) next.delete(id);
-    else next.add(id);
+    else next.set(id, false);
     enabled = next;
   }
 
   /**
-   * Persists the local `enabled` set as this world's ENTIRE enabled-module
-   * set (`setEnabledModules(world, [...enabled])` — a whole-set replace, not
+   * Flips `id`'s locally-held `validators_enabled` bit (not yet persisted). A module not
+   * currently enabled has no entry to flip — the checkbox rendering below only shows this
+   * control for an enabled, validator-declaring module, so this is unreachable otherwise.
+   * @param id The module's install-folder id.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to the validators checkbox
+   * toggleValidators("example-module");
+   * ```
+   */
+  function toggleValidators(id: string): void {
+    const next = new Map(enabled);
+    const current = next.get(id);
+    if (current === undefined) return;
+    next.set(id, !current);
+    enabled = next;
+  }
+
+  /**
+   * Persists the local `enabled` map as this world's ENTIRE enabled-module
+   * set (`setEnabledModules(world, entries)` — a whole-set replace, not
    * a diff). There is no optimistic-concurrency pre-image and no merge: the
    * server-side write is a plain settings overwrite
    * (`SqliteRepository::set_world_enabled_modules`,
@@ -140,7 +161,8 @@
     saving = true;
     error = null;
     try {
-      await setEnabledModules(world, [...enabled]);
+      const entries = [...enabled].map(([id, validators_enabled]) => ({ id, validators_enabled }));
+      await setEnabledModules(world, entries);
       await reconcileInstalledModules();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
@@ -169,6 +191,22 @@
             />
             {displayName(info)}
           </label>
+          {#if info.has_validators && enabled.has(info.id)}
+            <label>
+              <input
+                type="checkbox"
+                aria-label={t("settings.modules.runValidators", { name: displayName(info) })}
+                checked={enabled.get(info.id) ?? false}
+                onchange={() => toggleValidators(info.id)}
+              />
+              {t("settings.modules.runValidators", { name: displayName(info) })}
+            </label>
+            {#if info.validator_load_error}
+              <p class="error">
+                {t("settings.modules.validatorLoadError", { message: info.validator_load_error })}
+              </p>
+            {/if}
+          {/if}
         </li>
       {/each}
     </ul>

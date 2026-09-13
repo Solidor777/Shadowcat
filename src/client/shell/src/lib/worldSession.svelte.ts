@@ -1283,10 +1283,11 @@ export class WorldSession {
    */
   async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const resolved = WorldSession.#buildEntries(enabledIds, installed, this.#logger);
       if (resolved.length === 0) return;
       const result = await loadModules({
@@ -1464,10 +1465,11 @@ export class WorldSession {
   async reconcileInstalledModules(): Promise<void> {
     if (!this.world || this.#serverVersion === undefined) return;
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(this.world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const enabledSet = new Set(enabledIds);
       const toUnload = [...this.#externalModuleIds].filter(([folderId]) => !enabledSet.has(folderId));
       for (const [folderId, manifestId] of toUnload) {

@@ -6,7 +6,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::data::document::CapabilityRequirement;
 
@@ -88,6 +89,77 @@ pub struct ValidatorDecl {
     /// `sandbox::registry::compile_one`'s traversal check, the same guard
     /// `http::module_routes::serve_module_file` uses.
     pub wasm: std::path::PathBuf,
+}
+
+/// A world's enablement record for one installed module: whether it is enabled at all, and
+/// (only meaningful when enabled AND the module declares validators) whether the GM has
+/// additionally opted this world into running its sandboxed validators.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::WorldModuleEntry;
+///
+/// let e = WorldModuleEntry {
+///     id: "example-module".into(),
+///     validators_enabled: false,
+/// };
+/// assert!(!e.validators_enabled);
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+pub struct WorldModuleEntry {
+    /// The installed module's folder id (the same key `InstalledModule::id` uses).
+    pub id: String,
+    /// Whether this world has opted into running this module's declared validators. `false`
+    /// for every entry a legacy bare-string-array setting parses into (back-compat: an
+    /// existing world's stored enabled set never silently starts running validators).
+    pub validators_enabled: bool,
+}
+
+impl WorldModuleEntry {
+    /// Parses a `world-modules` settings value tolerant of the legacy shape: the new
+    /// `Vec<WorldModuleEntry>` array-of-objects first, falling back to a bare
+    /// `Vec<String>` (every entry reads as `validators_enabled: false`) when the new shape
+    /// fails to parse. Shared by `SqliteRepository::world_enabled_modules` (the live getter)
+    /// and `SqliteRepository::import_world` (reading a bundle's own settings row) so the two
+    /// call sites can never diverge on what "legacy" means.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::modules::WorldModuleEntry;
+    ///
+    /// // The current shape parses as-is.
+    /// let current = WorldModuleEntry::parse_legacy_tolerant(
+    ///     r#"[{"id":"example-module","validators_enabled":true}]"#,
+    /// )
+    /// .unwrap();
+    /// assert!(current[0].validators_enabled);
+    ///
+    /// // A legacy bare-string array reads as every id with validators disabled.
+    /// let legacy = WorldModuleEntry::parse_legacy_tolerant(r#"["example-module"]"#).unwrap();
+    /// assert_eq!(
+    ///     legacy,
+    ///     vec![WorldModuleEntry {
+    ///         id: "example-module".into(),
+    ///         validators_enabled: false,
+    ///     }]
+    /// );
+    /// ```
+    pub fn parse_legacy_tolerant(json: &str) -> Result<Vec<Self>, serde_json::Error> {
+        if let Ok(entries) = serde_json::from_str::<Vec<Self>>(json) {
+            return Ok(entries);
+        }
+        let legacy: Vec<String> = serde_json::from_str(json)?;
+        Ok(legacy
+            .into_iter()
+            .map(|id| WorldModuleEntry {
+                id,
+                validators_enabled: false,
+            })
+            .collect())
+    }
 }
 
 /// The game-system contract id (mirrors the client's `SYSTEM_CONTRACT`): a

@@ -1659,7 +1659,7 @@ async fn welcome_capability_requirements(
         let installed = tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
             .await
             .unwrap_or_default();
-        for id in &enabled {
+        for entry in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
             // or an on-disk manifest edit. Engine-compat is enforced at BOTH
@@ -1667,7 +1667,7 @@ async fn welcome_capability_requirements(
             // so a now-incompatible enabled module must not publish requirements.
             if let Some(m) = installed
                 .iter()
-                .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
+                .find(|m| m.id == entry.id && crate::modules::engine_compat_ok(m))
             {
                 for r in &m.requirements {
                     by_prefix

@@ -577,7 +577,10 @@ pub trait Repository: Send + Sync {
         world: Uuid,
     ) -> Result<Vec<SchemaDeclaration>, DataError>;
 
-    /// A world's enabled installed-module ids (GM-set). Empty when unset.
+    /// A world's enabled installed-module entries (GM-set), id + per-world
+    /// `validators_enabled` flag. Empty when unset. A stored legacy bare-string-array
+    /// setting reads back as every id with `validators_enabled: false`
+    /// (`WorldModuleEntry::parse_legacy_tolerant`).
     ///
     /// # Examples
     ///
@@ -587,12 +590,45 @@ pub trait Repository: Send + Sync {
     /// use shadowcat::data::repository::Repository;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// let ids = repo.world_enabled_modules(uuid::Uuid::nil()).await?;
-    /// assert!(ids.is_empty());
+    /// let entries = repo.world_enabled_modules(uuid::Uuid::nil()).await?;
+    /// assert!(entries.is_empty());
     /// # Ok(())
     /// # }
     /// ```
-    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError>;
+    async fn world_enabled_modules(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::modules::WorldModuleEntry>, DataError>;
+
+    /// Replace a world's enabled installed-module set (GM/admin-authorized by the caller — this
+    /// trait method itself performs no authorization). Stored as JSON in `settings`, beside
+    /// `world_cap_requirements`/`world_contract_declarations` — enable/disable never mutates
+    /// either of those.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::modules::WorldModuleEntry;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// let entries = vec![WorldModuleEntry {
+    ///     id: "mock-module".into(),
+    ///     validators_enabled: false,
+    /// }];
+    /// repo.set_world_enabled_modules(world.id, &entries).await?;
+    /// assert_eq!(repo.world_enabled_modules(world.id).await?, entries);
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn set_world_enabled_modules(
+        &self,
+        world: Uuid,
+        entries: &[crate::modules::WorldModuleEntry],
+    ) -> Result<(), DataError>;
 
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a

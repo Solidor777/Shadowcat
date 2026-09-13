@@ -189,7 +189,7 @@ pub async fn enabled_system_defaults(
     }
     scan_installed_modules(modules_dir)
         .into_iter()
-        .find(|m| m.provides_system && enabled.iter().any(|id| id == &m.id))
+        .find(|m| m.provides_system && enabled.iter().any(|e| e.id == m.id))
         .and_then(|m| m.system_defaults)
 }
 

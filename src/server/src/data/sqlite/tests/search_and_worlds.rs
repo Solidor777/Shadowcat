@@ -809,17 +809,60 @@ async fn world_enabled_modules_round_trip() {
 
     assert!(r.world_enabled_modules(w.id).await.unwrap().is_empty());
 
-    let ids = vec!["actors-plus".to_string(), "example-system".to_string()];
-    r.set_world_enabled_modules(w.id, &ids).await.unwrap();
-    assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), ids);
+    let entries = vec![
+        crate::modules::WorldModuleEntry {
+            id: "actors-plus".into(),
+            validators_enabled: false,
+        },
+        crate::modules::WorldModuleEntry {
+            id: "example-system".into(),
+            validators_enabled: true,
+        },
+    ];
+    r.set_world_enabled_modules(w.id, &entries).await.unwrap();
+    assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), entries);
 
     // A subsequent set fully replaces, not appends.
-    r.set_world_enabled_modules(w.id, &["example-system".to_string()])
-        .await
-        .unwrap();
+    r.set_world_enabled_modules(
+        w.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "example-system".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         r.world_enabled_modules(w.id).await.unwrap(),
-        vec!["example-system".to_string()]
+        vec![crate::modules::WorldModuleEntry {
+            id: "example-system".into(),
+            validators_enabled: false,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn world_enabled_modules_reads_a_legacy_string_array_as_validators_disabled() {
+    let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let author = r.create_user("a", None, ServerRole::User, 0).await.unwrap();
+    let w = r.create_world_owned("W", author, 0).await.unwrap();
+
+    // A settings row written before the enablement record gained the
+    // `validators_enabled` flag: a bare JSON string array. It must read back
+    // as every id with the flag OFF — an existing world never silently
+    // starts running validators.
+    r.set_setting(
+        &crate::data::sqlite::world_modules_key(w.id),
+        &serde_json::json!(["mock-module"]).to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        r.world_enabled_modules(w.id).await.unwrap(),
+        vec![crate::modules::WorldModuleEntry {
+            id: "mock-module".into(),
+            validators_enabled: false,
+        }]
     );
 }
 

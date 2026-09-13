@@ -224,6 +224,14 @@ pub struct SqliteRepository {
     /// re-derive this by re-parsing a URL string (see
     /// `crate::db::parse_connect_options`'s doc for why).
     connect_options: sqlx::sqlite::SqliteConnectOptions,
+    /// Installed-modules discovery root, `None` when this repository was never wired to one
+    /// (every existing test construction via `connect()` alone) — validators never run
+    /// without it, fail-open by absence exactly like `scan_installed_modules`'s own missing-
+    /// dir handling.
+    modules_dir: Option<std::path::PathBuf>,
+    /// Compiled validator cache, mirroring `crate::modules::ModuleScanCache`'s own
+    /// invalidation. Always present (cheap to construct; does no I/O until first scan).
+    validator_registry_cache: std::sync::Arc<crate::sandbox::registry::ValidatorRegistryCache>,
 }
 
 impl SqliteRepository {
@@ -256,6 +264,8 @@ impl SqliteRepository {
         Ok(Self {
             pool,
             connect_options,
+            modules_dir: None,
+            validator_registry_cache: Default::default(),
         })
     }
 
@@ -299,6 +309,57 @@ impl SqliteRepository {
     /// ```
     pub async fn open_read_pool(&self) -> Result<SqlitePool, sqlx::Error> {
         crate::db::open_read_only_pool(self.connect_options.clone()).await
+    }
+
+    /// Attaches an installed-modules discovery root, enabling sandboxed validator support
+    /// on this repository. Every existing `connect()` caller that never calls this keeps
+    /// `modules_dir: None` — validators never run, exactly as if none were installed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:")
+    ///     .await?
+    ///     .with_modules_dir("no-such-modules-dir");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_modules_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.modules_dir = Some(dir.into());
+        self
+    }
+
+    /// The compiled validator registry for `modules_dir`, or an empty registry when the
+    /// scan finds nothing. Off the async worker via `spawn_blocking`, matching every other
+    /// blocking module-scan call site in this crate; used by
+    /// `http::module_routes::list_installed_modules`'s validator-status projection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let registry = repo
+    ///     .validator_registry(std::path::Path::new("no-such-modules-dir"))
+    ///     .await;
+    /// assert!(registry.validator_for("example-module", "actor").is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn validator_registry(
+        &self,
+        modules_dir: &std::path::Path,
+    ) -> std::sync::Arc<crate::sandbox::registry::ValidatorRegistry> {
+        let cache = self.validator_registry_cache.clone();
+        let dir = modules_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
+            .await
+            .unwrap_or_default()
     }
 
     /// See `Repository::get_link_preview_cache`.
@@ -2313,11 +2374,25 @@ impl Repository for SqliteRepository {
         }
     }
 
-    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError> {
+    async fn world_enabled_modules(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::modules::WorldModuleEntry>, DataError> {
         match self.get_setting(&world_modules_key(world)).await? {
-            Some(json) => Ok(serde_json::from_str(&json)?),
+            Some(json) => Ok(crate::modules::WorldModuleEntry::parse_legacy_tolerant(
+                &json,
+            )?),
             None => Ok(Vec::new()),
         }
+    }
+
+    async fn set_world_enabled_modules(
+        &self,
+        world: Uuid,
+        entries: &[crate::modules::WorldModuleEntry],
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(entries)?;
+        self.set_setting(&world_modules_key(world), &json).await
     }
 
     async fn search(

@@ -173,8 +173,18 @@ impl Repository for DeleteMidHydration<'_> {
     ) -> Result<Vec<crate::data::document::SchemaDeclaration>, DataError> {
         self.inner.world_schema_declarations(world).await
     }
-    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError> {
+    async fn world_enabled_modules(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::modules::WorldModuleEntry>, DataError> {
         self.inner.world_enabled_modules(world).await
+    }
+    async fn set_world_enabled_modules(
+        &self,
+        world: Uuid,
+        entries: &[crate::modules::WorldModuleEntry],
+    ) -> Result<(), DataError> {
+        self.inner.set_world_enabled_modules(world, entries).await
     }
     async fn search(
         &self,
