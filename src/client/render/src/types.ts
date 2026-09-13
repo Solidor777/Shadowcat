@@ -1,3 +1,5 @@
+import type { VfxAnchor } from "@shadowcat/core";
+
 /** A point in scene coordinates. */
 export interface Point {
   /** Scene x-coordinate. */
@@ -5,7 +7,6 @@ export interface Point {
   /** Scene y-coordinate. */
   y: number;
 }
-
 /** A line segment in scene coordinates (grid lines). */
 export interface LineSeg {
   /** First endpoint's scene x-coordinate. */
@@ -90,7 +91,57 @@ export type ResolvedAnimatedSource =
       cols: number;
       /** Frame count to use, capped at `rows*cols`; omitted uses every cell. */
       count?: number;
+      /** Per-frame display duration in ms, in playback order; omitted = a uniform default the
+       * caller applies (existing token-face callers that never set this field are unaffected). */
+      frameMs?: number[];
     };
+
+/** A resolved PixiJS-spritesheet-format VFX source: an atlas image + a sidecar JSON in
+ * PixiJS's spritesheet format (`frames`/`animations`/`meta`), already asset-id-resolved to
+ * serve URLs. Distinct discriminant key (`kind`, not `type`) from `ResolvedAnimatedSource`'s
+ * own `"sheet"` arm (`type: "sheet"`) — the two are unrelated shapes that happen to share the
+ * English word "sheet"; a consumer checks `"imageUrl" in source` before falling back to
+ * `source.type`. */
+export interface ResolvedSheetSource {
+  /** Discriminant. */
+  kind: "sheet";
+  /** Atlas image serve URL. */
+  imageUrl: string;
+  /** Sidecar spritesheet-JSON serve URL. */
+  sheetUrl: string;
+  /** The named animation within the sidecar's `animations` map to play. */
+  animation: string;
+}
+
+/** A resolved, tick-driven VFX render node: an emitter (tracking a token) or a one-shot
+ * (fixed at spawn), already URL-resolved. */
+export interface VfxNodeSpec {
+  /** Always `"vfx"` — included so a node's target layer is self-describing, matching
+   * `ShapeNodeSpec.layer`'s convention. */
+  layer: "vfx";
+  /** Center's scene x-coordinate. */
+  x: number;
+  /** Center's scene y-coordinate. */
+  y: number;
+  /** Uniform scale multiplier. */
+  scale: number;
+  /** Rotation in degrees. */
+  rotation: number;
+  /** The resolved animation source to play. */
+  source: ResolvedAnimatedSource | ResolvedSheetSource;
+  /** `true` loops for the node's lifetime; `false` removes itself on completion
+   * (`DisplayBackend.setVfx`'s node calls back through `onDone`). */
+  loop: boolean;
+  /** Draw order among simultaneous vfx nodes at the same point: `"below"` (0), `"token"` (1),
+   * `"above"` (2) for an emitter — see `VfxAnchor`'s own doc for the placement rule this
+   * mirrors; `"point"` (also 1) for a one-shot, which has no token to anchor relative to. */
+  anchor: VfxAnchor | "point";
+  /** The emitter's owning token id, present only for `emitter:<token>` nodes — absent for a
+   * one-shot. */
+  token?: string;
+  /** Optional tint applied to the art, packed `0xRRGGBB`. */
+  tint?: number;
+}
 
 /** A resolved, already-URL'd art visual: a static image, or a tick-driven animation. This is
  * both a `TokenNodeSpec.visual` arm in its own right and the `art` payload of a resolved
