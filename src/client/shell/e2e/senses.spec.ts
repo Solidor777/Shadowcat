@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 import { clickScene } from "./stage-gestures";
 import type { ScenePoint as Point } from "./stage-gestures";
@@ -121,7 +121,7 @@ test("a tremorsense assignment reveals a grounded token through fog, and raising
   expect(code.length).toBeGreaterThan(0);
 
   // --- Player session: a second browser context (separate cookie jar). ---
-  const playerCtx = await browser.newContext({
+  const playerCtx = await newE2EContext(browser, {
     baseURL: test.info().project.use.baseURL,
     viewport: VIEWPORT,
   });

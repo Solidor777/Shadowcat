@@ -1,4 +1,4 @@
-import { test, expect, vi, afterEach, beforeEach } from "vitest";
+import { test, it, expect, vi, describe, afterEach, beforeEach } from "vitest";
 import * as api from "./api";
 import { i18n, theme, DEFAULT_THEME_ID, type PersistedTheme } from "@shadowcat/ui-kit";
 import {
@@ -16,6 +16,8 @@ import {
   readThemeMirror,
   writeThemeMirror,
   THEME_MIRROR_STORAGE_KEY,
+  readPerformanceMirror,
+  writePerformanceMirror,
 } from "./sessionState.svelte";
 
 // Module-level state (loaded/dirty/the cooldown timer) persists across tests otherwise — a
@@ -478,6 +480,26 @@ test("writeThemeMirror swallows a throwing storage instead of propagating", () =
   expect(() =>
     writeThemeMirror(throwing, { active: "slate-light", custom: {} }),
   ).not.toThrow();
+});
+
+describe("readPerformanceMirror / writePerformanceMirror", () => {
+  it("round-trips a written value", () => {
+    const store = new Map<string, string>();
+    const storage: Pick<Storage, "getItem" | "setItem"> = {
+      getItem: (k) => store.get(k) ?? null,
+      setItem: (k, v) => void store.set(k, v),
+    };
+    writePerformanceMirror(storage, { preset: "mobile", overrides: {} });
+    expect(readPerformanceMirror(storage)).toEqual({ preset: "mobile", overrides: {} });
+  });
+  it("returns undefined when the key is absent", () => {
+    const storage: Pick<Storage, "getItem"> = { getItem: () => null };
+    expect(readPerformanceMirror(storage)).toBeUndefined();
+  });
+  it("falls back to the auto default on garbage", () => {
+    const storage: Pick<Storage, "getItem"> = { getItem: () => "not json" };
+    expect(readPerformanceMirror(storage)).toEqual({ preset: "auto", overrides: {} });
+  });
 });
 
 test("the editor save sequence (saveCustom + setActive + preview clear) persists the custom theme", async () => {

@@ -2981,6 +2981,72 @@ gate history.
 
 ## Phase 3 — Atmosphere
 
+### M22 · Performance settings + render budget ✅
+Branch `m22-performance`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m22-performance-settings.md` (design:
+`docs/superpowers/specs/2026-09-11-m22-performance-settings-design.md`), as
+12 sequential tasks (task 13, the merge-forward integration, closes the
+milestone separately). Delivered:
+- **The seam (`@shadowcat/core` `performance.ts`):** `PerformanceSettings`
+  (fpsCap / renderScale / antialias / tokenFx / lighting / vfx / dice3d /
+  spatialAudio / idleSkip / reducedMotion), the `mobile`/`balanced`/`quality`
+  `PRESETS`, `resolveAuto` (mobile on coarse-pointer+compact, ≤4 cores, or
+  ≤4 GiB device memory; `prefers-reduced-motion` always OR-ed on top), and
+  `parsePersisted`/`serializePersisted`/`effectiveSettings` — the ONE place
+  preset + overrides + device signals combine, fail-closed per key on a
+  garbled `localStorage` blob, `renderScale` clamped to `[0.5, 1]` at every
+  read. Per-device only (decision D1): persisted in `localStorage` beside the
+  theme mirror (`readPerformanceMirror`/`writePerformanceMirror`), never the
+  server `ui_state`.
+- **The controller (`@shadowcat/ui-kit`):** `PerformanceController` mirroring
+  `ThemeController`'s shape exactly (`$state`-backed, `subscribe`/`load`/
+  `serialize`, a module singleton exported as `performanceController` — never
+  `performance`, which would shadow the ambient Performance global), live
+  `stats`/`showStats` state, exposed as `AppContext.performance`.
+- **The render engine (`@shadowcat/render`):** `DisplayBackend` gains
+  `setFrameCap`/`setRenderScale`/`render` (`createPixiBackend` removes Pixi's
+  own auto-render ticker listener so the engine owns the render call);
+  `wrapDirtyTracking` is the ONE dirty-flag seam every draw call flows
+  through; `RenderEngine` reads the budget through a
+  `RenderEngineOpts.performance` getter and drives the frame cap, render
+  scale, dirty-flag idle-skip (animated-token visuals via
+  `TokenView.hasAnimatedVisual` still render every tick), a stats sample
+  pushed through `onStats` at most 4×/s, the lighting `static`/`off` budgets
+  (fog/vision secrecy untouched — the overlay is cosmetic), the `tokenFx`
+  budget (condition fx dropped, the selection highlight exempt), and
+  reduced-motion snaps on token tweens and fog/light cross-fades.
+- **The UI surfaces:** `Stage.svelte` re-creates the backend only when
+  `antialias` flips (the one setting Pixi cannot change post-init, read
+  through a `$derived` so no other edit tears the stage down) and exposes
+  `data-fps-cap`/`data-render-scale`/`data-idle-skip` through a dedicated
+  reactive writer; `PerformanceEditor.svelte` (a built-in Settings section —
+  preset radios, per-key controls, show-stats toggle, reset-to-auto) and the
+  statusbar's `PerfStats.svelte` readout.
+- **Tests:** unit coverage at every layer (core truth tables, controller
+  transitions, mirror round-trips, idle-skip/tween/lighting-budget engine
+  tests, animator snaps, backend re-init and no-rebuild-on-other-edit stage
+  tests, editor/statusbar component tests); `performance.spec.ts`
+  (Playwright — preset → stage `data-*` signals, stats toggle → statusbar)
+  written here and dispatcher-run, not part of this branch's own gate
+  history.
+Decisions taken (design doc + plan): per-device `localStorage` persistence,
+never `ui_state` (D1); `effectiveSettings` as the single combination point;
+`PerformanceController.set` writes the FULL resulting settings object as the
+`custom` overrides, never a bare patch; dirty-flag interception at the
+`DisplayBackend` boundary so no reconciler/view changes; `tickTokenAnimations`
+deliberately excluded from dirty-tracking (`hasAnimatedVisual` covers the real
+need); the selection highlight exempt from the `tokenFx` budget (bounded by
+selection size); `lighting: "off"` never touches fog/vision secrecy;
+`start()` renders one initial frame so the idle-skip accounting starts clean;
+antialias re-creation keyed on a `$derived` boolean so other edits never
+rebuild the backend.
+Repo gates green at every commit (the 13-step commit gate: `cargo fmt
+--check`, `test:scripts`, `lint`, `check:svelte-runtime`, `lint:docs`,
+`lint:props`, `lint:comments`, `lint:allowances`, `lint:file-size`,
+`lint:inline-tests`, `lint:aria-labels`, `lint:gate-manifest`,
+`lint:settings-privacy`) plus per-task `pnpm --filter … test`, `pnpm -r
+typecheck` and `pnpm docs:check-examples` runs. The full gate battery runs at
+the milestone's integration task.
 ### M28 · Sandboxed third-party validators ✅
 Branch `m28-sandbox`, cut from `main`, executed from the approved plan
 `docs/superpowers/plans/2026-09-11-m28-sandboxed-validators.md` (design:

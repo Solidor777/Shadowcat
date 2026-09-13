@@ -31,3 +31,15 @@ export function sizeClass(): SizeClass {
   subscribe?.();
   return (mql?.matches ?? true) ? "expanded" : "compact";
 }
+
+/** One plain synchronous read of the compact breakpoint, for non-reactive callers that need
+ * a snapshot rather than a subscription (the shell's boot-time `readDeviceSignals`). Reads
+ * the SAME `QUERY` `sizeClass` subscribes to — the breakpoint lives in exactly one place.
+ * Returns `false` when `matchMedia` is unavailable (mirroring `sizeClass`'s always-expanded
+ * jsdom treatment).
+ * @returns Whether the viewport is currently compact (the `QUERY` media query does not match).
+ * @example isCompactViewport(); // false under jsdom
+ */
+export function isCompactViewport(): boolean {
+  return typeof matchMedia === "function" && !matchMedia(QUERY).matches;
+}
