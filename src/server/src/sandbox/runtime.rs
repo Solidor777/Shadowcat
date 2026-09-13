@@ -34,7 +34,7 @@ const MAX_LOG_CALLS: u32 = 16;
 
 /// One compiled, cached validator: the fuel-metered `Engine` plus the wasmi `Module` and the
 /// declaring module/doc_type this validator belongs to (for fault reporting).
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct CompiledValidator {
     /// The engine `module` was compiled with — a `wasmi::Module` is bound to its compiling
     /// engine, so a per-call fresh engine can never instantiate it ("foreign entity" panic);

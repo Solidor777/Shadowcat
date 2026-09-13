@@ -112,7 +112,7 @@ use crate::http::error::AppError;
 /// would otherwise collapse the per-module boundary onto its parent, letting
 /// stage 2 read ANY file under `modules_root` — including another module's
 /// own files, not just loose root files.
-fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bool {
+pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bool {
     candidate != root && candidate.starts_with(root)
 }
 

@@ -41,6 +41,9 @@ struct ModuleManifestMirror {
     /// absent; the module itself still loads — fail-open discovery).
     #[serde(default, rename = "systemDefaults")]
     system_defaults: Option<serde_json::Value>,
+    /// Declared server-side validators, compiled once by `sandbox::registry::ValidatorRegistry`.
+    #[serde(default)]
+    validators: Vec<ValidatorDecl>,
 }
 
 /// The `engines` object of a community `module.json`.
@@ -59,6 +62,32 @@ struct ModuleEngines {
 /// ```
 fn default_entry() -> String {
     "index.js".into()
+}
+
+/// One declared validator: which `doc_type` it judges and where its compiled `.wasm` lives,
+/// relative to the module's own install folder.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::modules::ValidatorDecl;
+///
+/// let decl: ValidatorDecl = serde_json::from_value(
+///     serde_json::json!({ "docType": "actor", "wasm": "validators/actor.wasm" }),
+/// )
+/// .unwrap();
+/// assert_eq!(decl.doc_type, "actor");
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct ValidatorDecl {
+    /// The `doc_type` this validator's `system` band judges.
+    #[serde(rename = "docType")]
+    pub doc_type: String,
+    /// Path to the compiled `.wasm`, relative to the module's own folder; a path escaping
+    /// that folder (via `..` or an absolute path) is refused at compile time by
+    /// `sandbox::registry::compile_one`'s traversal check, the same guard
+    /// `http::module_routes::serve_module_file` uses.
+    pub wasm: std::path::PathBuf,
 }
 
 /// The game-system contract id (mirrors the client's `SYSTEM_CONTRACT`): a
@@ -87,6 +116,7 @@ pub const SYSTEM_CONTRACT: &str = "shadowcat.system";
 ///     entry_url: "/modules/example-mod/index.js".into(),
 ///     system_defaults: None,
 ///     provides_system: false,
+///     validators: vec![],
 /// };
 /// assert_eq!(m.id, "example-mod");
 /// assert!(!m.provides_system);
@@ -113,6 +143,11 @@ pub struct InstalledModule {
     /// Whether the manifest's `provides` names `SYSTEM_CONTRACT` — i.e. this
     /// module declares itself a game system.
     pub provides_system: bool,
+    /// This module's declared validators. Compiled separately by
+    /// `sandbox::registry::ValidatorRegistry`; a compile failure is recorded there
+    /// (`ValidatorRegistry::load_error_for`), never here — discovery always succeeds for a
+    /// structurally valid manifest regardless of whether its validators compile.
+    pub validators: Vec<ValidatorDecl>,
 }
 
 /// Scan `<modules_dir>/*/module.json`, parse + validate each. An invalid
@@ -224,6 +259,7 @@ pub fn scan_installed_modules(modules_dir: &Path) -> Vec<InstalledModule> {
             entry_url,
             system_defaults,
             provides_system,
+            validators: mirror.validators,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -306,6 +342,7 @@ pub fn semver_satisfies(version: &str, range: &str) -> bool {
 ///     entry_url: "/modules/example-mod/index.js".into(),
 ///     system_defaults: None,
 ///     provides_system: false,
+///     validators: vec![],
 /// };
 /// assert!(!engine_compat_ok(&m)); // fails closed without engines.shadowcat
 /// assert!(engine_compat_ok(&InstalledModule { engines_shadowcat: Some("*".into()), ..m }));
