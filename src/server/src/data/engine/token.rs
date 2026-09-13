@@ -134,11 +134,14 @@ mod tests;
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(rename_all = "snake_case")]
 pub enum VfxAnchor {
-    /// On the token itself.
+    /// Centred on the token's own centre, in front of the art (`vfxAnchorZIndex` 1) — the
+    /// default "on the token" placement.
     Token,
-    /// Above the token's art.
+    /// Centred on the token's top edge (`vfxAnchorZIndex` 2, drawn above `Token`) — e.g. a
+    /// buff glow rising off a creature's head.
     Above,
-    /// Below the token's art.
+    /// Centred on the token's footprint base, its bottom edge (`vfxAnchorZIndex` 0, drawn
+    /// below `Token`) — e.g. a ground-hugging aura or a shadow-pool effect.
     Below,
 }
 
@@ -232,9 +235,9 @@ impl SoundEmission {
     }
 }
 
-/// A VFX emission: a visual effect asset anchored to the token. Playback-ready
-/// data only — no playback consumer exists yet, so nothing server-side or
-/// client-side reads it beyond storage.
+/// A VFX emission: a visual effect asset anchored to the token. The render client's
+/// `VfxView` plays it (an `emitter:<token>` node tracking the token's live transform);
+/// nothing server-side reads it beyond storage/validation.
 ///
 /// # Examples
 ///

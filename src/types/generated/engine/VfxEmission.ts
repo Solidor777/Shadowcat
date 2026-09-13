@@ -2,9 +2,9 @@
 import type { VfxAnchor } from "./VfxAnchor";
 
 /**
- * A VFX emission: a visual effect asset anchored to the token. Playback-ready
- * data only — no playback consumer exists yet, so nothing server-side or
- * client-side reads it beyond storage.
+ * A VFX emission: a visual effect asset anchored to the token. The render client's
+ * `VfxView` plays it (an `emitter:<token>` node tracking the token's live transform);
+ * nothing server-side reads it beyond storage/validation.
  *
  * # Examples
  *
