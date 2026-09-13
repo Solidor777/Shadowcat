@@ -1257,6 +1257,9 @@ impl Repository for SqliteRepository {
                     // anything the screen admits still faces Phase 1 unchanged.
                     let prior_permitted = match op {
                         Operation::Create { doc: create_doc } => {
+                            // Scope before anything else: a foreign-scope intent must
+                            // never reach a validator (same check Phase 1 runs).
+                            check_command_scope(create_doc, world_id)?;
                             authorize_create_intent(
                                 &read_pool,
                                 ctx,
@@ -1274,6 +1277,11 @@ impl Repository for SqliteRepository {
                             let pre_doc = prior
                                 .as_ref()
                                 .expect("an Update reaching this point always merged a pre-image");
+                            // Scope before anything else: `merge_update_document` loads by
+                            // bare id, so without this check an intent targeting world A
+                            // could feed a world-B document through world A's validators
+                            // and use the verdict/reason as a cross-world oracle.
+                            check_command_scope(pre_doc, world_id)?;
                             let (access, is_smr) = authorize_update_access(
                                 &read_pool,
                                 ctx,
