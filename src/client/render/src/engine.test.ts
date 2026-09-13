@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from "vitest";
-import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
+import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, PRESETS } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
 import type { FootprintLookup } from "@shadowcat/core";
@@ -1565,4 +1565,91 @@ test("the engine highlights selected tokens via the selectedTokens accessor, ref
   engine.reapplyTokenSelection();
   expect(backend.tokens.get("t1")!.fx).toBeUndefined();
   engine.destroy();
+});
+
+describe("idle-skip", () => {
+  function makeIdleEngine(overrides: Partial<import("@shadowcat/core").PerformanceSettings> = {}) {
+    const store = new DocumentStore();
+    const assets = new AssetResolver();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets, backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, idleSkip: true, ...overrides }),
+    });
+    engine.start();
+    backend.renderCount = 0; // discard start()'s own initial-reconcile render
+    return { engine, backend, store };
+  }
+
+  it("N idle ticks call render() 0 times", () => {
+    const { backend } = makeIdleEngine();
+    backend.runTicker(16);
+    backend.runTicker(16);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0);
+  });
+
+  it("a setCameraTransform makes the next tick render exactly once", () => {
+    const { engine, backend } = makeIdleEngine();
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0);
+    engine.applyCamera();
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(1);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(1); // consumed; back to idle
+  });
+
+  it("an in-flight tween renders every tick until it settles", () => {
+    const { backend, store } = makeIdleEngine();
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0);
+    // A confirmed position change starts a TokenAnimator tween: every tick pushes a
+    // `setToken`, which `wrapDirtyTracking` marks dirty. Same shape as this file's existing
+    // move tests: `tokenCmd` seeds the token, an update command moves it.
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    backend.runTicker(16); // the create's own reconcile render
+    store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 0, new: 400 }] }] });
+    const before = backend.renderCount;
+    backend.runTicker(16);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(before + 2);
+    backend.runTicker(1000); // past the tween's duration: it settles
+    const settled = backend.renderCount;
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(settled); // idle again
+  });
+
+  it("!idleSkip renders every tick regardless of dirty state", () => {
+    const { backend } = makeIdleEngine({ idleSkip: false });
+    backend.runTicker(16);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(2);
+  });
+
+  it("pushes setFrameCap/setRenderScale on the first tick and only again on change", () => {
+    const { backend } = makeIdleEngine({ fpsCap: 30, renderScale: 0.75 });
+    backend.runTicker(16);
+    expect(backend.frameCap).toBe(30);
+    expect(backend.renderScale).toBe(0.75);
+  });
+
+  it("maps fpsCap uncapped to a 0 frame cap", () => {
+    const { backend } = makeIdleEngine({ fpsCap: "uncapped" });
+    backend.runTicker(16);
+    expect(backend.frameCap).toBe(0);
+  });
+});
+
+describe("lighting budget", () => {
+  it("off clears the lighting overlay and never forwards a committed frame", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, lighting: "off" }),
+    });
+    engine.start();
+    expect(backend.lighting).toEqual({ cell: 0, cells: [], darkness: [] });
+  });
 });

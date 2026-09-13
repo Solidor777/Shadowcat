@@ -182,6 +182,31 @@ export class TokenView {
     return this.specs.get(id);
   }
 
+  /** Whether any currently-tracked token's resolved visual is tick-driven (an `"animated"` art
+   * kind, top-level or nested inside a `"generated"` frame). Read by `RenderEngine`'s ticker
+   * alongside the dirty flag: `tickTokenAnimations` advances an animated sprite's own frame
+   * index every tick unconditionally (it is excluded from `wrapDirtyTracking`'s dirty set — see
+   * that module's doc — because it fires whether or not anything is actually animated), so this
+   * is the real "is a redraw needed for animation" signal idle-skip consults.
+   * @returns Whether at least one tracked token has an animated visual.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.hasAnimatedVisual(); // false
+   * ```
+   */
+  hasAnimatedVisual(): boolean {
+    for (const spec of this.specs.values()) {
+      if (spec.visual.kind === "animated") return true;
+      if (spec.visual.kind === "generated" && spec.visual.art.kind === "animated") return true;
+    }
+    return false;
+  }
+
   /** Update the per-step world distance used to compute tween durations — the world distance
    * between adjacent cell centres (`Grid.worldUnitsPerCell`), NOT the grid's indexing scale
    * (`GridSpec.size`), which diverges from it by `sqrt(3)` on hex. Affects only FUTURE tweens
