@@ -1,8 +1,9 @@
-import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
+import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, AnimatedSprite, Spritesheet, Texture, Rectangle, Text, Assets, type Filter } from "pixi.js";
 import type { DisplayBackend, BackgroundSpec } from "./backend";
 import { MAX_DARK_ALPHA, type LightingFrame } from "./lighting";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource } from "./types";
-import { computeAnimatedFrame } from "./token-animation";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, TokenFx, ShapeNodeSpec, Point, ResolvedAnimatedSource, VfxNodeSpec } from "./types";
+import { computeAnimatedFrame, computeVfxFrame } from "./token-animation";
+import { vfxAnchorZIndex } from "./vfx-view";
 import { fogBlendRtStale, visibilityInputKey } from "./fog-blend";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
@@ -89,6 +90,55 @@ interface TokenNode {
     /** Decorative ring stroke around the crop shape, above the art. */
     ring: Graphics;
   } | null;
+}
+
+/** One frame entry in a spritesheet sidecar's `frames` map (see `SpritesheetDurationData`). */
+interface SpritesheetFrameEntry {
+  /** Per-frame display time in ms when the authoring tool wrote one. */
+  duration?: unknown;
+}
+
+/** The subset of the PixiJS spritesheet-JSON sidecar shape `setVfx` reads for per-frame
+ * durations — the TexturePacker convention (`frames[key].duration`, in ms). Anything beyond
+ * this shape is PixiJS's own to parse (`Spritesheet.parse`), never re-validated here. */
+interface SpritesheetDurationData {
+  /** Animation name → ordered frame keys within the atlas. */
+  animations?: Record<string, unknown>;
+  /** Frame key → its sidecar entry. */
+  frames?: Record<string, SpritesheetFrameEntry>;
+}
+
+/** One VFX render node: a positioned container holding an `AnimatedSprite`. */
+interface VfxRenderNode {
+  /** Positioned/rotated/scaled container, parented into the `vfx` layer, `zIndex` set from
+   * `vfxAnchorZIndex`. */
+  container: Container;
+  /** The art sprite. */
+  visual: AnimatedSprite;
+  /** Frame-advance state for the current source: per-frame timings driving `computeVfxFrame`
+   * (empty = the uniform 100ms/frame default), the loop flag, accumulated playback time, and
+   * the loaded frame count (`null` while a load is in flight — `tickVfx` skips the node). */
+  anim: {
+    /** Per-frame durations in ms, in playback order; a short tail defaults to 100ms/frame. */
+    frameMs: number[];
+    /** `true` wraps at the end of the sequence; `false` holds the final frame and fires
+     * `onDone` once. */
+    loop: boolean;
+    /** Accumulated elapsed time since this source was loaded, in ms. */
+    elapsedMs: number;
+    /** Loaded frame count; `null` while the async load is pending. */
+    frameCount: number | null;
+  };
+  /** Identifies the currently-loaded source, so a same-source re-push (a tween-position-only
+   * `setVfx` call) skips reloading — mirrors `TokenNode.sourceKey`. */
+  sourceKey: string | null;
+  /** Whether `tickVfx` has already called `onDone` for the current `sourceKey`'s completed
+   * non-looping sequence — guards against calling it again on every subsequent tick past
+   * completion (a node is normally removed on its first `onDone`, but the backend itself
+   * does not remove it — see `tickVfx`'s doc — so this flag is the only thing preventing a
+   * repeat call for a node the caller chooses not to remove immediately). Reset to `false`
+   * whenever `setVfx` loads a new `sourceKey`. */
+  completedFired: boolean;
 }
 
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
@@ -237,6 +287,8 @@ export class PixiBackend implements DisplayBackend {
   private readonly shapes = new Map<string, Graphics>();
   /** Token document id → its render node, populated by `createTokenNode`. */
   private readonly tokens = new Map<string, TokenNode>();
+  /** VFX node id → its render node, populated by `setVfx`. */
+  private readonly vfxNodes = new Map<string, VfxRenderNode>();
   /** Dedicated container stacked directly ABOVE the `mask` layer (and therefore the `lighting`
    * layer) but below `overlays`: a token whose spec's `perceived` flag is set is re-parented here
    * by `setToken` so it renders THROUGH fog and darkness, without touching the fog sheets
@@ -317,6 +369,11 @@ export class PixiBackend implements DisplayBackend {
       this.layers.set(id, c);
       this.world.addChild(c);
       if (id === "grid") c.addChild(this.grid);
+      if (id === "vfx") {
+        // VFX nodes carry a per-node zIndex (`vfxAnchorZIndex`'s 0/1/2), so this layer —
+        // alone among the core layers — must actually sort its children.
+        c.sortableChildren = true;
+      }
       if (id === "lighting") {
         c.addChild(this.darknessGraphics);
         c.addChild(this.litHoles);
@@ -1031,6 +1088,151 @@ export class PixiBackend implements DisplayBackend {
       node.anim.elapsedMs += dtMs;
       const frame = computeAnimatedFrame(node.anim.elapsedMs, node.anim.fps, node.anim.frameCount, node.anim.loop);
       if (node.visual.currentFrame !== frame) node.visual.gotoAndStop(frame);
+    }
+  }
+
+  /** `DisplayBackend.setVfx`: upsert a VFX render node. Creates the container/sprite on first
+   * use (parented into the `vfx` layer, `zIndex` from `vfxAnchorZIndex(spec.anchor)` —
+   * `ensureLayers` already made that layer `sortableChildren`), then applies
+   * position/rotation/scale UNCONDITIONALLY every call (cheap, like `updateTokenBorder`'s
+   * per-call redraw) before the `sourceKey` short-circuit on the source itself: an unchanged
+   * source is a transform-only re-push (an emitter tracking a moving token) and skips
+   * reloading.
+   * @param id The VFX node id.
+   * @param spec The resolved node to draw.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setVfx("oneshot:1", {
+   *   layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+   *   source: { type: "sheet", url: "https://example.test/fx.webp", rows: 2, cols: 2, count: 3 },
+   *   loop: false, anchor: "point",
+   * });
+   * ```
+   */
+  setVfx(id: string, spec: VfxNodeSpec): void {
+    let node = this.vfxNodes.get(id);
+    if (!node) {
+      const container = new Container();
+      container.zIndex = vfxAnchorZIndex(spec.anchor);
+      const visual = new AnimatedSprite([Texture.EMPTY]);
+      visual.anchor.set(0.5);
+      visual.autoUpdate = false;
+      container.addChild(visual);
+      this.layers.get("vfx")?.addChild(container);
+      node = { container, visual, anim: { frameMs: [], loop: spec.loop, elapsedMs: 0, frameCount: null }, sourceKey: null, completedFired: false };
+      this.vfxNodes.set(id, node);
+    }
+    // (Re)parent + re-order unconditionally: a node pushed before `ensureLayers` ran finds its
+    // home on the next pass, and an anchor change on a re-push re-sorts the container.
+    const layer = this.layers.get("vfx");
+    if (layer && node.container.parent !== layer) layer.addChild(node.container);
+    node.container.zIndex = vfxAnchorZIndex(spec.anchor);
+    node.container.position.set(spec.x, spec.y);
+    node.container.angle = spec.rotation;
+    node.container.scale.set(spec.scale);
+    if (spec.tint !== undefined) node.visual.tint = spec.tint;
+    const key = "imageUrl" in spec.source
+      ? `sheet:${spec.source.imageUrl}:${spec.source.sheetUrl}:${spec.source.animation}`
+      : `grid:${spec.source.type === "sheet" ? spec.source.url : spec.source.urls.join(",")}`;
+    if (node.sourceKey === key) return;
+    node.sourceKey = key;
+    node.anim = { frameMs: [], loop: spec.loop, elapsedMs: 0, frameCount: null };
+    node.completedFired = false;
+    const sprite = node.visual;
+    if ("imageUrl" in spec.source) {
+      const { imageUrl, sheetUrl, animation } = spec.source;
+      void Promise.all([Assets.load<Texture>(imageUrl), fetch(sheetUrl).then((r) => r.json())])
+        .then(([texture, json]) => {
+          if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
+          const sheet = new Spritesheet(texture, json);
+          void sheet.parse().then(() => {
+            if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
+            const textures = sheet.animations[animation] ?? [];
+            if (textures.length === 0) return;
+            sprite.textures = textures;
+            sprite.gotoAndStop(0);
+            // Per-frame durations, when the sidecar declares them (the TexturePacker
+            // `frames[key].duration` convention, in ms); absent entries fall back to
+            // `computeVfxFrame`'s uniform 100ms default.
+            const data = json as SpritesheetDurationData | undefined;
+            const frameKeys: unknown = data?.animations?.[animation];
+            const frameMs = Array.isArray(frameKeys)
+              ? frameKeys.map((k) => {
+                  const d = data?.frames?.[k as string]?.duration;
+                  return typeof d === "number" && Number.isFinite(d) && d > 0 ? d : 100;
+                })
+              : [];
+            node.anim = { frameMs, loop: spec.loop, elapsedMs: 0, frameCount: textures.length };
+          });
+        });
+    } else {
+      const source = spec.source;
+      void this.loadAnimatedTextures(source).then((textures) => {
+        if (this.vfxNodes.get(id) !== node || node.sourceKey !== key || textures.length === 0) return;
+        sprite.textures = textures;
+        sprite.gotoAndStop(0);
+        node.anim = {
+          frameMs: source.type === "sheet" ? (source.frameMs ?? []) : [],
+          loop: spec.loop,
+          elapsedMs: 0,
+          frameCount: textures.length,
+        };
+      });
+    }
+  }
+
+  /** `DisplayBackend.removeVfx`: destroy a VFX render node and drop it from `this.vfxNodes`. A
+   * no-op for an unknown `id`.
+   * @param id The VFX node id to remove.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.removeVfx("oneshot:1");
+   * ```
+   */
+  removeVfx(id: string): void {
+    const node = this.vfxNodes.get(id);
+    if (!node) return;
+    node.container.destroy({ children: true });
+    this.vfxNodes.delete(id);
+  }
+
+  /** `DisplayBackend.tickVfx`: advance every VFX node's `AnimatedSprite` by `dtMs` via
+   * `computeVfxFrame`. A `loop:false` node whose elapsed time reaches its sequence's total
+   * duration calls `onDone(id)` exactly once (guarded by `completedFired`) and does NOT remove
+   * itself here (`VfxView.tick`'s own external `durationMs` bookkeeping, or the caller
+   * reacting to `onDone`, decides removal — this method only advances frames and reports
+   * completion).
+   * @param dtMs Milliseconds elapsed since the previous tick.
+   * @param onDone Called once per node whose non-looping sequence completed this tick.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.tickVfx(16, (id) => {});
+   * ```
+   */
+  tickVfx(dtMs: number, onDone: (id: string) => void): void {
+    for (const [id, node] of this.vfxNodes) {
+      const anim = node.anim;
+      if (anim.frameCount === null || anim.frameCount <= 0) continue;
+      anim.elapsedMs += dtMs;
+      const frameCount = anim.frameCount;
+      const frame = computeVfxFrame(anim.elapsedMs, anim.frameMs, frameCount, anim.loop);
+      if (node.visual.currentFrame !== frame) node.visual.gotoAndStop(frame);
+      if (!anim.loop && !node.completedFired) {
+        const total = Array.from({ length: frameCount }, (_, i) => anim.frameMs[i] ?? 100).reduce((a, b) => a + b, 0);
+        if (anim.elapsedMs >= total) {
+          node.completedFired = true;
+          onDone(id);
+        }
+      }
     }
   }
 
