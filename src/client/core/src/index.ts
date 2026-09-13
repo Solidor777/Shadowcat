@@ -57,6 +57,7 @@ export type {
   MoveVisionSample,
   MoveLightSample,
   MoveStream,
+  VfxNotice,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,
