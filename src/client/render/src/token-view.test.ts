@@ -56,6 +56,25 @@ test("a moved token tweens via tick toward the new position", () => {
   expect(backend.tokens.get("t1")!.x).toBe(100);
 });
 
+test("transformOf returns the live tweened transform, distinct from specOf's target mid-tween", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const view = new TokenView(store, new AssetResolver(), backend);
+  expect(view.transformOf("t1")).toBeUndefined(); // untracked id
+  store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 0, 0, "img1") }]));
+  view.reconcile();
+  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 0, new: 100 }] }]));
+  view.reconcile(); // retargets the tween; the doc-projected spec is already at 100
+  expect(view.specOf("t1")!.x).toBe(100);
+  view.tick(16); // partway through the tween
+  const live = view.transformOf("t1");
+  expect(live).toBeDefined();
+  expect(live!.x).toBeGreaterThan(0);
+  expect(live!.x).toBeLessThan(100);
+  view.tick(10_000); // settle: live transform converges on the doc-projected target
+  expect(view.transformOf("t1")!.x).toBe(100);
+});
+
 test("renders a linked token using the actor's visual", () => {
   const store = new DocumentStore();
   const assets = new AssetResolver();
