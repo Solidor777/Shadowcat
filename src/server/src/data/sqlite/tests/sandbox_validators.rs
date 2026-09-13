@@ -836,3 +836,187 @@ async fn prior_is_withheld_from_a_writer_without_whole_document_read() {
     .await
     .expect("a write-without-read writer's validator never sees the pre-image");
 }
+
+/// Builds the parent `item` document (one embedded `widget` child) used by the
+/// embedded-boundary tests, seeded through the trusted replay path so setup
+/// never touches a validator.
+async fn seeded_parent_with_widget(r: &SqliteRepository, author: Uuid, world: Uuid) -> Document {
+    let mut parent = sandbox_item(1, world, serde_json::json!({}));
+    let mut child = sandbox_item(2, world, serde_json::json!({}));
+    child.doc_type = "widget".into();
+    parent.embedded.insert("widgets".into(), vec![child]);
+    r.apply_command(UnsequencedCommand {
+        world_id: world,
+        author,
+        ts: 1,
+        ops: vec![Operation::Create {
+            doc: parent.clone(),
+        }],
+    })
+    .await
+    .unwrap();
+    parent
+}
+
+#[tokio::test]
+async fn embedded_boundary_rewrites_reach_the_child_validator() {
+    let dir = tempfile::tempdir().unwrap();
+    // Refuses iff the judged document carries `"hp":5` — the refused payload
+    // each boundary rewrite below smuggles in through a DIFFERENT spelling.
+    write_validator_module(
+        dir.path(),
+        "mod-x",
+        "widget",
+        &scan_one_refusing_wat("\"hp\":5", "widget refused"),
+    );
+    let (r, gm_ctx, w) = sandbox_world(dir.path()).await;
+    enable(&r, w.id, "mod-x", true).await;
+    let parent = seeded_parent_with_widget(&r, gm_ctx.user_id, w.id).await;
+    let stored_child = parent.embedded["widgets"][0].clone();
+    let mut refused_child = stored_child.clone();
+    refused_child.system = serde_json::json!({ "hp": 5 });
+
+    // Each boundary shape replaces the child's `system` band wholesale while
+    // never naming `/system` in its path — every one must still classify as a
+    // system-band write and face the child's validator.
+    let refused_cases: Vec<(String, serde_json::Value, serde_json::Value)> = vec![
+        // Whole-child replacement.
+        (
+            "/embedded/widgets/0".into(),
+            serde_json::to_value(&stored_child).unwrap(),
+            serde_json::to_value(&refused_child).unwrap(),
+        ),
+        // Whole-collection rewrite (the shape a merge plan emits).
+        (
+            "/embedded/widgets".into(),
+            serde_json::to_value(vec![&stored_child]).unwrap(),
+            serde_json::to_value(vec![&refused_child]).unwrap(),
+        ),
+        // Whole-map rewrite.
+        (
+            "/embedded".into(),
+            serde_json::to_value(&parent.embedded).unwrap(),
+            serde_json::json!({ "widgets": [serde_json::to_value(&refused_child).unwrap()] }),
+        ),
+    ];
+    for (path, old, new) in refused_cases {
+        let err = r
+            .apply_intent(
+                &gm_ctx,
+                w.id,
+                vec![Operation::Update {
+                    doc_id: Uuid::from_u128(1),
+                    changes: vec![FieldChange {
+                        path: path.clone(),
+                        old,
+                        new,
+                        remove: false,
+                    }],
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        let DataError::OpFailed(msg) = err else {
+            panic!("expected OpFailed for {path}, got {err:?}");
+        };
+        assert!(
+            msg.contains("widget refused"),
+            "the {path} rewrite must reach the child's validator: {msg}"
+        );
+    }
+
+    // Control: the same whole-collection spelling carrying a payload the
+    // validator ACCEPTS commits — the fail-closed classification never blocks
+    // a legitimate rewrite.
+    let mut ok_child = stored_child.clone();
+    ok_child.system = serde_json::json!({ "hp": 3 });
+    r.apply_intent(
+        &gm_ctx,
+        w.id,
+        vec![Operation::Update {
+            doc_id: Uuid::from_u128(1),
+            changes: vec![FieldChange {
+                path: "/embedded/widgets".into(),
+                old: serde_json::to_value(vec![&stored_child]).unwrap(),
+                new: serde_json::to_value(vec![&ok_child]).unwrap(),
+                remove: false,
+            }],
+        }],
+        2,
+        WriteOrigin::Client,
+    )
+    .await
+    .expect("an accepted whole-collection rewrite commits");
+    assert_eq!(
+        r.get_document(Uuid::from_u128(1))
+            .await
+            .unwrap()
+            .unwrap()
+            .embedded["widgets"][0]
+            .system,
+        serde_json::json!({ "hp": 3 })
+    );
+}
+
+#[tokio::test]
+async fn an_update_addressing_a_foreign_worlds_document_never_reaches_a_validator() {
+    let dir = tempfile::tempdir().unwrap();
+    // A faulting validator: if the foreign document EVER reaches it, the
+    // answer is a fault, not the scope error.
+    write_validator_module(dir.path(), "mod-x", "item", SANDBOX_FAULTING_WAT);
+    let (r, gm_ctx, w) = sandbox_world(dir.path()).await;
+    enable(&r, w.id, "mod-x", true).await;
+
+    // A second world on the same server, holding the document the intent will
+    // address by bare id.
+    let other = r
+        .create_world_owned("OTHER", gm_ctx.user_id, 0)
+        .await
+        .unwrap();
+    r.apply_command(UnsequencedCommand {
+        world_id: other.id,
+        author: gm_ctx.user_id,
+        ts: 1,
+        ops: vec![Operation::Create {
+            doc: sandbox_item(9, other.id, serde_json::json!({ "hp": 1 })),
+        }],
+    })
+    .await
+    .unwrap();
+
+    // An intent in world A updating world B's document: the scope check in the
+    // pre-transaction screen rejects it BEFORE any validator runs — the
+    // verdict of world A's validators over world B's stored content is not an
+    // oracle a writer may consult.
+    let err = r
+        .apply_intent(
+            &gm_ctx,
+            w.id,
+            vec![Operation::Update {
+                doc_id: Uuid::from_u128(9),
+                changes: vec![FieldChange {
+                    path: "/system/hp".into(),
+                    old: serde_json::json!(1),
+                    new: serde_json::json!(2),
+                    remove: false,
+                }],
+            }],
+            1,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    let DataError::OpFailed(msg) = err else {
+        panic!("expected the scope error, got {err:?}");
+    };
+    assert!(
+        msg.contains("scope"),
+        "a foreign-world document must fail the scope check, never reach a validator: {msg}"
+    );
+    // The validator provably never ran: the streak for (world A, mod-x) is
+    // still zero (`record_fault` increments and returns the new total).
+    let registry = r.validator_registry().await;
+    assert_eq!(registry.record_fault(w.id, "mod-x"), 1);
+}
