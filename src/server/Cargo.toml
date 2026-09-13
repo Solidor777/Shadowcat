@@ -58,11 +58,11 @@ webp = "0.3"
 # compile-size caps, so an untrusted pattern cannot stall the server.
 regex = "1"
 
-# Sandboxed third-party validators (opt-in, per-world, over the `system` band only). wasmi
-# (MIT/Apache-2.0) is a pure-Rust WASM interpreter: no JIT attack surface, no host imports
-# beyond what `sandbox::runtime` wires up, fuel-metered, and small (~1 MiB) — the only WASM
-# runtime whose own footprint fits the 60 MiB binary-size budget without adding a JIT or
-# native codegen path.
+# Phase 3: M28 — sandboxed third-party validators (opt-in, per-world, over the `system`
+# band only). wasmi (MIT/Apache-2.0) is a pure-Rust WASM interpreter: no JIT attack surface,
+# no host imports beyond what `sandbox::runtime` wires up, fuel-metered, and small (~1 MiB) —
+# the only WASM runtime whose own footprint fits the 60 MiB binary-size budget without adding
+# a JIT or native codegen path.
 wasmi = "0.51"
 
 # Embeds the application icon into the Windows executable (see build.rs); a

@@ -13,6 +13,7 @@ const ARENA_SIZE: usize = 64 * 1024;
 static mut ARENA: [u8; ARENA_SIZE] = [0; ARENA_SIZE];
 static mut NEXT: usize = 0;
 
+// #region alloc
 /// Reserves `len` bytes from the static arena and returns their LINEAR-MEMORY ADDRESS (never a
 /// bare offset — the guest's stack and other statics share the same address space, so only a
 /// pointer derived from `ARENA` itself is guaranteed not to collide), or `-1` if the arena is
@@ -35,6 +36,8 @@ pub extern "C" fn alloc(len: i32) -> i32 {
     }
 }
 
+// #endregion alloc
+// #region validate
 /// Reads the `ValidatorInput` JSON at `(ptr, len)`, hand-scans for `"hp":<number>` inside the
 /// top-level `system` object, and refuses when that number is negative. Any other document
 /// (no `hp` key, or `hp >= 0`) is accepted. This is intentionally a minimal, forgiving scan —
@@ -124,6 +127,8 @@ fn find_hp(bytes: &[u8]) -> Option<i64> {
     Some(if negative { -value } else { value })
 }
 
+// #endregion validate
+// #region reason
 /// Static reason text for the one refusal case this validator authors.
 static REASON: &[u8] = b"system.hp must not be negative";
 
@@ -139,6 +144,8 @@ pub extern "C" fn reason_ptr() -> i32 {
 pub extern "C" fn reason_len() -> i32 {
     REASON.len() as i32
 }
+
+// #endregion reason
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {

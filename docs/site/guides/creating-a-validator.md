@@ -6,16 +6,14 @@ admin-installed, see [Creating a module](/guides/creating-a-module)), a validato
 sandbox: fuel-metered, memory-capped, and able to do exactly one thing — refuse a write with a
 reason. It cannot mutate, read other documents, observe time, or reach the network.
 
-Every code sample on this page is imported from `examples/validator-rust/` in the Shadowcat
-repository, which `src/server/tests/sandbox.rs` builds and runs on every push.
+The manifest and Rust sources on this page are imported from `examples/validator-rust/` in the
+Shadowcat repository, which `src/server/tests/sandbox.rs` builds and runs on every push.
 
 ## Declaring a validator
 
-Add a `validators` array to your module's `module.json`:
+Add a `validators` array to your module's `module.json` — this is the example's own manifest:
 
-```jsonc
-"validators": [{ "docType": "actor", "wasm": "validator.wasm" }]
-```
+<<< @/../../examples/validator-rust/module.json
 
 `wasm` is a path relative to your module's own install folder; a path escaping that folder is
 refused at scan time.
@@ -51,6 +49,19 @@ The host writes a UTF-8 JSON object at the pointer `alloc` returns:
 Nothing else reaches you: no `engine` band, no permissions, no other documents, no clock, no
 randomness. Your validator is a pure function of this input.
 
+The example's bump allocator (the host treats a negative return as a bad pointer fault):
+
+<<< @/../../examples/validator-rust/src/lib.rs#alloc
+
+The example's `validate` — a deliberately minimal, forgiving scan (not a general JSON parser)
+that stays anchored to the `system` value's span:
+
+<<< @/../../examples/validator-rust/src/lib.rs#validate
+
+And the refusal reason it returns:
+
+<<< @/../../examples/validator-rust/src/lib.rs#reason
+
 ## Limits
 
 | Limit | Value |
@@ -70,9 +81,7 @@ No build script; a raw `cargo build` invocation:
 cargo build --target wasm32-unknown-unknown --release
 ```
 
-`examples/validator-rust/` is `no_std`, dependency-free, with a tiny bump allocator — see its
-`src/lib.rs` for the complete `alloc`/`validate`/`reason_ptr`/`reason_len` implementation, which
-refuses an `actor` whose `system.hp` is negative.
+`examples/validator-rust/` is `no_std`, dependency-free, with a tiny bump allocator.
 
 ## Opting a world in
 
