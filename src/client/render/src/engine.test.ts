@@ -1,4 +1,4 @@
-import { test, expect, describe, it } from "vitest";
+import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, PRESETS } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
@@ -1642,11 +1642,29 @@ describe("idle-skip", () => {
     expect(backend.renderCount).toBe(2);
   });
 
-  it("pushes setFrameCap/setRenderScale on the first tick and only again on change", () => {
-    const { backend } = makeIdleEngine({ fpsCap: 30, renderScale: 0.75 });
-    backend.runTicker(16);
+  it("applies the frame cap/render scale at start and re-pushes only on change", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true, fpsCap: 30, renderScale: 0.75 };
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const capSpy = vi.spyOn(backend, "setFrameCap");
+    const scaleSpy = vi.spyOn(backend, "setRenderScale");
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => settings,
+    });
+    engine.start(); // applies the initial budget (before the first frame)
+    expect(capSpy).toHaveBeenCalledTimes(1);
+    expect(scaleSpy).toHaveBeenCalledTimes(1);
     expect(backend.frameCap).toBe(30);
     expect(backend.renderScale).toBe(0.75);
+    backend.runTicker(16);
+    expect(capSpy).toHaveBeenCalledTimes(1); // unchanged: no re-push
+    expect(scaleSpy).toHaveBeenCalledTimes(1);
+    settings.fpsCap = 60;
+    settings.renderScale = 1;
+    backend.runTicker(16);
+    expect(capSpy).toHaveBeenCalledTimes(2);
+    expect(scaleSpy).toHaveBeenCalledTimes(2);
   });
 
   it("a renderScale change on an idle engine renders on that tick (the backing-store realloc blanks the canvas)", () => {
