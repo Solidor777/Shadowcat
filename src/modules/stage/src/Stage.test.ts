@@ -790,3 +790,36 @@ test("a non-antialias performance edit does NOT re-create the backend", async ()
   expect(createBackend).toHaveBeenCalledOnce();
   expect(backend1.destroyed).toBe(false);
 });
+
+test("an antialias-flip backend re-init replaces the canvas element and the data-* attributes track every edit", async () => {
+  const backend1 = fakeBackend();
+  const backend2 = fakeBackend();
+  const createBackend = vi.fn(async (_canvas: HTMLCanvasElement) =>
+    createBackend.mock.calls.length === 1 ? backend1 : backend2);
+  const controller = new PerformanceController();
+  controller.setPreset("quality"); // fpsCap "uncapped" → 0, renderScale 1, idleSkip true
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const canvas1 = container.querySelector("[data-testid='stage-canvas']") as HTMLCanvasElement;
+  // The observability attributes are markup-owned: present from the first render, no effect needed.
+  expect(host.dataset.fpsCap).toBe("0");
+  expect(host.dataset.renderScale).toBe("1");
+  expect(host.dataset.idleSkip).toBe("1");
+
+  controller.set({ fpsCap: 30, renderScale: 0.75, antialias: false });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledTimes(2));
+  const canvas2 = container.querySelector("[data-testid='stage-canvas']") as HTMLCanvasElement;
+  // The canvas element itself is replaced (a destroyed GL context is never re-initialized),
+  // and the re-init runs against the NEW element, not the detached one.
+  expect(canvas2).not.toBe(canvas1);
+  expect(createBackend.mock.calls[1][0]).toBe(canvas2);
+  expect(backend1.destroyed).toBe(true);
+  // The host div was NOT replaced, and its attributes reflect the edited settings.
+  expect(host.dataset.fpsCap).toBe("30");
+  expect(host.dataset.renderScale).toBe("0.75");
+  expect(host.dataset.idleSkip).toBe("1");
+});

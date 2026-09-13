@@ -49,6 +49,9 @@
   const ctx = getAppContext();
   const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
 
+  // Live render-budget signals are Svelte-OWNED markup attributes (never an effect writer):
+  // any re-render carries them, and there is exactly one path that can produce them.
+  const perfBudget = $derived(ctx.performance.current);
   // The one budget Pixi cannot change post-init (`PixiBackendOptions.antialias`), read through a
   // `$derived` so the mount $effect below re-runs only when this VALUE flips: any other
   // performance edit re-derives `current` without changing the derived's boolean, so the
@@ -405,18 +408,6 @@
     });
   });
 
-  // Live render-budget signals (the e2e observability hook, mirroring the other
-  // read-only `host.dataset.*` signals the mount effect writes): `ctx.performance.current`
-  // is `$state`-backed, so this effect re-runs on any settings edit — which carries no
-  // document commit, so these attributes have THIS dedicated writer rather than living
-  // inside the commit-driven `onDocs`.
-  $effect(() => {
-    const perf = ctx.performance.current;
-    host.dataset.fpsCap = String(fpsCapToTickerValue(perf.fpsCap));
-    host.dataset.renderScale = String(perf.renderScale);
-    host.dataset.idleSkip = perf.idleSkip ? "1" : "0";
-  });
-
   /** Pointer/wheel gestures → the engine's tool-aware dispatcher (active tool first,
    * camera pan as the no-tool fallback). Unified pointer events (#10); listeners are
    * bound to `signal` so teardown removes them all in one `abort()`.
@@ -454,8 +445,21 @@
   }
 </script>
 
-<div class="stage-host" bind:this={host}>
-  <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+<div
+  class="stage-host"
+  bind:this={host}
+  data-fps-cap={String(fpsCapToTickerValue(perfBudget.fpsCap))}
+  data-render-scale={String(perfBudget.renderScale)}
+  data-idle-skip={perfBudget.idleSkip ? "1" : "0"}
+>
+  <!-- Keyed canvas: a WebGL context cannot be re-initialized on a canvas whose renderer was
+       destroyed (the mount effect's backend re-create on an antialias flip), so the element
+       itself is replaced and the mount effect's `canvas` binding always points at a pristine
+       element. Only the canvas is keyed — the host div (and its data-* observability
+       attributes) must remain one stable element. -->
+  {#key antialiasBudget}
+    <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+  {/key}
   {#if role === "gm"}
     <select
       class="gm-view"
