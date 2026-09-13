@@ -18,6 +18,10 @@ Two consequences to internalize before you start:
 - **Modules are admin-trusted.** There is no sandbox. An installed module is
   client code at the same trust tier as the Shadowcat binary itself. Install
   modules you trust; ship modules worthy of that trust.
+- **A module's client code is still fully trusted — this has not changed.** A module MAY
+  additionally declare sandboxed, opt-in, SERVER-SIDE validators (a completely separate
+  mechanism, `wasm32-unknown-unknown` code judging only the `system` band of one document
+  type) — see [Creating a validator](creating-a-validator).
 - **The server stays authoritative.** Your module *requests* changes (optimistic
   intents); the server validates, applies, and broadcasts. Nothing your module
   draws or writes locally bypasses server permissions.

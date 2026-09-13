@@ -34,6 +34,15 @@ const MAX_LOG_CALLS: u32 = 16;
 
 /// One compiled, cached validator: the fuel-metered `Engine` plus the wasmi `Module` and the
 /// declaring module/doc_type this validator belongs to (for fault reporting).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::sandbox::runtime::CompiledValidator;
+///
+/// let wasm = wat::parse_str(r#"(module (memory (export "memory") 1))"#).unwrap();
+/// let compiled = CompiledValidator::compile("example-module", &wasm).unwrap();
+/// ```
 #[derive(Debug, Clone)]
 pub struct CompiledValidator {
     /// The engine `module` was compiled with — a `wasmi::Module` is bound to its compiling
