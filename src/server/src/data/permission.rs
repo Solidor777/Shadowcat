@@ -409,6 +409,17 @@ pub(crate) fn targets_engine_band(path: &str) -> bool {
     strip_embedded_hops(path).is_some_and(|rest| writes_band(&rest, "engine"))
 }
 
+/// Whether `path` writes the opaque `system` band of the document itself or of an
+/// embedded child at any depth (`/system…`, `/embedded/<coll>/<idx>/system…`) — the
+/// any-depth band-membership shape `targets_engine_band` owns for the engine band,
+/// stated once for the `system` band so `SqliteRepository::apply_intent`'s
+/// sandboxed-validator pre-pass and every future caller classify an embedded-child
+/// `system` write identically rather than re-deriving (and silently top-level-only)
+/// the hop-stripping.
+pub(crate) fn targets_system_band(path: &str) -> bool {
+    strip_embedded_hops(path).is_some_and(|rest| writes_band(&rest, "system"))
+}
+
 /// Strip zero or more `/embedded/<coll>/<idx>` hops off `path`, returning the
 /// residual (always starting with `/`). Each hop requires BOTH a collection name
 /// and an index segment to keep descending, so a path naming a whole collection

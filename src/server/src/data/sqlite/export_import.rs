@@ -581,7 +581,13 @@ impl SqliteRepository {
                     registry,
                     &enabled_module_ids,
                     &mut document,
+                    // `prior` is always `None` for an import (every document is a Create
+                    // into an empty world), and `prior_permitted` is `true` because the
+                    // importing operator already holds the entire bundle — the READ gate
+                    // exists for live intent writers, not for a bulk import whose input
+                    // the caller supplied wholesale.
                     None,
+                    true,
                     world,
                     &world_schemas,
                 )

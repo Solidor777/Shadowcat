@@ -238,7 +238,11 @@ fn collect_validated_nodes<'a>(
 /// collection order, so `apply_intent` and `import_world` inherit identical, deterministic
 /// ordering with no way for the two chokepoints to fork — short-circuiting on the FIRST
 /// non-`Accept` verdict anywhere in the tree. `prior` is `doc`'s pre-image (`None` for a
-/// Create). Maintains `registry`'s per-(world, module) consecutive-fault counter itself: a
+/// Create). `prior_permitted` is the caller's statement that the WRITER holds whole-document
+/// READ on the pre-image: when `false`, `prior` is withheld entirely (every node validates as
+/// a Create) so a write-without-read configuration never hands the validator — or a crafted
+/// refusal reason reflected back to the writer — stored content no egress path would give
+/// them. Maintains `registry`'s per-(world, module) consecutive-fault counter itself: a
 /// module whose call faults has its streak incremented and stamped onto the returned
 /// `ValidatorVerdict::Fault`'s `consecutive` field; a module whose call returns `Accept` OR
 /// `Refuse` — either is a working, non-technical decision — has its own streak reset to zero; a
@@ -273,7 +277,8 @@ fn collect_validated_nodes<'a>(
 ///     created_at: 0,
 ///     updated_at: 0,
 /// };
-/// let verdict = validate_document(&registry, &[], &mut doc, None, uuid::Uuid::nil(), &[]).await?;
+/// let verdict =
+///     validate_document(&registry, &[], &mut doc, None, true, uuid::Uuid::nil(), &[]).await?;
 /// assert_eq!(verdict, ValidatorVerdict::Accept);
 /// # Ok(())
 /// # }
@@ -283,12 +288,14 @@ pub async fn validate_document(
     enabled_module_ids: &[String],
     doc: &mut Document,
     prior: Option<&Document>,
+    prior_permitted: bool,
     world_id: Uuid,
     schemas: &[SchemaDeclaration],
 ) -> Result<ValidatorVerdict, DataError> {
     validate_structural(doc, schemas)?;
     let mut ids: Vec<String> = enabled_module_ids.to_vec();
     ids.sort();
+    let prior = if prior_permitted { prior } else { None };
     let mut nodes = Vec::new();
     collect_validated_nodes(doc, prior, &mut nodes);
     for node in &nodes {

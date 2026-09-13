@@ -193,7 +193,7 @@ async fn validate_document_over_a_scanned_registry_isolates_each_modules_fault_s
 
     for expected in 1..=3u32 {
         let verdict =
-            crate::sandbox::validate_document(&registry, &a_only, &mut d, None, world, &[])
+            crate::sandbox::validate_document(&registry, &a_only, &mut d, None, true, world, &[])
                 .await
                 .expect("structurally valid document");
         let crate::sandbox::ValidatorVerdict::Fault(fault) = verdict else {
@@ -206,14 +206,16 @@ async fn validate_document_over_a_scanned_registry_isolates_each_modules_fault_s
     // module-b's own accept, resolved through the SAME scanned registry but keyed on a
     // DIFFERENT installed-module id (both modules here declare the SAME doc_type, "item"),
     // must never touch module-a's streak.
-    let verdict = crate::sandbox::validate_document(&registry, &b_only, &mut d, None, world, &[])
-        .await
-        .expect("structurally valid document");
+    let verdict =
+        crate::sandbox::validate_document(&registry, &b_only, &mut d, None, true, world, &[])
+            .await
+            .expect("structurally valid document");
     assert_eq!(verdict, crate::sandbox::ValidatorVerdict::Accept);
 
-    let verdict = crate::sandbox::validate_document(&registry, &a_only, &mut d, None, world, &[])
-        .await
-        .expect("structurally valid document");
+    let verdict =
+        crate::sandbox::validate_document(&registry, &a_only, &mut d, None, true, world, &[])
+            .await
+            .expect("structurally valid document");
     let crate::sandbox::ValidatorVerdict::Fault(fault) = verdict else {
         panic!("expected Fault from module-a, got {verdict:?}");
     };

@@ -113,7 +113,7 @@ async fn validate_document_short_circuits_on_first_non_accept_in_module_id_order
     // tree-walk and short-circuit ordering.)
     let registry = registry::ValidatorRegistry::default();
     let mut d = doc("item", serde_json::json!({ "hp": -1 }));
-    let verdict = validate_document(&registry, &[], &mut d, None, uuid::Uuid::nil(), &[])
+    let verdict = validate_document(&registry, &[], &mut d, None, true, uuid::Uuid::nil(), &[])
         .await
         .expect("structurally valid document");
     assert_eq!(verdict, ValidatorVerdict::Accept);
@@ -131,7 +131,7 @@ async fn per_module_fault_streaks_are_independent() {
     let mut d = doc("item", serde_json::json!({}));
 
     for expected in 1..=4u32 {
-        let verdict = validate_document(&registry, &a_only, &mut d, None, world, &[])
+        let verdict = validate_document(&registry, &a_only, &mut d, None, true, world, &[])
             .await
             .expect("structurally valid document");
         let ValidatorVerdict::Fault(fault) = verdict else {
@@ -141,12 +141,12 @@ async fn per_module_fault_streaks_are_independent() {
     }
 
     // module-b's own accept, keyed on a DIFFERENT module id, never touches module-a's streak.
-    let verdict = validate_document(&registry, &b_only, &mut d, None, world, &[])
+    let verdict = validate_document(&registry, &b_only, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     assert_eq!(verdict, ValidatorVerdict::Accept);
 
-    let verdict = validate_document(&registry, &a_only, &mut d, None, world, &[])
+    let verdict = validate_document(&registry, &a_only, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     let ValidatorVerdict::Fault(fault) = verdict else {
@@ -174,7 +174,7 @@ async fn a_modules_own_accept_resets_its_own_streak() {
     let mut d = doc("item", serde_json::json!({}));
 
     for _ in 0..4 {
-        validate_document(&faulting, &ids, &mut d, None, world, &[])
+        validate_document(&faulting, &ids, &mut d, None, true, world, &[])
             .await
             .expect("structurally valid document");
     }
@@ -182,12 +182,12 @@ async fn a_modules_own_accept_resets_its_own_streak() {
     // The SAME module's own accept — via a registry sharing the identical fault map, exactly
     // as a real rescan hands out a fresh `ValidatorRegistry` sharing the cache's one
     // persistent counter — resets module-a's streak to zero.
-    let verdict = validate_document(&accepting, &ids, &mut d, None, world, &[])
+    let verdict = validate_document(&accepting, &ids, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     assert_eq!(verdict, ValidatorVerdict::Accept);
 
-    let verdict = validate_document(&faulting, &ids, &mut d, None, world, &[])
+    let verdict = validate_document(&faulting, &ids, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     let ValidatorVerdict::Fault(fault) = verdict else {
@@ -218,17 +218,17 @@ async fn a_modules_own_refuse_also_resets_its_streak() {
     let mut d = doc("item", serde_json::json!({}));
 
     for _ in 0..4 {
-        validate_document(&faulting, &ids, &mut d, None, world, &[])
+        validate_document(&faulting, &ids, &mut d, None, true, world, &[])
             .await
             .expect("structurally valid document");
     }
 
-    let verdict = validate_document(&refusing, &ids, &mut d, None, world, &[])
+    let verdict = validate_document(&refusing, &ids, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     assert!(matches!(verdict, ValidatorVerdict::Refuse { .. }));
 
-    let verdict = validate_document(&faulting, &ids, &mut d, None, world, &[])
+    let verdict = validate_document(&faulting, &ids, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     let ValidatorVerdict::Fault(fault) = verdict else {
@@ -253,7 +253,7 @@ async fn enabled_module_order_is_sorted_by_validate_document_not_trusted_from_th
     let reverse_order = vec!["module-b".to_string(), "module-a".to_string()];
     let mut d = doc("item", serde_json::json!({}));
 
-    let verdict = validate_document(&registry, &reverse_order, &mut d, None, world, &[])
+    let verdict = validate_document(&registry, &reverse_order, &mut d, None, true, world, &[])
         .await
         .expect("structurally valid document");
     let ValidatorVerdict::Refuse { module, .. } = verdict else {
@@ -287,7 +287,7 @@ async fn a_structural_failure_never_reaches_or_faults_a_validator() {
     }];
     let mut d = doc("item", serde_json::json!({ "hp": "not-a-number" }));
 
-    let err = validate_document(&registry, &ids, &mut d, None, world, &schemas)
+    let err = validate_document(&registry, &ids, &mut d, None, true, world, &schemas)
         .await
         .expect_err("a tier-2 schema violation must surface as Phase 1's own error");
     assert!(
