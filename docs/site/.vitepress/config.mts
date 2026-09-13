@@ -26,6 +26,7 @@ export default defineConfig({
             { text: "Creating a module", link: "/guides/creating-a-module" },
             { text: "Creating a system", link: "/guides/creating-a-system" },
             { text: "Performance", link: "/guides/performance" },
+            { text: "Creating a validator", link: "/guides/creating-a-validator" },
           ],
         },
       ],

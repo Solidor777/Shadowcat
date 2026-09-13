@@ -54,6 +54,8 @@ export const en: Messages = {
   "settings.modules.empty": "No modules installed.",
   "settings.modules.save": "Save",
   "settings.modules.error": "Module operation failed: {message}",
+  "settings.modules.runValidators": "Run sandboxed validators ({name})",
+  "settings.modules.validatorLoadError": "Validator failed to load: {message}",
   "settings.invites.title": "World invites",
   "settings.invites.role": "World role",
   "settings.invites.mint": "Create invite",

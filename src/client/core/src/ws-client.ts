@@ -321,8 +321,10 @@ export interface WsClientHandlers {
   onCommand(cmd: WireCommand): void;
   /** An intent the server refused.
    * @param intentId The rejected intent's correlation id.
-   * @param reason The server's rejection category. */
-  onReject?(intentId: string, reason: RejectReason): void;
+   * @param reason The server's rejection category.
+   * @param detail Player/GM-presentable detail text (rendered as a text node only), if the
+   *   server supplied any. */
+  onReject?(intentId: string, reason: RejectReason, detail: string | null): void;
   /** The `welcome` frame following a (re)connect; carries capability/role/current-seq state.
    * @param welcome The parsed `welcome` frame. */
   onWelcome?(welcome: WireWelcome): void;
@@ -949,7 +951,7 @@ export class WsClient {
         this.applyEvent(msg.command);
         break;
       case "reject":
-        this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason));
+        this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason, msg.detail ?? null));
         break;
       case "resync_begin":
         break;

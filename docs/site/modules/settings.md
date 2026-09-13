@@ -18,7 +18,13 @@ enablement.
 - `UserManager.svelte` — admin account management.
 - `InviteManager.svelte` — world invite codes.
 - `ModuleManager.svelte` — installed community modules: discovery list +
-  per-world enable toggles (engine-compat gate surfaced here).
+  per-world enable toggles (engine-compat gate surfaced here), plus a second
+  "Run sandboxed validators" toggle for any enabled module that declares
+  `validators` in its manifest (the per-world `validators_enabled` opt-in,
+  persisted as `WorldModuleEntry`). A module whose declared validator fails to
+  compile shows its load error inline beside the toggle
+  (`InstalledModuleInfo.validator_load_error`, from the server's registry
+  scan). See [Creating a validator](/guides/creating-a-validator).
 - `PerformanceEditor.svelte` — the built-in per-device render-budget section
   (see below).
 

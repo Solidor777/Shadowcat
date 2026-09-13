@@ -116,6 +116,7 @@ fn reject_round_trips_snake_case() {
     let m = ServerMsg::Reject {
         intent_id: Uuid::from_u128(3),
         reason: RejectReason::Conflict,
+        detail: None,
     };
     let s = serde_json::to_string(&m).unwrap();
     assert!(s.contains("\"type\":\"reject\""));

@@ -184,7 +184,11 @@
       connect: webSocketConnect(wsUrl),
       modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable],
       onEvicted: () => leaveWorld(),
-      onReject: (reason) => notifications.push("warning", t(`intent.rejected.${reason}`)),
+      onReject: (reason, detail) =>
+        notifications.push(
+          "warning",
+          detail ? `${t(`intent.rejected.${reason}`)} ${detail}` : t(`intent.rejected.${reason}`),
+        ),
     });
     session = s;
     void s.enter(worldId);

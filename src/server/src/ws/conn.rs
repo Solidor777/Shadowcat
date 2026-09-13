@@ -207,13 +207,19 @@ fn text(msg: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
 
-/// Map a write-path error to the client-actionable reject category.
-fn reject_reason(e: &crate::data::DataError) -> RejectReason {
+/// Map a write-path error to the client-actionable reject category, plus an optional
+/// player-presentable detail string carried on `ServerMsg::Reject.detail`.
+fn reject_reason(e: &crate::data::DataError) -> (RejectReason, Option<String>) {
     use crate::data::DataError::*;
     match e {
-        Forbidden => RejectReason::Forbidden,
-        Conflict(_) => RejectReason::Conflict,
-        _ => RejectReason::Invalid,
+        Forbidden => (RejectReason::Forbidden, None),
+        Conflict(_) => (RejectReason::Conflict, None),
+        OpFailed(m) => (RejectReason::Invalid, Some(m.clone())),
+        Validator(fault) => (
+            RejectReason::Invalid,
+            Some(format!("validator {} faulted", fault.module)),
+        ),
+        _ => (RejectReason::Invalid, None),
     }
 }
 
@@ -417,21 +423,27 @@ async fn handle_socket(
                                             .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                 intent_id,
                                                 reason: RejectReason::Forbidden,
+                                                detail: None,
                                             })))
                                             .await;
                                         continue;
                                     }
                                     // Success is confirmed by the broadcast echo of the
                                     // authored Event; only a rejection is sent directly.
+                                    // A validator fault over the auto-disable limit is
+                                    // acted on inside `Room::commit_ops_locked`'s error
+                                    // arm (the one funnel every guarded write path
+                                    // shares), never here.
                                     match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
                                         Ok(_cmd) => {}
                                         Err(e) => {
-                                            let reason = reject_reason(&e);
+                                            let (reason, detail) = reject_reason(&e);
                                             tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
                                             let _ = etx
                                                 .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                     intent_id,
                                                     reason,
+                                                    detail,
                                                 })))
                                                 .await;
                                         }
@@ -1659,7 +1671,7 @@ async fn welcome_capability_requirements(
         let installed = tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
             .await
             .unwrap_or_default();
-        for id in &enabled {
+        for entry in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
             // or an on-disk manifest edit. Engine-compat is enforced at BOTH
@@ -1667,7 +1679,7 @@ async fn welcome_capability_requirements(
             // so a now-incompatible enabled module must not publish requirements.
             if let Some(m) = installed
                 .iter()
-                .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
+                .find(|m| m.id == entry.id && crate::modules::engine_compat_ok(m))
             {
                 for r in &m.requirements {
                     by_prefix

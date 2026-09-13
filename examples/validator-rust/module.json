@@ -1,0 +1,7 @@
+{
+  "id": "example-validator",
+  "version": "1.0.0",
+  "dependencies": {},
+  "engines": { "shadowcat": "*" },
+  "validators": [{ "docType": "actor", "wasm": "validator.wasm" }]
+}

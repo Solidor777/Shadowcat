@@ -100,6 +100,35 @@ test("requirements and hooks parse", () => {
   expect(m.hooks![0].kind).toBe("cancel");
 });
 
+test("a validators declaration parses", () => {
+  const m = parseManifest({
+    id: "example-validator",
+    version: "1.0.0",
+    dependencies: {},
+    validators: [{ docType: "actor", wasm: "validator.wasm" }],
+  });
+  expect(m.validators).toEqual([{ docType: "actor", wasm: "validator.wasm" }]);
+});
+
+test("a validators entry with an empty docType or wasm is rejected", () => {
+  expect(() =>
+    parseManifest({
+      id: "example-validator",
+      version: "1.0.0",
+      dependencies: {},
+      validators: [{ docType: "", wasm: "validator.wasm" }],
+    }),
+  ).toThrow();
+  expect(() =>
+    parseManifest({
+      id: "example-validator",
+      version: "1.0.0",
+      dependencies: {},
+      validators: [{ docType: "actor", wasm: "" }],
+    }),
+  ).toThrow();
+});
+
 test("missing id is rejected", () => {
   expect(() => parseManifest({ version: "1.0.0", dependencies: {} })).toThrow();
 });

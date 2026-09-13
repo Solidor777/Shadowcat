@@ -809,17 +809,60 @@ async fn world_enabled_modules_round_trip() {
 
     assert!(r.world_enabled_modules(w.id).await.unwrap().is_empty());
 
-    let ids = vec!["actors-plus".to_string(), "example-system".to_string()];
-    r.set_world_enabled_modules(w.id, &ids).await.unwrap();
-    assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), ids);
+    let entries = vec![
+        crate::modules::WorldModuleEntry {
+            id: "actors-plus".into(),
+            validators_enabled: false,
+        },
+        crate::modules::WorldModuleEntry {
+            id: "example-system".into(),
+            validators_enabled: true,
+        },
+    ];
+    r.set_world_enabled_modules(w.id, &entries).await.unwrap();
+    assert_eq!(r.world_enabled_modules(w.id).await.unwrap(), entries);
 
     // A subsequent set fully replaces, not appends.
-    r.set_world_enabled_modules(w.id, &["example-system".to_string()])
-        .await
-        .unwrap();
+    r.set_world_enabled_modules(
+        w.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "example-system".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
     assert_eq!(
         r.world_enabled_modules(w.id).await.unwrap(),
-        vec!["example-system".to_string()]
+        vec![crate::modules::WorldModuleEntry {
+            id: "example-system".into(),
+            validators_enabled: false,
+        }]
+    );
+}
+
+#[tokio::test]
+async fn world_enabled_modules_reads_a_legacy_string_array_as_validators_disabled() {
+    let r = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let author = r.create_user("a", None, ServerRole::User, 0).await.unwrap();
+    let w = r.create_world_owned("W", author, 0).await.unwrap();
+
+    // A settings row written before the enablement record gained the
+    // `validators_enabled` flag: a bare JSON string array. It must read back
+    // as every id with the flag OFF — an existing world never silently
+    // starts running validators.
+    r.set_setting(
+        &crate::data::sqlite::world_modules_key(w.id),
+        &serde_json::json!(["mock-module"]).to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        r.world_enabled_modules(w.id).await.unwrap(),
+        vec![crate::modules::WorldModuleEntry {
+            id: "mock-module".into(),
+            validators_enabled: false,
+        }]
     );
 }
 
@@ -2098,4 +2141,241 @@ async fn import_world_rejects_when_only_the_parent_document_has_a_foreign_scope(
         .await
         .unwrap();
     assert_eq!(world_exists, None);
+}
+
+// ---------- sandboxed validators over import_world's bulk writes ----------
+
+/// Writes one installed-module folder under `dir/<id>/` declaring a validator
+/// for `doc_type`, compiled from `wat_src` at test time — the import-side twin
+/// of the same small fixture the intent-chokepoint tests use (kept private to
+/// each sibling test module).
+fn write_import_validator_module(dir: &std::path::Path, id: &str, doc_type: &str, wat_src: &str) {
+    let module_dir = dir.join(id);
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.json"),
+        serde_json::json!({
+            "id": id,
+            "version": "1.0.0",
+            "engines": { "shadowcat": "*" },
+            "validators": [{ "docType": doc_type, "wasm": "v.wasm" }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        module_dir.join("v.wasm"),
+        wat::parse_str(wat_src).expect("valid WAT fixture"),
+    )
+    .unwrap();
+}
+
+/// No `validate` export at all — every call faults with `FaultKind::BadAbi`, the
+/// cheapest deterministic fault.
+const IMPORT_FAULTING_WAT: &str = r#"
+  (module
+    (memory (export "memory") 1)
+    (func (export "alloc") (param i32) (result i32) (i32.const 0)))
+"#;
+
+/// Always accepts.
+const IMPORT_ACCEPTING_WAT: &str = r#"
+  (module
+    (memory (export "memory") 1)
+    (func (export "alloc") (param i32) (result i32) (i32.const 0))
+    (func (export "validate") (param i32 i32) (result i32) (i32.const 0)))
+"#;
+
+/// Always refuses with `reason` stored at a static offset.
+fn import_refusing_wat(reason: &str) -> String {
+    format!(
+        r#"
+  (module
+    (memory (export "memory") 1)
+    (data (i32.const 2048) "{reason}")
+    (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+    (func (export "validate") (param i32 i32) (result i32) (i32.const 1))
+    (func (export "reason_ptr") (result i32) (i32.const 2048))
+    (func (export "reason_len") (result i32) (i32.const {len})))
+"#,
+        len = reason.len()
+    )
+}
+
+/// Rebuilds the `WorldImportData` shape `read_bundle` would produce, from an
+/// in-memory export plus caller-chosen `settings` rows.
+fn import_data_with_settings(
+    export_data: &crate::data::world_bundle::WorldExportData,
+    settings: Vec<crate::data::world_bundle::ExportedSettingRow>,
+) -> crate::data::world_bundle::WorldImportData {
+    crate::data::world_bundle::WorldImportData {
+        manifest: export_data.manifest.clone(),
+        documents: export_data.documents.clone(),
+        events: export_data.events.clone(),
+        members: export_data.members.clone(),
+        invites: export_data.invites.clone(),
+        assets: export_data.assets.clone(),
+        fog: export_data.fog.clone(),
+        settings,
+        staged_assets: Vec::new(),
+        staged_siblings: vec![],
+    }
+}
+
+/// A source repo holding one world with one `item` document carrying `system`,
+/// exported in-memory. `item` is a client-side doc_type (no engine body), so
+/// the bundle exercises the `system` band only.
+async fn exported_item_world(
+    id: u128,
+    system: serde_json::Value,
+) -> (SqliteRepository, crate::data::document::World) {
+    let src = repo().await;
+    let gm = src
+        .create_user("gm-import-sandbox", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let w = src
+        .create_world_owned("ImportSandbox", gm, 0)
+        .await
+        .unwrap();
+    let mut doc = world_doc(id, w.id, system);
+    doc.doc_type = "item".into();
+    doc.engine = None;
+    let mut conn = src.pool().acquire().await.unwrap();
+    SqliteRepository::upsert_document(&mut conn, &doc, 1)
+        .await
+        .unwrap();
+    drop(conn);
+    (src, w)
+}
+
+#[tokio::test]
+async fn import_world_refuses_a_bundle_document_a_validator_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    write_import_validator_module(
+        dir.path(),
+        "mod-x",
+        "item",
+        &import_refusing_wat("hp must stay positive"),
+    );
+    let (src, w) = exported_item_world(31, serde_json::json!({ "hp": -1 })).await;
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+
+    // The bundle's own settings record the world having opted into mod-x's
+    // validators — the same per-world enablement record a live world stores.
+    let mut settings = export_data.settings.clone();
+    settings.push(crate::data::world_bundle::ExportedSettingRow {
+        key: world_modules_key(w.id),
+        value: serde_json::json!([{ "id": "mod-x", "validators_enabled": true }]).to_string(),
+    });
+
+    let target = SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap()
+        .with_modules_dir(dir.path());
+    let err = target
+        .import_world(import_data_with_settings(&export_data, settings))
+        .await
+        .unwrap_err();
+    let DataError::OpFailed(msg) = err else {
+        panic!("expected OpFailed, got {err:?}");
+    };
+    assert!(
+        msg.contains("validator ") && msg.contains("hp must stay positive"),
+        "the import refusal must carry the validator's reason: {msg}"
+    );
+    // Zero partial state: nothing from the refused bundle landed.
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM documents WHERE world_id = ?")
+        .bind(w.id.to_string())
+        .fetch_one(target.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn import_world_rejects_a_schema_violating_bundle_before_any_validator_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    // An ALWAYS-FAULTING validator: if the structural pre-pass did not run
+    // first, the import would fail with `DataError::Validator` instead.
+    write_import_validator_module(dir.path(), "mod-x", "item", IMPORT_FAULTING_WAT);
+    let (src, w) = exported_item_world(32, serde_json::json!({ "hp": "not-a-number" })).await;
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+
+    let mut settings = export_data.settings.clone();
+    settings.push(crate::data::world_bundle::ExportedSettingRow {
+        key: world_modules_key(w.id),
+        value: serde_json::json!([{ "id": "mod-x", "validators_enabled": true }]).to_string(),
+    });
+    settings.push(crate::data::world_bundle::ExportedSettingRow {
+        key: world_schemas_key(w.id),
+        value: serde_json::json!([{
+            "module_id": "example-system",
+            "version": "1",
+            "schema_format": 1,
+            "doc_type": "item",
+            "subtree_pointer": "/system/hp",
+            "schema": { "type": "number" },
+        }])
+        .to_string(),
+    });
+
+    let target = SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap()
+        .with_modules_dir(dir.path());
+    let err = target
+        .import_world(import_data_with_settings(&export_data, settings))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, DataError::SchemaViolation { .. }),
+        "a tier-2 violation must surface as the structural error, never DataError::Validator: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
+    let dir = tempfile::tempdir().unwrap();
+    // An accepting validator for "item": the bundle's documents pass their
+    // declared validators and import cleanly (the judgment half — that a
+    // bundle's declared validators DO run over the import — is pinned by
+    // `import_world_refuses_a_bundle_document_a_validator_rejects` above)…
+    write_import_validator_module(dir.path(), "mod-x", "item", IMPORT_ACCEPTING_WAT);
+    let (src, w) = exported_item_world(33, serde_json::json!({ "hp": 3 })).await;
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+
+    // …while its settings record the source world opted INTO that validator.
+    let mut settings = export_data.settings.clone();
+    settings.push(crate::data::world_bundle::ExportedSettingRow {
+        key: world_modules_key(w.id),
+        value: serde_json::json!([{ "id": "mod-x", "validators_enabled": true }]).to_string(),
+    });
+
+    let target = SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap()
+        .with_modules_dir(dir.path());
+    target
+        .import_world(import_data_with_settings(&export_data, settings))
+        .await
+        .expect("a bundle whose documents pass their declared validators imports cleanly");
+
+    // …but the persisted enablement record arrives with validators_enabled
+    // forced OFF — opting a world into third-party code is the GM's own act,
+    // never something a bundle may carry in.
+    let entries = target.world_enabled_modules(w.id).await.unwrap();
+    assert_eq!(
+        entries,
+        vec![crate::modules::WorldModuleEntry {
+            id: "mod-x".into(),
+            validators_enabled: false,
+        }]
+    );
+    // And the imported document is live (the import itself was not blocked).
+    assert!(target
+        .get_document(Uuid::from_u128(33))
+        .await
+        .unwrap()
+        .is_some());
 }

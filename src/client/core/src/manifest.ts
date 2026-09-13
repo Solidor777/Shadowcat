@@ -148,6 +148,14 @@ export interface ModuleManifest {
    * `SystemDefaultsEngine` and the world-config seed path writes the `system-defaults` singleton
    * from it); this schema shape-checks it as an object for authoring-time feedback only. */
   systemDefaults?: SystemDefaultsEngine;
+  /** Declared server-side validators (advisory display only — the client never runs one; the
+   * server's `modules::scan_installed_modules` reads this authoritatively). */
+  validators?: {
+    /** The document type this validator's `system` band judges. */
+    docType: string;
+    /** Path to the compiled `.wasm`, relative to the module's own install folder. */
+    wasm: string;
+  }[];
 }
 
 const HookKindSchema = z.enum(["info", "mutate", "cancel"]);
@@ -208,6 +216,9 @@ export const ManifestSchema: z.ZodType<ModuleManifest> = z.object({
     .optional(),
   systemDefaults: z
     .custom<SystemDefaultsEngine>((v) => typeof v === "object" && v !== null && !Array.isArray(v))
+    .optional(),
+  validators: z
+    .array(z.object({ docType: z.string().min(1), wasm: z.string().min(1) }))
     .optional(),
 });
 
