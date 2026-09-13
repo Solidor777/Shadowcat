@@ -3,7 +3,9 @@
 //! binary with the web client embedded (`rust-embed` — `dist/` must exist at
 //! compile time). Clients send intents; this crate validates, applies, and
 //! broadcasts per-recipient-filtered events. Server-side code never executes
-//! third-party module code.
+//! third-party module code, except opted-in sandboxed validators (`sandbox`)
+//! running inside a fuel/memory-limited `wasmi` interpreter with no host
+//! imports beyond a rate-limited debug log.
 
 /// Accounts, sessions, password hashing, and the first-run setup flow.
 pub mod auth;
@@ -30,6 +32,8 @@ pub mod http;
 pub mod merge;
 /// Installed community-module discovery + the engine-compat semver gate.
 pub mod modules;
+/// Sandboxed third-party server-side validators (opt-in, per-world, WASM).
+pub mod sandbox;
 pub mod scene;
 /// Server-side rollable-table draws (`ClientMsg::DrawTable` -> a posted
 /// `Segment::TableDraw` chat message).
