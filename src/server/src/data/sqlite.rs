@@ -500,6 +500,43 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
     }
 }
 
+/// Reconstructs the MERGED post-image document a `changes` Update would produce against
+/// `doc_id`'s CURRENT stored row, read through `executor` — shared by Phase 2's authoritative
+/// merge (`&mut *tx`, inside the write transaction) and the pre-transaction validator
+/// pre-image build (a read-only pool connection, before the transaction opens): both merges
+/// must reach the IDENTICAL document, or the validated post-image and the committed one could
+/// silently diverge. Returns the PRE-image and the merged POST-image. `DataError::NotFound` if
+/// the row is absent; `DataError::OpFailed` if `changes` would change the document id.
+async fn merge_update_document<'e, E>(
+    executor: E,
+    doc_id: Uuid,
+    changes: &[FieldChange],
+) -> Result<(Document, Document), DataError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
+        .bind(doc_id.to_string())
+        .fetch_optional(executor)
+        .await?
+        .ok_or(DataError::NotFound)?;
+    let pre_value: serde_json::Value = serde_json::from_str(row.get::<String, _>("json").as_str())?;
+    let pre_doc: Document = serde_json::from_value(pre_value.clone())?;
+    let mut post_value = pre_value;
+    for ch in changes {
+        // THE `apply_field_change` mutation rule — the same call the authoritative
+        // merge makes; never a re-spelled remove/set branch.
+        apply_field_change(&mut post_value, ch)?;
+    }
+    let post_doc: Document = serde_json::from_value(post_value)?;
+    if post_doc.id != doc_id {
+        return Err(DataError::OpFailed(
+            "update must not change the document id".into(),
+        ));
+    }
+    Ok((pre_doc, post_doc))
+}
+
 /// `doc`'s `CombatEngine`, or `None` if `doc` is not a `combat` document.
 /// A stored `combat` document's engine body is always valid by construction
 /// (validated at every write), so a parse failure here is treated the same
@@ -871,6 +908,78 @@ impl Repository for SqliteRepository {
         // This is the GM-controlled tier-2 structural schema registry; the
         // writer never supplies its own judging schema.
         let world_schemas = self.world_schema_declarations(world_id).await?;
+        // Sandboxed validators run HERE, entirely before the write transaction opens: the
+        // single-writer pool (`max_connections(1)`) serializes every `apply_intent` server-wide,
+        // so a validator held inside the transaction would throttle every hosted world. A stale
+        // pre-image read here is safe — the OCC pre-image check inside Phase 1 below refuses the
+        // write with `Conflict` if the document changed since this read, so the validated
+        // post-image is the one that actually commits.
+        if let Some(modules_dir) = self.modules_dir.clone() {
+            let enabled = self
+                .world_enabled_modules(world_id)
+                .await
+                .unwrap_or_default();
+            let enabled_module_ids: Vec<String> = enabled
+                .iter()
+                .filter(|e| e.validators_enabled)
+                .map(|e| e.id.clone())
+                .collect();
+            if !enabled_module_ids.is_empty() {
+                let registry = {
+                    let cache = self.validator_registry_cache.clone();
+                    tokio::task::spawn_blocking(move || cache.get_or_scan(&modules_dir))
+                        .await
+                        .unwrap_or_default()
+                };
+                let read_pool = self.open_read_pool().await?;
+                for op in &ops {
+                    let (mut doc, prior): (Document, Option<Document>) = match op {
+                        Operation::Create { doc } => (doc.clone(), None),
+                        Operation::Update { doc_id, changes } => {
+                            let touches_system = changes
+                                .iter()
+                                .any(|c| c.path == "/system" || c.path.starts_with("/system/"));
+                            if !touches_system {
+                                continue;
+                            }
+                            match merge_update_document(&read_pool, *doc_id, changes).await {
+                                Ok((pre, post)) => (post, Some(pre)),
+                                // A missing/malformed pre-image here is not this pass's problem
+                                // to report — the real, authoritative Phase 1 load inside the
+                                // transaction below surfaces the SAME failure properly.
+                                Err(_) => continue,
+                            }
+                        }
+                        Operation::Move { .. } => continue,
+                        Operation::Delete { .. } => continue,
+                    };
+                    match crate::sandbox::validate_document(
+                        &registry,
+                        &enabled_module_ids,
+                        &mut doc,
+                        prior.as_ref(),
+                        world_id,
+                        &world_schemas,
+                    )
+                    .await
+                    {
+                        // `validate_document`'s own structural pre-pass rejected `doc` before
+                        // any validator ran — Phase 1 below would reject it identically, so
+                        // its error is returned untouched here.
+                        Err(structural_err) => return Err(structural_err),
+                        Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
+                        Ok(crate::sandbox::ValidatorVerdict::Refuse { module, reason }) => {
+                            return Err(DataError::OpFailed(format!(
+                                "validator {module}: {reason}"
+                            )));
+                        }
+                        Ok(crate::sandbox::ValidatorVerdict::Fault(fault)) => {
+                            return Err(DataError::Validator(fault));
+                        }
+                    }
+                }
+            }
+        }
         let mut tx = self.pool.begin().await?;
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
@@ -1906,35 +2015,18 @@ impl Repository for SqliteRepository {
                     }
                 }
                 Operation::Update { doc_id, changes } => {
-                    let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
-                        .bind(doc_id.to_string())
-                        .fetch_optional(&mut *tx)
-                        .await?
-                        .ok_or(DataError::NotFound)?;
-                    let mut value: serde_json::Value =
-                        serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    let (pre_doc, mut doc) =
+                        merge_update_document(&mut *tx, *doc_id, changes).await?;
                     // Captured before this op's own `changes` apply — the
                     // TRUE stored pre-image `derive_engine_side_effects`
                     // diffs against below, to surface a normalize-time side
                     // effect on an engine key none of this op's own `changes`
                     // named (e.g. `NoteEngine::derive_body`). Capturing after
-                    // the `apply_field_change` loop would compare the
-                    // post-`changes`, pre-normalize value against itself,
+                    // the merge would compare the post-`changes`,
+                    // pre-normalize value against itself,
                     // reporting the wrong `old` for a nested request this
                     // op's own change already applied.
-                    let pre_engine = value.get("engine").cloned();
-                    for ch in changes {
-                        // THE `apply_field_change` mutation rule. Never
-                        // re-derive the remove/set branch here: the derived scene ECS
-                        // mirrors these same changes and must land the same value.
-                        apply_field_change(&mut value, ch)?;
-                    }
-                    let mut doc: Document = serde_json::from_value(value)?;
-                    if doc.id != *doc_id {
-                        return Err(DataError::OpFailed(
-                            "update must not change the document id".into(),
-                        ));
-                    }
+                    let pre_engine = pre_doc.engine.clone();
                     check_command_scope(&doc, world_id)?;
                     // Embedded children NEVER carry `base` (the Create arm's
                     // `derive_create_base` strips it recursively), but a

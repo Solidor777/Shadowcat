@@ -92,4 +92,12 @@ pub enum DataError {
         /// Player-presentable mismatch description.
         reason: String,
     },
+    /// A sandboxed validator TECHNICALLY failed (trap/out-of-fuel/malformed module) — distinct
+    /// from an authored refusal, which is `OpFailed`. `ws::conn`'s `reject_reason` maps this to
+    /// `RejectReason::Invalid` like `OpFailed`; the CALLER (never `data` itself — see
+    /// `crate::sandbox`'s doc) additionally compares the carried `consecutive` count against
+    /// `crate::sandbox::VALIDATOR_FAULT_LIMIT` to decide whether to call
+    /// `Room::disable_faulting_validator`.
+    #[error("validator '{module}' faulted", module = .0.module)]
+    Validator(crate::sandbox::ValidatorFault),
 }

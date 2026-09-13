@@ -7,6 +7,7 @@ mod commands_and_intents;
 mod invites_and_ownership;
 mod moves;
 mod rows_and_validation;
+mod sandbox_validators;
 mod search_and_worlds;
 
 pub(super) use super::*;
