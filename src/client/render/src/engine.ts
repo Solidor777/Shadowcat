@@ -1,5 +1,5 @@
 import { EMPTY_FOOTPRINTS } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, FootprintLookup, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
@@ -20,6 +20,7 @@ import { RegionView } from "./region-view";
 import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
 import { EmoteView } from "./emote-view";
+import { VfxView } from "./vfx-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
@@ -111,6 +112,21 @@ export interface RenderEngineOpts {
    * selection change carries no store commit, so the host must call
    * {@link RenderEngine.reapplyTokenSelection} to re-project. */
   selectedTokens?: () => ReadonlySet<string>;
+  /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
+   * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
+   * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
+   * playback at all). */
+  vfxAssets?: (id: string) => ResolvedVfxSource | null;
+  /** Reads the current `PerformanceSettings.vfx` flag (Stage → `ctx.performance.current.vfx`,
+   * wired once the shell binds `PerformanceSettings`). Absent ⇒ always enabled — the default
+   * until that binding exists. */
+  vfxEnabled?: () => boolean;
+  /** Reads the current `PerformanceSettings.reducedMotion` flag (the same `PerformanceSettings`
+   * seam as `vfxEnabled`). Absent ⇒ always `false`. */
+  reducedMotion?: () => boolean;
+  /** Called whenever the live VFX node count changes (host observability hook) — the ONLY way
+   * an e2e/dev-tools surface can confirm a VFX node is live without inspecting WebGL pixels. */
+  onVfxChanged?: (count: number) => void;
 }
 
 /** Theme-driven colors applied to the stage canvas at runtime by
@@ -164,6 +180,11 @@ export class RenderEngine implements SceneToolHost {
   private pingsActive = false;
   /** Transient emote-glyph state, ticked each frame; drives `DisplayBackend.drawEmotes`. */
   private readonly emotes = new EmoteView();
+  /** Doc→VFX reconciler + one-shot player; tracks emitters via `tokens.transformOf`/`specOf`. */
+  private readonly vfxView: VfxView;
+  /** Last count reported to `onVfxChanged`, so the host is notified only on an actual change
+   * (mirrors `pingsActive`/`emotesActive`'s change-gated redraw pattern). */
+  private lastVfxCount = 0;
   /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
   private emotesActive = false;
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
@@ -317,6 +338,16 @@ export class RenderEngine implements SceneToolHost {
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
     this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
+    this.vfxView = new VfxView(
+      opts.store,
+      opts.backend,
+      this.viewedScene,
+      (id) => opts.vfxAssets?.(id) ?? null,
+      (id) => this.tokens.transformOf(id),
+      (id) => this.tokens.specOf(id),
+      () => opts.vfxEnabled?.() ?? true,
+      () => opts.reducedMotion?.() ?? false,
+    );
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
     this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
@@ -353,6 +384,7 @@ export class RenderEngine implements SceneToolHost {
     this.applyCamera();
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.vfxView.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
@@ -361,6 +393,7 @@ export class RenderEngine implements SceneToolHost {
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
+      this.vfxView.reconcile();
       this.drawings.reconcile();
       this.templates.reconcile();
       this.walls.reconcile();
@@ -370,6 +403,12 @@ export class RenderEngine implements SceneToolHost {
     });
     this.opts.backend.startTicker((dt) => {
       this.tokens.tick(dt);
+      this.vfxView.tick(dt);
+      const vfxCount = this.vfxView.count();
+      if (vfxCount !== this.lastVfxCount) {
+        this.lastVfxCount = vfxCount;
+        this.opts.onVfxChanged?.(vfxCount);
+      }
       this.lighting.tick(dt);
       this.tickVisionSweep(dt);
       this.tickLightSweep(dt);
@@ -614,6 +653,7 @@ export class RenderEngine implements SceneToolHost {
     }
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.vfxView.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
@@ -1177,6 +1217,22 @@ export class RenderEngine implements SceneToolHost {
     if (!spec) return;
     // Top-center of the token's bounding box (spec x/y is the CENTER — see TokenNodeSpec).
     this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell());
+  }
+
+  /** Forward a `ServerMsg::Vfx`-sourced one-shot request to `VfxView.play` — the exact
+   * `addPing`/`addEmote` delegation shape, one level removed (the view itself owns eviction
+   * and duration bookkeeping).
+   * @param req The one-shot request, including the server-broadcast `id`.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0, id: "one-shot-1" });
+   * ```
+   */
+  playVfx(req: VfxOneShotRequest): void {
+    this.vfxView.play(req);
   }
 
   /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.

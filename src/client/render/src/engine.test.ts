@@ -1,5 +1,5 @@
 import { test, expect, describe, it } from "vitest";
-import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
+import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
 import type { FootprintLookup } from "@shadowcat/core";
@@ -1565,4 +1565,80 @@ test("the engine highlights selected tokens via the selectedTokens accessor, ref
   engine.reapplyTokenSelection();
   expect(backend.tokens.get("t1")!.fx).toBeUndefined();
   engine.destroy();
+});
+
+describe("RenderEngine VFX wiring", () => {
+  function vfxTokenCmd(seq: number, tokenId = "tok1") {
+    const actor = buildActorDoc(
+      "w1",
+      "G",
+      { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: { asset: "fx1", anchor: "token", loop: true, enabled: true } },
+      "act1",
+    );
+    const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, tokenId);
+    return { seq, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create" as const, doc: actor }, { op: "create" as const, doc: token }] };
+  }
+
+  function makeVfxEngine(opts: { onVfxChanged?: (count: number) => void; viewedSceneId?: () => string | null } = {}) {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store,
+      assets: new AssetResolver(),
+      backend,
+      grid: { kind: "square", size: 100 },
+      vfxAssets: (id) => (id === "fx1" ? { type: "sheet", url: "/fx.webp", rows: 2, cols: 2, count: 3 } : null),
+      onVfxChanged: opts.onVfxChanged,
+      viewedSceneId: opts.viewedSceneId,
+    });
+    return { store, backend, engine };
+  }
+
+  it("reconciles an emitter-bearing token into one MockBackend.vfx entry", () => {
+    const { store, backend, engine } = makeVfxEngine();
+    engine.start();
+    store.applyCommand(vfxTokenCmd(1));
+    expect([...backend.vfx.keys()]).toEqual(["emitter:tok1"]);
+    engine.destroy();
+  });
+
+  it("playVfx forwards to a live one-shot node keyed oneshot:<id>", () => {
+    const { backend, engine } = makeVfxEngine();
+    engine.start();
+    engine.playVfx({ scene: "s1", asset: "fx1", x: 3, y: 4, id: "one" });
+    const node = backend.vfx.get("oneshot:one");
+    expect(node).toBeDefined();
+    expect(node!.x).toBe(3);
+    expect(node!.y).toBe(4);
+    engine.destroy();
+  });
+
+  it("onVfxChanged fires exactly once per actual count change", () => {
+    const counts: number[] = [];
+    const { store, backend, engine } = makeVfxEngine({ onVfxChanged: (c) => counts.push(c) });
+    engine.start();
+    backend.tick!(16);
+    expect(counts).toEqual([]); // still 0: no spurious initial call
+    store.applyCommand(vfxTokenCmd(1));
+    backend.tick!(16);
+    expect(counts).toEqual([1]);
+    backend.tick!(16); // unchanged count: no repeat call
+    expect(counts).toEqual([1]);
+    engine.playVfx({ scene: "s1", asset: "fx1", x: 0, y: 0, id: "one" });
+    backend.tick!(16);
+    expect(counts).toEqual([1, 2]);
+    engine.destroy();
+  });
+
+  it("reapplyViewedScene removes the prior scene's emitter node", () => {
+    let viewed: string | null = "s1";
+    const { store, backend, engine } = makeVfxEngine({ viewedSceneId: () => viewed });
+    engine.start();
+    store.applyCommand(vfxTokenCmd(1));
+    expect(backend.vfx.has("emitter:tok1")).toBe(true);
+    viewed = "s2";
+    engine.reapplyViewedScene();
+    expect(backend.vfx.has("emitter:tok1")).toBe(false);
+    engine.destroy();
+  });
 });
