@@ -463,10 +463,14 @@ describe("frame cap and render scale", () => {
   test("setRenderScale sets renderer.resolution to dpr*scale and calls resize", () => {
     const renderer = { resolution: 1, resize: vi.fn(), render: vi.fn() };
     const backend = headlessBackend(fakeApp({ renderer }));
-    globalThis.devicePixelRatio = 2;
-    backend.setRenderScale(0.5);
-    expect(renderer.resolution).toBe(1);
-    expect(renderer.resize).toHaveBeenCalledOnce();
+    vi.stubGlobal("devicePixelRatio", 2);
+    try {
+      backend.setRenderScale(0.5);
+      expect(renderer.resolution).toBe(1);
+      expect(renderer.resize).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
   test("render() calls renderer.render once with the stage", () => {
     const renderer = { resolution: 1, resize: vi.fn(), render: vi.fn() };
