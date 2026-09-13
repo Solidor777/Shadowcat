@@ -109,10 +109,7 @@ pub async fn list_installed_modules(
     State(state): State<AppState>,
 ) -> Json<Vec<InstalledModuleInfo>> {
     let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
-    let registry = state
-        .repo
-        .validator_registry(&state.config.modules_path())
-        .await;
+    let registry = state.repo.validator_registry().await;
     Json(
         installed
             .iter()

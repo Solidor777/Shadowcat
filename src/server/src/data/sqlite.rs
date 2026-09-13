@@ -333,10 +333,12 @@ impl SqliteRepository {
         self
     }
 
-    /// The compiled validator registry for `modules_dir`, or an empty registry when the
-    /// scan finds nothing. Off the async worker via `spawn_blocking`, matching every other
-    /// blocking module-scan call site in this crate; used by
-    /// `http::module_routes::list_installed_modules`'s validator-status projection.
+    /// The compiled validator registry for this repository's own `modules_dir`, or an empty
+    /// registry when none was wired (`with_modules_dir` was never called). Off the async
+    /// worker via `spawn_blocking`, matching every other blocking module-scan call site in
+    /// this crate. The repository's own field is the ONE source of the directory — callers
+    /// never pass their own copy, so two call sites can never disagree about which directory
+    /// the registry was compiled from.
     ///
     /// # Examples
     ///
@@ -345,22 +347,23 @@ impl SqliteRepository {
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// let registry = repo
-    ///     .validator_registry(std::path::Path::new("no-such-modules-dir"))
-    ///     .await;
+    /// let registry = repo.validator_registry().await;
     /// assert!(registry.validator_for("example-module", "actor").is_none());
     /// # Ok(())
     /// # }
     /// ```
     pub async fn validator_registry(
         &self,
-        modules_dir: &std::path::Path,
     ) -> std::sync::Arc<crate::sandbox::registry::ValidatorRegistry> {
-        let cache = self.validator_registry_cache.clone();
-        let dir = modules_dir.to_path_buf();
-        tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
-            .await
-            .unwrap_or_default()
+        match self.modules_dir.clone() {
+            Some(dir) => {
+                let cache = self.validator_registry_cache.clone();
+                tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Default::default(),
+        }
     }
 
     /// See `Repository::get_link_preview_cache`.

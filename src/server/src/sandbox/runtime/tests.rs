@@ -340,3 +340,43 @@ async fn a_trapping_call_keeps_its_precise_kind_even_past_the_slow_call_budget()
         })
     );
 }
+
+/// Calls `env.log` with negative and overflowing (ptr, len) pairs; the host drops them
+/// instead of wrapping into a wild read, and the verdict is unaffected.
+const MALFORMED_LOG_ARGS_WAT: &str = r#"
+  (module
+    (import "env" "log" (func $log (param i32 i32)))
+    (memory (export "memory") 1)
+    (func (export "alloc") (param i32) (result i32) (i32.const 0))
+    (func (export "validate") (param i32 i32) (result i32)
+      (call $log (i32.const -1) (i32.const -1))
+      (call $log (i32.const 0) (i32.const -1))
+      (call $log (i32.const 2147483647) (i32.const 2147483647))
+      (i32.const 0)))
+"#;
+
+#[tokio::test]
+async fn malformed_log_args_are_dropped_not_a_fault() {
+    let verdict = run_validator(&compiled(MALFORMED_LOG_ARGS_WAT), &input(0)).await;
+    assert_eq!(verdict, ValidatorVerdict::Accept);
+}
+
+/// `reason_ptr` traps (unreachable) instead of returning — a trap, never a pointer-shape
+/// problem.
+const TRAPPING_REASON_PTR_WAT: &str = r#"
+  (module
+    (memory (export "memory") 1)
+    (func (export "alloc") (param i32) (result i32) (i32.const 0))
+    (func (export "validate") (param i32 i32) (result i32) (i32.const 1))
+    (func (export "reason_ptr") (result i32) unreachable)
+    (func (export "reason_len") (result i32) (i32.const 2)))
+"#;
+
+#[tokio::test]
+async fn a_trapping_reason_export_is_classified_as_a_trap_not_a_bad_pointer() {
+    let verdict = run_validator(&compiled(TRAPPING_REASON_PTR_WAT), &input(0)).await;
+    let ValidatorVerdict::Fault(ValidatorFault { kind, .. }) = verdict else {
+        panic!("expected Fault, got {verdict:?}");
+    };
+    assert_eq!(kind, FaultKind::Trap);
+}

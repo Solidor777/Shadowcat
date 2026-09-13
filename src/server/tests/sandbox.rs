@@ -150,4 +150,36 @@ async fn a_negative_hp_actor_create_is_refused_a_non_negative_one_is_accepted() 
     .unwrap();
     let event = common::drain_until_event(&mut ws).await;
     assert_eq!(event["command"]["ops"][0]["doc"]["system"]["hp"], 3);
+
+    // The scan is anchored to the `system` value's span: a document whose NAME
+    // carries a lookalike `"hp":-1` substring but whose `system.hp` is
+    // non-negative must be accepted — the needle outside `system` is never
+    // mistaken for the judged field.
+    let named_doc = serde_json::json!({
+        "op": "create",
+        "doc": {
+            "id": uuid::Uuid::new_v4(),
+            "scope": { "kind": "world", "world_id": h.world },
+            "doc_type": "actor",
+            "schema_version": 1,
+            "name": "the \"hp\":-1 monster",
+            "engine": {
+                "displayName": "Goblin", "visual": { "kind": "image", "asset": "a.png" },
+                "size": { "w": 1.0, "h": 1.0 }, "shape": "square",
+                "faction": null, "conditions": [], "prototype": true
+            },
+            "system": { "hp": 7 },
+            "created_at": 0,
+            "updated_at": 0,
+        }
+    });
+    let intent_id_3 = uuid::Uuid::new_v4();
+    ws.send(Message::Text(
+        serde_json::json!({ "type": "intent", "intent_id": intent_id_3, "ops": [named_doc] })
+            .to_string(),
+    ))
+    .await
+    .unwrap();
+    let event = common::drain_until_event(&mut ws).await;
+    assert_eq!(event["command"]["ops"][0]["doc"]["system"]["hp"], 7);
 }

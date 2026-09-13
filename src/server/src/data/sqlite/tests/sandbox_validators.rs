@@ -363,7 +363,7 @@ async fn a_structural_failure_rejects_before_and_without_faulting_any_validator(
     // The registry's streak for (world, mod-x) is still zero: `record_fault`
     // increments from the stored value and returns the new total, so a fresh
     // `1` proves the rejected submission never reached the validator.
-    let registry = r.validator_registry(dir.path()).await;
+    let registry = r.validator_registry().await;
     assert_eq!(registry.record_fault(w.id, "mod-x"), 1);
 }
 
@@ -740,7 +740,7 @@ async fn an_unauthorized_intent_is_forbidden_before_and_without_faulting_any_val
     // ...and the validator must never have run at all: the streak is still
     // zero (`record_fault` increments and returns the new total, so a fresh
     // `1` proves no fault was ever recorded).
-    let registry = r.validator_registry(dir.path()).await;
+    let registry = r.validator_registry().await;
     assert_eq!(registry.record_fault(w.id, "mod-x"), 1);
 }
 

@@ -238,12 +238,21 @@ fn run_validator_body(compiled: &CompiledValidator, input_bytes: &[u8]) -> Valid
                 if caller.data().log_calls_remaining == 0 {
                     return;
                 }
+                // A hostile guest can pass negative or overflowing (ptr, len): the log is
+                // best-effort diagnostics, so a malformed call is dropped, never wrapped
+                // into a wild read.
+                if ptr < 0 || len < 0 {
+                    return;
+                }
                 let len = (len as usize).min(MAX_LOG_BYTES);
                 let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
                     return;
                 };
                 let ptr = ptr as usize;
-                if let Some(bytes) = memory.data(&caller).get(ptr..ptr + len) {
+                if let Some(bytes) = ptr
+                    .checked_add(len)
+                    .and_then(|end| memory.data(&caller).get(ptr..end))
+                {
                     let text = String::from_utf8_lossy(bytes);
                     tracing::debug!(target: "sandbox::guest_log", %text);
                 }
@@ -323,13 +332,20 @@ fn read_reason(
     };
     let ptr = match reason_ptr.call(&mut *store, ()) {
         Ok(p) if p >= 0 => p as usize,
-        _ => return Err(FaultKind::BadPointer),
+        Ok(_) => return Err(FaultKind::BadPointer),
+        // A `reason_ptr` that TRAPS (out of fuel, unreachable, ...) is that trap —
+        // never a pointer-shape problem.
+        Err(e) => return Err(classify_trap(&e)),
     };
     let len = match reason_len.call(&mut *store, ()) {
         Ok(l) if l >= 0 => (l as usize).min(MAX_REASON_BYTES),
-        _ => return Err(FaultKind::BadPointer),
+        Ok(_) => return Err(FaultKind::BadPointer),
+        Err(e) => return Err(classify_trap(&e)),
     };
-    let Some(bytes) = memory.data(&*store).get(ptr..ptr + len) else {
+    let Some(bytes) = ptr
+        .checked_add(len)
+        .and_then(|end| memory.data(&*store).get(ptr..end))
+    else {
         return Err(FaultKind::BadPointer);
     };
     let text: String = String::from_utf8_lossy(bytes)

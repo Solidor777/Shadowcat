@@ -38,7 +38,10 @@ pub extern "C" fn alloc(len: i32) -> i32 {
 /// Reads the `ValidatorInput` JSON at `(ptr, len)`, hand-scans for `"hp":<number>` inside the
 /// top-level `system` object, and refuses when that number is negative. Any other document
 /// (no `hp` key, or `hp >= 0`) is accepted. This is intentionally a minimal, forgiving scan —
-/// not a general JSON parser — matching the guide's stated scope.
+/// not a general JSON parser — matching the guide's stated scope; the one discipline it keeps
+/// absolutely is ANCHORING to the `system` value's span (`find_system_span`), so a `"hp":`
+/// substring anywhere else in the input (a document name, another band) is never mistaken
+/// for the field it judges.
 #[no_mangle]
 pub extern "C" fn validate(ptr: i32, len: i32) -> i32 {
     let bytes = unsafe { core::slice::from_raw_parts(ptr as *const u8, len as usize) };
@@ -48,26 +51,74 @@ pub extern "C" fn validate(ptr: i32, len: i32) -> i32 {
     }
 }
 
-/// Byte-scans for the literal substring `"hp":` and parses the signed integer that follows
-/// (optional leading `-`, then ASCII digits, stopping at the first non-digit). Returns `None`
-/// if the key is absent or the following text is not a recognizable integer.
+/// Locates the `"system":` key's VALUE and returns its `(start, end)` byte span — the
+/// balanced-brace extent of the object that follows, string-aware so a `}` inside a string
+/// value doesn't end the span early. `None` when the key or a well-formed object value is
+/// absent.
+fn find_system_span(bytes: &[u8]) -> Option<(usize, usize)> {
+    const KEY: &[u8] = b"\"system\":";
+    let mut i = bytes.windows(KEY.len()).position(|w| w == KEY)? + KEY.len();
+    while bytes.get(i).is_some_and(u8::is_ascii_whitespace) {
+        i += 1;
+    }
+    if bytes.get(i) != Some(&b'{') {
+        return None;
+    }
+    let start = i;
+    let mut depth: u32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut j = i;
+    while let Some(&b) = bytes.get(j) {
+        j += 1;
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((start, j));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Byte-scans for the literal substring `"hp":` WITHIN the `system` value's span and parses
+/// the signed integer that follows (optional leading `-`, then ASCII digits, stopping at the
+/// first non-digit). Returns `None` if the key is absent or the following text is not a
+/// recognizable integer.
 fn find_hp(bytes: &[u8]) -> Option<i64> {
     const NEEDLE: &[u8] = b"\"hp\":";
-    let pos = bytes.windows(NEEDLE.len()).position(|w| w == NEEDLE)? + NEEDLE.len();
+    let (start, end) = find_system_span(bytes)?;
+    let span = &bytes[start..end];
+    let pos = span.windows(NEEDLE.len()).position(|w| w == NEEDLE)? + NEEDLE.len() + start;
     let mut i = pos;
     let negative = bytes.get(i) == Some(&b'-');
     if negative {
         i += 1;
     }
-    let start = i;
+    let digits_start = i;
     while bytes.get(i).is_some_and(u8::is_ascii_digit) {
         i += 1;
     }
-    if i == start {
+    if i == digits_start {
         return None;
     }
     let mut value: i64 = 0;
-    for &b in &bytes[start..i] {
+    for &b in &bytes[digits_start..i] {
         value = value * 10 + i64::from(b - b'0');
     }
     Some(if negative { -value } else { value })
