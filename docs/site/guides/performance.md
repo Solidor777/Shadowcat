@@ -55,11 +55,15 @@ whichever preset is resolved, without forcing you onto a custom preset.
   interpolation); "Off" skips the overlay entirely. This never changes what
   you can or cannot see — fog of war and vision secrecy are untouched.
 - **Visual effects** — sprite VFX playback. Off skips the layer's reconcile
-  and one-shot playback.
+  and one-shot playback. This knob is wired and persisted today and takes
+  effect when the VFX layer lands; until then it changes nothing visible.
 - **3D dice** — the simulated dice overlay. Off leaves roll results as chat
-  cards only, and drops the second WebGL context entirely.
+  cards only, and drops the second WebGL context entirely. Like Visual
+  effects, this knob is wired today and takes effect when the 3D-dice
+  overlay lands.
 - **Spatial audio** — positional mixing of audio emitters. Off mixes every
-  emitter flat at its channel gain.
+  emitter flat at its channel gain. Wired today; takes effect when the audio
+  subsystem lands.
 - **Skip redraws when idle** — the stage only redraws when something actually
   changed (a move, a sweep, an animated token) instead of every frame. On a
   static scene this is the difference between a busy core and an idle one.

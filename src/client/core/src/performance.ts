@@ -1,5 +1,8 @@
-/** Per-device render-budget settings — the seam every render/audio consumer (`RenderEngine`,
- * `VfxView`, the dice overlay, the audio mixer) reads. Persisted in `localStorage` only, never
+/** Per-device render-budget settings — the seam every render/audio consumer reads.
+ * `RenderEngine` consumes it today (frame cap, render scale, antialias, tokenFx, lighting,
+ * idleSkip, reducedMotion); the `vfx`/`dice3d`/`spatialAudio` keys are consumed by their
+ * owning subsystems as those land, which MUST read them through this same type — never a
+ * private copy. Persisted in `localStorage` only, never
  * the server `ui_state`: a phone and a desktop want different budgets, and `ui_state` is
  * per-account. */
 export interface PerformanceSettings {
@@ -17,11 +20,14 @@ export interface PerformanceSettings {
    * cosmetic overlay never paints — fog/vision secrecy is untouched; this never affects what a
    * player can or cannot see, only the darkening/tint cosmetic on top of it). */
   lighting: "full" | "static" | "off";
-  /** VFX layer — off ⇒ no `VfxView` reconcile, no one-shot playback. */
+  /** VFX layer — reserved for the VFX subsystem's consumer: off ⇒ no VFX view reconcile, no
+   * one-shot playback. Read through this type when that consumer lands (see the module doc). */
   vfx: boolean;
-  /** 3D dice overlay — off ⇒ chat card only. */
+  /** 3D dice overlay — reserved for the dice subsystem's consumer: off ⇒ chat card only, no
+   * second WebGL context. Read through this type when that consumer lands. */
   dice3d: boolean;
-  /** Spatial audio — off ⇒ every emitter mixes flat at channel gain. */
+  /** Spatial audio — reserved for the audio subsystem's consumer: off ⇒ every emitter mixes
+   * flat at channel gain. Read through this type when that consumer lands. */
   spatialAudio: boolean;
   /** Redraw only when something changed (dirty-flag rendering) — see `RenderEngine`'s ticker. */
   idleSkip: boolean;
