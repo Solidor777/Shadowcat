@@ -6,13 +6,22 @@ test("core layers are in the fixed z-order", () => {
   expect(r.orderedIds()).toEqual([...CORE_LAYERS]);
   expect(CORE_LAYERS).toEqual([
     "background", "grid", "tiles", "regions", "drawings", "walls",
-    "tokens", "templates", "lighting", "mask", "overlays",
+    "tokens", "templates", "vfx", "lighting", "mask", "overlays",
   ]);
+});
+
+test("vfx sits between templates and lighting, below the fog mask", () => {
+  // Below `mask`: a VFX one-shot reaches every recipient over the wire, but the
+  // fog mask still visually hides it at a point the recipient cannot see.
+  expect(CORE_LAYERS.indexOf("vfx")).toBe(8);
+  expect(CORE_LAYERS.indexOf("vfx")).toBeLessThan(CORE_LAYERS.indexOf("lighting"));
+  expect(CORE_LAYERS.indexOf("vfx")).toBeLessThan(CORE_LAYERS.indexOf("mask"));
+  expect(CORE_LAYERS.indexOf("vfx")).toBeGreaterThan(CORE_LAYERS.indexOf("templates"));
 });
 
 test("a module layer is spliced by ascending order; dispose removes it", () => {
   const r = new LayerRegistry();
-  const dispose = r.register("fx", 6.5); // between tokens(6) and templates(7); lighting(8), mask(9)
+  const dispose = r.register("fx", 6.5); // between tokens(6) and templates(7); lighting(9), mask(10)
   const ids = r.orderedIds();
   expect(ids.indexOf("fx")).toBeGreaterThan(ids.indexOf("tokens"));
   expect(ids.indexOf("fx")).toBeLessThan(ids.indexOf("mask"));
