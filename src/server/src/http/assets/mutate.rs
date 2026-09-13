@@ -288,6 +288,9 @@ pub async fn patch(
         Some(f) => Some(validate_folder(&state, existing.world_id, f).await?),
     };
     let tags = body.tags.map(validate_tags).transpose()?;
+    if let Some(t) = &tags {
+        validate_sheet_pairing(&state, existing.world_id, &existing.original_name, t).await?;
+    }
     let updated = state
         .repo
         .update_asset_placement(id, name.as_deref(), folder, tags.as_deref())
@@ -301,6 +304,65 @@ pub async fn patch(
         });
     }
     Ok(Json(updated))
+}
+
+/// Prefix every `vfx:sheet=<uuid>` explicit tag carries; the suffix names the paired
+/// PixiJS-spritesheet-format sidecar JSON asset.
+const VFX_SHEET_TAG_PREFIX: &str = "vfx:sheet=";
+
+/// Validates at most one `vfx:sheet=<uuid>` tag is present in `tags`, and — when one is —
+/// that the named asset exists in `world`, is `application/json`, and its parsed `meta.image`
+/// names `image_original_name` exactly (the TexturePacker/PixiJS spritesheet-tool
+/// convention: the sidecar's `meta.image` is the paired atlas image's FILENAME, never an
+/// internal id, so an unmodified third-party export pairs correctly). A second
+/// `vfx:sheet=` tag, an unresolvable/wrong-type/wrong-world sidecar id, or a
+/// `meta.image` mismatch all refuse with the same `Unprocessable` — pairing is a GM
+/// authoring action, not a secrecy boundary, so the reason is safe to state precisely.
+async fn validate_sheet_pairing(
+    state: &AppState,
+    world: Uuid,
+    image_original_name: &str,
+    tags: &[String],
+) -> Result<(), AppError> {
+    let sheet_tags: Vec<&str> = tags
+        .iter()
+        .filter_map(|t| t.strip_prefix(VFX_SHEET_TAG_PREFIX))
+        .collect();
+    if sheet_tags.is_empty() {
+        return Ok(());
+    }
+    if sheet_tags.len() > 1 {
+        return Err(AppError::Unprocessable(
+            "at most one vfx:sheet= tag is allowed".into(),
+        ));
+    }
+    let json_id = Uuid::parse_str(sheet_tags[0])
+        .map_err(|_| AppError::Unprocessable("vfx:sheet= must name a valid asset id".into()))?;
+    let json_asset = state
+        .repo
+        .get_asset(json_id)
+        .await?
+        .filter(|a| a.world_id == world && a.content_type == "application/json")
+        .ok_or_else(|| {
+            AppError::Unprocessable("vfx:sheet= names no JSON asset in this world".into())
+        })?;
+    let canonical = state.config.assets_path().join(&json_asset.storage_key);
+    let bytes = tokio::fs::read(&canonical).await.map_err(|_| {
+        AppError::Unprocessable("vfx:sheet='s JSON sidecar could not be read".into())
+    })?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
+        AppError::Unprocessable("vfx:sheet='s JSON sidecar is not valid JSON".into())
+    })?;
+    let named_image = parsed
+        .get("meta")
+        .and_then(|m| m.get("image"))
+        .and_then(|i| i.as_str());
+    if named_image != Some(image_original_name) {
+        return Err(AppError::Unprocessable(
+            "vfx:sheet='s sidecar meta.image does not name this image".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `POST /api/worlds/{world}/assets/bulk` body.
