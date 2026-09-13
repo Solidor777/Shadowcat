@@ -421,6 +421,30 @@ impl SqliteRepository {
             .transpose()?
             .unwrap_or_default();
 
+        // The bundle's own enabled-modules record decides which validators run over the
+        // imported documents — the same per-world opt-in `apply_intent` consults, read from
+        // the bundle's `settings` rows for the same single-writer-pool reason `world_schemas`
+        // above is. The band, not the origin, decides: an import is a bulk write of the same
+        // `system` payloads a live Create would carry.
+        let enabled_module_ids: Vec<String> = data
+            .settings
+            .iter()
+            .find(|s| s.key == world_modules_key(world))
+            .map(|s| crate::modules::WorldModuleEntry::parse_legacy_tolerant(&s.value))
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.validators_enabled)
+            .map(|e| e.id)
+            .collect();
+        let validator_registry = if enabled_module_ids.is_empty() {
+            None
+        } else {
+            self.modules_dir
+                .clone()
+                .map(|dir| self.validator_registry_cache.get_or_scan(&dir))
+        };
+
         // Mirrors `apply_intent`'s intra-batch `claimed_singletons` tracking
         // (see `SINGLETON_DOC_TYPES`'s own doc) — a bundle is untrusted
         // input assembled outside any live `apply_intent` call, so nothing
@@ -552,6 +576,34 @@ impl SqliteRepository {
             validation::validate_property_overrides(&document)?;
             validation::validate_engine_tree(&mut document)?;
             validation::validate_system_schema_tree(&document, &world_schemas)?;
+            if let Some(registry) = &validator_registry {
+                match crate::sandbox::validate_document(
+                    registry,
+                    &enabled_module_ids,
+                    &mut document,
+                    None,
+                    world,
+                    &world_schemas,
+                )
+                .await
+                {
+                    // `validate_document`'s structural pre-pass also runs
+                    // `validate_containment`, which this loop's own inline chain above does
+                    // not call until the post-loop placement pass below — so a containment
+                    // violation can surface HERE, before any row is inserted, rather than
+                    // only after the whole bundle is written. `validate_containment` needs
+                    // no other document's state to decide, so an earlier verdict is
+                    // identical to the later one, just reached sooner.
+                    Err(structural_err) => return Err(structural_err),
+                    Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
+                    Ok(crate::sandbox::ValidatorVerdict::Refuse { module, reason }) => {
+                        return Err(DataError::OpFailed(format!("validator {module}: {reason}")));
+                    }
+                    Ok(crate::sandbox::ValidatorVerdict::Fault(fault)) => {
+                        return Err(DataError::Validator(fault));
+                    }
+                }
+            }
             Self::insert_imported_document(&mut tx, &document, row.seq, row.created_seq).await?;
             inserted_documents.push(document);
         }
