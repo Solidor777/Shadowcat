@@ -6,13 +6,17 @@ import type { DisplayBackend } from "./backend";
  * `LightView`) and both `Compositor`/`Lighting` already route every push through the injected
  * `DisplayBackend`, so intercepting at this one boundary needs no change to any of them.
  *
- * Excluded from dirty-tracking: `ensureLayers`/`addLayerFilter` (one-time/opt-in setup, not a
- * per-frame redraw trigger), `startTicker`/`destroy` (lifecycle, not drawing),
+ * Excluded from dirty-tracking: `ensureLayers` (one-time setup, not a per-frame redraw
+ * trigger), `startTicker`/`destroy` (lifecycle, not drawing),
  * `tickTokenAnimations` (called UNCONDITIONALLY every tick by `TokenView.tick` regardless of
  * whether an animated sprite exists — wrapping it would mark every tick dirty and defeat
  * idle-skip entirely; `TokenView.hasAnimatedVisual` covers the real animated-sprite-redraw need
- * instead), and `setFrameCap`/`setRenderScale` (budget settings, not draws) and `render` itself
- * (the call that CONSUMES the dirty flag, never sets it).
+ * instead), and `setFrameCap`/`setRenderScale` (budget settings, not draws — a render-scale
+ * change marks the flag itself at the push site, since it reallocates the backing store) and
+ * `render` itself (the call that CONSUMES the dirty flag, never sets it). `addLayerFilter` IS
+ * tracked: `RenderEngine.registerLayerFilter` is a public runtime API a module can call at any
+ * time, and an added filter changes what the next frame draws (registrations are rare, so the
+ * dirty cost is nil).
  * @param backend The real backend to wrap.
  * @param onDirty Called synchronously before forwarding any dirty-tracked method's call.
  * @returns A `DisplayBackend` behaviorally identical to `backend`, reporting every draw.
@@ -37,7 +41,7 @@ export function wrapDirtyTracking(backend: DisplayBackend, onDirty: () => void):
       ? (from, to, factor) => { onDirty(); backend.setVisibilityBlend!(from, to, factor); }
       : undefined,
     setCameraTransform: (t) => { onDirty(); backend.setCameraTransform(t); },
-    addLayerFilter: (layerId, filter) => backend.addLayerFilter(layerId, filter),
+    addLayerFilter: (layerId, filter) => { onDirty(); return backend.addLayerFilter(layerId, filter); },
     setToken: (id, spec) => { onDirty(); backend.setToken(id, spec); },
     removeToken: (id) => { onDirty(); backend.removeToken(id); },
     tickTokenAnimations: (dtMs) => backend.tickTokenAnimations(dtMs),

@@ -21,17 +21,27 @@ describe("wrapDirtyTracking", () => {
     expect(onDirty).not.toHaveBeenCalled();
   });
 
-  it("does not call onDirty for ensureLayers/addLayerFilter/startTicker/destroy", () => {
+  it("does not call onDirty for ensureLayers/startTicker/destroy", () => {
     const real = new MockBackend();
     const onDirty = vi.fn();
     const wrapped = wrapDirtyTracking(real, onDirty);
     wrapped.ensureLayers(["background"]);
-    wrapped.addLayerFilter("background", {});
     wrapped.startTicker(() => {});
     wrapped.destroy();
     expect(onDirty).not.toHaveBeenCalled();
     expect(real.layers).toEqual(["background"]);
     expect(real.destroyed).toBe(true);
+  });
+
+  it("calls onDirty for addLayerFilter and forwards the returned unregister", () => {
+    const real = new MockBackend();
+    const onDirty = vi.fn();
+    const wrapped = wrapDirtyTracking(real, onDirty);
+    const dispose = wrapped.addLayerFilter("background", {});
+    expect(onDirty).toHaveBeenCalledOnce();
+    expect(real.filters).toHaveLength(1);
+    dispose();
+    expect(real.filters).toHaveLength(0);
   });
 
   it("forwards setVisibilityBlend and calls onDirty when the real backend defines it", () => {
