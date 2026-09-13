@@ -237,9 +237,12 @@ struct CachedEntry {
     dir_mtime: std::time::SystemTime,
     /// Each cached module's id -> its `module.json`'s mtime at scan time.
     manifest_mtimes: BTreeMap<String, std::time::SystemTime>,
-    /// Every declared validator's `.wasm` path -> its mtime at scan time (see
-    /// `ValidatorRegistryCache`'s doc for the in-place-swap case this catches).
-    wasm_mtimes: BTreeMap<std::path::PathBuf, std::time::SystemTime>,
+    /// Every declared validator's `.wasm` path -> its mtime at scan time, `None`
+    /// when the file was declared but ABSENT at scan time — a sentinel that still
+    /// invalidates the cache when the file is dropped in later (neither the
+    /// modules dir's nor `module.json`'s mtime moves on that event, so without
+    /// the sentinel the stale load-error registry would serve until restart).
+    wasm_mtimes: BTreeMap<std::path::PathBuf, Option<std::time::SystemTime>>,
     /// The scan result itself.
     registry: Arc<ValidatorRegistry>,
 }
@@ -293,7 +296,7 @@ impl ValidatorRegistryCache {
                         == Some(*mtime)
                 })
                 && cached.wasm_mtimes.iter().all(|(path, mtime)| {
-                    std::fs::metadata(path).and_then(|m| m.modified()).ok() == Some(*mtime)
+                    std::fs::metadata(path).and_then(|m| m.modified()).ok() == *mtime
                 })
             {
                 return cached.registry.clone();
@@ -323,11 +326,9 @@ impl ValidatorRegistryCache {
                     .iter()
                     .map(move |d| modules_dir.join(&m.id).join(&d.wasm))
             })
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|meta| meta.modified())
-                    .ok()
-                    .map(|mt| (p, mt))
+            .map(|p| {
+                let mtime = std::fs::metadata(&p).and_then(|meta| meta.modified()).ok();
+                (p, mtime)
             })
             .collect();
         // A missing/unreadable modules_dir yields no dir_mtime; fall back to UNIX_EPOCH so the

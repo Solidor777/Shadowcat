@@ -256,3 +256,47 @@ async fn cache_detects_an_in_place_wasm_swap() {
         "the swapped-in validator must be the one that runs"
     );
 }
+
+#[tokio::test]
+async fn cache_detects_a_declared_wasm_dropped_in_after_a_missing_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    // A module declaring a validator whose `.wasm` is ABSENT at scan time:
+    // the registry records the load error and caches it.
+    let module_dir = dir.path().join("module-a");
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.json"),
+        serde_json::json!({
+            "id": "module-a",
+            "version": "1.0.0",
+            "validators": [{ "docType": "item", "wasm": "v.wasm" }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let cache = ValidatorRegistryCache::default();
+    let first = cache.get_or_scan(dir.path());
+    assert!(first.validator_for("module-a", "item").is_none());
+    assert!(first.load_error_for("module-a").is_some());
+
+    // Dropping the file in bumps neither the modules dir's mtime nor
+    // `module.json`'s — only the declared-but-missing sentinel sees it, and it
+    // must invalidate the cache so the next scan compiles the new validator.
+    let bytes = wat::parse_str(ACCEPTING_WAT).expect("valid WAT fixture");
+    std::fs::write(module_dir.join("v.wasm"), bytes).unwrap();
+
+    let second = cache.get_or_scan(dir.path());
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "a declared-but-missing wasm appearing later must invalidate the cache"
+    );
+    assert!(second.validator_for("module-a", "item").is_some());
+    assert!(second.load_error_for("module-a").is_none());
+
+    let world = uuid::Uuid::from_u128(78);
+    let ids = vec!["module-a".to_string()];
+    let mut d = doc("item", serde_json::json!({}));
+    let verdict =
+        crate::sandbox::validate_document(&second, &ids, &mut d, None, true, world, &[]).await;
+    assert_eq!(verdict.unwrap(), crate::sandbox::ValidatorVerdict::Accept);
+}
