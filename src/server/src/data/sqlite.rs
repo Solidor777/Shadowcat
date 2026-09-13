@@ -2630,6 +2630,10 @@ impl Repository for SqliteRepository {
         self.validator_registry_cache.reset_faults(world, module);
     }
 
+    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+        SqliteRepository::list_members(self, world).await
+    }
+
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,

@@ -189,6 +189,9 @@ impl Repository for DeleteMidHydration<'_> {
     async fn reset_validator_fault_streak(&self, world: Uuid, module: &str) {
         self.inner.reset_validator_fault_streak(world, module).await;
     }
+    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+        self.inner.list_members(world).await
+    }
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -3633,7 +3636,10 @@ async fn disable_faulting_validator_disables_the_module_notices_the_gm_and_reset
 
     let reg = RoomRegistry::new();
     let room = reg.get_or_create(&repo, world.id).await.unwrap().unwrap();
-    room.disable_faulting_validator(&repo, &ctx, "mod-x").await;
+    {
+        let _guard = room.publish_guard.lock().await;
+        room.disable_faulting_validator_locked(&repo, "mod-x").await;
+    }
 
     // mod-x is disabled for the world; mod-y's own flag is untouched.
     let entries = repo.world_enabled_modules(world.id).await.unwrap();
@@ -3692,5 +3698,132 @@ async fn disable_faulting_validator_disables_the_module_notices_the_gm_and_reset
     assert_eq!(
         fault.consecutive, 1,
         "the disable must have reset the streak so a re-enable starts clean"
+    );
+}
+
+#[tokio::test]
+async fn commit_ops_locked_auto_disables_exactly_at_the_fault_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    write_room_faulting_module(dir.path(), "mod-x", "item");
+    let repo = SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap()
+        .with_modules_dir(dir.path());
+    let author = repo
+        .create_user("a", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", author, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: author,
+        world_role: WorldRole::Gm,
+    };
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "mod-x".into(),
+            validators_enabled: true,
+        }],
+    )
+    .await
+    .unwrap();
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, world.id).await.unwrap().unwrap();
+
+    // Faults 1..=4: refused, but no disable and no notice.
+    for expected in 1..=4u32 {
+        let _guard = room.publish_guard.lock().await;
+        let err = room
+            .commit_ops_locked(
+                &repo,
+                &ctx,
+                vec![Operation::Create {
+                    doc: room_item_doc(1, world.id),
+                }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        drop(_guard);
+        let DataError::Validator(fault) = err else {
+            panic!("expected DataError::Validator, got {err:?}");
+        };
+        assert_eq!(fault.consecutive, expected);
+        assert!(
+            repo.query_documents_by_types(world.id, &["message"])
+                .await
+                .unwrap()
+                .is_empty(),
+            "no notice before the limit (streak {expected})"
+        );
+        assert!(
+            repo.world_enabled_modules(world.id).await.unwrap()[0].validators_enabled,
+            "still enabled below the limit (streak {expected})"
+        );
+    }
+
+    // The 5th consecutive fault: the module is disabled and exactly ONE
+    // GM-only notice lands.
+    {
+        let _guard = room.publish_guard.lock().await;
+        let err = room
+            .commit_ops_locked(
+                &repo,
+                &ctx,
+                vec![Operation::Create {
+                    doc: room_item_doc(2, world.id),
+                }],
+                2,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        drop(_guard);
+        let DataError::Validator(fault) = err else {
+            panic!("expected DataError::Validator, got {err:?}");
+        };
+        assert_eq!(fault.consecutive, 5);
+    }
+    assert!(
+        !repo.world_enabled_modules(world.id).await.unwrap()[0].validators_enabled,
+        "disabled at the limit"
+    );
+    let notices = repo
+        .query_documents_by_types(world.id, &["message"])
+        .await
+        .unwrap();
+    assert_eq!(notices.len(), 1, "exactly one notice at the limit");
+    assert!(notices[0].permissions.gm_role.is_some());
+    // The notice is attributed to the world's first GM (the seed author), and
+    // since the test world's creator IS that GM this also pins the shape: the
+    // attribution is server-side (`seed_author`), present on every notice.
+    assert!(serde_json::to_string(&notices[0].engine)
+        .unwrap()
+        .contains("mod-x"));
+
+    // The disabled module no longer runs: the same write is now ACCEPTED, and
+    // no second notice appears (the disable is idempotent).
+    {
+        let _guard = room.publish_guard.lock().await;
+        room.commit_ops_locked(
+            &repo,
+            &ctx,
+            vec![Operation::Create {
+                doc: room_item_doc(3, world.id),
+            }],
+            3,
+            WriteOrigin::Client,
+        )
+        .await
+        .expect("a disabled validator no longer runs");
+    }
+    assert_eq!(
+        repo.query_documents_by_types(world.id, &["message"])
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "no duplicate notice after the disable"
     );
 }

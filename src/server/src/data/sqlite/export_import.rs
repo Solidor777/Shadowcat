@@ -444,6 +444,14 @@ impl SqliteRepository {
                 .clone()
                 .map(|dir| self.validator_registry_cache.get_or_scan(&dir))
         };
+        // Room-less callers policy: an import records fault streaks (via
+        // `sandbox::validate_document`'s own counter) but NEVER auto-disables a
+        // module — the auto-disable lives at `Room::commit_ops_locked`'s error
+        // arm, the one funnel guarded write paths share, and a bulk import must
+        // not flip a world's settings as a side effect of being read in. A
+        // module that faults through an import keeps its streak; the next
+        // guarded write that crosses `sandbox::VALIDATOR_FAULT_LIMIT` disables
+        // it (or the GM disables it by hand).
 
         // Mirrors `apply_intent`'s intra-batch `claimed_singletons` tracking
         // (see `SINGLETON_DOC_TYPES`'s own doc) — a bundle is untrusted

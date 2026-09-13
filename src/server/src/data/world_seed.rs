@@ -23,6 +23,7 @@ use crate::data::engine::{
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
+#[cfg(test)]
 use crate::data::sqlite::SqliteRepository;
 use crate::modules::scan_installed_modules;
 
@@ -251,7 +252,7 @@ pub(crate) async fn seed_test_channel_registry(
 /// assert_eq!(ctx.world_role, WorldRole::Gm);
 /// # }
 /// ```
-pub async fn seed_author(repo: &SqliteRepository, world_id: Uuid) -> Option<PermissionContext> {
+pub async fn seed_author(repo: &dyn Repository, world_id: Uuid) -> Option<PermissionContext> {
     let members = match repo.list_members(world_id).await {
         Ok(m) => m,
         Err(e) => {

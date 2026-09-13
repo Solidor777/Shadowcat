@@ -1116,9 +1116,27 @@ impl Room {
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
-        let stored = repo
-            .apply_intent(ctx, self.world_id, ops, ts, origin)
-            .await?;
+        let stored = match repo.apply_intent(ctx, self.world_id, ops, ts, origin).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                // The ONE auto-disable funnel: every guarded write path reaches
+                // this error arm, so the `VALIDATOR_FAULT_LIMIT` check exists
+                // here and nowhere else (never beside a single ingress call
+                // site). The caller's `publish_guard` is held, so the disable
+                // runs through the `_locked` form inline — no re-acquisition,
+                // no deadlock. Room-less paths (`import_world`, `create_world`)
+                // never reach here: they record fault streaks only and never
+                // auto-disable, a deliberate policy — a bulk import must not
+                // flip a world's settings as a side effect of being read in.
+                if let DataError::Validator(fault) = &e {
+                    if fault.consecutive >= crate::sandbox::VALIDATOR_FAULT_LIMIT {
+                        self.disable_faulting_validator_locked(repo, &fault.module)
+                            .await;
+                    }
+                }
+                return Err(e);
+            }
+        };
         // Hydrate the derived ECS from the committed command while still holding
         // publish_guard (enforced by the caller), so the ECS is consistent with the seq
         // before the Event (and any derived recompute keyed to that seq) is observable.
@@ -1160,24 +1178,46 @@ impl Room {
             .await
     }
 
-    /// Disables `module`'s `validators_enabled` flag for this world (its own transaction, via
-    /// `set_world_enabled_modules`), posts a GM-only chat notice (`build_message_doc` +
-    /// `Audience::GmOnly`, committed under `WriteOrigin::ConfigSeed` — a second, independent
-    /// `commit_ops_locked` call under a freshly-acquired `publish_guard`), and resets
-    /// `module`'s consecutive-fault counter (`Repository::reset_validator_fault_streak`) so a future
-    /// re-enable starts clean. Performs NO threshold check itself — the CALLER (`ws::conn`'s
-    /// ingress loop) decides when `crate::sandbox::VALIDATOR_FAULT_LIMIT` is reached and calls
-    /// this unconditionally at that point. The disable write runs even if the notice fails: the
-    /// safety property does not depend on the notice succeeding. Never called while a caller's
-    /// own `publish_guard` is held.
-    pub(crate) async fn disable_faulting_validator(
-        &self,
-        repo: &dyn Repository,
-        ctx: &PermissionContext,
-        module: &str,
-    ) {
-        if let Ok(mut entries) = repo.world_enabled_modules(self.world_id).await {
-            if let Some(entry) = entries.iter_mut().find(|e| e.id == module) {
+    /// `Box::pin` wrapper around `commit_ops_locked`, existing solely so
+    /// `disable_faulting_validator_locked`'s notice commit can call back into it
+    /// without tripping the async-recursion check (see that call site's comment).
+    fn commit_ops_locked_boxed<'a>(
+        &'a self,
+        repo: &'a dyn Repository,
+        ctx: &'a PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+        origin: WriteOrigin,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Command, DataError>> + Send + 'a>>
+    {
+        Box::pin(self.commit_ops_locked(repo, ctx, ops, ts, origin))
+    }
+
+    /// The guard-held form of the validator auto-disable, called by
+    /// `commit_ops_locked`'s error arm — the ONE funnel every guarded write path
+    /// (intent ingress, HTTP writes, chat sends, merge intents, combat transitions,
+    /// config reseeds) shares, so the auto-disable check exists at exactly one site.
+    /// PRECONDITION (load-bearing): the caller MUST hold `publish_guard` (the notice
+    /// commit goes through `commit_ops_locked`, whose own precondition that is).
+    /// Idempotent: a module whose flag is already `false` (or no longer enabled at
+    /// all) is a no-op beyond the streak reset — a streak of 6, 7, ... must not
+    /// duplicate the GM notice the 5th fault already posted. A world with no GM
+    /// member gets no notice (`seed_author`'s own rule), but is still disabled and
+    /// reset.
+    async fn disable_faulting_validator_locked(&self, repo: &dyn Repository, module: &str) {
+        match repo.world_enabled_modules(self.world_id).await {
+            Ok(mut entries) => {
+                let Some(entry) = entries.iter_mut().find(|e| e.id == module) else {
+                    // No longer enabled at all — nothing to disable, nothing to notice.
+                    repo.reset_validator_fault_streak(self.world_id, module)
+                        .await;
+                    return;
+                };
+                if !entry.validators_enabled {
+                    repo.reset_validator_fault_streak(self.world_id, module)
+                        .await;
+                    return;
+                }
                 entry.validators_enabled = false;
                 if let Err(e) = repo
                     .set_world_enabled_modules(self.world_id, &entries)
@@ -1186,37 +1226,50 @@ impl Room {
                     tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable write failed");
                 }
             }
+            Err(e) => {
+                tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable could not read the enabled set");
+            }
         }
-        let doc = crate::chat::build_message_doc(
-            self.world_id,
-            ctx.user_id,
-            crate::chat::MessageDraft {
-                channel: "sandbox".to_string(),
-                actor_owner: None,
-                audience: crate::chat::Audience::GmOnly,
-                kind: crate::chat::MessageKind::System,
-                content: vec![crate::chat::Segment::Text {
-                    text: format!(
-                        "Sandboxed validator '{module}' faulted {} times in a row and has been disabled for this world.",
-                        crate::sandbox::VALIDATOR_FAULT_LIMIT
-                    ),
-                }],
-                source: None,
-            },
-            crate::ws::time::now_millis(),
-        );
-        let _guard = self.publish_guard.lock().await;
-        if let Err(e) = self
-            .commit_ops_locked(
-                repo,
-                ctx,
-                vec![Operation::Create { doc }],
-                crate::ws::time::now_millis(),
-                WriteOrigin::ConfigSeed,
-            )
-            .await
-        {
-            tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable notice failed");
+        match crate::data::world_seed::seed_author(repo, self.world_id).await {
+            Some(seed_ctx) => {
+                let doc = crate::chat::build_message_doc(
+                    self.world_id,
+                    seed_ctx.user_id,
+                    crate::chat::MessageDraft {
+                        channel: "sandbox".to_string(),
+                        actor_owner: None,
+                        audience: crate::chat::Audience::GmOnly,
+                        kind: crate::chat::MessageKind::System,
+                        content: vec![crate::chat::Segment::Text {
+                            text: format!(
+                                "Sandboxed validator '{module}' faulted {} times in a row and has been disabled for this world.",
+                                crate::sandbox::VALIDATOR_FAULT_LIMIT
+                            ),
+                        }],
+                        source: None,
+                    },
+                    crate::ws::time::now_millis(),
+                );
+                if let Err(e) = self
+                    // Boxed: `commit_ops_locked`'s error arm can reach this notice
+                    // commit, which is itself a `commit_ops_locked` call — async
+                    // recursion requires `Box::pin` (bounded in practice: each
+                    // level disables a distinct module).
+                    .commit_ops_locked_boxed(
+                        repo,
+                        &seed_ctx,
+                        vec![Operation::Create { doc }],
+                        crate::ws::time::now_millis(),
+                        WriteOrigin::ConfigSeed,
+                    )
+                    .await
+                {
+                    tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable notice failed");
+                }
+            }
+            None => {
+                tracing::warn!(world = %self.world_id, module, "validator auto-disable: no GM member to attribute the notice to; notice skipped");
+            }
         }
         repo.reset_validator_fault_streak(self.world_id, module)
             .await;

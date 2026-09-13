@@ -430,14 +430,13 @@ async fn handle_socket(
                                     }
                                     // Success is confirmed by the broadcast echo of the
                                     // authored Event; only a rejection is sent directly.
+                                    // A validator fault over the auto-disable limit is
+                                    // acted on inside `Room::commit_ops_locked`'s error
+                                    // arm (the one funnel every guarded write path
+                                    // shares), never here.
                                     match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
                                         Ok(_cmd) => {}
                                         Err(e) => {
-                                            if let crate::data::DataError::Validator(fault) = &e {
-                                                if fault.consecutive >= crate::sandbox::VALIDATOR_FAULT_LIMIT {
-                                                    room.disable_faulting_validator(repo.as_ref(), &ctx, &fault.module).await;
-                                                }
-                                            }
                                             let (reason, detail) = reject_reason(&e);
                                             tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
                                             let _ = etx

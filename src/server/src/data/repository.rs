@@ -630,6 +630,25 @@ pub trait Repository: Send + Sync {
         entries: &[crate::modules::WorldModuleEntry],
     ) -> Result<(), DataError>;
 
+    /// A world's member list as `(user_id, username, role)` triples, ordered by
+    /// username (case-insensitive) — the membership read `world_seed::seed_author`
+    /// and the member-listing route share.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let members = repo.list_members(uuid::Uuid::nil()).await?;
+    /// assert!(members.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError>;
+
     /// Resets `module`'s consecutive sandbox-validator fault counter for `world` to zero —
     /// called by `Room::disable_faulting_validator` once it finishes disabling a persistently
     /// faulting module, so a future re-enable starts the streak at zero. A cheap, synchronous,
