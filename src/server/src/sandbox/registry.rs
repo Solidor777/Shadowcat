@@ -103,15 +103,21 @@ impl ValidatorRegistry {
         self.faults.remove(&(world, module.to_string()));
     }
 
-    /// Compile every declared validator of every module `crate::modules::scan_installed_modules`
-    /// found under `modules_dir`. A module whose `.wasm` fails to read or fails to compile as a
+    /// Compile every declared validator of every module in `installed` (already scanned by
+    /// the caller — `ValidatorRegistryCache::get_or_scan` walks the modules dir exactly ONCE
+    /// per cache miss and shares the result between this compile pass and its own mtime
+    /// bookkeeping). A module whose `.wasm` fails to read or fails to compile as a
     /// valid WASM module gets `load_error: Some(..)` and NO entries — the module itself still
     /// scans/loads normally (fail-open discovery, the same posture `scan_installed_modules`
     /// already takes for a malformed manifest). `faults` is handed through unchanged from the
     /// `ValidatorRegistryCache` that calls this, so a rescan never resets an in-flight streak.
-    fn scan(modules_dir: &Path, faults: Arc<DashMap<(Uuid, String), u32>>) -> Self {
+    fn scan(
+        installed: &[crate::modules::InstalledModule],
+        modules_dir: &Path,
+        faults: Arc<DashMap<(Uuid, String), u32>>,
+    ) -> Self {
         let mut by_module = BTreeMap::new();
-        for installed in crate::modules::scan_installed_modules(modules_dir) {
+        for installed in installed {
             if installed.validators.is_empty() {
                 continue;
             }
@@ -195,11 +201,14 @@ fn compile_one(
 }
 
 /// Caches `ValidatorRegistry::scan`'s result the same way `crate::modules::ModuleScanCache`
-/// caches a manifest scan: invalidated by the modules directory's own mtime plus each cached
-/// module's `module.json` mtime. One instance per `SqliteRepository`, NOT shared with
-/// `ModuleScanCache` — the two caches invalidate on the same signal but hold structurally
-/// different payloads (raw manifests vs compiled `wasmi` modules) and are read from different
-/// layers (`ws`/`http` vs `data`).
+/// caches a manifest scan: invalidated by the modules directory's own mtime, each cached
+/// module's `module.json` mtime, AND each declared validator's `.wasm` file mtime (an
+/// in-place wasm swap — the natural update channel for an already-installed module — changes
+/// no manifest and bumps no directory mtime, so without the third signal a swapped validator
+/// would serve its stale compiled form until restart). One instance per `SqliteRepository`,
+/// NOT shared with `ModuleScanCache` — the caches invalidate on overlapping signals but hold
+/// structurally different payloads (raw manifests vs compiled `wasmi` modules) and are read
+/// from different layers (`ws`/`http` vs `data`).
 ///
 /// # Examples
 ///
@@ -228,6 +237,9 @@ struct CachedEntry {
     dir_mtime: std::time::SystemTime,
     /// Each cached module's id -> its `module.json`'s mtime at scan time.
     manifest_mtimes: BTreeMap<String, std::time::SystemTime>,
+    /// Every declared validator's `.wasm` path -> its mtime at scan time (see
+    /// `ValidatorRegistryCache`'s doc for the in-place-swap case this catches).
+    wasm_mtimes: BTreeMap<std::path::PathBuf, std::time::SystemTime>,
     /// The scan result itself.
     registry: Arc<ValidatorRegistry>,
 }
@@ -249,10 +261,10 @@ impl ValidatorRegistryCache {
         self.faults.remove(&(world, module.to_string()));
     }
 
-    /// Returns the cached registry if `modules_dir`'s own mtime and every cached module's
-    /// `module.json` mtime are unchanged since the cache was populated; otherwise recompiles
-    /// (`ValidatorRegistry::scan`) and replaces the cache. Blocking filesystem I/O — call only
-    /// from within `spawn_blocking`.
+    /// Returns the cached registry if `modules_dir`'s own mtime, every cached module's
+    /// `module.json` mtime, and every declared validator's `.wasm` mtime are unchanged since
+    /// the cache was populated; otherwise recompiles (`ValidatorRegistry::scan`) and replaces
+    /// the cache. Blocking filesystem I/O — call only from within `spawn_blocking`.
     ///
     /// # Examples
     ///
@@ -280,18 +292,42 @@ impl ValidatorRegistryCache {
                         .ok()
                         == Some(*mtime)
                 })
+                && cached.wasm_mtimes.iter().all(|(path, mtime)| {
+                    std::fs::metadata(path).and_then(|m| m.modified()).ok() == Some(*mtime)
+                })
             {
                 return cached.registry.clone();
             }
         }
-        let registry = Arc::new(ValidatorRegistry::scan(modules_dir, self.faults.clone()));
-        let manifest_mtimes = crate::modules::scan_installed_modules(modules_dir)
-            .into_iter()
+        // ONE directory walk per cache miss, shared between the compile pass and the
+        // mtime bookkeeping below.
+        let installed = crate::modules::scan_installed_modules(modules_dir);
+        let registry = Arc::new(ValidatorRegistry::scan(
+            &installed,
+            modules_dir,
+            self.faults.clone(),
+        ));
+        let manifest_mtimes = installed
+            .iter()
             .filter_map(|m| {
                 std::fs::metadata(modules_dir.join(&m.id).join("module.json"))
                     .and_then(|meta| meta.modified())
                     .ok()
-                    .map(|mt| (m.id, mt))
+                    .map(|mt| (m.id.clone(), mt))
+            })
+            .collect();
+        let wasm_mtimes = installed
+            .iter()
+            .flat_map(|m| {
+                m.validators
+                    .iter()
+                    .map(move |d| modules_dir.join(&m.id).join(&d.wasm))
+            })
+            .filter_map(|p| {
+                std::fs::metadata(&p)
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .map(|mt| (p, mt))
             })
             .collect();
         // A missing/unreadable modules_dir yields no dir_mtime; fall back to UNIX_EPOCH so the
@@ -300,6 +336,7 @@ impl ValidatorRegistryCache {
         let fresh = Arc::new(CachedEntry {
             dir_mtime: dir_mtime.unwrap_or(std::time::SystemTime::UNIX_EPOCH),
             manifest_mtimes,
+            wasm_mtimes,
             registry: registry.clone(),
         });
         *self

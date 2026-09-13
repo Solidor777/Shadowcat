@@ -440,9 +440,21 @@ impl SqliteRepository {
         let validator_registry = if enabled_module_ids.is_empty() {
             None
         } else {
-            self.modules_dir
-                .clone()
-                .map(|dir| self.validator_registry_cache.get_or_scan(&dir))
+            match self.modules_dir.clone() {
+                Some(dir) => {
+                    // Blocking filesystem I/O (compile-on-miss), off the async
+                    // worker like `apply_intent`'s own registry fetch — an
+                    // import holding the write transaction must not also park a
+                    // runtime thread on disk latency.
+                    let cache = self.validator_registry_cache.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
+                            .await
+                            .unwrap_or_default(),
+                    )
+                }
+                None => None,
+            }
         };
         // Room-less callers policy: an import records fault streaks (via
         // `sandbox::validate_document`'s own counter) but NEVER auto-disables a

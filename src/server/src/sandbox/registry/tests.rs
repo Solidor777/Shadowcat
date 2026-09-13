@@ -2,23 +2,23 @@ use super::*;
 
 #[test]
 fn scan_of_a_missing_modules_dir_yields_an_empty_registry() {
-    let registry =
-        ValidatorRegistry::scan(std::path::Path::new("no-such-modules-dir"), Arc::default());
+    let installed =
+        crate::modules::scan_installed_modules(std::path::Path::new("no-such-modules-dir"));
+    let registry = ValidatorRegistry::scan(
+        &installed,
+        std::path::Path::new("no-such-modules-dir"),
+        Arc::default(),
+    );
     assert!(registry.validator_for("anything", "actor").is_none());
 }
 
 #[test]
 fn cache_returns_the_same_registry_on_a_second_unchanged_scan() {
-    let dir = std::env::temp_dir().join(format!(
-        "shadowcat-sandbox-registry-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+    let dir = tempfile::tempdir().unwrap();
     let cache = ValidatorRegistryCache::default();
-    let first = cache.get_or_scan(&dir);
-    let second = cache.get_or_scan(&dir);
+    let first = cache.get_or_scan(dir.path());
+    let second = cache.get_or_scan(dir.path());
     assert!(Arc::ptr_eq(&first, &second));
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// Writes a minimal installed-module folder under `dir/<id>/` declaring one validator for
@@ -55,6 +55,23 @@ const ACCEPTING_WAT: &str = r#"
     (func (export "validate") (param i32 i32) (result i32) (i32.const 0)))
 "#;
 
+/// Always refuses with a fixed reason.
+const REFUSING_WAT: &str = r#"
+  (module
+    (memory (export "memory") 1)
+    (data (i32.const 2048) "no")
+    (func (export "alloc") (param i32) (result i32) (i32.const 1024))
+    (func (export "validate") (param i32 i32) (result i32) (i32.const 1))
+    (func (export "reason_ptr") (result i32) (i32.const 2048))
+    (func (export "reason_len") (result i32) (i32.const 2)))
+"#;
+
+/// Scans `dir` once through the shared single-walk entry point the cache uses.
+fn scan_dir(dir: &std::path::Path) -> ValidatorRegistry {
+    let installed = crate::modules::scan_installed_modules(dir);
+    ValidatorRegistry::scan(&installed, dir, Arc::default())
+}
+
 fn doc(doc_type: &str, system: serde_json::Value) -> crate::data::document::Document {
     crate::data::document::Document {
         id: uuid::Uuid::new_v4(),
@@ -81,15 +98,11 @@ fn doc(doc_type: &str, system: serde_json::Value) -> crate::data::document::Docu
 fn scan_assigns_each_compiled_validator_the_installed_modules_own_id() {
     // Both modules declare a validator for the SAME doc_type — the only way to prove
     // `compile_one` stamps `module_id` from the INSTALLED module, never from `decl.doc_type`.
-    let dir = std::env::temp_dir().join(format!(
-        "shadowcat-sandbox-scan-ids-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    write_installed_module(&dir, "module-a", "actor", FAULTING_WAT);
-    write_installed_module(&dir, "module-b", "actor", ACCEPTING_WAT);
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_module(dir.path(), "module-a", "actor", FAULTING_WAT);
+    write_installed_module(dir.path(), "module-b", "actor", ACCEPTING_WAT);
 
-    let registry = ValidatorRegistry::scan(&dir, Arc::default());
+    let registry = scan_dir(dir.path());
     let a = registry
         .validator_for("module-a", "actor")
         .expect("module-a's validator compiled");
@@ -101,21 +114,15 @@ fn scan_assigns_each_compiled_validator_the_installed_modules_own_id() {
         "module_id must be the INSTALLED MODULE id, never the doc_type it validates"
     );
     assert_eq!(b.module_id, "module-b");
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn a_validator_that_fails_to_compile_records_a_load_error_and_keeps_its_siblings() {
-    let dir = std::env::temp_dir().join(format!(
-        "shadowcat-sandbox-scan-load-error-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    write_installed_module(&dir, "module-a", "actor", ACCEPTING_WAT);
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_module(dir.path(), "module-a", "actor", ACCEPTING_WAT);
     // A declared `.wasm` that is not valid WASM at all: the entry fails, the module still
     // scans, and the diagnostic is recorded for `load_error_for`.
-    let bad_dir = dir.join("module-bad");
+    let bad_dir = dir.path().join("module-bad");
     std::fs::create_dir_all(&bad_dir).unwrap();
     std::fs::write(
         bad_dir.join("module.json"),
@@ -129,7 +136,7 @@ fn a_validator_that_fails_to_compile_records_a_load_error_and_keeps_its_siblings
     .unwrap();
     std::fs::write(bad_dir.join("v.wasm"), b"not wasm".as_slice()).unwrap();
 
-    let registry = ValidatorRegistry::scan(&dir, Arc::default());
+    let registry = scan_dir(dir.path());
     assert!(registry.validator_for("module-a", "actor").is_some());
     assert!(registry.validator_for("module-bad", "actor").is_none());
     assert!(
@@ -137,22 +144,16 @@ fn a_validator_that_fails_to_compile_records_a_load_error_and_keeps_its_siblings
         "a failed compile must be recorded, fail-open on discovery"
     );
     assert!(registry.load_error_for("module-a").is_none());
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn a_wasm_path_escaping_the_module_folder_is_refused() {
-    let dir = std::env::temp_dir().join(format!(
-        "shadowcat-sandbox-scan-traversal-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    write_installed_module(&dir, "module-a", "actor", ACCEPTING_WAT);
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_module(dir.path(), "module-a", "actor", ACCEPTING_WAT);
     // `wasm` names a path ABOVE the module's own folder (the sibling module's compiled
     // validator): refused by `compile_one`'s `is_strictly_within` boundary, recorded as this
     // module's load error.
-    let escape_dir = dir.join("module-escape");
+    let escape_dir = dir.path().join("module-escape");
     std::fs::create_dir_all(&escape_dir).unwrap();
     std::fs::write(
         escape_dir.join("module.json"),
@@ -165,27 +166,21 @@ fn a_wasm_path_escaping_the_module_folder_is_refused() {
     )
     .unwrap();
 
-    let registry = ValidatorRegistry::scan(&dir, Arc::default());
+    let registry = scan_dir(dir.path());
     assert!(registry.validator_for("module-escape", "actor").is_none());
     assert_eq!(
         registry.load_error_for("module-escape"),
         Some("wasm path escapes the module's own folder")
     );
-
-    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[tokio::test]
 async fn validate_document_over_a_scanned_registry_isolates_each_modules_fault_streak() {
-    let dir = std::env::temp_dir().join(format!(
-        "shadowcat-sandbox-scan-streak-{}",
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    write_installed_module(&dir, "module-a", "item", FAULTING_WAT);
-    write_installed_module(&dir, "module-b", "item", ACCEPTING_WAT);
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_module(dir.path(), "module-a", "item", FAULTING_WAT);
+    write_installed_module(dir.path(), "module-b", "item", ACCEPTING_WAT);
 
-    let registry = ValidatorRegistry::scan(&dir, Arc::default());
+    let registry = scan_dir(dir.path());
     let world = uuid::Uuid::from_u128(42);
     let a_only = vec!["module-a".to_string()];
     let b_only = vec!["module-b".to_string()];
@@ -223,6 +218,41 @@ async fn validate_document_over_a_scanned_registry_isolates_each_modules_fault_s
         fault.consecutive, 4,
         "module-b's accept must not have reset or incremented module-a's streak"
     );
+}
 
-    std::fs::remove_dir_all(&dir).ok();
+#[tokio::test]
+async fn cache_detects_an_in_place_wasm_swap() {
+    let dir = tempfile::tempdir().unwrap();
+    write_installed_module(dir.path(), "module-a", "item", ACCEPTING_WAT);
+    let cache = ValidatorRegistryCache::default();
+    let world = uuid::Uuid::from_u128(77);
+    let ids = vec!["module-a".to_string()];
+    let mut d = doc("item", serde_json::json!({}));
+
+    let first = cache.get_or_scan(dir.path());
+    let verdict =
+        crate::sandbox::validate_document(&first, &ids, &mut d, None, true, world, &[]).await;
+    assert_eq!(verdict.unwrap(), crate::sandbox::ValidatorVerdict::Accept);
+
+    // An IN-PLACE wasm swap: the manifest is untouched and no directory entry is
+    // added or removed, so only the `.wasm` file's own mtime advances. A cache
+    // blind to that signal would keep serving the stale compiled validator.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let bytes = wat::parse_str(REFUSING_WAT).expect("valid WAT fixture");
+    std::fs::write(dir.path().join("module-a").join("v.wasm"), bytes).unwrap();
+
+    let second = cache.get_or_scan(dir.path());
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "an in-place wasm swap must invalidate the cached registry"
+    );
+    let verdict =
+        crate::sandbox::validate_document(&second, &ids, &mut d, None, true, world, &[]).await;
+    assert!(
+        matches!(
+            verdict.unwrap(),
+            crate::sandbox::ValidatorVerdict::Refuse { .. }
+        ),
+        "the swapped-in validator must be the one that runs"
+    );
 }
