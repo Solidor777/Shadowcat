@@ -88,4 +88,20 @@ describe("PerformanceController", () => {
     c2.load(snap, {});
     expect(c2.current).toEqual(c.current);
   });
+
+  it("set does not bake the live reducedMotion signal into the persisted overrides", () => {
+    const c = new PerformanceController();
+    c.load(undefined, { reducedMotion: true });
+    c.set({ fpsCap: 30 });
+    expect(c.serialize().overrides.reducedMotion).toBe(false);
+    expect(c.current.reducedMotion).toBe(true); // the signal still ORs at read time
+  });
+
+  it("an explicit reducedMotion patch persists as the user's choice under a live signal", () => {
+    const c = new PerformanceController();
+    c.load(undefined, { reducedMotion: true });
+    c.set({ reducedMotion: false });
+    expect(c.serialize().overrides.reducedMotion).toBe(false);
+    expect(c.current.reducedMotion).toBe(true); // documented: cannot uncheck while the OS signal is on
+  });
 });

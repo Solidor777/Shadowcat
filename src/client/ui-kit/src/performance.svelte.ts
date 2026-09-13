@@ -115,7 +115,12 @@ export class PerformanceController {
   /** Applies `patch` on top of the CURRENT effective settings and moves `preset` to `"custom"`
    * — `overrides` becomes the FULL resulting settings object, never a bare patch, so a later
    * `effectiveSettings` resolution for this device never needs to fall back to a base preset for
-   * an untouched field.
+   * an untouched field. The carry-forward is computed with the device `reducedMotion` signal
+   * SUPPRESSED: `current` ORs that live signal onto the resolved base, and persisting the OR-ed
+   * value would bake a transient OS preference into the permanent overrides (it would then
+   * survive the signal itself going away). The signal keeps OR-ing at read time through
+   * `effectiveSettings`, so the documented behavior — a custom preset cannot uncheck
+   * `reducedMotion` while the OS signal is on — is unchanged.
    * @param patch The fields to change.
    * @example
    * ```ts
@@ -125,7 +130,11 @@ export class PerformanceController {
    * ```
    */
   set(patch: Partial<PerformanceSettings>): void {
-    this.#overrides = { ...this.current, ...patch };
+    const signalFree = effectiveSettings(
+      { preset: this.#preset, overrides: this.#overrides },
+      { ...this.#signals, reducedMotion: false },
+    );
+    this.#overrides = { ...signalFree, ...patch };
     this.#preset = "custom";
     this.#changed();
   }
