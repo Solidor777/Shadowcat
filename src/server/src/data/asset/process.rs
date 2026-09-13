@@ -143,6 +143,23 @@ pub fn original_path(canonical: &Path) -> PathBuf {
     with_suffix(canonical, ORIGINAL_SUFFIX)
 }
 
+/// Path of the server-derived grid-sheet image beside `canonical` (animated sources only,
+/// written by `generate_grid_sheet` at commit/reconvert time — never regenerated lazily, so
+/// a missing file is an anomaly the caller answers with its own refusal, never a re-derive).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::sheet_path;
+/// use std::path::Path;
+///
+/// let canonical = Path::new("data").join("uuid");
+/// assert_eq!(sheet_path(&canonical), Path::new("data").join("uuid.sheet.webp"));
+/// ```
+pub fn sheet_path(canonical: &Path) -> PathBuf {
+    with_suffix(canonical, SHEET_SUFFIX)
+}
+
 /// Every artifact that can sit beside a canonical: the retained original and
 /// the two derivatives, plus the two grid-sheet siblings for an animated
 /// source. The single statement of the sibling set — commit, replace, delete

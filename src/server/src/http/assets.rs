@@ -421,16 +421,18 @@ pub async fn upload(
 /// ```
 #[derive(Debug, serde::Deserialize)]
 pub struct ServeQuery {
-    /// `thumb` | `preview`; absent = the canonical file.
+    /// `thumb` | `preview` | `sheet`; absent = the canonical file.
     pub variant: Option<String>,
 }
 
-/// `GET /api/assets/{uuid}[?variant=thumb|preview]` — read-gated by world
+/// `GET /api/assets/{uuid}[?variant=thumb|preview|sheet]` — read-gated by world
 /// membership; ETag-revalidated. A derivative shares the canonical's ETag
 /// (`"{id}-{version}"`): it is regenerated whenever the canonical's version
-/// changes, so the version keys it. A missing derivative is regenerated on
+/// changes, so the version keys it. A missing `thumb`/`preview` derivative is regenerated on
 /// demand; if the canonical does not decode, the canonical itself is served
-/// in its place rather than a 404.
+/// in its place rather than a 404. `sheet` is the server-derived grid sheet
+/// (`AssetMeta.sheet`; animated sources only) — written once at commit/reconvert time, never
+/// regenerated on demand, so a missing sheet sibling answers 404 instead.
 ///
 /// # Examples
 ///
@@ -479,6 +481,45 @@ pub async fn serve(
         None => None,
         Some("thumb") => Some(Variant::Thumb),
         Some("preview") => Some(Variant::Preview),
+        Some("sheet") => {
+            // The server-derived grid sheet is written ONCE at commit/reconvert time (never
+            // lazily regenerated), so it does not ride `ensure_derivative`: a missing sibling
+            // is an anomaly answered 404, and the client fails closed — serving the canonical
+            // instead would hand the render layer the raw animated source sliced as if it
+            // were the tiled sheet.
+            let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+            state
+                .repo
+                .permission_context(asset.world_id, user.id, user.role)
+                .await?;
+            let canonical = state.config.assets_path().join(&asset.storage_key);
+            let sheet = crate::data::asset::process::sheet_path(&canonical);
+            let bytes = tokio::fs::read(&sheet).await.map_err(|e| {
+                tracing::debug!(?e, %id, "grid sheet missing for an asset whose metadata names one");
+                AppError::NotFound
+            })?;
+            let etag = format!("\"{}-{}\"", id, asset.version);
+            let if_none_match = headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if if_none_match.split(',').any(|t| t.trim() == etag) {
+                return Ok((StatusCode::NOT_MODIFIED).into_response());
+            }
+            return Ok((
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
+                    ),
+                    (header::CONTENT_DISPOSITION, "inline".to_string()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::ETAG, etag),
+                ],
+                Body::from(bytes),
+            )
+                .into_response());
+        }
         Some(other) => {
             return Err(AppError::BadRequest(format!("unknown variant '{other}'")));
         }
