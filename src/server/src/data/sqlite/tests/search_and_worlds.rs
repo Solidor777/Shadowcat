@@ -2178,6 +2178,14 @@ const IMPORT_FAULTING_WAT: &str = r#"
     (func (export "alloc") (param i32) (result i32) (i32.const 0)))
 "#;
 
+/// Always accepts.
+const IMPORT_ACCEPTING_WAT: &str = r#"
+  (module
+    (memory (export "memory") 1)
+    (func (export "alloc") (param i32) (result i32) (i32.const 0))
+    (func (export "validate") (param i32 i32) (result i32) (i32.const 0)))
+"#;
+
 /// Always refuses with `reason` stored at a static offset.
 fn import_refusing_wat(reason: &str) -> String {
     format!(
@@ -2324,4 +2332,50 @@ async fn import_world_rejects_a_schema_violating_bundle_before_any_validator_run
         matches!(err, DataError::SchemaViolation { .. }),
         "a tier-2 violation must surface as the structural error, never DataError::Validator: {err:?}"
     );
+}
+
+#[tokio::test]
+async fn import_world_judges_with_bundle_validators_but_persists_opted_out() {
+    let dir = tempfile::tempdir().unwrap();
+    // An accepting validator for "item": the bundle's documents pass their
+    // declared validators and import cleanly (the judgment half — that a
+    // bundle's declared validators DO run over the import — is pinned by
+    // `import_world_refuses_a_bundle_document_a_validator_rejects` above)…
+    write_import_validator_module(dir.path(), "mod-x", "item", IMPORT_ACCEPTING_WAT);
+    let (src, w) = exported_item_world(33, serde_json::json!({ "hp": 3 })).await;
+    let export_data = src.export_world_rows(w.id).await.unwrap();
+
+    // …while its settings record the source world opted INTO that validator.
+    let mut settings = export_data.settings.clone();
+    settings.push(crate::data::world_bundle::ExportedSettingRow {
+        key: world_modules_key(w.id),
+        value: serde_json::json!([{ "id": "mod-x", "validators_enabled": true }]).to_string(),
+    });
+
+    let target = SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap()
+        .with_modules_dir(dir.path());
+    target
+        .import_world(import_data_with_settings(&export_data, settings))
+        .await
+        .expect("a bundle whose documents pass their declared validators imports cleanly");
+
+    // …but the persisted enablement record arrives with validators_enabled
+    // forced OFF — opting a world into third-party code is the GM's own act,
+    // never something a bundle may carry in.
+    let entries = target.world_enabled_modules(w.id).await.unwrap();
+    assert_eq!(
+        entries,
+        vec![crate::modules::WorldModuleEntry {
+            id: "mod-x".into(),
+            validators_enabled: false,
+        }]
+    );
+    // And the imported document is live (the import itself was not blocked).
+    assert!(target
+        .get_document(Uuid::from_u128(33))
+        .await
+        .unwrap()
+        .is_some());
 }

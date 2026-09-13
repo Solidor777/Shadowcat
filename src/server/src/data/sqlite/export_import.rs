@@ -822,9 +822,29 @@ impl SqliteRepository {
         }
 
         for row in &data.settings {
+            // An imported world ARRIVES OPTED OUT: the bundle's enabled-module
+            // record is persisted with every `validators_enabled` forced false.
+            // Opting a world into third-party code is the GM's own act (the
+            // same per-world opt-in the enable endpoint gates on), never
+            // something a bundle file — potentially authored anywhere — may
+            // carry in. Note this does NOT affect the import's own validation:
+            // the documents above were judged by the bundle's declared
+            // validators as declared (the operator importing a world sees its
+            // rules enforced on what they import; the world simply does not
+            // keep running them afterward until the GM re-opts-in).
+            let value = if row.key == world_modules_key(world) {
+                let mut entries =
+                    crate::modules::WorldModuleEntry::parse_legacy_tolerant(&row.value)?;
+                for entry in &mut entries {
+                    entry.validators_enabled = false;
+                }
+                serde_json::to_string(&entries)?
+            } else {
+                row.value.clone()
+            };
             sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
                 .bind(&row.key)
-                .bind(&row.value)
+                .bind(&value)
                 .execute(&mut *tx)
                 .await?;
         }
