@@ -114,6 +114,9 @@ pub struct WsState {
     /// Per-user flood budget for every handler `MESSAGE_RATE_PER_MIN` governs (shared across a
     /// user's connections).
     pub message_rate: Arc<PingRateLimiter>,
+    /// Per-user audio-transport budget (shared across a user's connections); a
+    /// SEPARATE bucket from ping/emote/message so transport spam cannot starve them or vice versa.
+    pub audio_rate: Arc<PingRateLimiter>,
     /// The link-preview SSRF-guarded fetch client, built ONCE via
     /// `chat::build_link_preview_client()` (the no-flag production
     /// constructor — never the test-only loopback-permitting one) and
@@ -148,6 +151,7 @@ impl WsState {
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            audio_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
@@ -172,6 +176,7 @@ impl WsState {
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            audio_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),

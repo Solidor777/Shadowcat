@@ -390,6 +390,9 @@ async fn handle_socket(
     let emote_rate = state.ws.emote_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
+    // Per-user audio-transport budget (shared across this user's connections) — its own
+    // bucket, so transport spam cannot starve pings/emotes/chat and vice versa.
+    let audio_rate = state.ws.audio_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
     // and worlds — a preview's target and cached outcome are world-independent).
     let preview_client = state.ws.link_preview_client.clone();
@@ -567,6 +570,35 @@ async fn handle_socket(
                                             user: user_id,
                                             emote,
                                         });
+                                    }
+                                }
+                                Ok(ClientMsg::AudioTransport { op }) => {
+                                    // Fire-and-forget on the wire: no reply frame on success (the
+                                    // broadcast Event echo of the audio-state Update IS the
+                                    // success signal); a refusal is a connection-local AudioError.
+                                    // Rate check first (own budget — see WsState::audio_rate),
+                                    // then the GM/state/op checks inside handle_transport itself.
+                                    if !audio_rate.check(user_id, now_millis(), 30) {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
+                                                reason: "too many audio commands".into(),
+                                            })))
+                                            .await;
+                                    } else if let Err(e) = crate::audio::transport::handle_transport(
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &room,
+                                        world_id,
+                                        op,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
+                                                reason: e.to_string(),
+                                            })))
+                                            .await;
                                     }
                                 }
                                 Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {

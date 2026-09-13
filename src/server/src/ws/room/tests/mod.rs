@@ -3501,6 +3501,8 @@ async fn resync_floors_are_independent_per_user() {
     );
 }
 
+/// GM audio-transport handling and the activeScene ambience swap.
+mod audio_transport;
 mod movement_budget;
 
 /// `MoveStream.mover_light` computation: presence, sampling, suppression.
