@@ -630,6 +630,26 @@ pub trait Repository: Send + Sync {
         entries: &[crate::modules::WorldModuleEntry],
     ) -> Result<(), DataError>;
 
+    /// Resets `module`'s consecutive sandbox-validator fault counter for `world` to zero —
+    /// called by `Room::disable_faulting_validator` once it finishes disabling a persistently
+    /// faulting module, so a future re-enable starts the streak at zero. A cheap, synchronous,
+    /// in-memory operation: a repository never wired to a `modules_dir` has no counter to
+    /// reset, so this is a no-op for it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.reset_validator_fault_streak(uuid::Uuid::nil(), "mock-module").await;
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn reset_validator_fault_streak(&self, world: Uuid, module: &str);
+
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a
     /// prior page (`None` for the first). `doc_types` narrows the ranked

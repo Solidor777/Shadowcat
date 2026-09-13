@@ -186,6 +186,9 @@ impl Repository for DeleteMidHydration<'_> {
     ) -> Result<(), DataError> {
         self.inner.set_world_enabled_modules(world, entries).await
     }
+    async fn reset_validator_fault_streak(&self, world: Uuid, module: &str) {
+        self.inner.reset_validator_fault_streak(world, module).await;
+    }
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,
@@ -3516,3 +3519,178 @@ mod movement_budget;
 /// `MoveStream.mover_light` computation: presence, sampling, suppression.
 mod mover_light;
 mod region_triggers;
+
+// ---------- Room::disable_faulting_validator ----------
+
+/// Writes one installed-module folder under `dir/<id>/` whose validator for
+/// `doc_type` is missing its `validate` export — every call faults with
+/// `FaultKind::BadAbi`, the cheapest deterministic fault (kept private to each
+/// sibling test module, like the other small module-folder fixtures).
+fn write_room_faulting_module(dir: &std::path::Path, id: &str, doc_type: &str) {
+    let module_dir = dir.join(id);
+    std::fs::create_dir_all(&module_dir).unwrap();
+    std::fs::write(
+        module_dir.join("module.json"),
+        serde_json::json!({
+            "id": id,
+            "version": "1.0.0",
+            "engines": { "shadowcat": "*" },
+            "validators": [{ "docType": doc_type, "wasm": "v.wasm" }],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        module_dir.join("v.wasm"),
+        wat::parse_str(
+            r#"
+              (module
+                (memory (export "memory") 1)
+                (func (export "alloc") (param i32) (result i32) (i32.const 0)))
+            "#,
+        )
+        .expect("valid WAT fixture"),
+    )
+    .unwrap();
+}
+
+/// An `item` document (a client-side doc_type the server treats structurally —
+/// no engine body) with an empty `system` band.
+fn room_item_doc(id: u128, world: Uuid) -> Document {
+    Document {
+        id: Uuid::from_u128(id),
+        scope: crate::data::document::Scope::World { world_id: world },
+        doc_type: "item".into(),
+        schema_version: 1,
+        name: None,
+        source: None,
+        base: None,
+        owner: None,
+        permissions: Default::default(),
+        embedded: Default::default(),
+        parent_id: None,
+        engine: None,
+        system: serde_json::json!({}),
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+#[tokio::test]
+async fn disable_faulting_validator_disables_the_module_notices_the_gm_and_resets_the_streak() {
+    let dir = tempfile::tempdir().unwrap();
+    write_room_faulting_module(dir.path(), "mod-x", "item");
+    let repo = SqliteRepository::connect("sqlite::memory:")
+        .await
+        .unwrap()
+        .with_modules_dir(dir.path());
+    let author = repo
+        .create_user("a", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("W", author, 0).await.unwrap();
+    let ctx = PermissionContext {
+        user_id: author,
+        world_role: WorldRole::Gm,
+    };
+    repo.set_world_enabled_modules(
+        world.id,
+        &[
+            crate::modules::WorldModuleEntry {
+                id: "mod-x".into(),
+                validators_enabled: true,
+            },
+            crate::modules::WorldModuleEntry {
+                id: "mod-y".into(),
+                validators_enabled: true,
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    // Four consecutive faults: `disable_faulting_validator` performs no
+    // threshold check of its own, so the test needs no real streak of five —
+    // each call must surface `DataError::Validator`.
+    for expected in 1..=4u32 {
+        let err = repo
+            .apply_intent(
+                &ctx,
+                world.id,
+                vec![Operation::Create {
+                    doc: room_item_doc(1, world.id),
+                }],
+                1,
+                WriteOrigin::Client,
+            )
+            .await
+            .unwrap_err();
+        let DataError::Validator(fault) = err else {
+            panic!("expected DataError::Validator, got {err:?}");
+        };
+        assert_eq!(fault.consecutive, expected);
+    }
+
+    let reg = RoomRegistry::new();
+    let room = reg.get_or_create(&repo, world.id).await.unwrap().unwrap();
+    room.disable_faulting_validator(&repo, &ctx, "mod-x").await;
+
+    // mod-x is disabled for the world; mod-y's own flag is untouched.
+    let entries = repo.world_enabled_modules(world.id).await.unwrap();
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| (e.id.as_str(), e.validators_enabled))
+            .collect::<Vec<_>>(),
+        vec![("mod-x", false), ("mod-y", true)]
+    );
+
+    // A GM-only notice message exists, naming the disabled module.
+    let messages = repo
+        .query_documents_by_types(world.id, &["message"])
+        .await
+        .unwrap();
+    assert_eq!(messages.len(), 1, "exactly one notice message");
+    let notice = &messages[0];
+    assert!(
+        notice.permissions.gm_role.is_some(),
+        "the notice is GM-only (a `gm_role`-capped permission set)"
+    );
+    assert!(
+        serde_json::to_string(&notice.engine)
+            .unwrap()
+            .contains("mod-x"),
+        "the notice names the disabled module"
+    );
+
+    // The streak was genuinely reset, not merely the flag cleared: re-enable
+    // and fault once more — the streak restarts at 1.
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "mod-x".into(),
+            validators_enabled: true,
+        }],
+    )
+    .await
+    .unwrap();
+    let err = repo
+        .apply_intent(
+            &ctx,
+            world.id,
+            vec![Operation::Create {
+                doc: room_item_doc(2, world.id),
+            }],
+            2,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap_err();
+    let DataError::Validator(fault) = err else {
+        panic!("expected DataError::Validator, got {err:?}");
+    };
+    assert_eq!(
+        fault.consecutive, 1,
+        "the disable must have reset the streak so a re-enable starts clean"
+    );
+}

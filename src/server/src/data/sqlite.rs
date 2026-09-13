@@ -2487,6 +2487,10 @@ impl Repository for SqliteRepository {
         self.set_setting(&world_modules_key(world), &json).await
     }
 
+    async fn reset_validator_fault_streak(&self, world: Uuid, module: &str) {
+        self.validator_registry_cache.reset_faults(world, module);
+    }
+
     async fn search(
         &self,
         ctx: &crate::data::membership::PermissionContext,

@@ -1160,6 +1160,68 @@ impl Room {
             .await
     }
 
+    /// Disables `module`'s `validators_enabled` flag for this world (its own transaction, via
+    /// `set_world_enabled_modules`), posts a GM-only chat notice (`build_message_doc` +
+    /// `Audience::GmOnly`, committed under `WriteOrigin::ConfigSeed` — a second, independent
+    /// `commit_ops_locked` call under a freshly-acquired `publish_guard`), and resets
+    /// `module`'s consecutive-fault counter (`Repository::reset_validator_fault_streak`) so a future
+    /// re-enable starts clean. Performs NO threshold check itself — the CALLER (`ws::conn`'s
+    /// ingress loop) decides when `crate::sandbox::VALIDATOR_FAULT_LIMIT` is reached and calls
+    /// this unconditionally at that point. The disable write runs even if the notice fails: the
+    /// safety property does not depend on the notice succeeding. Never called while a caller's
+    /// own `publish_guard` is held.
+    pub(crate) async fn disable_faulting_validator(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        module: &str,
+    ) {
+        if let Ok(mut entries) = repo.world_enabled_modules(self.world_id).await {
+            if let Some(entry) = entries.iter_mut().find(|e| e.id == module) {
+                entry.validators_enabled = false;
+                if let Err(e) = repo
+                    .set_world_enabled_modules(self.world_id, &entries)
+                    .await
+                {
+                    tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable write failed");
+                }
+            }
+        }
+        let doc = crate::chat::build_message_doc(
+            self.world_id,
+            ctx.user_id,
+            crate::chat::MessageDraft {
+                channel: "sandbox".to_string(),
+                actor_owner: None,
+                audience: crate::chat::Audience::GmOnly,
+                kind: crate::chat::MessageKind::System,
+                content: vec![crate::chat::Segment::Text {
+                    text: format!(
+                        "Sandboxed validator '{module}' faulted {} times in a row and has been disabled for this world.",
+                        crate::sandbox::VALIDATOR_FAULT_LIMIT
+                    ),
+                }],
+                source: None,
+            },
+            crate::ws::time::now_millis(),
+        );
+        let _guard = self.publish_guard.lock().await;
+        if let Err(e) = self
+            .commit_ops_locked(
+                repo,
+                ctx,
+                vec![Operation::Create { doc }],
+                crate::ws::time::now_millis(),
+                WriteOrigin::ConfigSeed,
+            )
+            .await
+        {
+            tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable notice failed");
+        }
+        repo.reset_validator_fault_streak(self.world_id, module)
+            .await;
+    }
+
     /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
     /// pure path executor, atomically commits the token to its stop location, and enforces a
     /// per-token `moving` lock so a client cannot re-dispatch while the animation is in flight.
