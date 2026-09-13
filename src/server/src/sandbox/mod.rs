@@ -19,8 +19,9 @@ pub mod runtime;
 
 /// Technical failure of the sandbox itself — never a validator's own authored refusal
 /// (`ValidatorVerdict::Refuse`). Every variant maps to a `ValidatorFault`, whose `consecutive`
-/// count `ws::conn` compares against `VALIDATOR_FAULT_LIMIT` to decide whether to call
-/// `Room::disable_faulting_validator`.
+/// count `Room::commit_ops_locked`'s error arm — the one funnel every guarded write path
+/// shares — compares against `VALIDATOR_FAULT_LIMIT` before calling
+/// `disable_faulting_validator_locked`.
 ///
 /// # Examples
 ///

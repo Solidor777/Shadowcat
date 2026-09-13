@@ -650,10 +650,10 @@ pub trait Repository: Send + Sync {
     async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError>;
 
     /// Resets `module`'s consecutive sandbox-validator fault counter for `world` to zero —
-    /// called by `Room::disable_faulting_validator` once it finishes disabling a persistently
-    /// faulting module, so a future re-enable starts the streak at zero. A cheap, synchronous,
-    /// in-memory operation: a repository never wired to a `modules_dir` has no counter to
-    /// reset, so this is a no-op for it.
+    /// called by `Room::disable_faulting_validator_locked` once it finishes disabling a
+    /// persistently faulting module, so a future re-enable starts the streak at zero. A cheap,
+    /// synchronous, in-memory operation: a repository never wired to a `modules_dir` has no
+    /// counter to reset, so this is a no-op for it.
     ///
     /// # Examples
     ///

@@ -3523,7 +3523,7 @@ mod movement_budget;
 mod mover_light;
 mod region_triggers;
 
-// ---------- Room::disable_faulting_validator ----------
+// ---------- Room::disable_faulting_validator_locked ----------
 
 /// Writes one installed-module folder under `dir/<id>/` whose validator for
 /// `doc_type` is missing its `validate` export — every call faults with
@@ -3580,7 +3580,8 @@ fn room_item_doc(id: u128, world: Uuid) -> Document {
 }
 
 #[tokio::test]
-async fn disable_faulting_validator_disables_the_module_notices_the_gm_and_resets_the_streak() {
+async fn disable_faulting_validator_locked_disables_the_module_notices_the_gm_and_resets_the_streak(
+) {
     let dir = tempfile::tempdir().unwrap();
     write_room_faulting_module(dir.path(), "mod-x", "item");
     let repo = SqliteRepository::connect("sqlite::memory:")
@@ -3612,7 +3613,7 @@ async fn disable_faulting_validator_disables_the_module_notices_the_gm_and_reset
     .await
     .unwrap();
 
-    // Four consecutive faults: `disable_faulting_validator` performs no
+    // Four consecutive faults: `disable_faulting_validator_locked` performs no
     // threshold check of its own, so the test needs no real streak of five —
     // each call must surface `DataError::Validator`.
     for expected in 1..=4u32 {
