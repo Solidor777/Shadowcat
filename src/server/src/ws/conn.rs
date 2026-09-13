@@ -207,13 +207,19 @@ fn text(msg: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
 
-/// Map a write-path error to the client-actionable reject category.
-fn reject_reason(e: &crate::data::DataError) -> RejectReason {
+/// Map a write-path error to the client-actionable reject category, plus an optional
+/// player-presentable detail string carried on `ServerMsg::Reject.detail`.
+fn reject_reason(e: &crate::data::DataError) -> (RejectReason, Option<String>) {
     use crate::data::DataError::*;
     match e {
-        Forbidden => RejectReason::Forbidden,
-        Conflict(_) => RejectReason::Conflict,
-        _ => RejectReason::Invalid,
+        Forbidden => (RejectReason::Forbidden, None),
+        Conflict(_) => (RejectReason::Conflict, None),
+        OpFailed(m) => (RejectReason::Invalid, Some(m.clone())),
+        Validator(fault) => (
+            RejectReason::Invalid,
+            Some(format!("validator {} faulted", fault.module)),
+        ),
+        _ => (RejectReason::Invalid, None),
     }
 }
 
@@ -417,6 +423,7 @@ async fn handle_socket(
                                             .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                 intent_id,
                                                 reason: RejectReason::Forbidden,
+                                                detail: None,
                                             })))
                                             .await;
                                         continue;
@@ -426,12 +433,18 @@ async fn handle_socket(
                                     match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
                                         Ok(_cmd) => {}
                                         Err(e) => {
-                                            let reason = reject_reason(&e);
+                                            if let crate::data::DataError::Validator(fault) = &e {
+                                                if fault.consecutive >= crate::sandbox::VALIDATOR_FAULT_LIMIT {
+                                                    room.disable_faulting_validator(repo.as_ref(), &ctx, &fault.module).await;
+                                                }
+                                            }
+                                            let (reason, detail) = reject_reason(&e);
                                             tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
                                             let _ = etx
                                                 .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                     intent_id,
                                                     reason,
+                                                    detail,
                                                 })))
                                                 .await;
                                         }

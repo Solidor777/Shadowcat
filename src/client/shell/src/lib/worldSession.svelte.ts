@@ -100,10 +100,11 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
-  /** Called after every rejected intent, with the server's reason — the optimistic prediction
-   * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
-   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
-  onReject?: (reason: RejectReason) => void;
+  /** Called after every rejected intent, with the server's reason and any player-presentable
+   * detail text — the optimistic prediction has already been rolled back (`#optimistic.reject`)
+   * by the time this fires. The shell surfaces it as a toast; a headless caller (tests) may
+   * leave it unset. */
+  onReject?: (reason: RejectReason, detail: string | null) => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -1075,9 +1076,9 @@ export class WorldSession {
             this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
           }
         },
-        onReject: (id, reason) => {
+        onReject: (id, reason, detail) => {
           this.#optimistic.reject(id);
-          this.opts.onReject?.(reason);
+          this.opts.onReject?.(reason, detail);
         },
         onWelcome: (w) => {
           void this.#onWelcome(w);

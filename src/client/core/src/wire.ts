@@ -871,6 +871,12 @@ export type ServerMsg =
       intent_id: string;
       /** Why it was refused. */
       reason: z.infer<typeof RejectReasonSchema>;
+      /** Player/GM-presentable detail text, rendered as a TEXT NODE only. DECLARED optional
+       * because Zod infers any field whose output admits `undefined` as structurally optional
+       * (the same boundary rule `WireFieldChange.old`/`new` documents): the Rust source marks
+       * `detail` `#[serde(default)]`, so a frame omitting it is valid and parses to `undefined`.
+       * Consumers read `detail ?? null`. */
+      detail?: string | null;
     }
   | {
       /** Opens a resync replay range. */
@@ -1189,6 +1195,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     type: z.literal("reject"),
     intent_id: z.string(),
     reason: RejectReasonSchema,
+    detail: z.string().nullish(),
   }),
   z.object({
     type: z.literal("resync_begin"),

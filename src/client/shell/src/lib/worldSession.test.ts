@@ -275,10 +275,42 @@ test("a reject frame calls onReject with the reason AND rolls back the optimisti
   expect(session.documents.get(doc.id)).toBeDefined(); // optimistic prediction applied
 
   const intent = sent.find((f) => f.type === "intent") as { intent_id: string };
-  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden" });
+  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden", detail: null });
 
-  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden"));
+  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden", null));
   expect(session.documents.get(doc.id)).toBeUndefined(); // rolled back
+});
+
+test("a reject frame with detail passes it through to onReject", async () => {
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const onReject = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onReject,
+  });
+  await session.enter("w1");
+
+  push({
+    type: "reject",
+    intent_id: "00000000-0000-0000-0000-000000000001",
+    reason: "invalid",
+    detail: "validator example-module: hp must be non-negative",
+  });
+
+  await vi.waitFor(() =>
+    expect(onReject).toHaveBeenCalledWith(
+      "invalid",
+      "validator example-module: hp must be non-negative",
+    ),
+  );
 });
 
 function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {

@@ -95,7 +95,14 @@ intent_id: string,
 /**
  * Why it was refused.
  */
-reason: RejectReason, } | { "type": "resync_begin", 
+reason: RejectReason, 
+/**
+ * Player/GM-presentable detail text — populated for `DataError::OpFailed`/`Validator`
+ * refusals (≤ 512 bytes, control characters stripped at the source that produced the
+ * text — `sandbox::runtime::run_validator` for a validator refusal). Rendered by the
+ * client as a TEXT NODE only, never HTML.
+ */
+detail: string | null, } | { "type": "resync_begin", 
 /**
  * First seq delivered in the replay (inclusive; equals the client's
  * requested `from_seq`).
