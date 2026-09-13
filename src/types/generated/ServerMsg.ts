@@ -393,4 +393,48 @@ request_id: string,
 /**
  * Why it was refused.
  */
-reason: MergeErrorKind, };
+reason: MergeErrorKind, } | { "type": "vfx", 
+/**
+ * Scene the effect plays on.
+ */
+scene: string, 
+/**
+ * Who fired it (senders receive their own echo).
+ */
+user: string, 
+/**
+ * The spritesheet or animated-source asset id.
+ */
+asset: string, 
+/**
+ * Scene-coordinate x.
+ */
+x: number, 
+/**
+ * Scene-coordinate y.
+ */
+y: number, 
+/**
+ * Uniform scale multiplier; `None` = the asset's native scale (1).
+ */
+scale: number | null, 
+/**
+ * Rotation in degrees; `None` = unrotated.
+ */
+rotation: number | null, 
+/**
+ * Playback duration cap in ms; `None` = one loop of the asset.
+ */
+duration_ms: number | null, 
+/**
+ * Paired sound asset id; carried verbatim (playback wiring is a later integration).
+ */
+sound: string | null, 
+/**
+ * Elevation the effect plays at.
+ */
+elevation: number | null, 
+/**
+ * Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
+ */
+id: string, };
