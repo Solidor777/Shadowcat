@@ -16,7 +16,7 @@ export { TokenSelection } from "./tokenSelection.svelte";
 export { SceneSelection } from "./sceneSelection.svelte";
 export { SpeakAs } from "./speakAs.svelte";
 export { SpeakAsToken } from "./speakAsToken.svelte";
-export { sizeClass } from "./sizeClass.svelte";
+export { sizeClass, isCompactViewport } from "./sizeClass.svelte";
 export type { SizeClass } from "./sizeClass.svelte";
 export { PanelsBridge } from "./panelsBridge.svelte";
 export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
