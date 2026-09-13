@@ -230,9 +230,10 @@ pub(crate) async fn seed_test_channel_registry(
 /// `Uuid`, so seeds are attributed to a real member deterministically).
 /// `None` when the world has no GM member — the seed pass is skipped there
 /// (`create_world_owned` always seats one, so this arises only in
-/// legacy/test fixtures). Takes the concrete `SqliteRepository` rather than
-/// `dyn Repository` because `list_members` is an inherent method the trait
-/// does not carry.
+/// legacy/test fixtures). Takes `dyn Repository` so the `ws` layer's
+/// Room-bound callers (which hold no concrete repository) can share the
+/// attribution rule; the membership read is the trait's own
+/// `Repository::list_members`.
 ///
 /// # Examples
 ///
