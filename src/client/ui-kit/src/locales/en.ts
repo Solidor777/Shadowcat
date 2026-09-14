@@ -686,4 +686,10 @@ export const en: Messages = {
   "tables.draw": "Draw",
   "tables.delete": "Delete",
   "tables.empty": "No tables yet.",
+  "vfx.tab": "FX",
+  "vfx.toolLabel": "FX",
+  "vfx.pickEffect": "Pick effect",
+  "vfx.scale": "Scale",
+  "vfx.pickSound": "Pick sound",
+  "vfx.clearSound": "Clear sound",
 };
