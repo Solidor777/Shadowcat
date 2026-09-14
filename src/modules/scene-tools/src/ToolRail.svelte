@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneToolMeta } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
@@ -49,6 +49,18 @@
   const snapToGrid = $derived.by((): boolean => {
     subscribe();
     return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
+  });
+
+  // Contributed scene tools (SCENE_TOOL_CONTRACT): contribution changes are NOT document-store
+  // changes, so this needs its own `ctx.contributions.subscribe` bridge, separate from the
+  // document-store `subscribe` above.
+  const subscribeContributions = createSubscriber((update) => ctx.contributions.subscribe(update));
+  const sceneTools = $derived.by((): SceneToolMeta[] => {
+    subscribeContributions();
+    return ctx.contributions
+      .contributionsFor(SCENE_TOOL_CONTRACT)
+      .map((c) => c.sceneTool)
+      .filter((m): m is SceneToolMeta => m !== undefined);
   });
 
   /** GM-authored scene-level snap toggle: writes the engine-owned
@@ -407,6 +419,20 @@
       onclick={() => controller.toggle(tool.id)}
     >
       {tool.label}
+    </button>
+  {/each}
+
+  {#each sceneTools as tool (tool.id)}
+    <button
+      type="button"
+      class="tool"
+      class:active={controller.activeContributedId === tool.id}
+      aria-pressed={controller.activeContributedId === tool.id}
+      data-testid="scene-tool-{tool.id}"
+      title={t(tool.labelKey)}
+      onclick={() => controller.toggleContributed(tool)}
+    >
+      {t(tool.labelKey)}
     </button>
   {/each}
 
