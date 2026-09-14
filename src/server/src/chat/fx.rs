@@ -53,6 +53,15 @@ pub fn parse_fx_body(body: &str) -> Option<(String, Option<String>)> {
 
 /// Why `/fx` failed — each variant's `Display` (via `to_string()` in the caller, mirroring
 /// `RollError`'s player-presentable-text convention) is what the whispered notice shows.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::chat::fx::FxError;
+///
+/// assert_eq!(FxError::NoTarget.to_string(), "Usage: /fx <effect> @<token name>");
+/// assert_eq!(FxError::UnknownToken.to_string(), "No such token.");
+/// ```
 #[derive(Debug)]
 pub enum FxError {
     /// No `@<token-name>` was given (a coordinate-literal form is not supported).
@@ -159,6 +168,26 @@ async fn resolve_token_center(
 /// caller falls through to `parse_command` as normal); `Some(Ok(()))` on a successful play
 /// (the caller authors no message document); `Some(Err(FxError))` on a refusal (the caller
 /// authors the whispered notice via `build_system_error_notice`).
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::chat::fx::try_handle_fx;
+/// use shadowcat::data::document::WorldRole;
+/// use shadowcat::data::membership::PermissionContext;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::ws::room::RoomRegistry;
+/// use uuid::Uuid;
+///
+/// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+/// let registry = RoomRegistry::new();
+/// let room = registry.get_or_create(&repo, Uuid::new_v4()).await.unwrap().unwrap();
+/// let ctx = PermissionContext { user_id: Uuid::new_v4(), world_role: WorldRole::Player };
+/// // "hello" is not the command: falls through to `parse_command` as ordinary text.
+/// assert!(try_handle_fx(&repo, &room, &ctx, Uuid::new_v4(), "hello").await.is_none());
+/// # }
+/// ```
 pub async fn try_handle_fx(
     repo: &dyn Repository,
     room: &Room,

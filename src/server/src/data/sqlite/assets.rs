@@ -677,6 +677,20 @@ impl SqliteRepository {
     }
 
     /// See `Repository::asset_id_by_name`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.asset_id_by_name(uuid::Uuid::nil(), "no-such-asset").await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn asset_id_by_name(
         &self,
         world: Uuid,

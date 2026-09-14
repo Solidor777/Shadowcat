@@ -22,6 +22,19 @@ pub const MAX_DURATION_MS: u32 = 60_000;
 
 /// A `PlayVfx` request, already deserialized off the wire — the fields both call sites
 /// (the raw frame handler and `/fx`) validate identically.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::vfx::VfxRequest;
+/// use uuid::Uuid;
+///
+/// let req = VfxRequest {
+///     scene: Uuid::new_v4(), asset: "fx-asset".into(), x: 10.0, y: 20.0,
+///     scale: Some(2.0), rotation: None, duration_ms: Some(500), sound: None, elevation: None,
+/// };
+/// assert_eq!(req.scale, Some(2.0));
+/// ```
 pub struct VfxRequest {
     /// Scene the effect plays on.
     pub scene: Uuid,
