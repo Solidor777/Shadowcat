@@ -145,6 +145,7 @@
       setChatRead: (blob) => setChatRead(session.world!, blob),
     },
     panels,
+    vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     leaveWorld,
     logout: async () => {

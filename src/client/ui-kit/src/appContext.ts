@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, VfxPlayRequest, VfxNotice } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -351,6 +351,16 @@ export interface AppContext {
    * render a panel-dock strip elsewhere. No-ops/empty (with a one-time console
    * warning on a write call) until the panel host binds; see `PanelsBridge`. */
   panels: PanelsApi & PanelsChipsView;
+  /** VFX playback seam: fire a one-shot and subscribe to relayed ones (incl. our own echo). */
+  vfx: {
+    /** Broadcast a one-shot VFX playback request.
+     * @param req The one-shot request. */
+    play(req: VfxPlayRequest): void;
+    /** Subscribe to relayed VFX one-shots; returns an unsubscribe.
+     * @param cb Called with each relayed one-shot.
+     * @returns A function that removes this listener. */
+    onVfx(cb: (msg: VfxNotice) => void): () => void;
+  };
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

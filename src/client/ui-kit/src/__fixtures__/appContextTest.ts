@@ -104,6 +104,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setChatRead: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
+    vfx: over.vfx ?? { play: () => {}, onVfx: () => () => {} },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     viewedSceneId: over.viewedSceneId ?? null,
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,
