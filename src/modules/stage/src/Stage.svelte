@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, AssetMetaCache, resolveVfxSource, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -39,7 +39,11 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, onMoveOutcome, role, members } = ctx;
+
+  /** Per-world-session cache of asset metadata for VFX resolution (never bytes). Module
+   * scope, so it survives an `$effect` re-run and warms are never re-fetched needlessly. */
+  const vfxAssetCache = new AssetMetaCache();
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -118,6 +122,7 @@
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
     let offEmote: (() => void) | null = null;
+    let offVfx: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
@@ -138,6 +143,15 @@
         viewedSceneId: () => ctx.viewedSceneId,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
+        vfxAssets: (id) => {
+          const meta = vfxAssetCache.get(id);
+          return meta ? resolveVfxSource(meta, assets) : null;
+        },
+        // Bound getters — enabled/no-reduced-motion defaults until the shell binds
+        // `PerformanceSettings`, matching `RenderEngineOpts`' own documented defaults.
+        vfxEnabled: () => true,
+        reducedMotion: () => false,
+        onVfxChanged: (count) => { host.dataset.vfxCount = String(count); },
         onDerivedApplied: (input) => {
           host.dataset.sceneDerived = "1";
           host.dataset.visionMode = input.mode;
@@ -302,6 +316,13 @@
           .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
           .sort()
           .join(";");
+        // Warm the metadata cache for every emitter's asset proactively, so a token's
+        // `VfxEmission` resolves on the very first `vfxView.reconcile()` pass, not only
+        // after a one-shot happens to warm it.
+        for (const t of sceneTokens) {
+          const eff = resolveTokenActor(t, documents);
+          if (eff?.vfx?.enabled) void vfxAssetCache.warm(eff.vfx.asset);
+        }
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
         // e2e assertion can confirm the authored background reached the render layer
@@ -326,6 +347,20 @@
       offEmote = onEmote((m) => {
         e.addEmote(m.token, m.emote);
         host.dataset.lastEmote = `${m.token}:${m.emote}`;
+      });
+      // Relayed VFX one-shots (incl. our own echo) play through the engine. Warm the asset's
+      // metadata BEFORE calling engine.playVfx so the render layer's own synchronous
+      // vfxAssets(id) lookup always hits on this exact arrival — a cold cache would otherwise
+      // fail the node closed for the FIRST one-shot of any asset a client has never seen.
+      offVfx = vfx.onVfx((m) => {
+        void vfxAssetCache.warm(m.asset).then(() => {
+          e.playVfx({
+            scene: m.scene, asset: m.asset, x: m.x, y: m.y,
+            scale: m.scale ?? undefined, rotation: m.rotation ?? undefined,
+            durationMs: m.durationMs ?? undefined, sound: m.sound ?? undefined,
+            elevation: m.elevation ?? undefined, id: m.id,
+          });
+        });
       });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
@@ -359,6 +394,7 @@
       offGrid?.();
       offPing?.();
       offEmote?.();
+      offVfx?.();
       offMoveOutcome?.();
       offAsset?.();
       offViewed?.();

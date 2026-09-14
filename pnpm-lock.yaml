@@ -216,6 +216,9 @@ importers:
       '@shadowcat/module-topbar':
         specifier: workspace:*
         version: link:../../modules/topbar
+      '@shadowcat/module-vfx':
+        specifier: workspace:*
+        version: link:../../modules/vfx
       '@shadowcat/render':
         specifier: workspace:*
         version: link:../render

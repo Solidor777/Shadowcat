@@ -33,11 +33,12 @@ function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null } {
   return {
     destroyed: false,
     clearColor: null,
     gridColor: null,
+    tick: null,
     ensureLayers() {},
     setBackground() {},
     setClearColor(color: number) { this.clearColor = color; },
@@ -60,7 +61,7 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     removeVfx() {},
     tickVfx() {},
     setLighting() {},
-    startTicker() {},
+    startTicker(cb: (dtMs: number) => void) { this.tick = cb; },
     resize() {},
     destroy() { this.destroyed = true; },
   };
@@ -754,4 +755,85 @@ test("a theme change re-reads the color tokens and pushes them into the engine",
     theme.setActive("slate-dark");
     vi.unstubAllGlobals();
   }
+});
+
+test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count becomes 1", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let vfxCb: ((msg: unknown) => void) | null = null;
+  // getAssetMeta's fetch: an asset whose metadata carries a server-derived grid sheet, so
+  // resolveVfxSource resolves a playable source for the warmed id.
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      id: "fx1", tags: [],
+      sheet: { rows: 1, cols: 2, count: 2, frame_ms: [100, 100], width: 8, height: 8 },
+    }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const store = new DocumentStore();
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      subscribeScene: () => ({ unsubscribe() {} }),
+      vfx: { play: () => {}, onVfx: (cb: (msg: never) => void) => { vfxCb = cb as (msg: unknown) => void; return () => {}; } },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(vfxCb).not.toBeNull();
+  vfxCb!({
+    scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
+    scale: null, rotation: null, durationMs: null, sound: null, elevation: null, id: "one",
+  });
+  // The Stage warms the asset's metadata first, then plays; the count attribute flips on
+  // the next engine tick after the warm resolves.
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/fx1/meta"));
+  await vi.waitFor(() => {
+    backend.tick!(16);
+    expect(host.dataset.vfxCount).toBe("1");
+  });
+  vi.unstubAllGlobals();
+});
+
+test("an emitter-bearing token committed into the store warms its emission asset's metadata", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      id: "fx1", tags: [],
+      sheet: { rows: 1, cols: 2, count: 2, frame_ms: [100, 100], width: 8, height: 8 },
+    }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const store = new DocumentStore();
+  const { buildActorDoc, buildTokenFromActor } = await import("@shadowcat/core");
+  const actor = buildActorDoc(
+    "w1",
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: { asset: "fx1", anchor: "token", loop: true, enabled: true } },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, "tok1");
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "s1",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  fetchMock.mockClear();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "create", doc: actor }, { op: "create", doc: token }],
+  });
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/fx1/meta"));
+  vi.unstubAllGlobals();
 });
