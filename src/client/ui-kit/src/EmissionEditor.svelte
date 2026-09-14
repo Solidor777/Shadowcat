@@ -37,6 +37,13 @@
 
   let audioAssets = $state<Asset[]>([]);
   let visualAssets = $state<Asset[]>([]);
+  /** "VFX only" narrowing for the VFX section's asset `<select>` (default off — the `vfx`
+   * tag is a browsing aid, never a gate: an untagged animated asset stays a valid pick). */
+  let vfxOnly = $state(false);
+  /** The VFX section's option list: tag-narrowed when `vfxOnly` is checked, the full visual
+   * list otherwise (`visualAssets` itself stays untouched for the sound section and the
+   * unfiltered fallback). */
+  const vfxOptions = $derived(vfxOnly ? visualAssets.filter((a) => a.tags.includes("vfx")) : visualAssets);
 
   /**
    * Refetches the world's assets into the two picker lists — `audio/*` for the sound section,
@@ -170,12 +177,19 @@
   </label>
   {#if vfx}
     <div class="emission-fields">
+      <label class="emission-toggle">
+        <input type="checkbox" aria-label={t("actors.vfxOnlyFilter")} bind:checked={vfxOnly} {disabled} />
+        {t("actors.vfxOnlyFilter")}
+      </label>
       <label>{t("actors.vfxAsset")}
         <select aria-label={t("actors.vfxAsset")} value={vfx.asset} {disabled} onchange={(e) => onVfx({ ...vfx, asset: e.currentTarget.value })}>
           <option value="">—</option>
-          {#each visualAssets as a (a.id)}<option value={a.id}>{a.original_name}</option>{/each}
+          {#each vfxOptions as a (a.id)}<option value={a.id}>{a.original_name}</option>{/each}
         </select>
       </label>
+      {#if vfx.asset}
+        <img class="vfx-preview" src={ctx.assets.url(vfx.asset)} alt="" data-testid="vfx-preview" />
+      {/if}
       <label>{t("actors.vfxAnchor")}
         <select aria-label={t("actors.vfxAnchor")} value={vfx.anchor} {disabled} onchange={(e) => onVfx({ ...vfx, anchor: e.currentTarget.value as VfxAnchor })}>
           <option value="token">{t("actors.vfxAnchorToken")}</option>
@@ -209,5 +223,10 @@
   }
   .emission-fields label {
     min-height: 32px;
+  }
+  .vfx-preview {
+    max-width: 64px;
+    max-height: 64px;
+    align-self: flex-start;
   }
 </style>

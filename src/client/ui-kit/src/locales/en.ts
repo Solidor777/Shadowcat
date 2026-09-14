@@ -223,6 +223,7 @@ export const en: Messages = {
   "actors.vfxAnchorAbove": "Above token",
   "actors.vfxAnchorBelow": "Below token",
   "actors.vfxLoop": "VFX loop",
+  "actors.vfxOnlyFilter": "VFX only",
   "actors.vfxEnabled": "VFX enabled",
   "actors.tokenEmissionsHint": "Override the selected token's aura/sound/VFX emissions.",
   "actors.visualKindGenerated": "Generated",
