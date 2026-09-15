@@ -3287,3 +3287,61 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
   escape, so a `-m "C:\path\"` argument can carry a `--no-verify` past the POSIX tokenizer — the
   remote is the backstop for that class.
 
+
+## Phase 3 — Atmosphere
+
+### M26 · 3D dice ✅
+Branch `m26-dice-3d`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m26-dice-3d.md` (design:
+`docs/superpowers/specs/2026-09-11-m26-dice-3d-design.md`; master:
+`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`). Delivered:
+`DieRecord.kind: Option<DieKind>` (every-recipient, filled at all three
+`dice::eval::groups` construction sites, `#[serde(default)]` fail-closed for a
+pre-existing roll); `DiceSettingsEngine.sound: Option<Uuid>` plus
+`DiceSettingsEngine::validate` wired into `normalize_engine`'s `"dice-settings"` arm; the
+client's hand-written `chat-docs.ts` mirror (`kind` on `DieRecordSchema`, `RollEmbedSegment`
+extracted to a named export); `STAGE_OVERLAY_CONTRACT` (`shadowcat.stage-overlay`) and
+`Stage.svelte`'s `<Surface>` render of it; `@shadowcat/module-dice-3d` — a transparent
+`three`/`@dimforge/rapier3d-compat` overlay canvas, lazy-imported on first roll, seeded from
+`roll_id` (`mulberry32`) so every client throws the same tumble, remapping each die's face
+labels after settle (`remapFaces`) so the up face always shows the server's authoritative
+result (D6); a store-subscription trigger (`trigger.ts`) that seeds a `seen` set from the
+cold-start snapshot, plays a `roll_embed`/`table_draw` arriving after mount exactly once,
+and re-plays a recalculated roll under its new `recalc_history` length; a `<= 3` concurrent
+tumble queue with a `+N` overflow badge past 30 dice; `Dice3DBridge` (the
+`SceneInteractionBridge` late-binding pattern) exposing `AppContext.dice3d.roll`/`.clear`;
+the dice-settings sound picker on the game-settings panel.
+Decisions taken (full log: design doc, master §9 D5/D6): a separate three.js WebGL context
+on a transparent overlay canvas, never the PixiJS context (D5); the client always shows the
+server's rolled value, simulating locally only for the tumble's appearance, never for the
+result (D6). This milestone's own resolution of the milestone-spec/master-spec seam
+description (master §2.5's one-line "chat-card drives it" summary vs. the milestone spec
+§2.3's fully-worked direct-store-subscription design): the milestone spec's design is
+authoritative — dice-3d has no dependency on `chat-card`. Two plan-level corrections the
+implementation surfaced: the `@types/three` open question resolved from published registry
+metadata (`three@0.169.0` ships no bundled declarations, `@types/three@0.169.0` tracks it
+1:1 — the devDependency stays); and the plan's d10 geometry (apex `1.2`, ring height `0.4`,
+kite decomposition `{apex, 1 upper, 2 lowers}`) is mathematically incapable of planar kite
+faces — the shipped `geometry.ts` derives every shape from one construction (Platonic
+solids from their dual's vertex directions, the d10 from the corrected trapezohedron with
+apex/ring-height `(2+φ)/(2−φ)`), verified by node-environment planarity/containment tests
+rather than an unverifiable `ConvexGeometry` face ordering.
+Coverage: `dice::eval::groups::tests`/`dice::outcome::tests` (kind population at all three
+sites, serde-default fail-closed), `data::engine::tests` (`sound` round-trip, `validate`
+wiring), `chat-docs.test.ts`'s drift guard (`RollEmbedSegment`), `remapFaces.test.ts`/
+`rng.test.ts`/`shapes.test.ts` (truth tables: every standard shape, the d100 split, symbolic
+faces, unused-face padding), `geometry.test.ts` (per-shape face counts and polygon sizes,
+planarity, hull containment, outward unit normals), `trigger.test.ts`
+(seed-at-mount/play-once/recalc-replay/queue-cap/overflow-badge),
+`DiceEngine.test.ts`/`DiceOverlay.test.ts` (`three`/`@dimforge/rapier3d-compat` mocked via
+`vi.mock`), `defaultModuleOrder.test.ts`'s new `dice3d` case, and `dice-3d.spec.ts`
+(written; dispatcher-run — GM+player settle to the same value, dice3d-off leaves the player
+idle). The 13-step commit gate (fmt, scripts tests, eslint, docs/props/comments/
+allowances/file-size/inline-tests/aria-labels/gate-manifest/settings-privacy lints,
+svelte-runtime check) is green at every commit on the branch; the full battery
+(`pnpm install` for the three/rapier lockfile edge, `pnpm -r typecheck`, `pnpm -r test`,
+`pnpm build`, `cargo test --all`, docs builds) runs in the dependency-install lease window
+that follows the branch's code-complete state, and the browser suite
+(`pnpm --filter @shadowcat/shell e2e`),
+including this milestone's new spec, is dispatcher-run, not part of this branch's own gate
+history.

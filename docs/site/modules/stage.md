@@ -22,6 +22,8 @@ itself lives in `src/client/render`, not in this module.
 
 - **Requires** `shadowcat.surface:stage` (from core-ui); depends on
   `core-ui ^0.1.0`.
+- Renders `STAGE_OVERLAY_CONTRACT` (`shadowcat.stage-overlay`, multi) as absolutely
+  positioned children over the render canvas — `dice-3d`'s overlay is today's one consumer.
 - Renders the **optimistic** document view; consumes `viewedSceneId`,
   scene-derived channels (vision/fog/lighting), `move_stream` playback, and the
   render-layer API. The canvas renders what the server lets this user see —

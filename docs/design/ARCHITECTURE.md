@@ -56,6 +56,8 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | Client embedding | `rust-embed` | MIT | Vendor | Bakes the built client bundle into the binary. |
 | UI framework | Svelte 5 (runes) | MIT | Vendor | Compiled, lean output; default UI only — modders use any framework. |
 | Canvas renderer | PixiJS v8 | MIT | Vendor | Mature WebGL 2D: sprite batching, filter pipeline, mask compositing. Rebuilding this is the largest avoidable cost in the project. |
+| 3D dice rendering | three r169 | MIT | Vendor | A separate WebGL context on a transparent overlay canvas — PixiJS is 2D-only and two renderers cannot share one GL context safely; `PerformanceSettings.dice3d` turns the second context off entirely on a constrained device. |
+| 3D dice physics | `@dimforge/rapier3d-compat` (WASM) | Apache-2.0 | Vendor | Deterministic, actively maintained; lazy-imported only when a roll plays, ~2 MB loaded once. |
 | Build tooling | Cargo, Vite, pnpm | MIT | Vendor | pnpm is build-time only; output embeds into the binary. |
 
 ## 4. Deferred behind abstractions
@@ -69,7 +71,6 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Asset conversion — audio (`symphonia` + `opus`/`vorbis_rs`); animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (audio, animation). No FFmpeg; all replacements are royalty-free. |
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
 | Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
-| 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
 | Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
 | VFX, post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |

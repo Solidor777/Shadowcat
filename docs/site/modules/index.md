@@ -24,6 +24,7 @@ Community modules follow the same model — see
 | [scene-browser](/modules/scene-browser) | GM scene list/activate/roam panel |
 | [sheet-fallback](/modules/sheet-fallback) | The always-available generic document sheet |
 | [stage](/modules/stage) | The PixiJS scene canvas |
+| [dice-3d](/modules/dice-3d) | 3D dice tumble overlay over the stage |
 | [scene-tools](/modules/scene-tools) | Scene tool rail: place/select/move/draw/measure/ping/wall/region |
 | [actors](/modules/actors) | Actor browser panel (live search, open sheet) |
 | [factions](/modules/factions) | Faction registry panel |
