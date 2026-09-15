@@ -135,7 +135,7 @@ export function stubAudioContext(): StubAudioContext {
         loop: false,
         loopStart: 0,
         loopEnd: 0,
-        playbackRate: 1,
+        playbackRate: { value: 1, setTargetAtTime: () => {} },
         connect: () => {},
         start: vi.fn(),
         stop: vi.fn(),

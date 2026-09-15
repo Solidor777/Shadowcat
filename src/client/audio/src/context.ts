@@ -78,8 +78,10 @@ export interface BufferSourceNodeLike {
   loopStart: number;
   /** Loop region end, seconds — the buffer's own `duration` for a full-buffer loop. */
   loopEnd: number;
-  /** Playback-rate multiplier (`TrackPlayer`'s small-drift nudge; `1` = unity). */
-  playbackRate: number;
+  /** Playback-rate parameter (`TrackPlayer`'s small-drift nudge writes `.value`; `1` =
+   * unity). A parameter, not a plain number — the DOM's `AudioBufferSourceNode.playbackRate`
+   * is an `AudioParam`. */
+  readonly playbackRate: AudioParamLike;
   /** Connect this node's output to `dest`.
    * @param dest The downstream node.
    * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
@@ -91,8 +93,9 @@ export interface BufferSourceNodeLike {
   /** Stop playback at `when` (context time).
    * @param when The context time to stop at (`undefined` = now). */
   stop(when?: number): void;
-  /** End-of-playback callback (natural end, never a `stop()`). */
-  onended: (() => void) | null;
+  /** End-of-playback callback (natural end, never a `stop()`).
+   * @param ev The DOM `Event` (unused by every current handler). */
+  onended: ((ev: Event) => void) | null;
 }
 
 /** The subset of `HTMLMediaElement` (an `<audio>` element) `TrackPlayer` needs — streamed
@@ -113,8 +116,11 @@ export interface MediaElementLike {
   /** Pause playback in place. */
   pause(): void;
   /** Natural-end callback (playback reached the resource's end — never fired by `pause()`).
-   * `TrackPlayer` uses it for the client-observed track-end report (`AudioOp::TrackEnded`). */
-  onended: (() => void) | null;
+   * `TrackPlayer` uses it for the client-observed track-end report (`AudioOp::TrackEnded`).
+   * The parameter is the DOM `Event` (typed so both the DOM handler signature and a bare
+   * stub closure assign).
+   * @param ev The DOM `Event` (unused by every current handler). */
+  onended: ((ev: Event) => void) | null;
   /** The device's own support answer for a MIME string.
    * @param type The MIME string to test.
    * @returns `""`, `"maybe"`, or `"probably"`. */

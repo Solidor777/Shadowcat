@@ -101,7 +101,7 @@ describe("TrackPlayer — track-end report", () => {
       (id) => reports.push(id),
     );
     expect(el.onended).not.toBeNull();
-    el.onended!();
+    el.onended!({});
     expect(reports).toEqual(["e-end"]);
     player.dispose();
     expect(el.onended).toBeNull();

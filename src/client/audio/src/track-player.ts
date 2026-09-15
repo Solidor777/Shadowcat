@@ -174,7 +174,7 @@ export class TrackPlayer {
     source.loop = true;
     source.loopStart = 0;
     source.loopEnd = buffer.duration;
-    source.playbackRate = rate;
+    source.playbackRate.value = rate;
     source.connect(this.#gain);
     source.start(0, target % buffer.duration);
     this.#bufferSource = source;
@@ -251,10 +251,10 @@ export class TrackPlayer {
       } else if (drift > 0) {
         const behind = this.#positionAt(serverNow) < targetSecs;
         const rate = behind ? 1 + SYNC_RATE_NUDGE : 1 - SYNC_RATE_NUDGE;
-        if (this.#bufferSource) this.#bufferSource.playbackRate = rate;
+        if (this.#bufferSource) this.#bufferSource.playbackRate.value = rate;
         this.#anchor = { offset: this.#positionAt(serverNow), serverNow, rate };
       } else if (this.#anchor?.rate !== 1) {
-        if (this.#bufferSource) this.#bufferSource.playbackRate = 1;
+        if (this.#bufferSource) this.#bufferSource.playbackRate.value = 1;
         this.#anchor = { offset: this.#positionAt(serverNow), serverNow, rate: 1 };
       }
       return;
