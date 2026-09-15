@@ -1588,15 +1588,21 @@ fn absent_scene_region_field_is_none() {
 #[test]
 fn absent_scene_navmesh_for_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
-    assert!(ecs.navmesh_for(Uuid::from_u128(0xDEAD), 0.5, &[]).is_none());
+    assert!(ecs
+        .navmesh_for(Uuid::from_u128(0xDEAD), 0.5, "", &[])
+        .is_none());
 }
 
 #[test]
 fn navmesh_for_is_memoized_across_calls() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
-    let a = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
-    let b = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
+    let b = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
         "same (scene, radius, walls) must return the SAME cached Arc, not rebuild"
@@ -1607,8 +1613,12 @@ fn navmesh_for_is_memoized_across_calls() {
 fn navmesh_for_distinguishes_footprint_radii() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
-    let a = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
-    let b = ecs.navmesh_for(scene, 0.9, &[]).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
+    let b = ecs
+        .navmesh_for(scene, 0.9, "", &[])
+        .expect("navmesh builds");
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
         "distinct footprint radii must get distinct cached meshes"
@@ -1620,7 +1630,7 @@ fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
     // Prime the cache at footprint_radius_cells == 0.0: quantized key (scene, 0, []).
-    let primed = ecs.navmesh_for(scene, 0.0, &[]);
+    let primed = ecs.navmesh_for(scene, 0.0, "", &[]);
     assert!(
         primed.is_some(),
         "radius 0.0 must build and cache successfully"
@@ -1631,14 +1641,14 @@ fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
     // upfront validation guard this would return the CACHED radius-0.0 mesh instead of
     // failing closed.
     assert!(
-        ecs.navmesh_for(scene, f64::NAN, &[]).is_none(),
+        ecs.navmesh_for(scene, f64::NAN, "", &[]).is_none(),
         "NaN footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
     );
 
     // A small negative rounds to -0 under `(x * 1000.0).round() as i64`, which also casts
     // to the same colliding key.
     assert!(
-        ecs.navmesh_for(scene, -0.0001, &[]).is_none(),
+        ecs.navmesh_for(scene, -0.0001, "", &[]).is_none(),
         "negative footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
     );
 }
@@ -1649,10 +1659,10 @@ fn navmesh_for_does_not_share_a_mesh_across_differing_wall_sets() {
     let gm_walls = ecs.move_walls(scene, None, elevation::GROUND);
     let player_walls = ecs.move_walls(scene, Some(player), elevation::GROUND);
     let gm_mesh = ecs
-        .navmesh_for(scene, 0.4, &gm_walls)
+        .navmesh_for(scene, 0.4, "", &gm_walls)
         .expect("gm mesh builds");
     let player_mesh = ecs
-        .navmesh_for(scene, 0.4, &player_walls)
+        .navmesh_for(scene, 0.4, "", &player_walls)
         .expect("player mesh builds");
     assert!(
         !std::sync::Arc::ptr_eq(&gm_mesh, &player_mesh),
@@ -1664,11 +1674,42 @@ fn navmesh_for_does_not_share_a_mesh_across_differing_wall_sets() {
 fn navmesh_for_shares_a_mesh_across_identical_wall_sets() {
     let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
     let walls = ecs.move_walls(scene, None, elevation::GROUND);
-    let a = ecs.navmesh_for(scene, 0.4, &walls).expect("first build");
-    let b = ecs.navmesh_for(scene, 0.4, &walls).expect("second build");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("first build");
+    let b = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("second build");
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
         "an identical wall set reuses the memoized mesh"
+    );
+}
+
+#[test]
+fn navmesh_for_does_not_share_a_mesh_across_levels() {
+    // The IDENTICAL wall slice under two level ids: the level is part of the cache key, so the
+    // second call builds its own mesh rather than being served the first's — mirroring
+    // `navmesh_for_does_not_share_a_mesh_across_differing_wall_sets`, varying `level` instead of
+    // `walls`.
+    let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
+    let l1 = ecs
+        .navmesh_for(scene, 0.4, "l1", &walls)
+        .expect("l1 mesh builds");
+    let l2 = ecs
+        .navmesh_for(scene, 0.4, "l2", &walls)
+        .expect("l2 mesh builds");
+    assert!(
+        !std::sync::Arc::ptr_eq(&l1, &l2),
+        "two levels never share a navmesh cache entry, even over identical wall geometry"
+    );
+    let l1_again = ecs
+        .navmesh_for(scene, 0.4, "l1", &walls)
+        .expect("l1 mesh re-fetches");
+    assert!(
+        std::sync::Arc::ptr_eq(&l1, &l1_again),
+        "the same level reuses its own memoized mesh"
     );
 }
 
@@ -1680,9 +1721,11 @@ fn navmesh_for_wall_key_is_order_independent() {
     let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let mut reversed = walls.clone();
     reversed.reverse();
-    let a = ecs.navmesh_for(scene, 0.4, &walls).expect("first build");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("first build");
     let b = ecs
-        .navmesh_for(scene, 0.4, &reversed)
+        .navmesh_for(scene, 0.4, "", &reversed)
         .expect("reordered lookup");
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
@@ -1695,7 +1738,9 @@ fn wall_mutation_invalidates_the_navmesh_cache() {
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
     let walls = ecs.move_walls(scene, None, elevation::GROUND);
-    let a = ecs.navmesh_for(scene, 0.4, &walls).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("navmesh builds");
     ecs.apply_op(&Operation::Create {
         doc: entity_doc_eng(
             20,
@@ -1707,7 +1752,7 @@ fn wall_mutation_invalidates_the_navmesh_cache() {
     });
     let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let b = ecs
-        .navmesh_for(scene, 0.4, &walls)
+        .navmesh_for(scene, 0.4, "", &walls)
         .expect("navmesh rebuilds");
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
@@ -1726,7 +1771,9 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
         0,
     );
     let scene = Uuid::from_u128(10);
-    let a = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
     ecs.apply_op(&Operation::Update {
         doc_id: scene,
         changes: vec![crate::data::command::FieldChange {
@@ -1736,7 +1783,9 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
             new: json!({ "width": 40, "height": 40 }),
         }],
     });
-    let b = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh rebuilds");
+    let b = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh rebuilds");
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
         "changing scene bounds must invalidate the cached navmesh"

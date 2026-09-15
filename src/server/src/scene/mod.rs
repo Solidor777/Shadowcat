@@ -918,7 +918,7 @@ pub struct SceneEcs {
     /// iteration order.
     combats: HashMap<Uuid, Document>,
     /// Footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
-    /// millicells, wall-set key)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`):
+    /// millicells, level id, wall-set key)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`):
     /// `SceneEcs` sits behind a `tokio::sync::RwLock` shared across connection tasks, so
     /// concurrent readers may call `pathfind`/`navmesh_for` simultaneously — the cache needs
     /// `Sync` interior mutability. Never held across an `.await` (lookup + build are
@@ -1165,7 +1165,7 @@ fn engine_geometry_visible_to_world(doc: &Document) -> bool {
     engine_geometry_visible_to(doc, &access)
 }
 
-/// Exact, order-independent key for a routing wall set — the third component of
+/// Exact, order-independent key for a routing wall set — the last component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
 /// a hash: a collision would serve one requester a mesh built from another's wall set — the leak
@@ -1188,9 +1188,10 @@ fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
     k
 }
 
-/// `(scene, quantized footprint-radius millicells, wall-set key)` — see `navmesh_cache`'s field
-/// doc comment for what each component means and why.
-type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
+/// `(scene, quantized footprint-radius millicells, level id, wall-set key)` — see
+/// `navmesh_cache`'s field doc comment for what each component means and why. The level id is
+/// `""` for a level-less scene (or ground) — the same spelling the wire's level fields use.
+type NavmeshCacheKey = (Uuid, i64, String, Vec<(u64, u64, u64, u64)>);
 
 /// The footprint radius used when no effective actor resolves. Not a fail-closed choice: it is
 /// more permissive than a 1×1 square's 0.707, and it is the value the gate, the router and a
@@ -2362,9 +2363,25 @@ impl SceneEcs {
         elevation::walls_at_elevation(&self.move_wall_entries(scene, viewer), mover_elevation)
     }
 
-    /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells,
+    /// The scene's declared `SceneEngine::levels`, empty for a level-less scene or an unreadable
+    /// scene document — the caller's own scene-existence check (`scene_grid_sizes`) is what
+    /// refuses a missing scene; this accessor only ever resolves the floors of a scene that
+    /// check already admitted.
+    pub(crate) fn scene_levels(&self, scene: Uuid) -> Vec<eng::SceneLevel> {
+        self.index
+            .get(&scene)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .and_then(|c| self.engine_as_cached::<eng::SceneEngine>(scene, &c.doc))
+            .map(|s| s.levels)
+            .unwrap_or_default()
+    }
+
+    /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells, level,
     /// walls)`, memoized in `navmesh_cache` keyed on a quantized radius (nearest 1/1000 cell —
-    /// see the field doc comment) plus an exact wall-set key (`wall_set_key`). Returns `None`
+    /// see the field doc comment), the mover's level id, and an exact wall-set key
+    /// (`wall_set_key`). The level id is part of the key so two levels with coincidentally
+    /// identical wall geometry never share a cache entry — the never-fork pin extends to cache
+    /// identity, not just the predicate. Returns `None`
     /// when `navmesh::build_navmesh` fails closed (a degenerate world extent — which is what a
     /// degenerate cell size becomes — a degenerate footprint distance, or an over-cap obstacle
     /// count) — callers must treat this exactly like the grid router's
@@ -2385,6 +2402,7 @@ impl SceneEcs {
         &self,
         scene: Uuid,
         footprint_radius_cells: f64,
+        level: &str,
         walls: &[vision::Seg],
     ) -> Option<std::sync::Arc<navmesh::NavMesh>> {
         // Validate BEFORE computing the cache key or touching the cache at all. `f64 as i64`
@@ -2402,7 +2420,7 @@ impl SceneEcs {
         // Quantize to the nearest 1/1000 cell so floating-point noise in a client-computed radius
         // (e.g. derived via division) collapses onto the same cache entry as the canonical value.
         let quantized = (footprint_radius_cells * 1000.0).round() as i64;
-        let key = (scene, quantized, wall_set_key(walls));
+        let key = (scene, quantized, level.to_string(), wall_set_key(walls));
         if let Some(cached) = self.navmesh_cache.lock().unwrap().get(&key) {
             return Some(cached.clone());
         }
@@ -2498,6 +2516,12 @@ impl SceneEcs {
         // region springs. Hoisted out of the engine dispatch so BOTH engines receive the SAME
         // slice — never a forked wall computation (the same discipline `mask` follows).
         let walls = self.move_walls(scene, if is_gm { None } else { Some(user) }, elevation);
+        // The mover's level id, derived from its OWN elevation through the scene's declared
+        // levels — part of the navmesh cache key (`navmesh_for`), so two levels with identical
+        // wall geometry never share a mesh. `""` for a level-less scene.
+        let mover_level = elevation::level_of(&self.scene_levels(scene), elevation)
+            .map(|l| l.id.as_str())
+            .unwrap_or("");
         // Hoisted so `movement_model` is available to the engine dispatch regardless of `is_gm`
         // (a GM can also route on a continuous scene); the mask build and the dispatch discriminant
         // read this one resolution.
@@ -2633,7 +2657,7 @@ impl SceneEcs {
                     Ok(navmesh::los_smooth(weighted, &inputs))
                 } else {
                     let nav = self
-                        .navmesh_for(scene, footprint_radius, &walls)
+                        .navmesh_for(scene, footprint_radius, mover_level, &walls)
                         .ok_or(pathfinding::PathFail::Unreachable)?;
                     let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
                     // `raw.path.len() < 2` only when every waypoint leg collapsed to the start

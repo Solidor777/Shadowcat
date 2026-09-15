@@ -2656,7 +2656,7 @@ fn a_degenerate_authored_grid_size_never_reaches_the_extent_conversion() {
         e.width() > 0.0 && e.height() > 0.0,
         "the converted envelope is therefore never degenerate, got {e:?}"
     );
-    assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, &[]).is_some());
+    assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, "", &[]).is_some());
 }
 
 #[test]
@@ -2677,12 +2677,13 @@ fn navmesh_for_refuses_a_radius_over_the_footprint_cap() {
     let ecs = SceneEcs::from_documents(vec![scene], 0);
     let over_cap = crate::scene::pathfinding::MAX_FOOTPRINT_CELLS + 1.0;
     assert!(ecs
-        .navmesh_for(Uuid::from_u128(10), over_cap, &[])
+        .navmesh_for(Uuid::from_u128(10), over_cap, "", &[])
         .is_none());
     assert!(ecs
         .navmesh_for(
             Uuid::from_u128(10),
             crate::scene::pathfinding::MAX_FOOTPRINT_CELLS,
+            "",
             &[]
         )
         .is_some());
@@ -2704,7 +2705,7 @@ fn navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude() {
                 "bounds": { "width": 1e10, "height": 100.0 } }),
     );
     let ecs = SceneEcs::from_documents(vec![over], 0);
-    assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, &[]).is_none());
+    assert!(ecs.navmesh_for(Uuid::from_u128(10), 0.4, "", &[]).is_none());
 
     let under = entity_doc_top_eng(
         11,
@@ -2713,7 +2714,7 @@ fn navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude() {
                 "bounds": { "width": 10.0, "height": 10.0 } }),
     );
     let ecs = SceneEcs::from_documents(vec![under], 0);
-    assert!(ecs.navmesh_for(Uuid::from_u128(11), 0.4, &[]).is_some());
+    assert!(ecs.navmesh_for(Uuid::from_u128(11), 0.4, "", &[]).is_some());
 }
 
 /// A scene whose corridor from (50,50) to (250,50) is crossed by a blocksMove wall at x=150
