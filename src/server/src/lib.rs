@@ -5,6 +5,9 @@
 //! broadcasts per-recipient-filtered events. Server-side code never executes
 //! third-party module code.
 
+/// `shadowcat audio-monitor`: the OS audio-session-level subcommand (Windows WASAPI / macOS
+/// Core Audio process tap / Linux PipeWire) serving a localhost WebSocket.
+pub mod audio_monitor;
 /// Accounts, sessions, password hashing, and the first-run setup flow.
 pub mod auth;
 pub mod backup;
