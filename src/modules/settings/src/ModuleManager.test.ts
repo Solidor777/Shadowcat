@@ -8,7 +8,7 @@ vi.mock("@shadowcat/core", async (importOriginal) => {
   return {
     ...actual,
     listInstalledModules: vi.fn().mockResolvedValue([
-      { id: "example-system", manifest: { id: "example-system" }, entry_url: "/modules/example-system/index.js" },
+      { id: "example-system", manifest: { id: "example-system" }, entry_url: "/modules/example-system/index.js", has_validators: false, validator_load_error: null },
     ]),
     getEnabledModules: vi.fn().mockResolvedValue([]),
     setEnabledModules: vi.fn().mockResolvedValue(undefined),
@@ -27,7 +27,7 @@ describe("ModuleManager", () => {
     expect((checkbox as HTMLInputElement).checked).toBe(true);
 
     await fireEvent.click(screen.getByText("settings.modules.save"));
-    await vi.waitFor(() => expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", ["example-system"]));
+    await vi.waitFor(() => expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", [{ id: "example-system", validators_enabled: false }]));
   });
 
   it("calls ctx.reconcileInstalledModules exactly once after a successful save", async () => {
@@ -92,7 +92,7 @@ describe("ModuleManager", () => {
   it("keys the toggle/save identity on the canonical folder id (info.id), not manifest.id, when they differ", async () => {
     const { listInstalledModules, setEnabledModules } = await import("@shadowcat/core");
     vi.mocked(listInstalledModules).mockResolvedValueOnce([
-      { id: "folder-name", manifest: { id: "declared-manifest-id" }, entry_url: "/modules/folder-name/index.js" },
+      { id: "folder-name", manifest: { id: "declared-manifest-id" }, entry_url: "/modules/folder-name/index.js", has_validators: false, validator_load_error: null },
     ]);
     render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
 
@@ -102,7 +102,39 @@ describe("ModuleManager", () => {
     await fireEvent.click(checkbox);
     await fireEvent.click(screen.getByText("settings.modules.save"));
     await vi.waitFor(() =>
-      expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", ["folder-name"]),
+      expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", [
+        { id: "folder-name", validators_enabled: false },
+      ]),
+    );
+  });
+
+  it("shows the validators toggle only for an enabled module that declares validators", async () => {
+    const { listInstalledModules, getEnabledModules } = await import("@shadowcat/core");
+    vi.mocked(listInstalledModules).mockResolvedValueOnce([
+      { id: "example-system", manifest: { id: "example-system" }, entry_url: "/modules/example-system/index.js", has_validators: true, validator_load_error: null },
+    ]);
+    vi.mocked(getEnabledModules).mockResolvedValueOnce([{ id: "example-system", validators_enabled: false }]);
+    render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
+
+    expect(await screen.findByLabelText("settings.modules.runValidators")).toBeTruthy();
+  });
+
+  it("saves validators_enabled when the sandbox toggle is flipped", async () => {
+    const { listInstalledModules, getEnabledModules, setEnabledModules } = await import("@shadowcat/core");
+    vi.mocked(listInstalledModules).mockResolvedValueOnce([
+      { id: "example-system", manifest: { id: "example-system" }, entry_url: "/modules/example-system/index.js", has_validators: true, validator_load_error: null },
+    ]);
+    vi.mocked(getEnabledModules).mockResolvedValueOnce([{ id: "example-system", validators_enabled: false }]);
+    render(ModuleManager, { context: setAppContextForTest({ world: "w1", role: "gm" }) });
+
+    const validatorsToggle = await screen.findByLabelText("settings.modules.runValidators");
+    await fireEvent.click(validatorsToggle);
+    await fireEvent.click(screen.getByText("settings.modules.save"));
+
+    await vi.waitFor(() =>
+      expect(vi.mocked(setEnabledModules)).toHaveBeenCalledWith("w1", [
+        { id: "example-system", validators_enabled: true },
+      ]),
     );
   });
 });

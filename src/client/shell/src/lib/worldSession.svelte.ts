@@ -102,10 +102,11 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
-  /** Called after every rejected intent, with the server's reason — the optimistic prediction
-   * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
-   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
-  onReject?: (reason: RejectReason) => void;
+  /** Called after every rejected intent, with the server's reason and any player-presentable
+   * detail text — the optimistic prediction has already been rolled back (`#optimistic.reject`)
+   * by the time this fires. The shell surfaces it as a toast; a headless caller (tests) may
+   * leave it unset. */
+  onReject?: (reason: RejectReason, detail: string | null) => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -1113,9 +1114,9 @@ export class WorldSession {
             this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
           }
         },
-        onReject: (id, reason) => {
+        onReject: (id, reason, detail) => {
           this.#optimistic.reject(id);
-          this.opts.onReject?.(reason);
+          this.opts.onReject?.(reason, detail);
         },
         onWelcome: (w) => {
           void this.#onWelcome(w);
@@ -1328,10 +1329,11 @@ export class WorldSession {
    */
   async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const resolved = WorldSession.#buildEntries(enabledIds, installed, this.#logger);
       if (resolved.length === 0) return;
       const result = await loadModules({
@@ -1509,10 +1511,11 @@ export class WorldSession {
   async reconcileInstalledModules(): Promise<void> {
     if (!this.world || this.#serverVersion === undefined) return;
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(this.world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const enabledSet = new Set(enabledIds);
       const toUnload = [...this.#externalModuleIds].filter(([folderId]) => !enabledSet.has(folderId));
       for (const [folderId, manifestId] of toUnload) {

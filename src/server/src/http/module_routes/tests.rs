@@ -430,13 +430,13 @@ async fn enabled_modules_gm_crud_and_member_read() {
 
     // A non-GM cannot enable.
     pl.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["actors-plus"]))
+        .json(&serde_json::json!([{"id":"actors-plus","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::FORBIDDEN);
 
     // The GM enables it.
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["actors-plus"]))
+        .json(&serde_json::json!([{"id":"actors-plus","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::NO_CONTENT);
 
@@ -445,7 +445,10 @@ async fn enabled_modules_gm_crud_and_member_read() {
         .get(&format!("/api/worlds/{world_id}/enabled-modules"))
         .await
         .json();
-    assert_eq!(got, serde_json::json!(["actors-plus"]));
+    assert_eq!(
+        got,
+        serde_json::json!([{"id":"actors-plus","validators_enabled":false}])
+    );
 }
 
 #[tokio::test]
@@ -453,7 +456,7 @@ async fn enabled_modules_rejects_an_uninstalled_id() {
     let dir = tempfile::tempdir().unwrap();
     let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["not-installed"]))
+        .json(&serde_json::json!([{"id":"not-installed","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     // Rejected atomically: nothing is persisted from the bad batch.
@@ -475,7 +478,7 @@ async fn enabled_modules_rejects_an_engine_incompatible_module() {
     .unwrap();
     let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["too-new"]))
+        .json(&serde_json::json!([{"id":"too-new","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }
@@ -491,7 +494,7 @@ async fn enabled_modules_rejects_a_module_with_no_engines_field() {
     .unwrap();
     let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["no-engines"]))
+        .json(&serde_json::json!([{"id":"no-engines","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
 }
@@ -513,12 +516,12 @@ async fn enabled_modules_rejects_two_system_providers() {
     // Two enabled system providers would let the server's system-defaults
     // pick and the client's singleton-contract winner diverge: rejected.
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["sys-a", "sys-b"]))
+        .json(&serde_json::json!([{"id":"sys-a","validators_enabled":false},{"id":"sys-b","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     // Exactly one system provider is fine.
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["sys-a"]))
+        .json(&serde_json::json!([{"id":"sys-a","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::NO_CONTENT);
 }
@@ -578,7 +581,7 @@ async fn enabling_a_system_module_refreshes_the_system_defaults_singleton() {
     // Enabling the system refreshes the stored singleton to its declaration.
     server
         .put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["sys"]))
+        .json(&serde_json::json!([{"id":"sys","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::NO_CONTENT);
     let after = stored_sd(&state, world_id).await;
@@ -606,22 +609,25 @@ async fn enabled_modules_dedups_a_duplicate_id_preserving_first_occurrence_order
     .unwrap();
     let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["actors-plus", "actors-plus"]))
+        .json(&serde_json::json!([{"id":"actors-plus","validators_enabled":false},{"id":"actors-plus","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::NO_CONTENT);
     let got: serde_json::Value = gm
         .get(&format!("/api/worlds/{world_id}/enabled-modules"))
         .await
         .json();
-    assert_eq!(got, serde_json::json!(["actors-plus"]));
+    assert_eq!(
+        got,
+        serde_json::json!([{"id":"actors-plus","validators_enabled":false}])
+    );
 }
 
 #[tokio::test]
 async fn enabled_modules_rejects_a_batch_exceeding_the_max_cap() {
     let dir = tempfile::tempdir().unwrap();
     let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
-    let ids: Vec<String> = (0..(super::MAX_ENABLED_MODULES + 1))
-        .map(|i| format!("mod-{i}"))
+    let ids: Vec<serde_json::Value> = (0..(super::MAX_ENABLED_MODULES + 1))
+        .map(|i| serde_json::json!({"id": format!("mod-{i}"), "validators_enabled": false}))
         .collect();
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
         .json(&serde_json::json!(ids))
@@ -639,6 +645,32 @@ async fn enabled_modules_rejects_a_batch_exceeding_the_max_cap() {
 }
 
 #[tokio::test]
+async fn enabled_modules_rejects_validators_enabled_on_a_module_declaring_none() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
+    std::fs::write(
+        dir.path().join("actors-plus").join("module.json"),
+        format!(
+            r#"{{"id":"actors-plus","version":"1.0.0","engines":{{"shadowcat":"^{}"}}}}"#,
+            env!("CARGO_PKG_VERSION")
+        ),
+    )
+    .unwrap();
+    let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
+    // The module declares no `validators` key at all: opting it in is meaningless and
+    // rejected, atomically.
+    gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .json(&serde_json::json!([{"id":"actors-plus","validators_enabled":true}]))
+        .await
+        .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+    let got: serde_json::Value = gm
+        .get(&format!("/api/worlds/{world_id}/enabled-modules"))
+        .await
+        .json();
+    assert_eq!(got, serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn enabled_modules_a_batch_with_one_bad_id_rejects_the_whole_batch() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("actors-plus")).unwrap();
@@ -652,7 +684,7 @@ async fn enabled_modules_a_batch_with_one_bad_id_rejects_the_whole_batch() {
     .unwrap();
     let (gm, _pl, world_id) = logged_in_gm_and_player_with_modules_dir(dir.path()).await;
     gm.put(&format!("/api/worlds/{world_id}/enabled-modules"))
-        .json(&serde_json::json!(["actors-plus", "ghost"]))
+        .json(&serde_json::json!([{"id":"actors-plus","validators_enabled":false},{"id":"ghost","validators_enabled":false}]))
         .await
         .assert_status(StatusCode::UNPROCESSABLE_ENTITY);
     let got: serde_json::Value = gm

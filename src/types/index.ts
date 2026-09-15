@@ -64,6 +64,7 @@ export type { WorldEntry } from "./generated/WorldEntry";
 
 // Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
+export type { WorldModuleEntry } from "./generated/WorldModuleEntry";
 
 // Assets
 export type { Asset } from "./generated/Asset";

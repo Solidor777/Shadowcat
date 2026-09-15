@@ -82,6 +82,12 @@ export class MockBackend implements DisplayBackend {
   /** Set `true` by `destroy` — see `destroy`'s doc for the idempotent-vs-throwing divergence
    * from `PixiBackend`. */
   destroyed = false;
+  /** Last `setFrameCap` value, recorded verbatim; `null` before the first call. */
+  frameCap: number | null = null;
+  /** Last `setRenderScale` value, recorded verbatim; `null` before the first call. */
+  renderScale: number | null = null;
+  /** Count of `render()` calls — the idle-skip assertion surface. */
+  renderCount = 0;
 
   /** `DisplayBackend.ensureLayers`: records the requested z-order verbatim into `this.layers`,
    * replacing any previous value. Unlike `PixiBackend`, which idempotently creates/re-parents real
@@ -526,6 +532,45 @@ export class MockBackend implements DisplayBackend {
    */
   resize(width: number, height: number): void {
     this.size = { width, height };
+  }
+  /** `DisplayBackend.setFrameCap`: records `fps` verbatim into `this.frameCap`.
+   * @param fps The frame-rate cap, or `0` for uncapped.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setFrameCap(30);
+   * ```
+   */
+  setFrameCap(fps: number): void {
+    this.frameCap = fps;
+  }
+  /** `DisplayBackend.setRenderScale`: records `scale` verbatim into `this.renderScale`.
+   * @param scale The render-scale fraction.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setRenderScale(0.75);
+   * ```
+   */
+  setRenderScale(scale: number): void {
+    this.renderScale = scale;
+  }
+  /** `DisplayBackend.render`: increments `this.renderCount`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.render();
+   * backend.renderCount; // 1
+   * ```
+   */
+  render(): void {
+    this.renderCount++;
   }
   /** `DisplayBackend.destroy`: sets `this.destroyed = true`. Does not release any resources (this
    * mock never allocates GPU state) — a test asserts teardown was requested by reading

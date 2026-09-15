@@ -57,6 +57,7 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | UI framework | Svelte 5 (runes) | MIT | Vendor | Compiled, lean output; default UI only — modders use any framework. |
 | Canvas renderer | PixiJS v8 | MIT | Vendor | Mature WebGL 2D: sprite batching, filter pipeline, mask compositing. Rebuilding this is the largest avoidable cost in the project. |
 | Build tooling | Cargo, Vite, pnpm | MIT | Vendor | pnpm is build-time only; output embeds into the binary. |
+| Sandboxed validators | wasmi (pure-Rust interpreter) | MIT/Apache-2.0 | Vendor | Third-party server-side WASM code, opt-in per world per module, fuel/memory/instance-limited; no JIT, no host imports beyond a rate-limited debug log — see `docs/design/sandboxed-validators.md`. |
 
 ## 4. Deferred behind abstractions
 
@@ -73,7 +74,6 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
 | ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
-| Server-side untrusted execution (sandbox) | engine-grammar evaluation is server-side already (formulas, dice, schemas) and needs no sandbox; only third-party *code* would | Only if a marketplace with untrusted authors is pursued — then WASM (wasmtime/extism) or rquickjs, never Deno. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |
 | Compression (app-level `zstd`), content hashing (blake3, differential sync) | — | When profiling shows storage/transfer cost matters. |
 | Native wrappers (Tauri 2, Capacitor) | embedded-server client | After the web app is feature-complete. |
@@ -82,7 +82,13 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 
 - **Bun / Node as a server runtime** — pure-Rust server; no JS on the server.
 - **PostgreSQL + SQLite in parallel from day one** — doubles the data layer (JSONB vs JSON, two FTS engines, two migration trees) to serve a scale tier v1 does not target.
-- **Deno** — a ~100 MB V8 second runtime undercuts the single binary; its `--allow-*` model is a weak sandbox. Engine grammars are evaluated natively in Rust; no JS runtime is needed server-side.
+- **Deno / wasmtime / extism for the sandboxed-validator runtime** — Deno is a ~100 MB V8
+  second runtime that undercuts the single binary and whose `--allow-*` model is a weak
+  sandbox; `wasmtime`'s Cranelift JIT adds 15–20 MiB and a JIT attack surface a validator run
+  once per write over kilobytes of data does not need. `wasmi` (a pure-Rust interpreter, no
+  JIT, ~1 MiB) is the sandbox this project actually ships — see
+  `docs/design/sandboxed-validators.md`. Engine grammars themselves are still evaluated
+  natively in Rust; no JS runtime is needed server-side for anything the engine defines.
 - **FFmpeg as a hard dependency** — GPL contamination risk (libx264 etc.), LGPL static-link friction, and H.264/H.265/AAC patent exposure. Replaced by small royalty-free libraries.
 - **Tantivy in v1** — a third, non-transactional storage system; FTS5 is crash-consistent (updates inside the row's transaction) and sufficient at VTT scale.
 - **`steamworks` crate / Steam Rich Presence** — requires redistributing Valve's proprietary `steam_api`. Steam stays OpenID 2.0 auth + plain-executable distribution only.

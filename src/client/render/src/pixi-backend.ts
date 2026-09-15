@@ -328,6 +328,11 @@ export class PixiBackend implements DisplayBackend {
   private backgroundUrl: string | null = null;
   /** Monotonic counter disambiguating concurrent background loads. */
   private loadSeq = 0;
+  /** CSS-pixel viewport size from the last `resize` call — re-applied by `setRenderScale` after
+   * changing `resolution`, since `renderer.resize` takes CSS dimensions, not device pixels. */
+  private viewportWidth = 0;
+  /** See `viewportWidth`'s doc. */
+  private viewportHeight = 0;
 
   /** Wire this backend to a running Pixi `Application`: parents the `world` container (which
    * every layer/camera transform lives under) onto the stage, and adds the cross-fade sprites
@@ -1163,6 +1168,11 @@ export class PixiBackend implements DisplayBackend {
     // Tint REASSIGNS unconditionally (white when the node spec carries none) — a re-push
     // without a tint must clear the previous one, never leave it sticky.
     node.visual.tint = spec.tint ?? 0xffffff;
+    // The loop flag rides even a same-source re-push: a reduced-motion toggle-off re-pushes
+    // the emitter with `loop` restored (and a re-freeze with it cleared), and the source-key
+    // short-circuit must not swallow that (an already-frozen node would otherwise never
+    // resume).
+    node.anim.loop = spec.loop;
     const key = "imageUrl" in spec.source
       ? `sheet:${spec.source.imageUrl}:${spec.source.sheetUrl}:${spec.source.animation}`
       : `grid:${spec.source.type === "sheet" ? spec.source.url : spec.source.urls.join(",")}`;
@@ -1591,7 +1601,60 @@ export class PixiBackend implements DisplayBackend {
    * ```
    */
   resize(width: number, height: number): void {
+    this.viewportWidth = width;
+    this.viewportHeight = height;
     this.app.renderer.resize(width, height);
+  }
+
+  /** `DisplayBackend.setFrameCap`: sets Pixi's `Ticker.maxFPS` (`0` = uncapped, its own
+   * convention — confirmed against the vendored `Ticker` setter).
+   * @param fps The frame-rate cap, or `0` for uncapped.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setFrameCap(30);
+   * ```
+   */
+  setFrameCap(fps: number): void {
+    this.app.ticker.maxFPS = fps;
+  }
+
+  /** `DisplayBackend.setRenderScale`: sets the renderer's `resolution` to `devicePixelRatio *
+   * scale`, then re-applies the last known CSS-pixel viewport size — `renderer.resize` takes
+   * CSS dimensions and internally multiplies by `resolution`, so the resolution change alone
+   * would leave the backing texture at the OLD device-pixel size until the next external resize.
+   * @param scale The render-scale fraction (already clamped by the caller).
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.setRenderScale(0.75);
+   * ```
+   */
+  setRenderScale(scale: number): void {
+    this.app.renderer.resolution = (globalThis.devicePixelRatio || 1) * scale;
+    this.app.renderer.resize(this.viewportWidth, this.viewportHeight);
+  }
+
+  /** `DisplayBackend.render`: draws exactly one frame now — the same call `Application.render()`
+   * makes (`this.renderer.render({ container: this.stage })` — confirmed against the vendored
+   * `Application.render` source), inlined so the headless test double, which has a `renderer`
+   * but no `render` method of its own, exercises the identical path. `TickerPlugin`'s own
+   * (now-removed, see `createPixiBackend`) auto-render listener used to make this call every
+   * tick.
+   * @example
+   * ```ts
+   * import { PixiBackend } from "@shadowcat/render";
+   *
+   * declare const backend: PixiBackend;
+   * backend.render();
+   * ```
+   */
+  render(): void {
+    this.app.renderer.render({ container: this.app.stage });
   }
 
   /** `DisplayBackend.destroy`: release all GPU resources and detach the canvas. Bumps `loadSeq`
@@ -1720,5 +1783,12 @@ export async function createPixiBackend(
     background: opts.background,
     preference: "webgl",
   });
+  // RenderEngine's idle-skip ticker calls PixiBackend.render() itself; without removing
+  // TickerPlugin's own auto-render listener (installed by `Application.init` via
+  // `ticker.add(this.render, this, UPDATE_PRIORITY.LOW)` — confirmed against the vendored
+  // `TickerPlugin.init` source), Pixi would additionally redraw every tick regardless of
+  // idleSkip. `Ticker.remove(fn, context)` matches by the exact `(fn, context)` pair the add
+  // call used (confirmed against the vendored `Ticker.remove`/`Listener.match` source).
+  app.ticker.remove(app.render, app);
   return new PixiBackend(app);
 }

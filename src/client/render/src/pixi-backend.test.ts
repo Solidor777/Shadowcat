@@ -24,14 +24,19 @@ vi.mock("pixi.js", async (importActual) => {
   return { ...actual, ColorMatrixFilter: StubColorMatrixFilter };
 });
 
+/** A stub `Application` for the headless backend; callers pass the parts their test reads. */
+function fakeApp(extra: Record<string, unknown> = {}): Application {
+  return { stage: new Container(), ...extra } as unknown as Application;
+}
+
 /** A minimal stand-in satisfying `PixiBackend`'s constructor: it reads only `app.stage.addChild`.
  * `Container` is GL-free (a pure scene-graph node), so this constructs a real `PixiBackend`
  * without a WebGL context or `Application.init()`.
+ * @param app The stub `Application` to wrap — `fakeApp()` by default.
  * @returns A `PixiBackend` constructed over a stub `Application`.
  */
-function headlessBackend(): PixiBackend {
-  const fakeApp = { stage: new Container() } as unknown as Application;
-  return new PixiBackend(fakeApp);
+function headlessBackend(app: Application = fakeApp()): PixiBackend {
+  return new PixiBackend(app);
 }
 
 /** A headless backend whose `app.renderer.render` is a counting stub instead of a real GPU
@@ -604,5 +609,55 @@ describe("PixiBackend VFX playback", () => {
     backend.setVfx("oneshot:1", spec);
     expect(vfxNodesOf(backend).get("oneshot:1")!.visual.tint).toBe(0xffffff);
     loadSpy.mockRestore();
+  });
+
+  test("a same-source re-push with a flipped loop updates the flag WITHOUT reloading", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    const spec = {
+      layer: "vfx" as const, x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet" as const, url: "/fx.webp", rows: 1, cols: 2 },
+      loop: false, anchor: "point" as const,
+    };
+    backend.setVfx("emitter:t1", { ...spec, startAtEnd: true });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("emitter:t1")!.anim.frameCount).toBe(2));
+    // A reduced-motion toggle-off re-pushes the same source with the loop restored: the flag
+    // must land even though the source key is unchanged (a frozen emitter resumes looping).
+    backend.setVfx("emitter:t1", { ...spec, loop: true });
+    expect(vfxNodesOf(backend).get("emitter:t1")!.anim.loop).toBe(true);
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    loadSpy.mockRestore();
+  });
+});
+
+describe("frame cap and render scale", () => {
+  test("setFrameCap forwards to ticker.maxFPS (0 = uncapped)", () => {
+    const app = fakeApp({ ticker: { maxFPS: 0, add: vi.fn(), remove: vi.fn() } });
+    const backend = headlessBackend(app);
+    backend.setFrameCap(30);
+    expect((app as unknown as { ticker: { maxFPS: number } }).ticker.maxFPS).toBe(30);
+    backend.setFrameCap(0);
+    expect((app as unknown as { ticker: { maxFPS: number } }).ticker.maxFPS).toBe(0);
+  });
+  test("setRenderScale sets renderer.resolution to dpr*scale and calls resize", () => {
+    const renderer = { resolution: 1, resize: vi.fn(), render: vi.fn() };
+    const backend = headlessBackend(fakeApp({ renderer }));
+    vi.stubGlobal("devicePixelRatio", 2);
+    try {
+      backend.setRenderScale(0.5);
+      expect(renderer.resolution).toBe(1);
+      expect(renderer.resize).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+  test("render() calls renderer.render once with the stage", () => {
+    const renderer = { resolution: 1, resize: vi.fn(), render: vi.fn() };
+    const app = fakeApp({ renderer });
+    const backend = headlessBackend(app);
+    backend.render();
+    expect(renderer.render).toHaveBeenCalledWith({ container: app.stage });
+
   });
 });

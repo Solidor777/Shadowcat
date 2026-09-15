@@ -172,6 +172,19 @@ export class TokenAnimator {
     worldUnitsPerCell: 100,
   };
 
+  /** Constructs an animator reading the live reduced-motion flag per animation start.
+   * @param reducedMotion Resolves the live `PerformanceSettings.reducedMotion` flag, read fresh
+   * per `startAnim`/`animateSamples` call. Defaults to always-`false` (legacy/test callers keep
+   * today's tweened behavior).
+   * @example
+   * ```ts
+   * import { TokenAnimator } from "@shadowcat/render";
+   *
+   * const animator = new TokenAnimator(() => false);
+   * ```
+   */
+  constructor(private readonly reducedMotion: () => boolean = () => false) {}
+
   /** Replace the tween-duration tuning (speed/easing/worldUnitsPerCell). Affects only FUTURE
    * tweens started by `startAnim` — an animation already in progress keeps the duration computed
    * from the config that was active when it started.
@@ -252,6 +265,8 @@ export class TokenAnimator {
   /** Begin sample-driven playback from a server broadcast MoveStream. Interpolates the token
    * position between adjacent samples by tMs on the server-aligned clock; hides the token during
    * spans whose tMs gap exceeds the nominal-interval-based threshold (minConsecutiveDelta × 1.5).
+   * When `PerformanceSettings.reducedMotion` resolves true at call time, snaps straight to the
+   * last sample instead — no playback is registered and no occlusion-gap hiding applies.
    * Cancels any competing ease-to-stop Anim entry for this id: handles the typical server ordering
    * where the authoritative position Event (→ setTarget) arrives before the MoveStream broadcast.
    * Catch-up: if the server clock (serverNow) is ahead of startServerMs, playback begins from the
@@ -283,6 +298,16 @@ export class TokenAnimator {
     serverNow?: () => number,
   ): void {
     if (samples.length === 0) return;
+    if (this.reducedMotion()) {
+      // `PerformanceSettings.reducedMotion`: snap straight to the last sample, skipping the
+      // whole playback — see `startAnim`'s own snap for the polyline twin.
+      const last = samples[samples.length - 1];
+      this.cur.set(id, { x: last.pos[0], y: last.pos[1], rotation: this.cur.get(id)?.rotation ?? 0 });
+      this.anim.delete(id);
+      this.samplesAnim.delete(id);
+      this.hidden.delete(id);
+      return;
+    }
     const initialElapsed = serverNow
       ? Math.max(0, serverNow() - startServerMs)
       : 0;
@@ -505,7 +530,9 @@ export class TokenAnimator {
   /** Compute per-segment lengths for `poly` and register a new ease-to-stop `Anim` entry for `id`,
    * duration = `(total px / cfg.worldUnitsPerCell) / cfg.speedCellsPerSec * 1000` using the
    * CURRENT `cfg` (a later `setConfig` call does not retroactively affect this tween — see
-   * `setConfig`). Degenerate input (non-finite `total`, `total < EPSILON`, non-positive
+   * `setConfig`). When `PerformanceSettings.reducedMotion` resolves true, snaps straight to
+   * `poly`'s final vertex instead of registering a tween — the same snap shape the
+   * degenerate-input guard uses. Degenerate input (non-finite `total`, `total < EPSILON`, non-positive
    * `worldUnitsPerCell` or `speedCellsPerSec`) fails closed: snaps directly to `poly`'s last
    * vertex (when finite) instead of animating,
    * mirroring the fail-closed convention used server-side in `scene::movement`/`scene::lighting`/
@@ -528,6 +555,17 @@ export class TokenAnimator {
     finalRot: number,
     pathDriven: boolean,
   ): void {
+    if (this.reducedMotion()) {
+      // `PerformanceSettings.reducedMotion`: snap straight to the polyline's final vertex
+      // instead of tweening — the same fail-closed snap shape the degenerate-input guard
+      // below uses (a non-finite last vertex leaves `cur` unchanged).
+      const last = poly[poly.length - 1];
+      if (Number.isFinite(last[0]) && Number.isFinite(last[1])) {
+        this.cur.set(id, { x: last[0], y: last[1], rotation: finalRot });
+      }
+      this.anim.delete(id);
+      return;
+    }
     const segLen: number[] = [];
     let total = 0;
     for (let i = 1; i < poly.length; i++) {

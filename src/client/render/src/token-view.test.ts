@@ -1,4 +1,4 @@
-import { test, expect, it, vi } from "vitest";
+import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation, FootprintLookup, TokenVisual } from "@shadowcat/core";
@@ -570,8 +570,22 @@ test("an unselected token (or a view with no selection source) gains no highligh
   expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
 });
 
-// ---- helpers for animation-config tests ----
+describe("tokenFx budget", () => {
+  it("tokenFx: false drops condition fx and keeps only the selection highlight", () => {
+    // Same fixture shape as the condition-fx tests above: a condition that carries fx, with
+    // the token additionally selected (the selection highlight is the one exempt entry).
+    const { store, backend } = storeWithFxToken(
+      { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+      ["poisoned"],
+    );
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => new Set(["tok1"]), () => false);
+    view.reconcile();
+    const spec = view.specOf("tok1")!;
+    expect(spec.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+  });
+});
 
+// ---- helpers for animation-config tests ----
 /** Extends MockBackend with convenience accessors for token position queries. */
 class RecordingBackend extends MockBackend {
   lastTokenX(id: string): number {

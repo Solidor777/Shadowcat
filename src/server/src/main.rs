@@ -50,7 +50,9 @@ async fn main() -> anyhow::Result<()> {
 
     init_tracing();
 
-    let repo = SqliteRepository::connect(&config.db).await?;
+    let repo = SqliteRepository::connect(&config.db)
+        .await?
+        .with_modules_dir(config.modules_path());
     std::fs::create_dir_all(config.assets_path())?;
 
     // Runs once at boot purely to surface a summary in the log; every actual

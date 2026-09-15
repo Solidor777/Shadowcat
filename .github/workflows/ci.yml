@@ -28,6 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       # The repo pins a build-parallelism budget for a desktop the build shares with its user.
       # Cargo does not clamp that value to the host's parallelism, so on a runner with fewer
       # cores it raises concurrent rustc instead of lowering it and multiplies peak memory --
@@ -177,6 +178,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
       # build:all starts with the client build (rust-embed needs dist/ before
       # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check,
       # and finally the active documentation-exemption count. cargo doc runs

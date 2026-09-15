@@ -110,6 +110,15 @@ export interface DisplayBackend {
    * @param width New viewport width, in CSS pixels.
    * @param height New viewport height, in CSS pixels. */
   resize(width: number, height: number): void;
+  /** Cap the render ticker's rate; `0` = uncapped (Pixi's `Ticker.maxFPS = 0` convention).
+   * @param fps The new cap in frames per second, or `0` for uncapped. */
+  setFrameCap(fps: number): void;
+  /** Set the renderer's resolution (device-pixel-ratio × the given scale) and re-apply the last
+   * known viewport size at the new resolution.
+   * @param scale The render-scale fraction, already clamped by the caller. */
+  setRenderScale(scale: number): void;
+  /** Draw exactly one frame now — the idle-skip ticker's render call. */
+  render(): void;
   /** Release all GPU resources and detach the canvas. */
   destroy(): void;
 }

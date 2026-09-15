@@ -1,10 +1,12 @@
 <script lang="ts">
   import { getAppContext, Surface } from "@shadowcat/ui-kit";
+  import PerfStats from "./PerfStats.svelte";
   const { role } = getAppContext();
 </script>
 
 <footer class="statusbar">
   <span>{role}</span>
+  <PerfStats />
   <div class="dock"><Surface contract="shadowcat.surface:panel-dock" /></div>
 </footer>
 

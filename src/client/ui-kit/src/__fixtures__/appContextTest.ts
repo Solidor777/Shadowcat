@@ -9,6 +9,7 @@ import { SceneSelection } from "../sceneSelection.svelte";
 import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
 import { AssetPickController, type PickAssetOptions } from "../assetPickController.svelte";
+import { PerformanceController } from "../performance.svelte";
 
 /**
  * Build a Map for @testing-library/svelte's `context` option holding a minimal
@@ -123,6 +124,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       canPull: () => false,
       canPush: () => false,
     },
+    performance: over.performance ?? new PerformanceController(),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

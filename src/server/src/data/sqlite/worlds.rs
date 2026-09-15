@@ -384,33 +384,4 @@ impl SqliteRepository {
         let json = serde_json::to_string(decls)?;
         self.set_setting(&world_schemas_key(world), &json).await
     }
-
-    /// Replace a world's enabled installed-module set (stored as JSON in
-    /// settings, beside `world_cap_requirements`/`world_contract_declarations`
-    /// — enable/disable never mutates either of those; `welcome_capability_requirements` unions
-    /// the enabled modules' declared requirements with the stored GM-authored record fresh on
-    /// every `Welcome`, leaving the stored record the GM's own edit alone).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
-    /// use shadowcat::data::repository::Repository;
-    /// use shadowcat::data::sqlite::SqliteRepository;
-    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
-    /// repo.set_world_enabled_modules(world.id, &["mock-module".to_string()]).await?;
-    /// assert_eq!(repo.world_enabled_modules(world.id).await?, vec!["mock-module".to_string()]);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn set_world_enabled_modules(
-        &self,
-        world: Uuid,
-        ids: &[String],
-    ) -> Result<(), DataError> {
-        let json = serde_json::to_string(ids)?;
-        self.set_setting(&world_modules_key(world), &json).await
-    }
 }

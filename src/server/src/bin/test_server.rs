@@ -49,7 +49,16 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
-    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await?);
+    let args = Args::parse();
+    let mut config = Config::default();
+    if let Some(dir) = args.modules_dir {
+        config.modules_dir = Some(dir);
+    }
+    let repo = Arc::new(
+        SqliteRepository::connect("sqlite::memory:")
+            .await?
+            .with_modules_dir(config.modules_path()),
+    );
     let hash = hash_password("pw")?;
 
     // GM owns the world; player is a member.
@@ -160,11 +169,6 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    let args = Args::parse();
-    let mut config = Config::default();
-    if let Some(dir) = args.modules_dir {
-        config.modules_dir = Some(dir);
-    }
     let state = AppState {
         repo,
         config: Arc::new(config),

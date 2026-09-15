@@ -963,6 +963,12 @@ pub enum ServerMsg {
         intent_id: Uuid,
         /// Why it was refused.
         reason: RejectReason,
+        /// Player/GM-presentable detail text — populated for `DataError::OpFailed`/`Validator`
+        /// refusals (≤ 512 bytes, control characters stripped at the source that produced the
+        /// text — `sandbox::runtime::run_validator` for a validator refusal). Rendered by the
+        /// client as a TEXT NODE only, never HTML.
+        #[serde(default)]
+        detail: Option<String>,
     },
     /// Opens a resync replay range.
     ResyncBegin {
