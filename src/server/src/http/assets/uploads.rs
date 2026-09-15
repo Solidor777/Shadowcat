@@ -17,6 +17,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::session::AuthUser;
+use crate::data::asset::process::audio::AudioContainers;
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
     commit_staged_asset, process_staged_blocking, remove_asset_files, Asset, Provenance,
@@ -56,6 +57,7 @@ const MAX_NAME_CHARS: usize = 255;
 ///     received: 4,
 ///     folder_id: None,
 ///     tags: vec![],
+///     audio_containers: Default::default(),
 ///     staged: std::path::PathBuf::from("staged.tmp"),
 ///     rate_hit_ms: 0,
 ///     last_touch_ms: 0,
@@ -95,6 +97,7 @@ pub enum ChunkReject {
 ///     received: 0,
 ///     folder_id: None,
 ///     tags: vec![],
+///     audio_containers: Default::default(),
 ///     staged: std::path::PathBuf::from("staged.tmp"),
 ///     rate_hit_ms: 0,
 ///     last_touch_ms: 0,
@@ -124,6 +127,9 @@ pub struct UploadSession {
     pub folder_id: Option<Uuid>,
     /// Explicit tags to record at completion (validated at create).
     pub tags: Vec<String>,
+    /// The audio derivative container selection, resolved at create (an absent request field
+    /// already defaulted here, so `complete` never re-decides it).
+    pub audio_containers: AudioContainers,
     /// The staging file chunks append to.
     pub staged: PathBuf,
     /// `now_ms` the rate slot was taken at (refund key).
@@ -572,6 +578,10 @@ pub struct CreateUploadRequest {
     /// Explicit tags to record.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Which Opus derivative container(s) an audio upload emits; omitted = the default
+    /// (`AudioContainers::Both`). Ignored for a non-audio upload.
+    #[serde(default)]
+    pub audio_containers: Option<AudioContainers>,
 }
 
 /// `POST /api/worlds/{world}/assets/uploads` response.
@@ -703,6 +713,7 @@ pub async fn create_session(
         received: 0,
         folder_id,
         tags,
+        audio_containers: body.audio_containers.unwrap_or_default(),
         staged,
         rate_hit_ms: now,
         last_touch_ms: now,
@@ -920,6 +931,7 @@ pub async fn complete_session(
             content_type,
             session.byte_size as i64,
             state.config.retain_originals,
+            session.audio_containers,
         )
         .await
         .map_err(|e| {

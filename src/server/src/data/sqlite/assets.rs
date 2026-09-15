@@ -980,8 +980,13 @@ impl SqliteRepository {
             Some(AssetKind::Image) => {
                 qb.push(" AND a.content_type LIKE 'image/%'");
             }
+            Some(AssetKind::Audio) => {
+                qb.push(" AND a.content_type LIKE 'audio/%'");
+            }
             Some(AssetKind::Other) => {
-                qb.push(" AND a.content_type NOT LIKE 'image/%'");
+                qb.push(
+                    " AND a.content_type NOT LIKE 'image/%' AND a.content_type NOT LIKE 'audio/%'",
+                );
             }
         }
         if let Some(q) = &filter.query {

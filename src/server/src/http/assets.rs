@@ -158,6 +158,7 @@ impl Default for UploadRateLimiter {
 }
 
 use crate::auth::session::AuthUser;
+use crate::data::asset::process::audio::{self, AudioContainers};
 use crate::data::asset::process::{derivative_path, sibling_paths, write_derivatives, Variant};
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
@@ -176,18 +177,19 @@ use tokio::io::AsyncWriteExt;
 
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
 /// arrive (never buffering the whole body). Returns
-/// `(content_type, byte_size, original_name)`, where `content_type` is the
+/// `(content_type, byte_size, original_name, containers)`, where `content_type` is the
 /// type SNIFFED from the leading bytes when they are a supported image; when
 /// they are not, the client's declared type is used as a plain label —
 /// unless it CLAIMS `image/*`, which the bytes just disproved, in which case
 /// the label is `application/octet-stream`. The bytes are the validation
-/// boundary; a client's image claim is never trusted. On any failure the
-/// partial file is removed.
+/// boundary; a client's image claim is never trusted. `containers` is the
+/// optional trailing text field selecting the audio derivative container(s).
+/// On any failure the partial file is removed.
 async fn store_streamed(
     mut multipart: Multipart,
     dest: &std::path::Path,
     max_bytes: u64,
-) -> Result<(String, i64, String), AppError> {
+) -> Result<(String, i64, String, Option<String>), AppError> {
     let field = multipart
         .next_field()
         .await
@@ -236,8 +238,18 @@ async fn store_streamed(
     }
     file.flush().await.map_err(|_| AppError::Internal)?;
 
+    // An optional trailing `containers` text field selects the audio derivative container(s)
+    // (`data::asset::process::audio::AudioContainers`'s snake_case names); the file field is
+    // always first, so anything after it that is not this field is ignored.
+    let mut containers: Option<String> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() == Some("containers") {
+            containers = field.text().await.ok().map(|s| s.trim().to_string());
+        }
+    }
+
     let content_type = label_content_type(detect_image_type(&head), declared.as_deref());
-    Ok((content_type, total as i64, original_name))
+    Ok((content_type, total as i64, original_name, containers))
 }
 
 /// The content type recorded for an upload: the sniffed image type when the
@@ -251,6 +263,22 @@ pub(super) fn label_content_type(sniffed: Option<&'static str>, declared: Option
     match declared {
         Some(d) if !d.starts_with("image/") && !d.is_empty() => d.to_string(),
         _ => "application/octet-stream".to_string(),
+    }
+}
+
+/// Parse the optional `containers` multipart field into an audio derivative selection
+/// (absent/empty ⇒ the default). The snake_case spellings are
+/// `AudioContainers`'s own serde names — one statement of the accepted set, beside the one
+/// multipart reader that produces the raw string.
+fn parse_containers_field(value: Option<&str>) -> Result<AudioContainers, AppError> {
+    match value {
+        None | Some("") => Ok(AudioContainers::default()),
+        Some("ogg") => Ok(AudioContainers::Ogg),
+        Some("webm") => Ok(AudioContainers::WebM),
+        Some("both") => Ok(AudioContainers::Both),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown containers '{other}'"
+        ))),
     }
 }
 
@@ -345,16 +373,22 @@ pub async fn upload(
     // rate-limit hit `check` recorded — a rejected upload must not burn quota.
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
-        let (arrived_type, arrived_size, original_name) =
+        let (arrived_type, arrived_size, original_name, containers_field) =
             store_streamed(multipart, &tmp_path, max).await?;
+        let containers = parse_containers_field(containers_field.as_deref())?;
         // CPU-bound conversion, off the async runtime and BEFORE the barrier.
-        let processed =
-            process_staged_blocking(tmp_path.clone(), arrived_type, arrived_size, retain)
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, %id, "asset processing failed");
-                    AppError::Internal
-                })?;
+        let processed = process_staged_blocking(
+            tmp_path.clone(),
+            arrived_type,
+            arrived_size,
+            retain,
+            containers,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, %id, "asset processing failed");
+            AppError::Internal
+        })?;
         // Single-shot uploads land in the world root: no folder segments.
         let derived = derive(DeriveInput {
             content_type: &processed.content_type,
@@ -421,7 +455,7 @@ pub async fn upload(
 /// ```
 #[derive(Debug, serde::Deserialize)]
 pub struct ServeQuery {
-    /// `thumb` | `preview`; absent = the canonical file.
+    /// `thumb` | `preview` | `opus` | `opus-webm`; absent = the canonical file.
     pub variant: Option<String>,
 }
 
@@ -475,6 +509,47 @@ pub async fn serve(
     Query(q): Query<ServeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    // The Opus derivatives are NOT `Variant`s and bypass `ensure_derivative` entirely: a
+    // minutes-long transcode is never regenerated on serve, so a missing sibling is a plain
+    // 404 — derivatives are produced at commit time or not at all.
+    if matches!(q.variant.as_deref(), Some("opus") | Some("opus-webm")) {
+        let (suffix, content_type, etag_suffix) = if q.variant.as_deref() == Some("opus") {
+            (audio::OPUS_SUFFIX, audio::OPUS_CONTENT_TYPE, "opus")
+        } else {
+            (audio::WEBM_SUFFIX, audio::WEBM_CONTENT_TYPE, "opus-webm")
+        };
+        let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+        // Same read-gate as the canonical path: any member of the asset's world may read.
+        state
+            .repo
+            .permission_context(asset.world_id, user.id, user.role)
+            .await?;
+        let canonical = state.config.assets_path().join(&asset.storage_key);
+        let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
+        let bytes = tokio::fs::read(&sibling)
+            .await
+            .map_err(|_| AppError::NotFound)?;
+        let etag = format!("\"{id}-{}-{etag_suffix}\"", asset.version);
+        let if_none_match = headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if if_none_match.split(',').any(|t| t.trim() == etag) {
+            return Ok((StatusCode::NOT_MODIFIED).into_response());
+        }
+        // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
+        // audio derivative embeds via `<audio src>`, never `<img>` or a navigation.
+        return Ok((
+            [
+                (header::CONTENT_TYPE, content_type.to_string()),
+                (header::CONTENT_DISPOSITION, "inline".to_string()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                (header::ETAG, etag),
+            ],
+            Body::from(bytes),
+        )
+            .into_response());
+    }
     let variant = match q.variant.as_deref() {
         None => None,
         Some("thumb") => Some(Variant::Thumb),
@@ -671,14 +746,29 @@ pub async fn replace(
     // recorded — a rejected replace must not burn quota.
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
-        let (arrived_type, arrived_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
-        let processed =
-            process_staged_blocking(tmp_path.clone(), arrived_type, arrived_size, retain)
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, %id, "asset processing failed");
-                    AppError::Internal
-                })?;
+        let (arrived_type, arrived_size, _name, containers_field) =
+            store_streamed(multipart, &tmp_path, max).await?;
+        // No explicit selection on a replace re-emits the derivative set the asset already
+        // has (`audio::effective_reencode_selection`), never silently widening or narrowing it.
+        let containers = match containers_field.as_deref() {
+            Some(_) => parse_containers_field(containers_field.as_deref())?,
+            None => audio::effective_reencode_selection(
+                audio::has_sibling(&final_path, audio::OPUS_SUFFIX),
+                audio::has_sibling(&final_path, audio::WEBM_SUFFIX),
+            ),
+        };
+        let processed = process_staged_blocking(
+            tmp_path.clone(),
+            arrived_type,
+            arrived_size,
+            retain,
+            containers,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, %id, "asset processing failed");
+            AppError::Internal
+        })?;
         commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await
     }
     .await;

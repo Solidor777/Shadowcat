@@ -287,7 +287,7 @@ pub async fn remove_asset_files(canonical: &std::path::Path) {
 /// # #[tokio::main]
 /// # async fn main() {
 /// // A missing staged file fails to open rather than panicking.
-/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true)
+/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true, Default::default())
 ///     .await
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
@@ -298,6 +298,7 @@ pub async fn process_staged_blocking(
     original_content_type: String,
     original_byte_size: i64,
     retain_originals: bool,
+    audio_containers: process::audio::AudioContainers,
 ) -> std::io::Result<process::Processed> {
     let path = staged.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -306,6 +307,7 @@ pub async fn process_staged_blocking(
             &original_content_type,
             original_byte_size,
             retain_originals,
+            audio_containers,
         )
     })
     .await
@@ -515,6 +517,9 @@ pub async fn create_asset_from_bytes(
         content_type.to_string(),
         bytes.len() as i64,
         retain_originals,
+        // A programmatic byte-source (chat image, fixture) has no import-time
+        // container selection to honor — the default selection applies.
+        Default::default(),
     )
     .await?;
     let derived = tags::derive(tags::DeriveInput {

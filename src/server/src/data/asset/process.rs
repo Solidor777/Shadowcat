@@ -1,9 +1,15 @@
 //! Image processing for the asset pipeline: WebP conversion of a staged
 //! upload (original retained beside it when configured) plus thumb/preview
-//! derivatives. Every function here is BLOCKING (`image` decode/encode is
-//! CPU-bound) — callers run it under `tokio::task::spawn_blocking`.
+//! derivatives, and the audio transcode in the `audio` submodule (a sibling
+//! derivative off the untouched canonical). Every function here is BLOCKING
+//! (`image` decode/encode is CPU-bound) — callers run it under
+//! `tokio::task::spawn_blocking`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
+
+/// The audio transcode (Opus sibling derivatives), dispatched from
+/// `process_staged` before the image branch.
+pub mod audio;
 
 use super::AssetMeta;
 use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageReader};
@@ -43,7 +49,13 @@ fn decode_limits() -> image::Limits {
 const ORIGINAL_SUFFIX: &str = ".orig";
 /// Every suffix a sibling artifact may carry, in `sibling_paths` order. The
 /// world bundle accepts exactly this set under `assets/<id><suffix>`.
-pub const SIBLING_SUFFIXES: [&str; 3] = [ORIGINAL_SUFFIX, ".thumb.webp", ".preview.webp"];
+pub const SIBLING_SUFFIXES: [&str; 5] = [
+    ORIGINAL_SUFFIX,
+    ".thumb.webp",
+    ".preview.webp",
+    audio::OPUS_SUFFIX,
+    audio::WEBM_SUFFIX,
+];
 
 /// A derivative size class.
 ///
@@ -85,8 +97,10 @@ impl Variant {
 
 /// `path` with `suffix` appended to its final component (`<uuid>` →
 /// `<uuid>.thumb.webp`), keeping the directory. Built on the OS string, never
-/// a separator literal, so it is the same on every platform.
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+/// a separator literal, so it is the same on every platform. `pub(crate)`:
+/// `http::assets` resolves the Opus siblings through the same seam — never a
+/// re-spelled suffix join.
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut os = path.as_os_str().to_owned();
     os.push(suffix);
     PathBuf::from(os)
@@ -123,9 +137,10 @@ pub fn original_path(canonical: &Path) -> PathBuf {
     with_suffix(canonical, ORIGINAL_SUFFIX)
 }
 
-/// Every artifact that can sit beside a canonical: the retained original and
-/// the two derivatives. The single statement of the sibling set — commit,
-/// replace, delete and export all iterate this rather than re-spelling it.
+/// Every artifact that can sit beside a canonical: the retained original, the
+/// two image derivatives, and the two audio derivatives. The single statement
+/// of the sibling set — commit, replace, delete and export all iterate this
+/// rather than re-spelling it.
 ///
 /// # Examples
 ///
@@ -135,10 +150,10 @@ pub fn original_path(canonical: &Path) -> PathBuf {
 ///
 /// let canonical = Path::new("data").join("uuid");
 /// let siblings = sibling_paths(&canonical);
-/// assert_eq!(siblings.len(), 3);
+/// assert_eq!(siblings.len(), 5);
 /// assert!(siblings[0].to_string_lossy().ends_with(".orig"));
 /// ```
-pub fn sibling_paths(canonical: &Path) -> [PathBuf; 3] {
+pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
     SIBLING_SUFFIXES.map(|suffix| with_suffix(canonical, suffix))
 }
 
@@ -347,11 +362,11 @@ fn pass_through(
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::asset::process::process_staged;
+/// use shadowcat::data::asset::process::{audio::AudioContainers, process_staged};
 /// use std::path::Path;
 ///
 /// // A missing staged file fails to open rather than panicking.
-/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true)
+/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true, AudioContainers::default())
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 /// ```
@@ -360,7 +375,16 @@ pub fn process_staged(
     original_content_type: &str,
     original_byte_size: i64,
     retain_originals: bool,
+    audio_containers: audio::AudioContainers,
 ) -> io::Result<Processed> {
+    if original_content_type.starts_with("audio/") {
+        return audio::process_staged_audio(
+            staged,
+            original_content_type,
+            original_byte_size,
+            audio_containers,
+        );
+    }
     if !original_content_type.starts_with("image/") {
         return Ok(pass_through(
             original_content_type,

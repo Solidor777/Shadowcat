@@ -167,11 +167,50 @@ pub async fn reconvert(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Asset>, AppError> {
     let existing = gm_asset(&state, &user, id).await?;
+    let final_path = state.config.assets_path().join(&existing.storage_key);
+    let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", Uuid::new_v4()));
+
+    if existing.content_type.starts_with("audio/") {
+        // Audio's `original_retained` precondition holds by construction: the canonical is
+        // NEVER converted (only sibling derivatives are emitted), so the "original" a retry
+        // re-processes is the canonical file itself. This is audio's only recovery from an
+        // over-cap/failed transcode; a stale derivative of a previous success is removed by
+        // `commit_replacement`'s sibling swap when the retry emits none.
+        let copied = tokio::fs::copy(&final_path, &tmp_path).await;
+        if let Err(e) = copied {
+            tracing::error!(?e, %id, "audio canonical missing for existing record");
+            return Err(AppError::Internal);
+        }
+        let containers = crate::data::asset::process::audio::effective_reencode_selection(
+            crate::data::asset::process::audio::has_sibling(
+                &final_path,
+                crate::data::asset::process::audio::OPUS_SUFFIX,
+            ),
+            crate::data::asset::process::audio::has_sibling(
+                &final_path,
+                crate::data::asset::process::audio::WEBM_SUFFIX,
+            ),
+        );
+        let processed = process_staged_blocking(
+            tmp_path.clone(),
+            existing.content_type.clone(),
+            existing.meta.original_byte_size,
+            state.config.retain_originals,
+            containers,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, %id, "audio reconvert processing failed");
+            AppError::Internal
+        })?;
+        let asset =
+            commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await?;
+        return Ok(Json(asset));
+    }
+
     if !existing.meta.original_retained {
         return Err(AppError::NotFound);
     }
-    let final_path = state.config.assets_path().join(&existing.storage_key);
-    let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", Uuid::new_v4()));
     let copied = tokio::fs::copy(original_path(&final_path), &tmp_path).await;
     if let Err(e) = copied {
         tracing::error!(?e, %id, "retained original missing for existing record");
@@ -182,6 +221,7 @@ pub async fn reconvert(
         existing.meta.original_content_type.clone(),
         existing.meta.original_byte_size,
         state.config.retain_originals,
+        Default::default(),
     )
     .await
     .map_err(|e| {

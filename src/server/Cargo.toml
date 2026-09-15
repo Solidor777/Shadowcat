@@ -58,14 +58,16 @@ webp = "0.3"
 # compile-size caps, so an untrusted pattern cannot stall the server.
 regex = "1"
 
-# Phase 3: M23 (audio). Pure-Rust decode covers every upload format a GM has (mp3, flac, wav,
-# ogg/vorbis, aac-lc, isomp4) with no C toolchain — the same "no FFmpeg" posture as the image
-# pipeline (symphonia is MPL-2.0; the "ogg" feature demuxes the container vorbis arrives in).
+# Phase 3: M23 (audio). Pure-Rust decode covers every upload format a GM has (mp3, flac, wav
+# (via the `pcm` codec feature), ogg/vorbis, aac-lc, isomp4) with no C toolchain — the same
+# "no FFmpeg" posture as the image pipeline (symphonia is MPL-2.0; the "ogg" feature demuxes
+# the container vorbis arrives in, "mkv" the one webm arrives in and the WebM round-trip
+# probe needs).
 # `opus` (MIT/Apache-2.0) / `opusic-sys` (BSD-3-Clause) bind libopus via cmake — opusic-sys's
 # default `bundled` feature drives the `cmake` crate (see spec §2.3's measured per-OS cmake
 # availability); `ogg` (BSD-3-Clause) wraps the encoded frames in
 # Ogg pages; `rubato` (MIT/Apache-2.0) resamples to the 48 kHz Opus wants before encoding.
-symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac", "wav", "vorbis", "ogg", "aac", "isomp4"] }
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac", "wav", "pcm", "vorbis", "ogg", "aac", "isomp4", "mkv"] }
 opus = "0.4"
 ogg = "0.9"
 rubato = "5"
