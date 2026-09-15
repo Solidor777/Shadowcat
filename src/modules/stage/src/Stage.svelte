@@ -370,8 +370,13 @@
       });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
-      // Re-reconcile explicitly so a replaced/deleted background re-resolves.
-      offAsset = onAssetChanged(() => e.reconcileNow());
+      // Re-reconcile explicitly so a replaced/deleted background re-resolves. The VFX
+      // metadata cache is invalidated the same way: a replaced animated asset derives a NEW
+      // grid sheet, and the stale SheetMeta would slice it with the old geometry.
+      offAsset = onAssetChanged((m) => {
+        vfxAssetCache.invalidate(m.uuid);
+        e.reconcileNow();
+      });
       observer = new ResizeObserver(() => {
         e.setViewport(host.clientWidth, host.clientHeight);
       });

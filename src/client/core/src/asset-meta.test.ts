@@ -82,4 +82,19 @@ describe("AssetMetaCache", () => {
     await cache.warm(ID);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("invalidate drops a cached entry so a later warm refetches", async () => {
+    const asset = fakeAsset(ID);
+    // A fresh Response per call: a Response body is consumed by the first res.json().
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(okResponse(asset)));
+    vi.stubGlobal("fetch", fetchMock);
+    const cache = new AssetMetaCache();
+    await cache.warm(ID);
+    expect(cache.get(ID)).toEqual(asset);
+    cache.invalidate(ID);
+    expect(cache.get(ID)).toBeNull();
+    await cache.warm(ID);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(cache.get(ID)).toEqual(asset);
+  });
 });

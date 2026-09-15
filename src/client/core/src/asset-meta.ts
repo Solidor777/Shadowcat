@@ -39,6 +39,21 @@ export class AssetMetaCache {
   }
 
   /**
+   * Drops any cached metadata for `id` (a replaced/reconverted asset derives a NEW sheet —
+   * the stale `SheetMeta` would slice the new image with the old geometry). Wired to the
+   * asset-changed notice at the consumption site; a later `warm` refetches.
+   * @param id The asset id to invalidate.
+   * @example
+   * ```ts
+   * const cache = new AssetMetaCache();
+   * cache.invalidate("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
+  invalidate(id: string): void {
+    this.#entries.delete(id);
+  }
+
+  /**
    * Fetches `id`'s metadata (via `getAssetMeta`) and caches it; a concurrent call for the
    * same id shares one in-flight fetch. A fetch failure (network error, 404) resolves to
    * `null` and leaves the cache unset for `id` — a later warm retries.
