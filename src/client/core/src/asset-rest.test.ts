@@ -31,6 +31,13 @@ test("uploadAsset appends the containers field when a selection is given", async
   expect(form.get("containers")).toBe("ogg");
 });
 
+test("queryAssets round-trips the audio kind", async () => {
+  const f = mockFetch(200, { items: [], next_cursor: null });
+  await api.queryAssets("w1", { kind: "audio" });
+  const url = new URL(String(f.mock.calls[0][0]), "http://x");
+  expect(url.searchParams.get("kind")).toBe("audio");
+});
+
 test("listAssets GETs the per-world list", async () => {
   mockFetch(200, [{ id: "a1" }]);
   expect(await api.listAssets("w1")).toHaveLength(1);

@@ -103,3 +103,38 @@ test("replace swaps bytes behind the stable uuid via replaceAsset", async () => 
   await waitFor(() => expect(rep).toHaveBeenCalledWith("a1", file));
   expect(changed).toHaveBeenCalled();
 });
+
+test("an audio asset renders the inline play button and duration; an image renders the img", async () => {
+  const playOneShot = vi.fn();
+  const first = render(PreviewPane, {
+    props: {
+      asset: asset({ id: "a9", content_type: "audio/wav", original_name: "loop.wav", duration_ms: 2_500n }),
+      mutable: true,
+      onChanged: vi.fn(),
+    },
+    context: setAppContextForTest({
+      audio: {
+        channels: { master: { gain: 1, muted: false } },
+        setChannel: () => {},
+        unlock: async () => {},
+        duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
+        playOneShot,
+        serverNow: () => 0,
+        transport: () => {},
+      } as never,
+    }),
+  });
+  expect(screen.getByTestId("preview-audio")).toBeTruthy();
+  expect(screen.getByText("2.5s")).toBeTruthy();
+  await fireEvent.click(screen.getByTestId("preview-audio-play"));
+  expect(playOneShot).toHaveBeenCalledWith("a9");
+  first.unmount();
+
+  const { unmount } = render(PreviewPane, {
+    props: { asset: asset({ id: "a2", content_type: "image/webp" }), mutable: true, onChanged: vi.fn() },
+    context: setAppContextForTest(),
+  });
+  expect(screen.getAllByTestId("preview-pane").length).toBeGreaterThan(0);
+  expect(screen.queryByTestId("preview-audio-play")).toBeNull();
+  unmount();
+});
