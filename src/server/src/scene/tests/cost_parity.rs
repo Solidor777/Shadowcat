@@ -41,6 +41,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                     footprint_radius: 0.4,
                     budget_cells: None,
                     traits: MoveTraits::default(),
+                    elevation: elevation::GROUND,
                 },
             )
             .expect("routable");
@@ -53,6 +54,7 @@ fn router_preview_cost_equals_executor_cost_per_diagonal_rule() {
                 cell: 100.0,
                 budget: None,
                 traits: MoveTraits::default(),
+                mover_elevation: elevation::GROUND,
             },
             Uuid::from_u128(2),
             &route.path,
@@ -107,6 +109,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("routable");
@@ -119,6 +122,7 @@ fn continuous_smoothed_preview_cost_equals_executor_cost() {
             cell: 100.0,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: elevation::GROUND,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -185,6 +189,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("routable");
@@ -203,6 +208,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: EXEMPT_TRAITS,
+                elevation: elevation::GROUND,
             },
         )
         .expect("routable");
@@ -220,6 +226,7 @@ fn exempt_mover_grid_preview_equals_executor_and_both_read_unweighted() {
             cell: 100.0,
             budget: None,
             traits: EXEMPT_TRAITS,
+            mover_elevation: elevation::GROUND,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -283,6 +290,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: EXEMPT_TRAITS,
+                elevation: elevation::GROUND,
             },
         )
         .expect("routable");
@@ -311,6 +319,7 @@ fn exempt_mover_continuous_takes_the_plain_any_angle_route_through_terrain() {
             cell: 100.0,
             budget: None,
             traits: EXEMPT_TRAITS,
+            mover_elevation: elevation::GROUND,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -367,6 +376,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: EXEMPT_TRAITS,
+                elevation: elevation::GROUND,
             },
         )
         .expect("a route around the band exists");
@@ -384,6 +394,7 @@ fn exempt_mover_continuous_still_routes_around_impassable() {
             cell: 100.0,
             budget: None,
             traits: EXEMPT_TRAITS,
+            mover_elevation: elevation::GROUND,
         },
         Uuid::from_u128(2),
         &route.path,
@@ -448,6 +459,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("routable");
@@ -461,6 +473,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: EXEMPT_TRAITS,
+                elevation: elevation::GROUND,
             },
         )
         .expect("routable");
@@ -501,6 +514,7 @@ fn exempt_mover_continuous_weighted_subpath_chords_through_terrain_at_unweighted
             cell: 100.0,
             budget: None,
             traits: EXEMPT_TRAITS,
+            mover_elevation: elevation::GROUND,
         },
         Uuid::from_u128(2),
         &route.path,

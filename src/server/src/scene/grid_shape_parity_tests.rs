@@ -203,6 +203,7 @@ fn gate_walk_mask_gate_parity_pins_diagonal_truncation_point() {
             cell: FIXTURE_GRID_SIZE,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -271,6 +272,7 @@ fn gate_walk_flanker_gate_truncates_with_both_diagonal_endpoints_visible() {
             cell: FIXTURE_GRID_SIZE,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -329,6 +331,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                     footprint_radius: 0.1,
                     budget_cells: None,
                     traits: MoveTraits::default(),
+                    elevation: crate::scene::elevation::GROUND,
                 },
             )
             .expect("unclamped route");
@@ -343,6 +346,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                     footprint_radius: 0.1,
                     budget_cells: Some(2.0),
                     traits: MoveTraits::default(),
+                    elevation: crate::scene::elevation::GROUND,
                 },
             )
             .expect("clamped route");
@@ -356,6 +360,7 @@ fn budget_clamped_preview_last_point_equals_executor_stop() {
                 cell: FIXTURE_GRID_SIZE,
                 budget: Some(2.0),
                 traits: MoveTraits::default(),
+                mover_elevation: crate::scene::elevation::GROUND,
             },
             token,
             &full.path,

@@ -1204,6 +1204,13 @@ async fn handle_pathfind(
             footprint_radius,
             budget_cells,
             traits,
+            // The mover's floor: resolved off the named token's stored elevation (the same
+            // re-resolution `footprint_radius` gets above), never the wire's claim; a token-less
+            // hypothetical preview routes at ground.
+            elevation: match token {
+                Some(t) => s.token_mover_elevation(t),
+                None => crate::scene::elevation::GROUND,
+            },
         },
     ) {
         Ok(outcome) => ServerMsg::PathResult {

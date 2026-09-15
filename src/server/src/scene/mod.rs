@@ -802,8 +802,8 @@ impl InstantSight<'_> {
 /// ```
 pub struct RouteRequester<'a> {
     /// The requesting user. Selects the per-requester wall/region view via
-    /// `move_walls(scene, Some(user))` / `region_field(scene, Some(user))`, and the visibility
-    /// mask via `visible_cells(user, ..)`.
+    /// `move_walls(scene, Some(user), ..)` / `region_field(scene, Some(user), ..)`, and the
+    /// visibility mask via `visible_cells(user, ..)`.
     pub user: Uuid,
     /// Whether the requester is a GM. Skips the mask entirely and selects the AUTHORITATIVE
     /// (`None`-viewer) wall set and region field — callers must never pass a GM's id as the
@@ -840,6 +840,7 @@ pub struct RouteRequester<'a> {
 ///     footprint_radius: 0.4,
 ///     budget_cells: None,
 ///     traits: Default::default(),
+///     elevation: 0.0,
 /// };
 /// assert_eq!(mover.footprint_radius, 0.4);
 /// ```
@@ -858,6 +859,12 @@ pub struct RouteMover {
     /// weighted sub-path on a Continuous scene (impassable still does: the exemption is terrain
     /// COST, never solidity).
     pub traits: pathfinding::MoveTraits,
+    /// The mover's resolved elevation (`elevation::elevation_or_ground` of the named token's
+    /// stored value, or the hypothetical wire value for a token-less preview) — filters
+    /// `move_walls`/`region_field` to the mover's floor. NEVER the client's raw claim for a
+    /// named-token request: the caller re-resolves it off the token exactly as `footprint_radius`
+    /// is re-resolved.
+    pub elevation: f64,
 }
 
 /// The per-world derived world. Writes are serialized by the caller
@@ -2295,23 +2302,27 @@ impl SceneEcs {
         out
     }
 
-    /// The scene's `blocksMove` wall segments. Mirrors the wall filter in `blocks_move`
-    /// (doc_type "wall", parent = scene, `engine.blocksMove == true`, endpoints at
-    /// `engine.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
-    /// would allow the pathfinder to route through walls the movement gate would then reject.
+    /// The scene's `blocksMove` wall segments with their elevation bands — the raw collector
+    /// behind `move_walls`. Two-value secrecy contract identical to `region_field`'s, and never a
+    /// third mode: `viewer: None` is the AUTHORITATIVE set — used by `execute_move` and by a GM
+    /// requester; `viewer: Some(user)` is the PER-REQUESTER set used by the routers, where a wall
+    /// is included only when `user` can see the visibility tier declared on its `/engine`. A
+    /// `gm_only` wall is therefore absent from a non-GM's route (its geometry cannot be inferred
+    /// from route shape) but still blocks at execution, exactly as a secret region springs.
+    /// Callers MUST pass `None` for a GM requester.
     ///
-    /// Two-value secrecy contract, identical to `region_field`'s and never a third mode:
-    /// `viewer: None` is the AUTHORITATIVE set — used by `execute_move` and by a GM requester;
-    /// `viewer: Some(user)` is the PER-REQUESTER set used by the routers, where a wall is included
-    /// only when `user` can see the visibility tier declared on its `/engine`. A `gm_only` wall is
-    /// therefore absent from a non-GM's route (its geometry cannot be inferred from route shape)
-    /// but still blocks at execution, exactly as a secret region springs. Callers MUST pass `None`
-    /// for a GM requester.
+    /// INVARIANT: same wall filter as `blocks_move` (doc_type "wall", parent = scene,
+    /// `engine.blocksMove == true`, endpoints at `engine.seg.{x1,y1,x2,y2}`) — any divergence
+    /// would allow the pathfinder to route through walls the movement gate would then reject.
     ///
     /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
     /// full set including `gm_only` walls (full-wall-set invariant) — a wall you cannot see
     /// still blocks your sight, which under-reveals and is correct. Do not unify the two.
-    pub(crate) fn move_walls(&self, scene: Uuid, viewer: Option<Uuid>) -> Vec<vision::Seg> {
+    pub(crate) fn move_wall_entries(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+    ) -> Vec<elevation::BandedWall> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -2326,12 +2337,29 @@ impl SceneEcs {
             if !engine_tier_visible(&w.doc, viewer) {
                 continue;
             }
-            out.push(vision::Seg {
-                a: (wall.seg.x1, wall.seg.y1),
-                b: (wall.seg.x2, wall.seg.y2),
-            });
+            out.push((
+                vision::Seg {
+                    a: (wall.seg.x1, wall.seg.y1),
+                    b: (wall.seg.x2, wall.seg.y2),
+                },
+                wall.elevation,
+            ));
         }
         out
+    }
+
+    /// The `blocksMove` wall segments of `scene`, per-requester (`viewer`, see
+    /// `move_wall_entries`), filtered to the segments whose band contains `mover_elevation`
+    /// (`elevation::band_contains` — a floor-2 wall no longer blocks a floor-1 mover). Callers
+    /// MUST pass the mover's OWN resolved elevation (`elevation::elevation_or_ground` of its
+    /// stored value), never a client-claimed one.
+    pub(crate) fn move_walls(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+        mover_elevation: f64,
+    ) -> Vec<vision::Seg> {
+        elevation::walls_at_elevation(&self.move_wall_entries(scene, viewer), mover_elevation)
     }
 
     /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells,
@@ -2425,7 +2453,7 @@ impl SceneEcs {
     ///     world_defaults: &defaults,
     ///     explored: None,
     /// };
-    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default() };
+    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default(), elevation: 0.0 };
     /// // No scene document exists: the route is refused, not routed against a synthesized grid.
     /// let result = ecs.pathfind(requester, uuid::Uuid::new_v4(), (0.0, 0.0), &[], mover);
     /// assert!(result.is_err());
@@ -2449,6 +2477,7 @@ impl SceneEcs {
             footprint_radius,
             budget_cells,
             traits,
+            elevation,
         } = mover;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
@@ -2462,12 +2491,13 @@ impl SceneEcs {
             return Err(pathfinding::PathFail::Invalid);
         };
         let grid_shape = self.resolve_grid_shape(scene, cell);
-        // Per-requester routing wall set: a non-GM's route omits `gm_only` walls, so their
-        // geometry cannot be inferred from route shape. The executor always reads the authoritative
-        // set (`None`) and springs a secret wall at execution, exactly as a secret region springs.
-        // Hoisted out of the engine dispatch so BOTH engines receive the SAME slice — never a
-        // forked wall computation (the same discipline `mask` follows).
-        let walls = self.move_walls(scene, if is_gm { None } else { Some(user) });
+        // Per-requester routing wall set, filtered to the mover's floor: a non-GM's route omits
+        // `gm_only` walls, so their geometry cannot be inferred from route shape, and a wall
+        // banded to another level blocks nobody on this one. The executor always reads the
+        // authoritative set (`None`) and springs a secret wall at execution, exactly as a secret
+        // region springs. Hoisted out of the engine dispatch so BOTH engines receive the SAME
+        // slice — never a forked wall computation (the same discipline `mask` follows).
+        let walls = self.move_walls(scene, if is_gm { None } else { Some(user) }, elevation);
         // Hoisted so `movement_model` is available to the engine dispatch regardless of `is_gm`
         // (a GM can also route on a continuous scene); the mask build and the dispatch discriminant
         // read this one resolution.
@@ -2509,7 +2539,8 @@ impl SceneEcs {
                 // field; a non-GM requester's field silently omits any region they cannot see, so
                 // a secret region never influences their route or budget (it "springs" only at
                 // execution, `move_exec`, which always reads the authoritative field).
-                let Some(regions) = self.region_field(scene, if is_gm { None } else { Some(user) })
+                let Some(regions) =
+                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
                 else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
@@ -2536,7 +2567,8 @@ impl SceneEcs {
                 // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
                 // paths. The per-requester field omits any region a non-GM cannot see (secret
                 // regions spring only at `move_exec`).
-                let Some(regions) = self.region_field(scene, if is_gm { None } else { Some(user) })
+                let Some(regions) =
+                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
                 else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
@@ -2675,6 +2707,9 @@ impl SceneEcs {
     /// GM always sees the authoritative field, mirroring `visible_cells`'s GM-skips-the-mask
     /// convention in `pathfind`).
     ///
+    /// The composed field additionally excludes any region whose elevation band does not contain
+    /// `elevation` (`elevation::band_contains`) — the mover's floor, never the viewer's.
+    ///
     /// Returns `None` when `scene` has no live document (an absent `scene_grid_sizes` entry) —
     /// refuse rather than synthesize a grid. Callers must refuse the whole operation on `None`,
     /// mirroring `pathfind`'s `PathFail::Invalid`.
@@ -2682,6 +2717,7 @@ impl SceneEcs {
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
+        elevation: f64,
     ) -> Option<regions::RegionField> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
@@ -2698,6 +2734,9 @@ impl SceneEcs {
                 continue;
             }
             if !engine_tier_visible(doc, viewer) {
+                continue;
+            }
+            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
                 continue;
             }
             let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
@@ -2722,13 +2761,20 @@ impl SceneEcs {
     /// per-requester form: triggers fire on the server's authoritative view, springing secret
     /// regions exactly as `move_exec` does; secrecy is enforced on the effect side (a
     /// not-visible-to-all region's notices are forced GM-only), never by filtering this table.
+    /// A region whose elevation band does not contain `elevation` (`elevation::band_contains` —
+    /// the entering mover's floor) is excluded alongside the visible-to-all/triggers-non-empty
+    /// filters: a floor-2 region never fires on a floor-1 token.
     /// Recomputed on demand from the same ECS entities `region_field` reads, so a region-doc
     /// mutation applied through `apply_op` is reflected on the next call.
     ///
     /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
     /// Rows are sorted by region id so downstream effect application order is deterministic
     /// (entity-query order is unspecified).
-    pub(crate) fn trigger_regions(&self, scene: Uuid) -> Option<Vec<regions::TriggerRegion>> {
+    pub(crate) fn trigger_regions(
+        &self,
+        scene: Uuid,
+        elevation: f64,
+    ) -> Option<Vec<regions::TriggerRegion>> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
         let mut out = Vec::new();
@@ -2741,6 +2787,9 @@ impl SceneEcs {
                 continue;
             };
             if !region_eng.enabled || region_eng.triggers.is_empty() {
+                continue;
+            }
+            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
                 continue;
             }
             let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
@@ -4115,19 +4164,29 @@ impl SceneEcs {
     }
 
     /// Engine-owned movement collision. True if the move segment `a0→a1` crosses any `blocksMove`
-    /// wall in `scene`. A no-op move (`a0 == a1`) never blocks.
+    /// wall in `scene` whose elevation band contains `mover_elevation`
+    /// (`elevation::walls_at_elevation` — the same band filter the production `move_walls`
+    /// applies). A no-op move (`a0 == a1`) never blocks.
     ///
     /// This is the REFERENCE implementation of wall-crossing semantics — one home for it, per the
-    /// module's own INVARIANT on `move_walls`. `move_exec::execute_move`'s per-cell wall gate is
-    /// the production traversal path and does not call this function directly (it composes
-    /// `move_walls(scene, None)` with `segments_cross` inline instead); an anti-drift test pins
-    /// the two to agreement, so a change to either wall filter that drifts them apart fails it.
-    /// Test-only: it has no production caller, so it compiles only into test builds.
+    /// module's own INVARIANT on `move_wall_entries`. `move_exec::execute_move`'s per-cell wall
+    /// gate is the production traversal path and does not call this function directly (it composes
+    /// `move_walls(scene, None, mover_elevation)` with `segments_cross` inline instead); an
+    /// anti-drift test pins the two to agreement, so a change to either wall filter that drifts
+    /// them apart fails it. Test-only: it has no production caller, so it compiles only into
+    /// test builds.
     #[cfg(test)]
-    pub(crate) fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
+    pub(crate) fn blocks_move(
+        &self,
+        scene: Uuid,
+        a0: (f64, f64),
+        a1: (f64, f64),
+        mover_elevation: f64,
+    ) -> bool {
         if a0 == a1 {
             return false;
         }
+        let mut banded: Vec<elevation::BandedWall> = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -4138,16 +4197,36 @@ impl SceneEcs {
             if wall.blocks_move != Some(true) {
                 continue;
             }
-            if segments_cross(
-                a0,
-                a1,
-                (wall.seg.x1, wall.seg.y1),
-                (wall.seg.x2, wall.seg.y2),
-            ) {
+            banded.push((
+                vision::Seg {
+                    a: (wall.seg.x1, wall.seg.y1),
+                    b: (wall.seg.x2, wall.seg.y2),
+                },
+                wall.elevation,
+            ));
+        }
+        for w in elevation::walls_at_elevation(&banded, mover_elevation) {
+            if segments_cross(a0, a1, w.a, w.b) {
                 return true;
             }
         }
         false
+    }
+
+    /// A token's resolved elevation for the movement/routing gates:
+    /// `elevation::elevation_or_ground` of its stored `TokenEngine.elevation`. `GROUND` when the
+    /// token or its engine body is unreadable — the caller's own token-existence check
+    /// (`token_move`, `resolve_token_footprint`) is what refuses a missing token; this accessor
+    /// only ever resolves the floor of a token that check already admitted.
+    pub(crate) fn token_mover_elevation(&self, token: Uuid) -> f64 {
+        let Some(&e) = self.index.get(&token) else {
+            return elevation::GROUND;
+        };
+        let Ok(ent) = self.world.get::<&SceneEntity>(e) else {
+            return elevation::GROUND;
+        };
+        let eng = self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc);
+        elevation::elevation_or_ground(eng.and_then(|t| t.elevation))
     }
 }
 

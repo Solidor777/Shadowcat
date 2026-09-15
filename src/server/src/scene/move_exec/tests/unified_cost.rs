@@ -31,6 +31,7 @@ fn diagonal_steps_are_priced_by_the_world_rule() {
                 cell: FIXTURE_GRID_SIZE,
                 budget: None,
                 traits: MoveTraits::default(),
+                mover_elevation: crate::scene::elevation::GROUND,
             },
             token,
             &[(0.0, 0.0), (100.0, 100.0)],
@@ -58,6 +59,7 @@ fn alternating_rule_threads_parity_across_consecutive_diagonals() {
             cell: FIXTURE_GRID_SIZE,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0), (200.0, 200.0), (300.0, 300.0)],
@@ -80,6 +82,7 @@ fn budget_truncates_at_the_last_affordable_step_and_reports_truncated() {
             cell: FIXTURE_GRID_SIZE,
             budget: Some(2.0),
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)],
@@ -104,6 +107,7 @@ fn budget_exactly_equal_to_the_cost_is_affordable() {
             cell: FIXTURE_GRID_SIZE,
             budget: Some(3.0),
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -130,6 +134,7 @@ fn gm_move_ignores_budget_but_still_accrues_cost() {
             cell: FIXTURE_GRID_SIZE,
             budget: Some(0.0),
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0)],
@@ -157,6 +162,7 @@ fn non_finite_budget_is_rejected_as_degenerate() {
             cell: FIXTURE_GRID_SIZE,
             budget: Some(f64::NAN),
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(0.0, 0.0), (100.0, 100.0)],
@@ -185,6 +191,7 @@ fn hex_steps_cost_one_regardless_of_the_square_rule() {
             cell: FIXTURE_GRID_SIZE,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[a, b],
@@ -215,6 +222,7 @@ fn exempt_mover_pays_unweighted_through_terrain_where_the_ground_mover_pays_the_
         cell: FIXTURE_GRID_SIZE,
         budget: None,
         traits,
+        mover_elevation: crate::scene::elevation::GROUND,
     };
     let grounded = execute_move(&ecs, gate(MoveTraits::default()), token, &path, false, 0.4)
         .expect("admissible");
@@ -249,6 +257,7 @@ fn exempt_mover_budget_stop_uses_the_exempt_cost() {
             cell: FIXTURE_GRID_SIZE,
             budget: Some(2.0),
             traits: EXEMPT_TRAITS,
+            mover_elevation: crate::scene::elevation::GROUND,
         },
         token,
         &[(50.0, 50.0), (150.0, 50.0), (250.0, 50.0)],
@@ -281,6 +290,7 @@ fn exempt_mover_continuous_transition_and_tail_both_read_unweighted() {
         cell: FIXTURE_GRID_SIZE,
         budget: None,
         traits,
+        mover_elevation: crate::scene::elevation::GROUND,
     };
     let path = [(50.0, 50.0), (160.0, 50.0)];
     let grounded = execute_move(&ecs, gate(MoveTraits::default()), token, &path, false, 0.4)
@@ -312,6 +322,7 @@ fn exemption_never_covers_impassable_or_arrest() {
         cell: FIXTURE_GRID_SIZE,
         budget: None,
         traits: EXEMPT_TRAITS,
+        mover_elevation: crate::scene::elevation::GROUND,
     };
     let blocked = execute_move(
         &ecs,

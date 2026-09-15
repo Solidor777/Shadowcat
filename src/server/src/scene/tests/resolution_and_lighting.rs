@@ -1291,7 +1291,9 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
         0,
     );
 
-    let authoritative = ecs.region_field(scene_id, None).expect("scene exists");
+    let authoritative = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
     assert!(
         authoritative.is_impassable((0, 0)),
         "authoritative field includes the secret region"
@@ -1299,7 +1301,7 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     assert_eq!(authoritative.terrain_multiplier((2, 0)), 2.0);
 
     let player_field = ecs
-        .region_field(scene_id, Some(player))
+        .region_field(scene_id, Some(player), elevation::GROUND)
         .expect("scene exists");
     assert!(
         !player_field.is_impassable((0, 0)),
@@ -1335,7 +1337,7 @@ fn region_field_ignores_disabled_regions() {
         0,
     );
     assert!(!ecs
-        .region_field(scene_id, None)
+        .region_field(scene_id, None, elevation::GROUND)
         .expect("scene exists")
         .is_impassable((0, 0)));
 }
@@ -1377,9 +1379,13 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
         0,
     );
 
-    let field = ecs.region_field(scene_id, None).expect("scene exists");
+    let field = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
     let field_cells: std::collections::BTreeSet<_> = field.iter_cells().map(|(c, _)| c).collect();
-    let rows = ecs.trigger_regions(scene_id).expect("scene exists");
+    let rows = ecs
+        .trigger_regions(scene_id, elevation::GROUND)
+        .expect("scene exists");
     assert_eq!(
         rows.len(),
         2,
@@ -1406,7 +1412,7 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
 fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
     // A scene with one blocksMove wall and one non-blocksMove wall yields exactly the blocking segment.
     let (ecs, scene) = scene_with_two_walls_one_blocking();
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
     let w = walls[0];
     assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
@@ -1463,11 +1469,11 @@ fn scene_with_invisible_barrier_wall() -> (SceneEcs, Uuid, Uuid) {
 fn move_walls_omits_a_gm_only_wall_for_a_player_viewer() {
     let (ecs, scene, player) = scene_with_public_and_secret_move_walls();
     assert_eq!(
-        ecs.move_walls(scene, None).len(),
+        ecs.move_walls(scene, None, elevation::GROUND).len(),
         2,
         "authoritative view carries every blocksMove wall"
     );
-    let visible = ecs.move_walls(scene, Some(player));
+    let visible = ecs.move_walls(scene, Some(player), elevation::GROUND);
     assert_eq!(
         visible.len(),
         1,
@@ -1486,7 +1492,7 @@ fn move_walls_keeps_a_blocks_sight_false_wall_for_a_player() {
     // must honor it. Only document-level secrecy filters — the two kinds are not the same axis.
     let (ecs, scene, player) = scene_with_invisible_barrier_wall();
     assert_eq!(
-        ecs.move_walls(scene, Some(player)).len(),
+        ecs.move_walls(scene, Some(player), elevation::GROUND).len(),
         1,
         "a blocksSight:false wall is public geometry and stays in the player's routing set"
     );
@@ -1508,7 +1514,7 @@ fn vision_and_lighting_keep_a_gm_only_wall_that_routing_drops() {
         "light_walls keeps the gm_only wall"
     );
     assert_eq!(
-        ecs.move_walls(scene, Some(player)).len(),
+        ecs.move_walls(scene, Some(player), elevation::GROUND).len(),
         1,
         "only the ROUTING set filters per requester"
     );
@@ -1574,7 +1580,9 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
 #[test]
 fn absent_scene_region_field_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
-    assert!(ecs.region_field(Uuid::from_u128(0xDEAD), None).is_none());
+    assert!(ecs
+        .region_field(Uuid::from_u128(0xDEAD), None, elevation::GROUND)
+        .is_none());
 }
 
 #[test]
@@ -1638,8 +1646,8 @@ fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
 #[test]
 fn navmesh_for_does_not_share_a_mesh_across_differing_wall_sets() {
     let (ecs, scene, player) = scene_with_public_and_secret_move_walls();
-    let gm_walls = ecs.move_walls(scene, None);
-    let player_walls = ecs.move_walls(scene, Some(player));
+    let gm_walls = ecs.move_walls(scene, None, elevation::GROUND);
+    let player_walls = ecs.move_walls(scene, Some(player), elevation::GROUND);
     let gm_mesh = ecs
         .navmesh_for(scene, 0.4, &gm_walls)
         .expect("gm mesh builds");
@@ -1655,7 +1663,7 @@ fn navmesh_for_does_not_share_a_mesh_across_differing_wall_sets() {
 #[test]
 fn navmesh_for_shares_a_mesh_across_identical_wall_sets() {
     let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let a = ecs.navmesh_for(scene, 0.4, &walls).expect("first build");
     let b = ecs.navmesh_for(scene, 0.4, &walls).expect("second build");
     assert!(
@@ -1669,7 +1677,7 @@ fn navmesh_for_wall_key_is_order_independent() {
     // `hecs` iteration order is not stable, so the same set produced in a different order must
     // still hit the cache.
     let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let mut reversed = walls.clone();
     reversed.reverse();
     let a = ecs.navmesh_for(scene, 0.4, &walls).expect("first build");
@@ -1686,7 +1694,7 @@ fn navmesh_for_wall_key_is_order_independent() {
 fn wall_mutation_invalidates_the_navmesh_cache() {
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let a = ecs.navmesh_for(scene, 0.4, &walls).expect("navmesh builds");
     ecs.apply_op(&Operation::Create {
         doc: entity_doc_eng(
@@ -1697,7 +1705,7 @@ fn wall_mutation_invalidates_the_navmesh_cache() {
                     "blocksMove": true, "blocksSight": false, "blocksLight": false }),
         ),
     });
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let b = ecs
         .navmesh_for(scene, 0.4, &walls)
         .expect("navmesh rebuilds");
@@ -2525,4 +2533,74 @@ fn recipient_sight_agrees_with_player_lit_mask_cell_for_cell() {
         lit > 0 && dark > 0,
         "non-vacuous: the light reaches some cells, not all"
     );
+}
+
+#[test]
+fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
+    // Two enabled, trigger-bearing, impassable regions: one banded to a floor-2 band [10,20]
+    // over cell (0,0), one unbanded over cell (2,0). The band is the only difference.
+    let scene_id = Uuid::from_u128(10);
+    let enter_notice = serde_json::json!([
+        { "on": "enter", "effect": { "type": "chat_notice", "text": "hi", "audience": "gm_only" } }
+    ]);
+    let region = |id: u128, x0: f64, band: serde_json::Value| {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(id),
+            "region",
+        );
+        d.parent_id = Some(scene_id);
+        d.engine = Some(serde_json::json!({
+            "shape": { "kind": "rect", "points": [x0, 0.0, x0 + 100.0, 100.0] },
+            "behavior": "impassable",
+            "cost": 1.0,
+            "enabled": true,
+            "triggers": enter_notice,
+            "elevation": band,
+        }));
+        d
+    };
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            region(20, 0.0, serde_json::json!({ "bottom": 10.0, "top": 20.0 })),
+            region(21, 200.0, serde_json::Value::Null),
+        ],
+        0,
+    );
+
+    // A floor-0 mover: the floor-2 region is absent from BOTH the composed field and the
+    // trigger table; the unbanded region is present in both.
+    let field = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
+    assert!(
+        !field.is_impassable((0, 0)),
+        "a floor-2 region is absent from a floor-0 mover's field"
+    );
+    assert!(
+        field.is_impassable((2, 0)),
+        "an unbanded region applies at every elevation"
+    );
+    let rows = ecs
+        .trigger_regions(scene_id, elevation::GROUND)
+        .expect("scene exists");
+    assert!(
+        rows.iter().all(|r| r.region_id != Uuid::from_u128(20)),
+        "a floor-2 region never fires on a floor-0 token"
+    );
+    assert!(
+        rows.iter().any(|r| r.region_id == Uuid::from_u128(21)),
+        "an unbanded region fires at every elevation"
+    );
+
+    // A mover inside the band: both regions apply, to the field and to the trigger table.
+    let field = ecs
+        .region_field(scene_id, None, 15.0)
+        .expect("scene exists");
+    assert!(field.is_impassable((0, 0)));
+    assert!(field.is_impassable((2, 0)));
+    let rows = ecs.trigger_regions(scene_id, 15.0).expect("scene exists");
+    assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(20)));
+    assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(21)));
 }

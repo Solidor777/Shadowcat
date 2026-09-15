@@ -198,9 +198,9 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
         ],
         0,
     );
-    assert!(ecs.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // crosses the wall
-    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (1.0, 1.0))); // misses (sum 2 < 10)
-    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (0.0, 0.0))); // a no-op move never blocks
+    assert!(ecs.blocks_move(scene, (0.0, 0.0), (10.0, 10.0), elevation::GROUND)); // crosses the wall
+    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (1.0, 1.0), elevation::GROUND)); // misses (sum 2 < 10)
+    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (0.0, 0.0), elevation::GROUND)); // a no-op move never blocks
 
     // Scene scoping: an identical crossing wall in scene 20 blocks a scene-20 move but NOT
     // a scene-10 move (the `parent_id == Some(scene)` filter).
@@ -212,8 +212,8 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
         ],
         0,
     );
-    assert!(ecs_scope.blocks_move(other, (0.0, 0.0), (10.0, 10.0))); // blocks in scene 20
-    assert!(!ecs_scope.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // not in scene 10
+    assert!(ecs_scope.blocks_move(other, (0.0, 0.0), (10.0, 10.0), elevation::GROUND)); // blocks in scene 20
+    assert!(!ecs_scope.blocks_move(scene, (0.0, 0.0), (10.0, 10.0), elevation::GROUND)); // not in scene 10
 
     // A scene whose only crossing wall is blocksMove:false must not block movement.
     let ecs2 = SceneEcs::from_documents(
@@ -228,13 +228,14 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
         ],
         0,
     );
-    assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0)));
+    assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0), elevation::GROUND));
 }
 
 /// Anti-drift check: `blocks_move` (the reference implementation) must agree with the
-/// production traversal path (`move_walls(scene, None)` filtered by `segments_cross`, as
-/// used by `move_exec`'s per-cell wall gate) on every segment tried here, evaluated against
-/// BOTH scenes in the fixture — including the case where a segment would cross a wall that
+/// production traversal path (`move_walls(scene, None, mover_elevation)` filtered by
+/// `segments_cross`, as used by `move_exec`'s per-cell wall gate) on every segment tried here,
+/// evaluated against BOTH scenes in the fixture and at BOTH an elevation inside the banded
+/// wall's band and one outside it — including the case where a segment would cross a wall that
 /// belongs to the OTHER scene. A mutation of either `blocks_move`'s or `move_walls`'s wall
 /// filter is expected to fail this test.
 #[test]
@@ -243,6 +244,10 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
     let other_scene = Uuid::from_u128(20);
     let blocking = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
     let non_blocking = json!({ "seg": {"x1":0,"y1":0,"x2":0,"y2":20}, "blocksMove": false });
+    let banded_blocking = json!({
+        "seg": {"x1":0,"y1":20,"x2":20,"y2":0}, "blocksMove": true,
+        "elevation": { "bottom": 10.0, "top": 20.0 },
+    });
     let other_scene_wall = json!({ "seg": {"x1":20,"y1":30,"x2":30,"y2":20}, "blocksMove": true });
 
     let ecs = SceneEcs::from_documents(
@@ -251,6 +256,7 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
             doc(20, None, "scene"),
             entity_doc_eng(12, 10, "wall", blocking),
             entity_doc_eng(13, 10, "wall", non_blocking),
+            entity_doc_eng(14, 10, "wall", banded_blocking),
             entity_doc_eng(24, 20, "wall", other_scene_wall),
         ],
         0,
@@ -261,20 +267,27 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
         ((0.0, 0.0), (1.0, 1.0)),     // crosses nothing
         ((0.0, 5.0), (5.0, 5.0)),     // crosses the scene-10 non-blocking wall only
         ((20.0, 20.0), (30.0, 30.0)), // would cross the OTHER scene's wall, not scene 10's
+        ((0.0, 20.0), (20.0, 0.0)),   // crosses the scene-10 banded wall only
     ];
-    for (a0, a1) in segments {
-        for s in [scene, other_scene] {
-            let production = ecs
-                .move_walls(s, None)
-                .iter()
-                .any(|w| segments_cross(a0, a1, w.a, w.b));
-            assert_eq!(
-                ecs.blocks_move(s, a0, a1),
-                production,
-                "blocks_move disagreed with the production move_walls/segments_cross path for {a0:?}->{a1:?} in scene {s:?}"
-            );
+    // `elevation::GROUND` is outside the banded wall's `[10, 20]` band; `15.0` is inside it.
+    for mover_elevation in [elevation::GROUND, 15.0] {
+        for (a0, a1) in segments {
+            for s in [scene, other_scene] {
+                let production = ecs
+                    .move_walls(s, None, mover_elevation)
+                    .iter()
+                    .any(|w| segments_cross(a0, a1, w.a, w.b));
+                assert_eq!(
+                    ecs.blocks_move(s, a0, a1, mover_elevation),
+                    production,
+                    "blocks_move disagreed with the production move_walls/segments_cross path for {a0:?}->{a1:?} in scene {s:?} at elevation {mover_elevation}"
+                );
+            }
         }
     }
+    // The band itself decides: the banded wall blocks only inside its band.
+    assert!(ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), 15.0));
+    assert!(!ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), elevation::GROUND));
 }
 
 #[test]
@@ -581,6 +594,7 @@ fn pathfind_refuses_a_scene_with_no_document() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     assert!(
@@ -2388,11 +2402,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     let s10 = Uuid::from_u128(10);
     let s11 = Uuid::from_u128(11);
     assert!(ecs
-        .region_field(s10, None)
+        .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
     assert!(!ecs
-        .region_field(s11, None)
+        .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
 
@@ -2403,11 +2417,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     });
 
     assert!(!ecs
-        .region_field(s10, None)
+        .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
     assert!(ecs
-        .region_field(s11, None)
+        .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
 }

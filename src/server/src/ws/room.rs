@@ -1450,6 +1450,9 @@ impl Room {
                     // the combatant is hidden from — see `BudgetGate::enforced`).
                     budget: move_budget_cells,
                     traits: move_traits,
+                    // The mover's floor, resolved off the token's stored elevation under this
+                    // same read guard — never the client's claim (mirrors `footprint`/`traits`).
+                    mover_elevation: scene.token_mover_elevation(token),
                 },
                 token,
                 &path,
@@ -1789,11 +1792,30 @@ impl Room {
             }
         };
 
+        // The token's actor join, resolved once: `TokenEngine.actor_id` else the embedded
+        // copy's id (`SceneEcs::combatant_for_token`'s rule). The CONDITIONS host uses the
+        // `formula_host` precedence instead (embedded copy first, else the linked actor) —
+        // the two answers differ only for a token carrying both, and each consumer's own
+        // precedent is kept.
+        let token_eng: Option<eng::TokenEngine> = token_doc
+            .engine
+            .clone()
+            .and_then(|v| serde_json::from_value(v).ok());
+
         // The authoritative identity table (the server springs secret regions), the arrest
         // cell, and the token's effective owner — one read guard, no lock across an await.
+        // `trigger_regions` is filtered to the entering token's floor: a region banded to
+        // another level never fires on this token (`elevation::band_contains`).
         let (regions, arrest_cell, effective_owner) = {
             let ecs = self.scene.read().await;
-            let regions = ecs.trigger_regions(scene).unwrap_or_default();
+            let regions = ecs
+                .trigger_regions(
+                    scene,
+                    crate::scene::elevation::elevation_or_ground(
+                        token_eng.as_ref().and_then(|t| t.elevation),
+                    ),
+                )
+                .unwrap_or_default();
             let arrest_cell = match arrest_stop {
                 Some(pos) => ecs
                     .scene_grid_sizes()
@@ -1812,15 +1834,6 @@ impl Room {
         let mut ops: Vec<Operation> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
-        // The token's actor join, resolved once: `TokenEngine.actor_id` else the embedded
-        // copy's id (`SceneEcs::combatant_for_token`'s rule). The CONDITIONS host uses the
-        // `formula_host` precedence instead (embedded copy first, else the linked actor) —
-        // the two answers differ only for a token carrying both, and each consumer's own
-        // precedent is kept.
-        let token_eng: Option<eng::TokenEngine> = token_doc
-            .engine
-            .clone()
-            .and_then(|v| serde_json::from_value(v).ok());
         let embedded_actor = token_doc
             .embedded
             .get("actor")

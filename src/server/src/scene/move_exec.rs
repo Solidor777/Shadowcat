@@ -7,7 +7,8 @@
 //! dense walk, validating each dense sub-step against the SAME predicate set
 //! `pathfinding::cell_enterable` uses for routing:
 //! - a footprint-disc clearance test AND a center-to-center segment-crossing test against every
-//!   `blocksMove` wall in the AUTHORITATIVE wall set (`ecs.move_walls(scene, None)`) — both are
+//!   `blocksMove` wall in the AUTHORITATIVE wall set for the mover's floor
+//!   (`ecs.move_walls(scene, None, mover_elevation)`) — both are
 //!   required; the disc test alone lets a wall between two adjacent cell centers become
 //!   permeable at the default 0.4-cell footprint,
 //! - the caller-supplied `visible` mask (skipped for `Unrestricted`) over
@@ -15,9 +16,9 @@
 //! - the region field: impassable is footprint-gated (a wide body cannot fit past
 //!   impassable terrain any more than a wall); arrest and terrain stay CENTER-CELL only, mirroring
 //!   `cell_enterable`'s documented asymmetry (they act on the mover's own position, not solid
-//!   geometry it must clear). Always reads the AUTHORITATIVE field (`ecs.region_field(scene,
-//!   None)`) — this executor springs every region regardless of what the mover's own pathfind
-//!   preview could see.
+//!   geometry it must clear). Always reads the AUTHORITATIVE field for the mover's floor
+//!   (`ecs.region_field(scene, None, mover_elevation)`) — this executor springs every region
+//!   regardless of what the mover's own pathfind preview could see.
 //!
 //! Returns the stop cell + the legal prefix render-path + accumulated cost. `truncated` is true
 //! when the move stops before `path.last()` for any reason (wall, mask, region-impassable,
@@ -296,6 +297,10 @@ pub(crate) struct MoveGateInputs<'a> {
     /// router prices with, so preview and execution cannot disagree on what an exempt mover pays.
     /// Walls, impassable, arrest, and the mask are untouched by the flag.
     pub traits: crate::scene::pathfinding::MoveTraits,
+    /// The mover's resolved elevation, filtering the wall gate and the region field to its floor
+    /// — see `SceneEcs::move_walls`'s third parameter. Resolved by the caller off the token's
+    /// stored `TokenEngine.elevation` (`SceneEcs::token_mover_elevation`), never from the frame.
+    pub mover_elevation: f64,
 }
 
 /// Walk `path` step by step, validating each step against the wall gate (step 1), the
@@ -372,6 +377,7 @@ pub(crate) fn execute_move(
         cell,
         budget,
         traits,
+        mover_elevation,
     } = gate;
     // --- Input validation (fail closed on every degenerate input) ---
     if path.len() < 2 {
@@ -429,10 +435,10 @@ pub(crate) fn execute_move(
     // regardless (see the `budget` field's own doc comment) — only the STOP is gated.
     let check_budget = !is_gm;
 
-    // Authoritative region field: always the full field, never filtered — this
-    // executor springs secret regions regardless of what the mover's pathfind preview
-    // could see.
-    let Some(regions) = ecs.region_field(scene, None) else {
+    // Authoritative region field for the mover's floor: always the full field, never
+    // viewer-filtered — this executor springs secret regions regardless of what the mover's
+    // pathfind preview could see.
+    let Some(regions) = ecs.region_field(scene, None, mover_elevation) else {
         return Err(MoveReject::SceneUnknown);
     };
 
@@ -441,9 +447,9 @@ pub(crate) fn execute_move(
     // than a hardcoded square-grid call.
     let grid = ecs.resolve_grid_shape(scene, cell);
 
-    // The executor always reads the AUTHORITATIVE wall set: a `gm_only` wall omitted from the
-    // requester's route springs here, exactly as a secret region does.
-    let gate_walls = ecs.move_walls(scene, None);
+    // The executor always reads the AUTHORITATIVE wall set for the mover's floor: a `gm_only`
+    // wall omitted from the requester's route springs here, exactly as a secret region does.
+    let gate_walls = ecs.move_walls(scene, None, mover_elevation);
 
     // Constant for the whole walk: the footprint disc radius in world units, mirroring
     // `cell_enterable`'s `r_scene`. The radius is already stated in the grid's OWN cells by

@@ -53,6 +53,7 @@ fn pathfind_gm_unconstrained_routes_without_a_mask() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     let outcome = r.expect("GM route");
@@ -101,6 +102,7 @@ explored: // GM: unrestricted mask
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("continuous route over an open bounded scene");
@@ -155,6 +157,7 @@ fn pathfind_continuous_budget_cut_truncates_the_final_span_at_the_boundary() {
                 footprint_radius: 0.1,
                 budget_cells: Some(4.0),
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("continuous route over an open bounded scene");
@@ -212,6 +215,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("grid-stepped straight route");
@@ -225,6 +229,7 @@ fn pathfind_grid_and_continuous_report_the_same_cell_cost_for_a_straight_route()
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("continuous straight route");
@@ -293,6 +298,7 @@ explored: // GM: unrestricted mask
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("start == goal must succeed, not Unreachable");
@@ -416,6 +422,7 @@ fn pathfind_continuous_terrain_bends_the_route_and_costs_cells() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("weighted continuous route");
@@ -490,7 +497,7 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
     // neighbour arrests too, so the whole ring is checked rather than the two cells the route
     // happens to pass through.
     let field = ecs
-        .region_field(Uuid::from_u128(10), None)
+        .region_field(Uuid::from_u128(10), None, elevation::GROUND)
         .expect("scene exists");
     assert!(
         field.is_arrest(arrest_cell),
@@ -519,6 +526,7 @@ fn pathfind_hex_continuous_arrest_truncates_at_the_axial_hex_not_the_square_cell
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("hex continuous route");
@@ -566,6 +574,7 @@ fn pathfind_continuous_no_region_is_a_straight_polyanya_route() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("polyanya route");
@@ -613,6 +622,7 @@ fn pathfind_continuous_impassable_routes_around() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("route around impassable");
@@ -673,6 +683,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("player route");
@@ -700,6 +711,7 @@ fn pathfind_continuous_secret_terrain_absent_from_player_route_present_for_gm() 
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("gm route");
@@ -748,6 +760,7 @@ fn pathfind_continuous_nongm_route_clips_to_the_visible_mask() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("clip truncates the route short of the unseen goal rather than failing outright");
@@ -833,7 +846,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
     );
     assert!(!mask.is_empty(), "the lit token has a non-empty mask");
     assert!(
-        ecs.region_field(scene_id, Some(user))
+        ecs.region_field(scene_id, Some(user), elevation::GROUND)
             .expect("scene exists")
             .has_terrain_or_impassable(),
         "the terrain region flips the Continuous dispatch to the weighted sub-path"
@@ -859,6 +872,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("weighted route to a visible goal succeeds");
@@ -890,6 +904,7 @@ fn pathfind_continuous_weighted_nongm_route_clips_to_the_visible_mask() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     assert!(
@@ -958,6 +973,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("player route");
@@ -990,6 +1006,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("gm route");
@@ -1013,6 +1030,7 @@ fn pathfind_continuous_secret_arrest_absent_from_player_preview_but_springs_at_e
                 .expect("the fixture's scene declares a grid size"),
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: elevation::GROUND,
         },
         token,
         &p.path,
@@ -1089,6 +1107,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("the player's route ignores a wall it cannot see");
@@ -1110,6 +1129,7 @@ fn non_gm_route_crosses_a_gm_only_wall_that_springs_at_execution() {
                 .expect("the fixture's scene declares a grid size"),
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: elevation::GROUND,
         },
         token,
         &out.path,
@@ -1146,6 +1166,7 @@ fn gm_route_does_not_cross_a_gm_only_wall() {
                 footprint_radius: 0.4,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("a GM route exists (bounds admit a detour around the wall's endpoint)");
@@ -1180,6 +1201,7 @@ fn pathfind_grid_stepped_scene_is_byte_for_byte_unchanged() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     let outcome = r.expect("GM route");
@@ -1212,6 +1234,7 @@ fn pathfind_nongm_visible_is_bounded_by_the_mask() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     assert_eq!(far, Err(crate::scene::pathfinding::PathFail::Unreachable));
@@ -1240,6 +1263,7 @@ fn pathfind_revealed_unions_explored_memory() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     assert!(
@@ -1856,6 +1880,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
             cell,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: elevation::GROUND,
         },
         token,
         &[(0.0, 0.0), dest],
@@ -1879,6 +1904,7 @@ fn hex_lenient_mask_lets_the_executor_enter_a_cell_the_strict_mask_stops_at() {
             cell,
             budget: None,
             traits: MoveTraits::default(),
+            mover_elevation: elevation::GROUND,
         },
         token,
         &[(0.0, 0.0), dest],
@@ -2376,6 +2402,7 @@ fn hex_continuous_routes_along_axial_row_zero_strictly_inside_the_mesh() {
                     footprint_radius: 0.1,
                     budget_cells: None,
                     traits: MoveTraits::default(),
+                    elevation: elevation::GROUND,
                 },
             )
             .unwrap_or_else(|e| panic!("routing {label} along row 0 must succeed, got {e:?}"));
@@ -2447,6 +2474,7 @@ fn hex_continuous_routes_below_the_origin_row_inside_its_own_hexes() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("a position inside an authored hex must be on-mesh and routable");
@@ -2507,6 +2535,7 @@ fn hex_continuous_navmesh_spans_the_authored_play_area() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("a hex cell inside the authored bounds must be routable");
@@ -2555,7 +2584,7 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
     // predicate fires. Asserted rather than assumed: with an empty field the pure-polyanya
     // path runs instead and the cost assertion would be measuring a different function.
     let field = ecs
-        .region_field(Uuid::from_u128(10), None)
+        .region_field(Uuid::from_u128(10), None, elevation::GROUND)
         .expect("the fixture's scene resolves a region field");
     assert!(
         field.has_terrain_or_impassable(),
@@ -2581,6 +2610,7 @@ fn hex_continuous_weighted_cost_is_reported_in_cells() {
                 footprint_radius: 0.1,
                 budget_cells: None,
                 traits: MoveTraits::default(),
+                elevation: elevation::GROUND,
             },
         )
         .expect("hex continuous weighted route");
@@ -2684,4 +2714,192 @@ fn navmesh_for_refuses_a_scene_whose_converted_extent_is_over_magnitude() {
     );
     let ecs = SceneEcs::from_documents(vec![under], 0);
     assert!(ecs.navmesh_for(Uuid::from_u128(11), 0.4, &[]).is_some());
+}
+
+/// A scene whose corridor from (50,50) to (250,50) is crossed by a blocksMove wall at x=150
+/// spanning y∈[0,100], banded to `band` (`serde_json::Value::Null` = unbanded, blocks every
+/// elevation). Identical geometry to `scene_with_secret_wall_between_two_cells`, minus the
+/// secrecy override: the variable under test is the wall's elevation band, not its tier.
+fn scene_with_banded_wall_between_two_cells(
+    band: serde_json::Value,
+) -> (SceneEcs, Uuid, Uuid, Uuid) {
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                "bounds": { "width": 4.0, "height": 4.0 },
+                "vision": { "movementModel": "continuous" } }),
+    );
+    let scene_id = Uuid::from_u128(10);
+    let user = Uuid::from_u128(2);
+    let mut tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50.0, "y": 50.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    tok.owner = Some(user);
+    let token_id = Uuid::from_u128(11);
+    let mut wall = wall_doc_eng(scene_id, (150.0, 0.0), (150.0, 100.0));
+    wall.engine
+        .as_mut()
+        .expect("wall fixture has an engine body")
+        .as_object_mut()
+        .expect("engine body is an object")
+        .insert("elevation".to_string(), band);
+    let mut ecs = SceneEcs::from_documents(vec![scene, tok, wall], 0);
+    ecs.set_world_settings_for_test(continuous_world_settings());
+    (ecs, scene_id, user, token_id)
+}
+
+/// Route (50,50)→(250,50) for `user` at `mover_elevation`, then execute the returned route at
+/// the same elevation — the production pair (`pathfind`'s preview, `execute_move`'s gate) read
+/// the mover's OWN elevation at both ends, so the test resolves it once and threads both.
+fn route_and_execute_at(
+    ecs: &SceneEcs,
+    scene: Uuid,
+    user: Uuid,
+    token: Uuid,
+    mover_elevation: f64,
+) -> (Vec<(f64, f64)>, crate::scene::move_exec::MoveOutcome) {
+    let out = ecs
+        .pathfind(
+            RouteRequester {
+                user,
+                is_gm: false,
+                world_role: WorldRole::Player,
+                world_defaults: &no_world_grants(),
+                explored: None,
+            },
+            scene,
+            (50.0, 50.0),
+            &[(250.0, 50.0)],
+            crate::scene::RouteMover {
+                footprint_radius: 0.4,
+                budget_cells: None,
+                traits: MoveTraits::default(),
+                elevation: mover_elevation,
+            },
+        )
+        .expect("a route exists (bounds admit a detour around the wall's endpoint)");
+    let visible = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let exec = crate::scene::move_exec::execute_move(
+        ecs,
+        crate::scene::move_exec::MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &visible,
+            cell: *ecs
+                .scene_grid_sizes()
+                .get(&scene)
+                .expect("the fixture's scene declares a grid size"),
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation,
+        },
+        token,
+        &out.path,
+        false,
+        0.4,
+    )
+    .expect("execution is admissible");
+    (out.path, exec)
+}
+
+#[test]
+fn a_banded_wall_blocks_only_movers_inside_its_band() {
+    let wall_seg = ((150.0, 0.0), (150.0, 100.0));
+    let crosses = |path: &[(f64, f64)]| {
+        path.windows(2)
+            .any(|s| segments_cross(s[0], s[1], wall_seg.0, wall_seg.1))
+    };
+
+    // Floor-0 mover: the [10,20]-banded wall is absent from BOTH the router's and the
+    // executor's wall set — the route crosses the corridor straight, and execution walks it
+    // untruncated.
+    let (ecs, scene, player, token) =
+        scene_with_banded_wall_between_two_cells(json!({ "bottom": 10.0, "top": 20.0 }));
+    let (path, exec) = route_and_execute_at(&ecs, scene, player, token, elevation::GROUND);
+    assert!(
+        crosses(&path),
+        "the banded wall is absent from a floor-0 mover's routing wall set"
+    );
+    assert!(
+        !exec.truncated,
+        "the banded wall does not spring at a floor-0 mover's execution"
+    );
+    assert!(
+        (exec.stop.0 - 250.0).abs() < 1e-6 && (exec.stop.1 - 50.0).abs() < 1e-6,
+        "the floor-0 mover reaches the corridor's end, got {:?}",
+        exec.stop
+    );
+
+    // A mover at elevation 15 — inside the band — is refused by the router: it detours around
+    // the wall's endpoint (no route segment crosses the wall).
+    let (path, _exec) = route_and_execute_at(&ecs, scene, player, token, 15.0);
+    assert!(
+        !crosses(&path),
+        "the banded wall blocks an in-band mover's router"
+    );
+
+    // The straight authored path (no detour) truncates at the wall for the in-band mover.
+    let visible = ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false);
+    let exec = crate::scene::move_exec::execute_move(
+        &ecs,
+        crate::scene::move_exec::MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &visible,
+            cell: *ecs
+                .scene_grid_sizes()
+                .get(&scene)
+                .expect("the fixture's scene declares a grid size"),
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: 15.0,
+        },
+        token,
+        &[(50.0, 50.0), (250.0, 50.0)],
+        false,
+        0.4,
+    )
+    .expect("execution is admissible");
+    assert!(
+        exec.truncated,
+        "the banded wall springs at an in-band mover's execution"
+    );
+
+    // The identical corridor with an UNBANDED wall blocks a floor-0 mover at both gates.
+    let (ecs, scene, player, token) =
+        scene_with_banded_wall_between_two_cells(serde_json::Value::Null);
+    let (path, _exec) = route_and_execute_at(&ecs, scene, player, token, elevation::GROUND);
+    assert!(
+        !crosses(&path),
+        "the unbanded wall blocks a floor-0 mover's router through the identical corridor"
+    );
+    let visible = ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false);
+    let exec = crate::scene::move_exec::execute_move(
+        &ecs,
+        crate::scene::move_exec::MoveGateInputs {
+            scene,
+            restriction: MovementRestriction::Unrestricted,
+            visible: &visible,
+            cell: *ecs
+                .scene_grid_sizes()
+                .get(&scene)
+                .expect("the fixture's scene declares a grid size"),
+            budget: None,
+            traits: MoveTraits::default(),
+            mover_elevation: elevation::GROUND,
+        },
+        token,
+        &[(50.0, 50.0), (250.0, 50.0)],
+        false,
+        0.4,
+    )
+    .expect("execution is admissible");
+    assert!(
+        exec.truncated,
+        "the unbanded wall springs at a floor-0 mover's execution through the identical corridor"
+    );
 }
