@@ -505,6 +505,7 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
     vision: engine.vision ?? null,
     lighting: engine.lighting ?? null,
     combat: engine.combat ?? null,
+    levels: engine.levels ?? [],
   };
   return envelope(worldId, "scene", null, {}, id, full, null);
 }
@@ -1089,6 +1090,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true,
  *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
+ *   elevation: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1118,6 +1120,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
+ *   elevation: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);

@@ -2,6 +2,7 @@
 import type { CombatDefaults } from "./CombatDefaults";
 import type { Grid } from "./Grid";
 import type { SceneDimensions } from "./SceneDimensions";
+import type { SceneLevel } from "./SceneLevel";
 import type { SceneLightingOverrides } from "./SceneLightingOverrides";
 import type { SceneVisionOverrides } from "./SceneVisionOverrides";
 
@@ -24,6 +25,7 @@ import type { SceneVisionOverrides } from "./SceneVisionOverrides";
  *     vision: None,
  *     lighting: None,
  *     combat: None,
+ *     levels: Vec::new(),
  * };
  * assert_eq!(scene.grid.size, 50.0);
  * ```
@@ -66,4 +68,11 @@ lighting: SceneLightingOverrides | null,
  * turn control); absent fields fall through the chain
  * (`combat::resolve_combat_rules`).
  */
-combat: CombatDefaults | null, };
+combat: CombatDefaults | null, 
+/**
+ * The scene's floors: named elevation bands a token's floor is derived
+ * from via `scene::elevation::level_of`. Empty = one implicit ground
+ * level (a level-less scene). Levels are data on the scene, never
+ * separate scene documents.
+ */
+levels: Array<SceneLevel>, };

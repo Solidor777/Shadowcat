@@ -35,6 +35,8 @@ export type { Module, ModuleContext, ModuleInfo } from "./modules";
 export { loadModules } from "./loader";
 export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from "./loader";
 export { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";
+export { bandContains, levelOf } from "./levels";
+export type { SceneLevel, ElevationBand } from "./levels";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
 export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT } from "./contributions";

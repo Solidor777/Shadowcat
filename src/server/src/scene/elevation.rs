@@ -1,7 +1,9 @@
-//! The elevation model (2.5D, single-level): tokens and lights carry an elevation
-//! above the ground plane (0 = grounded), and a wall optionally carries the elevation
-//! band its occlusion applies to. Elevation only ever FILTERS which walls occlude a
-//! sight/light source — the star-shaped raycast pipeline itself is untouched, and
+//! The elevation model (2.5D): tokens and lights carry an elevation above the
+//! ground plane (0 = grounded), a wall optionally carries the elevation band its
+//! occlusion applies to, and a scene optionally declares `SceneEngine::levels` —
+//! named elevation bands (`SceneLevel`) a token's floor is derived from via
+//! `level_of`. Elevation only ever FILTERS which walls occlude a sight/light
+//! source — the star-shaped raycast pipeline itself is untouched, and
 //! sight/light ranges stay 2D (horizontal). Environment ambient light is the one
 //! exception: it keeps the full wall set at every elevation (walls always shadow
 //! sky-light, or daylight would flood interiors).
@@ -30,17 +32,16 @@ pub(crate) fn elevation_or_ground(v: Option<f64>) -> f64 {
     }
 }
 
-/// Whether a wall with elevation band `band` occludes a sight/light source at
-/// elevation `e`: the wall occludes iff `bottom ≤ e ≤ top`, an absent end is
-/// unbounded, and an absent band occludes every elevation. Fail-closed: a
-/// malformed interval (`bottom > top`), a non-finite authored endpoint, or a
-/// non-finite source elevation occludes EVERYTHING (the pre-elevation behavior),
-/// so a corrupt wall or a NaN leaked past `elevation_or_ground` never opens a
-/// sightline the scene did not have.
-pub(crate) fn wall_occludes(band: Option<&eng::WallElevation>, e: f64) -> bool {
-    if !e.is_finite() {
-        return true;
-    }
+/// Whether elevation band `band` contains point `e`: `bottom ≤ e ≤ top`; an
+/// absent end is unbounded, and `band: None` contains every elevation.
+/// Fail-closed: a malformed interval (`bottom > top`) or a non-finite band
+/// endpoint contains everything (the pre-elevation behavior for that wall).
+/// Shared by `wall_occludes` (vision/light occlusion), the movement gate
+/// (`SceneEcs::move_wall_entries`'s per-mover filter), `SceneEcs::region_field`'s
+/// per-mover selection, `SceneEcs::trigger_regions`'s per-mover selection, and
+/// the drawing/region render filters (`sceneScopedDocs`'s TS mirror
+/// `bandContains`) — the never-fork pin.
+pub(crate) fn band_contains(band: Option<&eng::ElevationBand>, e: f64) -> bool {
     let Some(b) = band else { return true };
     if b.bottom.is_some_and(|v| !v.is_finite()) || b.top.is_some_and(|v| !v.is_finite()) {
         return true;
@@ -53,12 +54,49 @@ pub(crate) fn wall_occludes(band: Option<&eng::WallElevation>, e: f64) -> bool {
     lo <= e && e <= hi
 }
 
+/// Whether a wall with elevation band `band` occludes a sight/light source at
+/// elevation `e`: `band_contains(band, e)`, additionally fail-closed (occludes)
+/// when `e` itself is non-finite — a corrupt wall or a NaN leaked past
+/// `elevation_or_ground` never opens a sightline the scene did not have.
+pub(crate) fn wall_occludes(band: Option<&eng::ElevationBand>, e: f64) -> bool {
+    if !e.is_finite() {
+        return true;
+    }
+    band_contains(band, e)
+}
+
+/// The level whose `[bottom, top)` band contains `elevation`; if none contains
+/// it, the highest level whose `bottom <= elevation` (a token on a roof is on
+/// the top floor); below every level's bottom, the lowest level; `levels`
+/// empty, `None`. Callers pass an already-clamped elevation
+/// (`elevation_or_ground`'s output), never a raw stored value. Mirrored exactly
+/// by `levelOf` in `@shadowcat/core`, pinned by the shared conformance corpus
+/// this module's tests read.
+pub(crate) fn level_of(levels: &[eng::SceneLevel], elevation: f64) -> Option<&eng::SceneLevel> {
+    if levels.is_empty() {
+        return None;
+    }
+    if let Some(l) = levels
+        .iter()
+        .find(|l| l.bottom <= elevation && elevation < l.top)
+    {
+        return Some(l);
+    }
+    let mut below = levels.iter().filter(|l| l.bottom <= elevation).peekable();
+    if below.peek().is_some() {
+        return below.max_by(|a, b| a.bottom.partial_cmp(&b.bottom).unwrap());
+    }
+    levels
+        .iter()
+        .min_by(|a, b| a.bottom.partial_cmp(&b.bottom).unwrap())
+}
+
 /// A wall segment paired with the elevation band its occlusion applies to (`None`
 /// band = occludes every elevation). The collected shape both bare wall accessors
 /// and their elevation-filtered `_for` variants derive from — the wall SELECTION
 /// rule (doc_type, parent scene, the blocks flag) is stated once per collector, so
 /// an elevation edit and a flag edit reach every consumer through the same read.
-pub(crate) type BandedWall = (vision::Seg, Option<eng::WallElevation>);
+pub(crate) type BandedWall = (vision::Seg, Option<eng::ElevationBand>);
 
 /// Filter a banded wall set to the segments occluding a source at `elevation`
 /// (`wall_occludes`).

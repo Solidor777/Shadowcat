@@ -40,28 +40,33 @@ pub struct Seg {
     pub y2: f64,
 }
 
-/// The elevation interval a wall's occlusion applies to. A sight/light source at
-/// elevation `e` is occluded by the wall iff `bottom ≤ e ≤ top`; an absent end is
-/// unbounded (`bottom: None` = −∞, `top: None` = +∞). A wall whose `elevation`
-/// field is absent occludes every elevation, and a malformed interval
-/// (`bottom > top`, or a non-finite endpoint) fails closed to occluding
-/// everything — see `scene::elevation::wall_occludes`.
+/// The elevation interval a banded geometry occupies. ONE type shared by every
+/// banded-geometry engine — a wall's occlusion band (`WallEngine::elevation`) and
+/// the level band a region/drawing/template sits on (`RegionEngine::elevation`,
+/// `DrawingEngine::elevation`, `TemplateEngine::elevation`) — never a per-engine
+/// copy. A sight/light source at elevation `e` is occluded by a wall iff
+/// `bottom ≤ e ≤ top`; an absent end is unbounded (`bottom: None` = −∞,
+/// `top: None` = +∞). An absent band applies at every elevation, and a malformed
+/// interval (`bottom > top`, or a non-finite endpoint) fails closed to applying
+/// everywhere — see `scene::elevation::band_contains`, the ONE point-in-band
+/// predicate every consumer (`scene::elevation::wall_occludes`, the movement
+/// gate, region selection, the render filters) calls.
 ///
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::engine::WallElevation;
+/// use shadowcat::data::engine::ElevationBand;
 ///
-/// let unbounded = WallElevation { bottom: None, top: None };
+/// let unbounded = ElevationBand { bottom: None, top: None };
 /// assert!(unbounded.bottom.is_none());
 ///
-/// let band = WallElevation { bottom: Some(0.0), top: Some(10.0) };
+/// let band = ElevationBand { bottom: Some(0.0), top: Some(10.0) };
 /// assert_eq!(band.top, Some(10.0));
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/engine/")]
 #[serde(deny_unknown_fields)]
-pub struct WallElevation {
+pub struct ElevationBand {
     /// Lower end of the occluded band; absent = unbounded below.
     #[serde(default)]
     pub bottom: Option<f64>,
@@ -106,10 +111,11 @@ pub struct WallEngine {
     #[serde(default)]
     pub blocks_move: Option<bool>,
     /// The elevation band this wall's sight/light occlusion applies to;
-    /// absent = occludes every elevation. Never consulted by the movement
-    /// gate (movement is ground-plane).
+    /// absent = occludes every elevation. Consulted by the movement gate exactly
+    /// as it is by sight/light occlusion — see `scene::elevation::band_contains`
+    /// and `SceneEcs::move_wall_entries`.
     #[serde(default)]
-    pub elevation: Option<WallElevation>,
+    pub elevation: Option<ElevationBand>,
 }
 
 /// A region's vector geometry. `points` layout by
@@ -280,6 +286,7 @@ pub struct RegionTrigger {
 ///     cost: 2.0,
 ///     enabled: true,
 ///     triggers: Vec::new(),
+///     elevation: None,
 /// };
 /// assert!(region.validate().is_ok());
 /// ```
@@ -301,6 +308,12 @@ pub struct RegionEngine {
     /// Absent on documents written before triggers existed (serde default).
     #[serde(default)]
     pub triggers: Vec<RegionTrigger>,
+    /// The elevation band this region's geometry occupies; absent = every
+    /// level (pre-levels authoring, or a level-less scene). Read by
+    /// `scene::elevation::band_contains` — the SAME predicate
+    /// `WallEngine::elevation`'s occlusion test and the movement gate consult.
+    #[serde(default)]
+    pub elevation: Option<ElevationBand>,
 }
 
 impl RegionEngine {
@@ -327,6 +340,7 @@ impl RegionEngine {
     ///         on: TriggerEvent::Enter,
     ///         effect: TriggerEffect::ConditionAdd { condition: String::new() },
     ///     }],
+    ///     elevation: None,
     /// };
     /// assert!(region.validate().is_err()); // empty condition id
     /// ```
@@ -445,6 +459,7 @@ pub struct Fill {
 ///     shape: DrawingShape { kind: "rect".to_string(), points: vec![0.0, 0.0, 4.0, 4.0] },
 ///     stroke: None,
 ///     fill: None,
+///     elevation: None,
 /// };
 /// assert!(drawing.stroke.is_none());
 /// ```
@@ -458,6 +473,12 @@ pub struct DrawingEngine {
     pub stroke: Option<Stroke>,
     /// Fill style; wire-required but nullable (`Fill | null`).
     pub fill: Option<Fill>,
+    /// The elevation band this drawing's geometry occupies; absent = every
+    /// level (pre-levels authoring, or a level-less scene). Read by
+    /// `scene::elevation::band_contains` — the SAME predicate
+    /// `WallEngine::elevation`'s occlusion test and the movement gate consult.
+    #[serde(default)]
+    pub elevation: Option<ElevationBand>,
 }
 
 /// A template's area anchored at `(x,y)` with a `size` and `direction`
@@ -500,6 +521,7 @@ pub struct TemplateShape {
 /// let template = TemplateEngine {
 ///     shape: TemplateShape { kind: "circle".to_string(), x: 0.0, y: 0.0, size: 10.0, direction: 0.0 },
 ///     color: "#ffaa00".to_string(),
+///     elevation: None,
 /// };
 /// assert_eq!(template.color, "#ffaa00");
 /// ```
@@ -511,4 +533,10 @@ pub struct TemplateEngine {
     pub shape: TemplateShape,
     /// `#rrggbb` overlay color.
     pub color: String,
+    /// The elevation band this template's geometry occupies; absent = every
+    /// level (pre-levels authoring, or a level-less scene). Read by
+    /// `scene::elevation::band_contains` — the SAME predicate
+    /// `WallEngine::elevation`'s occlusion test and the movement gate consult.
+    #[serde(default)]
+    pub elevation: Option<ElevationBand>,
 }

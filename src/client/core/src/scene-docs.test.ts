@@ -208,6 +208,7 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
     vision: null,
     lighting: null,
     combat: null,
+    levels: [],
   });
   expect(typeof doc.id).toBe("string");
   expect(doc.id.length).toBeGreaterThan(0);
@@ -421,6 +422,7 @@ describe("buildRegionDoc", () => {
         { on: "enter", effect: { type: "condition_add", condition: "prone" } },
         { on: "arrest", effect: { type: "resource_delta", resource: "hp", amount: -3 } },
       ],
+      elevation: null,
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -437,6 +439,7 @@ describe("buildRegionDoc", () => {
       cost: 1,
       enabled: true,
       triggers: [],
+      elevation: null,
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");

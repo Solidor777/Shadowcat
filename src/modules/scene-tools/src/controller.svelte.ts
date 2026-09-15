@@ -643,6 +643,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
           // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
           // array wraps its contents in is not cloneable.
           triggers: $state.snapshot(controller.regionTriggers),
+          elevation: null,
         };
         const doc = buildRegionDoc(ctx.world, scene.id, engine);
         if (controller.regionSecret) setRegionVisibility(doc, true);
