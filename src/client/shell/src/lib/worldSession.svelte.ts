@@ -745,9 +745,9 @@ export class WorldSession {
    * re-authorizes scene readability and world role (spectator refused) and drops an
    * over-reaching send silently, so callers may offer this client-advisory only. The request
    * carries an explicit `scene` (unlike `sendPing`/`sendEmote`'s auto-derived target): a
-   * `VfxPlayRequest` may need to name a scene other than the caller's own currently-viewed
-   * one (a future portal effect playing at both ends, per the seam's own consumer note), so
-   * the caller supplies it, matching `pathfind`/`moveRequest`'s explicit-scene convention.
+   * caller may legitimately need to name a scene other than its own currently-viewed one (a
+   * portal effect plays at both ends of a teleport), so the caller supplies it, matching
+   * `pathfind`/`moveRequest`'s explicit-scene convention.
    * @param req The one-shot request.
    * @example
    * ```
