@@ -482,7 +482,7 @@ describe("PixiBackend VFX playback", () => {
       loop: true, anchor: "point",
     });
     await vi.waitFor(() => expect(vfxNodesOf(backend).get("oneshot:1")!.anim.frameCount).toBe(2));
-    expect(loadSpy).toHaveBeenCalledWith("/atlas.png");
+    expect(loadSpy).toHaveBeenCalledWith({ src: "/atlas.png", parser: "loadTextures" });
     expect(fetchMock).toHaveBeenCalledWith("/atlas.json");
     const node = vfxNodesOf(backend).get("oneshot:1")!;
     expect(node.anim.frameMs).toEqual([250, 100]);

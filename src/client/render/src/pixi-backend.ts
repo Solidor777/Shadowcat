@@ -141,6 +141,27 @@ interface VfxRenderNode {
   completedFired: boolean;
 }
 
+/** Every image load in this backend goes through this one seam. The asset serve URLs
+ * (`/api/assets/<uuid>[?variant=…]`) carry no file extension, so Pixi's default parser
+ * DISCOVERY — which tests a URL's extension — finds no parser for them and never even
+ * fetches (the "could not be loaded as we don't know how to parse it" warning, and the
+ * load resolves `null`); the explicit `parser: "loadTextures"` override bypasses that
+ * extension gate (the served bytes' own content decides the decode, exactly as it does for
+ * an `.webp`-suffixed URL).
+ * @param url The serve URL to load as a texture.
+ * @returns The loaded `Texture` (or `null` when the load produced nothing).
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * await loadAssetTexture("/api/assets/00000000-0000-0000-0000-000000000001?variant=sheet");
+ * ```
+ */
+function loadAssetTexture(url: string): Promise<Texture | null> {
+  // A load that produced nothing resolves `null` (the caller's "no art" path) rather than
+  // rejecting — the same contract the extension gate produced for every load.
+  return Assets.load<Texture>({ src: url, parser: "loadTextures" }).catch(() => null);
+}
+
 /** Identity key for a `TokenNodeSpec.visual` — equal specs must produce an equal key so a
  * tweening token's re-push (same visual, new transform) skips texture (re)loading.
  * @param v A token's resolved visual tokenSpec (image URL, or an animated source + fps/loop).
@@ -445,8 +466,8 @@ export class PixiBackend implements DisplayBackend {
     // the SAME url (set X → set Y → set X) would both pass a URL check and the
     // earlier one would flash a stale sprite. The token admits only the latest.
     const token = ++this.loadSeq;
-    void Assets.load(spec.url).then((texture) => {
-      if (token !== this.loadSeq) return; // superseded by a newer set/clear/destroy
+    void loadAssetTexture(spec.url).then((texture) => {
+      if (texture === null || token !== this.loadSeq) return; // no art, or superseded by a newer set/clear/destroy
       this.background?.destroy();
       const sprite = new Sprite(texture);
       this.background = sprite;
@@ -767,8 +788,8 @@ export class PixiBackend implements DisplayBackend {
       node.anim = null;
       const sprite = node.visual;
       const url = art.url;
-      void Assets.load(url).then((texture) => {
-        if (this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
+      void loadAssetTexture(url).then((texture) => {
+        if (texture !== null && this.tokens.get(id) === node && node.visual === sprite && node.sourceKey === key) sprite.texture = texture;
       });
     } else {
       if (!(node.visual instanceof AnimatedSprite)) this.replaceVisualChild(node, new AnimatedSprite([Texture.EMPTY]));
@@ -899,10 +920,13 @@ export class PixiBackend implements DisplayBackend {
   private async loadAnimatedTextures(source: ResolvedAnimatedSource): Promise<Texture[]> {
     if (source.type === "frames") {
       if (source.urls.length === 0) return [];
-      return Promise.all(source.urls.map((url) => Assets.load<Texture>(url)));
+      return (await Promise.all(source.urls.map((url) => loadAssetTexture(url)))).filter(
+        (t): t is Texture => t !== null,
+      );
     }
     if (!Number.isInteger(source.rows) || source.rows <= 0 || !Number.isInteger(source.cols) || source.cols <= 0) return [];
-    const sheet = await Assets.load<Texture>(source.url);
+    const sheet = await loadAssetTexture(source.url);
+    if (sheet === null) return [];
     const frameW = sheet.width / source.cols;
     const frameH = sheet.height / source.rows;
     const total = source.count !== undefined ? Math.min(source.count, source.rows * source.cols) : source.rows * source.cols;
@@ -1164,7 +1188,7 @@ export class PixiBackend implements DisplayBackend {
     if ("imageUrl" in spec.source) {
       const { imageUrl, sheetUrl, animation } = spec.source;
       void Promise.all([
-        Assets.load<Texture>(imageUrl),
+        loadAssetTexture(imageUrl),
         fetch(sheetUrl).then((r) => {
           if (!r.ok) throw new Error(`vfx sidecar fetch failed: ${r.status}`);
           return r.json();
@@ -1172,6 +1196,10 @@ export class PixiBackend implements DisplayBackend {
       ])
         .then(([texture, json]) => {
           if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return undefined;
+          if (texture === null) {
+            fail();
+            return undefined;
+          }
           const sheet = new Spritesheet(texture, json);
           return sheet.parse().then(() => {
             if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
