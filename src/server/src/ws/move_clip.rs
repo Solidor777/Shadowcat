@@ -61,6 +61,10 @@ pub(crate) struct InFlight<'a> {
     pub mover: Uuid,
     /// The move's `MoveStream.token_id`.
     pub token: Uuid,
+    /// The moving token's resolved elevation (`SceneEcs::token_mover_elevation`, resolved
+    /// server-side off the token's stored value): the composed carried light's level — a torch
+    /// on another floor lights nothing for this clip's sources (`InstantSight::sees_with`).
+    pub mover_elevation: f64,
     /// The move's position samples (elapsed-ms from `start_server_ms`).
     pub positions: &'a [PosSample],
     /// The move's carried-light samples, when the mover carries an enabled emission.
@@ -87,6 +91,14 @@ pub(crate) struct ClipInputs<'a> {
     pub in_flight: &'a [InFlight<'a>],
     /// The clip target — whose own in-flight tokens are re-raycast at their instant viewpoints.
     pub target: Uuid,
+    /// The FRAME mover's resolved level id (`elevation::level_of` over the scene's declared
+    /// levels at the mover's own resolved elevation, `""` for ground/a level-less scene) — the
+    /// level conjunct of the position clip (`InstantSight::sees_token`): a mover on another
+    /// level is clipped like a mover out of sight.
+    pub mover_level: String,
+    /// The FRAME mover's resolved elevation (`SceneEcs::token_mover_elevation`): the level its
+    /// own carried-light timeline composes into.
+    pub mover_elevation: f64,
 }
 
 impl ClipInputs<'_> {
@@ -111,7 +123,7 @@ impl ClipInputs<'_> {
                 }
             }
             if let Some(ls) = m.light.and_then(|l| chosen_vision_sample(l, elapsed)) {
-                lights.push(self.sight.sample_light(ls));
+                lights.push(self.sight.sample_light(ls, m.mover_elevation));
             }
         }
         (self.sight.at(&moved), lights)
@@ -165,7 +177,10 @@ pub(crate) fn clip_frame(
         .filter(|s| {
             instants
                 .get(&s.t_ms.to_bits())
-                .is_some_and(|(sight, lights)| sight.sees_token((s.pos[0], s.pos[1]), lights))
+                .is_some_and(|(sight, lights)| {
+                    let extra: Vec<&InstantLight> = lights.iter().collect();
+                    sight.sees_token((s.pos[0], s.pos[1]), &extra, &inputs.mover_level)
+                })
         })
         .copied()
         .collect();
@@ -175,7 +190,10 @@ pub(crate) fn clip_frame(
                 .filter(|l| {
                     instants
                         .get(&l.t_ms.to_bits())
-                        .is_some_and(|(sight, lights)| glow_reaches(sight, lights, l))
+                        .is_some_and(|(sight, lights)| {
+                            let extra: Vec<&InstantLight> = lights.iter().collect();
+                            glow_reaches(sight, &extra, l, inputs.mover_elevation)
+                        })
                 })
                 .cloned()
                 .collect::<Vec<_>>()
@@ -239,11 +257,14 @@ pub(crate) fn disc_intersects_polys<'a>(
 /// own scan bound (`explored::MAX_CELLS_PER_POLYGON`), and a box past even that bound admits
 /// nothing (fail-closed). A `dimRadius` is ingress-bounded by `MAX_FOOTPRINT_CELLS`
 /// (`LightEmission::validate`), so no authored light reaches the bound. A non-finite or
-/// non-positive reach admits nothing.
+/// non-positive reach admits nothing. `mover_elevation` is the sample bearer's resolved
+/// elevation — the level its glow composes into: a torch on another floor satisfies `sees`
+/// for no source here, exactly as the committed field's level filter rules it out at rest.
 pub(crate) fn glow_reaches(
     sight: &InstantSight<'_>,
-    lights: &[InstantLight],
+    lights: &[&InstantLight],
     sample: &LightSample,
+    mover_elevation: f64,
 ) -> bool {
     let (px, py) = (sample.pos[0], sample.pos[1]);
     let dim = sample.dim;
@@ -253,7 +274,7 @@ pub(crate) fn glow_reaches(
     if !sight.disc_touches_los((px, py), dim) {
         return false;
     }
-    let own = sight.sample_light(sample);
+    let own = sight.sample_light(sample, mover_elevation);
     let Some((mut lo, mut hi)) = sight.los_bbox() else {
         return false;
     };

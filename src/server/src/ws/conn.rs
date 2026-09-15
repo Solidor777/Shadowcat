@@ -1521,10 +1521,24 @@ async fn clip_move_stream(
     // Every in-flight mover's carried emission leaves the committed field (its committed
     // position is its move's end); `ClipInputs::at` composes each back in per instant.
     let exclude: Vec<Uuid> = in_flight.iter().map(|m| m.token).collect();
-    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`.
-    let sight = {
+    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`. The
+    // mover's floor is resolved here too (its OWN stored elevation, never the frame's say-so):
+    // the position clip's level conjunct and each composed torch's level both read it.
+    let (sight, mover_level, mover_elevation) = {
         let ecs = room.scene().read().await;
-        ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id)
+        let mover_elevation = ecs.token_mover_elevation(*token_id);
+        let mover_level =
+            crate::scene::elevation::level_of(&ecs.scene_levels(*scene), mover_elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
+        for m in in_flight.iter_mut() {
+            m.mover_elevation = ecs.token_mover_elevation(m.token);
+        }
+        (
+            ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id),
+            mover_level,
+            mover_elevation,
+        )
     };
     if ctx.world_role == crate::data::document::WorldRole::Gm && !sight.has_sources() {
         // See-as target has no vision source in this scene → not applicable → full GM stream.
@@ -1537,6 +1551,8 @@ async fn clip_move_stream(
         sight: &sight,
         in_flight: &in_flight,
         target: target.user_id,
+        mover_level,
+        mover_elevation,
     };
     // Both gates from ONE resolution of each distinct instant: a position sample stays where
     // the target perceives it, a light sample where its glow lights a cell the target sees;
@@ -1605,6 +1621,9 @@ fn in_flight_of(token: Uuid, frame: &ServerMsg) -> Option<crate::ws::move_clip::
             start_server_ms: *start_server_ms,
             mover: *mover,
             token,
+            // Overwritten with the token's resolved elevation under the caller's ECS read guard
+            // (`clip_move_stream`); the frame itself carries no elevation.
+            mover_elevation: crate::scene::elevation::GROUND,
             positions: samples,
             light: mover_light.as_deref(),
         }),

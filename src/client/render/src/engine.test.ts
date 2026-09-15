@@ -1156,7 +1156,7 @@ test("the engine renders a token at the footprint lookup it was constructed with
   // repaints without any document change.
   const store = new DocumentStore();
   const backend = new MockBackend();
-  let footprints: FootprintLookup = { token: () => ({ w: 173.2, h: 200 }), unit: () => null };
+  let footprints: FootprintLookup = { token: () => ({ w: 173.2, h: 200 }), unit: () => null, level: () => null };
   const engine = new RenderEngine({
     store,
     assets: new AssetResolver(),

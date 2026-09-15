@@ -428,6 +428,7 @@ pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 /// ```
 /// let lit = shadowcat::scene::LitScene {
 ///     scene: uuid::Uuid::new_v4(),
+///     level: String::new(),
 ///     cell: 1.0,
 ///     cells: vec![(0, 0, 0, 0xffffff, None)],
 /// };
@@ -437,6 +438,10 @@ pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 pub struct LitScene {
     /// Scene document id.
     pub scene: Uuid,
+    /// The level this entry's cells belong to, resolved from each source token's elevation
+    /// through `elevation::level_of`; `""` = ground/a level-less scene. One scene yields one
+    /// entry PER LEVEL its sources occupy, never a cross-level union.
+    pub level: String,
     /// Grid cell size in scene units.
     pub cell: f64,
     /// Visible cells as `(i, j, band_index, tint, render_hint)` tuples.
@@ -499,9 +504,22 @@ impl SightSources {
         self.sources.is_empty()
     }
 
-    /// Every source's committed LOS polygon.
-    pub(crate) fn polygons(&self) -> Vec<Vec<vision::P>> {
-        self.sources.iter().map(|s| s.poly.clone()).collect()
+    /// Every source's committed LOS polygon paired with its resolved level id (`level_of` over
+    /// `levels`, `""` for ground/a level-less scene) — the level tag `player_vision_polygons`
+    /// attaches to each polygon so the client cuts fog holes only into the viewed level's fog.
+    pub(crate) fn polygons_with_level(
+        &self,
+        levels: &[eng::SceneLevel],
+    ) -> Vec<(String, Vec<vision::P>)> {
+        self.sources
+            .iter()
+            .map(|s| {
+                let level = elevation::level_of(levels, s.elevation)
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default();
+                (level, s.poly.clone())
+            })
+            .collect()
     }
 
     /// Every source's `(viewpoint, LOS polygon)` at one instant: the committed pair, except for
@@ -562,9 +580,16 @@ pub(crate) struct InstantLight {
 pub(crate) struct RecipientSight {
     /// The LOS half.
     los: SightSources,
-    /// The scene's illumination inputs, minus the excluded emitters — shared with every other
-    /// recipient of the same frame through `SceneEcs::lighting_inputs_excluding`'s memo.
-    li: std::sync::Arc<LightingInputs>,
+    /// The scene's illumination inputs per LEVEL, minus the excluded emitters — shared with
+    /// every other recipient of the same frame through `SceneEcs::lighting_inputs_excluding`'s
+    /// memo. Keyed by level id (`""` = ground/a level-less scene) for exactly the levels the
+    /// recipient's own sources occupy: a source's cells are judged against its own floor's
+    /// field, and a lamp on another floor brightens nothing (`player_lit_mask`'s rule, applied
+    /// here so the clip and the resting mask agree).
+    li_by_level: std::collections::BTreeMap<String, std::sync::Arc<LightingInputs>>,
+    /// The scene's declared `SceneEngine::levels` (empty for a level-less scene) — maps a
+    /// source's or a composed light's elevation to its level through `elevation::level_of`.
+    levels: Vec<eng::SceneLevel>,
     /// Test-only instrumentation: how many instants `at` has resolved, so a test can pin that a
     /// frame's clip resolves each DISTINCT instant once (`ws::move_clip::clip_frame`), never
     /// once per sample per gate.
@@ -583,6 +608,15 @@ impl RecipientSight {
     /// True when the recipient has no vision source in the scene (nothing is ever visible).
     pub(crate) fn has_sources(&self) -> bool {
         !self.los.is_empty()
+    }
+
+    /// The level id `e` maps to under this scene's declared levels (`""` for ground/a
+    /// level-less scene) — the key `li_by_level` is built on, and the conjunct a cross-level
+    /// mover is clipped by (`InstantSight::sees_token`).
+    pub(crate) fn level_of_elevation(&self, e: f64) -> String {
+        elevation::level_of(&self.levels, e)
+            .map(|l| l.id.clone())
+            .unwrap_or_default()
     }
 
     /// The sight at one instant (`SightSources::los_at` for the LOS half — one raycast per
@@ -605,8 +639,15 @@ impl RecipientSight {
 
     /// The field `Light` for an in-flight carried-light sample: `bright`/`dim` arrive in scene
     /// units and convert back to cells through this scene's own per-cell distance (a
-    /// non-finite or non-positive reach reads as 0, contributing nothing).
-    pub(crate) fn sample_light(&self, sample: &crate::ws::protocol::LightSample) -> InstantLight {
+    /// non-finite or non-positive reach reads as 0, contributing nothing). `elevation` is the
+    /// MOVER's resolved elevation (never the wire's — the sample carries none): it decides the
+    /// composed light's level (`level_of_elevation`), so a torch on another floor composes
+    /// into no source's field, matching the committed field's level filter.
+    pub(crate) fn sample_light(
+        &self,
+        sample: &crate::ws::protocol::LightSample,
+        elevation: f64,
+    ) -> InstantLight {
         let cells = |r: f64| {
             if r.is_finite() && r > 0.0 && self.world_units_per_cell > 0.0 {
                 r / self.world_units_per_cell
@@ -617,7 +658,7 @@ impl RecipientSight {
         InstantLight {
             light: lighting::Light {
                 pos: (sample.pos[0], sample.pos[1]),
-                elevation: elevation::GROUND,
+                elevation,
                 color: sample.color,
                 intensity: sample.intensity.clamp(0.0, 1.0),
                 bright_radius: cells(sample.bright),
@@ -674,9 +715,13 @@ impl InstantSight<'_> {
     }
 
     /// `RecipientSight::sample_light` for this instant's sight — the field light a carried-
-    /// light sample composes as.
-    pub(crate) fn sample_light(&self, sample: &crate::ws::protocol::LightSample) -> InstantLight {
-        self.sight.sample_light(sample)
+    /// light sample composes as, at the mover's own resolved `elevation`.
+    pub(crate) fn sample_light(
+        &self,
+        sample: &crate::ws::protocol::LightSample,
+        elevation: f64,
+    ) -> InstantLight {
+        self.sight.sample_light(sample, elevation)
     }
 
     /// Whether `light` contributes at `center` on its own: `lighting::source_level` — the
@@ -707,14 +752,22 @@ impl InstantSight<'_> {
     }
 
     /// Whether the recipient perceives the frame's moving token at `point` at this instant:
-    /// `sees` (a terrain sense — line of sight and the composed illumination) OR a creature
-    /// sense of some source reaches it (`senses_perceive`). THE token-visibility predicate the
-    /// position clip reads (`ws::move_clip::ClipInputs::sees_at`): at rest the same token is
-    /// visible through the lit mask OR named by `player_perceived_tokens`, and this is that
-    /// disjunction per instant. A glow is admitted through `sees` alone — creature senses
-    /// perceive tokens, never light.
-    pub(crate) fn sees_token(&self, point: vision::P, extra: &[InstantLight]) -> bool {
-        self.sees(point, extra) || self.senses_perceive(point)
+    /// `sees` restricted to sources on the MOVER'S OWN level (`mover_level` — two entities on
+    /// different levels never see each other, so a mover on another floor is clipped exactly
+    /// like a mover out of sight: the SAME per-source conjunction, with one more conjunct,
+    /// never a second door) OR a creature sense of some source reaches it
+    /// (`senses_perceive`). THE token-visibility predicate the position clip reads
+    /// (`ws::move_clip::ClipInputs::sees_at`): at rest the same token is visible through the
+    /// lit mask OR named by `player_perceived_tokens`, and this is that disjunction per
+    /// instant. A glow is admitted through `sees` alone — creature senses perceive tokens,
+    /// never light.
+    pub(crate) fn sees_token(
+        &self,
+        point: vision::P,
+        extra: &[&InstantLight],
+        mover_level: &str,
+    ) -> bool {
+        self.sees_with(point, extra, Some(mover_level)) || self.senses_perceive(point)
     }
 
     /// The creature-sense half of `sees_token`: some source other than the sensed token itself
@@ -750,23 +803,54 @@ impl InstantSight<'_> {
     /// composed into the field: some source's LOS polygon contains the point AND that source
     /// `point_qualifies` at the point's cell center — the mask's own per-source conjunction,
     /// never an LOS-of-one-source-with-the-floor-of-another union.
-    pub(crate) fn sees(&self, point: vision::P, extra: &[InstantLight]) -> bool {
+    pub(crate) fn sees(&self, point: vision::P, extra: &[&InstantLight]) -> bool {
+        self.sees_with(point, extra, None)
+    }
+
+    /// The shared per-source visibility conjunction behind `sees` (any admitting source) and
+    /// `sees_token` (only sources whose own level IS `mover_level`). A source admits `point`
+    /// when its LOS polygon contains it AND `point_qualifies` at the point's cell center
+    /// against the source's OWN level's field (`li_by_level` — `player_lit_mask`'s per-level
+    /// rule, so the clip and the resting mask agree), with `extra` carried lights composed in
+    /// only when the light's own level matches the source's: an in-flight torch on another
+    /// floor lights nothing for this source, exactly as the committed field's level filter
+    /// rules it out at rest.
+    fn sees_with(
+        &self,
+        point: vision::P,
+        extra: &[&InstantLight],
+        mover_level: Option<&str>,
+    ) -> bool {
         let sight = self.sight;
         let center = sight.los.grid.cell_center(sight.los.grid.cell_of(point));
         self.views
             .iter()
             .zip(&sight.los.sources)
             .any(|((vp, poly), src)| {
-                vision::point_in_poly(poly, point)
-                    && point_qualifies(
-                        center,
-                        *vp,
-                        &src.floors,
-                        &sight.los.settings,
-                        &sight.li,
-                        sight.world_units_per_cell,
-                        extra,
-                    )
+                let src_level = sight.level_of_elevation(src.elevation);
+                if mover_level.is_some_and(|ml| ml != src_level) {
+                    return false;
+                }
+                let Some(li) = sight.li_by_level.get(&src_level) else {
+                    return false;
+                };
+                if !vision::point_in_poly(poly, point) {
+                    return false;
+                }
+                let extra_here: Vec<&InstantLight> = extra
+                    .iter()
+                    .filter(|il| sight.level_of_elevation(il.light.elevation) == src_level)
+                    .copied()
+                    .collect();
+                point_qualifies(
+                    center,
+                    *vp,
+                    &src.floors,
+                    &sight.los.settings,
+                    li,
+                    sight.world_units_per_cell,
+                    &extra_here,
+                )
             })
     }
 }
@@ -982,9 +1066,10 @@ pub struct SceneEcs {
     lighting_inputs_recompute_count: std::sync::atomic::AtomicU64,
 }
 
-/// `lighting_inputs_cache`'s key: the scene and the SORTED token ids whose carried emissions
-/// the entry leaves out (`scene_lights_excluding`).
-type LightingInputsCacheKey = (Uuid, Vec<Uuid>);
+/// `lighting_inputs_cache`'s key: the scene, the LEVEL the field is computed for (a light on
+/// another floor contributes nothing — `level_of(light.elevation)` decides membership), and the
+/// SORTED token ids whose carried emissions the entry leaves out (`scene_lights_excluding`).
+type LightingInputsCacheKey = (Uuid, String, Vec<Uuid>);
 
 /// `lighting_inputs_cache`'s value: the snapshot the inputs were raycast from, paired with them.
 type LightingInputsCacheEntry = (LightingInputsSnapshot, std::sync::Arc<LightingInputs>);
@@ -2107,15 +2192,18 @@ impl SceneEcs {
         Some((scene, (cx, cy), (nx, ny)))
     }
 
-    /// Per-player visibility polygons, each tagged with the scene it belongs to: one polygon per
-    /// vision source the user holds in that scene (`SightSources` — owned tokens ∪ observer-tier
-    /// tokens under `observerVision`, the SAME admission the lit mask and the movement gate
-    /// read), computed by `source_los_poly` against the scene's FULL `blocksSight` wall set (so
-    /// a `gm_only` wall the player never receives still occludes) at the source's elevation, or
-    /// the whole scene bound when the scene's `losRestriction` is off. The player only ever gets
-    /// their own polygons. The scene tag lets the client cut fog holes only for the scene it is
-    /// rendering — a token in scene B must not punch a hole into scene A's fog (scene
-    /// coordinates are scene-local). Empty when the player holds no source anywhere.
+    /// Per-player visibility polygons, each tagged with the scene AND the level it belongs to:
+    /// one polygon per vision source the user holds in that scene (`SightSources` — owned tokens
+    /// ∪ observer-tier tokens under `observerVision`, the SAME admission the lit mask and the
+    /// movement gate read), computed by `source_los_poly` against the scene's FULL `blocksSight`
+    /// wall set (so a `gm_only` wall the player never receives still occludes) at the source's
+    /// elevation, or the whole scene bound when the scene's `losRestriction` is off. The player
+    /// only ever gets their own polygons. The scene tag lets the client cut fog holes only for
+    /// the scene it is rendering — a token in scene B must not punch a hole into scene A's fog
+    /// (scene coordinates are scene-local) — and the level tag (`""` = ground/a level-less
+    /// scene, the same spelling `SceneSubscribe.level`'s implicit ground uses, never `null`)
+    /// restricts the holes to the viewed level's fog. Empty when the player holds no source
+    /// anywhere.
     ///
     /// # Examples
     ///
@@ -2134,11 +2222,17 @@ impl SceneEcs {
         user_id: Uuid,
         world_role: crate::data::document::WorldRole,
         world_defaults: &crate::data::document::WorldCapDefaults,
-    ) -> Vec<(Uuid, Vec<vision::P>)> {
+    ) -> Vec<(Uuid, String, Vec<vision::P>)> {
         let mut out = Vec::new();
         for scene in self.token_scene_ids() {
             let sight = self.sight_sources(user_id, world_role, world_defaults, scene);
-            out.extend(sight.polygons().into_iter().map(|p| (scene, p)));
+            let levels = self.scene_levels(scene);
+            out.extend(
+                sight
+                    .polygons_with_level(&levels)
+                    .into_iter()
+                    .map(|(level, p)| (scene, level, p)),
+            );
         }
         out
     }
@@ -2231,7 +2325,37 @@ impl SceneEcs {
         // illumination inputs built here are never consulted; a zero cell size synthesizes no
         // grid.
         let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
-        let li = self.lighting_inputs_excluding(scene, &los.settings, cell, exclude_emitters);
+        // One level-filtered field per level the recipient's own sources occupy: a source's
+        // cells are judged against its own floor's lights (`player_lit_mask`'s rule), and the
+        // memo makes each distinct level's raycasts run once per frame, not once per recipient.
+        let levels = self.scene_levels(scene);
+        let mut source_levels: Vec<String> = los
+            .sources
+            .iter()
+            .map(|s| {
+                elevation::level_of(&levels, s.elevation)
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        source_levels.sort();
+        source_levels.dedup();
+        let li_by_level: std::collections::BTreeMap<String, std::sync::Arc<LightingInputs>> =
+            source_levels
+                .into_iter()
+                .map(|level| {
+                    (
+                        level.clone(),
+                        self.lighting_inputs_excluding(
+                            scene,
+                            &level,
+                            &los.settings,
+                            cell,
+                            exclude_emitters,
+                        ),
+                    )
+                })
+                .collect();
         let sensed = self.index.get(&mover).and_then(|&e| {
             let ent = self.world.get::<&SceneEntity>(e).ok()?;
             let doc = &ent.doc;
@@ -2248,7 +2372,8 @@ impl SceneEcs {
         RecipientSight {
             world_units_per_cell: los.grid.world_units_per_cell(),
             los,
-            li,
+            li_by_level,
+            levels,
             sensed,
             #[cfg(test)]
             at_calls: std::sync::atomic::AtomicU64::new(0),
@@ -3375,10 +3500,12 @@ impl SceneEcs {
         ctx: &PermissionContext,
         world_defaults: &crate::data::document::WorldCapDefaults,
     ) -> footprint::FootprintsPayload {
-        let mut by_scene: BTreeMap<Uuid, (f64, footprint::SceneFootprints)> = BTreeMap::new();
+        let mut by_scene: BTreeMap<Uuid, (f64, Vec<eng::SceneLevel>, footprint::SceneFootprints)> =
+            BTreeMap::new();
         // The cell size comes from `scene_grid_sizes` rather than a second `grid.size` read, so
         // this channel's scale can never disagree with the gates'; the entity scan alongside it
-        // supplies the scene DOCUMENT that map does not carry, which the egress check needs.
+        // supplies the scene DOCUMENT that map does not carry, which the egress check needs —
+        // and its declared levels, which tag each token's entry with its floor.
         let grid_sizes = self.scene_grid_sizes();
         for e in self.world.query::<&SceneEntity>().iter() {
             let doc = &e.doc;
@@ -3389,12 +3516,17 @@ impl SceneEcs {
                 continue;
             };
             let scene = doc.id;
+            let levels = self
+                .engine_as_cached::<eng::SceneEngine>(scene, doc)
+                .map(|s| s.levels)
+                .unwrap_or_default();
             let kind = self.resolve_grid_kind(scene);
             let unit = footprint::resolve_footprint_cells(kind, "square", 1.0, 1.0);
             by_scene.insert(
                 scene,
                 (
                     cell,
+                    levels,
                     footprint::SceneFootprints {
                         scene,
                         unit: footprint::FootprintExtent {
@@ -3427,7 +3559,7 @@ impl SceneEcs {
         }
         tokens.sort_unstable();
         for (scene, token) in tokens {
-            let Some((cell, entry)) = by_scene.get_mut(&scene) else {
+            let Some((cell, levels, entry)) = by_scene.get_mut(&scene) else {
                 continue;
             };
             let Some((shape, size)) = self.token_shape_and_size(token) else {
@@ -3440,12 +3572,26 @@ impl SceneEcs {
                     w: f.box_w * *cell,
                     h: f.box_h * *cell,
                 });
-            entry
-                .tokens
-                .push(footprint::TokenFootprint { token, extent });
+            // The token's floor, derived from its own stored elevation (`level_of`) — `None`
+            // for ground/a level-less scene, so the client scopes by level without re-deriving
+            // it from elevation.
+            let level = self
+                .index
+                .get(&token)
+                .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+                .and_then(|ent| self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc))
+                .and_then(|t| {
+                    elevation::level_of(levels, elevation::elevation_or_ground(t.elevation))
+                        .map(|l| l.id.clone())
+                });
+            entry.tokens.push(footprint::TokenFootprint {
+                token,
+                extent,
+                level,
+            });
         }
         footprint::FootprintsPayload {
-            scenes: by_scene.into_values().map(|(_, s)| s).collect(),
+            scenes: by_scene.into_values().map(|(_, _, s)| s).collect(),
         }
     }
     /// The resolved `"combat"` derived-channel payload for `ctx`: every combat `ctx` may READ,
@@ -3593,15 +3739,18 @@ impl SceneEcs {
     }
 
     /// Scene-shared lighting/wall inputs for the visibility mask — `lighting_inputs_excluding`
-    /// with nothing excluded, memoised the same way. `all_bright` short-circuits light
-    /// raycasts under lighting-off or globalIllumination.
+    /// with nothing excluded, memoised the same way. `level` scopes the field to one floor: a
+    /// light contributes only to the level `elevation::level_of(light.elevation)` resolves to,
+    /// so the mask for a floor never brightens from another floor's lamps. `all_bright`
+    /// short-circuits light raycasts under lighting-off or globalIllumination.
     pub(crate) fn lighting_inputs(
         &self,
         scene: Uuid,
+        level: &str,
         settings: &ResolvedScene,
         cell: f64,
     ) -> std::sync::Arc<LightingInputs> {
-        self.lighting_inputs_excluding(scene, settings, cell, &[])
+        self.lighting_inputs_excluding(scene, level, settings, cell, &[])
     }
 
     /// `lighting_inputs` with the carried emissions of `exclude_emitters` (token ids) left out
@@ -3609,25 +3758,39 @@ impl SceneEcs {
     /// movers' torches back in per instant from their timelines rather than at their committed
     /// (end-of-move) positions. Standalone lights are never excluded.
     ///
-    /// MEMOISED per `(scene, sorted exclude set)` in `lighting_inputs_cache`: every recipient of
+    /// MEMOISED per `(scene, level, sorted exclude set)` in `lighting_inputs_cache`: every
+    /// recipient of
     /// one frame excludes the same in-flight set, so the field's light + environment raycasts
-    /// run once per frame per scene rather than once per recipient, and the lit mask, the
-    /// movement gate and the clip share one computation. Reuse is decided by comparing a
+    /// run once per frame per scene per level rather than once per recipient, and the lit mask,
+    /// the movement gate and the clip share one computation. Reuse is decided by comparing a
     /// freshly gathered `LightingInputsSnapshot` (cheap document decodes, no geometry) against
     /// the stored one — a changed light, wall, setting or cell size misses and recomputes.
     pub(crate) fn lighting_inputs_excluding(
         &self,
         scene: Uuid,
+        level: &str,
         settings: &ResolvedScene,
         cell: f64,
         exclude_emitters: &[Uuid],
     ) -> std::sync::Arc<LightingInputs> {
         let all_bright = settings.all_bright();
-        let lights = if all_bright {
+        let levels = self.scene_levels(scene);
+        let mut lights = if all_bright {
             Vec::new()
         } else {
             self.scene_lights_excluding(scene, exclude_emitters)
         };
+        // Level membership: a light contributes only to the level its own elevation resolves
+        // to (`elevation::level_of`); a lamp on another floor lights nothing here. The
+        // light WALL set stays unfiltered by level — walls occlude per-source-elevation at
+        // consumption (`lighting_inputs_from`'s `walls_at_elevation`), and environment ambient
+        // keeps the full set at every elevation.
+        lights.retain(|l| {
+            elevation::level_of(&levels, l.elevation)
+                .map(|x| x.id.as_str())
+                .unwrap_or("")
+                == level
+        });
         let light_walls = if all_bright {
             Vec::new()
         } else {
@@ -3637,7 +3800,7 @@ impl SceneEcs {
         let mut excluded: Vec<Uuid> = exclude_emitters.to_vec();
         excluded.sort_unstable();
         excluded.dedup();
-        let key = (scene, excluded);
+        let key = (scene, level.to_string(), excluded);
         let snapshot = LightingInputsSnapshot {
             settings: settings.clone(),
             cell,
@@ -3744,7 +3907,8 @@ impl SceneEcs {
         }
     }
 
-    /// The per-player lighting-aware visibility mask: per scene, the cells the user can currently
+    /// The per-player lighting-aware visibility mask: per scene PER LEVEL, the cells the user
+    /// can currently
     /// see = LOS-cells ∩ (illumination ≥ vision floor ∨ darkvision-in-range), each tagged with its
     /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? tokens the user
     /// holds whole-document `cap::READ` on : ∅), gathered through the ONE admission decision in
@@ -3797,6 +3961,14 @@ impl SceneEcs {
             .iter()
             .map(|&sid| (sid, self.resolve_scene(sid)))
             .collect();
+        // The declared levels per scene, resolved in the same first pass: each source's cells
+        // accumulate under the level its own elevation resolves to (`elevation::level_of`), and
+        // the illumination field is the level-filtered one (`lighting_inputs`), so a lamp on
+        // another floor brightens nothing here.
+        let scene_levels: HashMap<Uuid, Vec<eng::SceneLevel>> = all_scene_ids
+            .iter()
+            .map(|&sid| (sid, self.scene_levels(sid)))
+            .collect();
 
         // 1. Per scene, gather this user's vision sources through the ONE admission decision
         //    (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
@@ -3808,8 +3980,9 @@ impl SceneEcs {
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
         type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
-        // scene -> (the scene's `cell` indexing scale, per-cell best)
-        let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
+        // (scene, level id) -> (the scene's `cell` indexing scale, per-cell best): one entry per
+        // level a source occupies — `""` for ground/a level-less scene.
+        let mut per_scene: BTreeMap<(Uuid, String), (f64, CellEntry)> = BTreeMap::new();
 
         for scene in all_scene_ids {
             // Use the memoized settings; fall back to resolve (unreachable in practice since
@@ -3840,14 +4013,22 @@ impl SceneEcs {
             // One grid step's world distance, resolved once per scene: it is a property of the
             // shape, so every candidate cell of every source in this scene shares the value.
             let world_units_per_cell = cell_grid.world_units_per_cell();
-            // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
-            // else compute per-cell from lights (occluded by blocksLight) + environment.
-            let li = self.lighting_inputs(scene, settings, cell);
-
-            let entry = per_scene
-                .entry(scene)
-                .or_insert_with(|| (cell, BTreeMap::new()));
+            let levels = scene_levels.get(&scene).map(Vec::as_slice).unwrap_or(&[]);
             for src in &sources {
+                // The source's own floor decides both which illumination field its cells are
+                // judged against (a lamp on another floor contributes nothing) and which
+                // `(scene, level)` entry they accumulate into.
+                let level = elevation::level_of(levels, src.elevation)
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default();
+                // Lighting inputs for THIS level: under globalIllumination or lighting-off,
+                // every LOS cell is bright; else compute per-cell from the level's lights
+                // (occluded by blocksLight) + environment. Memoised per (scene, level), so
+                // same-floor sources share one raycast set.
+                let li = self.lighting_inputs(scene, &level, settings, cell);
+                let entry = per_scene
+                    .entry((scene, level))
+                    .or_insert_with(|| (cell, BTreeMap::new()));
                 // LOS polygon for this source (or, LOS off, the whole bound box as a polygon),
                 // raycast against the sight walls whose band covers the source's elevation.
                 let src_walls = elevation::walls_at_elevation(&li.sight_walls, src.elevation);
@@ -3954,8 +4135,9 @@ impl SceneEcs {
 
         per_scene
             .into_iter()
-            .map(|(scene, (cell, cells))| LitScene {
+            .map(|((scene, level), (cell, cells))| LitScene {
                 scene,
+                level,
                 cell,
                 cells: cells
                     .into_iter()
@@ -4013,10 +4195,26 @@ impl SceneEcs {
             return out;
         }
 
-        // Scene-shared lighting inputs (once), then per-source per-cell test.
-        let li = self.lighting_inputs(scene, &settings, cell);
+        // Scene-shared lighting inputs per SOURCE LEVEL (a lamp on another floor contributes
+        // nothing to a source's own cells — the same rule `player_lit_mask` applies, so the
+        // gate mask and the egress mask agree cell for cell), then per-source per-cell test.
+        let levels = self.scene_levels(scene);
         let grid = self.resolve_grid_shape(scene, cell);
-        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient, &*grid);
+        for src in &sources {
+            let level = elevation::level_of(&levels, src.elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
+            let li = self.lighting_inputs(scene, &level, &settings, cell);
+            accumulate_visible_cells(
+                &mut out,
+                std::slice::from_ref(src),
+                &settings,
+                cell,
+                &li,
+                lenient,
+                &*grid,
+            );
+        }
         out
     }
 
@@ -4099,6 +4297,10 @@ impl SceneEcs {
                 .iter()
                 .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
                 .collect(),
+            // The scene's declared levels decide each source's level (`elevation::level_of`)
+            // and therefore which level-filtered illumination field its cells are judged
+            // against — a levels edit must miss the cache exactly like a light edit.
+            levels: self.scene_levels(scene),
             lights,
             light_walls,
             sight_walls,
@@ -4118,11 +4320,27 @@ impl SceneEcs {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let grid = self.resolve_grid_shape(scene, cell);
-        // The field itself comes from the shared memo (a hit whenever the clip or the lit
-        // mask already raycast this scene's lights); only the per-source cell scan is ours.
-        let li = self.lighting_inputs(scene, &settings, cell);
+        // The field itself comes from the shared memo per SOURCE LEVEL (a hit whenever the clip
+        // or the lit mask already raycast this scene's lights for that level); only the
+        // per-source cell scan is ours. Same per-source-level rule `visible_cells` applies, so
+        // the cached and uncached masks are identical.
+        let levels = self.scene_levels(scene);
         let mut mask = BTreeSet::new();
-        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
+        for src in &sources {
+            let level = elevation::level_of(&levels, src.elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
+            let li = self.lighting_inputs(scene, &level, &settings, cell);
+            accumulate_visible_cells(
+                &mut mask,
+                std::slice::from_ref(src),
+                &settings,
+                cell,
+                &li,
+                lenient,
+                &*grid,
+            );
+        }
 
         let mut cache = self.visible_cells_cache.lock().unwrap();
         cache.insert((user, scene), (snapshot, mask.clone()));
@@ -4298,7 +4516,7 @@ impl LightingInputs {
         point: (f64, f64),
         settings: &ResolvedScene,
         world_units_per_cell: f64,
-        extra: &[InstantLight],
+        extra: &[&InstantLight],
     ) -> crate::scene::lighting::CellLight {
         if self.all_bright {
             return crate::scene::lighting::CellLight {
@@ -4345,7 +4563,7 @@ fn point_qualifies(
     settings: &ResolvedScene,
     li: &LightingInputs,
     world_units_per_cell: f64,
-    extra: &[InstantLight],
+    extra: &[&InstantLight],
 ) -> bool {
     let cl = li.cell_light(point, settings, world_units_per_cell, extra);
     let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt())
@@ -4411,6 +4629,10 @@ struct VisibilityInputsSnapshot {
     cell: f64,
     /// Every vision source's `(id, viewpoint, floors)` snapshot.
     sources: Vec<VisSrcSnapshot>,
+    /// The scene's declared `SceneEngine::levels`: they decide each source's level
+    /// (`elevation::level_of`) and therefore which level-filtered illumination field its cells
+    /// are judged against, so they are fingerprinted like every other input.
+    levels: Vec<eng::SceneLevel>,
     /// Resolved scene lights.
     lights: Vec<lighting::Light>,
     /// `blocksLight` wall segments with their elevation bands.
@@ -4690,9 +4912,12 @@ pub fn compute_derived(
                 let polygons: Vec<serde_json::Value> = ecs
                     .player_vision_polygons(ctx.user_id, ctx.world_role, world_defaults)
                     .into_iter()
-                    .map(|(scene, poly)| {
+                    .map(|(scene, level, poly)| {
                         let points: Vec<f64> = poly.into_iter().flat_map(|(x, y)| [x, y]).collect();
-                        serde_json::json!({ "scene": scene, "points": points })
+                        // `level` serializes as an empty string for ground/a level-less scene —
+                        // the ONE spelling both sides use (the client's `levelOf`/`bandContains`
+                        // mirrors treat `""` as the ground/default level id), never `null`.
+                        serde_json::json!({ "scene": scene, "level": level, "points": points })
                     })
                     .collect();
                 // The secrecy-safe lighting-aware mask — only currently-visible cells, each
@@ -4741,7 +4966,7 @@ pub fn compute_derived(
                         flat.extend_from_slice(&[i as i64, j as i64, band as i64, tint as i64, hi]);
                     }
                     lit.push(
-                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat }),
+                        serde_json::json!({ "scene": s.scene, "level": s.level, "cell": s.cell, "cells": flat }),
                     );
                 }
                 Some(

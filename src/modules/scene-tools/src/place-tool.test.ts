@@ -27,7 +27,7 @@ function snapBridge(): SceneInteractionBridge {
 
 /** A lookup stating a 100x100 unit footprint for every scene, standing in for a `"footprints"`
  * frame on a 100-unit square grid. */
-const unitFootprints: FootprintLookup = { token: () => null, unit: () => ({ w: 100, h: 100 }) };
+const unitFootprints: FootprintLookup = { token: () => null, unit: () => ({ w: 100, h: 100 }), level: () => null };
 
 function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperation[][] } {
   const sent: WireOperation[][] = [];

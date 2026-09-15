@@ -1399,9 +1399,9 @@ fn wall_less_scene_gives_full_intrascene_vision_not_a_degenerate_box() {
     let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
     let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
-    let (_, poly) = polys
+    let (_, _, poly) = polys
         .iter()
-        .find(|(sid, _)| *sid == scene_id)
+        .find(|(sid, _, _)| *sid == scene_id)
         .expect("scene present");
 
     let far_corner = (490.0, 490.0);
@@ -1460,9 +1460,9 @@ fn each_scenes_vision_bound_uses_its_own_extent_not_a_neighbours() {
     );
 
     for (i, scene_id) in [10u128, 20].iter().enumerate() {
-        let (_, poly) = polys
+        let (_, _, poly) = polys
             .iter()
-            .find(|(sid, _)| *sid == Uuid::from_u128(*scene_id))
+            .find(|(sid, _, _)| *sid == Uuid::from_u128(*scene_id))
             .expect("scene present");
         let (ex, ey) = extents[i].max;
         // Just inside this scene's own extent, on the diagonal from the viewpoint.
@@ -1507,7 +1507,7 @@ fn wall_less_scene_vision_does_not_leak_beyond_its_own_bounds() {
     let ecs = SceneEcs::from_documents(vec![scene, tok], 0);
 
     let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
-    let (_, poly) = polys.iter().find(|(sid, _)| *sid == scene_id).unwrap();
+    let (_, _, poly) = polys.iter().find(|(sid, _, _)| *sid == scene_id).unwrap();
 
     let beyond_bounds = (1000.0, 1000.0);
     assert!(
@@ -1542,8 +1542,8 @@ fn player_vision_polygons_and_player_vision_polygons_at_agree_on_wall_less_bound
     let poly_from_polygons = ecs
         .player_vision_polygons(user, WorldRole::Player, &no_world_grants())
         .into_iter()
-        .find(|(sid, _)| *sid == scene_id)
-        .map(|(_, p)| p);
+        .find(|(sid, _, _)| *sid == scene_id)
+        .map(|(_, _, p)| p);
     let poly_from_inputs = ecs
         .player_vision_polygons_at(user, scene_id, token_id, (5.0, 5.0))
         .into_iter()
@@ -1668,9 +1668,9 @@ fn visible_cells_agrees_with_player_vision_polygons_bound_on_wall_less_scene() {
     let (ecs, user, scene_id) = wall_less_large_scene_all_bright();
 
     let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
-    let (_, poly) = polys
+    let (_, _, poly) = polys
         .iter()
-        .find(|(sid, _)| *sid == scene_id)
+        .find(|(sid, _, _)| *sid == scene_id)
         .expect("scene present");
     let far_corner = (490.0, 490.0);
     assert!(
@@ -2903,4 +2903,72 @@ fn a_banded_wall_blocks_only_movers_inside_its_band() {
         exec.truncated,
         "the unbanded wall springs at a floor-0 mover's execution through the identical corridor"
     );
+}
+
+#[test]
+fn player_vision_polygons_tags_each_polygon_with_its_sources_level() {
+    // Two levels on one scene; the user owns a token on each floor. Each polygon carries the
+    // level `level_of` resolves for its source's elevation, so the client cuts fog holes only
+    // into the viewed level's fog.
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                "bounds": { "width": 5.0, "height": 5.0 },
+                "levels": [
+                    { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                    { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
+                ] }),
+    );
+    let mut ground_tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 5.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    ground_tok.owner = Some(user);
+    let mut upper_tok = entity_doc_eng(
+        12,
+        10,
+        "token",
+        json!({ "x": 105.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                "elevation": 15.0 }),
+    );
+    upper_tok.owner = Some(user);
+    let ecs = SceneEcs::from_documents(vec![scene, ground_tok, upper_tok], 0);
+
+    let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
+    let tagged: std::collections::BTreeSet<&str> = polys
+        .iter()
+        .filter(|(sid, _, _)| *sid == scene_id)
+        .map(|(_, level, _)| level.as_str())
+        .collect();
+    assert_eq!(tagged.len(), 2, "one polygon per source, one per level");
+    assert!(
+        tagged.contains("l1"),
+        "the ground token's polygon is tagged l1"
+    );
+    assert!(
+        tagged.contains("l2"),
+        "the floor-2 token's polygon is tagged l2"
+    );
+    // A level-less scene tags `""` (the implicit-ground spelling), never a level id.
+    let plain = entity_doc_top_eng(
+        20,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null }),
+    );
+    let mut plain_tok = entity_doc_eng(
+        21,
+        20,
+        "token",
+        json!({ "x": 5.0, "y": 5.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    plain_tok.owner = Some(user);
+    let ecs = SceneEcs::from_documents(vec![plain, plain_tok], 0);
+    let polys = ecs.player_vision_polygons(user, WorldRole::Player, &no_world_grants());
+    assert_eq!(polys.len(), 1);
+    assert_eq!(polys[0].1, "", "a level-less scene tags the ground level");
 }

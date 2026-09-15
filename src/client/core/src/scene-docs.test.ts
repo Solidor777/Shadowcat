@@ -286,7 +286,7 @@ test("buildTokenFromActor stamps the scene's unit footprint, which stands until 
 
   // The server's own resolved extent, once stated, wins over the stamped unit footprint.
   const store = storeWith(actor, token);
-  const resolved: FootprintLookup = { token: () => ({ w: 100, h: 100 }), unit: () => null };
+  const resolved: FootprintLookup = { token: () => ({ w: 100, h: 100 }), unit: () => null, level: () => null };
   expect(resolveTokenBox(token, store, resolved, resolveTokenActor(token, store)).w).toBe(100);
 
   // Until then — and permanently for a token no actor sizes — the stamped extent is the box.

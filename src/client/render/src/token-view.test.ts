@@ -198,7 +198,7 @@ test("reconciles a token to the server's resolved extent, with the shape still r
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: actor }, { op: "create", doc: token }]));
-  const footprints: FootprintLookup = { token: (id) => (id === "tok1" ? { w: 173.2, h: 200 } : null), unit: () => null };
+  const footprints: FootprintLookup = { token: (id) => (id === "tok1" ? { w: 173.2, h: 200 } : null), unit: () => null, level: () => null };
   new TokenView(store, assets, backend, () => null, () => footprints).reconcile();
   const spec = backend.tokens.get("tok1")!;
   expect(spec.w).toBe(173.2);

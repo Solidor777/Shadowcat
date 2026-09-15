@@ -1552,6 +1552,7 @@ fn footprints_payload_carries_a_square_token_extent_of_the_authored_block_in_sce
         vec![footprint::TokenFootprint {
             token,
             extent: Some(footprint::FootprintExtent { w: 200.0, h: 300.0 }),
+            level: None,
         }]
     );
 }
@@ -1572,6 +1573,7 @@ fn footprints_payload_carries_a_hex_token_extent_of_the_hexs_own_bounding_box() 
         vec![footprint::TokenFootprint {
             token,
             extent: Some(want),
+            level: None,
         }]
     );
 }
@@ -1590,6 +1592,7 @@ fn footprints_payload_states_a_refusal_as_a_null_extent_rather_than_a_size() {
         vec![footprint::TokenFootprint {
             token,
             extent: None,
+            level: None,
         }],
         "the wire states the same refusal rather than a drawable size"
     );
@@ -2424,4 +2427,40 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
         .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
+}
+
+#[test]
+fn footprints_payload_tags_each_token_with_its_resolved_level() {
+    // A level-bearing scene with a linked token on floor 2 (elevation 15 ∈ [10,20)): its entry
+    // carries `Some("l2")`, matching `level_of` over the scene's declared levels — the client
+    // scopes by level without re-deriving it from elevation.
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null,
+                "levels": [
+                    { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                    { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
+                ] }),
+    );
+    let token = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                "elevation": 15.0, "actor_id": Uuid::from_u128(200).to_string() }),
+    );
+    let mut ecs = SceneEcs::from_documents(vec![scene, token], 0);
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_body_shaped("square", 1.0, 1.0),
+    )]);
+    let s = only_scene_footprints(&ecs);
+    assert_eq!(s.tokens.len(), 1);
+    assert_eq!(
+        s.tokens[0].level.as_deref(),
+        Some("l2"),
+        "the token's floor rides its footprint entry"
+    );
 }

@@ -1186,7 +1186,7 @@ fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
     let settings = ecs.resolve_scene(scene);
     assert_eq!(settings.env_intensity, 0.0);
     assert!(ecs
-        .lighting_inputs(scene, &settings, 100.0)
+        .lighting_inputs(scene, "", &settings, 100.0)
         .env_polys
         .is_empty());
     ecs.set_world_settings_for_test(json!({
@@ -1195,7 +1195,7 @@ fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
     let settings = ecs.resolve_scene(scene);
     assert_eq!(settings.env_intensity, 0.5);
     assert!(!ecs
-        .lighting_inputs(scene, &settings, 100.0)
+        .lighting_inputs(scene, "", &settings, 100.0)
         .env_polys
         .is_empty());
 }
@@ -2652,4 +2652,81 @@ fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
     let rows = ecs.trigger_regions(scene_id, 15.0).expect("scene exists");
     assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(20)));
     assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(21)));
+}
+
+/// A two-level scene (`l1` [0,10), `l2` [10,20)) with a player-owned token on EACH floor — both
+/// at (50,50), so the floor-1 lamp WOULD light the floor-2 token's cell if light leaked across
+/// levels — and a single enabled white light on floor 1 (elevation 0) at that same point.
+fn scene_with_two_levels_and_a_floor_one_light() -> (SceneEcs, Uuid, Uuid) {
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                "levels": [
+                    { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                    { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
+                ] }),
+    );
+    let mut ground_tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    ground_tok.owner = Some(user);
+    let mut upper_tok = entity_doc_eng(
+        12,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0, "elevation": 15.0 }),
+    );
+    upper_tok.owner = Some(user);
+    let light = entity_doc_eng(
+        20,
+        10,
+        "light",
+        json!({ "x": 50.0, "y": 50.0, "elevation": 0.0,
+                "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0,
+                              "dimRadius": 6.0, "enabled": true } }),
+    );
+    (
+        SceneEcs::from_documents(vec![scene, ground_tok, upper_tok, light], 0),
+        user,
+        scene_id,
+    )
+}
+
+#[test]
+fn player_lit_mask_accumulates_per_level_and_a_light_never_leaks_across_levels() {
+    let (ecs, user, scene) = scene_with_two_levels_and_a_floor_one_light();
+    let mask = ecs.player_lit_mask(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    );
+    let l1 = mask
+        .iter()
+        .find(|s| s.scene == scene && s.level == "l1")
+        .expect("a floor-1 entry for the ground token's cells");
+    let l2 = mask
+        .iter()
+        .find(|s| s.scene == scene && s.level == "l2")
+        .expect("a floor-2 entry for the upper token's (empty) cells");
+    assert!(
+        l1.cells.iter().any(|(i, j, ..)| (*i, *j) == (0, 0)),
+        "the floor-1 lamp lights its own cell on floor 1"
+    );
+    assert!(
+        l2.cells.is_empty(),
+        "the floor-1 lamp contributes zero illumination to floor 2: the cell it would light if \
+         it leaked is absent from the floor-2 mask, got {:?}",
+        l2.cells
+    );
+    // Gate/egress parity survives per-level accumulation: the gate mask (a union over the
+    // user's sources, each judged against its own level's field) equals the union of the
+    // per-level egress entries.
+    assert_strict_parity(&ecs, user, scene);
 }
