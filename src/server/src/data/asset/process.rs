@@ -162,7 +162,7 @@ pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::asset::process::{process_staged, Processed};
+/// use shadowcat::data::asset::process::{audio::AudioContainers, process_staged, Processed};
 /// use std::io::Cursor;
 ///
 /// // A directory outside the repo tree — never written to source control.
@@ -176,7 +176,7 @@ pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
 /// // A real PNG decodes and re-encodes: `converted`/`content_type` come from the
 /// // pipeline's own decision, not from a literal.
 /// let processed: Processed =
-///     process_staged(&staged, "image/png", png.len() as i64, false).unwrap();
+///     process_staged(&staged, "image/png", png.len() as i64, false, AudioContainers::default()).unwrap();
 /// assert!(processed.converted);
 /// assert_eq!(processed.content_type, "image/webp");
 /// ```
