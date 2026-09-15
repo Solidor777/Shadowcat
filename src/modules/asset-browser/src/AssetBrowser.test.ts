@@ -6,6 +6,17 @@ import AssetBrowser from "./AssetBrowser.svelte";
 
 beforeEach(() => vi.restoreAllMocks());
 
+test("the audio container selector renders with the dual-container default", async () => {
+  vi.spyOn(api, "queryAssets").mockResolvedValue({ items: [], next_cursor: null } as never);
+  render(AssetBrowser, {
+    props: { mode: "manage" },
+    context: setAppContextForTest(),
+  });
+  const select = (await screen.findByTestId("audio-containers")) as HTMLSelectElement;
+  expect(select.value).toBe("both");
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["both", "ogg", "webm"]);
+});
+
 test("renders the empty state when the world has no assets", async () => {
   vi.spyOn(api, "queryAssets").mockResolvedValue({ items: [], next_cursor: null } as never);
   render(AssetBrowser, {

@@ -39,10 +39,17 @@ test("a small file goes single-shot and applies placement via patchAsset", async
     tags: ["map"],
     onProgress: (s, t) => progress.push([s, t]),
   });
-  expect(upload).toHaveBeenCalledWith("w1", file);
+  expect(upload).toHaveBeenCalledWith("w1", file, undefined);
   expect(patch).toHaveBeenCalledWith("a1", { folder_id: null, tags: ["map"] });
   expect(out.tags).toEqual(["map"]);
   expect(progress).toEqual([[3, 3]]);
+});
+
+test("a small audio file's container selection reaches the single-shot upload", async () => {
+  const upload = vi.spyOn(rest, "uploadAsset").mockResolvedValue(ASSET as never);
+  const file = new File([new Uint8Array([1, 2, 3])], "loop.wav", { type: "audio/wav" });
+  await startChunkedUpload("w1", file, { audioContainers: "webm" });
+  expect(upload).toHaveBeenCalledWith("w1", file, "webm");
 });
 
 test("a placement failure after a single-shot upload surfaces the created asset", async () => {
@@ -81,6 +88,7 @@ test("a large file opens a session, PUTs chunks at successive chunk-size offsets
     fetchImpl: impl,
     folderId: "f1",
     tags: ["big"],
+    audioContainers: "both",
     onProgress: (s) => progress.push(s),
   });
   expect(out).toEqual(ASSET);
@@ -93,6 +101,7 @@ test("a large file opens a session, PUTs chunks at successive chunk-size offsets
     byte_size: file.size,
     folder_id: "f1",
     tags: ["big"],
+    audio_containers: "both",
   });
   const puts = calls.filter((c) => c.method === "PUT").map((c) => c.url);
   expect(puts).toEqual([

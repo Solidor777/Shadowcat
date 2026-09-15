@@ -683,4 +683,8 @@ export const en: Messages = {
   "tables.draw": "Draw",
   "tables.delete": "Delete",
   "tables.empty": "No tables yet.",
+  "assetBrowser.audioContainers": "Audio derivative format",
+  "assetBrowser.containersBoth": "Ogg + WebM (recommended)",
+  "assetBrowser.containersOgg": "Ogg only",
+  "assetBrowser.containersWebm": "WebM only",
 };
