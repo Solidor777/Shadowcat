@@ -26,9 +26,9 @@ pub use combat::{
     ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
-    DrawingEngine, DrawingShape, ElevationBand, Fill, NoticeAudience, RegionEngine, RegionShape,
-    RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent,
-    WallEngine, MAX_TRIGGER_ID_CHARS,
+    DrawingEngine, DrawingShape, ElevationBand, Fill, NoticeAudience, PortalTarget, RegionEngine,
+    RegionShape, RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect,
+    TriggerEvent, WallEngine, MAX_TRIGGER_ID_CHARS,
 };
 pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{

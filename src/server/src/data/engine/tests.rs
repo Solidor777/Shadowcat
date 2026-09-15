@@ -2008,3 +2008,88 @@ fn scene_levels_validate_rejects_an_invalid_band_and_empty_background() {
     blank.background = Some(String::new());
     assert!(scene_with_levels(vec![blank]).validate().is_err());
 }
+
+// --- PortalTarget / TriggerEffect::Teleport validation ---
+
+/// A minimal same-scene teleport target (`scene: None`); the fields are the caller's.
+fn portal_target(x: f64, y: f64) -> PortalTarget {
+    PortalTarget {
+        scene: None,
+        x,
+        y,
+        elevation: None,
+        vfx: None,
+    }
+}
+
+#[test]
+fn portal_target_accepts_a_minimal_same_scene_target() {
+    assert!(portal_target(10.0, -20.0).validate().is_ok());
+}
+
+#[test]
+fn portal_target_rejects_non_finite_and_over_bound_coordinates() {
+    assert!(portal_target(f64::NAN, 0.0).validate().is_err());
+    assert!(portal_target(0.0, f64::INFINITY).validate().is_err());
+    let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+    assert!(portal_target(over, 0.0).validate().is_err());
+    assert!(portal_target(0.0, -over).validate().is_err());
+}
+
+#[test]
+fn portal_target_rejects_a_non_finite_elevation_and_an_empty_vfx() {
+    let mut t = portal_target(0.0, 0.0);
+    t.elevation = Some(f64::NAN);
+    assert!(t.validate().is_err());
+    let mut t = portal_target(0.0, 0.0);
+    t.vfx = Some(String::new());
+    assert!(t.validate().is_err());
+    t.vfx = Some("asset-1".to_string());
+    assert!(t.validate().is_ok());
+}
+
+/// A `RegionEngine` carrying one `Teleport` trigger whose target is the caller's.
+fn region_with_teleport(target: PortalTarget) -> RegionEngine {
+    RegionEngine {
+        shape: RegionShape {
+            kind: "rect".to_string(),
+            points: vec![0.0, 0.0, 1.0, 1.0],
+        },
+        behavior: "terrain".to_string(),
+        cost: 1.0,
+        enabled: true,
+        triggers: vec![RegionTrigger {
+            on: TriggerEvent::Enter,
+            effect: TriggerEffect::Teleport { target },
+        }],
+        elevation: None,
+    }
+}
+
+#[test]
+fn region_validate_rejects_an_invalid_teleport_target() {
+    assert!(region_with_teleport(portal_target(f64::NAN, 0.0))
+        .validate()
+        .is_err());
+    assert!(region_with_teleport(portal_target(10.0, 10.0))
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn teleport_effect_round_trips_through_the_engine_wire_shape() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 10.0, "y": 20.0, "elevation": 15.0, "vfx": "asset-1" } } }
+        ]
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(n["triggers"][0]["effect"]["type"], "teleport");
+    assert_eq!(n["triggers"][0]["effect"]["target"]["x"], 10.0);
+    assert_eq!(n["triggers"][0]["effect"]["target"]["elevation"], 15.0);
+    assert_eq!(n["triggers"][0]["effect"]["target"]["vfx"], "asset-1");
+}

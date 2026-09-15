@@ -242,6 +242,78 @@ pub enum TriggerEffect {
         /// to all.
         audience: NoticeAudience,
     },
+    /// Move the entering token to `target` — within the same scene
+    /// (`target.scene: None`) or to another scene entirely. Fires from
+    /// `TriggerEvent::Enter` only; see `ws::room::Room::fire_region_triggers`
+    /// for application (same-scene Update vs cross-scene Move+Update) and the
+    /// one-hop anti-loop (a destination's OWN `Enter` effects fire except
+    /// another `Teleport`).
+    Teleport {
+        /// Where to send the token.
+        target: PortalTarget,
+    },
+}
+
+/// A teleport's destination. `scene: None` = the same scene the portal fired
+/// in.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::PortalTarget;
+///
+/// let target = PortalTarget { scene: None, x: 10.0, y: 10.0, elevation: None, vfx: None };
+/// assert!(target.scene.is_none());
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct PortalTarget {
+    /// Destination scene id; `None` = the portal's own scene.
+    #[serde(default)]
+    pub scene: Option<uuid::Uuid>,
+    /// Destination x, destination scene units.
+    pub x: f64,
+    /// Destination y, destination scene units.
+    pub y: f64,
+    /// Destination elevation; `None` leaves the token's current elevation
+    /// unchanged.
+    #[serde(default)]
+    pub elevation: Option<f64>,
+    /// Asset id of a VFX played at BOTH ends on teleport (source +
+    /// destination); validated and carried here; PLAYED once `ws::room`
+    /// broadcasts it through `ServerMsg::Vfx` (a validated id with no
+    /// broadcaster is stored, never dropped).
+    #[serde(default)]
+    pub vfx: Option<String>,
+}
+
+impl PortalTarget {
+    /// Ingress validation: `x`/`y` finite and `MAX_GATE_WALK_COORD`-bounded
+    /// (the same bound the movement gate and `TokenEngine::validate` enforce —
+    /// a teleport must never place a token past the coordinate ceiling every
+    /// other write path already refuses), `elevation` finite when present,
+    /// `vfx` non-empty when present.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let bound = crate::scene::move_exec::MAX_GATE_WALK_COORD;
+        for (name, v) in [("x", self.x), ("y", self.y)] {
+            if !v.is_finite() {
+                return Err(format!("{name} must be finite"));
+            }
+        }
+        if self.x.abs() > bound || self.y.abs() > bound {
+            return Err(format!("teleport target exceeds coordinate bound {bound}"));
+        }
+        if let Some(e) = self.elevation {
+            if !e.is_finite() {
+                return Err("elevation must be finite".to_string());
+            }
+        }
+        if self.vfx.as_deref() == Some("") {
+            return Err("vfx must be non-empty when present".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// One region trigger: when `on` occurs for a token inside the region,
@@ -362,6 +434,9 @@ impl RegionEngine {
                             crate::chat::MAX_MESSAGE_CHARS
                         ));
                     }
+                }
+                TriggerEffect::Teleport { target } => {
+                    target.validate()?;
                 }
             }
         }

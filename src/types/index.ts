@@ -126,6 +126,7 @@ export type { RegionShape } from "./generated/engine/RegionShape";
 export type { RegionTrigger } from "./generated/engine/RegionTrigger";
 export type { TriggerEvent } from "./generated/engine/TriggerEvent";
 export type { TriggerEffect } from "./generated/engine/TriggerEffect";
+export type { PortalTarget } from "./generated/engine/PortalTarget";
 export type { NoticeAudience } from "./generated/engine/NoticeAudience";
 export type { DrawingEngine } from "./generated/engine/DrawingEngine";
 export type { DrawingShape } from "./generated/engine/DrawingShape";
