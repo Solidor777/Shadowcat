@@ -243,6 +243,9 @@ struct OpusStream {
     packets: Vec<Vec<u8>>,
     /// Encoder lookahead (samples), recorded as the container's pre-skip.
     pre_skip: u16,
+    /// Total VALID samples per channel at 48 kHz (before the final frame's zero-padding) —
+    /// the Ogg end-trim granule's numerator (RFC 7845: final granule = pre_skip + valid).
+    total_valid: u64,
 }
 
 /// Encode 48 kHz PCM to 20 ms Opus frames (VBR; 96 kbps stereo / 64 kbps mono). The final
@@ -285,7 +288,11 @@ fn encode_opus_frames(pcm_48k: &[f32], channels: u16) -> Result<OpusStream, Stri
     if packets.is_empty() {
         return Err("nothing to encode".to_string());
     }
-    Ok(OpusStream { packets, pre_skip })
+    Ok(OpusStream {
+        packets,
+        pre_skip,
+        total_valid: pcm_48k.len() as u64 / channels as u64,
+    })
 }
 
 /// The 19-byte `OpusHead` both containers carry (Ogg as the first header packet, WebM as the
@@ -342,13 +349,20 @@ fn mux_ogg(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<u
     let last = stream.packets.len() - 1;
     for (i, packet) in stream.packets.iter().enumerate() {
         granule += frame_samples;
-        let end = if i == last {
-            PacketWriteEndInfo::EndStream
+        let (end, g) = if i == last {
+            // RFC 7845 end-trim: the final page's granule is pre_skip + the VALID sample
+            // count, never the zero-padded cumulative — otherwise every loop carries up to
+            // ~20ms of trailing silence (or clips real samples when a decoder honors the
+            // pre-skip shift) once per repetition.
+            (
+                PacketWriteEndInfo::EndStream,
+                stream.pre_skip as u64 + stream.total_valid,
+            )
         } else {
-            PacketWriteEndInfo::NormalPacket
+            (PacketWriteEndInfo::NormalPacket, granule)
         };
         writer
-            .write_packet(packet.clone(), serial, end, granule)
+            .write_packet(packet.clone(), serial, end, g)
             .map_err(|e| e.to_string())?;
     }
     Ok(out)
@@ -425,7 +439,7 @@ fn mux_webm(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<
     let mut entry = Vec::new();
     ebml_uint(&mut entry, &[0xD7], 1, 1); // TrackNumber
     ebml_uint(&mut entry, &[0x73, 0xC5], 1, 4); // TrackUID
-    ebml_uint(&mut entry, &[0x83], 1, 1); // TrackType: audio
+    ebml_uint(&mut entry, &[0x83], 2, 1); // TrackType: 2 = audio (1 is video)
     ebml_element(&mut entry, &[0x86], b"A_OPUS"); // CodecID
     ebml_element(
         &mut entry,

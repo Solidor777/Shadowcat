@@ -3,8 +3,13 @@ use super::*;
 /// A synthesized 440 Hz sine WAV, `secs` long, mono 44100 Hz 16-bit PCM — the RIFF/WAVE
 /// header is built by hand (no `hound` dev-dependency: ~30 lines once, zero new crates).
 fn synth_wav_440hz(secs: f64) -> Vec<u8> {
-    let sample_rate = 44_100u32;
-    let n = (sample_rate as f64 * secs) as u32;
+    synth_wav_440hz_at(44_100, secs)
+}
+
+/// `synth_wav_440hz` at an explicit sample rate (a 48 kHz source skips the resampler, which
+/// makes the end-trim granule's expected value exact rather than approximate).
+fn synth_wav_440hz_at(sample_rate: u32, secs: f64) -> Vec<u8> {
+    let n = (sample_rate as f64 * secs).round() as u32;
     let mut pcm = Vec::with_capacity(n as usize * 2);
     for i in 0..n {
         let t = i as f64 / sample_rate as f64;
@@ -195,4 +200,79 @@ fn a_malformed_file_decodes_to_pass_through_not_a_panic() {
         .as_deref()
         .unwrap_or("")
         .contains("decode failed"));
+}
+
+/// Parse the `TrackType` (0x83) value out of the emitted WebM's TrackEntry, scanning only the
+/// bytes before the first Cluster (payload bytes could alias the id). Element sizes are EBML
+/// vints; this writer only ever emits 1-byte sizes, so the parse stays that narrow.
+fn webm_track_type(bytes: &[u8]) -> Option<u64> {
+    let cluster_off = bytes
+        .windows(4)
+        .position(|w| w == [0x1F, 0x43, 0xB6, 0x75])
+        .unwrap_or(bytes.len());
+    let head = &bytes[..cluster_off];
+    let pos = head.iter().position(|&b| b == 0x83)?;
+    let size_byte = *head.get(pos + 1)?;
+    let size = if size_byte >= 0x80 {
+        (size_byte & 0x7F) as usize
+    } else {
+        return None; // longer vint than this writer ever emits
+    };
+    let start = pos + 2;
+    let mut value = 0u64;
+    for &b in head.get(start..start + size)? {
+        value = (value << 8) | b as u64;
+    }
+    Some(value)
+}
+
+/// Parse the granule position (8-byte LE at page offset 6) of the LAST Ogg page in `bytes`.
+fn ogg_last_granule(bytes: &[u8]) -> Option<u64> {
+    let pos = bytes.windows(4).rposition(|w| w == b"OggS")?;
+    let g = bytes.get(pos + 6..pos + 14)?;
+    Some(u64::from_le_bytes(g.try_into().ok()?))
+}
+
+/// Parse the pre-skip (u16 LE at offset 8 of the OpusHead payload) out of the Ogg file's
+/// first packet.
+fn ogg_head_pre_skip(bytes: &[u8]) -> Option<u16> {
+    let pos = bytes.windows(8).position(|w| w == b"OpusHead")?;
+    Some(u16::from_le_bytes(
+        bytes.get(pos + 10..pos + 12)?.try_into().ok()?,
+    ))
+}
+
+#[test]
+fn the_webm_derivative_marks_its_track_as_audio_not_video() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("upload");
+    let wav = synth_wav_440hz(0.5);
+    std::fs::write(&staged, &wav).unwrap();
+    process_staged_audio(
+        &staged,
+        "audio/wav",
+        wav.len() as i64,
+        AudioContainers::WebM,
+    )
+    .unwrap();
+    let bytes = std::fs::read(with_suffix(&staged, WEBM_SUFFIX)).unwrap();
+    // Matroska TrackType 2 is audio; 1 is video. A strict demuxer (WebKit's included) keys
+    // the decode pipeline off this element.
+    assert_eq!(webm_track_type(&bytes), Some(2));
+}
+
+#[test]
+fn the_ogg_final_granule_trims_the_zero_padding_of_the_last_frame() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("upload");
+    // 1.005 s at 48 kHz = 48240 valid samples = 50 full 960-sample frames + 240 — the padded
+    // cumulative (51 × 960 = 48960) must NOT be the final granule.
+    let wav = synth_wav_440hz_at(48_000, 1.005);
+    std::fs::write(&staged, &wav).unwrap();
+    process_staged_audio(&staged, "audio/wav", wav.len() as i64, AudioContainers::Ogg).unwrap();
+    let bytes = std::fs::read(with_suffix(&staged, OPUS_SUFFIX)).unwrap();
+    let pre_skip = ogg_head_pre_skip(&bytes).expect("OpusHead present");
+    let final_granule = ogg_last_granule(&bytes).expect("an Ogg page exists");
+    assert_eq!(final_granule, pre_skip as u64 + 48_240);
+    assert!(final_granule < 51 * 960, "no padded granule");
 }
