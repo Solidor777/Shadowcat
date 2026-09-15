@@ -12,6 +12,7 @@ import {
   type WireSearchHit,
   type WireActorOwnerRef,
   type WireAudience,
+  type WireAudioOp,
   type WireRecalcOp,
   type WireMergeOutcome,
   type WireMergeErrorKind,
@@ -343,6 +344,11 @@ export interface WsClientHandlers {
   /** An out-of-band relayed emote over a token (carries no seq).
    * @param msg The emote's scene, token, sending user, and glyph(s). */
   onEmote?(msg: EmoteNotice): void;
+  /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
+   * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
+   * doc).
+   * @param reason Player-presentable failure text. */
+  onAudioError?(reason: string): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
@@ -1145,6 +1151,9 @@ export class WsClient {
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
         );
         break;
+      case "audio_error":
+        this.safeEmit(() => this.opts.handlers.onAudioError?.(msg.reason));
+        break;
       case "scene_derived": {
         const handler = this.sceneSubs.get(msg.request_id);
         if (handler) this.safeEmit(() => handler({ payload: msg.payload, computedAtSeq: msg.computed_at_seq }));
@@ -1437,6 +1446,27 @@ export class WsClient {
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
     });
+  }
+
+  /**
+   * Send a GM-only audio-transport op. Fire-and-forget on the wire: there is no success
+   * reply (the broadcast `event` echo of the `audio-state` Update is the confirmation) and no
+   * correlation id — a refusal arrives as `onAudioError`, not a rejected promise.
+   * @param op The transport operation to apply.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * client.audioTransport({ type: "stop_all" });
+   * ```
+   */
+  audioTransport(op: WireAudioOp): void {
+    this.send({ type: "audio_transport", op });
   }
 
   /**
