@@ -114,6 +114,37 @@ Measured locally via Playwright 1.61.0 (`chromium` 1228, `firefox` 1532, `webkit
 | Firefox | `probably` | `probably` |
 | WebKit | `""` | `probably` |
 
+#### Measured: WebM decodeAudioData per engine (the WebM-only gate probe)
+
+Measured with the REAL pipeline derivative (a 1.005 s / 48 kHz mono WebM: 48,240 valid
+samples, pre-skip 312, produced by `data::asset::process::audio` from a synthetic WAV;
+`decodeAudioData` in each engine, `ok: false` recorded verbatim rather than assumed):
+
+| Engine | decodeAudioData | decoded length | delta vs 48,240 |
+| --- | --- | --- | --- |
+| Chromium | OK | 48,648 | +408 (pre-skip + tail — NOT trimmed) |
+| Firefox | OK | 48,648 | +408 (pre-skip + tail — NOT trimmed) |
+| WebKit | **FAIL** | — | — |
+
+The WebKit failure is API-level, not codec-level: this machine's Playwright WebKit build
+(Safari 26.5 UA, Windows) has **no Web Audio API at all** — `AudioContext`,
+`webkitAudioContext`, `OfflineAudioContext`, and `webkitOfflineAudioContext` are all
+`undefined` in both headless modes, while its media element still reports
+`canPlayType("audio/webm; codecs=opus") === "probably"`. The probe's decode attempt therefore
+returned `ok: false` (`ReferenceError: Can't find variable: OfflineAudioContext`, then
+`TypeError: undefined is not a constructor` via the `AudioContext` fallback).
+
+**Outcome (the directive's own gate, applied):** the probe is not green on WebKit, so the
+WebM-only refactor is REVERTED and the **dual-container status quo stands**: the transcode
+pipeline keeps emitting both `.opus.ogg` and `.opus.webm` derivatives per the import
+selection, the `ogg` crate stays, and the WASM `ogg-opus-decoder` fallback stays for Ogg on
+WebKit. Two measurements this probe DID establish are recorded for the architecture: (1)
+chromium and firefox both decode WebM/Opus successfully but do NOT trim to the valid sample
+count (+408 = pre-skip + tail padding), so any future sample-exact looping must come from
+transcode-known bounds rather than decoder trim behavior; (2) WebKit clients play the WebM
+derivative via the streaming `<audio>` element path (the media stack reports `probably`), and
+the buffered paths that need Web Audio degrade exactly as designed.
+
 #### Rulings (owner, superseding the earlier single-container note)
 
 1. **Dual container, end to end.** The pipeline supports BOTH Ogg and WebM derivatives. The
