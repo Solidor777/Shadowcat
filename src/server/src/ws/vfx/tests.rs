@@ -95,6 +95,11 @@ fn validate_bounds_id_lengths() {
         ..req()
     };
     assert!(!validate_bounds(&empty));
+    let empty_sound = VfxRequest {
+        sound: Some(String::new()),
+        ..req()
+    };
+    assert!(!validate_bounds(&empty_sound));
     let at = VfxRequest {
         asset: "x".repeat(MAX_ID_BYTES),
         sound: Some("y".repeat(MAX_ID_BYTES)),

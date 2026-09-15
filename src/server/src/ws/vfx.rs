@@ -96,7 +96,9 @@ pub fn validate_bounds(req: &VfxRequest) -> bool {
         return false;
     }
     if let Some(s) = &req.sound {
-        if s.len() > MAX_ID_BYTES {
+        // `sound` obeys the same non-empty rule as `asset` when present — a `Some("")` is a
+        // malformed frame, not "no sound" (that is what `None` says).
+        if s.is_empty() || s.len() > MAX_ID_BYTES {
             return false;
         }
     }
