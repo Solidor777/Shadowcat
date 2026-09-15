@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -351,6 +351,10 @@ export interface AppContext {
    * render a panel-dock strip elsewhere. No-ops/empty (with a one-time console
    * warning on a write call) until the panel host binds; see `PanelsBridge`. */
   panels: PanelsApi & PanelsChipsView;
+  /** The per-device audio mixer + transport seam (channel gains/mutes, ducking,
+   * one-shots, GM transport, unlock) — device state plus thin `WsClient`
+   * forwarders; see `AudioApi`. */
+  audio: AudioApi;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

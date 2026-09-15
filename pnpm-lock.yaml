@@ -148,6 +148,9 @@ importers:
 
   src/client/shell:
     dependencies:
+      '@shadowcat/audio':
+        specifier: workspace:*
+        version: link:../audio
       '@shadowcat/core':
         specifier: workspace:*
         version: link:../core

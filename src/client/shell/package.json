@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@shadowcat/core": "workspace:*",
+    "@shadowcat/audio": "workspace:*",
     "@shadowcat/formula": "workspace:*",
     "@shadowcat/render": "workspace:*",
     "@shadowcat/module-entry": "workspace:*",

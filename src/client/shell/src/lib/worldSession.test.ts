@@ -1,4 +1,4 @@
-import { test, expect, vi } from "vitest";
+import { test, expect, vi, beforeEach, describe } from "vitest";
 import { render } from "@testing-library/svelte";
 import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
@@ -1832,4 +1832,84 @@ test("a module whose activation fails gets no stylesheet link", async () => {
   await new Promise((r) => setTimeout(r, 0));
   expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
   session.leave();
+});
+
+describe("WorldSession.audio", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function audioSession(): WorldSession {
+    return new WorldSession({
+      selfId: "u1",
+      connect: mockConnect(),
+      modules: [coreUiStub],
+      logger: silentLogger,
+    });
+  }
+
+  test("the audio getter's setChannel persists channels and duck depth to the mirror", async () => {
+    const session = audioSession();
+    session.audio.setChannel("sfx", { gain: 0.5, muted: true });
+    const raw = localStorage.getItem("shadowcat.audio");
+    expect(raw).not.toBeNull();
+    const mirror = JSON.parse(raw!) as { channels: Record<string, { gain: number; muted: boolean }>; duckDepth: number };
+    expect(mirror.channels.sfx).toEqual({ gain: 0.5, muted: true });
+    expect(mirror.duckDepth).toBe(session.audio.duck.depth);
+    session.leave();
+  });
+
+  test("duck.setDepth persists duckDepth to the SAME mirror without disturbing channels", async () => {
+    const session = audioSession();
+    session.audio.setChannel("music", { gain: 0.4 });
+    session.audio.duck.setDepth(0.3);
+    const mirror = JSON.parse(localStorage.getItem("shadowcat.audio")!) as {
+      channels: Record<string, { gain: number; muted: boolean }>;
+      duckDepth: number;
+    };
+    expect(mirror.duckDepth).toBe(0.3);
+    expect(mirror.channels.music).toEqual({ gain: 0.4, muted: false });
+    session.leave();
+  });
+
+  test("construction from a pre-seeded mirror reports the persisted duck depth", () => {
+    localStorage.setItem(
+      "shadowcat.audio",
+      JSON.stringify({ channels: { sfx: { gain: 0.1, muted: true } }, duckDepth: 0.2 }),
+    );
+    const session = audioSession();
+    expect(session.audio.duck.depth).toBe(0.2);
+    expect(session.audio.channels.sfx).toEqual({ gain: 0.1, muted: true });
+    session.leave();
+  });
+
+  test("audio.serverNow and audio.transport forward to the session's WsClient", async () => {
+    const { WsClient } = await import("@shadowcat/core");
+    const serverNow = vi.spyOn(WsClient.prototype, "serverNow").mockReturnValue(1234);
+    const audioTransport = vi.spyOn(WsClient.prototype, "audioTransport").mockImplementation(() => {});
+    const session = audioSession();
+    await session.enter("w1");
+    expect(session.audio.serverNow()).toBe(1234);
+    expect(serverNow).toHaveBeenCalled();
+    session.audio.transport({ type: "stop_all" });
+    expect(audioTransport).toHaveBeenCalledWith({ type: "stop_all" });
+    session.leave();
+  });
+
+  test("an audio-state document-store update drives AudioEngine.applyState", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyState = vi.spyOn(AudioEngine.prototype, "applyState").mockImplementation(() => {});
+    const session = audioSession();
+    await session.enter("w1");
+    const doc = {
+      ...buildWorldSettingsDoc("w1", {}),
+      doc_type: "audio-state",
+      name: null,
+      engine: { playing: [], shuffleSeed: 0 },
+    };
+    applyState.mockClear();
+    session.documents.seedDocuments([doc as never]);
+    expect(applyState).toHaveBeenCalledWith({ playing: [], shuffleSeed: 0 });
+    session.leave();
+  });
 });
