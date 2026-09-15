@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
+import { ContributionRegistry, PANEL_CONTRACT, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
 import { coreUi } from "@shadowcat/module-core-ui";
 import { panels } from "@shadowcat/module-panels";
 import { topBar } from "@shadowcat/module-topbar";
@@ -22,6 +22,7 @@ import { sheetActor } from "@shadowcat/module-sheet-actor";
 import { sheetItem } from "@shadowcat/module-sheet-item";
 import { sheetNote } from "@shadowcat/module-sheet-note";
 import { sheetTable } from "@shadowcat/module-sheet-table";
+import { dice3d } from "@shadowcat/module-dice-3d";
 import { SHEET_FALLBACK_CONTRACT, sheetContract } from "@shadowcat/core";
 
 // Every panel-contributing module in `App`'s default set, registered in the
@@ -72,5 +73,15 @@ describe("sheet modules contribute sheets, not panels", () => {
     expect(contributions.entriesFor(sheetContract("item"))).toHaveLength(1);
     expect(contributions.entriesFor(sheetContract("note"))).toHaveLength(1);
     expect(contributions.entriesFor(sheetContract("table"))).toHaveLength(1);
+  });
+});
+
+describe("dice3d contributes a stage overlay, not a panel", () => {
+  it("registers exactly one shadowcat.stage-overlay contribution and no shadowcat.panel", () => {
+    const contributions = new ContributionRegistry();
+    const ctx = { contributions, hooks: { on: () => () => {} } } as never;
+    dice3d.register(ctx);
+    expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
+    expect(contributions.contributionsFor(STAGE_OVERLAY_CONTRACT)).toHaveLength(1);
   });
 });
