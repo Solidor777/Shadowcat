@@ -163,6 +163,9 @@ importers:
       '@shadowcat/module-asset-browser':
         specifier: workspace:*
         version: link:../../modules/asset-browser
+      '@shadowcat/module-audio':
+        specifier: workspace:*
+        version: link:../../modules/audio
       '@shadowcat/module-chat':
         specifier: workspace:*
         version: link:../../modules/chat
@@ -217,6 +220,9 @@ importers:
       '@shadowcat/module-sheet-note':
         specifier: workspace:*
         version: link:../../modules/sheet-note
+      '@shadowcat/module-sheet-playlist':
+        specifier: workspace:*
+        version: link:../../modules/sheet-playlist
       '@shadowcat/module-sheet-table':
         specifier: workspace:*
         version: link:../../modules/sheet-table
