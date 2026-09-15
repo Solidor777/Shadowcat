@@ -60,6 +60,45 @@ pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Sniff an AUDIO container from the leading bytes — the upload pipeline's "the bytes decide"
+/// counterpart to `detect_image_type`, so a mislabeled upload (`application/octet-stream` on
+/// a real WAV) still reaches the transcode arm. Only audio-unambiguous magics are claimed
+/// (RIFF/WAVE, FLAC, MP3, Ogg); EBML/Matroska is deliberately NOT sniffed here — a WebM file
+/// may be video, and its declared label stands (the transcode probe would pass it through
+/// harmlessly either way). The returned label is a candidate for
+/// `process_staged`'s audio arm; `process::audio`'s own symphonia probe remains the real
+/// container decision.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::detect_audio_type;
+///
+/// assert_eq!(detect_audio_type(b"RIFF\x00\x00\x00\x00WAVE"), Some("audio/wav"));
+/// assert_eq!(detect_audio_type(b"fLaC\x00"), Some("audio/flac"));
+/// assert_eq!(detect_audio_type(b"ID3\x04"), Some("audio/mpeg"));
+/// assert_eq!(detect_audio_type(&[0xFF, 0xFB, 0x90, 0x00]), Some("audio/mpeg"));
+/// assert_eq!(detect_audio_type(b"OggS\x00"), Some("audio/ogg"));
+/// assert_eq!(detect_audio_type(b"not audio"), None);
+/// ```
+pub fn detect_audio_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return Some("audio/wav");
+    }
+    if bytes.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    if bytes.starts_with(b"ID3")
+        || (bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0)
+    {
+        return Some("audio/mpeg");
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some("audio/ogg");
+    }
+    None
+}
+
 /// Per-user sliding-window upload limiter (trailing 60s). In-memory; resets on
 /// restart, which is acceptable for an abuse backstop.
 ///
@@ -248,16 +287,38 @@ async fn store_streamed(
         }
     }
 
-    let content_type = label_content_type(detect_image_type(&head), declared.as_deref());
+    let content_type = label_content_type_with_audio(
+        detect_image_type(&head),
+        detect_audio_type(&head),
+        declared.as_deref(),
+    );
     Ok((content_type, total as i64, original_name, containers))
 }
 
 /// The content type recorded for an upload: the sniffed image type when the
-/// bytes are a supported image; otherwise the declared type as a label,
+/// bytes are a supported image, else the sniffed audio type when the bytes are
+/// a recognized audio container; otherwise the declared type as a label,
 /// except that a declared `image/*` the bytes disproved becomes
 /// `application/octet-stream`.
 pub(super) fn label_content_type(sniffed: Option<&'static str>, declared: Option<&str>) -> String {
-    if let Some(ct) = sniffed {
+    label_content_type_with_audio(sniffed, None, declared)
+}
+
+/// `label_content_type` with the audio sniff supplied (kept separate so the image-only
+/// callers' signature is untouched). The BYTES win over the declared label for both media
+/// families: a mislabeled audio upload (`application/octet-stream` on a real WAV) is
+/// classified audio and reaches the transcode arm, and a declared `image/*` the bytes
+/// disproved stays `application/octet-stream` (a browser must never be told a non-image is
+/// an image).
+pub(super) fn label_content_type_with_audio(
+    sniffed_image: Option<&'static str>,
+    sniffed_audio: Option<&'static str>,
+    declared: Option<&str>,
+) -> String {
+    if let Some(ct) = sniffed_image {
+        return ct.to_string();
+    }
+    if let Some(ct) = sniffed_audio {
         return ct.to_string();
     }
     match declared {

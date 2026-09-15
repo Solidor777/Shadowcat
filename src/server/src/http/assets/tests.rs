@@ -39,3 +39,44 @@ fn rate_limiter_trips_after_per_min_then_window_slides() {
                                      // 61s later the earlier hits have aged out.
     assert!(rl.check(u, 62_001, 2));
 }
+
+#[test]
+fn detects_audio_signatures_and_rejects_others() {
+    assert_eq!(
+        detect_audio_type(b"RIFF\0\0\0\0WAVEfmt "),
+        Some("audio/wav")
+    );
+    assert_eq!(detect_audio_type(b"fLaC\0\0"), Some("audio/flac"));
+    assert_eq!(detect_audio_type(b"ID3\x04\0"), Some("audio/mpeg"));
+    assert_eq!(
+        detect_audio_type(&[0xFF, 0xFB, 0x90, 0x00]),
+        Some("audio/mpeg")
+    );
+    assert_eq!(detect_audio_type(b"OggS\0"), Some("audio/ogg"));
+    assert_eq!(detect_audio_type(b"not audio"), None);
+    // A JPEG's leading 0xFF must never read as MP3 frame sync (0xD8 & 0xE0 != 0xE0).
+    assert_eq!(detect_audio_type(&[0xFF, 0xD8, 0xFF, 0x00]), None);
+}
+
+#[test]
+fn a_mislabeled_audio_upload_is_classified_by_its_bytes() {
+    // `application/octet-stream` on a real WAV: the bytes decide — the audio sniff wins over
+    // the declared label and the upload reaches the transcode arm.
+    assert_eq!(
+        label_content_type_with_audio(
+            None,
+            detect_audio_type(b"RIFF\0\0\0\0WAVEfmt "),
+            Some("application/octet-stream")
+        ),
+        "audio/wav"
+    );
+    // An image sniff still outranks everything; a disproved image claim stays octet-stream.
+    assert_eq!(
+        label_content_type_with_audio(Some("image/png"), Some("audio/wav"), Some("audio/wav")),
+        "image/png"
+    );
+    assert_eq!(
+        label_content_type_with_audio(None, None, Some("image/png")),
+        "application/octet-stream"
+    );
+}

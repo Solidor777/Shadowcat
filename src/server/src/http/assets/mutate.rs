@@ -23,7 +23,7 @@ use crate::http::{routes::require_gm, routes::write_ops, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
 
 use super::uploads::{validate_folder, validate_tags};
-use super::{commit_replacement, delete_asset_files_and_row};
+use super::{commit_replacement, delete_asset_files_and_row, detect_audio_type};
 
 /// Tri-state deserializer: a missing key is `None` (leave unchanged), an
 /// explicit `null` is `Some(None)` (set to root), a value is `Some(Some(v))`.
@@ -216,9 +216,32 @@ pub async fn reconvert(
         tracing::error!(?e, %id, "retained original missing for existing record");
         return Err(AppError::Internal);
     }
+    // An upload whose label missed the bytes (e.g. stored `application/octet-stream` on a
+    // real WAV before audio sniffing existed) is probed here: a sniffed audio container
+    // reclassifies the retry as an audio re-transcode instead of an image reconvert.
+    let head = {
+        use tokio::io::AsyncReadExt;
+        let mut head = vec![0u8; 16];
+        let mut f = tokio::fs::File::open(&tmp_path)
+            .await
+            .map_err(|_| AppError::Internal)?;
+        let mut read = 0usize;
+        while read < head.len() {
+            match f.read(&mut head[read..]).await {
+                Ok(0) => break,
+                Ok(n) => read += n,
+                Err(_) => return Err(AppError::Internal),
+            }
+        }
+        head.truncate(read);
+        head
+    };
+    let audio_sniff = detect_audio_type(&head);
     let processed = process_staged_blocking(
         tmp_path.clone(),
-        existing.meta.original_content_type.clone(),
+        audio_sniff
+            .map(str::to_string)
+            .unwrap_or_else(|| existing.meta.original_content_type.clone()),
         existing.meta.original_byte_size,
         state.config.retain_originals,
         Default::default(),
