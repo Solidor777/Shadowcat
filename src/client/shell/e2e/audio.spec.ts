@@ -87,20 +87,29 @@ test("audio: GM uploads a track, creates a playlist, plays it, and a player sees
     // `AudioContext.resume()` — see `StatusBar`'s `audio-unlock` control).
     await gm.getByTestId("audio-unlock").click();
 
-    // Create a playlist naming the uploaded track. `PlaylistSheet`'s track picker opens the
-    // asset-pick overlay scoped to `kind: "audio"`; the just-uploaded tile is the only audio
-    // asset in the world, so it is the sole pick candidate.
+    // Create a playlist and add the uploaded track. `PlaylistSheet`'s add-track opens the
+    // asset-pick overlay scoped to `kind: "audio"` FIRST — a track row always carries a
+    // non-empty asset id (`PlaylistEngine::validate` rejects an unassigned track), so picking
+    // precedes the row — and the just-uploaded tile is the world's only audio asset, hence the
+    // sole pick candidate.
     await gm.getByTestId("playlists-name").fill("Tavern Loop");
     await gm.getByTestId("playlists-create").click();
-    const sheet = gm.getByRole("dialog", { name: "Sheet", exact: true }).filter({ hasText: "Tavern Loop" });
+    // The just-created playlist's sheet floats to the front (its chrome's accessible name is
+    // `Sheet — floating window. …`, so a substring name match — exact "Sheet" matches nothing).
+    const sheet = gm.getByRole("dialog", { name: "Sheet" });
     await expect(sheet).toBeVisible({ timeout: 15_000 });
+    await expect(sheet.getByTestId("playlist-name")).toHaveValue("Tavern Loop");
     await sheet.getByTestId("playlist-add-track").click();
-    await sheet.getByTestId("track-asset").click();
-    await gm.getByTestId("asset-pick-dialog").getByTestId("asset-tile").click();
+    const pickDialog = gm.getByTestId("asset-pick-dialog");
+    await expect(pickDialog).toBeVisible({ timeout: 15_000 });
+    await pickDialog.getByTestId("asset-tile").click();
     await gm.getByTestId("pick-confirm").click();
     await expect(sheet.getByTestId("track-row")).toHaveCount(1);
 
-    // Play it from the panel's playlists list.
+    // Play it from the panel's playlists list — the list is search-first (the ActorsPanel
+    // live-search shape), so the row appears only once the search names it.
+    await gm.getByTestId("playlists-search").fill("Tavern");
+    await expect(gm.getByTestId("playlist-row")).toHaveCount(1);
     await gm.getByTestId("playlist-play").click();
 
     // GM sees exactly one live entry; the player's own panel reflects the SAME server-derived
