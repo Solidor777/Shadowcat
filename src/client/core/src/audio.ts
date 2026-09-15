@@ -29,8 +29,8 @@ export interface DuckSource {
  * applied to the `duckable` channels (music + ambience by default). */
 export interface DuckController {
   /** Register a ducking source; returns its handle. Any number may be active simultaneously.
-   * @param id A stable identifier for this source (diagnostic only; not a dedup key — calling
-   * this twice with the same `id` registers TWO independent sources).
+   * @param id A stable identifier for this source — it IS the dedup key: calling this twice
+   * with the same `id` replaces the first source's demand slot rather than adding a second.
    * @returns The handle this source uses to report its demand. */
   addSource(id: string): DuckSource;
   /** Unregister a source by the id it was added with. A source that never registered is a

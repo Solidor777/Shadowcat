@@ -46,12 +46,20 @@ let cached: Promise<WasmOpusDecoderLike> | null = null;
  */
 export function createOggOpusDecoder(): Promise<WasmOpusDecoderLike> {
   cached ??= (async () => {
-    const pkg = (await import("ogg-opus-decoder")) as unknown as {
+    const pkg = (await import("ogg-opus-decoder").catch((e: unknown) => {
+      // A failed construction (WASM fetch/compile failure) is NOT memoized — the next
+      // decode attempt retries from scratch rather than wedging on a permanent rejection.
+      cached = null;
+      throw e;
+    })) as unknown as {
       /** The package's decoder class. */
       OggOpusDecoder: new () => OggOpusDecoderPackage;
     };
     const decoder = new pkg.OggOpusDecoder();
     await decoder.ready;
+    // The package documents no reentrancy guarantee, so decodes serialize through this
+    // promise chain: a later decode starts only after the earlier settles.
+    let queue: Promise<unknown> = Promise.resolve();
     return {
       /** Decode a whole Ogg/Opus file to per-channel PCM.
        * @param data The file bytes.
@@ -61,9 +69,13 @@ export function createOggOpusDecoder(): Promise<WasmOpusDecoderLike> {
        * // wrapper member; forwards to the package decoder
        * ```
        */
-      decodeFile: async (data: Uint8Array) => {
-        const result = await decoder.decodeFile(data);
-        return { channelData: result.channelData, sampleRate: result.sampleRate };
+      decodeFile: (data: Uint8Array) => {
+        const run = queue.then(() => decoder.decodeFile(data));
+        queue = run.catch(() => {});
+        return run.then((result) => ({
+          channelData: result.channelData,
+          sampleRate: result.sampleRate,
+        }));
       },
       /** Release the decoder (never called — the shared instance lives with the page).
        * @returns Resolves when released.

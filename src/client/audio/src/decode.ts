@@ -36,6 +36,7 @@ export function decodeCandidates(urls: AudioUrls, preference: DecodePreference):
  * ```
  */
 function isOgg(bytes: ArrayBuffer): boolean {
+  if (bytes.byteLength < 4) return false;
   const head = new Uint8Array(bytes, 0, 4);
   return head[0] === 0x4f && head[1] === 0x67 && head[2] === 0x67 && head[3] === 0x53;
 }

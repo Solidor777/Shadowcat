@@ -79,7 +79,9 @@ export class DuckControllerImpl implements DuckController {
     this.#depth = Math.max(0, Math.min(1, depth));
   }
 
-  /** Register a ducking source; returns its handle.
+  /** Register a ducking source; returns its handle. The id IS the dedup key: a second
+   * `addSource` with an id already registered replaces that source's demand slot rather than
+   * adding a second one.
    * @param id A stable identifier for this source.
    * @returns The handle this source uses to report its demand.
    * @example

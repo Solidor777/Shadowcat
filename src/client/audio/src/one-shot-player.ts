@@ -31,6 +31,9 @@ export class OneShotPlayer {
   #createWasmDecoder: () => Promise<WasmOpusDecoderLike>;
   /** The decoded-buffer LRU (insertion order = recency). */
   #cache = new Map<string, CacheEntry>();
+  /** In-flight decodes by `preference:asset` — concurrent misses for the same asset share one
+   * decode (and one cache-budget charge) instead of decoding twice. */
+  #inFlight = new Map<string, Promise<AudioBufferLike>>();
   /** Sum of cached byte estimates. */
   #totalBytes = 0;
 
@@ -100,8 +103,14 @@ export class OneShotPlayer {
    * ```
    */
   async getBuffer(asset: string, preference: DecodePreference = "oneshot"): Promise<AudioBufferLike> {
-    const cached = this.#cache.get(asset);
-    return cached ? this.#touchAndGet(asset) : await this.#decode(asset, preference);
+    if (this.#cache.has(asset)) return this.#touchAndGet(asset);
+    const key = `${preference}:${asset}`;
+    let pending = this.#inFlight.get(key);
+    if (!pending) {
+      pending = this.#decode(asset, preference).finally(() => this.#inFlight.delete(key));
+      this.#inFlight.set(key, pending);
+    }
+    return pending;
   }
 
   /** Return the cached buffer for `asset`, refreshing its LRU position.
@@ -133,7 +142,8 @@ export class OneShotPlayer {
   async #decode(asset: string, preference: DecodePreference): Promise<AudioBufferLike> {
     const urls = this.#resolver.audioUrl(asset);
     const buffer = await decodeAudioCandidate(this.#context, urls, preference, this.#createWasmDecoder);
-    const estimatedBytes = Math.round(buffer.duration * buffer.sampleRate) * 4;
+    // channels × frames × 4 bytes (f32 PCM) — the budget doc's own accounting unit.
+    const estimatedBytes = Math.round(buffer.duration * buffer.sampleRate) * buffer.numberOfChannels * 4;
     this.#evictUntilFits(estimatedBytes);
     this.#cache.set(asset, { buffer, bytes: estimatedBytes });
     this.#totalBytes += estimatedBytes;

@@ -88,6 +88,15 @@ describe("decodeAudioCandidate", () => {
 });
 
 describe("OneShotPlayer", () => {
+  it("concurrent misses share ONE in-flight decode (and one fetch)", async () => {
+    const f = mockFetchBytes(wavBytes());
+    const ctx = stubAudioContext();
+    const player = new OneShotPlayer(ctx, new AssetResolver(), channelGains(), async () => stubWasmDecoder());
+    const [a, b] = await Promise.all([player.getBuffer("a1"), player.getBuffer("a1")]);
+    expect(a).toBe(b);
+    expect(f).toHaveBeenCalledTimes(1);
+  });
+
   it("decodes and caches on first play; a second play reuses the buffer (fetch once)", async () => {
     const f = mockFetchBytes(wavBytes());
     const ctx = stubAudioContext();
