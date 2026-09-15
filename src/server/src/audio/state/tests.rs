@@ -348,3 +348,132 @@ fn set_gain_nonfinite_is_rejected() {
         AudioError::InvalidGain
     );
 }
+
+#[test]
+fn fresh_play_sequential_starts_at_track_zero() {
+    let pl = playlist(PlaylistMode::Sequential, 3);
+    let pid = uuid::Uuid::new_v4();
+    let state = AudioStateEngine::default();
+    let op = AudioOp::Play {
+        playlist: Some(pid),
+        asset: None,
+        track_index: None,
+        channel: None,
+        gain: None,
+        loop_: None,
+    };
+    let next = apply(&state, &op, 0.0, &|q| (q == pid).then(|| pl.clone())).unwrap();
+    assert_eq!(next.playing[0].track_index, 0);
+    assert_eq!(next.playing[0].asset, "a0");
+}
+
+#[test]
+fn loop_all_prev_from_zero_wraps_to_the_last_track() {
+    let pl = playlist(PlaylistMode::LoopAll, 3);
+    let pid = uuid::Uuid::new_v4();
+    let id = uuid::Uuid::new_v4();
+    let mut state = AudioStateEngine::default();
+    state.playing.push(PlayingTrack {
+        id,
+        playlist: Some(pid),
+        track_index: 0,
+        asset: "a0".into(),
+        channel: AudioChannel::Music,
+        gain: 1.0,
+        loop_: false,
+        started_at: 0.0,
+        paused_at: None,
+    });
+    let next = apply(&state, &AudioOp::Prev { id }, 1.0, &|q| {
+        (q == pid).then(|| pl.clone())
+    })
+    .unwrap();
+    assert_eq!(next.playing[0].track_index, 2);
+    assert_eq!(next.playing[0].asset, "a2");
+}
+
+#[test]
+fn fresh_shuffle_play_starts_at_the_seeded_first_and_advances_the_seed() {
+    let pl = playlist(PlaylistMode::Shuffle, 4);
+    let pid = uuid::Uuid::new_v4();
+    let state = AudioStateEngine {
+        playing: vec![],
+        shuffle_seed: 7,
+    };
+    let op = AudioOp::Play {
+        playlist: Some(pid),
+        asset: None,
+        track_index: None,
+        channel: None,
+        gain: None,
+        loop_: None,
+    };
+    let next = apply(&state, &op, 0.0, &|q| (q == pid).then(|| pl.clone())).unwrap();
+    assert_eq!(
+        next.playing[0].track_index,
+        seeded_permutation(4, advance_seed(7))[0]
+    );
+    assert_ne!(next.shuffle_seed, state.shuffle_seed);
+}
+
+/// Helper: a Play op naming `pid` with every override absent.
+fn op_with_playlist(pid: uuid::Uuid) -> AudioOp {
+    AudioOp::Play {
+        playlist: Some(pid),
+        asset: None,
+        track_index: None,
+        channel: None,
+        gain: None,
+        loop_: None,
+    }
+}
+
+#[test]
+fn shuffle_next_walk_visits_every_track_exactly_once() {
+    for (len, seed) in [(1u32, 0u32), (2, 7), (3, 1), (5, 42), (7, 0x9E37_79B9)] {
+        let pl = playlist(PlaylistMode::Shuffle, len as usize);
+        let pid = uuid::Uuid::new_v4();
+        let lookup = |q: uuid::Uuid| (q == pid).then(|| pl.clone());
+        let mut state = AudioStateEngine {
+            playing: vec![],
+            shuffle_seed: seed,
+        };
+        // Fresh play lands on the seeded order's first element.
+        let first = apply(&state, &op_with_playlist(pid), 0.0, &lookup).unwrap();
+        state = first;
+        let mut seen: Vec<u32> = vec![state.playing[0].track_index];
+        // len - 1 Next advances complete the cycle: every track exactly once.
+        for step in 1..len {
+            let id = state.playing[0].id;
+            state = apply(&state, &AudioOp::Next { id }, step as f64, &lookup).unwrap();
+            assert_eq!(
+                state.playing.len(),
+                1,
+                "len {len} seed {seed}: entry survives the walk"
+            );
+            seen.push(state.playing[0].track_index);
+        }
+        let mut sorted = seen.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted,
+            (0..len).collect::<Vec<u32>>(),
+            "len {len} seed {seed}: full walk covers the playlist"
+        );
+    }
+}
+
+#[test]
+fn sequential_fresh_play_does_not_reseed() {
+    let pl = playlist(PlaylistMode::Sequential, 3);
+    let pid = uuid::Uuid::new_v4();
+    let state = AudioStateEngine {
+        playing: vec![],
+        shuffle_seed: 99,
+    };
+    let next = apply(&state, &op_with_playlist(pid), 0.0, &|q| {
+        (q == pid).then(|| pl.clone())
+    })
+    .unwrap();
+    assert_eq!(next.shuffle_seed, 99);
+}

@@ -51,11 +51,60 @@ impl fmt::Display for AudioError {
     }
 }
 
+/// Advance `seed` one step — the LCG `AudioOp::Play` applies to `AudioStateEngine.shuffle_seed`
+/// on a fresh Shuffle play, so a world's shuffle order does not repeat identically forever.
+/// The seed is still the only input to the order itself, so every client reproduces the
+/// current walk from the committed seed exactly.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio::state::advance_seed;
+///
+/// assert_ne!(advance_seed(0), 0);
+/// assert_eq!(advance_seed(advance_seed(7)), advance_seed(advance_seed(7)));
+/// ```
+pub fn advance_seed(seed: u32) -> u32 {
+    seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223)
+}
+
+/// The seeded shuffle order over `len` track indices: a Fisher–Yates permutation driven by a
+/// splitmix32 stream seeded from `shuffle_seed` — deterministic and reproducible by every
+/// client from the same seed, never a per-client `Math.random()`, and never the degenerate
+/// rotation (seed + ordinal) % len produces (it short-cycles when gcd(seed+1, len) > 1).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio::state::seeded_permutation;
+///
+/// let perm = seeded_permutation(4, 42);
+/// let mut sorted = perm.clone();
+/// sorted.sort_unstable();
+/// assert_eq!(sorted, vec![0, 1, 2, 3]);
+/// assert_eq!(seeded_permutation(4, 42), perm); // deterministic
+/// ```
+pub fn seeded_permutation(len: u32, shuffle_seed: u32) -> Vec<u32> {
+    let mut perm: Vec<u32> = (0..len).collect();
+    let mut state = shuffle_seed;
+    for i in (1..len).rev() {
+        // splitmix32 step: a full-period 32-bit generator, so no seed sticks the walk.
+        state = state.wrapping_add(0x9E37_79B9);
+        let mut z = state;
+        z = (z ^ (z >> 16)).wrapping_mul(0x21F0_AAAD);
+        z = (z ^ (z >> 15)).wrapping_mul(0x735A_2D97);
+        z ^= z >> 15;
+        let j = (z as u64 % (i as u64 + 1)) as u32;
+        perm.swap(i as usize, j as usize);
+    }
+    perm
+}
+
 /// Resolve the track index `AudioOp::Play`/`Next`/`Prev` should land on, given `mode` and the
 /// deterministic `shuffle_seed`. `current` is `None` for a fresh `Play`, `Some(index)` for a
-/// `Next`/`Prev` advance from an existing entry. Shuffle order is `(seed.wrapping_add(i) as
-/// usize) % len` walked from `current`'s position — deterministic and reproducible by every
-/// client from the same `shuffle_seed`, never a per-client `Math.random()`.
+/// `Next`/`Prev` advance from an existing entry. A fresh play starts at the mode's NATURAL
+/// first track (0 for ordered modes, the seeded order's first element for `Shuffle`) — never
+/// one track in.
 fn resolve_track_index(
     playlist: &PlaylistEngine,
     mode: PlaylistMode,
@@ -70,11 +119,19 @@ fn resolve_track_index(
     match mode {
         PlaylistMode::Single => Some(current.unwrap_or(0).min(len as u32 - 1)),
         PlaylistMode::Sequential | PlaylistMode::LoopAll => {
-            let idx = current.unwrap_or(0);
-            let next = if forward {
-                idx.wrapping_add(1)
-            } else {
-                idx.wrapping_sub(1)
+            let next = match current {
+                // A fresh play starts at the natural first track, never one track in.
+                None => 0,
+                Some(idx) => {
+                    if forward {
+                        idx.wrapping_add(1)
+                    } else {
+                        // (idx + len - 1) % len, not idx.wrapping_sub(1) % len — the wrapping_sub
+                        // form turns Prev-from-0 into (2^32 - 1) % len, which only lands on len - 1
+                        // when len divides 2^32.
+                        (idx + len as u32 - 1) % len as u32
+                    }
+                }
             };
             if mode == PlaylistMode::LoopAll {
                 Some(next % len as u32)
@@ -85,10 +142,19 @@ fn resolve_track_index(
             }
         }
         PlaylistMode::Shuffle => {
-            let base = current.unwrap_or(0);
-            let step: u32 = if forward { 1 } else { len as u32 - 1 };
-            let ordinal = base.wrapping_add(step) % len as u32;
-            Some((shuffle_seed.wrapping_add(ordinal)) % len as u32)
+            let perm = seeded_permutation(len as u32, shuffle_seed);
+            match current {
+                None => Some(perm[0]),
+                Some(track_index) => {
+                    let pos = perm.iter().position(|&t| t == track_index).unwrap_or(0) as u32;
+                    let next = if forward {
+                        (pos + 1) % len as u32
+                    } else {
+                        (pos + len as u32 - 1) % len as u32
+                    };
+                    Some(perm[next as usize])
+                }
+            }
         }
     }
 }
@@ -143,6 +209,12 @@ pub fn apply(
                         let pl = playlist_lookup(*pid).ok_or(AudioError::UnknownPlaylist)?;
                         if pl.tracks.is_empty() {
                             return Err(AudioError::EmptyPlaylist);
+                        }
+                        // A fresh Shuffle play (no explicit track_index) advances the world's
+                        // shuffle_seed first, so the order does not repeat identically forever;
+                        // the committed seed still drives every client's walk identically.
+                        if pl.mode == PlaylistMode::Shuffle && track_index.is_none() {
+                            next.shuffle_seed = advance_seed(next.shuffle_seed);
                         }
                         let idx = track_index
                             .or_else(|| {
