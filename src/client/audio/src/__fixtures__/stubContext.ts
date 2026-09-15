@@ -56,6 +56,7 @@ function stubPanner(): PannerNodeLike {
 /** A minimal `AudioBufferLike` for the stub context: carries the duration/sampleRate the
  * buffered-loop math reads; `copyToChannel` is a no-op (nothing renders in Node).
  * @param durationSecs The buffer's duration, seconds.
+ * @param channels The buffer's channel count (drives the LRU byte estimate).
  * @param sampleRate The buffer's sample rate, Hz.
  * @returns The stub buffer.
  * @example
@@ -64,10 +65,11 @@ function stubPanner(): PannerNodeLike {
  * stubBuffer(1).duration; // 1
  * ```
  */
-export function stubBuffer(durationSecs: number, sampleRate = 48_000): AudioBufferLike {
+export function stubBuffer(durationSecs: number, sampleRate = 48_000, channels = 1): AudioBufferLike {
   return {
     duration: durationSecs,
     sampleRate,
+    numberOfChannels: channels,
     /** No-op channel write (nothing renders in Node).
      * @example
      * ```
@@ -78,10 +80,14 @@ export function stubBuffer(durationSecs: number, sampleRate = 48_000): AudioBuff
   };
 }
 
-/** `stubAudioContext`'s return shape: the stub context plus its captured buffer sources. */
+/** `stubAudioContext`'s return shape: the stub context plus its captured nodes. */
 export interface StubAudioContext extends AudioContextLike {
   /** Every buffer source the stub created, in creation order (spy targets). */
   sources: BufferSourceNodeLike[];
+  /** Every gain node the stub created, in creation order (spy targets). */
+  gains: GainNodeLike[];
+  /** Every media-element source the stub created, in creation order (spy targets). */
+  mediaSources: MediaElementSourceNodeLike[];
 }
 
 /** A fully in-memory `AudioContextLike` for Node-environment tests — no real Web Audio, no
@@ -99,8 +105,12 @@ export function stubAudioContext(): StubAudioContext {
   /** The stub's current running state. */
   let state: "suspended" | "running" | "closed" = "suspended";
   const sources: BufferSourceNodeLike[] = [];
+  const gains: GainNodeLike[] = [];
+  const mediaSources: MediaElementSourceNodeLike[] = [];
   return {
     sources,
+    gains,
+    mediaSources,
     /** The stub's running state (flips to `"running"` on `resume`).
      * @returns The state.
      * @example
@@ -113,7 +123,11 @@ export function stubAudioContext(): StubAudioContext {
     },
     currentTime: 0,
     destination: { __destination: true },
-    createGain: stubGain,
+    createGain: () => {
+      const node = stubGain();
+      gains.push(node);
+      return node;
+    },
     createStereoPanner: stubPanner,
     createBufferSource: (): BufferSourceNodeLike => {
       const source: BufferSourceNodeLike = {
@@ -130,8 +144,16 @@ export function stubAudioContext(): StubAudioContext {
       sources.push(source);
       return source;
     },
-    createBuffer: (_channels: number, frames: number, sampleRate: number) => stubBuffer(frames / sampleRate, sampleRate),
-    createMediaElementSource: (): MediaElementSourceNodeLike => ({ connect: () => {}, disconnect: () => {} }),
+    createBuffer: (channels: number, frames: number, sampleRate: number) =>
+      stubBuffer(frames / sampleRate, sampleRate, channels),
+    createMediaElementSource: (): MediaElementSourceNodeLike => {
+      const source: MediaElementSourceNodeLike = {
+        connect: () => {},
+        disconnect: vi.fn(),
+      };
+      mediaSources.push(source);
+      return source;
+    },
     decodeAudioData: async () => stubBuffer(1),
     resume: async () => {
       state = "running";
@@ -155,6 +177,7 @@ export function stubMediaElement(): MediaElementLike {
     loop: false,
     play: async () => {},
     pause: () => {},
+    onended: null,
     canPlayType: () => "probably",
   };
 }

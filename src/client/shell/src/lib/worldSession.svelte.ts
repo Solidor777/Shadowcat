@@ -54,11 +54,17 @@ import {
   listInstalledModules,
   getEnabledModules,
   listWorldMembers,
+  AUDIO_STATE_DOC_TYPE,
+  type AudioApi,
+  type AudioChannelId,
+  type AudioStateEngine,
 } from "@shadowcat/core";
 import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
+import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
+import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
 export type ConnState = "connecting" | "open" | "closed";
@@ -104,6 +110,10 @@ export interface WorldSessionOpts {
    * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
    * surfaces it as a toast; a headless caller (tests) may leave it unset. */
   onReject?: (reason: RejectReason) => void;
+  /** Called when an `audio_transport` op this connection sent was refused, with the server's
+   * player-presentable reason (fire-and-forget frame — there is no correlated reply to
+   * reject instead). The shell surfaces it as a toast. */
+  onAudioError?: (reason: string) => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -223,6 +233,13 @@ export class WorldSession {
   /** Handle for the session-owned `"footprints"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #footprintsSub: SceneSubscription | null = null;
+  /** The per-device mixer + one-shot/loop engine (`AppContext.audio`'s backing); constructed
+   * once here (its wire-facing closures read `#ws` lazily, so a pre-`enter()` read is a safe
+   * no-op) and disposed in `leave()`. */
+  #audioEngine: AudioEngine;
+  /** The audio-state document-store subscription driving `#audioEngine.applyState`; dropped
+   * in `leave()`. */
+  #audioUnsub: (() => void) | null = null;
   /** Handle for the session-owned `"combat"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #combatSub: SceneSubscription | null = null;
@@ -288,6 +305,50 @@ export class WorldSession {
    * @returns The current lookup; `EMPTY_FOOTPRINTS` before the first frame. */
   get footprints(): FootprintLookup {
     return this.#footprints;
+  }
+
+  /** The per-device audio seam (`AppContext.audio`). `AudioEngine` implements `AudioApi`
+   * directly for everything but `setChannel` and `duck.setDepth`: those two additionally
+   * persist to this device's `shadowcat.audio` mirror — a `localStorage` dependency
+   * `AudioEngine` itself deliberately does not have, staying framework/platform-neutral —
+   * so this getter wraps exactly those two surfaces.
+   * @returns The audio API the shell publishes on `AppContext.audio`. */
+  get audio(): AudioApi {
+    const engine = this.#audioEngine;
+    return {
+      get channels() {
+        return engine.channels;
+      },
+      setChannel: (id, patch) => {
+        engine.setChannel(id, patch);
+        if (typeof localStorage !== "undefined") {
+          writeAudioMirror(localStorage, { channels: engine.channels, duckDepth: engine.duck.depth });
+        }
+      },
+      unlock: () => engine.unlock(),
+      get duck() {
+        const duck = engine.duck;
+        return {
+          addSource: (id: string) => duck.addSource(id),
+          removeSource: (id: string) => duck.removeSource(id),
+          get gain() {
+            return duck.gain;
+          },
+          get depth() {
+            return duck.depth;
+          },
+          setDepth: (depth: number) => {
+            duck.setDepth(depth);
+            if (typeof localStorage !== "undefined") {
+              writeAudioMirror(localStorage, { channels: engine.channels, duckDepth: duck.depth });
+            }
+          },
+        };
+      },
+      playOneShot: (asset, opts) => engine.playOneShot(asset, opts),
+      serverNow: () => engine.serverNow(),
+      transport: (op) => engine.transport(op),
+    };
   }
 
   /** GM local roam: view any scene without moving players. Ignored (warned) for a non-GM —
@@ -533,6 +594,33 @@ export class WorldSession {
     });
     this.#combatEmitter = new CombatHookEmitter(this.#hooks, this.#logger);
     this.#services.provide(COMBAT_SERVICE, this.#combat, { version: COMBAT_HOOK_VERSION });
+    const mirror = typeof localStorage !== "undefined" ? readAudioMirror(localStorage) : undefined;
+    this.#audioEngine = new AudioEngine({
+      resolver: this.assets,
+      serverNow: () => this.#ws?.serverNow() ?? 0,
+      transport: (op) => this.#ws?.audioTransport(op),
+      createContext: () => new AudioContext(),
+      onTrackEnded: (id) => this.#ws?.audioTransport({ type: "track_ended", id }),
+      fadeMsFor: (playlistId) => {
+        if (!playlistId) return 0;
+        const doc = this.documents.query("playlist").find((d) => d.id === playlistId);
+        /** The playlist document's engine body (only `fadeMs` is read here). */
+        const engine = doc?.engine as {
+          /** The playlist's crossfade duration, ms. */
+          fadeMs?: number;
+        } | undefined;
+        return engine?.fadeMs ?? 0;
+      },
+      duckDepth: mirror?.duckDepth ?? DEFAULT_DUCK_DEPTH,
+      raf: (cb) => requestAnimationFrame(cb),
+      caf: (handle) => cancelAnimationFrame(handle),
+    });
+    setMediaElementFactory(() => document.createElement("audio"));
+    if (mirror) {
+      for (const [id, state] of Object.entries(mirror.channels)) {
+        this.#audioEngine.setChannel(id as AudioChannelId, state);
+      }
+    }
     this.#modules = new ModuleRegistry({
       hooks: this.#hooks,
       services: this.#services,
@@ -1107,6 +1195,7 @@ export class WorldSession {
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#emoteListeners) cb(msg);
         },
+        onAudioError: (reason) => this.opts.onAudioError?.(reason),
       },
     });
     // Pre-seed the watermark BEFORE start()/open() sends the first Hello — a call after open()
@@ -1147,6 +1236,18 @@ export class WorldSession {
     this.#combatSub = this.subscribeScene("combat", (f) => {
       this.#combat.setResolved(parseCombats(f.payload, this.#logger));
     });
+    // The audio-state singleton drives the device mixer: every authoritative change (this
+    // world's own transport echoes included) reconciles the live TrackPlayer set. Plain
+    // store-level subscription (this class is not a Svelte component), applied once
+    // immediately for the state already in the snapshot.
+    this.#audioUnsub = this.documents.subscribe(() => {
+      const doc = this.documents.query(AUDIO_STATE_DOC_TYPE)[0];
+      if (doc?.engine) this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+    });
+    {
+      const doc = this.documents.query(AUDIO_STATE_DOC_TYPE)[0];
+      if (doc?.engine) this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+    }
     await this.#ws.start();
     this.state = "open";
   }
@@ -1528,6 +1629,9 @@ export class WorldSession {
     this.#combatSub?.unsubscribe();
     this.#combatSub = null;
     this.#combat.setResolved(EMPTY_COMBATS);
+    this.#audioUnsub?.();
+    this.#audioUnsub = null;
+    this.#audioEngine.dispose();
     for (const manifestId of [...this.#moduleStyleLinks.keys()]) {
       this.#removeModuleStyle(manifestId);
     }

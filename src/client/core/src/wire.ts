@@ -1464,11 +1464,18 @@ export type WireAudioOp =
       position_ms: number;
     }
   | {
-      /** Advance to the next track per the source playlist's mode; the server verifies the
-       * current track's elapsed duration against the asset's own `durationMs` before
-       * applying — a client cannot skip a track early. */
+      /** Advance to the next track per the source playlist's mode. GM-only: an EXPLICIT
+       * skip, applied unconditionally (no elapsed-duration gate). */
       type: "next";
       /** The entry to advance. */
+      id: string;
+    }
+  | {
+      /** A non-looping track reached its natural end on this client, reported so the
+       * server decides the advance (the first report wins; stale ids no-op). Any world
+       * member may send it. */
+      type: "track_ended";
+      /** The entry that ended. */
       id: string;
     }
   | {
@@ -1503,6 +1510,7 @@ export const audioOpSchemaImpl = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stop_all") }),
   z.object({ type: z.literal("seek"), id: z.string(), position_ms: int }),
   z.object({ type: z.literal("next"), id: z.string() }),
+  z.object({ type: z.literal("track_ended"), id: z.string() }),
   z.object({ type: z.literal("prev"), id: z.string() }),
   z.object({ type: z.literal("set_gain"), id: z.string(), gain: z.number() }),
 ]);

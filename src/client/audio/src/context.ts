@@ -16,8 +16,9 @@ export interface GainNodeLike {
   /** The node's gain parameter. */
   readonly gain: AudioParamLike;
   /** Connect this node's output to `dest`.
-   * @param dest The downstream node. */
-  connect(dest: AudioNodeLike): void;
+   * @param dest The downstream node.
+   * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
+  connect(dest: AudioNodeLike): unknown;
   /** Detach this node from the graph. */
   disconnect(): void;
 }
@@ -27,21 +28,27 @@ export interface PannerNodeLike {
   /** The node's pan parameter (`-1` full left .. `1` full right). */
   readonly pan: AudioParamLike;
   /** Connect this node's output to `dest`.
-   * @param dest The downstream node. */
-  connect(dest: AudioNodeLike): void;
+   * @param dest The downstream node.
+   * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
+  connect(dest: AudioNodeLike): unknown;
   /** Detach this node from the graph. */
   disconnect(): void;
 }
 
-/** The marker shape of `AudioContext.destination` (the graph's terminal node). */
-export interface AudioDestinationLike {
-  /** Brand distinguishing the destination from a real connectable node. */
-  readonly __destination: true;
-}
+/** The graph's terminal node: the real `AudioDestinationNode` in production, or a stub's
+ * branded object in tests (the brand is what a spy distinguishes it by). */
+export type AudioDestinationLike =
+  | {
+      /** Brand marking the stub destination. */
+      readonly __destination?: true;
+    }
+  | AudioDestinationNode;
 
 /** Anything a `GainNode`/`PannerNode`/`AudioContext.destination` can be — the connect-graph
- * leaf type every node's `connect` accepts. */
-export type AudioNodeLike = GainNodeLike | PannerNodeLike | AudioDestinationLike;
+ * leaf type every node's `connect` accepts. Includes the DOM `AudioNode` itself so the REAL
+ * Web Audio classes satisfy the `*Like` interfaces structurally (their `connect` takes an
+ * `AudioNode`; method-parameter bivariance then admits both the stubs and the real nodes). */
+export type AudioNodeLike = GainNodeLike | PannerNodeLike | AudioDestinationLike | AudioNode;
 
 /** The subset of `AudioBuffer` the players need: the decoded-PCM container a
  * `BufferSourceNode` plays. A real `AudioBuffer` satisfies this verbatim (`duration`/
@@ -52,6 +59,8 @@ export interface AudioBufferLike {
   readonly duration: number;
   /** Sample rate, Hz. */
   readonly sampleRate: number;
+  /** Channel count (drives the LRU cache's byte estimate: channels × frames × 4 for f32 PCM). */
+  readonly numberOfChannels: number;
   /** Write one channel's PCM (the WASM decoder returns per-channel `Float32Array`s).
    * @param data The channel's samples.
    * @param channel The channel index to write. */
@@ -72,8 +81,9 @@ export interface BufferSourceNodeLike {
   /** Playback-rate multiplier (`TrackPlayer`'s small-drift nudge; `1` = unity). */
   playbackRate: number;
   /** Connect this node's output to `dest`.
-   * @param dest The downstream node. */
-  connect(dest: AudioNodeLike): void;
+   * @param dest The downstream node.
+   * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
+  connect(dest: AudioNodeLike): unknown;
   /** Start playback at `when` (context time), from `offset` seconds into the buffer.
    * @param when The context time to start at (`undefined` = now).
    * @param offset The buffer position to start from, seconds. */
@@ -102,6 +112,9 @@ export interface MediaElementLike {
   play(): Promise<void>;
   /** Pause playback in place. */
   pause(): void;
+  /** Natural-end callback (playback reached the resource's end — never fired by `pause()`).
+   * `TrackPlayer` uses it for the client-observed track-end report (`AudioOp::TrackEnded`). */
+  onended: (() => void) | null;
   /** The device's own support answer for a MIME string.
    * @param type The MIME string to test.
    * @returns `""`, `"maybe"`, or `"probably"`. */
@@ -111,8 +124,9 @@ export interface MediaElementLike {
 /** The subset of `MediaElementAudioSourceNode` `TrackPlayer` needs. */
 export interface MediaElementSourceNodeLike {
   /** Connect this node's output to `dest`.
-   * @param dest The downstream node. */
-  connect(dest: AudioNodeLike): void;
+   * @param dest The downstream node.
+   * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
+  connect(dest: AudioNodeLike): unknown;
   /** Detach this node from the graph. */
   disconnect(): void;
 }
@@ -143,7 +157,7 @@ export interface WasmOpusDecoderLike {
  * this interface). */
 export interface AudioContextLike {
   /** The context's running state. */
-  readonly state: "suspended" | "running" | "closed";
+  readonly state: "suspended" | "running" | "closed" | "interrupted";
   /** The context's audio-thread clock, seconds. */
   readonly currentTime: number;
   /** The graph's terminal node. */

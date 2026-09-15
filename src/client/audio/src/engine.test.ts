@@ -65,11 +65,17 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("AudioEngine", () => {
   it("tracks pending state before unlock and applies it once unlock resolves", async () => {
+    let elements = 0;
+    setMediaElementFactory(() => {
+      elements++;
+      return stubMediaElement();
+    });
     const engine = new AudioEngine(makeOpts());
     engine.applyState(state(entry("e1")));
-    // No context yet: no TrackPlayer exists (nothing threw, state is queued).
+    // No context yet: NO player exists — a streaming entry would have needed an element.
+    expect(elements).toBe(0);
     await engine.unlock();
-    // After unlock, the queued state produced one live player; removing it disposes it.
+    expect(elements).toBe(1); // the queued state produced exactly one live player
     engine.applyState(state());
   });
 
@@ -81,16 +87,23 @@ describe("AudioEngine", () => {
     engine.applyState(state());
   });
 
-  it("setChannel mute zeroes the live GainNode", async () => {
+  it("setChannel writes the live channel GainNode and clamps gain to 0..=1", async () => {
     const opts = makeOpts();
     const ctx = stubAudioContext();
     opts.createContext = () => ctx;
     const engine = new AudioEngine(opts);
     await engine.unlock();
+    // Channel node order in unlock(): master, duck, then master/music/ambience/sfx/ui.
+    const sfxNode = ctx.gains[5];
+    engine.setChannel("sfx", { gain: 0.4 });
+    expect(sfxNode.gain.value).toBe(0.4);
     engine.setChannel("sfx", { muted: true });
-    expect(engine.channels.sfx.muted).toBe(true);
+    expect(sfxNode.gain.value).toBe(0);
     engine.setChannel("sfx", { muted: false });
-    expect(engine.channels.sfx.muted).toBe(false);
+    expect(sfxNode.gain.value).toBe(0.4);
+    engine.setChannel("sfx", { gain: 5 });
+    expect(engine.channels.sfx.gain).toBe(1);
+    expect(sfxNode.gain.value).toBe(1);
   });
 
   it("playOneShot before unlock is a silent no-op (never throws)", () => {
@@ -122,16 +135,41 @@ describe("AudioEngine", () => {
     expect(pump.hasQueued()).toBe(false);
   });
 
-  it("dispose cancels the duck loop's raf handle", async () => {
+  it("dispose cancels the duck loop's raf handle and disconnects every player node", async () => {
     const pump = pumpHarness();
     const opts = makeOpts({ raf: pump.raf, caf: pump.caf });
+    const ctx = stubAudioContext();
+    opts.createContext = () => ctx;
     const caf = vi.spyOn(opts, "caf");
     const engine = new AudioEngine(opts);
     await engine.unlock();
+    engine.applyState(state(entry("e1")));
     engine.dispose();
     expect(caf).toHaveBeenCalledTimes(1);
+    expect(ctx.mediaSources[0].disconnect).toHaveBeenCalledTimes(1);
     pump.pump(9_999); // no re-arm after dispose
     expect(pump.hasQueued()).toBe(false);
+  });
+
+  it("crossfades a replaced entry over the playlist's fadeMs instead of a hard cut", async () => {
+    const opts = makeOpts({ fadeMsFor: (pid) => (pid === "pl1" ? 5 : 0) });
+    const ctx = stubAudioContext();
+    opts.createContext = () => ctx;
+    const engine = new AudioEngine(opts);
+    await engine.unlock();
+    engine.applyState(state(entry("a", { playlist: "pl1" })));
+    const oldSource = ctx.mediaSources[0];
+    // The advance: same playlist, fresh id.
+    engine.applyState(state(entry("b", { playlist: "pl1" })));
+    // The outgoing player RAMPED to 0 (crossfade) rather than disconnecting immediately...
+    const oldPlayerGains = ctx.gains.filter((g) => g.gain.value === 0);
+    expect(oldPlayerGains.length).toBeGreaterThan(0);
+    expect(oldSource.disconnect).not.toHaveBeenCalled();
+    // ...and the incoming player exists (second element created).
+    expect(ctx.mediaSources.length).toBe(2);
+    // The deferred dispose lands after fadeMs.
+    await new Promise((r) => setTimeout(r, 30));
+    expect(oldSource.disconnect).toHaveBeenCalledTimes(1);
   });
 
   it("a buffered-loop entry creates a player without a media element", async () => {

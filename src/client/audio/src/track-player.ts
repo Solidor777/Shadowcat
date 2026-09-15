@@ -61,10 +61,23 @@ export class TrackPlayer {
   #loop: boolean;
   /** The per-track gain node (routes into the channel bus). */
   #gain: GainNodeLike;
+  /** The current target gain (the entry's own gain; `fadeIn` ramps from 0 toward it). */
+  #targetGain: number;
   /** Streaming-mode element (null in buffered mode). */
   #el: MediaElementLike | null = null;
   /** Streaming-mode graph source (null in buffered mode). */
   #source: MediaElementSourceNodeLike | null = null;
+  /** This player's entry id (stable — an advance assigns a fresh id, which creates a NEW
+   * player, so a player's own report can never name a stale id). */
+  #entryId: string;
+  /** The source playlist id, for `AudioEngine.applyState`'s replace-pairing (crossfade). */
+  #playlist: string | null;
+  /** The client-observed track-end reporter (`AudioEngineOpts.onTrackEnded`). */
+  #onTrackEnded: (id: string) => void;
+  /** Set on `dispose()`; async continuations (decode) check it before touching the graph. */
+  #disposed = false;
+  /** The buffered decode is started at most once, however many syncs arrive meanwhile. */
+  #decodeStarted = false;
   /** The live buffered source, when started (null in streaming mode and while paused). */
   #bufferSource: BufferSourceNodeLike | null = null;
   /** The decoded loop buffer (buffered mode, once decoded). */
@@ -88,6 +101,8 @@ export class TrackPlayer {
    * @param oneShot The shared decode/LRU (buffered mode).
    * @param entry The server-authoritative entry to play.
    * @param dest The channel gain node to route through.
+   * @param onTrackEnded The client-observed track-end reporter (streaming mode's natural
+   * element end; the server decides the advance).
    * @example
    * ```
    * // constructed by `AudioEngine.applyState` — exercised through this package's tests
@@ -99,18 +114,29 @@ export class TrackPlayer {
     oneShot: OneShotPlayer,
     entry: PlayingTrack,
     dest: GainNodeLike,
+    onTrackEnded: (id: string) => void,
   ) {
     this.#context = context;
     this.#oneShot = oneShot;
     this.#asset = entry.asset;
     this.#loop = entry.loop;
+    this.#entryId = entry.id;
+    this.#playlist = entry.playlist;
+    this.#onTrackEnded = onTrackEnded;
     this.#gain = context.createGain();
+    this.#targetGain = entry.gain;
     this.#gain.gain.value = entry.gain;
     this.#gain.connect(dest);
     if (!this.#loop) {
       this.#el = createMediaElement();
       const urls = resolver.audioUrl(entry.asset);
       this.#el.src = pickStreamSrc(this.#el, urls);
+      // Track END is client-observed but server-decided: a natural element end reports this
+      // entry's id (the server's pause-aware elapsed gate decides; the first report wins).
+      // A looping entry never reaches here — buffered mode has no natural end.
+      this.#el.onended = () => {
+        if (!this.#disposed) this.#onTrackEnded(this.#entryId);
+      };
       this.#source = context.createMediaElementSource(this.#el);
       this.#source.connect(this.#gain);
     }
@@ -155,15 +181,20 @@ export class TrackPlayer {
     this.#anchor = { offset: target, serverNow, rate };
   }
 
-  /** Decode the loop buffer on first use, then apply any stashed sync.
+  /** Decode the loop buffer on first use, then apply any stashed sync — latched
+   * (`#decodeStarted`: concurrent syncs never double-decode) and liveness-guarded
+   * (`#disposed`: a player disposed mid-decode never starts a source on a detached gain).
    * @example
    * ```
    * // private helper; exercised through the buffered-loop sync tests
    * ```
    */
   async #ensureBuffer(): Promise<void> {
-    if (this.#buffer) return;
-    this.#buffer = await this.#oneShot.getBuffer(this.#asset, "loop");
+    if (this.#buffer || this.#decodeStarted) return;
+    this.#decodeStarted = true;
+    const buffer = await this.#oneShot.getBuffer(this.#asset, "loop");
+    if (this.#disposed) return;
+    this.#buffer = buffer;
     const pending = this.#pending;
     this.#pending = null;
     if (pending) this.sync(pending.entry, pending.serverNow);
@@ -179,11 +210,16 @@ export class TrackPlayer {
    * ```
    */
   sync(entry: PlayingTrack, serverNow: number): void {
+    this.#targetGain = entry.gain;
     this.#gain.gain.value = entry.gain;
-    const targetSecs =
+    // Clamped ≥ 0: a negatively-skewed clock calibration must never reach
+    // `source.start(0, negative)` or `el.currentTime = negative` (both throw).
+    const targetSecs = Math.max(
+      0,
       entry.pausedAt != null
         ? (entry.pausedAt - entry.startedAt) / 1000
-        : (serverNow - entry.startedAt) / 1000;
+        : (serverNow - entry.startedAt) / 1000,
+    );
 
     if (this.#loop) {
       if (!this.#buffer) {
@@ -194,11 +230,14 @@ export class TrackPlayer {
       const playing = this.#bufferSource !== null;
       if (entry.pausedAt != null) {
         if (playing) {
-          this.#frozen = this.#positionAt(serverNow);
           this.#bufferSource?.stop();
           this.#bufferSource = null;
           this.#anchor = null;
         }
+        // Every paused sync refreshes the frozen position from the authoritative entry (a
+        // Seek while paused would otherwise be lost until the next drift tick — and the two
+        // agree when no seek happened, so refreshing is always safe).
+        this.#frozen = targetSecs;
         return;
       }
       if (!playing) {
@@ -241,14 +280,59 @@ export class TrackPlayer {
     }
   }
 
-  /** Stop and detach from the graph.
+  /** The source playlist id this entry plays from (drives replace-pairing in
+   * `AudioEngine.applyState`'s crossfade).
+   * @returns The playlist id, or `null` for a direct (playlist-less) entry.
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s crossfade-replace case
+   * ```
+   */
+  get playlistId(): string | null {
+    return this.#playlist;
+  }
+
+  /** Ramp this player's gain to its entry gain from 0 over `fadeMs` (the incoming half of a
+   * crossfade — the server-assigned fresh entry on an advance).
+   * @param fadeMs The crossfade duration, ms (the source playlist's own `fadeMs`).
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s crossfade-replace case
+   * ```
+   */
+  fadeIn(fadeMs: number): void {
+    const now = this.#context.currentTime;
+    this.#gain.gain.value = 0;
+    this.#gain.gain.setTargetAtTime(this.#targetGain, now, fadeMs / 3000);
+  }
+
+  /** Ramp this player's gain to 0 over `fadeMs`, then dispose (the outgoing half of a
+   * crossfade — the superseded entry on an advance). The gain RAMP is immediate from the
+   * caller's perspective; disposal lands on a timer so the fade is actually audible.
+   * @param fadeMs The crossfade duration, ms (the source playlist's own `fadeMs`).
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s crossfade-replace case
+   * ```
+   */
+  fadeOut(fadeMs: number): void {
+    const now = this.#context.currentTime;
+    this.#gain.gain.setTargetAtTime(0, now, fadeMs / 3000);
+    setTimeout(() => this.dispose(), fadeMs);
+  }
+
+  /** Stop and detach from the graph. Idempotent-ish: marks the player dead first, so an
+   * in-flight decode continuation becomes a no-op (never starts a source on a detached gain).
    * @example
    * ```
    * // exercised through `track-player.test.ts`'s dispose calls
    * ```
    */
   dispose(): void {
+    this.#disposed = true;
+    this.#pending = null;
     this.#el?.pause();
+    if (this.#el) this.#el.onended = null;
     this.#source?.disconnect();
     this.#bufferSource?.stop();
     this.#gain.disconnect();

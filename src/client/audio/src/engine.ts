@@ -35,6 +35,14 @@ export interface AudioEngineOpts {
   /** The WASM Ogg/Opus decoder factory behind the WebKit Ogg path — production defaults to
    * `wasm.ts`'s lazy singleton; tests inject a stub. */
   createOggOpusDecoder?: () => Promise<WasmOpusDecoderLike>;
+  /** Called when a non-looping track reaches its natural end on this device — the
+   * client-observed half of track-end advance (the server decides; see
+   * `AudioOp::TrackEnded`). The shell wires this to `WsClient.audioTransport`. */
+  onTrackEnded?: (id: string) => void;
+  /** The crossfade duration for a replaced entry, ms, by source playlist id — the playlist
+   * document's own `fadeMs`, looked up by the caller (this package never touches the
+   * document store). `0`/absent = hard cut. */
+  fadeMsFor?: (playlistId: string | null) => number;
   /** Starting duck depth, `0..=1` — seeded from this device's persisted audio mirror by the
    * caller; defaults to `DEFAULT_DUCK_DEPTH` when the caller has no persisted value. */
   duckDepth?: number;
@@ -144,7 +152,8 @@ export class AudioEngine implements AudioApi {
     /** The new mute state; omitted = unchanged. */
     muted?: boolean;
   }): void {
-    this.#channelState[id] = { ...this.#channelState[id], ...patch };
+    const gain = patch.gain === undefined ? undefined : Math.max(0, Math.min(1, patch.gain));
+    this.#channelState[id] = { ...this.#channelState[id], ...patch, ...(gain === undefined ? {} : { gain }) };
     const node = this.#channelNodes.get(id);
     if (node) {
       node.gain.value = this.#channelState[id].muted ? 0 : this.#channelState[id].gain;
@@ -265,14 +274,40 @@ export class AudioEngine implements AudioApi {
         existing.sync(entry, serverNow);
       } else {
         const dest = this.#channelNodes.get(channelIdOf(entry))!;
-        const player = new TrackPlayer(this.#context, this.#opts.resolver, this.#oneShot!, entry, dest);
+        const player = new TrackPlayer(
+          this.#context,
+          this.#opts.resolver,
+          this.#oneShot!,
+          entry,
+          dest,
+          (id) => this.#opts.onTrackEnded?.(id),
+        );
         player.sync(entry, serverNow);
+        // Crossfade IN when this fresh entry replaces an outgoing one from the same playlist
+        // (the server assigns a fresh id on advance — the pair is the playlist id).
+        const outgoing = [...this.#trackPlayers.values()].find(
+          (p) => p.playlistId !== null && p.playlistId === entry.playlist,
+        );
+        if (outgoing) {
+          const fadeMs = this.#opts.fadeMsFor?.(entry.playlist) ?? 0;
+          if (fadeMs > 0) player.fadeIn(fadeMs);
+        }
         this.#trackPlayers.set(entry.id, player);
       }
     }
     for (const [id, player] of this.#trackPlayers) {
       if (!seen.has(id)) {
-        player.dispose();
+        // A replaced player fades out over the playlist's own `fadeMs`; anything else is a
+        // hard cut (a stop, or a playlist with no crossfade authored).
+        const replacement = state.playing.find(
+          (e) => e.playlist !== null && e.playlist === player.playlistId,
+        );
+        const fadeMs = replacement ? (this.#opts.fadeMsFor?.(replacement.playlist) ?? 0) : 0;
+        if (replacement && fadeMs > 0) {
+          player.fadeOut(fadeMs);
+        } else {
+          player.dispose();
+        }
         this.#trackPlayers.delete(id);
       }
     }

@@ -49,19 +49,19 @@ describe("TrackPlayer — streaming mode", () => {
     const el = stubMediaElement();
     el.canPlayType = () => "probably";
     setMediaElementFactory(() => el);
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest());
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
     expect(el.src).toBe("/api/assets/a1?variant=opus");
 
     const el2 = stubMediaElement();
     el2.canPlayType = (t) => (t.includes("ogg") ? "" : "probably");
     setMediaElementFactory(() => el2);
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest());
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
     expect(el2.src).toBe("/api/assets/a1?variant=opus-webm");
 
     const el3 = stubMediaElement();
     el3.canPlayType = () => "";
     setMediaElementFactory(() => el3);
-    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest());
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
     expect(el3.src).toBe("/api/assets/a1");
   });
 
@@ -69,7 +69,7 @@ describe("TrackPlayer — streaming mode", () => {
     const ctx = stubAudioContext();
     const el = stubMediaElement();
     setMediaElementFactory(() => el);
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest());
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
 
     el.currentTime = 0;
     player.sync(entry(), (SYNC_SEEK_THRESHOLD_SECS + 1) * 1000);
@@ -86,11 +86,33 @@ describe("TrackPlayer — streaming mode", () => {
   });
 });
 
+describe("TrackPlayer — track-end report", () => {
+  it("a natural element end reports the entry id once, and never after dispose", () => {
+    const ctx = stubAudioContext();
+    const el = stubMediaElement();
+    setMediaElementFactory(() => el);
+    const reports: string[] = [];
+    const player = new TrackPlayer(
+      ctx,
+      new AssetResolver(),
+      oneShotFor(ctx),
+      entry({ id: "e-end" }),
+      dest(),
+      (id) => reports.push(id),
+    );
+    expect(el.onended).not.toBeNull();
+    el.onended!();
+    expect(reports).toEqual(["e-end"]);
+    player.dispose();
+    expect(el.onended).toBeNull();
+  });
+});
+
 describe("TrackPlayer — buffered loop mode", () => {
   it("decodes the buffer, then starts a full-buffer loop at the position offset", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
     const ctx = stubAudioContext();
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ loop: true }), dest());
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ loop: true }), dest(), () => {});
     player.sync(entry({ loop: true }), 1_500);
     await flush();
     const source = ctx.sources[0];
@@ -106,7 +128,7 @@ describe("TrackPlayer — buffered loop mode", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
     const ctx = stubAudioContext();
     const e = entry({ loop: true });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest());
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
     player.sync(e, 1_000);
     await flush();
     const first = ctx.sources[0];
@@ -127,7 +149,7 @@ describe("TrackPlayer — buffered loop mode", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
     const ctx = stubAudioContext();
     const e = entry({ loop: true, startedAt: 200 });
-    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest());
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
     player.sync(e, 1_000);
     await flush();
     const first = ctx.sources[0];

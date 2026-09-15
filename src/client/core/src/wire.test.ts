@@ -158,6 +158,10 @@ describe("wire drift guard — non-vacuous schema/type assertions", () => {
   it("AudioOp", () => {
     expectTypeOf<z.infer<typeof audioOpSchemaImpl>>().toEqualTypeOf<WireAudioOp>();
   });
+  it("AudioOp track_ended validates and round-trips", () => {
+    expect(audioOpSchemaImpl.safeParse({ type: "track_ended", id: "e1" }).success).toBe(true);
+    expect(audioOpSchemaImpl.safeParse({ type: "track_ended" }).success).toBe(false);
+  });
   it("Audience", () => {
     expectTypeOf<z.infer<typeof audienceSchemaImpl>>().toEqualTypeOf<WireAudience>();
   });
