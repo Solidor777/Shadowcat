@@ -274,7 +274,26 @@ impl Repository for StubRepo {
     ) -> Result<Vec<SchemaDeclaration>, DataError> {
         unimplemented!()
     }
-    async fn world_enabled_modules(&self, _world: Uuid) -> Result<Vec<String>, DataError> {
+    async fn world_enabled_modules(
+        &self,
+        _world: Uuid,
+    ) -> Result<Vec<crate::modules::WorldModuleEntry>, DataError> {
+        unimplemented!()
+    }
+    async fn set_world_enabled_modules(
+        &self,
+        _world: Uuid,
+        _entries: &[crate::modules::WorldModuleEntry],
+    ) -> Result<(), DataError> {
+        unimplemented!()
+    }
+    async fn list_members(
+        &self,
+        _world: Uuid,
+    ) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+        unimplemented!()
+    }
+    async fn reset_validator_fault_streak(&self, _world: Uuid, _module: &str) {
         unimplemented!()
     }
     async fn search(
