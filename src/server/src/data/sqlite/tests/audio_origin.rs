@@ -94,8 +94,10 @@ async fn config_seed_origin_cannot_update_audio_state_but_audio_transport_can() 
     )
     .await
     .unwrap();
-    let mut next = AudioStateEngine::default();
-    next.shuffle_seed = 7;
+    let next = AudioStateEngine {
+        shuffle_seed: 7,
+        ..AudioStateEngine::default()
+    };
     let change = FieldChange {
         path: "/engine".into(),
         old: old_engine.clone(),

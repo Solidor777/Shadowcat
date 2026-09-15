@@ -1,6 +1,6 @@
-//! `playlist`/`audio-state` engine bands. `playlist` is a standard-write-rules document (owner
-//! + WRITE_FIELDS, same as `table`/`note`); `audio-state` is the world's singleton transport
-//! state, writable only by `WriteOrigin::AudioTransport` (the guard lives in
+//! `playlist`/`audio-state` engine bands. `playlist` is a standard-write-rules document
+//! (owner + WRITE_FIELDS, same as `table`/`note`); `audio-state` is the world's singleton
+//! transport state, writable only by `WriteOrigin::AudioTransport` (the guard lives in
 //! `data::sqlite::SqliteRepository::apply_intent`, mirroring the `system-defaults`/
 //! `WriteOrigin::ConfigSeed` guard exactly — see that guard's own doc for why this is NOT a
 //! `validate_engine`/`normalize_engine` rule).

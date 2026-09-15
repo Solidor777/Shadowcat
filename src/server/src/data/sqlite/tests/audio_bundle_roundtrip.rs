@@ -68,8 +68,10 @@ async fn bundle_export_import_carries_playlists_and_the_audio_state_singleton() 
         .into_iter()
         .next()
         .expect("the seed pass created the audio-state singleton");
-    let mut mutated = AudioStateEngine::default();
-    mutated.shuffle_seed = 7;
+    let mutated = AudioStateEngine {
+        shuffle_seed: 7,
+        ..AudioStateEngine::default()
+    };
     src.apply_intent(
         &ctx,
         world,
