@@ -51,6 +51,10 @@ const SHEET_JSON_SUFFIX: &str = ".sheet.json";
 /// Longest axis (px) the grid sheet's FULL tiled image may reach; frames are downscaled
 /// uniformly (never upscaled) when the near-square tiling would exceed it.
 const SHEET_MAX_PX: u32 = 4096;
+/// Floor applied to every decoded frame's display duration — a zero-delay frame would
+/// otherwise stall per-frame playback timing (the browser's own GIF clamp is the same order
+/// of magnitude).
+const MIN_FRAME_MS: u32 = 100;
 
 /// Every artifact that can sit beside a canonical: the retained original, the two
 /// derivatives, and the two grid-sheet siblings (animated sources only). The single
@@ -341,6 +345,14 @@ fn is_animated(path: &Path, content_type: &str) -> bool {
 /// callers treat an empty result as "sheet generation produced nothing", never a hard
 /// failure (an upload/reconvert is never rejected for a sheet-generation reason, mirroring
 /// `process_staged`'s own pass-through-on-failure convention).
+///
+/// BOTH decoders PRE-COMPOSITE: the vendored `image` crate's GIF path inserts each sub-rect
+/// frame at its left/top into a full logical-screen buffer and applies the frame's disposal
+/// method before yielding, and its WebP path renders every frame at full canvas size — so
+/// every yielded `Frame` carries a uniform full-canvas RGBA buffer (left/top always 0), and
+/// no further offset/disposal handling is needed here. `generate_grid_sheet` still guards
+/// against a non-uniform buffer size, so a future decoder that stops pre-compositing fails
+/// closed rather than tiling garbage.
 fn decode_animation_frames(path: &Path, content_type: &str) -> Vec<Frame> {
     let Ok(file) = std::fs::File::open(path) else {
         return Vec::new();
@@ -425,11 +437,19 @@ pub fn generate_grid_sheet(canonical: &Path, content_type: &str) -> Option<Sheet
         .iter()
         .map(|f| {
             let (numer, denom) = f.delay().numer_denom_ms();
-            numer.checked_div(denom).unwrap_or(0)
+            // A zero-delay frame plays at the browser-like floor, never at zero — an
+            // unclamped 0 ms cell would freeze `computeVfxFrame`'s cumulative walk.
+            numer.checked_div(denom).unwrap_or(0).max(MIN_FRAME_MS)
         })
         .collect();
     let (fw0, fh0) = frames[0].buffer().dimensions();
     if fw0 == 0 || fh0 == 0 {
+        return None;
+    }
+    // Both supported decoders yield uniform full-canvas buffers (see
+    // `decode_animation_frames`); if that ever stops holding, tiling differently-sized
+    // frames would smear them across the grid — fail closed instead.
+    if frames.iter().any(|f| f.buffer().dimensions() != (fw0, fh0)) {
         return None;
     }
     let sheet_w = fw0.saturating_mul(cols);
@@ -440,8 +460,10 @@ pub fn generate_grid_sheet(canonical: &Path, content_type: &str) -> Option<Sheet
     } else {
         1.0
     };
-    let fw = ((f64::from(fw0) * scale).round() as u32).max(1);
-    let fh = ((f64::from(fh0) * scale).round() as u32).max(1);
+    // Floor, never round: a rounded-up per-frame size times cols/rows could push the tiled
+    // sheet's longest side past SHEET_MAX_PX by half a frame.
+    let fw = ((f64::from(fw0) * scale).floor() as u32).max(1);
+    let fh = ((f64::from(fh0) * scale).floor() as u32).max(1);
     let mut canvas = image::RgbaImage::new(fw * cols, fh * rows);
     for (i, frame) in frames.iter().enumerate() {
         let img = DynamicImage::ImageRgba8(frame.buffer().clone());

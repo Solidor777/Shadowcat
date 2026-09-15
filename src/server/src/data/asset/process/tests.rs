@@ -471,3 +471,80 @@ fn the_committed_animated_webp_fixture_decodes_through_the_webp_arm() {
     assert_eq!(tile.get_pixel(0, 4).0, [254, 0, 0, 255]);
     assert_eq!(tile.get_pixel(0, 5).0, [0, 0, 254, 255]);
 }
+
+#[test]
+fn generate_grid_sheet_composites_a_sub_rect_frame_at_its_offset() {
+    // Committed fixture (123 bytes): an 8×8 logical screen; frame 0 solid red, frame 1 a 4×4
+    // blue sub-image at left=2, top=2 (written with Pillow — the vendored `image` crate's
+    // `GifEncoder` drops `Frame::left`/`top` when encoding, so an in-test generated fixture
+    // can never carry a real offset, exactly why the animated-WebP fixture is committed too).
+    // The decoder must composite the sub-rect at its offset, not smear it from (0,0).
+    let bytes = include_bytes!("tests/fixtures/offset-4x4-at-2x2.gif");
+    let dir = tempfile::tempdir().unwrap();
+    let staged = stage(dir.path(), bytes);
+
+    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    assert_eq!((meta.count, meta.rows, meta.cols), (2, 1, 2));
+    assert_eq!((meta.width, meta.height), (8, 8));
+
+    let sheet = with_suffix(&staged, ".sheet.webp");
+    let img = ImageReader::open(&sheet)
+        .unwrap()
+        .with_guessed_format()
+        .unwrap()
+        .decode()
+        .unwrap()
+        .to_rgba8();
+    // Tile 1 (the second frame) is the red canvas with the blue 4×4 block at (2,2) — a
+    // decoder that yielded the raw sub-rect instead would paint blue at (0,0). Channel
+    // thresholds, not exact values: the VP8L round-trip lands pure red/blue one step off
+    // (the same decoder artifact the fixture test above pins).
+    let tile1 = image::imageops::crop_imm(&img, meta.width, 0, meta.width, meta.height).to_image();
+    let blue_at =
+        |x: u32, y: u32| tile1.get_pixel(x, y).0[2] >= 250 && tile1.get_pixel(x, y).0[0] <= 10;
+    let red_at =
+        |x: u32, y: u32| tile1.get_pixel(x, y).0[0] >= 250 && tile1.get_pixel(x, y).0[2] <= 10;
+    assert!(
+        blue_at(3, 3),
+        "offset block center: {:?}",
+        tile1.get_pixel(3, 3)
+    );
+    assert!(blue_at(2, 2), "block corner: {:?}", tile1.get_pixel(2, 2));
+    assert!(
+        red_at(0, 0),
+        "outside the block: {:?}",
+        tile1.get_pixel(0, 0)
+    );
+    assert!(red_at(6, 6), "past the block: {:?}", tile1.get_pixel(6, 6));
+}
+
+#[test]
+fn generate_grid_sheet_clamps_a_zero_delay_frame_to_the_floor() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = stage(dir.path(), &gif_frames_ms(4, 4, &[100, 0, 300]));
+
+    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    assert_eq!(meta.frame_ms, vec![100, 100, 300]);
+}
+
+#[test]
+fn generate_grid_sheet_never_exceeds_the_max_axis_after_downscale() {
+    let dir = tempfile::tempdir().unwrap();
+    // 257 frames of 250×250 tile 17 wide: the naive round() lands each frame at 241 px and
+    // the sheet at 17×241 = 4097, one pixel over the cap — floor() must hold it under.
+    let input = gif_frames_ms(250, 250, &[100].repeat(257));
+    let staged = stage(dir.path(), &input);
+
+    let meta = generate_grid_sheet(&staged, "image/gif").unwrap();
+    assert_eq!(meta.cols, 17);
+    assert!(
+        meta.width * meta.cols <= 4096,
+        "tiled width {} over the cap",
+        meta.width * meta.cols
+    );
+    assert!(
+        meta.height * meta.rows <= 4096,
+        "tiled height {} over the cap",
+        meta.height * meta.rows
+    );
+}
