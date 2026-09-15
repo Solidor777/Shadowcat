@@ -14,6 +14,9 @@ pub mod fake;
 /// Linux backend (PipeWire).
 #[cfg(target_os = "linux")]
 pub mod linux;
+/// macOS backend (Core Audio process tap, macOS 14.2+).
+#[cfg(target_os = "macos")]
+pub mod macos;
 /// Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
 #[cfg(target_os = "windows")]
 pub mod windows;
@@ -117,11 +120,15 @@ pub fn platform_monitor() -> Result<Box<dyn SessionMonitor>, MonitorError> {
     {
         return windows::WindowsMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
     }
+    #[cfg(target_os = "macos")]
+    {
+        return macos::MacosMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
+    }
     #[cfg(target_os = "linux")]
     {
         return linux::LinuxMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
     }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         Err(MonitorError::Unsupported(
             "this operating system".to_string(),
