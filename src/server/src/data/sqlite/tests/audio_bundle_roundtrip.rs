@@ -3,11 +3,11 @@
 //! `documents` table with no `doc_type` filter, so both ride the same bulk
 //! path every other document does — proven here end to end.
 use super::*;
+use crate::data::document::PermissionSet;
 use crate::data::engine::{
     AudioChannel, AudioStateEngine, PlaylistEngine, PlaylistMode, PlaylistTrack,
     AUDIO_STATE_DOC_TYPE, PLAYLIST_DOC_TYPE,
 };
-use crate::data::membership::PermissionContext;
 use crate::data::world_seed::missing_config_ops;
 
 /// One real playlist engine body (a single track), so the round-trip compares
