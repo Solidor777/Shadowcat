@@ -585,19 +585,21 @@ pub async fn serve(
             .repo
             .permission_context(asset.world_id, user.id, user.role)
             .await?;
-        let canonical = state.config.assets_path().join(&asset.storage_key);
-        let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
-        let bytes = tokio::fs::read(&sibling)
-            .await
-            .map_err(|_| AppError::NotFound)?;
+        // ETag BEFORE the file read (a 304 costs no disk I/O, same as the canonical path),
+        // and the 304 carries the ETag back so a cache can refresh its validator.
         let etag = format!("\"{id}-{}-{etag_suffix}\"", asset.version);
         let if_none_match = headers
             .get(header::IF_NONE_MATCH)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if if_none_match.split(',').any(|t| t.trim() == etag) {
-            return Ok((StatusCode::NOT_MODIFIED).into_response());
+            return Ok(([(header::ETAG, etag)], StatusCode::NOT_MODIFIED).into_response());
         }
+        let canonical = state.config.assets_path().join(&asset.storage_key);
+        let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
+        let bytes = tokio::fs::read(&sibling)
+            .await
+            .map_err(|_| AppError::NotFound)?;
         // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
         // audio derivative embeds via `<audio src>`, never `<img>` or a navigation.
         return Ok((
