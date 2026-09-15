@@ -72,7 +72,7 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
 | Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
-| VFX, post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
+| ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |
 | Compression (app-level `zstd`), content hashing (blake3, differential sync) | — | When profiling shows storage/transfer cost matters. |

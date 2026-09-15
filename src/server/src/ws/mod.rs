@@ -18,6 +18,7 @@ pub mod room;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
+pub mod vfx;
 
 pub use room::RoomRegistry;
 
@@ -114,6 +115,12 @@ pub struct WsState {
     /// Per-user flood budget for every handler `MESSAGE_RATE_PER_MIN` governs (shared across a
     /// user's connections).
     pub message_rate: Arc<PingRateLimiter>,
+    /// Per-user VFX one-shot budget (shared across a user's connections); a SEPARATE bucket
+    /// from `ping_rate`/`emote_rate`/`message_rate` so a VFX spam burst cannot starve any other
+    /// relay. Charged by BOTH entry paths — the raw `ClientMsg::PlayVfx` arm in `ws::conn` and
+    /// the `/fx` chat command (`chat::fx::run_fx`) — at the same inline 30/min/user budget, so
+    /// neither front door buys more plays than the other.
+    pub vfx_rate: Arc<PingRateLimiter>,
     /// The link-preview SSRF-guarded fetch client, built ONCE via
     /// `chat::build_link_preview_client()` (the no-flag production
     /// constructor — never the test-only loopback-permitting one) and
@@ -148,6 +155,7 @@ impl WsState {
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            vfx_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
@@ -172,6 +180,7 @@ impl WsState {
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            vfx_rate: Arc::new(PingRateLimiter::new()),
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),

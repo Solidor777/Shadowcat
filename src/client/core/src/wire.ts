@@ -1164,6 +1164,33 @@ export type ServerMsg =
       type: "evicted";
       /** `null` = every connection in the room; set = that user only. */
       user: string | null;
+    }
+  | {
+      /** A relayed VFX one-shot: the sender's transient effect at scene coords. Out-of-band
+       * (no seq, never buffered/resynced), mirroring `scene_ping`/`emote`. */
+      type: "vfx";
+      /** Scene the effect plays on. */
+      scene: string;
+      /** Who fired it (senders receive their own echo). */
+      user: string;
+      /** The spritesheet or animated-source asset id. */
+      asset: string;
+      /** Scene-coordinate x. */
+      x: number;
+      /** Scene-coordinate y. */
+      y: number;
+      /** Uniform scale multiplier; `null` = the asset's native scale (1). */
+      scale: number | null;
+      /** Rotation in degrees; `null` = unrotated. */
+      rotation: number | null;
+      /** Playback duration cap in ms; `null` = one loop of the asset. */
+      duration_ms: number | null;
+      /** Paired sound asset id; `null` = none. */
+      sound: string | null;
+      /** Elevation the effect plays at; `null` = ground. */
+      elevation: number | null;
+      /** Fresh per-broadcast id — the render layer's one-shot node key. */
+      id: string;
     };
 
 // Unannotated impl const — see the module-level note above the `z` import. This is the
@@ -1354,6 +1381,20 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     reason: mergeErrorKindSchemaImpl,
   }),
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
+  z.object({
+    type: z.literal("vfx"),
+    scene: z.string(),
+    user: z.string(),
+    asset: z.string(),
+    x: z.number(),
+    y: z.number(),
+    scale: z.number().nullable(),
+    rotation: z.number().nullable(),
+    duration_ms: z.number().nullable(),
+    sound: z.string().nullable(),
+    elevation: z.number().nullable(),
+    id: z.string(),
+  }),
 ]);
 /** Validator for every frame the server sends, discriminated by `type`. */
 export const ServerMsgSchema: z.ZodType<ServerMsg, z.ZodTypeDef, unknown> = serverMsgSchemaImpl;
@@ -1758,6 +1799,31 @@ export type ClientMsg =
       request_id: string;
       /** The instance to reset. */
       child_id: string;
+    }
+  | {
+      /** A one-shot VFX playback request at scene coords, relayed out-of-band with the sender
+       * stamped server-side; never sequenced, logged, or a document (mirrors `scene_ping`).
+       * The scene must exist and grant the sender READ; refused for a spectator; rate-limited
+       * per user on its own budget (silent drop otherwise). */
+      type: "play_vfx";
+      /** Scene the effect plays on (must grant the sender READ). */
+      scene: string;
+      /** The spritesheet or animated-source asset id. */
+      asset: string;
+      /** Scene-coordinate x. */
+      x: number;
+      /** Scene-coordinate y. */
+      y: number;
+      /** Uniform scale multiplier; omitted = the asset's native scale (1). */
+      scale?: number;
+      /** Rotation in degrees; omitted = unrotated. */
+      rotation?: number;
+      /** Playback duration cap in ms; omitted = one loop of the asset. */
+      duration_ms?: number;
+      /** Paired sound asset id. */
+      sound?: string;
+      /** Elevation the effect plays at. */
+      elevation?: number;
     };
 
 /**

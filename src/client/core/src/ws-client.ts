@@ -17,6 +17,7 @@ import {
   type WireMergeErrorKind,
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
+import type { VfxPlayRequest } from "./vfx";
 
 // Re-exported so consumers importing `WireWelcome` from this module keep resolving — its
 // canonical declaration lives alongside `ServerMsg`'s other hand-written wire shapes.
@@ -234,6 +235,32 @@ export interface EmoteNotice {
   emote: string;
 }
 
+/** A relayed VFX one-shot (`WsClientHandlers.onVfx`); carries no seq. */
+export interface VfxNotice {
+  /** The scene the effect plays on. */
+  scene: string;
+  /** Who fired it (senders receive their own echo). */
+  user: string;
+  /** The spritesheet or animated-source asset id. */
+  asset: string;
+  /** Scene-coordinate x. */
+  x: number;
+  /** Scene-coordinate y. */
+  y: number;
+  /** Uniform scale multiplier; `null` = the asset's native scale (1). */
+  scale: number | null;
+  /** Rotation in degrees; `null` = unrotated. */
+  rotation: number | null;
+  /** Playback duration cap in ms; `null` = one loop of the asset. */
+  durationMs: number | null;
+  /** Paired sound asset id; `null` = none. */
+  sound: string | null;
+  /** Elevation the effect plays at; `null` = ground. */
+  elevation: number | null;
+  /** Fresh per-broadcast id — the render layer's one-shot node key. */
+  id: string;
+}
+
 /** Timeout override for a correlated request whose only option is how long to wait for the
  * reply before rejecting. Shared by `WsClient.moveRequest` and `WsClient.pathfind` — each
  * signature's own doc states its default. */
@@ -345,6 +372,9 @@ export interface WsClientHandlers {
   /** An out-of-band relayed emote over a token (carries no seq).
    * @param msg The emote's scene, token, sending user, and glyph(s). */
   onEmote?(msg: EmoteNotice): void;
+  /** An out-of-band relayed VFX one-shot (carries no seq).
+   * @param msg The effect's scene, position, asset, and sending user. */
+  onVfx?(msg: VfxNotice): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
@@ -757,6 +787,33 @@ export class WsClient {
     this.transport?.send(JSON.stringify(msg));
   }
 
+  /** Send a one-shot `PlayVfx` frame. Fire-and-forget: the server replies with nothing on
+   * success (the broadcast `vfx` echo IS the confirmation, mirroring the ping/emote relay);
+   * a denial (rate limit, unreadable scene, spectator role) drops silently — no reject frame.
+   * @param req The one-shot request.
+   * @example
+   * ```ts
+   * import type { WsClient } from "@shadowcat/core";
+   *
+   * declare const client: WsClient;
+   * client.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 });
+   * ```
+   */
+  playVfx(req: VfxPlayRequest): void {
+    this.send({
+      type: "play_vfx",
+      scene: req.scene,
+      asset: req.asset,
+      x: req.x,
+      y: req.y,
+      scale: req.scale,
+      rotation: req.rotation,
+      duration_ms: req.durationMs,
+      sound: req.sound,
+      elevation: req.elevation,
+    });
+  }
+
   /** The highest authoritative seq applied.
    * @returns `nextExpected - 1`; the watermark `OptimisticClient`/`DocumentStore` key their
    * rebase against (see `render-from-optimistic-view`). */
@@ -1145,6 +1202,15 @@ export class WsClient {
       case "emote":
         this.safeEmit(() =>
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
+        );
+        break;
+      case "vfx":
+        this.safeEmit(() =>
+          this.opts.handlers.onVfx?.({
+            scene: msg.scene, user: msg.user, asset: msg.asset, x: msg.x, y: msg.y,
+            scale: msg.scale, rotation: msg.rotation, durationMs: msg.duration_ms,
+            sound: msg.sound, elevation: msg.elevation, id: msg.id,
+          }),
         );
         break;
       case "scene_derived": {

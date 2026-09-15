@@ -1,6 +1,6 @@
 <script lang="ts">
   import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, fpsCapToTickerValue, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -47,7 +47,11 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, onMoveOutcome, role, members } = ctx;
+
+  /** Per-world-session cache of asset metadata for VFX resolution (never bytes). Module
+   * scope, so it survives an `$effect` re-run and warms are never re-fetched needlessly. */
+  const vfxAssetCache = new AssetMetaCache();
 
   // Live render-budget signals are Svelte-OWNED markup attributes (never an effect writer):
   // any re-render carries them, and there is exactly one path that can produce them.
@@ -140,6 +144,7 @@
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
     let offEmote: (() => void) | null = null;
+    let offVfx: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
@@ -162,6 +167,11 @@
         selectedTokens: () => ctx.tokenSelection.ids,
         performance: () => ctx.performance.current,
         onStats: (s) => ctx.performance.recordStats(s),
+        vfxAssets: (id) => {
+          const meta = vfxAssetCache.get(id);
+          return meta ? resolveVfxSource(meta, assets) : null;
+        },
+        onVfxChanged: (count) => { host.dataset.vfxCount = String(count); },
         onDerivedApplied: (input) => {
           host.dataset.sceneDerived = "1";
           host.dataset.visionMode = input.mode;
@@ -326,6 +336,14 @@
           .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
           .sort()
           .join(";");
+        // Warm the metadata cache for every emitter's asset proactively, then re-run the VFX
+        // reconcile once each warm settles: the store-commit reconcile that would resolve the
+        // emission ran against a COLD cache (the warm is an out-of-band fetch), so without
+        // the re-projection the emitter would never appear until an unrelated commit.
+        for (const t of sceneTokens) {
+          const eff = resolveTokenActor(t, documents);
+          if (eff?.vfx?.enabled) void vfxAssetCache.warm(eff.vfx.asset).then(() => e.reapplyVfx());
+        }
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
         // e2e assertion can confirm the authored background reached the render layer
@@ -351,6 +369,20 @@
         e.addEmote(m.token, m.emote);
         host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
+      // Relayed VFX one-shots (incl. our own echo) play through the engine. Warm the asset's
+      // metadata BEFORE calling engine.playVfx so the render layer's own synchronous
+      // vfxAssets(id) lookup always hits on this exact arrival — a cold cache would otherwise
+      // fail the node closed for the FIRST one-shot of any asset a client has never seen.
+      offVfx = vfx.onVfx((m) => {
+        void vfxAssetCache.warm(m.asset).then(() => {
+          e.playVfx({
+            scene: m.scene, asset: m.asset, x: m.x, y: m.y,
+            scale: m.scale ?? undefined, rotation: m.rotation ?? undefined,
+            durationMs: m.durationMs ?? undefined, sound: m.sound ?? undefined,
+            elevation: m.elevation ?? undefined, id: m.id,
+          });
+        });
+      });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
       // receives via `WorldSession.moveRequest`'s resolution.
@@ -359,8 +391,13 @@
       });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
-      // Re-reconcile explicitly so a replaced/deleted background re-resolves.
-      offAsset = onAssetChanged(() => e.reconcileNow());
+      // Re-reconcile explicitly so a replaced/deleted background re-resolves. The VFX
+      // metadata cache is invalidated the same way: a replaced animated asset derives a NEW
+      // grid sheet, and the stale SheetMeta would slice it with the old geometry.
+      offAsset = onAssetChanged((m) => {
+        vfxAssetCache.invalidate(m.uuid);
+        e.reconcileNow();
+      });
       observer = new ResizeObserver(() => {
         e.setViewport(host.clientWidth, host.clientHeight);
       });
@@ -383,6 +420,7 @@
       offGrid?.();
       offPing?.();
       offEmote?.();
+      offVfx?.();
       offMoveOutcome?.();
       offAsset?.();
       offViewed?.();

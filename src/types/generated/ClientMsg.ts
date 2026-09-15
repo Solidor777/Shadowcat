@@ -356,4 +356,42 @@ request_id: string,
 /**
  * The instance to reset.
  */
-child_id: string, };
+child_id: string, } | { "type": "play_vfx", 
+/**
+ * Scene the effect plays on (must grant the sender READ).
+ */
+scene: string, 
+/**
+ * The spritesheet or animated-source asset id.
+ */
+asset: string, 
+/**
+ * Scene-coordinate x.
+ */
+x: number, 
+/**
+ * Scene-coordinate y.
+ */
+y: number, 
+/**
+ * Uniform scale multiplier; `None` = the asset's native scale (1).
+ */
+scale?: number, 
+/**
+ * Rotation in degrees; `None` = unrotated.
+ */
+rotation?: number, 
+/**
+ * Playback duration cap in ms; `None` = one loop of the asset.
+ */
+duration_ms?: number, 
+/**
+ * Paired sound asset id; no consumer plays it yet — carried through to
+ * `ServerMsg::Vfx` untouched until an audio integration wires `AudioApi.playOneShot`
+ * to it.
+ */
+sound?: string, 
+/**
+ * Elevation the effect plays at; the render layer filters by the viewed level.
+ */
+elevation?: number, };

@@ -1346,6 +1346,64 @@ test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, dro
   expect(got[0].scene).toBe("sceneB");
 });
 
+test("playVfx forwards to WsClient.playVfx; onVfx fires only for the viewed scene; a disconnected session no-ops", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneId = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+
+  session.playVfx({ scene: sceneId, asset: "a1", x: 3, y: 4 });
+  const frame = sent.find((m) => m.type === "play_vfx");
+  expect(frame).toBeTruthy();
+  expect(frame!.scene).toBe(sceneId);
+  expect(frame!.asset).toBe("a1");
+  expect(frame!.x).toBe(3);
+  expect(frame!.y).toBe(4);
+
+  const got: Array<{ scene: string; id: string }> = [];
+  session.onVfx((m) => got.push(m));
+  const blank = { scale: null, rotation: null, duration_ms: null, sound: null, elevation: null };
+  push({ type: "vfx", scene: sceneId, user: "u9", asset: "a1", x: 1, y: 2, id: "fx-1", ...blank });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].id).toBe("fx-1");
+  push({ type: "vfx", scene: "some-other-scene", user: "u9", asset: "a1", x: 1, y: 2, id: "fx-2", ...blank });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(1); // a frame for another scene is dropped
+
+  // Disconnected: no WsClient exists yet, so playVfx is a silent no-op (never a throw).
+  const offline = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  expect(() => offline.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 })).not.toThrow();
+});
+
+test("onVfx cross-scene guard: a GM roaming scene B sees one-shots for B, drops one-shots for A", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB");
+
+  const got: Array<{ scene: string }> = [];
+  session.onVfx((m) => got.push(m));
+  const blank = { scale: null, rotation: null, duration_ms: null, sound: null, elevation: null };
+
+  push({ type: "vfx", scene: sceneA, user: "u9", asset: "a1", x: 1, y: 2, id: "fx-a", ...blank }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "vfx", scene: "sceneB", user: "u1", asset: "a1", x: 3, y: 4, id: "fx-b", ...blank }); // the GM's own viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].scene).toBe("sceneB");
+});
+
 test("Welcome warns (but still enters the world) when an enabled id is not installed", async () => {
   const core = await import("@shadowcat/core");
   vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "missing-mod", validators_enabled: false }]);

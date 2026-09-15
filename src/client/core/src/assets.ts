@@ -5,8 +5,10 @@ import type { Asset } from "@shadowcat/types";
  * the bytes behind a URL. */
 export type AssetOp = "created" | "replaced" | "moved" | "deleted";
 
-/** A derivative size class servable via `?variant=`: `thumb` (≤128px) or `preview` (≤512px). */
-export type AssetVariant = "thumb" | "preview";
+/** A derivative servable via `?variant=`: `thumb` (≤128px) or `preview` (≤512px) size classes,
+ * or `sheet` (the server-derived grid sheet, present only for an animated source whose
+ * `AssetMeta.sheet` is set). */
+export type AssetVariant = "thumb" | "preview" | "sheet";
 
 /** An out-of-band asset mutation notice; carries no seq. Shared by
  * `AssetResolver.onAssetChanged` and `WsClientHandlers.onAssetChanged` — both consume the
@@ -205,6 +207,7 @@ export class AssetResolver {
    *     original_byte_size: 1n,
    *     original_retained: false,
    *     conversion_note: null,
+   *     sheet: null,
    *   },
    * ]);
    * ```

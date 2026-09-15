@@ -1590,3 +1590,59 @@ describe("WsClient", () => {
     });
   });
 });
+
+describe("WsClient VFX frames", () => {
+  it("a vfx server frame invokes onVfx with every field mapped (incl. duration_ms → durationMs)", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const received: unknown[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { onCommand: () => {}, onVfx: (m) => received.push(m) },
+    });
+    await client.start();
+    await flush();
+    onMessage(
+      JSON.stringify({
+        type: "vfx", scene: "s1", user: "u1", asset: "a1", x: 1, y: 2,
+        scale: 2, rotation: 90, duration_ms: 500, sound: "snd1", elevation: 10, id: "fx-1",
+      }),
+    );
+    await flush();
+    expect(received).toEqual([
+      { scene: "s1", user: "u1", asset: "a1", x: 1, y: 2, scale: 2, rotation: 90, durationMs: 500, sound: "snd1", elevation: 10, id: "fx-1" },
+    ]);
+    client.stop();
+  });
+
+  it("playVfx sends a play_vfx frame; omitted optionals stay absent (never null)", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d: string) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    await flush();
+    client.playVfx({ scene: "s1", asset: "a1", x: 1, y: 2 });
+    const frame = JSON.parse(sent.find((s) => JSON.parse(s).type === "play_vfx")!);
+    expect(frame).toEqual({
+      type: "play_vfx", scene: "s1", asset: "a1", x: 1, y: 2,
+      // JSON.stringify drops every undefined optional — the wire shape a
+      // `#[serde(default)]` Rust field expects (absent, never null).
+      scale: undefined, rotation: undefined, duration_ms: undefined, sound: undefined, elevation: undefined,
+    });
+    expect("scale" in frame).toBe(false);
+    expect("duration_ms" in frame).toBe(false);
+    client.playVfx({ scene: "s1", asset: "a1", x: 1, y: 2, scale: 2, rotation: 45, durationMs: 500, sound: "snd1", elevation: 5 });
+    const full = JSON.parse(sent.filter((s) => JSON.parse(s).type === "play_vfx")[1]);
+    expect(full).toEqual({
+      type: "play_vfx", scene: "s1", asset: "a1", x: 1, y: 2,
+      scale: 2, rotation: 45, duration_ms: 500, sound: "snd1", elevation: 5,
+    });
+    client.stop();
+  });
+});

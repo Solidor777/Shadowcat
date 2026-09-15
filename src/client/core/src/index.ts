@@ -37,8 +37,8 @@ export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from 
 export { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
-export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT } from "./contributions";
-export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta } from "./contributions";
+export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, SCENE_TOOL_CONTRACT } from "./contributions";
+export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, SceneToolMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
@@ -57,6 +57,7 @@ export type {
   MoveVisionSample,
   MoveLightSample,
   MoveStream,
+  VfxNotice,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,
@@ -119,6 +120,7 @@ export type {
 } from "./assets";
 export {
   listAssets,
+  getAssetMeta,
   uploadAsset,
   replaceAsset,
   deleteAsset,
@@ -131,6 +133,9 @@ export {
   deleteAssetFolder,
 } from "./asset-rest";
 export type { AssetQuery } from "./asset-rest";
+export { AssetMetaCache } from "./asset-meta";
+export { resolveVfxSource } from "./vfx";
+export type { VfxPlayRequest, VfxOneShotRequest, ResolvedVfxSource } from "./vfx";
 export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from "./asset-upload";
 export type { ChunkedUploadOptions } from "./asset-upload";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";

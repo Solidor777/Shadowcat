@@ -27,6 +27,7 @@ function asset(id: string, version: number): Asset {
     original_byte_size: 1n,
     original_retained: false,
     conversion_note: null,
+    sheet: null,
   };
 }
 

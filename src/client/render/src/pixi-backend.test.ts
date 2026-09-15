@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from "vitest";
-import { Container } from "pixi.js";
+import { AnimatedSprite, Assets, Container, Texture } from "pixi.js";
 import type { Application } from "pixi.js";
 import { PixiBackend } from "./pixi-backend";
 import type { LightingFrame } from "./lighting";
@@ -451,6 +451,186 @@ describe("PixiBackend.updateTokenFx", () => {
   });
 });
 
+interface VfxNodeLike {
+  /** Mirror of `VfxRenderNode.visual` — read to assert the current frame. */
+  visual: AnimatedSprite;
+  /** Mirror of `VfxRenderNode.anim` — read to assert load state and per-frame timings. */
+  anim: { frameMs: number[]; loop: boolean; elapsedMs: number; frameCount: number | null };
+}
+
+/** Reads the backend's private `vfxNodes` map (no public accessor exists; the tests pin the
+ * playback state the backend actually drives).
+ * @param backend A `PixiBackend`; only the private map is read.
+ * @returns The live `vfxNodes` map. */
+function vfxNodesOf(backend: PixiBackend): Map<string, VfxNodeLike> {
+  return (backend as unknown as { vfxNodes: Map<string, VfxNodeLike> }).vfxNodes;
+}
+
+describe("PixiBackend VFX playback", () => {
+  test("a spritesheet source loads the atlas image AND the sidecar JSON, honoring its per-frame durations", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const sheetJson = {
+      frames: {
+        f0: { frame: { x: 0, y: 0, w: 1, h: 1 }, duration: 250 },
+        f1: { frame: { x: 0, y: 0, w: 1, h: 1 } }, // no duration: the 100ms default applies
+      },
+      animations: { default: ["f0", "f1"] },
+      meta: {},
+    };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(sheetJson), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { kind: "sheet", imageUrl: "/atlas.png", sheetUrl: "/atlas.json", animation: "default" },
+      loop: true, anchor: "point",
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("oneshot:1")!.anim.frameCount).toBe(2));
+    expect(loadSpy).toHaveBeenCalledWith({ src: "/atlas.png", parser: "loadTextures" });
+    expect(fetchMock).toHaveBeenCalledWith("/atlas.json");
+    const node = vfxNodesOf(backend).get("oneshot:1")!;
+    expect(node.anim.frameMs).toEqual([250, 100]);
+    // 150ms in: still frame 0 under the sidecar's 250ms first frame (the uniform 100ms
+    // default would already have advanced to frame 1).
+    backend.tickVfx(150, () => {});
+    expect(node.visual.currentFrame).toBe(0);
+    vi.unstubAllGlobals();
+    loadSpy.mockRestore();
+  });
+
+  test("tickVfx advances the frame index by per-frame timings", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("emitter:t1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/fx.webp", rows: 1, cols: 2, frameMs: [100, 200] },
+      loop: true, anchor: "token", token: "t1",
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("emitter:t1")!.anim.frameCount).toBe(2));
+    const node = vfxNodesOf(backend).get("emitter:t1")!;
+    backend.tickVfx(150, () => {});
+    expect(node.visual.currentFrame).toBe(1);
+    backend.tickVfx(150, () => {}); // 300ms: wraps to frame 0 of the 300ms loop
+    expect(node.visual.currentFrame).toBe(0);
+    loadSpy.mockRestore();
+  });
+
+  test("a completed non-looping node fires onDone exactly once, on the crossing tick only", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/fx.webp", rows: 1, cols: 2, frameMs: [100, 100] },
+      loop: false, anchor: "point",
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("oneshot:1")!.anim.frameCount).toBe(2));
+    const done: string[] = [];
+    backend.tickVfx(150, (id) => done.push(id)); // 150ms < 200ms total: not yet
+    expect(done).toEqual([]);
+    backend.tickVfx(100, (id) => done.push(id)); // 250ms: crosses the 200ms total
+    expect(done).toEqual(["oneshot:1"]);
+    backend.tickVfx(100, (id) => done.push(id)); // already fired: no repeat
+    expect(done).toEqual(["oneshot:1"]);
+    loadSpy.mockRestore();
+  });
+
+  test("removeVfx destroys the node; an unknown id is a no-op", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/fx.webp", rows: 1, cols: 2 },
+      loop: false, anchor: "point",
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("oneshot:1")!.anim.frameCount).toBe(2));
+    backend.removeVfx("oneshot:1");
+    expect(vfxNodesOf(backend).has("oneshot:1")).toBe(false);
+    expect(() => backend.removeVfx("oneshot:nope")).not.toThrow();
+    loadSpy.mockRestore();
+  });
+
+  test("a startAtEnd node loads already frozen at its final frame and never fires onDone", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("emitter:t1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/fx.webp", rows: 1, cols: 2, frameMs: [100, 100] },
+      loop: false, anchor: "token", token: "t1", startAtEnd: true,
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("emitter:t1")!.anim.frameCount).toBe(2));
+    const node = vfxNodesOf(backend).get("emitter:t1")!;
+    // Born at the sequence's end: the LAST frame renders from the first tick, never a
+    // play-through.
+    expect(node.visual.currentFrame).toBe(1);
+    const done: string[] = [];
+    backend.tickVfx(500, (id) => done.push(id)); // far past the 200ms total: no completion
+    expect(done).toEqual([]);
+    expect(node.visual.currentFrame).toBe(1);
+    loadSpy.mockRestore();
+  });
+
+  test("a failed sidecar fetch destroys the node and surfaces completion on the next tick", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { kind: "sheet", imageUrl: "/atlas.png", sheetUrl: "/atlas.json", animation: "default" },
+      loop: false, anchor: "point",
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).has("oneshot:1")).toBe(false));
+    const done: string[] = [];
+    backend.tickVfx(16, (id) => done.push(id));
+    expect(done).toEqual(["oneshot:1"]); // the view drains its bookkeeping through this call
+    backend.tickVfx(16, (id) => done.push(id));
+    expect(done).toEqual(["oneshot:1"]); // drained once, not every tick
+    vi.unstubAllGlobals();
+    loadSpy.mockRestore();
+  });
+
+  test("a re-push without a tint clears the tint an earlier push assigned", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    const spec = {
+      layer: "vfx" as const, x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet" as const, url: "/fx.webp", rows: 1, cols: 2 },
+      loop: false, anchor: "point" as const,
+    };
+    backend.setVfx("oneshot:1", { ...spec, tint: 0xff0000 });
+    expect(vfxNodesOf(backend).get("oneshot:1")!.visual.tint).toBe(0xff0000);
+    backend.setVfx("oneshot:1", spec);
+    expect(vfxNodesOf(backend).get("oneshot:1")!.visual.tint).toBe(0xffffff);
+    loadSpy.mockRestore();
+  });
+
+  test("a same-source re-push with a flipped loop updates the flag WITHOUT reloading", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    const spec = {
+      layer: "vfx" as const, x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet" as const, url: "/fx.webp", rows: 1, cols: 2 },
+      loop: false, anchor: "point" as const,
+    };
+    backend.setVfx("emitter:t1", { ...spec, startAtEnd: true });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("emitter:t1")!.anim.frameCount).toBe(2));
+    // A reduced-motion toggle-off re-pushes the same source with the loop restored: the flag
+    // must land even though the source key is unchanged (a frozen emitter resumes looping).
+    backend.setVfx("emitter:t1", { ...spec, loop: true });
+    expect(vfxNodesOf(backend).get("emitter:t1")!.anim.loop).toBe(true);
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    loadSpy.mockRestore();
+  });
+});
+
 describe("frame cap and render scale", () => {
   test("setFrameCap forwards to ticker.maxFPS (0 = uncapped)", () => {
     const app = fakeApp({ ticker: { maxFPS: 0, add: vi.fn(), remove: vi.fn() } });
@@ -478,5 +658,6 @@ describe("frame cap and render scale", () => {
     const backend = headlessBackend(app);
     backend.render();
     expect(renderer.render).toHaveBeenCalledWith({ container: app.stage });
+
   });
 });

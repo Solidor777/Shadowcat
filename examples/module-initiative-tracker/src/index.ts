@@ -1,5 +1,5 @@
 // #region manifest
-import { PANEL_CONTRACT, type Module } from "@shadowcat/core";
+import { PANEL_CONTRACT, SCENE_TOOL_CONTRACT, type Module } from "@shadowcat/core";
 import InitiativePanel from "./InitiativePanel.svelte";
 
 /** One tracked combatant row: the actor's doc id, display name, and rolled score. */
@@ -66,7 +66,10 @@ const initiativeTracker: Module = {
   // #endregion manifest
   // #region register
   register(ctx) {
-    ctx.i18n.addMessages("en", { "example-initiative-tracker.panelLabel": "Initiative" });
+    ctx.i18n.addMessages("en", {
+      "example-initiative-tracker.panelLabel": "Initiative",
+      "example-initiative-tracker.toolLabel": "Mark point",
+    });
     ctx.contributions.contribute({
       id: "example-initiative-tracker:panel",
       contract: PANEL_CONTRACT,
@@ -75,6 +78,21 @@ const initiativeTracker: Module = {
       // just above — a key with no registered message falls back to its literal string (`I18n.t`).
       panel: { icon: "⚔️", labelKey: "example-initiative-tracker.panelLabel", gmOnly: true },
     });
+    // #region scene-tool
+    ctx.contributions.contribute({
+      id: "example-initiative-tracker:scene-tool",
+      contract: SCENE_TOOL_CONTRACT,
+      component: null,
+      sceneTool: {
+        id: "example-initiative-tracker",
+        icon: "🎯",
+        labelKey: "example-initiative-tracker.toolLabel",
+        onSceneClick: (x, y) => {
+          void ctx.hooks.emitInfo("example-initiative-tracker:scene-click", { x, y });
+        },
+      },
+    });
+    // #endregion scene-tool
   },
   // #endregion register
 };

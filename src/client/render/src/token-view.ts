@@ -1,7 +1,7 @@
 import { resolveTokenActor, resolveConditions, resolveTokenBox, resolveTokenVisual, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import type { ReadableDocuments, AssetResolver, WireDocument, FactionRegistryEngine, TokenEngine, AnimatedSource, RenderVisual, FootprintLookup, ConditionFx } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
-import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual } from "./types";
+import type { TokenNodeSpec, TokenFx, ResolvedAnimatedSource, ResolvedArtVisual, TokenTransform } from "./types";
 import { parseColor } from "./geometry";
 import { TokenAnimator, type MoveSample } from "./token-animator";
 import type { EasingMode, TokenTweenConfig } from "./easing";
@@ -191,6 +191,26 @@ export class TokenView {
    */
   specOf(id: string): TokenNodeSpec | undefined {
     return this.specs.get(id);
+  }
+
+  /** The token's CURRENT rendered (tweened) transform, or `undefined` when untracked — the
+   * live position mid-tween, unlike `specOf`'s doc-projected target. `VfxView`'s emitter
+   * reconcile reads this every tick so an effect anchored to a moving token tracks the SAME
+   * interpolation the token's own sprite renders, never a second one.
+   * @param id The token document id.
+   * @returns The current `{x,y,rotation}`, or `undefined` when `id` is untracked.
+   * @example
+   * ```ts
+   * import { TokenView, MockBackend } from "@shadowcat/render";
+   * import { AssetResolver, type ReadableDocuments } from "@shadowcat/core";
+   *
+   * declare const store: ReadableDocuments;
+   * const view = new TokenView(store, new AssetResolver(), new MockBackend());
+   * view.transformOf("token-1"); // undefined until reconcile() projects the token
+   * ```
+   */
+  transformOf(id: string): TokenTransform | undefined {
+    return this.animator.get(id);
   }
 
   /** Whether any currently-tracked token's resolved visual is tick-driven (an `"animated"` art

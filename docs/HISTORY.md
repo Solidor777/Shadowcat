@@ -3110,6 +3110,85 @@ Branch `m28-sandbox`, cut from `main`, executed from the approved plan
   trap's precise `FaultKind` is never masked; the slow-call budget is measured on the blocking
   thread; test fixtures use the non-engine `"item"` doc_type (an `"actor"` fixture with no
   engine body fails the structural pre-pass before any validator runs).
+### M24 · VFX ✅
+Branch `m24-vfx`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m24-vfx.md` (design:
+`docs/superpowers/specs/2026-09-11-m24-vfx-design.md`). Delivered:
+- **Server-derived grid sheet (no new codec):** any animated GIF/WebP upload
+  is decoded once at commit/reconvert time (never lazily) by
+  `data::asset::process::generate_grid_sheet` into `<uuid>.sheet.webp`
+  (frames tiled near-square, longest side capped at `SHEET_MAX_PX` = 4096,
+  lossless) plus a `<uuid>.sheet.json` sidecar; the geometry/timings persist
+  as flat `sheet_*` columns on the `assets` row (`AssetMeta.sheet`, ts-rs
+  `SheetMeta`), ride `SIBLING_SUFFIXES` through commit/replace/delete/
+  export-import, and serve membership-gated as `?variant=sheet` (never
+  regenerated on demand — a missing sibling 404s).
+- **Single-asset metadata seam:** `GET /api/assets/{uuid}/meta` +
+  `@shadowcat/core`'s `getAssetMeta`/`AssetMetaCache` — a client that never
+  listed the world's assets resolves one asset's pipeline metadata
+  synchronously before playing it as a VFX source (`Stage.svelte` warms
+  every emitter's asset and awaits the warm before a one-shot's first
+  lookup).
+- **Spritesheet pairing:** a PNG/WebP atlas + a PixiJS-format sidecar JSON
+  uploaded as two assets, paired by the explicit tag `vfx:sheet=<json-id>`
+  on the image; `assets::mutate::patch` validates the pairing (one tag max,
+  JSON in-world, `meta.image` names the image's `original_name`). The
+  sidecar's `animations` map must define `"default"` (the resolver never
+  reads its bytes). The asset browser gained the "Pair sheet" action and a
+  "VFX" quick-filter chip.
+- **Wire + authz:** `ClientMsg::PlayVfx`/`ServerMsg::Vfx` aux frames
+  (ScenePing shape — out-of-band, silent-drop on denial) with a separate
+  per-user `vfx_rate` bucket; `ws::vfx` shares bounds
+  (`MAX_GATE_WALK_COORD`, scale ≤ 8, duration ≤ 60 s) and authorization
+  (Gm/Player + scene READ; spectators refused) between the raw frame and
+  `/fx`. The `/fx <asset-id-or-name> @<token name>` chat command resolves
+  the asset (id, then case-insensitive `original_name` via
+  `Repository::asset_id_by_name`) and the token's center server-side on the
+  world's active scene, never oracles an unreadable token's existence, and
+  authors no message on success (a failure whispers a system notice via the
+  generalized `build_system_error_notice`).
+- **Render layer:** `"vfx"` core layer between `templates` and `lighting`
+  (below the fog `mask`); `VfxView` (the `PingView`/`EmoteView` pattern)
+  plays `EffectiveActor.vfx` emitters tracking the token's LIVE tweened
+  transform (`TokenView.transformOf` — never a second interpolation) and
+  transient one-shots with a 64-per-scene cap (oldest evicted);
+  `DisplayBackend`/`PixiBackend` gained `setVfx`/`removeVfx`/`tickVfx` with
+  per-frame durations (`computeVfxFrame`; spritesheet sidecar
+  `frames[key].duration` honored, 100 ms default); `VfxAnchor` placements
+  pinned (`below` footprint base / `token` center / `above` top edge,
+  z-order 0/1/2, all above the `tokens` layer). Reduced motion freezes
+  emitters on their last frame and skips one-shots; `PerformanceSettings.vfx`
+  off tears every node down (per-device, wired at integration).
+- **UI extension point + module:** `SCENE_TOOL_CONTRACT`
+  (`shadowcat.scene-tool`, `SceneToolMeta{id, icon, labelKey, onSceneClick}`)
+  — the scene-tools rail renders contributed tools through
+  `ToolController.activeContributedId` (parallel to the closed `ToolId`
+  union, mutually exclusive both directions); `@shadowcat/module-vfx`
+  contributes the FX tool + a launcher-only config panel (last-picked
+  asset/scale/sound in module-scoped state; inline asset pick on first
+  click otherwise). `EmissionEditor` gained the VFX-tag filter + preview.
+- **Decisions** (plan's Resolved design decisions, restated): contributed
+  tools get a parallel `activeContributedId`, never a widened `ToolId`;
+  tool config lives in a standard panel, not inline rail controls; the
+  sound picker filters `kind: "other"` (no audio kind exists yet);
+  fixtures split GIF (generated in-test) / WebP (committed);
+  `AssetMeta.sheet.frame_ms` stays snake_case Rust-side; the two "sheet"
+  discriminant keys (`kind` vs `type`) are the spec's own fixed shape;
+  pairing validation rides the existing `PATCH` route, no new route;
+  `/fx` resolves names against `Document.name` directly and refuses
+  target-less invocations with a whispered usage notice.
+- **Tests:** server pipeline (GIF + committed WebP fixture, 4096-px cap,
+  idempotent reconvert), flat-column round-trips incl. export→import,
+  pairing validation, `validate_bounds`/`vfx_permitted` truth tables, `/fx`
+  integration (success broadcast, whispered failures, no-oracle);
+  `resolveVfxSource` truth table; `VfxView` (emitter lifecycle, tween
+  tracking, anchors, 64-cap eviction, duration caps, reduced motion,
+  vfx-off teardown); `PixiBackend` playback (sidecar durations, tick
+  advance, once-only completion); engine/session/wire parity. The e2e spec
+  (`vfx.spec.ts`: emitter + FX-tool one-shot visible to GM and player, a
+  player's `vfx` toggle local-only) is WRITTEN and dispatcher-run — not
+  part of this branch's own gate history.
+
 
 ## Documentation campaign — completed sweeps
 

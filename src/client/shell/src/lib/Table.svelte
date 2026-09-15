@@ -146,6 +146,7 @@
     },
     panels,
     performance: performanceController,
+    vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     leaveWorld,
     logout: async () => {

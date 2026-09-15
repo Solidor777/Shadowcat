@@ -22,6 +22,7 @@ import { sheetActor } from "@shadowcat/module-sheet-actor";
 import { sheetItem } from "@shadowcat/module-sheet-item";
 import { sheetNote } from "@shadowcat/module-sheet-note";
 import { sheetTable } from "@shadowcat/module-sheet-table";
+import { vfx } from "@shadowcat/module-vfx";
 import { SHEET_FALLBACK_CONTRACT, sheetContract } from "@shadowcat/core";
 
 // Every panel-contributing module in `App`'s default set, registered in the
@@ -33,7 +34,7 @@ describe("default module set — default docked panel", () => {
   it("chat:panel (order 0) is the first shadowcat.panel contribution across the full default module set", () => {
     const contributions = new ContributionRegistry();
     const ctx = { contributions, hooks: { on: () => () => {} } } as never;
-    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, notes, tables]) {
+    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, notes, tables, vfx]) {
       m.register(ctx);
     }
     const list = contributions.contributionsFor(PANEL_CONTRACT);
@@ -43,7 +44,7 @@ describe("default module set — default docked panel", () => {
   it("the built default layout docks exactly chat:panel; every other panel starts closed in the launcher", () => {
     const contributions = new ContributionRegistry();
     const ctx = { contributions, hooks: { on: () => () => {} } } as never;
-    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, notes, tables]) {
+    for (const m of [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, notes, tables, vfx]) {
       m.register(ctx);
     }
     const regs = contributions.contributionsFor(PANEL_CONTRACT).map((c) => ({ id: c.id, placement: c.panel?.defaultPlacement }));
@@ -56,7 +57,7 @@ describe("default module set — default docked panel", () => {
     expect(docked).toEqual(["chat:panel"]);
     expect(layout.expanded.minimized).toEqual([]);
     expect(layout.compact.order.sort()).toEqual(
-      ["chat:panel", "asset-browser:panel", "actors:panel", "factions:panel", "conditions:panel", "combat-tracker:panel", "game-settings:panel", "settings:panel", "notes:panel", "tables:panel"].sort(),
+      ["chat:panel", "asset-browser:panel", "actors:panel", "factions:panel", "conditions:panel", "combat-tracker:panel", "game-settings:panel", "settings:panel", "notes:panel", "tables:panel", "vfx:panel"].sort(),
     );
   });
 });

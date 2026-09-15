@@ -634,6 +634,20 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       truncated: null,
     },
     evicted: { type: "evicted", user: null },
+    vfx: {
+      type: "vfx",
+      scene: "s",
+      user: "u",
+      asset: "a",
+      x: 0,
+      y: 0,
+      scale: null,
+      rotation: null,
+      duration_ms: null,
+      sound: null,
+      elevation: null,
+      id: "i",
+    },
   };
 
   for (const [type, frame] of Object.entries(minimalFrames)) {

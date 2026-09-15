@@ -44,6 +44,8 @@ import {
   type SceneSubscription,
   type PathResult,
   type MoveStream,
+  type VfxNotice,
+  type VfxPlayRequest,
   type SubscriptionHandle,
   type WireSearchHit,
   type ClientMsg,
@@ -186,6 +188,8 @@ export class WorldSession {
       emote: string;
     }) => void
   >();
+  /** `onVfx` subscriber set. */
+  #vfxListeners = new Set<(msg: VfxNotice) => void>();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
@@ -722,6 +726,40 @@ export class WorldSession {
     this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
   }
 
+  /** Subscribe to relayed VFX one-shots (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with each one-shot's scene, position, asset, sending user, and id.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function playVfxLocally(msg: VfxNotice): void;
+   * const off = session.onVfx(playVfxLocally);
+   * off();
+   * ```
+   */
+  onVfx(cb: (msg: VfxNotice) => void): () => void {
+    this.#vfxListeners.add(cb);
+    return () => this.#vfxListeners.delete(cb);
+  }
+
+  /** Broadcast a one-shot VFX playback request. No-op when disconnected. The server
+   * re-authorizes scene readability and world role (spectator refused) and drops an
+   * over-reaching send silently, so callers may offer this client-advisory only. The request
+   * carries an explicit `scene` (unlike `sendPing`/`sendEmote`'s auto-derived target): a
+   * caller may legitimately need to name a scene other than its own currently-viewed one (a
+   * portal effect plays at both ends of a teleport), so the caller supplies it, matching
+   * `pathfind`/`moveRequest`'s explicit-scene convention.
+   * @param req The one-shot request.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * session.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 });
+   * ```
+   */
+  playVfx(req: VfxPlayRequest): void {
+    this.#ws?.playVfx(req);
+  }
+
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
    * rejects immediately when there is no live transport.
    * @param scene The scene to path on.
@@ -1107,6 +1145,13 @@ export class WorldSession {
           // that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#emoteListeners) cb(msg);
+        },
+        onVfx: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a vfx
+          // one-shot broadcasts room-wide and must render only for recipients currently
+          // viewing that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#vfxListeners) cb(msg);
         },
       },
     });

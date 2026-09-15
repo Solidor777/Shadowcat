@@ -396,6 +396,9 @@ async fn handle_socket(
     let emote_rate = state.ws.emote_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
+    // Per-user VFX one-shot budget (shared across this user's connections) — a SEPARATE
+    // bucket from ping/emote/message, so a VFX burst cannot starve any other relay.
+    let vfx_rate = state.ws.vfx_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
     // and worlds — a preview's target and cached outcome are world-independent).
     let preview_client = state.ws.link_preview_client.clone();
@@ -581,6 +584,43 @@ async fn handle_socket(
                                         });
                                     }
                                 }
+                                Ok(ClientMsg::PlayVfx { scene, asset, x, y, scale, rotation, duration_ms, sound, elevation }) => {
+                                    // Out-of-band relay, same shape as `ScenePing`/`Emote`
+                                    // (silent drop on any denial — no error frame, so a
+                                    // non-reader never learns whether `scene` exists).
+                                    // Guard order: cheap rate check first (its own bucket —
+                                    // a VFX burst cannot starve ping/emote/message), then
+                                    // bounds (no I/O), then the authz lookup (one doc read).
+                                    let req = crate::ws::vfx::VfxRequest {
+                                        scene,
+                                        asset: asset.clone(),
+                                        x,
+                                        y,
+                                        scale,
+                                        rotation,
+                                        duration_ms,
+                                        sound: sound.clone(),
+                                        elevation,
+                                    };
+                                    if vfx_rate.check(user_id, now_millis(), 30)
+                                        && crate::ws::vfx::validate_bounds(&req)
+                                        && crate::ws::vfx::vfx_permitted(scene, &ctx, world_id, repo.as_ref()).await
+                                    {
+                                        room.broadcast_aux(ServerMsg::Vfx {
+                                            scene,
+                                            user: user_id,
+                                            asset,
+                                            x,
+                                            y,
+                                            scale,
+                                            rotation,
+                                            duration_ms,
+                                            sound,
+                                            elevation,
+                                            id: Uuid::new_v4(),
+                                        });
+                                    }
+                                }
                                 Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
                                     // Server-authoritative move execution. On success, broadcasts
                                     // MoveStream out-of-band to the room — no etx reply to the requester.
@@ -619,6 +659,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
@@ -630,7 +672,7 @@ async fn handle_socket(
         )
                                     .await
                                     {
-                                        Ok((cmd, pending)) => {
+                                        Ok(Some((cmd, pending))) => {
                                             if !pending.is_empty() {
                                                 if let Some(message_id) = crate::chat::command_message_id(&cmd) {
                                                     tokio::spawn(crate::chat::run_pending_enrichments(
@@ -650,6 +692,10 @@ async fn handle_socket(
                                                 }
                                             }
                                         }
+                                        // A successful `/fx`: no message document, no
+                                        // enrichment, no reply frame (the broadcast `vfx`
+                                        // echo IS the confirmation).
+                                        Ok(None) => {}
                                         Err(e) => {
                                             tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
                                             if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
@@ -672,6 +718,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,

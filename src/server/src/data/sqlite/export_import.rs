@@ -758,8 +758,9 @@ impl SqliteRepository {
                 "INSERT INTO assets \
                  (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
                   created_at, version, folder_id, width, height, has_alpha, animated, \
-                  original_content_type, original_byte_size, original_retained, conversion_note) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  original_content_type, original_byte_size, original_retained, conversion_note, \
+                  sheet_rows, sheet_cols, sheet_count, sheet_frame_ms, sheet_width, sheet_height) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(row.id.to_string())
             .bind(world.to_string())
@@ -779,6 +780,16 @@ impl SqliteRepository {
             .bind(meta.original_byte_size)
             .bind(i64::from(meta.original_retained))
             .bind(&meta.conversion_note)
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.rows)))
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.cols)))
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.count)))
+            .bind(
+                meta.sheet
+                    .as_ref()
+                    .map(|s| serde_json::to_string(&s.frame_ms).unwrap_or_default()),
+            )
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.width)))
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.height)))
             .execute(&mut *tx)
             .await?;
             // A bundle is untrusted input: its explicit tags pass the same rule

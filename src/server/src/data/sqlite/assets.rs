@@ -537,8 +537,9 @@ impl SqliteRepository {
             "INSERT INTO assets \
              (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
               created_at, version, folder_id, width, height, has_alpha, animated, \
-              original_content_type, original_byte_size, original_retained, conversion_note) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              original_content_type, original_byte_size, original_retained, conversion_note, \
+              sheet_rows, sheet_cols, sheet_count, sheet_frame_ms, sheet_width, sheet_height) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(a.id.to_string())
         .bind(a.world_id.to_string())
@@ -558,6 +559,17 @@ impl SqliteRepository {
         .bind(a.meta.original_byte_size)
         .bind(i64::from(a.meta.original_retained))
         .bind(&a.meta.conversion_note)
+        .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.rows)))
+        .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.cols)))
+        .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.count)))
+        .bind(
+            a.meta
+                .sheet
+                .as_ref()
+                .map(|s| serde_json::to_string(&s.frame_ms).unwrap_or_default()),
+        )
+        .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.width)))
+        .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.height)))
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -603,6 +615,22 @@ impl SqliteRepository {
                 original_byte_size: row.get("original_byte_size"),
                 original_retained: row.get::<i64, _>("original_retained") != 0,
                 conversion_note: row.get("conversion_note"),
+                sheet: {
+                    let dim32 = |v: Option<i64>| v.and_then(|n| u32::try_from(n).ok());
+                    dim32(row.get::<Option<i64>, _>("sheet_rows")).map(|rows| {
+                        crate::data::asset::process::SheetMeta {
+                            rows,
+                            cols: dim32(row.get::<Option<i64>, _>("sheet_cols")).unwrap_or(0),
+                            count: dim32(row.get::<Option<i64>, _>("sheet_count")).unwrap_or(0),
+                            frame_ms: row
+                                .get::<Option<String>, _>("sheet_frame_ms")
+                                .and_then(|s| serde_json::from_str(&s).ok())
+                                .unwrap_or_default(),
+                            width: dim32(row.get::<Option<i64>, _>("sheet_width")).unwrap_or(0),
+                            height: dim32(row.get::<Option<i64>, _>("sheet_height")).unwrap_or(0),
+                        }
+                    })
+                },
             },
         })
     }
@@ -646,6 +674,41 @@ impl SqliteRepository {
         asset.tags = tags;
         asset.derived_tags = derived;
         Ok(Some(asset))
+    }
+
+    /// See `Repository::asset_id_by_name`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.asset_id_by_name(uuid::Uuid::nil(), "no-such-asset").await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn asset_id_by_name(
+        &self,
+        world: Uuid,
+        name: &str,
+    ) -> Result<Option<Uuid>, DataError> {
+        let row = sqlx::query(
+            "SELECT id FROM assets WHERE world_id = ? AND LOWER(original_name) = LOWER(?) \
+             ORDER BY created_at LIMIT 1",
+        )
+        .bind(world.to_string())
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|r| {
+            Uuid::parse_str(&r.get::<String, _>("id"))
+                .map_err(|e| DataError::OpFailed(e.to_string()))
+        })
+        .transpose()
     }
 
     /// Swap the bytes behind a stable id: rewrites the served-file columns AND
@@ -705,6 +768,8 @@ impl SqliteRepository {
             "UPDATE assets SET storage_key = ?, content_type = ?, byte_size = ?, \
              width = ?, height = ?, has_alpha = ?, animated = ?, original_content_type = ?, \
              original_byte_size = ?, original_retained = ?, conversion_note = ?, \
+             sheet_rows = ?, sheet_cols = ?, sheet_count = ?, sheet_frame_ms = ?, \
+             sheet_width = ?, sheet_height = ?, \
              version = version + 1 \
              WHERE id = ? RETURNING version",
         )
@@ -719,6 +784,16 @@ impl SqliteRepository {
         .bind(meta.original_byte_size)
         .bind(i64::from(meta.original_retained))
         .bind(&meta.conversion_note)
+        .bind(meta.sheet.as_ref().map(|s| i64::from(s.rows)))
+        .bind(meta.sheet.as_ref().map(|s| i64::from(s.cols)))
+        .bind(meta.sheet.as_ref().map(|s| i64::from(s.count)))
+        .bind(
+            meta.sheet
+                .as_ref()
+                .map(|s| serde_json::to_string(&s.frame_ms).unwrap_or_default()),
+        )
+        .bind(meta.sheet.as_ref().map(|s| i64::from(s.width)))
+        .bind(meta.sheet.as_ref().map(|s| i64::from(s.height)))
         .bind(id.to_string())
         .fetch_optional(&self.pool)
         .await?

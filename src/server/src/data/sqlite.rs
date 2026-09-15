@@ -2579,6 +2579,12 @@ impl Repository for SqliteRepository {
         SqliteRepository::member_id_by_username(self, world, username).await
     }
 
+    async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
+        // Delegates to the inherent method of the same name (see `member_role`
+        // above for why this is not infinite recursion).
+        SqliteRepository::asset_id_by_name(self, world, name).await
+    }
+
     async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError> {
         match self.get_setting(&world_caps_key(world)).await? {
             Some(json) => Ok(serde_json::from_str(&json)?),

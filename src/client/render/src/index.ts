@@ -11,6 +11,7 @@ export { RegionView } from "./region-view";
 export { LightView } from "./light-view";
 export { PingView, type PingRing } from "./ping-view";
 export { EmoteView, type EmoteGlyph } from "./emote-view";
+export { VfxView, vfxAnchorZIndex } from "./vfx-view";
 export { LayerRegistry, CORE_LAYERS, type CoreLayerId } from "./layers";
 export { Camera } from "./camera";
 export { Grid, type GridKind, type GridSpec, type DiagonalRule } from "./grid";

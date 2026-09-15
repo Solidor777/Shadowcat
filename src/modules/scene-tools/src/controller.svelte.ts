@@ -3,7 +3,7 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type SceneToolMeta } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
@@ -230,6 +230,14 @@ export class ToolController {
   /** The currently activated tool, or `null` when back to the plain camera (`toggle`'s
    * re-select-clears rule). */
   active = $state<ToolId | null>(null);
+  /** The currently-active CONTRIBUTED tool's id (a `SceneToolMeta.id`, from any module's
+   * `SCENE_TOOL_CONTRACT` registration), or `null`. Deliberately a PARALLEL field to `active`
+   * rather than widening `ToolId` to `string | null` — every existing `active === "..."` branch
+   * elsewhere in this module and in `ToolRail.svelte` stays exhaustively typed against the
+   * closed built-in set; a contributed tool is a genuinely different activation path (no
+   * built-in mode controls of its own). Mutually exclusive with `active`: `toggle` and
+   * `toggleContributed` each clear the other. */
+  activeContributedId = $state<string | null>(null);
   /** The token art the place tool stamps; chosen in the asset picker. */
   selectedAsset = $state<string | null>(null);
   /** Draw-tool shape mode + stroke color. */
@@ -304,9 +312,45 @@ export class ToolController {
   toggle(id: ToolId): void {
     // Deactivate the outgoing tool before updating `active` so it can still read state.
     if (this.active) this.#tools[this.active].onDeactivate?.();
+    this.activeContributedId = null;
     this.editingEntity = null; // an edit selection never survives a tool switch
     this.active = this.active === id ? null : id;
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
+  }
+
+  /** Toggle a contributed scene tool: re-selecting the active one clears it (back to camera),
+   * exactly like `toggle`'s built-in re-select-clears rule. Installs a minimal `SceneTool`
+   * whose `onPointerDown` forwards the click's scene point to `meta.onSceneClick` and claims
+   * the gesture (returns `true`, the `makePingTool` precedent) — a contributed tool has no
+   * drag/preview behavior of its own; `SceneToolMeta` carries only a click handler.
+   * @param meta The contributed tool's metadata.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * declare const meta: SceneToolMeta;
+   * controller.toggleContributed(meta);
+   * ```
+   */
+  toggleContributed(meta: SceneToolMeta): void {
+    if (this.active) {
+      this.#tools[this.active].onDeactivate?.();
+      this.active = null;
+    }
+    this.editingEntity = null;
+    if (this.activeContributedId === meta.id) {
+      this.activeContributedId = null;
+      this.ctx.scene.setActiveTool(null);
+      return;
+    }
+    this.activeContributedId = meta.id;
+    this.ctx.scene.setActiveTool({
+      onPointerDown(p: Point): boolean {
+        meta.onSceneClick(p.x, p.y);
+        return true;
+      },
+      onPointerMove(): void {},
+      onPointerUp(): void {},
+    });
   }
 }
 

@@ -497,6 +497,25 @@ pub trait Repository: Send + Sync {
         username: &str,
     ) -> Result<Option<Uuid>, DataError>;
 
+    /// The first asset in `world` whose `original_name` case-insensitively equals `name`, or
+    /// `None`. Ties (two assets sharing a name) resolve to the earliest-created — an
+    /// under-specified but stable pick; asset names are not enforced unique.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.asset_id_by_name(uuid::Uuid::nil(), "no-such-asset").await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError>;
+
     /// A world's default capability grants (additive over the per-document
     /// `DocRole` floor). Empty when unset.
     ///

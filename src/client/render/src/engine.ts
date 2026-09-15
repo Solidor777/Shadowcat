@@ -1,5 +1,5 @@
 import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
 import { wrapDirtyTracking } from "./dirty-backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
@@ -21,6 +21,7 @@ import { RegionView } from "./region-view";
 import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
 import { EmoteView } from "./emote-view";
+import { VfxView } from "./vfx-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
@@ -112,6 +113,14 @@ export interface RenderEngineOpts {
    * selection change carries no store commit, so the host must call
    * {@link RenderEngine.reapplyTokenSelection} to re-project. */
   selectedTokens?: () => ReadonlySet<string>;
+  /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
+   * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
+   * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
+   * playback at all). */
+  vfxAssets?: (id: string) => ResolvedVfxSource | null;
+  /** Called whenever the live VFX node count changes (host observability hook) — the ONLY way
+   * an e2e/dev-tools surface can confirm a VFX node is live without inspecting WebGL pixels. */
+  onVfxChanged?: (count: number) => void;
   /** Live per-device render budget (Stage → `() => ctx.performance.current`). Absent ⇒
    * `PRESETS.quality` with `idleSkip: false` (legacy/test callers keep today's unconditional
    * per-tick render). A getter, like `viewedSceneId` — read fresh every tick, never cached. */
@@ -181,6 +190,11 @@ export class RenderEngine implements SceneToolHost {
   private pingsActive = false;
   /** Transient emote-glyph state, ticked each frame; drives `DisplayBackend.drawEmotes`. */
   private readonly emotes = new EmoteView();
+  /** Doc→VFX reconciler + one-shot player; tracks emitters via `tokens.transformOf`/`specOf`. */
+  private readonly vfxView: VfxView;
+  /** Last count reported to `onVfxChanged`, so the host is notified only on an actual change
+   * (mirrors `pingsActive`/`emotesActive`'s change-gated redraw pattern). */
+  private lastVfxCount = 0;
   /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
   private emotesActive = false;
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
@@ -365,6 +379,18 @@ export class RenderEngine implements SceneToolHost {
     this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
     this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => this.perf().tokenFx, () => this.perf().reducedMotion);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
+    this.vfxView = new VfxView(
+      opts.store,
+      this.backend,
+      this.viewedScene,
+      (id) => opts.vfxAssets?.(id) ?? null,
+      (id) => this.tokens.transformOf(id),
+      (id) => this.tokens.specOf(id),
+      // The SAME per-tick read-fresh budget seam `TokenView` already uses — one perf source,
+      // never a second getter pair for the same value.
+      () => this.perf().vfx,
+      () => this.perf().reducedMotion,
+    );
     this.drawings = new DrawingView(opts.store, this.backend, this.viewedScene);
     this.templates = new TemplateView(opts.store, this.backend, this.viewedScene);
     this.walls = new WallView(opts.store, this.backend, this.viewedScene);
@@ -403,6 +429,7 @@ export class RenderEngine implements SceneToolHost {
     this.applyCamera();
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.vfxView.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
@@ -411,6 +438,7 @@ export class RenderEngine implements SceneToolHost {
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
+      this.vfxView.reconcile();
       this.drawings.reconcile();
       this.templates.reconcile();
       this.walls.reconcile();
@@ -420,6 +448,12 @@ export class RenderEngine implements SceneToolHost {
     });
     this.backend.startTicker((dt) => {
       this.tokens.tick(dt);
+      this.vfxView.tick(dt);
+      const vfxCount = this.vfxView.count();
+      if (vfxCount !== this.lastVfxCount) {
+        this.lastVfxCount = vfxCount;
+        this.opts.onVfxChanged?.(vfxCount);
+      }
       this.lighting.tick(dt);
       this.tickVisionSweep(dt);
       this.tickLightSweep(dt);
@@ -456,12 +490,19 @@ export class RenderEngine implements SceneToolHost {
       // the next committed frame / document commit (which may never come).
       if (lastPerf !== null && perf.lighting !== lastPerf.lighting) this.applyCommittedLighting();
       if (lastPerf !== null && perf.tokenFx !== lastPerf.tokenFx) this.tokens.reconcile();
+      // Same live-flip shape for the VFX budget: a `vfx` knob toggle re-runs the view's
+      // reconcile on this tick (it reads the flag fresh and tears every node down when off).
+      if (lastPerf !== null && perf.vfx !== lastPerf.vfx) this.vfxView.reconcile();
+      // A reduced-motion flip likewise re-derives every emitter's loop/freeze state on this
+      // tick (the backend's source-key short-circuit lets the loop flag through — see
+      // `PixiBackend.setVfx`).
+      if (lastPerf !== null && perf.reducedMotion !== lastPerf.reducedMotion) this.vfxView.reconcile();
       if (dt > 0) {
         const sample = 1000 / dt;
         const alpha = 2 / 31; // EMA over ~30 ticks
         this.statsFpsEma = this.statsFpsEma === null ? sample : alpha * sample + (1 - alpha) * this.statsFpsEma;
       }
-      const animationsInFlight = this.tokens.hasAnimatedVisual();
+      const animationsInFlight = this.tokens.hasAnimatedVisual() || this.vfxView.count() > 0;
       if (!perf.idleSkip || this.dirty || animationsInFlight) {
         // `globalThis.performance` is the ambient Web Performance API (a monotonic clock), not a
         // settings object — the explicit `globalThis.` prefix keeps it unshadowable.
@@ -726,6 +767,7 @@ export class RenderEngine implements SceneToolHost {
     }
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.vfxView.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
@@ -1295,6 +1337,22 @@ export class RenderEngine implements SceneToolHost {
     this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell());
   }
 
+  /** Forward a `ServerMsg::Vfx`-sourced one-shot request to `VfxView.play` — the exact
+   * `addPing`/`addEmote` delegation shape, one level removed (the view itself owns eviction
+   * and duration bookkeeping).
+   * @param req The one-shot request, including the server-broadcast `id`.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0, id: "one-shot-1" });
+   * ```
+   */
+  playVfx(req: VfxOneShotRequest): void {
+    this.vfxView.play(req);
+  }
+
   /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.
    * Coupling: notifies the token animator so tween durations are recalculated against the new
    * grid's per-step world distance (`Grid.worldUnitsPerCell`) — not `spec.size` directly, which
@@ -1785,6 +1843,23 @@ export class RenderEngine implements SceneToolHost {
   reconcileNow(): void {
     this.reconciler.reconcile();
     this.tokens.reconcile(); // re-resolve token images too (AssetChanged path)
+  }
+
+  /** Re-run `vfxView.reconcile()` after an asset-metadata warm settles. A warm completing
+   * carries no store commit (it is an out-of-band HTTP fetch), so the reconcile that would
+   * resolve an emitter's `VfxEmission` has already run against a COLD `vfxAssets` cache and
+   * failed the node closed — the same client-local re-projection shape `reapplyFootprints`
+   * exists for (a footprints frame likewise carries no store commit).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyVfx();
+   * ```
+   */
+  reapplyVfx(): void {
+    this.vfxView.reconcile();
   }
 
   /** Push the camera transform to the backend and redraw the grid for the new view.

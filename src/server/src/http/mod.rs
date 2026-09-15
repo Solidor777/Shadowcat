@@ -264,6 +264,7 @@ pub async fn router(state: AppState) -> Router {
                 .delete(assets::delete)
                 .patch(assets::mutate::patch),
         )
+        .route("/api/assets/{uuid}/meta", get(assets::meta))
         .route(
             "/api/assets/{uuid}/replace",
             post(assets::replace).layer(DefaultBodyLimit::disable()),

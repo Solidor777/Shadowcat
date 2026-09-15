@@ -45,6 +45,11 @@ export function wrapDirtyTracking(backend: DisplayBackend, onDirty: () => void):
     setToken: (id, spec) => { onDirty(); backend.setToken(id, spec); },
     removeToken: (id) => { onDirty(); backend.removeToken(id); },
     tickTokenAnimations: (dtMs) => backend.tickTokenAnimations(dtMs),
+    setVfx: (id, spec) => { onDirty(); backend.setVfx(id, spec); },
+    removeVfx: (id) => { onDirty(); backend.removeVfx(id); },
+    // Same exclusion as `tickTokenAnimations` (called unconditionally every tick by
+    // `VfxView.tick`; `RenderEngine`'s `animationsInFlight` check covers the redraw need).
+    tickVfx: (dtMs, onDone) => backend.tickVfx(dtMs, onDone),
     setShape: (id, spec) => { onDirty(); backend.setShape(id, spec); },
     removeShape: (id) => { onDirty(); backend.removeShape(id); },
     drawOverlay: (shapes) => { onDirty(); backend.drawOverlay(shapes); },

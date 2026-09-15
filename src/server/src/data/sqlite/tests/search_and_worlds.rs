@@ -1716,6 +1716,14 @@ async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_
             original_byte_size: 20,
             original_retained: true,
             conversion_note: None,
+            sheet: Some(crate::data::asset::process::SheetMeta {
+                rows: 2,
+                cols: 2,
+                count: 3,
+                frame_ms: vec![100, 200, 300],
+                width: 8,
+                height: 8,
+            }),
         },
     })
     .await
@@ -1770,6 +1778,18 @@ async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_
     );
     assert_eq!(got.version, 3);
     assert_eq!((got.meta.width, got.meta.height), (Some(64), Some(32)));
+    assert_eq!(
+        got.meta.sheet,
+        Some(crate::data::asset::process::SheetMeta {
+            rows: 2,
+            cols: 2,
+            count: 3,
+            frame_ms: vec![100, 200, 300],
+            width: 8,
+            height: 8,
+        }),
+        "the sheet's flat columns survive export → import"
+    );
     assert!(got.meta.has_alpha);
     assert_eq!(got.meta.original_content_type, "image/png");
     assert!(
