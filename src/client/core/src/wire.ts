@@ -1158,6 +1158,13 @@ export type ServerMsg =
       type: "evicted";
       /** `null` = every connection in the room; set = that user only. */
       user: string | null;
+    }
+  | {
+      /** An `audio_transport` op was refused. Addressed to the originating connection only;
+       * never broadcast. Carries no `request_id` (see the `ClientMsg` variant's own doc). */
+      type: "audio_error";
+      /** Player-presentable failure text. */
+      reason: string;
     };
 
 // Unannotated impl const — see the module-level note above the `z` import. This is the
@@ -1347,6 +1354,7 @@ export const serverMsgSchemaImpl = z.discriminatedUnion("type", [
     reason: mergeErrorKindSchemaImpl,
   }),
   z.object({ type: z.literal("evicted"), user: z.string().nullable() }),
+  z.object({ type: z.literal("audio_error"), reason: z.string() }),
 ]);
 /** Validator for every frame the server sends, discriminated by `type`. */
 export const ServerMsgSchema: z.ZodType<ServerMsg, z.ZodTypeDef, unknown> = serverMsgSchemaImpl;
@@ -1402,6 +1410,105 @@ export type WireResourceOp =
       /** The value to set. */
       value: number;
     };
+
+/** One audio-transport operation (`ClientMsg::AudioTransport.op`). Mirrors
+ * `ws::protocol::AudioOp` exactly (a discriminated union on `type`). */
+export type WireAudioOp =
+  | {
+      /** Start a new playing entry, from a playlist track or a direct asset. */
+      type: "play";
+      /** Source playlist, or `null` for a direct asset play. */
+      playlist: string | null;
+      /** Direct asset id; required when `playlist` is `null`, ignored otherwise unless the
+       * playlist resolution should be overridden (rare — normally left `null`). */
+      asset: string | null;
+      /** Track index within `playlist`; `null` lets the server resolve it (the playlist
+       * mode's natural start). */
+      track_index: number | null;
+      /** Overrides the resolved channel; `null` uses the playlist's own channel (or `sfx`
+       * for a direct asset play). */
+      channel: "music" | "ambience" | "sfx" | null;
+      /** Overrides the resolved gain; `null` uses the track's own gain (or `1.0` direct). */
+      gain: number | null;
+      /** Overrides the resolved loop flag; `null` uses the track's own (or `false` direct). */
+      loop: boolean | null;
+    }
+  | {
+      /** Pause a playing entry in place. */
+      type: "pause";
+      /** The entry to pause. */
+      id: string;
+    }
+  | {
+      /** Resume a paused entry from where it paused. */
+      type: "resume";
+      /** The entry to resume. */
+      id: string;
+    }
+  | {
+      /** Stop and remove a playing entry. */
+      type: "stop";
+      /** The entry to stop. */
+      id: string;
+    }
+  | {
+      /** Stop and remove every playing entry. */
+      type: "stop_all";
+    }
+  | {
+      /** Seek a playing entry to an absolute position. */
+      type: "seek";
+      /** The entry to seek. */
+      id: string;
+      /** Target position, milliseconds from the track's own start. */
+      position_ms: number;
+    }
+  | {
+      /** Advance to the next track per the source playlist's mode; the server verifies the
+       * current track's elapsed duration against the asset's own `durationMs` before
+       * applying — a client cannot skip a track early. */
+      type: "next";
+      /** The entry to advance. */
+      id: string;
+    }
+  | {
+      /** Step back to the previous track per the source playlist's mode. */
+      type: "prev";
+      /** The entry to step back. */
+      id: string;
+    }
+  | {
+      /** Adjust a playing entry's gain without restarting it. */
+      type: "set_gain";
+      /** The entry to adjust. */
+      id: string;
+      /** The new gain, `0..=1` (presentation range; ingress validates finiteness). */
+      gain: number;
+    };
+
+// Unannotated impl const — see the module-level note above the `z` import.
+export const audioOpSchemaImpl = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("play"),
+    playlist: z.string().nullable(),
+    asset: z.string().nullable(),
+    track_index: int.nullable(),
+    channel: z.enum(["music", "ambience", "sfx"]).nullable(),
+    gain: z.number().nullable(),
+    loop: z.boolean().nullable(),
+  }),
+  z.object({ type: z.literal("pause"), id: z.string() }),
+  z.object({ type: z.literal("resume"), id: z.string() }),
+  z.object({ type: z.literal("stop"), id: z.string() }),
+  z.object({ type: z.literal("stop_all") }),
+  z.object({ type: z.literal("seek"), id: z.string(), position_ms: int }),
+  z.object({ type: z.literal("next"), id: z.string() }),
+  z.object({ type: z.literal("prev"), id: z.string() }),
+  z.object({ type: z.literal("set_gain"), id: z.string(), gain: z.number() }),
+]);
+/** Validator for a `WireAudioOp`, for a caller wanting to validate a constructed op before it
+ * is `JSON.stringify`'d onto the wire (mirrors `PathfindSchema`'s purpose). */
+export const AudioOpSchema: z.ZodType<WireAudioOp> = audioOpSchemaImpl;
 
 /** Client -> server frames. Plain objects (numbers, JSON.stringify-friendly). Mirrors
  * `ws::protocol::ClientMsg` variant-by-variant; each
@@ -1751,6 +1858,14 @@ export type ClientMsg =
       request_id: string;
       /** The instance to reset. */
       child_id: string;
+    }
+  | {
+      /** GM-only audio transport control. No `request_id`: fire-and-forget on the wire —
+       * success is the broadcast `event` echo of the `audio-state` Update; failure is a
+       * connection-local `audio_error`. */
+      type: "audio_transport";
+      /** The transport operation to apply. */
+      op: WireAudioOp;
     };
 
 /**

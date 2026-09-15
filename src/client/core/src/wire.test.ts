@@ -634,6 +634,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       truncated: null,
     },
     evicted: { type: "evicted", user: null },
+    audio_error: { type: "audio_error", reason: "forbidden" },
   };
 
   for (const [type, frame] of Object.entries(minimalFrames)) {

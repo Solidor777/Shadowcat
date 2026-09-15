@@ -99,6 +99,7 @@ export type {
   WireRecalcOp,
   WireCombatRollEntry,
   WireResourceOp,
+  WireAudioOp,
   CombatsView,
   CombatView,
   CombatantView,
