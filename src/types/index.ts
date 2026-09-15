@@ -69,6 +69,7 @@ export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
 // Assets
 export type { Asset } from "./generated/Asset";
 export type { AssetMeta } from "./generated/AssetMeta";
+export type { AudioContainers } from "./generated/AudioContainers";
 export type { AssetPage } from "./generated/AssetPage";
 export type { PatchAssetRequest } from "./generated/PatchAssetRequest";
 export type { BulkAssetRequest } from "./generated/BulkAssetRequest";

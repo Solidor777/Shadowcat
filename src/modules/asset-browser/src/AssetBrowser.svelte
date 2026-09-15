@@ -254,18 +254,20 @@
           }}
         />
       </label>
-      <label class="audio-containers">
-        {t("assetBrowser.audioContainers")}
-        <select
-          aria-label={t("assetBrowser.audioContainers")}
-          data-testid="audio-containers"
-          bind:value={audioContainers}
-        >
-          <option value="both">{t("assetBrowser.containersBoth")}</option>
-          <option value="ogg">{t("assetBrowser.containersOgg")}</option>
-          <option value="webm">{t("assetBrowser.containersWebm")}</option>
-        </select>
-      </label>
+      {#if uploads.entries.some((e) => e.file.type.startsWith("audio/"))}
+        <label class="audio-containers">
+          {t("assetBrowser.audioContainers")}
+          <select
+            aria-label={t("assetBrowser.audioContainers")}
+            data-testid="audio-containers"
+            bind:value={audioContainers}
+          >
+            <option value="both">{t("assetBrowser.containersBoth")}</option>
+            <option value="ogg">{t("assetBrowser.containersOgg")}</option>
+            <option value="webm">{t("assetBrowser.containersWebm")}</option>
+          </select>
+        </label>
+      {/if}
     {/if}
     {#if error}
       <p class="error">{error}</p>

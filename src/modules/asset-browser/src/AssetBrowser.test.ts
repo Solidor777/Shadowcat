@@ -6,15 +6,34 @@ import AssetBrowser from "./AssetBrowser.svelte";
 
 beforeEach(() => vi.restoreAllMocks());
 
-test("the audio container selector renders with the dual-container default", async () => {
+test("the audio container selector appears only once a queued file is audio", async () => {
   vi.spyOn(api, "queryAssets").mockResolvedValue({ items: [], next_cursor: null } as never);
+  const start = vi.spyOn(api, "startChunkedUpload").mockResolvedValue({ id: "a1" } as never);
   render(AssetBrowser, {
     props: { mode: "manage" },
     context: setAppContextForTest(),
   });
+  await screen.findByTestId("asset-browser-empty");
+  // Nothing queued: no audio in flight, no selector.
+  expect(screen.queryByTestId("audio-containers")).toBeNull();
+
+  const { fireEvent } = await import("@testing-library/svelte");
+  const input = screen.getByTestId("asset-upload-input");
+  const audioFile = new File([new Uint8Array([1, 2, 3])], "loop.wav", { type: "audio/wav" });
+  await fireEvent.change(input, { target: { files: [audioFile] } });
   const select = (await screen.findByTestId("audio-containers")) as HTMLSelectElement;
   expect(select.value).toBe("both");
   expect(Array.from(select.options).map((o) => o.value)).toEqual(["both", "ogg", "webm"]);
+
+  // The default selection reaches the upload options.
+  const { waitFor } = await import("@testing-library/svelte");
+  await waitFor(() =>
+    expect(start).toHaveBeenCalledWith(
+      "w1",
+      expect.anything(),
+      expect.objectContaining({ audioContainers: "both" }),
+    ),
+  );
 });
 
 test("renders the empty state when the world has no assets", async () => {

@@ -279,11 +279,30 @@ async fn store_streamed(
 
     // An optional trailing `containers` text field selects the audio derivative container(s)
     // (`data::asset::process::audio::AudioContainers`'s snake_case names); the file field is
-    // always first, so anything after it that is not this field is ignored.
+    // always first, so anything after it that is not this field is ignored. The read is
+    // bounded (a form field naming a 4-byte enum never needs more than 64 bytes).
     let mut containers: Option<String> = None;
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("containers") {
-            containers = field.text().await.ok().map(|s| s.trim().to_string());
+            let mut text = String::new();
+            let mut field = field;
+            loop {
+                match field.chunk().await {
+                    Ok(Some(c)) => {
+                        if text.len() + c.len() > 64 {
+                            let _ = tokio::fs::remove_file(dest).await;
+                            return Err(AppError::BadRequest("containers field too long".into()));
+                        }
+                        text.push_str(&String::from_utf8_lossy(&c));
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = tokio::fs::remove_file(dest).await;
+                        return Err(AppError::BadRequest(format!("multipart error: {e}")));
+                    }
+                }
+            }
+            containers = Some(text.trim().to_string());
         }
     }
 
@@ -436,7 +455,14 @@ pub async fn upload(
     let outcome: Result<Asset, AppError> = async {
         let (arrived_type, arrived_size, original_name, containers_field) =
             store_streamed(multipart, &tmp_path, max).await?;
-        let containers = parse_containers_field(containers_field.as_deref())?;
+        let containers = match parse_containers_field(containers_field.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                // The staged tmp is already on disk; a rejected selection must not strand it.
+                remove_asset_files(&tmp_path).await;
+                return Err(e);
+            }
+        };
         // CPU-bound conversion, off the async runtime and BEFORE the barrier.
         let processed = process_staged_blocking(
             tmp_path.clone(),
@@ -814,7 +840,13 @@ pub async fn replace(
         // No explicit selection on a replace re-emits the derivative set the asset already
         // has (`audio::effective_reencode_selection`), never silently widening or narrowing it.
         let containers = match containers_field.as_deref() {
-            Some(_) => parse_containers_field(containers_field.as_deref())?,
+            Some(_) => match parse_containers_field(containers_field.as_deref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    remove_asset_files(&tmp_path).await;
+                    return Err(e);
+                }
+            },
             None => audio::effective_reencode_selection(
                 audio::has_sibling(&final_path, audio::OPUS_SUFFIX),
                 audio::has_sibling(&final_path, audio::WEBM_SUFFIX),
