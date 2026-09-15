@@ -272,7 +272,7 @@ fn resample_to_target(decoded: &Decoded) -> Result<Vec<f32>, String> {
             n,
         )
         .map_err(|e| e.to_string())?;
-        let indexing = (n < chunk_frames).then(|| Indexing {
+        let indexing = (n < chunk_frames).then_some(Indexing {
             input_offset: 0,
             output_offset: 0,
             partial_len: Some(n),
