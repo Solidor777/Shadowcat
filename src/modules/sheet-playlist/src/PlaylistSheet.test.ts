@@ -154,4 +154,59 @@ describe("PlaylistSheet", () => {
       },
     ]);
   });
+
+  it("add track picks an asset first, then appends a row for the pick", async () => {
+    const calls: unknown[] = [];
+    const pickAsset = vi.fn().mockResolvedValue("picked-asset");
+    const doc = buildPlaylistDoc("w1", "Tavern", engine([TRACK_A]));
+    const documents = storeWith(doc);
+    const context = setAppContextForTest({
+      documents,
+      dispatchIntent: confirmingDispatch(documents, calls),
+      canEdit: () => true,
+      pickAsset: pickAsset as never,
+    });
+    const { getByTestId } = render(PlaylistSheet, {
+      props: { docId: doc.id, systemPrefix: "/system", close: () => {} },
+      context,
+    });
+    await fireEvent.click(getByTestId("playlist-add-track"));
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "audio" });
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    expect(calls[0]).toEqual([
+      {
+        op: "update",
+        doc_id: doc.id,
+        changes: [
+          {
+            path: "/engine/tracks",
+            old: [TRACK_A],
+            new: [TRACK_A, { asset: "picked-asset", name: null, gain: 1, loop: false }],
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("a cancelled add-track pick dispatches nothing (an unassigned row can never be staged)", async () => {
+    const calls: unknown[] = [];
+    const pickAsset = vi.fn().mockResolvedValue(null);
+    const doc = buildPlaylistDoc("w1", "Tavern", engine());
+    const documents = storeWith(doc);
+    const context = setAppContextForTest({
+      documents,
+      dispatchIntent: confirmingDispatch(documents, calls),
+      canEdit: () => true,
+      pickAsset: pickAsset as never,
+    });
+    const { getByTestId } = render(PlaylistSheet, {
+      props: { docId: doc.id, systemPrefix: "/system", close: () => {} },
+      context,
+    });
+    await fireEvent.click(getByTestId("playlist-add-track"));
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "audio" });
+    // Let any (unexpected) resolve-then-dispatch microtask chain settle.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toHaveLength(0);
+  });
 });

@@ -93,6 +93,20 @@
     const picked = await ctx.pickAsset({ kind: "audio" });
     if (typeof picked === "string") patchTrack(i, { asset: picked });
   }
+
+  /** Open the asset picker and append a track for the pick. Pick-first because
+   * `PlaylistEngine::validate` rejects a track with an empty asset id, so the sheet can never
+   * stage an unassigned row — a cancelled pick simply adds nothing.
+   * @example
+   * ```
+   * // private handler; exercised through `PlaylistSheet.test.ts`'s add cases
+   * ```
+   */
+  async function addTrackPicked(): Promise<void> {
+    const picked = await ctx.pickAsset({ kind: "audio" });
+    if (typeof picked !== "string" || !engine) return;
+    setField(ctx, docId, tracksPath, engine.tracks, addTrack(engine.tracks, picked));
+  }
 </script>
 
 {#if doc && engine}
@@ -222,7 +236,7 @@
     <button
       type="button"
       data-testid="playlist-add-track"
-      onclick={() => engine && setField(ctx, docId, tracksPath, engine.tracks, addTrack(engine.tracks, ""))}
+      onclick={() => void addTrackPicked()}
     >{t("sheetPlaylist.addTrack")}</button>
   {/if}
 {:else}
