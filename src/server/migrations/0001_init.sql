@@ -198,9 +198,10 @@ CREATE TABLE link_preview_cache (
 CREATE TABLE explored_fog (
   world_id  TEXT NOT NULL,
   scene_id  TEXT NOT NULL,
+  level_id  TEXT NOT NULL DEFAULT '',
   user_id   TEXT NOT NULL,
   cells     BLOB NOT NULL,
-  PRIMARY KEY (scene_id, user_id)
+  PRIMARY KEY (scene_id, level_id, user_id)
 );
 
 CREATE INDEX idx_explored_fog_world ON explored_fog(world_id);

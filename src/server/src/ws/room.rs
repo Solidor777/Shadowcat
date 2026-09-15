@@ -914,8 +914,13 @@ impl Room {
             // cells, visible_set). Revealed mode requires an async get_explored call which
             // cannot occur while holding the scene read lock.
             type CellSet = std::collections::BTreeSet<(i32, i32)>;
-            let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet, crate::scene::GridKind)> =
-                Vec::new();
+            let mut revealed_pending: Vec<(
+                uuid::Uuid,
+                String,
+                CellSet,
+                CellSet,
+                crate::scene::GridKind,
+            )> = Vec::new();
             // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
             // source admission through `resolve_access_world`, which reads the world's capability
             // grants — an await, which must not run under the scene read guard below. Fetched
@@ -1019,8 +1024,18 @@ impl Room {
                                 // scene read guard — defer exactly as the movement gate did. The
                                 // grid kind is captured here, under the same guard `settings` was
                                 // resolved in, since decoding runs after the guard is dropped.
+                                // The placed token's OWN level decides which level's explored
+                                // memory unions in: explored is keyed per level, and the cell
+                                // being admitted sits on the new token's floor.
+                                let level = crate::scene::elevation::level_of(
+                                    &scene.scene_levels(scene_id),
+                                    crate::scene::elevation::elevation_or_ground(eng.elevation),
+                                )
+                                .map(|l| l.id.clone())
+                                .unwrap_or_default();
                                 revealed_pending.push((
                                     scene_id,
+                                    level,
                                     [target].into_iter().collect(),
                                     mask,
                                     settings.grid_kind,
@@ -1031,18 +1046,18 @@ impl Room {
                 }
             } // scene read guard dropped here — safe to await
 
-            // Memoize the explored blob per scene: a batch of Revealed moves in the same
+            // Memoize the explored blob per (scene, level): a batch of Revealed moves in the same
             // scene (e.g. multi-waypoint) must not issue N DB round-trips. Pattern mirrors
             // visible_cache above. Fail closed: error or missing blob → empty set (visible-only).
             let mut explored_cache: std::collections::HashMap<
-                uuid::Uuid,
+                (uuid::Uuid, String),
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, move_cells, visible, grid_kind) in revealed_pending {
-                let explored = match explored_cache.entry(scene_id) {
+            for (scene_id, level, move_cells, visible, grid_kind) in revealed_pending {
+                let explored = match explored_cache.entry((scene_id, level.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let set = match repo.get_explored(scene_id, ctx.user_id).await {
+                        let set = match repo.get_explored(scene_id, &level, ctx.user_id).await {
                             Ok(Some(blob)) => {
                                 crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
@@ -1275,6 +1290,10 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The mover's resolved level id (`""` = ground/a level-less scene), captured under the
+        // first guard: explored memory is keyed per level, so the Revealed union reads the
+        // mover's OWN floor's memory — a floor the token is not on grants nothing.
+        let mover_level: String;
         // The mover's resolved locomotion traits (terrain exemption), resolved in the SAME
         // first guard block as `footprint` and threaded into `MoveGateInputs` — the executor
         // never re-derives them (that struct's caller-resolves invariant). The tags belong to
@@ -1323,6 +1342,12 @@ impl Room {
             // Captured under this same read guard for the same reason `cell` is: the explored
             // decode below runs after the guard is dropped.
             grid_kind = settings.grid_kind;
+            mover_level = crate::scene::elevation::level_of(
+                &scene.scene_levels(token_scene),
+                scene.token_mover_elevation(token),
+            )
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
             // Fail-closed on a `parent_id` with no scene document: `scene_grid_sizes` carries an
             // entry (defaulting to 100) for every live scene, so an absent entry means the scene
             // itself is gone — no authored cell size exists to index the visibility mask, the
@@ -1411,7 +1436,10 @@ impl Room {
         // (falls back to visible-only, which is stricter but safe).
         let visible = if is_revealed {
             let mut union = visible_cells;
-            let explored = match repo.get_explored(token_scene, ctx.user_id).await {
+            let explored = match repo
+                .get_explored(token_scene, &mover_level, ctx.user_id)
+                .await
+            {
                 Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),
                 _ => crate::scene::explored::ExploredSet::new(),
             };

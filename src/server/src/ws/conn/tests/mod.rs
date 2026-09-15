@@ -590,7 +590,17 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         "mode": "masked",
         "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1, 0, 1, 0, 0, -1, 0, 2, 0, 0, -1, 1, 0, 0, 0, -1, 1, 1, 0, 0, -1, 1, 2, 0, 0, -1, 2, 0, 0, 0, -1, 2, 1, 0, 0, -1, 2, 2, 0, 0, -1] }]
     });
-    enrich_vision_explored(&mut payload, &grid, &grid_shapes, &repo, world, user, true).await;
+    enrich_vision_explored(
+        &mut payload,
+        &grid,
+        &grid_shapes,
+        &repo,
+        world,
+        user,
+        "",
+        true,
+    )
+    .await;
 
     // The payload gained a scene-tagged explored cell set (9 cells × 2 coords).
     let explored = payload["explored"].as_array().unwrap();
@@ -601,7 +611,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
 
     // It persisted: a fresh read returns the same 9 cells.
     let stored = crate::scene::explored::ExploredSet::from_bytes(
-        &repo.get_explored(scene, user).await.unwrap().unwrap(),
+        &repo.get_explored(scene, "", user).await.unwrap().unwrap(),
         crate::scene::GridKind::Square,
     );
     assert_eq!(stored.len(), 9);
@@ -611,14 +621,24 @@ async fn enrich_accumulates_persists_and_emits_explored() {
         "mode": "masked",
         "lit": [{ "scene": scene, "cell": 100.0, "cells": [0, 0, 0, 0, -1, 0, 1, 0, 0, -1, 0, 2, 0, 0, -1, 1, 0, 0, 0, -1, 1, 1, 0, 0, -1, 1, 2, 0, 0, -1, 2, 0, 0, 0, -1, 2, 1, 0, 0, -1, 2, 2, 0, 0, -1] }]
     });
-    enrich_vision_explored(&mut again, &grid, &grid_shapes, &repo, world, user, true).await;
+    enrich_vision_explored(
+        &mut again,
+        &grid,
+        &grid_shapes,
+        &repo,
+        world,
+        user,
+        "",
+        true,
+    )
+    .await;
     assert_eq!(
         again["explored"][0]["cells"].as_array().unwrap().len(),
         9 * 2
     );
     assert_eq!(
         crate::scene::explored::ExploredSet::from_bytes(
-            &repo.get_explored(scene, user).await.unwrap().unwrap(),
+            &repo.get_explored(scene, "", user).await.unwrap().unwrap(),
             crate::scene::GridKind::Square,
         )
         .len(),
@@ -628,7 +648,7 @@ async fn enrich_accumulates_persists_and_emits_explored() {
 
     // A GM payload (no fog) is left untouched — no explored memory.
     let mut gm = json!({ "mode": "all" });
-    enrich_vision_explored(&mut gm, &grid, &grid_shapes, &repo, world, user, true).await;
+    enrich_vision_explored(&mut gm, &grid, &grid_shapes, &repo, world, user, "", true).await;
     assert_eq!(gm, json!({ "mode": "all" }));
 }
 
@@ -654,6 +674,7 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
         repo.as_ref(),
         world,
         user,
+        "",
         true,
     )
     .await;
@@ -682,6 +703,7 @@ async fn enrich_see_as_player_is_read_only() {
     repo.set_explored(
         world,
         scene,
+        "",
         target,
         &seed.to_bytes(crate::scene::GridKind::Square),
     )
@@ -701,6 +723,7 @@ async fn enrich_see_as_player_is_read_only() {
         &repo,
         world,
         target,
+        "",
         false,
     )
     .await;
@@ -711,7 +734,7 @@ async fn enrich_see_as_player_is_read_only() {
     );
     assert_eq!(
         crate::scene::explored::ExploredSet::from_bytes(
-            &repo.get_explored(scene, target).await.unwrap().unwrap(),
+            &repo.get_explored(scene, "", target).await.unwrap().unwrap(),
             crate::scene::GridKind::Square,
         )
         .len(),
@@ -2365,6 +2388,7 @@ async fn enrich_token_less_player_emits_no_explored() {
         &repo,
         Uuid::from_u128(1),
         Uuid::from_u128(2),
+        "",
         true,
     )
     .await;
@@ -3987,4 +4011,75 @@ async fn e2e_replay_redacts_a_field_that_was_gm_only_at_commit_after_the_overrid
         "sanity check: the widening command itself must be visible to the player \
          (only the earlier GmOnly value must stay hidden)"
     );
+}
+
+/// A floor a player cannot currently see still remembers what THAT floor's tokens saw — but
+/// the wire payload never restates a floor the client is not rendering: accumulation keys on
+/// each `lit` group's own level, emission on the connection's viewed level only.
+#[tokio::test]
+async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level() {
+    let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
+    let world = Uuid::from_u128(1);
+    let scene = Uuid::from_u128(10);
+    let user = Uuid::from_u128(20);
+    let grid = std::collections::HashMap::from([(scene, 100.0)]);
+    let grid_shapes = square_grid_shapes(&grid);
+
+    // Two lit groups: a floor-1 source sees cell (0,0); a floor-2 source sees cell (5,5).
+    let mut payload = json!({
+        "mode": "masked",
+        "lit": [
+            { "scene": scene, "level": "l1", "cell": 100.0, "cells": [0, 0, 0, 0, -1] },
+            { "scene": scene, "level": "l2", "cell": 100.0, "cells": [5, 5, 0, 0, -1] }
+        ]
+    });
+    // The connection VIEWS l1: floor-2 memory grows but is not restated on the wire.
+    enrich_vision_explored(
+        &mut payload,
+        &grid,
+        &grid_shapes,
+        &repo,
+        world,
+        user,
+        "l1",
+        true,
+    )
+    .await;
+    let emitted = payload["explored"].as_array().unwrap();
+    assert_eq!(
+        emitted.len(),
+        1,
+        "only the viewed level's memory is emitted"
+    );
+    assert_eq!(emitted[0]["level"], json!("l1"));
+    assert_eq!(
+        emitted[0]["cells"].as_array().unwrap().len(),
+        2,
+        "the l1 cell (x,y pair)"
+    );
+    let l2_stored = crate::scene::explored::ExploredSet::from_bytes(
+        &repo.get_explored(scene, "l2", user).await.unwrap().unwrap(),
+        crate::scene::GridKind::Square,
+    );
+    assert_eq!(
+        l2_stored.len(),
+        1,
+        "the floor-2 accumulation happened even though it was not sent"
+    );
+    // Viewing l2 restates that memory (and only it).
+    enrich_vision_explored(
+        &mut payload,
+        &grid,
+        &grid_shapes,
+        &repo,
+        world,
+        user,
+        "l2",
+        true,
+    )
+    .await;
+    let emitted = payload["explored"].as_array().unwrap();
+    assert_eq!(emitted.len(), 1);
+    assert_eq!(emitted[0]["level"], json!("l2"));
+    assert_eq!(emitted[0]["cells"].as_array().unwrap().len(), 2);
 }

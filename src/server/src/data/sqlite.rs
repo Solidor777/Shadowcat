@@ -2476,10 +2476,15 @@ impl Repository for SqliteRepository {
         Ok(SearchPage { hits, next_cursor })
     }
 
-    async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError> {
+    async fn get_explored(
+        &self,
+        scene: Uuid,
+        level: &str,
+        user: Uuid,
+    ) -> Result<Option<Vec<u8>>, DataError> {
         // Delegate to the concrete method on SqliteRepository (same query, exposed
         // on the trait so Room::publish can call it through &dyn Repository).
-        SqliteRepository::get_explored(self, scene, user).await
+        SqliteRepository::get_explored(self, scene, level, user).await
     }
 
     async fn get_link_preview_cache(

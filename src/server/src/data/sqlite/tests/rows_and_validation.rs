@@ -329,7 +329,7 @@ async fn seed_world_rows(repo: &SqliteRepository, world: Uuid, owner: Uuid) -> U
         )
         .await
         .unwrap());
-    repo.set_explored(world, scene, owner, &[1, 0, 0, 0, 2, 0, 0, 0])
+    repo.set_explored(world, scene, "", owner, &[1, 0, 0, 0, 2, 0, 0, 0])
         .await
         .unwrap();
     repo.set_world_cap_defaults(world, &WorldCapDefaults::default())
@@ -518,10 +518,10 @@ async fn delete_user_scrubs_everything() {
         .await
         .unwrap());
     // Fog memory for U (purged) and for the admin (survives).
-    repo.set_explored(w, scene, u, &[1, 0, 0, 0, 2, 0, 0, 0])
+    repo.set_explored(w, scene, "", u, &[1, 0, 0, 0, 2, 0, 0, 0])
         .await
         .unwrap();
-    repo.set_explored(w, scene, admin, &[1, 0, 0, 0, 2, 0, 0, 0])
+    repo.set_explored(w, scene, "", admin, &[1, 0, 0, 0, 2, 0, 0, 0])
         .await
         .unwrap();
     // Live sessions for both.
@@ -752,11 +752,11 @@ async fn fog_purge_fixture(repo: &SqliteRepository, owner: Uuid) -> (Uuid, Uuid,
     .await
     .unwrap();
     for user in [owner, other] {
-        repo.set_explored(w, scene, user, &[1, 0, 0, 0, 2, 0, 0, 0])
+        repo.set_explored(w, scene, "", user, &[1, 0, 0, 0, 2, 0, 0, 0])
             .await
             .unwrap();
     }
-    repo.set_explored(w, other_scene, owner, &[1, 0, 0, 0, 2, 0, 0, 0])
+    repo.set_explored(w, other_scene, "", owner, &[1, 0, 0, 0, 2, 0, 0, 0])
         .await
         .unwrap();
     (w, scene, other_scene, other)
@@ -1438,38 +1438,38 @@ async fn explored_fog_round_trips_and_is_per_scene_user() {
     let bob = Uuid::from_u128(21);
 
     // Unexplored → None.
-    assert_eq!(repo.get_explored(scene_a, alice).await.unwrap(), None);
+    assert_eq!(repo.get_explored(scene_a, "", alice).await.unwrap(), None);
 
     // Set then read back the exact blob.
-    repo.set_explored(world, scene_a, alice, &[1, 2, 3, 4])
+    repo.set_explored(world, scene_a, "", alice, &[1, 2, 3, 4])
         .await
         .unwrap();
     assert_eq!(
-        repo.get_explored(scene_a, alice).await.unwrap(),
+        repo.get_explored(scene_a, "", alice).await.unwrap(),
         Some(vec![1, 2, 3, 4])
     );
 
-    // Upsert replaces (whole-blob), keyed (scene, user).
-    repo.set_explored(world, scene_a, alice, &[9, 9])
+    // Upsert replaces (whole-blob), keyed (scene, level, user).
+    repo.set_explored(world, scene_a, "", alice, &[9, 9])
         .await
         .unwrap();
     assert_eq!(
-        repo.get_explored(scene_a, alice).await.unwrap(),
+        repo.get_explored(scene_a, "", alice).await.unwrap(),
         Some(vec![9, 9])
     );
 
     // Isolation: another user and another scene are independent (no cross-player leak).
-    assert_eq!(repo.get_explored(scene_a, bob).await.unwrap(), None);
-    assert_eq!(repo.get_explored(scene_b, alice).await.unwrap(), None);
-    repo.set_explored(world, scene_b, alice, &[7])
+    assert_eq!(repo.get_explored(scene_a, "", bob).await.unwrap(), None);
+    assert_eq!(repo.get_explored(scene_b, "", alice).await.unwrap(), None);
+    repo.set_explored(world, scene_b, "", alice, &[7])
         .await
         .unwrap();
     assert_eq!(
-        repo.get_explored(scene_a, alice).await.unwrap(),
+        repo.get_explored(scene_a, "", alice).await.unwrap(),
         Some(vec![9, 9])
     );
     assert_eq!(
-        repo.get_explored(scene_b, alice).await.unwrap(),
+        repo.get_explored(scene_b, "", alice).await.unwrap(),
         Some(vec![7])
     );
 }
@@ -2802,4 +2802,44 @@ async fn declarative_requirement_blocks_create_with_protected_subtree() {
     )
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn explored_fog_is_keyed_per_scene_level_user() {
+    let repo = repo().await;
+    let world = Uuid::from_u128(9);
+    let scene = Uuid::from_u128(10);
+    let alice = Uuid::from_u128(20);
+
+    // Two levels of the SAME scene keep independent memory: a blob written under "l1" is
+    // invisible to a read under "l2", and each level's upsert replaces only its own row.
+    repo.set_explored(world, scene, "l1", alice, &[1, 1])
+        .await
+        .unwrap();
+    repo.set_explored(world, scene, "l2", alice, &[2, 2, 2])
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_explored(scene, "l1", alice).await.unwrap(),
+        Some(vec![1, 1])
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l2", alice).await.unwrap(),
+        Some(vec![2, 2, 2])
+    );
+    // The ground/level-less key ("") is a THIRD independent row, not an alias for a level.
+    assert_eq!(repo.get_explored(scene, "", alice).await.unwrap(), None);
+    repo.set_explored(world, scene, "l1", alice, &[9])
+        .await
+        .unwrap();
+    assert_eq!(
+        repo.get_explored(scene, "l1", alice).await.unwrap(),
+        Some(vec![9]),
+        "an l1 upsert replaces only the l1 row"
+    );
+    assert_eq!(
+        repo.get_explored(scene, "l2", alice).await.unwrap(),
+        Some(vec![2, 2, 2]),
+        "the l2 row is untouched by the l1 upsert"
+    );
 }

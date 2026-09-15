@@ -189,8 +189,13 @@ impl Repository for DeleteMidHydration<'_> {
             .search(ctx, world_id, query, limit, cursor, doc_types)
             .await
     }
-    async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError> {
-        self.inner.get_explored(scene, user).await
+    async fn get_explored(
+        &self,
+        scene: Uuid,
+        level: &str,
+        user: Uuid,
+    ) -> Result<Option<Vec<u8>>, DataError> {
+        self.inner.get_explored(scene, level, user).await
     }
     async fn get_link_preview_cache(
         &self,
@@ -1254,6 +1259,7 @@ async fn non_gm_token_create_in_explored_but_unlit_cell_succeeds() {
         .set_explored(
             h.world,
             h.scene,
+            "",
             h.player_ctx.user_id,
             &seed.to_bytes(crate::scene::GridKind::Square),
         )
@@ -2990,6 +2996,7 @@ async fn execute_move_revealed_union_allows_explored_cell() {
         .set_explored(
             h.world_id,
             h.scene_id,
+            "",
             h.player.user_id,
             &seed.to_bytes(crate::scene::GridKind::Square),
         )
