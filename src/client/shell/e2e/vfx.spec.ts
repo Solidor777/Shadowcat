@@ -125,14 +125,21 @@ test("emitter playback and the FX scene tool are visible to both GM and player; 
     await expect(stageHost(player)).toHaveAttribute("data-vfx-count", "2", { timeout: 15_000 });
     await expect(stageHost(gm)).toHaveAttribute("data-vfx-count", "2", { timeout: 15_000 });
 
+    // The one-shot is transient BY DESIGN (removed when its animation completes): let it
+    // run out on both stages before the toggle flow, so every later assertion pins a STABLE
+    // state (the persistent emitter alone, "1") rather than racing the one-shot's lifetime.
+    await expect(stageHost(player)).toHaveAttribute("data-vfx-count", "1", { timeout: 30_000 });
+    await expect(stageHost(gm)).toHaveAttribute("data-vfx-count", "1", { timeout: 30_000 });
+
     // The player's own per-device `vfx` budget toggle (Settings → Performance) suppresses
     // playback locally only — the GM's stage is unaffected (a client-local performance
-    // setting, never a server-side suppression).
+    // setting, never a server-side suppression). The one-shot has already run out by design,
+    // so the GM's stable state here is the emitter alone.
     await player.getByTestId("launcher-trigger").click();
     await player.getByTestId("launcher-item-settings:panel").click();
     await player.getByTestId("perf-vfx").uncheck();
     await expect(stageHost(player)).toHaveAttribute("data-vfx-count", "0", { timeout: 15_000 });
-    await expect(stageHost(gm)).toHaveAttribute("data-vfx-count", "2");
+    await expect(stageHost(gm)).toHaveAttribute("data-vfx-count", "1", { timeout: 15_000 });
   } finally {
     await playerCtx.close();
   }
