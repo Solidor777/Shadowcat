@@ -578,7 +578,7 @@ async fn handle_socket(
                                     // success signal); a refusal is a connection-local AudioError.
                                     // Rate check first (own budget — see WsState::audio_rate),
                                     // then the GM/state/op checks inside handle_transport itself.
-                                    if !audio_rate.check(user_id, now_millis(), 30) {
+                                    if !audio_rate.check(user_id, now_millis(), crate::ws::AUDIO_RATE_PER_MIN) {
                                         let _ = etx
                                             .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
                                                 reason: "too many audio commands".into(),
@@ -588,7 +588,6 @@ async fn handle_socket(
                                         repo.as_ref(),
                                         &ctx,
                                         &room,
-                                        world_id,
                                         op,
                                         now_millis(),
                                     )

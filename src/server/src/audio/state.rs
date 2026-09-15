@@ -300,8 +300,13 @@ pub fn apply(
                 track.paused_at = Some(now);
             }
         }
-        AudioOp::Next { id } | AudioOp::Prev { id } => {
-            let forward = matches!(op, AudioOp::Next { .. });
+        AudioOp::Next { id } | AudioOp::TrackEnded { id } | AudioOp::Prev { id } => {
+            // `TrackEnded` IS a forward advance here: the elapsed-duration gate that
+            // distinguishes it from an explicit `Next` lives in
+            // `transport::handle_transport_locked` (it needs the asset row's `duration_ms`),
+            // never in this pure function — by the time `apply` runs, the report is already
+            // decided, and it advances exactly like a `Next`.
+            let forward = !matches!(op, AudioOp::Prev { .. });
             let pos = next
                 .playing
                 .iter()

@@ -10,7 +10,7 @@ use std::fmt;
 use uuid::Uuid;
 
 use crate::data::command::{FieldChange, Operation, WriteOrigin};
-use crate::data::document::WorldRole;
+use crate::data::document::{Scope, WorldRole};
 use crate::data::engine::{
     self as eng, AudioChannel, AudioStateEngine, PlaylistEngine, AUDIO_STATE_DOC_TYPE,
     PLAYLIST_DOC_TYPE,
@@ -24,7 +24,7 @@ use crate::ws::room::Room;
 /// (player-presentable `Display`).
 #[derive(Debug)]
 pub(crate) enum TransportError {
-    /// The caller is not a GM.
+    /// The caller is not a GM (and the op is not a member-reportable `TrackEnded`).
     Forbidden,
     /// This world has no `audio-state` document yet (should not arise once every world is
     /// seeded with one; defensive for a world that never re-seeded).
@@ -47,10 +47,13 @@ impl fmt::Display for TransportError {
 }
 
 /// The one playlist `op` could need, pre-fetched here (async) so the pure `state::apply` stays
-/// I/O-free: `Play` names it directly; `Next`/`Prev` need the advancing entry's OWN `playlist`
-/// field, read from `state` before the fetch.
+/// I/O-free: `Play` names it directly; `Next`/`Prev`/`TrackEnded` need the advancing entry's
+/// OWN `playlist` field, read from `state` before the fetch. A playlist document from ANOTHER
+/// world never enters the cache (fail-closed — a GM of world A playing world B's playlist
+/// would otherwise leak its track list's asset ids into A's audio-state).
 async fn prefetch_playlist(
     repo: &dyn Repository,
+    world_id: Uuid,
     state: &AudioStateEngine,
     op: &AudioOp,
 ) -> HashMap<Uuid, PlaylistEngine> {
@@ -59,7 +62,7 @@ async fn prefetch_playlist(
             playlist: Some(pid),
             ..
         } => Some(*pid),
-        AudioOp::Next { id } | AudioOp::Prev { id } => state
+        AudioOp::Next { id } | AudioOp::Prev { id } | AudioOp::TrackEnded { id } => state
             .playing
             .iter()
             .find(|t| t.id == *id)
@@ -69,7 +72,8 @@ async fn prefetch_playlist(
     let mut cache = HashMap::new();
     if let Some(pid) = needed {
         if let Ok(Some(doc)) = repo.get_document(pid).await {
-            if doc.doc_type == PLAYLIST_DOC_TYPE {
+            let in_world = matches!(doc.scope, Scope::World { world_id: w } if w == world_id);
+            if in_world && doc.doc_type == PLAYLIST_DOC_TYPE {
                 if let Some(v) = &doc.engine {
                     if let Ok(pl) = serde_json::from_value::<PlaylistEngine>(v.clone()) {
                         cache.insert(pid, pl);
@@ -81,13 +85,37 @@ async fn prefetch_playlist(
     cache
 }
 
-/// GM-only: applies `op` to the world's `audio-state` singleton and commits the Update under
-/// `WriteOrigin::AudioTransport`. `AudioOp::Next`'s elapsed-duration gate lives HERE (not in the
-/// pure `state::apply`) because it needs the asset row's `durationMs`: a report that arrives
-/// before the current track's computed end time is a silent no-op (`Ok(())`, no `AudioError`),
-/// which is what makes "the first client's report wins" true without punishing a merely-early
-/// second reporter with a visible refusal.
+/// Entry point for `ClientMsg::AudioTransport` (`ws::conn`'s arm). Per-op authorization:
+/// every op but `TrackEnded` is GM-only (the transport is the GM's console); `TrackEnded` is
+/// the client-observed end report any world member may send — its own elapsed-duration gate
+/// (in `handle_transport_locked`) is what stops it skipping a track early, so no GM check
+/// applies to it. Everything else (state read, apply, commit) runs inside `publish_guard`
+/// via `Room::commit_audio_transport` — the same serialized-section discipline
+/// `commit_combat` follows, so two transports can never interleave a stale read with the
+/// other's commit.
 pub(crate) async fn handle_transport(
+    repo: &dyn Repository,
+    ctx: &PermissionContext,
+    room: &Room,
+    op: AudioOp,
+    now: i64,
+) -> Result<(), TransportError> {
+    if !matches!(op, AudioOp::TrackEnded { .. }) && ctx.world_role != WorldRole::Gm {
+        return Err(TransportError::Forbidden);
+    }
+    room.commit_audio_transport(repo, ctx, op, now).await
+}
+
+/// The guarded body `Room::commit_audio_transport` runs with `publish_guard` HELD (never call
+/// this directly without the guard — `commit_ops_locked`'s ECS-hydration precondition).
+/// `AudioOp::Next` is the GM's EXPLICIT skip and applies unconditionally; `TrackEnded` is the
+/// report path and is the ONLY place the elapsed-duration gate exists: a report naming a stale
+/// id (already advanced by an earlier report) or arriving before the current track's computed
+/// end time is a silent no-op (`Ok(())`, no `AudioError`), which is what makes "the first
+/// client's report wins" true without punishing a merely-early second reporter with a visible
+/// refusal. Elapsed time is pause-aware: `paused_at.unwrap_or(now) - started_at` — paused time
+/// is not playback time.
+pub(crate) async fn handle_transport_locked(
     repo: &dyn Repository,
     ctx: &PermissionContext,
     room: &Room,
@@ -95,9 +123,6 @@ pub(crate) async fn handle_transport(
     op: AudioOp,
     now: i64,
 ) -> Result<(), TransportError> {
-    if ctx.world_role != WorldRole::Gm {
-        return Err(TransportError::Forbidden);
-    }
     let docs = repo
         .query_documents(world_id, AUDIO_STATE_DOC_TYPE)
         .await
@@ -109,22 +134,28 @@ pub(crate) async fn handle_transport(
     let state: AudioStateEngine = eng::engine_of(&doc);
     let now_f = now as f64;
 
-    if let AudioOp::Next { id } = &op {
-        let Some(track) = state.playing.iter().find(|t| t.id == *id) else {
-            return Ok(()); // stale id: already advanced by an earlier report
-        };
-        if let Ok(asset_id) = Uuid::parse_str(&track.asset) {
-            if let Ok(Some(asset)) = repo.get_asset(asset_id).await {
-                if let Some(duration_ms) = asset.meta.duration_ms {
-                    if now_f < track.started_at + duration_ms as f64 {
-                        return Ok(()); // premature report
+    let op = match op {
+        AudioOp::TrackEnded { id } => {
+            let Some(track) = state.playing.iter().find(|t| t.id == id) else {
+                return Ok(()); // stale id: already advanced by an earlier report
+            };
+            if let Ok(asset_id) = Uuid::parse_str(&track.asset) {
+                if let Ok(Some(asset)) = repo.get_asset(asset_id).await {
+                    if let Some(duration_ms) = asset.meta.duration_ms {
+                        let elapsed = track.paused_at.unwrap_or(now_f) - track.started_at;
+                        if elapsed < duration_ms as f64 {
+                            return Ok(()); // premature report
+                        }
                     }
                 }
             }
+            // The gate passed: advance exactly as an explicit Next would.
+            AudioOp::Next { id }
         }
-    }
+        other => other,
+    };
 
-    let cache = prefetch_playlist(repo, &state, &op).await;
+    let cache = prefetch_playlist(repo, world_id, &state, &op).await;
     let lookup = |id: Uuid| cache.get(&id).cloned();
     let next =
         crate::audio::state::apply(&state, &op, now_f, &lookup).map_err(TransportError::Op)?;
@@ -172,7 +203,9 @@ async fn commit_audio_state(
 /// scene's ambience entries (matched by playlist id) and start the NEW scene's ambience
 /// playlist, if it declares one and it is not already playing. Best-effort: any read/parse
 /// failure along the way silently skips that half (never blocks the activeScene write itself,
-/// which has already committed by the time this runs).
+/// which has already committed by the time this runs). Called from `publish` with
+/// `publish_guard` already held — it must NOT re-acquire it (tokio Mutex is non-reentrant),
+/// which is why it never routes through `Room::commit_audio_transport`.
 pub(crate) async fn on_active_scene(
     repo: &dyn Repository,
     ctx: &PermissionContext,
@@ -192,34 +225,39 @@ pub(crate) async fn on_active_scene(
     let mut next = state.clone();
 
     if let Some(old_id) = old_active {
-        if let Some(ambience) = scene_ambience(repo, old_id).await {
+        if let Some(ambience) = scene_ambience(repo, world_id, old_id).await {
             next.playing
                 .retain(|t| t.playlist != Some(ambience.playlist));
         }
     }
     if let Some(new_id) = new_active {
-        if let Some(ambience) = scene_ambience(repo, new_id).await {
+        if let Some(ambience) = scene_ambience(repo, world_id, new_id).await {
             let already = next
                 .playing
                 .iter()
                 .any(|t| t.playlist == Some(ambience.playlist));
             if !already {
                 if let Ok(Some(pl_doc)) = repo.get_document(ambience.playlist).await {
-                    if let Some(v) = &pl_doc.engine {
-                        if let Ok(pl) = serde_json::from_value::<PlaylistEngine>(v.clone()) {
-                            let op = AudioOp::Play {
-                                playlist: Some(ambience.playlist),
-                                asset: None,
-                                track_index: None,
-                                channel: Some(AudioChannel::Ambience),
-                                gain: Some(ambience.gain),
-                                loop_: None,
-                            };
-                            let lookup = |id: Uuid| (id == ambience.playlist).then(|| pl.clone());
-                            if let Ok(applied) =
-                                crate::audio::state::apply(&next, &op, now as f64, &lookup)
-                            {
-                                next = applied;
+                    let pl_in_world =
+                        matches!(pl_doc.scope, Scope::World { world_id: w } if w == world_id);
+                    if pl_in_world && pl_doc.doc_type == PLAYLIST_DOC_TYPE {
+                        if let Some(v) = &pl_doc.engine {
+                            if let Ok(pl) = serde_json::from_value::<PlaylistEngine>(v.clone()) {
+                                let op = AudioOp::Play {
+                                    playlist: Some(ambience.playlist),
+                                    asset: None,
+                                    track_index: None,
+                                    channel: Some(AudioChannel::Ambience),
+                                    gain: Some(ambience.gain),
+                                    loop_: None,
+                                };
+                                let lookup =
+                                    |id: Uuid| (id == ambience.playlist).then(|| pl.clone());
+                                if let Ok(applied) =
+                                    crate::audio::state::apply(&next, &op, now as f64, &lookup)
+                                {
+                                    next = applied;
+                                }
                             }
                         }
                     }
@@ -231,9 +269,18 @@ pub(crate) async fn on_active_scene(
     let _ = commit_audio_state(repo, ctx, room, &doc, &state, &next, now).await;
 }
 
-/// `scene`'s `SceneEngine.ambience`, or `None` on any read/parse failure or absence.
-async fn scene_ambience(repo: &dyn Repository, scene: Uuid) -> Option<eng::scene::SceneAmbience> {
+/// `scene`'s `SceneEngine.ambience`, or `None` on any read/parse failure, absence, or the
+/// document not belonging to `world_id` (fail-closed, same shape `prefetch_playlist`'s own
+/// scope check takes).
+async fn scene_ambience(
+    repo: &dyn Repository,
+    world_id: Uuid,
+    scene: Uuid,
+) -> Option<eng::scene::SceneAmbience> {
     let doc = repo.get_document(scene).await.ok().flatten()?;
+    if !matches!(doc.scope, Scope::World { world_id: w } if w == world_id) {
+        return None;
+    }
     let v = doc.engine?;
     serde_json::from_value::<eng::SceneEngine>(v).ok()?.ambience
 }

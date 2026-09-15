@@ -461,12 +461,16 @@ pub enum AudioOp {
     Seek {
         /// The entry to seek.
         id: Uuid,
-        /// Target position, milliseconds from the track's own start.
-        position_ms: u64,
+        /// Target position, milliseconds from the track's own start. `u32`, not `u64`:
+        /// the transcode pipeline's own 30-minute admission cap bounds any real track at
+        /// 1.8M ms, and `u64` would generate as TS `bigint` while the client mirror reads a
+        /// plain `number` (the documented bigint-drift class; see
+        /// `data::engine::audio::PlayingTrack.started_at`'s own rationale).
+        position_ms: u32,
     },
-    /// Advance to the next track per the source playlist's mode; the server verifies the
-    /// current track's elapsed duration against the asset's own `durationMs` before applying
-    /// (see `audio::transport::handle_transport`) — a client cannot skip a track early.
+    /// Advance to the next track per the source playlist's mode. GM-only: an EXPLICIT skip,
+    /// applied unconditionally (no elapsed-duration gate — that gate belongs to `TrackEnded`,
+    /// the client-observed report path, so a GM's skip button can never silently no-op).
     Next {
         /// The entry to advance.
         id: Uuid,
@@ -474,6 +478,16 @@ pub enum AudioOp {
     /// Step back to the previous track per the source playlist's mode.
     Prev {
         /// The entry to step back.
+        id: Uuid,
+    },
+    /// A non-looping track reached its natural end on this client, which reports it so the
+    /// server decides the advance (track END is client-observed but server-decided: the first
+    /// report to arrive wins; a stale id — already advanced by an earlier report — is a silent
+    /// no-op). Any world member may send it; the elapsed-duration gate
+    /// (`audio::transport::handle_transport`) refuses a premature report, so it cannot be used
+    /// to skip a track early.
+    TrackEnded {
+        /// The entry that ended.
         id: Uuid,
     },
     /// Adjust a playing entry's gain without restarting it.

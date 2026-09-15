@@ -127,7 +127,7 @@ async fn a_gm_play_through_handle_transport_commits_the_new_playing_entry() {
         gain: None,
         loop_: None,
     };
-    handle_transport(&repo, &ctx, &room, world, op, 1_000)
+    handle_transport(&repo, &ctx, &room, op, 1_000)
         .await
         .unwrap();
 
@@ -156,7 +156,7 @@ async fn a_player_transport_op_is_forbidden_and_commits_nothing() {
         world_role: WorldRole::Player,
     };
 
-    let err = handle_transport(&repo, &player_ctx, &room, world, AudioOp::StopAll, 1_000)
+    let err = handle_transport(&repo, &player_ctx, &room, AudioOp::StopAll, 1_000)
         .await
         .unwrap_err();
     assert!(matches!(err, TransportError::Forbidden));
@@ -237,5 +237,229 @@ async fn activating_a_scene_starts_its_ambience_and_leaving_it_stops() {
     )
     .await
     .unwrap();
+    assert!(audio_state(&repo, world).await.playing.is_empty());
+}
+
+/// An audio asset row with a known `duration_ms` (the TrackEnded gate's duration source).
+async fn insert_audio_asset(repo: &SqliteRepository, world: Uuid, id: Uuid, duration_ms: i64) {
+    repo.insert_asset(&crate::data::asset::Asset {
+        id,
+        world_id: world,
+        storage_key: format!("{world}/{id}"),
+        original_name: "loop.wav".into(),
+        content_type: "audio/wav".into(),
+        byte_size: 100,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta {
+            duration_ms: Some(duration_ms),
+            ..crate::data::asset::AssetMeta::unprocessed("audio/wav", 100)
+        },
+    })
+    .await
+    .unwrap();
+}
+
+/// A one-track LoopAll playlist whose track names `asset` directly.
+fn playlist_doc_with_asset(world: Uuid, asset: Uuid) -> crate::data::document::Document {
+    let mut doc = playlist_doc(world);
+    doc.engine = Some(
+        serde_json::to_value(PlaylistEngine {
+            tracks: vec![PlaylistTrack {
+                asset: asset.to_string(),
+                name: None,
+                gain: 1.0,
+                loop_: false,
+            }],
+            mode: PlaylistMode::LoopAll,
+            channel: AudioChannel::Music,
+            fade_ms: 0,
+        })
+        .unwrap(),
+    );
+    doc
+}
+
+/// Play `playlist_id` through the handler as the GM at `now`.
+async fn gm_play(
+    repo: &SqliteRepository,
+    ctx: &PermissionContext,
+    room: &std::sync::Arc<Room>,
+    playlist_id: Uuid,
+    now: i64,
+) {
+    let op = AudioOp::Play {
+        playlist: Some(playlist_id),
+        asset: None,
+        track_index: None,
+        channel: None,
+        gain: None,
+        loop_: None,
+    };
+    handle_transport(repo, ctx, room, op, now).await.unwrap();
+}
+
+#[tokio::test]
+async fn track_ended_reports_obey_the_pause_aware_elapsed_gate() {
+    let (repo, world, ctx) = repo_with_world().await;
+    let room = seeded_room(&repo, world, &ctx).await;
+    let asset = Uuid::new_v4();
+    insert_audio_asset(&repo, world, asset, 5_000).await;
+    let playlist = playlist_doc_with_asset(world, asset);
+    let playlist_id = playlist.id;
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Create { doc: playlist }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    gm_play(&repo, &ctx, &room, playlist_id, 1_000).await;
+    let first_id = audio_state(&repo, world).await.playing[0].id;
+
+    // A PLAYER's premature report is a silent no-op (elapsed 2000 < 5000).
+    let player = repo
+        .create_user("p", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    repo.add_member(world, player, WorldRole::Player)
+        .await
+        .unwrap();
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    handle_transport(
+        &repo,
+        &player_ctx,
+        &room,
+        AudioOp::TrackEnded { id: first_id },
+        3_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(audio_state(&repo, world).await.playing[0].id, first_id);
+
+    // Pause at 2000: the paused span must not count as playback time. A report at 7000
+    // wall-clock still sees only 1000ms elapsed.
+    handle_transport(&repo, &ctx, &room, AudioOp::Pause { id: first_id }, 2_000)
+        .await
+        .unwrap();
+    handle_transport(
+        &repo,
+        &player_ctx,
+        &room,
+        AudioOp::TrackEnded { id: first_id },
+        7_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(audio_state(&repo, world).await.playing[0].id, first_id);
+
+    // Resume at 8000 (started_at shifts to 7000); at 12500 the elapsed 5500ms passes the gate.
+    handle_transport(&repo, &ctx, &room, AudioOp::Resume { id: first_id }, 8_000)
+        .await
+        .unwrap();
+    handle_transport(
+        &repo,
+        &player_ctx,
+        &room,
+        AudioOp::TrackEnded { id: first_id },
+        12_500,
+    )
+    .await
+    .unwrap();
+    let advanced = audio_state(&repo, world).await;
+    assert_eq!(advanced.playing.len(), 1);
+    assert_ne!(
+        advanced.playing[0].id, first_id,
+        "the advance assigns a fresh id"
+    );
+
+    // A second report naming the now-stale id is a silent no-op (the first report won).
+    let second_id = advanced.playing[0].id;
+    handle_transport(
+        &repo,
+        &player_ctx,
+        &room,
+        AudioOp::TrackEnded { id: first_id },
+        13_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(audio_state(&repo, world).await.playing[0].id, second_id);
+}
+
+#[tokio::test]
+async fn a_gm_next_skips_unconditionally_even_before_the_duration_elapses() {
+    let (repo, world, ctx) = repo_with_world().await;
+    let room = seeded_room(&repo, world, &ctx).await;
+    let asset = Uuid::new_v4();
+    insert_audio_asset(&repo, world, asset, 60_000).await;
+    let playlist = playlist_doc_with_asset(world, asset);
+    let playlist_id = playlist.id;
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Create { doc: playlist }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    gm_play(&repo, &ctx, &room, playlist_id, 1_000).await;
+    let first_id = audio_state(&repo, world).await.playing[0].id;
+
+    // 500ms into a 60s track: the GM's explicit skip advances immediately, no gate.
+    handle_transport(&repo, &ctx, &room, AudioOp::Next { id: first_id }, 1_500)
+        .await
+        .unwrap();
+    assert_ne!(audio_state(&repo, world).await.playing[0].id, first_id);
+}
+
+#[tokio::test]
+async fn a_playlist_from_another_world_is_refused_as_unknown() {
+    let (repo, world, ctx) = repo_with_world().await;
+    let room = seeded_room(&repo, world, &ctx).await;
+    // A playlist belonging to a DIFFERENT world.
+    let other = repo.create_world_owned("W2", ctx.user_id, 0).await.unwrap();
+    let foreign = playlist_doc(other.id);
+    let foreign_id = foreign.id;
+    repo.apply_intent(
+        &ctx,
+        other.id,
+        vec![Operation::Create { doc: foreign }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+
+    let err = handle_transport(
+        &repo,
+        &ctx,
+        &room,
+        AudioOp::Play {
+            playlist: Some(foreign_id),
+            asset: None,
+            track_index: None,
+            channel: None,
+            gain: None,
+            loop_: None,
+        },
+        1_000,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        TransportError::Op(crate::audio::state::AudioError::UnknownPlaylist)
+    ));
     assert!(audio_state(&repo, world).await.playing.is_empty());
 }

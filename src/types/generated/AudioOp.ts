@@ -62,15 +62,23 @@ id: string, } | { "type": "stop_all" } | { "type": "seek",
  */
 id: string, 
 /**
- * Target position, milliseconds from the track's own start.
+ * Target position, milliseconds from the track's own start. `u32`, not `u64`:
+ * the transcode pipeline's own 30-minute admission cap bounds any real track at
+ * 1.8M ms, and `u64` would generate as TS `bigint` while the client mirror reads a
+ * plain `number` (the documented bigint-drift class; see
+ * `data::engine::audio::PlayingTrack.started_at`'s own rationale).
  */
-position_ms: bigint, } | { "type": "next", 
+position_ms: number, } | { "type": "next", 
 /**
  * The entry to advance.
  */
 id: string, } | { "type": "prev", 
 /**
  * The entry to step back.
+ */
+id: string, } | { "type": "track_ended", 
+/**
+ * The entry that ended.
  */
 id: string, } | { "type": "set_gain", 
 /**

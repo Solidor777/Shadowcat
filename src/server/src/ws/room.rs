@@ -1215,6 +1215,23 @@ impl Room {
             .await
     }
 
+    /// The audio-transport counterpart of `commit_combat`'s guard discipline: the
+    /// read→apply→commit section (`audio::transport::handle_transport_locked`) runs INSIDE a
+    /// freshly-acquired `publish_guard`, so two transports can never interleave a stale
+    /// `audio-state` read with the other's commit. `on_active_scene` must NOT route through
+    /// here: `publish` already holds the guard and a tokio Mutex is non-reentrant.
+    pub(crate) async fn commit_audio_transport(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        op: crate::ws::protocol::AudioOp,
+        ts: i64,
+    ) -> Result<(), crate::audio::transport::TransportError> {
+        let _guard = self.publish_guard.lock().await;
+        crate::audio::transport::handle_transport_locked(repo, ctx, self, self.world_id, op, ts)
+            .await
+    }
+
     /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
     /// pure path executor, atomically commits the token to its stop location, and enforces a
     /// per-token `moving` lock so a client cannot re-dispatch while the animation is in flight.

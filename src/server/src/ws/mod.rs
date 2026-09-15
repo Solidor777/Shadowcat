@@ -91,6 +91,12 @@ impl PingRateLimiter {
 /// nothing failing to report it.
 pub(crate) const MESSAGE_RATE_PER_MIN: usize = 30;
 
+/// The per-user, per-trailing-60s budget the `ClientMsg::AudioTransport` handler spends
+/// against, from its OWN bucket (`WsState::audio_rate` — a transport flood must not starve
+/// chat/pings/emotes or vice versa). Declared once, beside the limiter it governs, for the
+/// same no-fork reason `MESSAGE_RATE_PER_MIN` states above.
+pub(crate) const AUDIO_RATE_PER_MIN: usize = 30;
+
 /// Realtime state shared in `AppState`. A thin handle today; the seam for future
 /// bus internals (actor pool / external broker) without touching callers.
 ///
