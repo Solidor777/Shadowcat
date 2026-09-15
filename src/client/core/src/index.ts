@@ -115,6 +115,7 @@ export { AssetResolver } from "./assets";
 export type {
   AssetOp,
   AssetVariant,
+  AudioUrls,
   AssetChangedNotice,
   ListingInvalidatedHandler,
 } from "./assets";

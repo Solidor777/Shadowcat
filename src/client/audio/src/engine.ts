@@ -1,0 +1,312 @@
+import type {
+  AssetResolver,
+  AudioApi,
+  AudioChannelId,
+  AudioChannelState,
+  AudioStateEngine,
+  DuckController,
+  PlayingTrack,
+  WireAudioOp,
+} from "@shadowcat/core";
+import type { AudioContextLike, GainNodeLike, WasmOpusDecoderLike } from "./context";
+import { DEFAULT_DUCK_DEPTH, DuckControllerImpl } from "./duck-controller";
+import { OneShotPlayer } from "./one-shot-player";
+import { TrackPlayer } from "./track-player";
+import { createOggOpusDecoder } from "./wasm";
+
+/** Channels every `AudioEngine` mixer graph carries (server-known three plus the two
+ * client-only buses `AudioApi.channels` exposes device volume/mute for). */
+const ALL_CHANNELS: AudioChannelId[] = ["master", "music", "ambience", "sfx", "ui"];
+/** Channels the duck bus attenuates by default. */
+const DEFAULT_DUCKABLE: AudioChannelId[] = ["music", "ambience"];
+
+/** Constructor options for `AudioEngine`. */
+export interface AudioEngineOpts {
+  /** Resolves asset ids to serve URLs (the shell's shared `AssetResolver`). */
+  resolver: AssetResolver;
+  /** The calibrated server clock (`WsClient.serverNow()`), never `Date.now()` directly. */
+  serverNow: () => number;
+  /** Sends a GM transport op — a thin forwarder to `WsClient.audioTransport(op)`, injected so
+   * this framework-neutral package never references `WsClient` directly. */
+  transport: (op: WireAudioOp) => void;
+  /** Lazily constructs the underlying `AudioContext`-shaped object, called exactly once, from
+   * `unlock()` (Web Audio requires a user gesture before a context may run). */
+  createContext: () => AudioContextLike;
+  /** The WASM Ogg/Opus decoder factory behind the WebKit Ogg path — production defaults to
+   * `wasm.ts`'s lazy singleton; tests inject a stub. */
+  createOggOpusDecoder?: () => Promise<WasmOpusDecoderLike>;
+  /** Starting duck depth, `0..=1` — seeded from this device's persisted audio mirror by the
+   * caller; defaults to `DEFAULT_DUCK_DEPTH` when the caller has no persisted value. */
+  duckDepth?: number;
+  /** Schedules `cb` for the next animation frame; injected so tests can pump frames manually
+   * without a browser event loop (production passes `requestAnimationFrame`). */
+  raf: (cb: (now: number) => void) => number;
+  /** Cancels a frame scheduled by `raf` (production passes `cancelAnimationFrame`). */
+  caf: (handle: number) => void;
+}
+
+/** The per-world mixer graph: `master ← duck ← {music, ambience, sfx, ui}` `GainNode`s, one
+ * `AudioContext` created lazily on `unlock()`. Implements `AudioApi` — this IS the concrete
+ * class the shell wraps in a reactive adapter for `AppContext.audio`. */
+export class AudioEngine implements AudioApi {
+  /** The constructor options. */
+  #opts: AudioEngineOpts;
+  /** The lazily-constructed context (`null` until `unlock()`). */
+  #context: AudioContextLike | null = null;
+  /** The graph's master gain. */
+  #master: GainNodeLike | null = null;
+  /** The duck bus's gain node. */
+  #duckNode: GainNodeLike | null = null;
+  /** Every bus's live gain node, by channel id. */
+  #channelNodes = new Map<AudioChannelId, GainNodeLike>();
+  /** Every bus's device gain/mute state, by channel id. */
+  #channelState: Record<AudioChannelId, AudioChannelState>;
+  /** The duck bus implementation. */
+  #duckImpl: DuckControllerImpl;
+  /** The shared one-shot decode/LRU player (`null` until `unlock()`). */
+  #oneShot: OneShotPlayer | null = null;
+  /** Live track players, by `PlayingTrack.id`. */
+  #trackPlayers = new Map<string, TrackPlayer>();
+  /** Pending state to apply once `unlock()` completes — Web Audio node creation before a
+   * context exists is impossible, so a `PlayingTrack` set arriving before unlock is tracked
+   * here and replayed by `unlock()`'s own tail. */
+  #pendingState: AudioStateEngine | null = null;
+  /** The `raf` handle for the running duck-gain driver loop, or `null` before `unlock()`/after
+   * `dispose()`. */
+  #duckLoopHandle: number | null = null;
+  /** The last duck gain applied to `#duckNode` — the driver writes `setTargetAtTime` only when
+   * `DuckControllerImpl.gain` differs from this, avoiding a redundant ramp restart every frame. */
+  #lastAppliedDuckGain: number | null = null;
+
+  /** Construct the engine (no graph yet — `unlock()` builds it on the first user gesture).
+   * @param opts The engine's dependencies and device hooks.
+   * @example
+   * ```
+   * // constructed by the shell's world session — exercised through `engine.test.ts`
+   * ```
+   */
+  constructor(opts: AudioEngineOpts) {
+    this.#opts = opts;
+    this.#duckImpl = new DuckControllerImpl(opts.duckDepth ?? DEFAULT_DUCK_DEPTH);
+    this.#channelState = Object.fromEntries(
+      ALL_CHANNELS.map((c) => [c, { gain: 1, muted: false }]),
+    ) as Record<AudioChannelId, AudioChannelState>;
+  }
+
+  /** Per-channel device gain + mute state, keyed by `AudioChannelId` (all five buses).
+   * @returns The live channel state record. */
+  get channels(): Record<AudioChannelId, AudioChannelState> {
+    return this.#channelState;
+  }
+
+  /** The shared ducking bus.
+   * @returns The duck controller. */
+  get duck(): DuckController {
+    return this.#duckImpl;
+  }
+
+  /** The calibrated server clock, ms (thin forwarder to `AudioEngineOpts.serverNow`).
+   * @returns The current calibrated server time, ms.
+   * @example
+   * ```ts
+   * // implements `AudioApi.serverNow` — see that interface's own doc
+   * ```
+   */
+  serverNow(): number {
+    return this.#opts.serverNow();
+  }
+
+  /** Send a GM-only transport op (thin forwarder to `AudioEngineOpts.transport`).
+   * @param op The transport operation to apply.
+   * @example
+   * ```ts
+   * // implements `AudioApi.transport` — see that interface's own doc
+   * ```
+   */
+  transport(op: WireAudioOp): void {
+    this.#opts.transport(op);
+  }
+
+  /** Adjust one channel's device gain and/or mute state; omitted fields are unchanged. A live
+   * channel node follows immediately (muted ⇒ gain 0).
+   * @param id The channel to adjust.
+   * @param patch The fields to change.
+   * @param patch.gain The new gain, `0..=1`; omitted = unchanged.
+   * @param patch.muted The new mute state; omitted = unchanged.
+   * @example
+   * ```ts
+   * // implements `AudioApi.setChannel` — see that interface's own doc
+   * ```
+   */
+  setChannel(id: AudioChannelId, patch: {
+    /** The new gain, `0..=1`; omitted = unchanged. */
+    gain?: number;
+    /** The new mute state; omitted = unchanged. */
+    muted?: boolean;
+  }): void {
+    this.#channelState[id] = { ...this.#channelState[id], ...patch };
+    const node = this.#channelNodes.get(id);
+    if (node) {
+      node.gain.value = this.#channelState[id].muted ? 0 : this.#channelState[id].gain;
+    }
+  }
+
+  /** Unlock the device's `AudioContext` — constructs the mixer graph on first call, resumes
+   * the context inside the calling gesture, replays any pending transport state, and starts
+   * the duck-gain driver loop. Idempotent.
+   * @returns Resolves once the context is running.
+   * @example
+   * ```ts
+   * // implements `AudioApi.unlock` — see that interface's own doc
+   * ```
+   */
+  async unlock(): Promise<void> {
+    if (this.#context !== null) {
+      if (this.#context.state !== "running") await this.#context.resume();
+      return;
+    }
+    const context = this.#opts.createContext();
+    this.#master = context.createGain();
+    this.#master.connect(context.destination);
+    this.#duckNode = context.createGain();
+    this.#duckNode.connect(this.#master);
+    for (const id of ALL_CHANNELS) {
+      const node = context.createGain();
+      node.gain.value = this.#channelState[id].muted ? 0 : this.#channelState[id].gain;
+      // "master"/"ui" are client-only buses with no server-authored playback source — they
+      // exist only so `setChannel` has a uniform target; only music/ambience/sfx ever receive
+      // a TrackPlayer/OneShotPlayer/EmitterPlayer connection.
+      node.connect(DEFAULT_DUCKABLE.includes(id) ? this.#duckNode : this.#master);
+      this.#channelNodes.set(id, node);
+    }
+    this.#context = context;
+    this.#oneShot = new OneShotPlayer(
+      context,
+      this.#opts.resolver,
+      {
+        master: this.#channelNodes.get("master")!,
+        music: this.#channelNodes.get("music")!,
+        ambience: this.#channelNodes.get("ambience")!,
+        sfx: this.#channelNodes.get("sfx")!,
+        ui: this.#channelNodes.get("ui")!,
+      },
+      this.#opts.createOggOpusDecoder ?? createOggOpusDecoder,
+    );
+    await context.resume();
+    if (this.#pendingState) {
+      this.applyState(this.#pendingState);
+      this.#pendingState = null;
+    }
+    this.#startDuckLoop();
+  }
+
+  /** Drives `DuckControllerImpl.tick` off `#opts.raf` and applies its output to `#duckNode`.
+   * Started once by `unlock()`; stopped by `dispose()`.
+   * @example
+   * ```
+   * // private driver; exercised through `engine.test.ts`'s pumped-raf duck cases
+   * ```
+   */
+  #startDuckLoop(): void {
+    const frame = (now: number): void => {
+      this.#duckImpl.tick(now);
+      const gain = this.#duckImpl.gain;
+      if (this.#duckNode && this.#context && gain !== this.#lastAppliedDuckGain) {
+        this.#duckNode.gain.setTargetAtTime(gain, this.#context.currentTime, 0.02);
+        this.#lastAppliedDuckGain = gain;
+      }
+      this.#duckLoopHandle = this.#opts.raf(frame);
+    };
+    this.#duckLoopHandle = this.#opts.raf(frame);
+  }
+
+  /** Play a one-shot sound effect; a no-op until `unlock()` has run (one-shots are never
+   * queued — a missed UI cue is inconsequential).
+   * @param asset Asset id of the sound to play.
+   * @param opts Optional channel override and gain multiplier.
+   * @param opts.channel The bus to play through; default `"sfx"`.
+   * @param opts.gain Per-call gain multiplier; default `1`.
+   * @example
+   * ```ts
+   * // implements `AudioApi.playOneShot` — see that interface's own doc
+   * ```
+   */
+  playOneShot(asset: string, opts?: {
+    /** The bus to play through; default `"sfx"`. */
+    channel?: AudioChannelId;
+    /** Per-call gain multiplier; default `1`. */
+    gain?: number;
+  }): void {
+    if (!this.#oneShot) return; // not yet unlocked: one-shots are never queued
+    void this.#oneShot.play(asset, opts);
+  }
+
+  /** Diff `state.playing` by id against the live `TrackPlayer` set: create players for new
+   * entries, `sync` existing ones, dispose removed ones. Called from the shell's `audio-state`
+   * document-store subscription on every change and on a 1 Hz drift-correction tick.
+   * No-ops (tracks the state for replay) until `unlock()` has run.
+   * @param state The world's current `AudioStateEngine`.
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s applyState diff cases
+   * ```
+   */
+  applyState(state: AudioStateEngine): void {
+    if (!this.#context) {
+      this.#pendingState = state;
+      return;
+    }
+    const serverNow = this.#opts.serverNow();
+    const seen = new Set<string>();
+    for (const entry of state.playing) {
+      seen.add(entry.id);
+      const existing = this.#trackPlayers.get(entry.id);
+      if (existing) {
+        existing.sync(entry, serverNow);
+      } else {
+        const dest = this.#channelNodes.get(channelIdOf(entry))!;
+        const player = new TrackPlayer(this.#context, this.#opts.resolver, this.#oneShot!, entry, dest);
+        player.sync(entry, serverNow);
+        this.#trackPlayers.set(entry.id, player);
+      }
+    }
+    for (const [id, player] of this.#trackPlayers) {
+      if (!seen.has(id)) {
+        player.dispose();
+        this.#trackPlayers.delete(id);
+      }
+    }
+  }
+
+  /** Release every node, player, and the duck-loop `raf` handle; the `AudioContext` itself is
+   * left to the shell (one `AudioEngine` per world session — the context's own lifecycle is the
+   * shell's, not this class's, since `unlock()` may be called again on rejoin).
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s dispose cases
+   * ```
+   */
+  dispose(): void {
+    for (const player of this.#trackPlayers.values()) player.dispose();
+    this.#trackPlayers.clear();
+    if (this.#duckLoopHandle !== null) {
+      this.#opts.caf(this.#duckLoopHandle);
+      this.#duckLoopHandle = null;
+    }
+  }
+}
+
+/** Maps a `PlayingTrack`'s server channel (`"music" | "ambience" | "sfx"`) onto this engine's
+ * `AudioChannelId` — a pure passthrough today (the sets already coincide on those three), kept
+ * as a named function so a future divergence between the two vocabularies has one seam to
+ * change.
+ * @param entry The playing entry whose channel maps.
+ * @returns The mixer bus id for the entry's channel.
+ * @example
+ * ```
+ * // private helper; exercised through `AudioEngine.applyState`'s player construction
+ * ```
+ */
+function channelIdOf(entry: PlayingTrack): AudioChannelId {
+  return entry.channel;
+}
