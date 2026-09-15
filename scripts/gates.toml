@@ -36,13 +36,6 @@ tier = "push"
 [[gate]]
 workflow = "ci.yml"
 job = "rust"
-command = "cmake --version || echo \"cmake: NOT FOUND\""
-tier = "ci-only"
-reason = "Measures cmake availability on each CI runner image for the audio transcode toolchain decision; a developer machine's cmake is not the value being measured."
-
-[[gate]]
-workflow = "ci.yml"
-job = "rust"
 command = "n=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo \"${NUMBER_OF_PROCESSORS:-2}\") echo \"runner parallelism: $n\" echo \"CARGO_BUILD_JOBS=$n\" >> \"$GITHUB_ENV\""
 tier = "setup"
 reason = "Exports the runner's own core count as CARGO_BUILD_JOBS for the cargo steps after it; a developer machine builds under the repo's own parallelism budget instead."

@@ -88,6 +88,21 @@ ServerMsg::AudioError { reason: String }          // refusal (authz, cap, unknow
 
 ### 2.3 Transcode pipeline (`data::asset::process` audio arm; master §7, D9)
 
+#### Measured: cmake availability (Task 1a)
+
+Measured via a temporary probe step in the `rust` CI job (run 34940788676, all legs green —
+the `opusic-sys` cmake build itself compiled libopus successfully on every leg):
+
+| OS | cmake version | Action needed |
+| --- | --- | --- |
+| ubuntu-latest | `cmake version 3.31.6` | none |
+| windows-latest | `cmake version 4.4.3` | none |
+| macos-latest | `cmake version 4.4.3` | none |
+
+Every leg reports a version, so no `lukka/get-cmake` step is needed on any leg; the temporary
+probe was removed (from `.github/workflows/ci.yml` and the matching `scripts/gates.toml`
+entry) after the measurement was captured.
+
 #### Measured: canPlayType per engine (Task 1b)
 
 Measured locally via Playwright 1.61.0 (`chromium` 1228, `firefox` 1532, `webkit` 2311 —
@@ -99,17 +114,19 @@ Measured locally via Playwright 1.61.0 (`chromium` 1228, `firefox` 1532, `webkit
 | Firefox | `probably` | `probably` |
 | WebKit | `""` | `probably` |
 
-**Decision (the plan's Task 1b rule, applied):** WebKit returns `""` for Ogg and every engine
-returns non-empty for WebM, so the derivative container is **WebM**, not Ogg. Every
-`.opus.ogg` / `"audio/ogg; codecs=opus"` literal in this spec and the plan (the `OPUS_SUFFIX` /
-`OPUS_CONTENT_TYPE` constants, `AssetResolver.audioUrl`'s `primaryType`, the `?variant=opus`
-sibling name, the transcode test's `OggS` magic-byte assertion) becomes `.opus.webm` /
-`"audio/webm; codecs=opus"` uniformly. **Muxer implication the plan's "suffix and MIME string
-only" note does not cover:** the `ogg` crate's `ogg::writing::PacketWriter` emits Ogg
-encapsulation, not WebM/EBML — the transcode task (plan Task 9) must swap the muxing layer to a
-WebM/EBML writer (and may drop the `ogg` dependency) when it implements the pipeline; the
-decode (`symphonia`), resample (`rubato`) and encode (`opus`) stages are container-agnostic and
-unaffected.
+#### Rulings (owner, superseding the earlier single-container note)
+
+1. **Dual container, end to end.** The pipeline supports BOTH Ogg and WebM derivatives. The
+   `ogg` crate STAYS; the OggS magic-byte probe/validation STAYS as originally written. WebKit's
+   `""` for `audio/ogg; codecs=opus` does NOT eliminate Ogg: Ogg on WebKit decodes via a WASM
+   opus decoder (`ogg-opus-decoder`, MIT) feeding the Web Audio API.
+2. **Seamless looping is a PLAYBACK-TIME flag, not an asset property.** `loop=true` ⇒ decode
+   to `AudioBuffer` + `AudioBufferSourceNode` `loopStart`/`loopEnd` (sample-accurate gapless).
+   Looped playback prefers the Ogg derivative; one-shots prefer native containers.
+3. **Import-time format choice.** The audio import UI offers Ogg / WebM / Both (`"both"` stores
+   both container derivatives off the retained original). Default: **Both** (any file may be
+   looped, and a WebKit client needs the WebM derivative). Audio assets are UNCLASSIFIED — no
+   ambient/stinger tagging anywhere in `AssetMeta`.
 
 - `AssetKind::Audio` (`content_type` starts with `audio/`); the `kind` filter and the browser's
   kind chips learn it. Assets table gains `duration_ms INTEGER NULL` and `sample_rate INTEGER
@@ -117,36 +134,38 @@ unaffected.
 - `process_staged`'s new arm for `audio/*` (sniffed by `symphonia`'s probe, never trusted from
   the client's `Content-Type` alone): decode → mono/stereo f32 at source rate → `rubato`
   (MIT) resample to 48 kHz → `opus` encode (VBR, 96 kbps stereo / 64 kbps mono, 20 ms frames)
-  → `ogg` pages → `<uuid>.opus.ogg` (`Variant::Opus`, appended to `Variant` and
-  `SIBLING_SUFFIXES`). **Audio deliberately does NOT mirror the image pipeline's canonical
+  → mux into the import-selected container(s): Ogg pages via `ogg` → `<uuid>.opus.ogg`,
+  and/or a minimal single-track EBML (this module's own writer, no extra crate) →
+  `<uuid>.opus.webm` (neither is a `Variant`; both are appended to `SIBLING_SUFFIXES`).
+  **Audio deliberately does NOT mirror the image pipeline's canonical
   SWAP** (where the converted bytes become the canonical file and the original moves to the
   GM-only `.orig` sibling served by `/original`): for audio the CANONICAL file stays the
   uploaded original (member-readable through the normal serve route, because it is every
   non-GM player's playback fallback) and Opus is a derivative SIBLING like `.thumb.webp`,
-  served through `?variant=opus`. `retain_originals` is not consulted for audio. The
+  served through `?variant=opus` (Ogg) / `?variant=opus-webm` (WebM). `retain_originals` is
+  not consulted for audio. The
   derivative is produced at commit time or not at all: over-cap input (duration > 30 min or
   decoded frames > 2^28 samples) or a decode failure stores the original with the explicit
-  tag `audio:untranscoded` and NO derivative, and `?variant=opus` on an asset without the
-  sibling answers 404 — there is NO lazy on-demand regeneration path for audio (the
+  tag `audio:untranscoded` and NO derivative, and `?variant=opus`/`opus-webm` on an asset
+  without the sibling answers 404 — there is NO lazy on-demand regeneration path for audio (the
   thumb/preview `write_derivatives` regenerate-on-serve convention is cheap for an image
   resize and unacceptable for a minutes-long transcode); `reconvert` is the only way to retry.
-- Build toolchain: `opus` binds libopus through `audiopus_sys`, whose build script drives
-  `cmake` (unlike `libwebp-sys`, which uses the `cc` crate — so the webp precedent proves
-  only that a C compiler is present, not cmake). GitHub-hosted runner images for all three
-  OSes ship `cmake`; **the plan's first task runs `cmake --version` on each matrix leg (a
-  throwaway CI step, or a check inside the existing rust job) and records the result here
-  before the dependency lands.** If any leg lacks it, add the `lukka/get-cmake` step to that
-  leg — never a hand-installed toolchain.
-- `GET /api/worlds/{world}/assets/{id}?variant=opus` serves the derivative (the `serve`
-  route's `ServeQuery` variant match gains an `"opus"` arm beside `"thumb"`/`"preview"`);
-  `reconvert` accepts audio assets (its `original_retained` precondition holds by
-  construction for audio).
-- Client `AssetResolver.audioUrl(id): { primary: string; fallback: string; primaryType:
-  "audio/ogg; codecs=opus" }` and the engine picks `primary` iff
-  `HTMLMediaElement.canPlayType(primaryType) !== ""`. **The plan's first task is a probe that
-  records `canPlayType` for `audio/ogg; codecs=opus`, `audio/webm; codecs=opus` on Chromium,
-  Firefox and WebKit (Playwright's three engines) into the spec's §2.3 as measured text** — the
-  container choice (Ogg vs WebM) is decided by that measurement, not assumed.
+- Build toolchain: `opus` binds libopus through `opusic-sys` (the `opus` crate's `-sys` half;
+  BSD-3-Clause), whose build script drives `cmake` via its default `bundled` feature
+  (unlike `libwebp-sys`, which uses the `cc` crate — so the webp precedent proves
+  only that a C compiler is present, not cmake). **Measured: every CI matrix leg ships `cmake`
+  (see the table above), so no toolchain step is needed on any leg.**
+- `GET /api/worlds/{world}/assets/{id}?variant=opus` / `?variant=opus-webm` serves the
+  respective derivative (the `serve` route's variant handling gains an early branch beside
+  `"thumb"`/`"preview"`); `reconvert` accepts audio assets (its `original_retained`
+  precondition holds by construction for audio, and the retry re-emits the derivative set the
+  asset currently has — `effective_reencode_selection`).
+- Client `AssetResolver.audioUrl(id)` exposes BOTH derivatives plus the canonical fallback
+  (`{ ogg, webm, fallback, oggType, webmType }`); the player picks per the rulings above —
+  loops prefer the Ogg derivative (WASM decode on WebKit), one-shots prefer the native
+  original, and every candidate is checked through `canPlayType`/decode-fallback, never
+  assumed playable. **The Task 1b probe recorded the raw `canPlayType` matrix above; the
+  dual-container ruling governs how it is consumed.**
 
 ### 2.4 World seed / bundle
 

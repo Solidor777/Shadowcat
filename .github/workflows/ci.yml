@@ -28,10 +28,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: Audio toolchain probe (cmake)
-        shell: bash
-        run: >-
-          cmake --version || echo "cmake: NOT FOUND"
       # The repo pins a build-parallelism budget for a desktop the build shares with its user.
       # Cargo does not clamp that value to the host's parallelism, so on a runner with fewer
       # cores it raises concurrent rustc instead of lowering it and multiplies peak memory --
