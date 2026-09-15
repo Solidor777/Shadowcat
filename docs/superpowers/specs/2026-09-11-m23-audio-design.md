@@ -145,6 +145,31 @@ transcode-known bounds rather than decoder trim behavior; (2) WebKit clients pla
 derivative via the streaming `<audio>` element path (the media stack reports `probably`), and
 the buffered paths that need Web Audio degrade exactly as designed.
 
+#### Measured: Ogg decodeAudioData trim per engine (the loop-bounds follow-on probe)
+
+Same fixture and method as the WebM probe above (48,240 valid samples = 50 full 960-sample
+frames + a 240-sample tail, pre-skip 312; `decodeAudioData` per engine; WebKit omitted — no
+Web Audio API on this machine's build, as recorded above), both containers re-measured in one
+run so the matrix is self-consistent:
+
+| Engine | container | decoded length | delta vs 48,240 |
+| --- | --- | --- | --- |
+| Chromium | `.opus.ogg` | 48,240 | 0 (trimmed exactly) |
+| Firefox | `.opus.ogg` | 48,240 | 0 (trimmed exactly) |
+| Chromium | `.opus.webm` | 48,648 | +408 (NOT trimmed) |
+| Firefox | `.opus.webm` | 48,648 | +408 (NOT trimmed) |
+
+**Outcome (the directive's conditional, applied):** BOTH engines trim the Ogg derivative to
+exactly the valid sample count (both honor RFC 7845's pre-skip header field and end-trim
+granule), so the transcode-known loop-bounds metadata path is NOT built. Rationale: the only
+consumers of sample-exact bounds are `AudioBufferSourceNode` loops, and ruling 2 already
+routes looped playback to the Ogg derivative; with every measured Web-Audio engine decoding
+that derivative to exactly the valid region, `loopStart = 0` / `loopEnd = buffer.duration`
+ARE the correct bounds, and a server-recorded pre_skip/valid-samples pair would add a column,
+a wire field, and a client-side comparison to guard against decoder behavior no shipped
+engine exhibits. Should a future engine decode Ogg untrimmed, this probe regenerates in
+minutes and the bounds path can be reconsidered with that data.
+
 #### Rulings (owner, superseding the earlier single-container note)
 
 1. **Dual container, end to end.** The pipeline supports BOTH Ogg and WebM derivatives. The
