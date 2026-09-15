@@ -492,6 +492,12 @@ pub async fn serve(
                 .repo
                 .permission_context(asset.world_id, user.id, user.role)
                 .await?;
+            // The metadata is authoritative: a `None` sheet means no sheet exists even if a
+            // stale sibling file survived on disk (e.g. the asset was replaced with a
+            // non-animated one through a path that left the file behind).
+            if asset.meta.sheet.is_none() {
+                return Err(AppError::NotFound);
+            }
             let canonical = state.config.assets_path().join(&asset.storage_key);
             let sheet = crate::data::asset::process::sheet_path(&canonical);
             let bytes = tokio::fs::read(&sheet).await.map_err(|e| {

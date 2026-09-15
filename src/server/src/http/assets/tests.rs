@@ -76,6 +76,15 @@ impl SheetFixture {
             .unwrap();
         let world = repo.create_world_owned("w", gm, 0).await.unwrap();
         let asset = Uuid::new_v4();
+        let mut meta = crate::data::asset::AssetMeta::unprocessed("image/webp", 10);
+        meta.sheet = Some(crate::data::asset::process::SheetMeta {
+            rows: 1,
+            cols: 2,
+            count: 2,
+            frame_ms: vec![100, 100],
+            width: 8,
+            height: 8,
+        });
         repo.insert_asset(&crate::data::asset::Asset {
             id: asset,
             world_id: world.id,
@@ -89,7 +98,7 @@ impl SheetFixture {
             folder_id: None,
             tags: vec![],
             derived_tags: vec![],
-            meta: crate::data::asset::AssetMeta::unprocessed("image/webp", 10),
+            meta,
         })
         .await
         .unwrap();
@@ -200,4 +209,46 @@ async fn serve_variant_sheet_is_not_found_without_the_sibling() {
     )
     .await;
     assert!(matches!(bad, Err(AppError::BadRequest(_))), "{bad:?}");
+}
+
+#[tokio::test]
+async fn serve_variant_sheet_404s_when_metadata_says_none_even_with_a_file_on_disk() {
+    let f = SheetFixture::new().await;
+    // A stale sibling file (e.g. left behind by a replace that produced no new sheet) must
+    // not be served once the row's metadata says `sheet: None`.
+    let world = f.world;
+    let mut meta = crate::data::asset::AssetMeta::unprocessed("image/webp", 10);
+    meta.sheet = None;
+    let stale = Uuid::new_v4();
+    f.state
+        .repo
+        .insert_asset(&crate::data::asset::Asset {
+            id: stale,
+            world_id: world,
+            storage_key: format!("{world}/{stale}"),
+            original_name: "old-fx.webp".into(),
+            content_type: "image/webp".into(),
+            byte_size: 10,
+            created_by: None,
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta,
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        crate::data::asset::process::sheet_path(
+            &f.state
+                .config
+                .assets_path()
+                .join(format!("{world}/{stale}")),
+        ),
+        b"stale-sheet",
+    )
+    .unwrap();
+    let res = f.serve_sheet(stale).await;
+    assert!(matches!(res, Err(AppError::NotFound)), "{res:?}");
 }
