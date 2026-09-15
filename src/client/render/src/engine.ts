@@ -1711,6 +1711,23 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.reconcile(); // re-resolve token images too (AssetChanged path)
   }
 
+  /** Re-run `vfxView.reconcile()` after an asset-metadata warm settles. A warm completing
+   * carries no store commit (it is an out-of-band HTTP fetch), so the reconcile that would
+   * resolve an emitter's `VfxEmission` has already run against a COLD `vfxAssets` cache and
+   * failed the node closed — the same client-local re-projection shape `reapplyFootprints`
+   * exists for (a footprints frame likewise carries no store commit).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyVfx();
+   * ```
+   */
+  reapplyVfx(): void {
+    this.vfxView.reconcile();
+  }
+
   /** Push the camera transform to the backend and redraw the grid for the new view.
    * @example
    * ```ts

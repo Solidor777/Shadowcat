@@ -1641,4 +1641,26 @@ describe("RenderEngine VFX wiring", () => {
     expect(backend.vfx.has("emitter:tok1")).toBe(false);
     engine.destroy();
   });
+
+  it("reapplyVfx resolves an emitter that failed closed against a cold asset cache", () => {
+    // The cold-cache race: the store commit's reconcile ran before the metadata warm landed,
+    // so the emitter failed closed; the warm-settled re-projection is what makes it appear.
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    let resolvable = false;
+    const engine = new RenderEngine({
+      store,
+      assets: new AssetResolver(),
+      backend,
+      grid: { kind: "square", size: 100 },
+      vfxAssets: (id) => (resolvable && id === "fx1" ? { type: "sheet", url: "/fx.webp", rows: 2, cols: 2, count: 3 } : null),
+    });
+    engine.start();
+    store.applyCommand(vfxTokenCmd(1));
+    expect(backend.vfx.has("emitter:tok1")).toBe(false); // cold cache: failed closed
+    resolvable = true;
+    engine.reapplyVfx();
+    expect(backend.vfx.has("emitter:tok1")).toBe(true);
+    engine.destroy();
+  });
 });

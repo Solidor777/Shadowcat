@@ -316,12 +316,13 @@
           .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
           .sort()
           .join(";");
-        // Warm the metadata cache for every emitter's asset proactively, so a token's
-        // `VfxEmission` resolves on the very first `vfxView.reconcile()` pass, not only
-        // after a one-shot happens to warm it.
+        // Warm the metadata cache for every emitter's asset proactively, then re-run the VFX
+        // reconcile once each warm settles: the store-commit reconcile that would resolve the
+        // emission ran against a COLD cache (the warm is an out-of-band fetch), so without
+        // the re-projection the emitter would never appear until an unrelated commit.
         for (const t of sceneTokens) {
           const eff = resolveTokenActor(t, documents);
-          if (eff?.vfx?.enabled) void vfxAssetCache.warm(eff.vfx.asset);
+          if (eff?.vfx?.enabled) void vfxAssetCache.warm(eff.vfx.asset).then(() => e.reapplyVfx());
         }
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
