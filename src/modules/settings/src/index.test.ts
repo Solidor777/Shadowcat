@@ -16,4 +16,10 @@ describe("settings module", () => {
       labelKey: "settings.tab",
     });
   });
+
+  it("provides shadowcat.settings-section for other modules to contribute into", () => {
+    expect(settings.manifest.provides).toEqual([
+      { contract: "shadowcat.settings-section", cardinality: "multi" },
+    ]);
+  });
 });
