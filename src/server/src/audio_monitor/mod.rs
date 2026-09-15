@@ -11,6 +11,9 @@
 /// A scripted in-memory backend for tests — never compiled into the release binary.
 #[cfg(test)]
 pub mod fake;
+/// Linux backend (PipeWire).
+#[cfg(target_os = "linux")]
+pub mod linux;
 
 /// One watched process's current peak output level, already basename-reduced and clamped.
 ///
@@ -92,6 +95,31 @@ pub trait SessionMonitor: Send {
     /// assert_eq!(monitor.poll().unwrap()[0].peak, 0.9);
     /// ```
     fn poll(&mut self) -> Result<Vec<SessionLevel>, MonitorError>;
+}
+
+/// Constructs the platform-appropriate `SessionMonitor`, or `MonitorError::Unsupported` when
+/// this OS/OS-version has none (macOS < 14.2, Linux with no PipeWire socket running, or a
+/// build for any other target).
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::audio_monitor::platform_monitor;
+///
+/// // Never panics: a host without a working backend reports `Unsupported` instead.
+/// let _outcome = platform_monitor();
+/// ```
+pub fn platform_monitor() -> Result<Box<dyn SessionMonitor>, MonitorError> {
+    #[cfg(target_os = "linux")]
+    {
+        return linux::LinuxMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(MonitorError::Unsupported(
+            "this operating system".to_string(),
+        ))
+    }
 }
 
 /// Basename length cap before serialization; names longer than this are truncated.
