@@ -1,6 +1,13 @@
 use super::*;
 use crate::sandbox::{ValidatorFault, ValidatorInput};
 
+/// Wall-clock budgets that keep the production `HANG_GUARD` out of every non-timing test:
+/// on a saturated CI runner, instantiating even a trivial module can exceed the production
+/// guard's wall clock, which would race the verdict kind the test actually pins (a
+/// non-timing assertion must never observe `Fault(TooSlow)`). Tests that pin the
+/// guard/slow-call behavior itself set their own budgets explicitly instead.
+const GENEROUS: (Duration, Duration) = (Duration::from_secs(3600), Duration::from_secs(3600));
+
 /// Compiles a WAT fixture into a `CompiledValidator` through `CompiledValidator::compile`,
 /// the same single compile path the registry's scan-time compile uses.
 fn compiled(wat_src: &str) -> CompiledValidator {
@@ -41,7 +48,8 @@ const ACCEPT_WAT: &str = r#"
 
 #[tokio::test]
 async fn accept_returns_zero() {
-    let verdict = run_validator(&compiled(ACCEPT_WAT), &input(10)).await;
+    let verdict =
+        run_validator_with_budgets(&compiled(ACCEPT_WAT), &input(10), GENEROUS.0, GENEROUS.1).await;
     assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
@@ -68,7 +76,8 @@ const REFUSE_WAT: &str = r#"
 
 #[tokio::test]
 async fn refuse_with_reason() {
-    let verdict = run_validator(&compiled(REFUSE_WAT), &input(-1)).await;
+    let verdict =
+        run_validator_with_budgets(&compiled(REFUSE_WAT), &input(-1), GENEROUS.0, GENEROUS.1).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Refuse {
@@ -102,7 +111,13 @@ const REFUSE_LONG_REASON_WAT: &str = r#"
 
 #[tokio::test]
 async fn refuse_with_an_over_long_reason_is_truncated() {
-    let verdict = run_validator(&compiled(REFUSE_LONG_REASON_WAT), &input(-1)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(REFUSE_LONG_REASON_WAT),
+        &input(-1),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     let ValidatorVerdict::Refuse { reason, .. } = verdict else {
         panic!("expected Refuse, got {verdict:?}");
     };
@@ -166,7 +181,13 @@ async fn memory_bomb_is_a_memory_limit_fault() {
     // The denied grow is silent (-1); the store past the obtained pages is the trap, and it
     // must classify as MemoryLimit — never OutOfFuel, which would mean the ceiling was not
     // enforced and the loop ran until the fuel ran out.
-    let verdict = run_validator(&compiled(MEMORY_BOMB_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(MEMORY_BOMB_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     let ValidatorVerdict::Fault(ValidatorFault { kind, .. }) = verdict else {
         panic!("expected Fault, got {verdict:?}");
     };
@@ -182,7 +203,13 @@ const MISSING_VALIDATE_WAT: &str = r#"
 
 #[tokio::test]
 async fn missing_validate_export_is_bad_abi() {
-    let verdict = run_validator(&compiled(MISSING_VALIDATE_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(MISSING_VALIDATE_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -203,7 +230,13 @@ const BAD_POINTER_WAT: &str = r#"
 
 #[tokio::test]
 async fn alloc_out_of_bounds_is_bad_pointer() {
-    let verdict = run_validator(&compiled(BAD_POINTER_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(BAD_POINTER_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -228,7 +261,13 @@ const NON_UTF8_REASON_WAT: &str = r#"
 
 #[tokio::test]
 async fn non_utf8_reason_is_lossy_decoded_not_a_fault() {
-    let verdict = run_validator(&compiled(NON_UTF8_REASON_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(NON_UTF8_REASON_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     assert!(matches!(verdict, ValidatorVerdict::Refuse { .. }));
 }
 
@@ -254,7 +293,13 @@ const LOG_SEVENTEEN_TIMES_WAT: &str = r#"
 async fn sixteen_log_calls_honoured_seventeenth_ignored() {
     // No assertion on the log sink itself here (that's `tracing`'s own concern) — this test
     // pins that the 17th call does not trap or otherwise change the verdict.
-    let verdict = run_validator(&compiled(LOG_SEVENTEEN_TIMES_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(LOG_SEVENTEEN_TIMES_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
@@ -262,7 +307,8 @@ async fn sixteen_log_calls_honoured_seventeenth_ignored() {
 async fn input_over_one_mib_is_refused_without_running() {
     let mut oversized = input(0);
     oversized.name = Some("x".repeat(2 * 1024 * 1024));
-    let verdict = run_validator(&compiled(ACCEPT_WAT), &oversized).await;
+    let verdict =
+        run_validator_with_budgets(&compiled(ACCEPT_WAT), &oversized, GENEROUS.0, GENEROUS.1).await;
     assert_eq!(
         verdict,
         ValidatorVerdict::Fault(ValidatorFault {
@@ -357,7 +403,13 @@ const MALFORMED_LOG_ARGS_WAT: &str = r#"
 
 #[tokio::test]
 async fn malformed_log_args_are_dropped_not_a_fault() {
-    let verdict = run_validator(&compiled(MALFORMED_LOG_ARGS_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(MALFORMED_LOG_ARGS_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     assert_eq!(verdict, ValidatorVerdict::Accept);
 }
 
@@ -374,7 +426,13 @@ const TRAPPING_REASON_PTR_WAT: &str = r#"
 
 #[tokio::test]
 async fn a_trapping_reason_export_is_classified_as_a_trap_not_a_bad_pointer() {
-    let verdict = run_validator(&compiled(TRAPPING_REASON_PTR_WAT), &input(0)).await;
+    let verdict = run_validator_with_budgets(
+        &compiled(TRAPPING_REASON_PTR_WAT),
+        &input(0),
+        GENEROUS.0,
+        GENEROUS.1,
+    )
+    .await;
     let ValidatorVerdict::Fault(ValidatorFault { kind, .. }) = verdict else {
         panic!("expected Fault, got {verdict:?}");
     };
