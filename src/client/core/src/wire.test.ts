@@ -18,6 +18,7 @@ import {
   FieldChangeSchema,
   CapabilityGrantsSchema,
   actorOwnerRefSchemaImpl,
+  audioOpSchemaImpl,
   audienceSchemaImpl,
   capabilityGrantsSchemaImpl,
   capabilityRequirementSchemaImpl,
@@ -40,6 +41,7 @@ import {
   type ClientMsg,
   type WireOperation,
   type WireAudience,
+  type WireAudioOp,
   type WireActorOwnerRef,
   type WireCapabilityGrants,
   type WireCapabilityRequirement,
@@ -152,6 +154,9 @@ describe("wire drift guard — message discriminants", () => {
 describe("wire drift guard — non-vacuous schema/type assertions", () => {
   it("ActorOwnerRef", () => {
     expectTypeOf<z.infer<typeof actorOwnerRefSchemaImpl>>().toEqualTypeOf<WireActorOwnerRef>();
+  });
+  it("AudioOp", () => {
+    expectTypeOf<z.infer<typeof audioOpSchemaImpl>>().toEqualTypeOf<WireAudioOp>();
   });
   it("Audience", () => {
     expectTypeOf<z.infer<typeof audienceSchemaImpl>>().toEqualTypeOf<WireAudience>();

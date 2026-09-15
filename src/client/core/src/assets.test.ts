@@ -38,6 +38,17 @@ describe("AssetResolver", () => {
     expect(r.url("abc")).toBe("/api/assets/abc");
   });
 
+  it("audioUrl returns both derivatives, the canonical fallback, and both MIME strings", () => {
+    const r = new AssetResolver();
+    expect(r.audioUrl("abc")).toEqual({
+      ogg: "/api/assets/abc?variant=opus",
+      webm: "/api/assets/abc?variant=opus-webm",
+      fallback: "/api/assets/abc",
+      oggType: "audio/ogg; codecs=opus",
+      webmType: "audio/webm; codecs=opus",
+    });
+  });
+
   it("after replace, the URL changes (cache-bust) so the new bytes load", () => {
     const r = new AssetResolver();
     const before = r.url("abc");
