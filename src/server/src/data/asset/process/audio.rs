@@ -183,11 +183,32 @@ fn decode_audio(staged: &Path) -> Result<Decoded, String> {
             Err(e) => return Err(e.to_string()),
         };
         sample_rate = decoded.spec().rate();
-        channels = (decoded.spec().channels().count() as u16).clamp(1, 2);
-        let frames = decoded.samples_interleaved() / decoded.spec().channels().count().max(1);
-        let mut buf = vec![0.0f32; frames * channels as usize];
-        decoded.copy_to_slice_interleaved(&mut buf);
-        samples.extend_from_slice(&buf);
+        let true_channels = decoded.spec().channels().count().max(1);
+        let frames = decoded.samples_interleaved() / true_channels;
+        let mut raw = vec![0.0f32; frames * true_channels];
+        decoded.copy_to_slice_interleaved(&mut raw);
+        channels = true_channels.min(2) as u16;
+        if true_channels > 2 {
+            // Documented fold-down to stereo: the front pair is kept as-is; every further
+            // channel (centre, LFE, surrounds) folds into BOTH sides at half weight. libopus
+            // clamps float input internally, so a hot centre channel cannot clip the encode.
+            for f in 0..frames {
+                let mut l = raw[f * true_channels];
+                let mut r = raw[f * true_channels + 1];
+                for c in 2..true_channels {
+                    let s = 0.5 * raw[f * true_channels + c];
+                    l += s;
+                    r += s;
+                }
+                samples.push(l);
+                samples.push(r);
+            }
+        } else if true_channels == 2 {
+            samples.extend_from_slice(&raw);
+        } else {
+            // Mono: one channel, no interleave expansion.
+            samples.extend_from_slice(&raw);
+        }
         if (samples.len() as u64) > MAX_AUDIO_SAMPLES {
             break; // caller's cap check below catches this via duration/sample-count
         }
@@ -206,15 +227,17 @@ fn decode_audio(staged: &Path) -> Result<Decoded, String> {
     })
 }
 
-/// Resample `decoded`'s PCM to `OPUS_TARGET_SAMPLE_RATE` via `rubato`'s sinc resampler. A
-/// no-op (clone) when the source is already at the target rate.
+/// Resample `decoded`'s PCM to `OPUS_TARGET_SAMPLE_RATE` via `rubato`'s sinc resampler,
+/// processing ~1-second input chunks so the FFT workspace never scales with the upload's
+/// length (a whole-file chunk on a 30-minute source allocates gigabytes). A no-op (clone)
+/// when the source is already at the target rate.
 fn resample_to_target(decoded: &Decoded) -> Result<Vec<f32>, String> {
     if decoded.sample_rate == OPUS_TARGET_SAMPLE_RATE {
         return Ok(decoded.samples.clone());
     }
     use rubato::audioadapter_buffers::direct::InterleavedSlice;
     use rubato::{
-        Async, FixedAsync, Resampler, SincInterpolationParameters, SincInterpolationType,
+        Async, FixedAsync, Indexing, Resampler, SincInterpolationParameters, SincInterpolationType,
         WindowFunction,
     };
     let params = SincInterpolationParameters {
@@ -226,15 +249,42 @@ fn resample_to_target(decoded: &Decoded) -> Result<Vec<f32>, String> {
     };
     let ratio = OPUS_TARGET_SAMPLE_RATE as f64 / decoded.sample_rate as f64;
     let channels = decoded.channels as usize;
-    let frames = decoded.samples.len() / channels;
-    let mut resampler = Async::new_sinc(ratio, 2.0, &params, frames, channels, FixedAsync::Input)
+    // ~1 s of source audio per chunk: bounded workspace regardless of input length.
+    let chunk_frames = decoded.sample_rate as usize;
+    let mut resampler = Async::new_sinc(
+        ratio,
+        2.0,
+        &params,
+        chunk_frames,
+        channels,
+        FixedAsync::Input,
+    )
+    .map_err(|e| e.to_string())?;
+    let total_frames = decoded.samples.len() / channels;
+    let mut out: Vec<f32> =
+        Vec::with_capacity((total_frames as f64 * ratio) as usize * channels + 8192);
+    let mut pos = 0usize;
+    while pos < total_frames {
+        let n = (total_frames - pos).min(chunk_frames);
+        let adapter = InterleavedSlice::new(
+            &decoded.samples[pos * channels..(pos + n) * channels],
+            channels,
+            n,
+        )
         .map_err(|e| e.to_string())?;
-    let adapter =
-        InterleavedSlice::new(&decoded.samples, channels, frames).map_err(|e| e.to_string())?;
-    let out = resampler
-        .process(&adapter, None)
-        .map_err(|e| e.to_string())?;
-    Ok(out.take_data())
+        let indexing = (n < chunk_frames).then(|| Indexing {
+            input_offset: 0,
+            output_offset: 0,
+            partial_len: Some(n),
+            active_channels_mask: None,
+        });
+        let chunk = resampler
+            .process(&adapter, indexing.as_ref())
+            .map_err(|e| e.to_string())?;
+        out.extend_from_slice(&chunk.take_data());
+        pos += n;
+    }
+    Ok(out)
 }
 
 /// One encoded 20 ms Opus frame plus the running granule (48 kHz sample count) it ends at.

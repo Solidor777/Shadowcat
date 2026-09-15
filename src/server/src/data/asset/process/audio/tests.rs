@@ -276,3 +276,59 @@ fn the_ogg_final_granule_trims_the_zero_padding_of_the_last_frame() {
     assert_eq!(final_granule, pre_skip as u64 + 48_240);
     assert!(final_granule < 51 * 960, "no padded granule");
 }
+
+/// A synthesized 5.1 WAV (6 channels, 44100 Hz, 16-bit PCM): every channel carries a distinct
+/// constant level, so a misread channel count or a mismatched interleave would change the
+/// decoded length or panic outright.
+fn synth_wav_6ch(secs: f64) -> Vec<u8> {
+    let sample_rate = 44_100u32;
+    let channels = 6u16;
+    let frames = (sample_rate as f64 * secs).round() as u32;
+    let mut pcm = Vec::with_capacity(frames as usize * channels as usize * 2);
+    for _ in 0..frames {
+        for c in 0..channels {
+            let level = ((c as i32 + 1) * 1000) as i16;
+            pcm.extend_from_slice(&level.to_le_bytes());
+        }
+    }
+    let mut wav = Vec::new();
+    let data_len = pcm.len() as u32;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * channels as u32 * 2).to_le_bytes());
+    wav.extend_from_slice(&(channels * 2).to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend_from_slice(&pcm);
+    wav
+}
+
+#[test]
+fn a_five_point_one_wav_downmixes_to_stereo_instead_of_rejecting() {
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("upload");
+    let wav = synth_wav_6ch(0.5);
+    std::fs::write(&staged, &wav).unwrap();
+    let processed = process_staged_audio(
+        &staged,
+        "audio/wav",
+        wav.len() as i64,
+        AudioContainers::Both,
+    )
+    .unwrap();
+    // Never-reject posture: a >2-channel source transcodes (documented fold-down), it does
+    // NOT fall back to pass-through and it cannot panic.
+    assert!(processed.meta.conversion_note.is_none());
+    let duration_ms = processed.meta.duration_ms.unwrap();
+    assert!(
+        (duration_ms - 500).abs() <= 60,
+        "expected ~500ms, got {duration_ms}"
+    );
+    assert!(with_suffix(&staged, OPUS_SUFFIX).exists());
+}
