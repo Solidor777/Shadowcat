@@ -174,6 +174,7 @@ export function stubMediaElement(): MediaElementLike {
     src: "",
     currentTime: 0,
     playbackRate: 1,
+    volume: 1,
     loop: false,
     play: async () => {},
     pause: () => {},

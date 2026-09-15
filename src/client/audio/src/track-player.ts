@@ -16,16 +16,17 @@ export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
 export const SYNC_RATE_NUDGE = 0.02;
 
 /** Pick the `<audio>`-element source for a streaming track: the first candidate the element
- * reports playable (Ogg derivative, then WebM, then the native original).
+ * reports playable (Ogg derivative, then WebM, then the native original). Shared by
+ * `TrackPlayer`'s streaming mode and `FallbackTrackPlayer`'s bare-element mode.
  * @param el The media element (its `canPlayType` is the device truth).
  * @param urls The asset's playback URL set.
  * @returns The URL to assign to `el.src`.
  * @example
  * ```ts
- * // private seam — exercised through `TrackPlayer`'s constructor
+ * // package-internal seam — exercised through `TrackPlayer`'s constructor
  * ```
  */
-function pickStreamSrc(el: MediaElementLike, urls: AudioUrls): string {
+export function pickStreamSrc(el: MediaElementLike, urls: AudioUrls): string {
   if (el.canPlayType(urls.oggType) !== "") return urls.ogg;
   if (el.canPlayType(urls.webmType) !== "") return urls.webm;
   return urls.fallback;
@@ -362,13 +363,14 @@ export function setMediaElementFactory(factory: () => MediaElementLike): void {
   mediaElementFactory = factory;
 }
 
-/** Construct a fresh media element through the installed factory.
+/** Construct a fresh media element through the installed factory. Package-internal: shared by
+ * `TrackPlayer` (graph-routed streaming) and `FallbackTrackPlayer` (bare-element mode).
  * @returns The new element.
  * @example
  * ```
- * // private helper; exercised through `TrackPlayer`'s streaming-mode construction
+ * // package-internal helper; exercised through `TrackPlayer`'s streaming-mode construction
  * ```
  */
-function createMediaElement(): MediaElementLike {
+export function createMediaElement(): MediaElementLike {
   return mediaElementFactory();
 }

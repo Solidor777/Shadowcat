@@ -135,6 +135,29 @@ interface ResolvedModuleEntry {
   entry: string;
 }
 
+/** The legacy-prefix global shape older WebKit exposes instead of the standard
+ * `AudioContext` constructor (`createDeviceAudioContext`'s fallback read). */
+interface WebkitAudioGlobal {
+  /** The prefixed constructor (absent on every modern engine). */
+  webkitAudioContext?: typeof AudioContext;
+}
+
+/** Construct the device's `AudioContext` for `AudioEngineOpts.createContext`: the standard
+ * constructor first, then the legacy webkit-prefixed one; when NEITHER exists the throw is
+ * what routes `AudioEngine.unlock` onto its degraded bare-element mode.
+ * @returns The new audio context.
+ * @example
+ * ```
+ * // wired as `AudioEngineOpts.createContext` in `WorldSession`'s constructor — exercised
+ * // through `@shadowcat/audio`'s engine tests with a stub context
+ * ```
+ */
+function createDeviceAudioContext(): AudioContext {
+  const Ctor = globalThis.AudioContext ?? (globalThis as WebkitAudioGlobal).webkitAudioContext;
+  if (!Ctor) throw new Error("this device has no Web Audio API");
+  return new Ctor();
+}
+
 /**
  * Per-world session controller: owns the WS connection, the authoritative
  * `DocumentStore` + optimistic view, first-party and external module
@@ -599,7 +622,7 @@ export class WorldSession {
       resolver: this.assets,
       serverNow: () => this.#ws?.serverNow() ?? 0,
       transport: (op) => this.#ws?.audioTransport(op),
-      createContext: () => new AudioContext(),
+      createContext: createDeviceAudioContext,
       onTrackEnded: (id) => this.#ws?.audioTransport({ type: "track_ended", id }),
       fadeMsFor: (playlistId) => {
         if (!playlistId) return 0;

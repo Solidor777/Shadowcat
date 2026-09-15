@@ -179,4 +179,75 @@ describe("AudioEngine", () => {
     engine.applyState(state(entry("e1", { loop: true })));
     engine.applyState(state());
   });
+
+  it("with no Web Audio API, unlock resolves into the degraded bare-element mode (loops included)", async () => {
+    const created: ReturnType<typeof stubMediaElement>[] = [];
+    setMediaElementFactory(() => {
+      const el = stubMediaElement();
+      created.push(el);
+      return el;
+    });
+    const engine = new AudioEngine(
+      makeOpts({
+        createContext: () => {
+          throw new TypeError("undefined is not a constructor");
+        },
+      }),
+    );
+    // State arriving BEFORE unlock must still replay after the degraded unlock.
+    engine.applyState(state(entry("e1", { loop: true })));
+    await engine.unlock(); // must RESOLVE, not reject — streaming playback is still available
+    expect(created).toHaveLength(1);
+    expect(created[0].loop).toBe(true); // the element-loop fallback (a seam hiccup is accepted)
+    // A state change drops the degraded player.
+    engine.applyState(state());
+    engine.applyState(state(entry("e2")));
+    expect(created).toHaveLength(2);
+    expect(created[1].loop).toBe(false);
+  });
+
+  it("in the degraded mode, setChannel drives the element's volume (mute included)", async () => {
+    const created: ReturnType<typeof stubMediaElement>[] = [];
+    setMediaElementFactory(() => {
+      const el = stubMediaElement();
+      created.push(el);
+      return el;
+    });
+    const engine = new AudioEngine(
+      makeOpts({
+        createContext: () => {
+          throw new TypeError("undefined is not a constructor");
+        },
+      }),
+    );
+    await engine.unlock();
+    engine.applyState(state(entry("e1", { gain: 0.5 })));
+    expect(created[0].volume).toBeCloseTo(0.5);
+    engine.setChannel("sfx", { gain: 0.4 });
+    expect(created[0].volume).toBeCloseTo(0.2);
+    engine.setChannel("sfx", { muted: true });
+    expect(created[0].volume).toBe(0);
+  });
+
+  it("in the degraded mode, playOneShot fires a detached element rather than no-op", async () => {
+    const created: ReturnType<typeof stubMediaElement>[] = [];
+    setMediaElementFactory(() => {
+      const el = stubMediaElement();
+      created.push(el);
+      return el;
+    });
+    const engine = new AudioEngine(
+      makeOpts({
+        createContext: () => {
+          throw new TypeError("undefined is not a constructor");
+        },
+      }),
+    );
+    await engine.unlock();
+    engine.playOneShot("a1", { gain: 0.5 });
+    expect(created).toHaveLength(1);
+    expect(created[0].src).toContain("variant=opus");
+    expect(created[0].volume).toBeCloseTo(0.5);
+    expect(created[0].loop).toBe(false);
+  });
 });

@@ -107,8 +107,12 @@ export interface MediaElementLike {
   currentTime: number;
   /** Playback-rate multiplier (the small-drift nudge). */
   playbackRate: number;
-  /** Whether the element loops (never set for a playlist track — looping is the buffered
-   * mode's job; the server transport owns track repetition). */
+  /** Output volume, 0..=1 — only meaningful to `FallbackTrackPlayer`, whose bare element has
+   * no mixer graph to route through (the channel/master buses land on this one knob). */
+  volume: number;
+  /** Whether the element loops. Graph-routed playback never sets this (looping is the
+   * buffered mode's job — `TrackPlayer`'s sample-accurate full-buffer loop); the no-Web-Audio
+   * `FallbackTrackPlayer` sets it for a looping entry, accepting the element's seam hiccup. */
   loop: boolean;
   /** Begin playback.
    * @returns Resolves when playback has started. */

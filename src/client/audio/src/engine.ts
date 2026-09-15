@@ -10,8 +10,9 @@ import type {
 } from "@shadowcat/core";
 import type { AudioContextLike, GainNodeLike, WasmOpusDecoderLike } from "./context";
 import { DEFAULT_DUCK_DEPTH, DuckControllerImpl } from "./duck-controller";
+import { FallbackTrackPlayer } from "./fallback-player";
 import { OneShotPlayer } from "./one-shot-player";
-import { TrackPlayer } from "./track-player";
+import { createMediaElement, pickStreamSrc, TrackPlayer } from "./track-player";
 import { createOggOpusDecoder } from "./wasm";
 
 /** Channels every `AudioEngine` mixer graph carries (server-known three plus the two
@@ -75,6 +76,11 @@ export class AudioEngine implements AudioApi {
   #oneShot: OneShotPlayer | null = null;
   /** Live track players, by `PlayingTrack.id`. */
   #trackPlayers = new Map<string, TrackPlayer>();
+  /** True once `unlock()` found no Web Audio API at all — every playback path then degrades
+   * to bare `<audio>` elements (`FallbackTrackPlayer` / a fire-and-forget one-shot element). */
+  #noWebAudio = false;
+  /** Live degraded players (`#noWebAudio` mode only), by `PlayingTrack.id`. */
+  #fallbackPlayers = new Map<string, FallbackTrackPlayer>();
   /** Pending state to apply once `unlock()` completes — Web Audio node creation before a
    * context exists is impossible, so a `PlayingTrack` set arriving before unlock is tracked
    * here and replayed by `unlock()`'s own tail. */
@@ -158,23 +164,46 @@ export class AudioEngine implements AudioApi {
     if (node) {
       node.gain.value = this.#channelState[id].muted ? 0 : this.#channelState[id].gain;
     }
+    if (this.#noWebAudio) {
+      // Degraded players have no gain node — their element volume recomputes now, not on the
+      // next sync tick.
+      for (const player of this.#fallbackPlayers.values()) player.applyChannelGain();
+    }
   }
 
   /** Unlock the device's `AudioContext` — constructs the mixer graph on first call, resumes
    * the context inside the calling gesture, replays any pending transport state, and starts
-   * the duck-gain driver loop. Idempotent.
-   * @returns Resolves once the context is running.
+   * the duck-gain driver loop. Idempotent. When the device has NO Web Audio API at all
+   * (`createContext` throws), the engine degrades instead of rejecting: every playback path
+   * falls back to bare `<audio>` elements (`FallbackTrackPlayer`, loops included via the
+   * element's own `loop`), so streaming playback still works — just without the graph's
+   * sample-accurate loops, per-bus gains, ducking, and crossfades.
+   * @returns Resolves once the context is running (or the degraded mode is armed).
    * @example
    * ```ts
    * // implements `AudioApi.unlock` — see that interface's own doc
    * ```
    */
   async unlock(): Promise<void> {
+    if (this.#noWebAudio) return;
     if (this.#context !== null) {
       if (this.#context.state !== "running") await this.#context.resume();
       return;
     }
-    const context = this.#opts.createContext();
+    let context: AudioContextLike;
+    try {
+      context = this.#opts.createContext();
+    } catch {
+      // No Web Audio API at all: arm the degraded mode and replay any pending state through
+      // it. RESOLVING (not rejecting) is the contract — streaming playback is available.
+      this.#noWebAudio = true;
+      if (this.#pendingState) {
+        const pending = this.#pendingState;
+        this.#pendingState = null;
+        this.applyState(pending);
+      }
+      return;
+    }
     this.#master = context.createGain();
     this.#master.connect(context.destination);
     this.#duckNode = context.createGain();
@@ -246,6 +275,18 @@ export class AudioEngine implements AudioApi {
     /** Per-call gain multiplier; default `1`. */
     gain?: number;
   }): void {
+    if (this.#noWebAudio) {
+      // Degraded mode: a detached fire-and-forget element plays the cue straight to the
+      // device (no graph, no LRU — nothing tracks the element after `play()`).
+      const el = createMediaElement();
+      el.src = pickStreamSrc(el, this.#opts.resolver.audioUrl(asset));
+      const channel = this.#channelState[opts?.channel ?? "sfx"];
+      const master = this.#channelState.master;
+      el.volume =
+        channel.muted || master.muted ? 0 : Math.min(1, (opts?.gain ?? 1) * channel.gain * master.gain);
+      void el.play();
+      return;
+    }
     if (!this.#oneShot) return; // not yet unlocked: one-shots are never queued
     void this.#oneShot.play(asset, opts);
   }
@@ -261,6 +302,10 @@ export class AudioEngine implements AudioApi {
    * ```
    */
   applyState(state: AudioStateEngine): void {
+    if (this.#noWebAudio) {
+      this.#applyStateFallback(state);
+      return;
+    }
     if (!this.#context) {
       this.#pendingState = state;
       return;
@@ -313,6 +358,42 @@ export class AudioEngine implements AudioApi {
     }
   }
 
+  /** The degraded-mode `applyState` arm: the same create/sync/dispose id-diff the graph mode
+   * runs, over `FallbackTrackPlayer`s. Crossfades are NOT paired here — a degraded replace is
+   * a hard cut (one of the three accepted degradations `FallbackTrackPlayer`'s doc lists).
+   * @param state The world's current `AudioStateEngine`.
+   * @example
+   * ```
+   * // private arm; exercised through `engine.test.ts`'s degraded-mode cases
+   * ```
+   */
+  #applyStateFallback(state: AudioStateEngine): void {
+    const serverNow = this.#opts.serverNow();
+    const seen = new Set<string>();
+    for (const entry of state.playing) {
+      seen.add(entry.id);
+      const existing = this.#fallbackPlayers.get(entry.id);
+      if (existing) {
+        existing.sync(entry, serverNow);
+      } else {
+        const player = new FallbackTrackPlayer(
+          this.#opts.resolver,
+          (id) => this.#channelState[id],
+          entry,
+          (id) => this.#opts.onTrackEnded?.(id),
+        );
+        player.sync(entry, serverNow);
+        this.#fallbackPlayers.set(entry.id, player);
+      }
+    }
+    for (const [id, player] of this.#fallbackPlayers) {
+      if (!seen.has(id)) {
+        player.dispose();
+        this.#fallbackPlayers.delete(id);
+      }
+    }
+  }
+
   /** Release every node, player, and the duck-loop `raf` handle; the `AudioContext` itself is
    * left to the shell (one `AudioEngine` per world session — the context's own lifecycle is the
    * shell's, not this class's, since `unlock()` may be called again on rejoin).
@@ -324,6 +405,8 @@ export class AudioEngine implements AudioApi {
   dispose(): void {
     for (const player of this.#trackPlayers.values()) player.dispose();
     this.#trackPlayers.clear();
+    for (const player of this.#fallbackPlayers.values()) player.dispose();
+    this.#fallbackPlayers.clear();
     if (this.#duckLoopHandle !== null) {
       this.#opts.caf(this.#duckLoopHandle);
       this.#duckLoopHandle = null;
