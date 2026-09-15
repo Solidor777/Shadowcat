@@ -393,4 +393,9 @@ request_id: string,
 /**
  * Why it was refused.
  */
-reason: MergeErrorKind, };
+reason: MergeErrorKind, } | { "type": "audio_error", 
+/**
+ * Player-presentable failure text (`audio::state::AudioError`'s `Display`, or
+ * "forbidden" for the not-GM case).
+ */
+reason: string, };
