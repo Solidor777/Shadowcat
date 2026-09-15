@@ -547,4 +547,62 @@ describe("PixiBackend VFX playback", () => {
     expect(() => backend.removeVfx("oneshot:nope")).not.toThrow();
     loadSpy.mockRestore();
   });
+
+  test("a startAtEnd node loads already frozen at its final frame and never fires onDone", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("emitter:t1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet", url: "/fx.webp", rows: 1, cols: 2, frameMs: [100, 100] },
+      loop: false, anchor: "token", token: "t1", startAtEnd: true,
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).get("emitter:t1")!.anim.frameCount).toBe(2));
+    const node = vfxNodesOf(backend).get("emitter:t1")!;
+    // Born at the sequence's end: the LAST frame renders from the first tick, never a
+    // play-through.
+    expect(node.visual.currentFrame).toBe(1);
+    const done: string[] = [];
+    backend.tickVfx(500, (id) => done.push(id)); // far past the 200ms total: no completion
+    expect(done).toEqual([]);
+    expect(node.visual.currentFrame).toBe(1);
+    loadSpy.mockRestore();
+  });
+
+  test("a failed sidecar fetch destroys the node and surfaces completion on the next tick", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    const fetchMock = vi.fn().mockResolvedValue(new Response("nope", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    backend.ensureLayers(["vfx"]);
+    backend.setVfx("oneshot:1", {
+      layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+      source: { kind: "sheet", imageUrl: "/atlas.png", sheetUrl: "/atlas.json", animation: "default" },
+      loop: false, anchor: "point",
+    });
+    await vi.waitFor(() => expect(vfxNodesOf(backend).has("oneshot:1")).toBe(false));
+    const done: string[] = [];
+    backend.tickVfx(16, (id) => done.push(id));
+    expect(done).toEqual(["oneshot:1"]); // the view drains its bookkeeping through this call
+    backend.tickVfx(16, (id) => done.push(id));
+    expect(done).toEqual(["oneshot:1"]); // drained once, not every tick
+    vi.unstubAllGlobals();
+    loadSpy.mockRestore();
+  });
+
+  test("a re-push without a tint clears the tint an earlier push assigned", async () => {
+    const backend = headlessBackend();
+    const loadSpy = vi.spyOn(Assets, "load").mockResolvedValue(Texture.EMPTY as never);
+    backend.ensureLayers(["vfx"]);
+    const spec = {
+      layer: "vfx" as const, x: 0, y: 0, scale: 1, rotation: 0,
+      source: { type: "sheet" as const, url: "/fx.webp", rows: 1, cols: 2 },
+      loop: false, anchor: "point" as const,
+    };
+    backend.setVfx("oneshot:1", { ...spec, tint: 0xff0000 });
+    expect(vfxNodesOf(backend).get("oneshot:1")!.visual.tint).toBe(0xff0000);
+    backend.setVfx("oneshot:1", spec);
+    expect(vfxNodesOf(backend).get("oneshot:1")!.visual.tint).toBe(0xffffff);
+    loadSpy.mockRestore();
+  });
 });

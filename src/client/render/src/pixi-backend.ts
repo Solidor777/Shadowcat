@@ -289,6 +289,9 @@ export class PixiBackend implements DisplayBackend {
   private readonly tokens = new Map<string, TokenNode>();
   /** VFX node id → its render node, populated by `setVfx`. */
   private readonly vfxNodes = new Map<string, VfxRenderNode>();
+  /** Ids whose source load failed since the last `tickVfx` — drained into `onDone` on the
+   * next tick so a caller's bookkeeping hears the failure through the completion channel. */
+  private readonly failedVfxLoads: string[] = [];
   /** Dedicated container stacked directly ABOVE the `mask` layer (and therefore the `lighting`
    * layer) but below `overlays`: a token whose spec's `perceived` flag is set is re-parented here
    * by `setToken` so it renders THROUGH fog and darkness, without touching the fog sheets
@@ -1133,7 +1136,9 @@ export class PixiBackend implements DisplayBackend {
     node.container.position.set(spec.x, spec.y);
     node.container.angle = spec.rotation;
     node.container.scale.set(spec.scale);
-    if (spec.tint !== undefined) node.visual.tint = spec.tint;
+    // Tint REASSIGNS unconditionally (white when the node spec carries none) — a re-push
+    // without a tint must clear the previous one, never leave it sticky.
+    node.visual.tint = spec.tint ?? 0xffffff;
     const key = "imageUrl" in spec.source
       ? `sheet:${spec.source.imageUrl}:${spec.source.sheetUrl}:${spec.source.animation}`
       : `grid:${spec.source.type === "sheet" ? spec.source.url : spec.source.urls.join(",")}`;
@@ -1142,18 +1147,41 @@ export class PixiBackend implements DisplayBackend {
     node.anim = { frameMs: [], loop: spec.loop, elapsedMs: 0, frameCount: null };
     node.completedFired = false;
     const sprite = node.visual;
+    /** A load that produced nothing (fetch/HTTP/decode failure, an empty animation) must not
+     * strand a zombie node (`frameCount` null forever, never completing, the caller's
+     * bookkeeping leaking): destroy the node and surface completion through the next
+     * `tickVfx`, so the caller drains it through the same channel a natural completion uses.
+     * @example
+     * ```
+     * // private method-local closure; not part of the public API
+     * ```
+     */
+    const fail = (): void => {
+      if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
+      this.removeVfx(id);
+      this.failedVfxLoads.push(id);
+    };
     if ("imageUrl" in spec.source) {
       const { imageUrl, sheetUrl, animation } = spec.source;
-      void Promise.all([Assets.load<Texture>(imageUrl), fetch(sheetUrl).then((r) => r.json())])
+      void Promise.all([
+        Assets.load<Texture>(imageUrl),
+        fetch(sheetUrl).then((r) => {
+          if (!r.ok) throw new Error(`vfx sidecar fetch failed: ${r.status}`);
+          return r.json();
+        }),
+      ])
         .then(([texture, json]) => {
-          if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
+          if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return undefined;
           const sheet = new Spritesheet(texture, json);
-          void sheet.parse().then(() => {
+          return sheet.parse().then(() => {
             if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
             const textures = sheet.animations[animation] ?? [];
-            if (textures.length === 0) return;
+            if (textures.length === 0) {
+              fail();
+              return;
+            }
             sprite.textures = textures;
-            sprite.gotoAndStop(0);
+            sprite.gotoAndStop(spec.startAtEnd ? textures.length - 1 : 0);
             // Per-frame durations, when the sidecar declares them (the TexturePacker
             // `frames[key].duration` convention, in ms); absent entries fall back to
             // `computeVfxFrame`'s uniform 100ms default.
@@ -1165,22 +1193,34 @@ export class PixiBackend implements DisplayBackend {
                   return typeof d === "number" && Number.isFinite(d) && d > 0 ? d : 100;
                 })
               : [];
-            node.anim = { frameMs, loop: spec.loop, elapsedMs: 0, frameCount: textures.length };
+            const total = Array.from({ length: textures.length }, (_, i) => frameMs[i] ?? 100).reduce((a, b) => a + b, 0);
+            node.anim = { frameMs, loop: spec.loop, elapsedMs: spec.startAtEnd ? total : 0, frameCount: textures.length };
+            // A startAtEnd node is born already frozen at its final frame — it never plays
+            // through and never reports completion (it is an emitter, not a one-shot).
+            node.completedFired = spec.startAtEnd === true;
           });
-        });
+        })
+        .catch(fail);
     } else {
       const source = spec.source;
       void this.loadAnimatedTextures(source).then((textures) => {
-        if (this.vfxNodes.get(id) !== node || node.sourceKey !== key || textures.length === 0) return;
+        if (this.vfxNodes.get(id) !== node || node.sourceKey !== key) return;
+        if (textures.length === 0) {
+          fail();
+          return;
+        }
         sprite.textures = textures;
-        sprite.gotoAndStop(0);
+        sprite.gotoAndStop(spec.startAtEnd ? textures.length - 1 : 0);
+        const frameMs = source.type === "sheet" ? (source.frameMs ?? []) : [];
+        const total = Array.from({ length: textures.length }, (_, i) => frameMs[i] ?? 100).reduce((a, b) => a + b, 0);
         node.anim = {
-          frameMs: source.type === "sheet" ? (source.frameMs ?? []) : [],
+          frameMs,
           loop: spec.loop,
-          elapsedMs: 0,
+          elapsedMs: spec.startAtEnd ? total : 0,
           frameCount: textures.length,
         };
-      });
+        node.completedFired = spec.startAtEnd === true;
+      }).catch(fail);
     }
   }
 
@@ -1219,6 +1259,9 @@ export class PixiBackend implements DisplayBackend {
    * ```
    */
   tickVfx(dtMs: number, onDone: (id: string) => void): void {
+    // Load failures recorded since the last tick surface through the same completion channel
+    // a natural completion uses, so the caller's bookkeeping drains identically.
+    for (const id of this.failedVfxLoads.splice(0)) onDone(id);
     for (const [id, node] of this.vfxNodes) {
       const anim = node.anim;
       if (anim.frameCount === null || anim.frameCount <= 0) continue;
