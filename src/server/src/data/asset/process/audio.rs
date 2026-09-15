@@ -533,6 +533,18 @@ fn mux_webm(stream: &OpusStream, channels: u16, source_rate: u32) -> Result<Vec<
 /// Whether the `suffix` derivative sibling of `canonical` exists on disk — the re-transcode
 /// selection (`effective_reencode_selection`) and the `?variant=opus*` serve branch both ask
 /// this of the live file set, never of a recorded flag.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::asset::process::audio::has_sibling;
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let canonical = dir.path().join("uuid");
+/// assert!(!has_sibling(&canonical, ".opus.ogg"));
+/// std::fs::write(dir.path().join("uuid.opus.ogg"), b"x").unwrap();
+/// assert!(has_sibling(&canonical, ".opus.ogg"));
+/// ```
 pub fn has_sibling(canonical: &Path, suffix: &str) -> bool {
     with_suffix(canonical, suffix).is_file()
 }
@@ -567,11 +579,35 @@ fn untranscoded(content_type: &str, byte_size: i64, note: String) -> Processed {
 ///
 /// # Examples
 ///
-/// ```text
-/// process_staged_audio(&staged, "audio/wav", byte_size, AudioContainers::Both)
-/// // -> Processed { converted: false, .. } — canonical bytes UNCHANGED either way; success
-/// // differs from pass-through only in whether the derivative sibling(s) now exist and
-/// // duration_ms/sample_rate are populated.
+/// ```
+/// use shadowcat::data::asset::process::audio::{process_staged_audio, AudioContainers};
+///
+/// let dir = tempfile::tempdir().unwrap();
+/// let staged = dir.path().join("upload");
+/// // A minimal 0.1 s mono 8 kHz PCM WAV (header + silence), hand-rolled like the pipeline's
+/// // own fixtures.
+/// let samples = 800u32;
+/// let data_len = samples * 2;
+/// let mut wav = Vec::new();
+/// wav.extend_from_slice(b"RIFF");
+/// wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+/// wav.extend_from_slice(b"WAVEfmt ");
+/// wav.extend_from_slice(&16u32.to_le_bytes());
+/// wav.extend_from_slice(&1u16.to_le_bytes());
+/// wav.extend_from_slice(&1u16.to_le_bytes());
+/// wav.extend_from_slice(&8_000u32.to_le_bytes());
+/// wav.extend_from_slice(&16_000u32.to_le_bytes());
+/// wav.extend_from_slice(&2u16.to_le_bytes());
+/// wav.extend_from_slice(&16u16.to_le_bytes());
+/// wav.extend_from_slice(b"data");
+/// wav.extend_from_slice(&data_len.to_le_bytes());
+/// wav.extend_from_slice(&vec![0u8; data_len as usize]);
+/// std::fs::write(&staged, &wav).unwrap();
+///
+/// let processed = process_staged_audio(&staged, "audio/wav", wav.len() as i64, AudioContainers::Both).unwrap();
+/// assert!(!processed.converted); // the canonical is NEVER rewritten for audio
+/// assert!(processed.meta.duration_ms.is_some());
+/// assert!(staged.with_file_name("upload.opus.ogg").exists());
 /// ```
 pub fn process_staged_audio(
     staged: &Path,
