@@ -430,7 +430,7 @@ async fn handle_socket(
                                         Ok(_cmd) => {}
                                         Err(e) => {
                                             let reason = reject_reason(&e);
-                                            tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                                            tracing::debug!(world = %world_id, %intent_id, ?reason, error = ?e, "intent rejected");
                                             let _ = etx
                                                 .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                     intent_id,
