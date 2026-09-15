@@ -1009,9 +1009,11 @@ impl Repository for SqliteRepository {
                     // GM-only, and only where the GM's unconditional
                     // short-circuit holds: a `gm_role`-capped GM floor-resolves
                     // through `resolve_access_world` like any other actor and
-                    // is refused. `CombatTransition` skips this capability
+                    // is refused. Any capability-skipping origin
+                    // (`WriteOrigin::skips_capability_gates` — the shape every
+                    // other gate site here already uses) skips this capability
                     // gate — see the Create arm's matching comment above.
-                    if origin != WriteOrigin::CombatTransition {
+                    if !origin.skips_capability_gates() {
                         let owner = Self::load_effective_owner(&mut *tx, &cur).await?;
                         let access = resolve_access_world(
                             ctx.user_id,

@@ -370,6 +370,14 @@ pub enum WriteOrigin {
     /// server-owned merge snapshot, refreshed whole-band to the template's
     /// current snapshot (`merge::plan::plan_to_update`'s emission contract).
     TemplateMerge,
+    /// Server-authored region-trigger write (condition/resource/chat-notice/
+    /// teleport effects applied by `ws::room::Room::fire_region_triggers`):
+    /// per-op capability gates are skipped; scope, size, engine, containment,
+    /// singleton, schema and OCC checks all run; never derivable from a wire
+    /// frame. Every trigger effect (`ConditionAdd`/`ConditionRemove`/
+    /// `ResourceDelta`/`ChatNotice`/`Teleport`) commits under this origin;
+    /// `CombatTransition` belongs to combat state transitions alone.
+    Trigger,
 }
 
 impl WriteOrigin {
@@ -392,6 +400,7 @@ impl WriteOrigin {
                 | WriteOrigin::CombatTransition
                 | WriteOrigin::ConfigSeed
                 | WriteOrigin::TemplateMerge
+                | WriteOrigin::Trigger
         )
     }
 
@@ -417,7 +426,10 @@ impl WriteOrigin {
     pub fn skips_capability_gates(&self) -> bool {
         matches!(
             self,
-            WriteOrigin::CombatTransition | WriteOrigin::ConfigSeed | WriteOrigin::TemplateMerge
+            WriteOrigin::CombatTransition
+                | WriteOrigin::ConfigSeed
+                | WriteOrigin::TemplateMerge
+                | WriteOrigin::Trigger
         )
     }
 }

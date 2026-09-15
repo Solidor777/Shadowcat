@@ -1757,7 +1757,7 @@ impl Room {
     /// cells of the new position) — so the two cannot drift on what an effect means.
     ///
     /// Effects are server-authored and commit as ONE batch via `commit_ops_locked` under
-    /// `WriteOrigin::CombatTransition` — never batched with the client-origin write that
+    /// `WriteOrigin::Trigger` — never batched with the client-origin write that
     /// triggered them (the split discipline `execute_move`'s position commit states). A commit
     /// failure is logged and swallowed rather than propagated: the triggering write already
     /// stands, and failing the caller over a lost effect would desync it from what was
@@ -2112,7 +2112,7 @@ impl Room {
             return;
         }
         if let Err(err) = self
-            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::Trigger)
             .await
         {
             tracing::debug!(
