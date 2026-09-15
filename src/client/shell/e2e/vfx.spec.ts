@@ -1,7 +1,6 @@
 import { test, expect, login, createAccount, newE2EContext, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
 import type { Page } from "@playwright/test";
 import { clickScene } from "./stage-gestures";
-import type { ScenePoint } from "./stage-gestures";
 
 // A 1×1 PNG used as token art (same fixture `hex-movement.spec.ts`/`assets.spec.ts` use).
 const PNG_1X1 = Buffer.from(
@@ -22,20 +21,6 @@ test.use({ viewport: VIEWPORT });
 
 function stageHost(page: Page) {
   return page.locator(".stage-host");
-}
-
-/** Activates the place tool, picks the first asset once, then places one raw token per
- * point (the place tool keeps the picked asset across placements — same helper shape as
- * `combat-tracker.spec.ts`'s own).
- * @param page The GM's page.
- * @param points Canvas-local points to place a token at, in order.
- */
-async function placeTokens(page: Page, points: readonly ScenePoint[]): Promise<void> {
-  await page.getByTestId("tool-place").click();
-  const pick = page.getByTestId("picker-asset").first();
-  await expect(pick).toBeVisible({ timeout: 10_000 });
-  await pick.click();
-  for (const p of points) await clickScene(page, p);
 }
 
 // Two browser contexts (GM + invited player), the `combat-tracker.spec.ts` seating flow.
@@ -74,22 +59,35 @@ test("emitter playback and the FX scene tool are visible to both GM and player; 
   await expect(gm.getByTestId("asset-tile")).toHaveCount(1);
   await gm.getByTestId("asset-upload-input").setInputFiles({ name: "anim.webp", mimeType: "image/webp", buffer: ANIMATED_WEBP_4F });
   await expect(gm.getByTestId("asset-tile")).toHaveCount(2);
-  await gm.getByTestId("asset-tile").first().click();
+  // Tag the EFFECT asset by its accessible name — never by grid position.
+  await gm.getByRole("button", { name: "anim.webp" }).click();
   await gm.getByTestId("preview-tag-input").fill("vfx");
   await gm.getByTestId("preview-tag-input").press("Enter");
   await expect(gm.getByTestId("preview-tag-remove-vfx")).toBeVisible();
 
-  // A raw token carrying the emission: place it, select it, author the VFX override
-  // through the actors panel's per-token emission control.
-  await placeTokens(gm, [{ x: 200, y: 300 }]);
-  await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
-  await gm.getByTestId("tool-select").click();
-  await clickScene(gm, { x: 200, y: 300 });
+  // An ACTOR carrying the emission (a raw token's override control renders only for
+  // actor-linked tokens): create one in the actors panel with the effect as its VFX
+  // emission, then place a linked token of it.
   await gm.getByTestId("launcher-trigger").click();
   await gm.getByTestId("launcher-item-actors:panel").click();
-  const emissions = gm.locator(".token-emissions");
-  await emissions.getByLabel("VFX", { exact: true }).check();
-  await emissions.getByLabel("VFX asset").selectOption({ label: "anim.webp" });
+  const form = gm.locator("form");
+  await form.getByLabel("Name", { exact: true }).fill("Torchbearer");
+  await gm.getByTestId("visual-pick").click();
+  // Pick via the confirm bar (single click selects, "Use selected" settles) — the tile's name
+  // is its accessible name (img alt), never text content, and a double-click races the
+  // dialog's own settle-and-unmount under a slow renderer.
+  await gm.getByTestId("asset-pick-dialog").getByRole("button", { name: "tok.png" }).click();
+  await gm.getByTestId("pick-confirm").click();
+  await form.getByLabel("VFX", { exact: true }).check();
+  await form.getByLabel("VFX asset").selectOption({ label: "anim.webp" });
+  await form.getByRole("button", { name: "Create actor" }).click();
+
+  // Select the actor row (its name button) so the place tool stamps a token of it. The name
+  // also appears in hidden selects (e.g. the composer's), so match the row's button, not text.
+  await gm.getByRole("button", { name: "Torchbearer" }).click();
+  await gm.getByTestId("tool-place").click();
+  await clickScene(gm, { x: 200, y: 300 });
+  await expect(stageHost(gm)).toHaveAttribute("data-token-count", "1", { timeout: 15_000 });
 
   // The emitter reaches the GM's own stage immediately.
   await expect(stageHost(gm)).toHaveAttribute("data-vfx-count", "1", { timeout: 15_000 });
@@ -115,7 +113,12 @@ test("emitter playback and the FX scene tool are visible to both GM and player; 
     await player.getByTestId("launcher-trigger").click();
     await player.getByTestId("launcher-item-vfx:panel").click();
     await player.getByTestId("fx-pick-effect").click();
-    await player.getByTestId("asset-tile").first().click();
+    await expect(
+      player.getByTestId("asset-pick-dialog").getByRole("button", { name: "anim.webp" }),
+      "the vfx-tagged effect asset is pickable in the FX dialog",
+    ).toBeVisible({ timeout: 5_000 });
+    await player.getByTestId("asset-pick-dialog").getByRole("button", { name: "anim.webp" }).click();
+    await player.getByTestId("pick-confirm").click();
     await expect(player.getByTestId("fx-preview")).toBeVisible({ timeout: 10_000 });
     await player.getByTestId("scene-tool-vfx").click();
     await clickScene(player, { x: 600, y: 300 });
