@@ -27,9 +27,7 @@ use crate::data::repository::Repository;
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 
-use super::{
-    detect_audio_type, detect_image_type, label_content_type_with_audio, UploadRateLimiter,
-};
+use super::{detect_audio_type, detect_image_type, label_content_type, UploadRateLimiter};
 
 /// Fixed chunk size the client must honor; the single-shot route covers
 /// anything at or under one chunk.
@@ -935,7 +933,7 @@ pub async fn complete_session(
         let head = read_head(&session.staged)
             .await
             .map_err(|_| AppError::Internal)?;
-        let content_type = label_content_type_with_audio(
+        let content_type = label_content_type(
             detect_image_type(&head),
             detect_audio_type(&head),
             Some(&session.content_type),

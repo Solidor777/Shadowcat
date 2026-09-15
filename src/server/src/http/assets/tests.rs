@@ -63,7 +63,7 @@ fn a_mislabeled_audio_upload_is_classified_by_its_bytes() {
     // `application/octet-stream` on a real WAV: the bytes decide — the audio sniff wins over
     // the declared label and the upload reaches the transcode arm.
     assert_eq!(
-        label_content_type_with_audio(
+        label_content_type(
             None,
             detect_audio_type(b"RIFF\0\0\0\0WAVEfmt "),
             Some("application/octet-stream")
@@ -72,11 +72,11 @@ fn a_mislabeled_audio_upload_is_classified_by_its_bytes() {
     );
     // An image sniff still outranks everything; a disproved image claim stays octet-stream.
     assert_eq!(
-        label_content_type_with_audio(Some("image/png"), Some("audio/wav"), Some("audio/wav")),
+        label_content_type(Some("image/png"), Some("audio/wav"), Some("audio/wav")),
         "image/png"
     );
     assert_eq!(
-        label_content_type_with_audio(None, None, Some("image/png")),
+        label_content_type(None, None, Some("image/png")),
         "application/octet-stream"
     );
 }

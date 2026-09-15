@@ -306,7 +306,7 @@ async fn store_streamed(
         }
     }
 
-    let content_type = label_content_type_with_audio(
+    let content_type = label_content_type(
         detect_image_type(&head),
         detect_audio_type(&head),
         declared.as_deref(),
@@ -318,18 +318,12 @@ async fn store_streamed(
 /// bytes are a supported image, else the sniffed audio type when the bytes are
 /// a recognized audio container; otherwise the declared type as a label,
 /// except that a declared `image/*` the bytes disproved becomes
-/// `application/octet-stream`.
-pub(super) fn label_content_type(sniffed: Option<&'static str>, declared: Option<&str>) -> String {
-    label_content_type_with_audio(sniffed, None, declared)
-}
-
-/// `label_content_type` with the audio sniff supplied (kept separate so the image-only
-/// callers' signature is untouched). The BYTES win over the declared label for both media
+/// `application/octet-stream`. The BYTES win over the declared label for both media
 /// families: a mislabeled audio upload (`application/octet-stream` on a real WAV) is
 /// classified audio and reaches the transcode arm, and a declared `image/*` the bytes
 /// disproved stays `application/octet-stream` (a browser must never be told a non-image is
 /// an image).
-pub(super) fn label_content_type_with_audio(
+pub(super) fn label_content_type(
     sniffed_image: Option<&'static str>,
     sniffed_audio: Option<&'static str>,
     declared: Option<&str>,
