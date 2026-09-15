@@ -81,11 +81,12 @@
     onchange={(e) =>
       onChange({
         ...filter,
-        kind: e.currentTarget.value === "" ? undefined : (e.currentTarget.value as "image" | "other"),
+        kind: e.currentTarget.value === "" ? undefined : (e.currentTarget.value as "image" | "other" | "audio"),
       })}
   >
     <option value="">{t("assetBrowser.kindAll")}</option>
     <option value="image">{t("assetBrowser.kindImage")}</option>
+    <option value="audio">{t("assetBrowser.kindAudio")}</option>
     <option value="other">{t("assetBrowser.kindOther")}</option>
   </select>
 
