@@ -17,6 +17,8 @@ pub mod linux;
 /// macOS backend (Core Audio process tap, macOS 14.2+).
 #[cfg(target_os = "macos")]
 pub mod macos;
+/// The localhost WebSocket server: origin allowlist, hello/levels/watch frames, the 10 Hz loop.
+pub mod server;
 /// Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
 #[cfg(target_os = "windows")]
 pub mod windows;
