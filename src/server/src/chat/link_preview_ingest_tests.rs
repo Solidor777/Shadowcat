@@ -127,6 +127,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.ctx,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,
@@ -190,6 +192,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.ctx,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,
@@ -219,6 +223,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.ctx,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,

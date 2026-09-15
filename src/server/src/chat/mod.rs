@@ -1287,6 +1287,7 @@ pub(crate) async fn validate_actor_owner(
 ///     repo: &repo,
 ///     ctx: &ctx,
 ///     rate: &rate,
+///     vfx_rate: &rate,
 ///     preview: LinkPreviewDeps {
 ///         client: &client,
 ///         cache: &LinkPreviewCache::new(),
@@ -1307,6 +1308,11 @@ pub struct MessageRequestCtx<'a> {
     pub ctx: &'a PermissionContext,
     /// The per-user chat flood-budget limiter.
     pub rate: &'a PingRateLimiter,
+    /// The per-user VFX one-shot budget — a SEPARATE bucket from `rate`, charged when the
+    /// content turns out to be a `/fx` command, so a VFX burst cannot starve chat and a chat
+    /// burst cannot starve VFX (one rate decision per VFX play, whichever front door the play
+    /// arrived through).
+    pub vfx_rate: &'a PingRateLimiter,
     /// Link-preview fetch dependencies.
     pub preview: LinkPreviewDeps<'a>,
     /// The moment of this request (used for `created_at`/`edited_at`/rate accounting).
@@ -1367,6 +1373,7 @@ pub struct MessageRequestCtx<'a> {
 ///         repo: &repo,
 ///         ctx: &ctx,
 ///         rate: &rate,
+///         vfx_rate: &rate,
 ///         preview: LinkPreviewDeps {
 ///             client: &client,
 ///             cache: &LinkPreviewCache::new(),
@@ -1399,6 +1406,7 @@ pub async fn handle_send_message(
         repo,
         ctx,
         rate,
+        vfx_rate,
         preview,
         now,
         budget_per_min,
@@ -1443,7 +1451,9 @@ pub async fn handle_send_message(
     // (the same shape `build_roll_error_notice` establishes for `/roll`). Runs
     // after the channel-registered check above so the failure notice files
     // under a valid channel.
-    if let Some(result) = fx::try_handle_fx(repo, room, ctx, room.world_id, &content).await {
+    if let Some(result) =
+        fx::try_handle_fx(repo, room, ctx, room.world_id, &content, vfx_rate, now).await
+    {
         return match result {
             Ok(()) => Ok(None),
             Err(e) => {
@@ -1739,6 +1749,7 @@ pub async fn handle_send_message(
 ///     repo: &repo,
 ///     ctx: &ctx,
 ///     rate: &rate,
+///     vfx_rate: &rate,
 ///     preview: LinkPreviewDeps {
 ///         client: &client,
 ///         cache: &cache,
@@ -1780,6 +1791,8 @@ pub async fn handle_edit_message(
         preview,
         now,
         budget_per_min,
+        // An edit never reaches the `/fx` interception, so the VFX bucket goes unread here.
+        vfx_rate: _,
     } = req;
     if content.trim().is_empty() {
         return Err(SendMessageError::Empty);
@@ -2056,6 +2069,7 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
 ///         repo: &repo,
 ///         ctx: &ctx,
 ///         rate: &rate,
+///         vfx_rate: &rate,
 ///         preview: LinkPreviewDeps {
 ///             client: &client,
 ///             cache: &LinkPreviewCache::new(),
@@ -2236,6 +2250,7 @@ pub struct RecalcRollRequestCtx<'a> {
 ///         repo: &repo,
 ///         ctx: &ctx,
 ///         rate: &rate,
+///         vfx_rate: &rate,
 ///         preview: LinkPreviewDeps {
 ///             client: &client,
 ///             cache: &LinkPreviewCache::new(),

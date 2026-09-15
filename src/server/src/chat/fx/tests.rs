@@ -198,6 +198,8 @@ impl FxFixture {
                 repo: &self.repo,
                 ctx: &ctx,
                 rate: &rate,
+                vfx_rate: &rate,
+
                 preview: LinkPreviewDeps {
                     client: &client,
                     cache: &LinkPreviewCache::new(),
@@ -242,20 +244,51 @@ async fn try_handle_fx_boundary_cases() {
         user_id: f.player,
         world_role: WorldRole::Player,
     };
+    let vfx_rate = crate::ws::PingRateLimiter::new();
     // Not the command at all: falls through to `parse_command`.
-    assert!(try_handle_fx(&f.repo, &f.room, &ctx, f.world, "hello")
-        .await
-        .is_none());
+    assert!(
+        try_handle_fx(&f.repo, &f.room, &ctx, f.world, "hello", &vfx_rate, 0)
+            .await
+            .is_none()
+    );
     // No word boundary: "/fxwhatever" is ordinary text, not the command.
     assert!(
-        try_handle_fx(&f.repo, &f.room, &ctx, f.world, "/fxwhatever")
+        try_handle_fx(&f.repo, &f.room, &ctx, f.world, "/fxwhatever", &vfx_rate, 0)
             .await
             .is_none()
     );
     // A bare "/fx" IS the command and fails with the usage notice.
     assert!(matches!(
-        try_handle_fx(&f.repo, &f.room, &ctx, f.world, "/fx").await,
+        try_handle_fx(&f.repo, &f.room, &ctx, f.world, "/fx", &vfx_rate, 0).await,
         Some(Err(FxError::NoTarget))
+    ));
+}
+
+#[tokio::test]
+async fn fx_charges_the_vfx_bucket_before_broadcast() {
+    let f = FxFixture::new(DocRole::Observer).await;
+    let ctx = PermissionContext {
+        user_id: f.player,
+        world_role: WorldRole::Player,
+    };
+    // A budget already spent by earlier plays refuses the next one — the SAME bucket the raw
+    // `PlayVfx` frame spends against, so neither front door buys more plays than the other.
+    let vfx_rate = crate::ws::PingRateLimiter::new();
+    for i in 0..30 {
+        assert!(vfx_rate.check(ctx.user_id, i, 30));
+    }
+    assert!(matches!(
+        try_handle_fx(
+            &f.repo,
+            &f.room,
+            &ctx,
+            f.world,
+            "/fx fireball.webp @Big Red Dragon",
+            &vfx_rate,
+            31
+        )
+        .await,
+        Some(Err(FxError::Refused))
     ));
 }
 

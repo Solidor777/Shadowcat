@@ -167,7 +167,9 @@ async fn resolve_token_center(
 /// Try to handle `body` as `/fx`. Returns `None` when `body` does not start with `/fx` (the
 /// caller falls through to `parse_command` as normal); `Some(Ok(()))` on a successful play
 /// (the caller authors no message document); `Some(Err(FxError))` on a refusal (the caller
-/// authors the whispered notice via `build_system_error_notice`).
+/// authors the whispered notice via `build_system_error_notice`). A successful play charges
+/// `vfx_rate` BEFORE broadcast — the SAME per-user VFX bucket the raw `ClientMsg::PlayVfx`
+/// frame spends against, so neither front door buys more plays than the other.
 ///
 /// # Examples
 ///
@@ -178,14 +180,16 @@ async fn resolve_token_center(
 /// use shadowcat::data::membership::PermissionContext;
 /// use shadowcat::data::sqlite::SqliteRepository;
 /// use shadowcat::ws::room::RoomRegistry;
+/// use shadowcat::ws::PingRateLimiter;
 /// use uuid::Uuid;
 ///
 /// let repo = SqliteRepository::connect("sqlite::memory:").await.unwrap();
 /// let registry = RoomRegistry::new();
 /// let room = registry.get_or_create(&repo, Uuid::new_v4()).await.unwrap().unwrap();
 /// let ctx = PermissionContext { user_id: Uuid::new_v4(), world_role: WorldRole::Player };
+/// let vfx_rate = PingRateLimiter::new();
 /// // "hello" is not the command: falls through to `parse_command` as ordinary text.
-/// assert!(try_handle_fx(&repo, &room, &ctx, Uuid::new_v4(), "hello").await.is_none());
+/// assert!(try_handle_fx(&repo, &room, &ctx, Uuid::new_v4(), "hello", &vfx_rate, 0).await.is_none());
 /// # }
 /// ```
 pub async fn try_handle_fx(
@@ -194,6 +198,8 @@ pub async fn try_handle_fx(
     ctx: &PermissionContext,
     world_id: Uuid,
     body: &str,
+    vfx_rate: &crate::ws::PingRateLimiter,
+    now: i64,
 ) -> Option<Result<(), FxError>> {
     let rest = body.strip_prefix("/fx")?;
     // "/fxsomething" (no boundary) is not the command — fall through to parse_command, which
@@ -201,7 +207,7 @@ pub async fn try_handle_fx(
     if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
         return None;
     }
-    Some(run_fx(repo, room, ctx, world_id, rest).await)
+    Some(run_fx(repo, room, ctx, world_id, rest, vfx_rate, now).await)
 }
 
 /// The command body, once `try_handle_fx` has confirmed the `/fx` prefix.
@@ -211,6 +217,8 @@ async fn run_fx(
     ctx: &PermissionContext,
     world_id: Uuid,
     rest: &str,
+    vfx_rate: &crate::ws::PingRateLimiter,
+    now: i64,
 ) -> Result<(), FxError> {
     let (asset_ref, token_name) = parse_fx_body(rest).ok_or(FxError::NoTarget)?;
     let token_name = token_name
@@ -232,7 +240,12 @@ async fn run_fx(
         sound: None,
         elevation: None,
     };
-    if !validate_bounds(&req) || !vfx_permitted(scene, ctx, world_id, repo).await {
+    // One rate decision per VFX play regardless of entry path: the chat front door charges
+    // the same bucket at the same budget the raw `PlayVfx` frame does.
+    if !vfx_rate.check(ctx.user_id, now, 30)
+        || !validate_bounds(&req)
+        || !vfx_permitted(scene, ctx, world_id, repo).await
+    {
         return Err(FxError::Refused);
     }
     room.broadcast_aux(ServerMsg::Vfx {

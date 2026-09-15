@@ -822,6 +822,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -851,6 +853,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 repo: &repo,
                 ctx: &ctx,
                 rate: &rate2,
+                vfx_rate: &rate2,
+
                 preview: LinkPreviewDeps {
                     client: &super::link_preview::build_client_allow_loopback(),
                     cache: &LinkPreviewCache::new(),
@@ -872,6 +876,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate2,
+            vfx_rate: &rate2,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -896,6 +902,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 repo: &repo,
                 ctx: &ctx,
                 rate: &rate,
+                vfx_rate: &rate,
+
                 preview: LinkPreviewDeps {
                     client: &super::link_preview::build_client_allow_loopback(),
                     cache: &LinkPreviewCache::new(),
@@ -920,6 +928,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 repo: &repo,
                 ctx: &ctx,
                 rate: &rate,
+                vfx_rate: &rate,
+
                 preview: LinkPreviewDeps {
                     client: &super::link_preview::build_client_allow_loopback(),
                     cache: &LinkPreviewCache::new(),
@@ -946,6 +956,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 repo: &repo,
                 ctx: &ctx,
                 rate: &rate,
+                vfx_rate: &rate,
+
                 preview: LinkPreviewDeps {
                     client: &super::link_preview::build_client_allow_loopback(),
                     cache: &LinkPreviewCache::new(),
@@ -970,6 +982,8 @@ async fn handle_send_message_publishes_and_broadcasts() {
                 repo: &repo,
                 ctx: &ctx,
                 rate: &rate,
+                vfx_rate: &rate,
+
                 preview: LinkPreviewDeps {
                     client: &super::link_preview::build_client_allow_loopback(),
                     cache: &LinkPreviewCache::new(),
@@ -1028,6 +1042,8 @@ async fn a_roll_messages_spec_and_raw_are_gm_only_but_outcome_and_roll_id_are_no
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1105,6 +1121,8 @@ async fn send_message_stores_a_doc_link_segment() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1175,6 +1193,8 @@ async fn send_message_stores_a_token_link_segment() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1237,6 +1257,8 @@ async fn send_message_with_a_dangling_doc_link_target_still_stores_it_unvalidate
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1299,6 +1321,8 @@ async fn send_message_rejects_a_malformed_doc_link_and_authors_no_message() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1368,6 +1392,8 @@ async fn handle_send_message_rejects_unknown_whisper_recipient() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1432,6 +1458,8 @@ async fn handle_send_message_accepts_a_whisper_to_a_real_member() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1495,6 +1523,8 @@ async fn handle_send_message_rejects_oversized_whisper_recipient_list() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1555,6 +1585,8 @@ async fn handle_send_message_accepts_whisper_at_exactly_the_recipient_cap() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1623,6 +1655,8 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1653,6 +1687,8 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1683,6 +1719,8 @@ async fn source_stores_raw_input_for_plain_and_command_messages() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1742,6 +1780,8 @@ async fn edit_replaces_source_and_delete_clears_it() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1769,6 +1809,8 @@ async fn edit_replaces_source_and_delete_clears_it() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1826,6 +1868,8 @@ async fn editing_into_a_doc_link_span_stores_the_doc_link_segment() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1854,6 +1898,8 @@ async fn editing_into_a_doc_link_span_stores_the_doc_link_segment() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1959,6 +2005,8 @@ async fn editing_into_an_asset_span_stores_the_image_segment_when_images_are_ena
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -1986,6 +2034,8 @@ async fn editing_into_an_asset_span_stores_the_image_segment_when_images_are_ena
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2035,6 +2085,8 @@ async fn editing_into_a_roll_button_span_validates_without_rolling() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2062,6 +2114,8 @@ async fn editing_into_a_roll_button_span_validates_without_rolling() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2113,6 +2167,8 @@ async fn editing_into_an_inline_formula_span_is_roll_immutable_not_executed() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2144,6 +2200,8 @@ async fn editing_into_an_inline_formula_span_is_roll_immutable_not_executed() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2203,6 +2261,8 @@ async fn whisper_edit_body_is_scanned_for_doc_link_spans_like_a_send() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2238,6 +2298,8 @@ async fn whisper_edit_body_is_scanned_for_doc_link_spans_like_a_send() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2305,6 +2367,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2340,6 +2404,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2376,6 +2442,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2409,6 +2477,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2441,6 +2511,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2467,6 +2539,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2490,6 +2564,8 @@ async fn whisper_edit_prefill_resubmit_is_idempotent() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2553,6 +2629,8 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2589,6 +2667,8 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2611,6 +2691,8 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2637,6 +2719,8 @@ async fn editing_a_normal_message_with_an_inline_roll_segment_is_immutable() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2699,6 +2783,8 @@ async fn whisper_roll_via_frame_audience_is_edit_immutable() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2735,6 +2821,8 @@ async fn whisper_roll_via_frame_audience_is_edit_immutable() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -2938,6 +3026,8 @@ async fn send_message_allows_token_owner_via_its_own_override_to_speak_as_it() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3019,6 +3109,8 @@ async fn send_message_allows_the_linked_actors_owner_to_speak_as_its_token() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3101,6 +3193,8 @@ async fn send_message_rejects_a_non_owner_non_gm_speaking_as_a_token() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3173,6 +3267,8 @@ async fn send_message_rejects_a_token_from_another_world_even_for_its_owner() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3239,6 +3335,8 @@ async fn send_message_allows_gm_to_speak_as_any_token_regardless_of_owner() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3314,6 +3412,8 @@ async fn send_message_allows_player_attributing_own_actor() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3397,6 +3497,8 @@ async fn send_message_rejects_player_attributing_another_users_actor() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3474,6 +3576,8 @@ async fn actor_from_another_world_is_not_speakable_even_for_its_owner() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3528,6 +3632,8 @@ async fn send_message_rejects_attributing_a_nonexistent_actor() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3595,6 +3701,8 @@ async fn send_message_allows_gm_attributing_any_actor() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3651,6 +3759,8 @@ async fn send_message_rejects_attributing_a_nonexistent_token() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3724,6 +3834,8 @@ async fn send_message_rejects_attribution_to_a_non_actor_doc() {
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &super::link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3801,6 +3913,8 @@ async fn handle_recalc_roll_rejects_a_non_gm_sender() {
             repo: &repo,
             ctx: &gm_ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -3863,6 +3977,8 @@ async fn handle_recalc_roll_rejects_unknown_roll_id_and_missing_stored_state() {
             repo: &repo,
             ctx: &gm_ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -4008,6 +4124,8 @@ async fn handle_recalc_roll_succeeds_for_public_whisper_and_gmonly_audiences() {
                 repo: &repo,
                 ctx: &gm_ctx,
                 rate: &rate,
+                vfx_rate: &rate,
+
                 preview: LinkPreviewDeps {
                     client: &link_preview::build_client_allow_loopback(),
                     cache: &LinkPreviewCache::new(),
@@ -4068,6 +4186,8 @@ async fn handle_recalc_roll_applies_a_reroll_and_appends_recalc_history() {
             repo: &repo,
             ctx: &gm_ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -4252,6 +4372,7 @@ async fn send(
             repo,
             ctx,
             rate,
+            vfx_rate: rate,
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),
@@ -4285,6 +4406,8 @@ async fn handle_send_message_rejects_an_unregistered_channel_and_persists_nothin
             repo: &repo,
             ctx: &ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &link_preview::build_client_allow_loopback(),
                 cache: &LinkPreviewCache::new(),

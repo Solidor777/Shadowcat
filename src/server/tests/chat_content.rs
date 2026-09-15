@@ -213,6 +213,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.alice,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,
@@ -255,6 +257,8 @@ async fn owner_can_edit_and_content_resanitizes() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -279,6 +283,8 @@ async fn owner_can_edit_and_content_resanitizes() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -307,6 +313,8 @@ async fn non_owner_non_gm_cannot_edit() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -331,6 +339,8 @@ async fn non_owner_non_gm_cannot_edit() {
             repo: &f.repo,
             ctx: &f.bob,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -360,6 +370,8 @@ async fn cannot_edit_already_deleted_message() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -387,6 +399,8 @@ async fn cannot_edit_already_deleted_message() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -421,6 +435,8 @@ async fn gm_can_edit_players_message() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -445,6 +461,8 @@ async fn gm_can_edit_players_message() {
             repo: &f.repo,
             ctx: &f.gm,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -476,6 +494,8 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -502,6 +522,8 @@ async fn gm_can_edit_whisper_message_not_addressed_to_gm() {
             repo: &f.repo,
             ctx: &f.gm,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -534,6 +556,8 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -558,6 +582,8 @@ async fn gm_can_edit_gm_only_message_not_individually_listed() {
             repo: &f.repo,
             ctx: &f.gm,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -586,6 +612,8 @@ async fn edit_cannot_retarget_audience() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -610,6 +638,8 @@ async fn edit_cannot_retarget_audience() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -797,6 +827,8 @@ async fn owner_soft_delete_clears_content_and_keeps_doc() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -838,6 +870,8 @@ async fn non_owner_non_gm_cannot_delete() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -876,6 +910,8 @@ async fn repeated_delete_of_same_message_is_rate_limited() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -919,6 +955,8 @@ async fn soft_delete_leaves_doc_in_sequenced_log() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -967,6 +1005,8 @@ async fn gm_can_delete_whisper_message_not_addressed_to_gm() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -1010,6 +1050,8 @@ async fn gm_can_delete_gm_only_message_not_individually_listed() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -1061,6 +1103,8 @@ async fn non_recipient_still_cannot_see_deleted_whisper() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -1133,6 +1177,8 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -1159,6 +1205,8 @@ async fn non_recipient_finds_no_trace_of_edited_whisper_content() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,

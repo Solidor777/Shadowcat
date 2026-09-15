@@ -647,6 +647,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
@@ -704,6 +706,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
