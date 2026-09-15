@@ -11,6 +11,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use futures_util::stream::SplitSink;
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 
 use super::{filter_for_watch_list, platform_monitor, MonitorError, SessionLevel, SessionMonitor};
@@ -189,13 +191,16 @@ async fn upgrade(
 
 /// Per-connection loop: sends `hello` once, then a `levels` frame every `POLL_INTERVAL`,
 /// concurrently reading `watch` frames the client sends (each replaces the live watch list).
-async fn handle_socket(mut socket: WebSocket, state: Arc<SharedState>) {
+/// The socket is split so the `select!` can hold a read future while the tick arm writes
+/// (the same split-sink shape `ws::conn`'s connection loop uses).
+async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
+    let (mut sink, mut stream) = socket.split();
     let hello = OutgoingFrame::Hello {
         os: std::env::consts::OS,
         supported: state.supported,
         reason: state.unsupported_reason.clone(),
     };
-    if send_frame(&mut socket, &hello).await.is_err() {
+    if send_frame(&mut sink, &hello).await.is_err() {
         return;
     }
 
@@ -211,11 +216,11 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<SharedState>) {
                 let frame = OutgoingFrame::Levels {
                     sessions: sessions.into_iter().map(WireSessionLevel::from).collect(),
                 };
-                if send_frame(&mut socket, &frame).await.is_err() {
+                if send_frame(&mut sink, &frame).await.is_err() {
                     return;
                 }
             }
-            incoming = socket.recv() => {
+            incoming = stream.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(IncomingFrame::Watch { names }) = serde_json::from_str(text.as_str()) {
@@ -233,12 +238,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<SharedState>) {
 
 /// Serializes and sends one JSON text frame, mapping any send failure to `Err(())` so the
 /// caller can end the connection loop without inspecting axum's error type.
-async fn send_frame(socket: &mut WebSocket, frame: &OutgoingFrame) -> Result<(), ()> {
+async fn send_frame(
+    sink: &mut SplitSink<WebSocket, Message>,
+    frame: &OutgoingFrame,
+) -> Result<(), ()> {
     let text = serde_json::to_string(frame).map_err(|_| ())?;
-    socket
-        .send(Message::Text(text.into()))
-        .await
-        .map_err(|_| ())
+    sink.send(Message::Text(text.into())).await.map_err(|_| ())
 }
 
 #[cfg(test)]
