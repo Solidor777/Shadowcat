@@ -1694,6 +1694,7 @@ impl Room {
                 arrest_stop: outcome.arrested.then_some(outcome.stop),
             },
             ts,
+            true,
         )
         .await;
 
@@ -1787,12 +1788,31 @@ impl Room {
     ///   recipients cannot see. `Owner` (effective owner + every GM) has no
     ///   `chat::Audience` shape of its own, so it builds the `GmOnly` permission shape and
     ///   grants the token's effective owner a read on top.
+    /// - `Teleport`: the token moves to the target — same-scene (`target.scene: None`) as a
+    ///   server-authored `Operation::Update` of `/engine/x`,`/engine/y` (+ `/engine/elevation`
+    ///   when the target names one); cross-scene as the server-authored `Operation::Move`
+    ///   reparenting PLUS the position Update, in the SAME committed batch (one seq). At most
+    ///   ONE teleport applies per token per fire (a region's own trigger list could carry
+    ///   several; only the first wins). The target scene's existence is checked at FIRE time,
+    ///   never at ingress (`validate_engine_tree` is pure): a missing target scene is a GM-only
+    ///   notice, no move. After a teleport the destination cells fire `Enter` effects EXCEPT
+    ///   another `Teleport` (one hop per move; a chained portal is refused with a GM-only
+    ///   notice) — enforced by the recursive re-fire passing `allow_teleport: false`. A token
+    ///   teleported OFF its combat's scene keeps its combatant record and turn but moves
+    ///   unbudgeted there (a portal is a legitimate escape), made visible by a GM-only notice
+    ///   when an active combat runs on the source scene.
+    ///
+    /// `allow_teleport` is a FUNCTION parameter rather than a `TriggerReport` field by
+    /// deliberate choice: the report describes the entry EVENT (scene, token, cells, arrest),
+    /// while the flag is a property of the firing PASS (the one-hop anti-loop), so it travels
+    /// beside `ts`, not inside the event description.
     pub(crate) async fn fire_region_triggers(
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
         report: TriggerReport,
         ts: i64,
+        allow_teleport: bool,
     ) {
         let TriggerReport {
             scene,
@@ -2036,6 +2056,102 @@ impl Room {
             }
         }
 
+        // --- Teleport: at most ONE per token per fire (a region's own trigger list could in
+        // principle carry several teleports; only the FIRST wins — a second is silently ignored
+        // rather than double-moving the token, mirroring "one hop per move"). ---
+        let mut teleported: Option<Uuid> = None;
+        if allow_teleport {
+            if let Some((_, trigger)) = fired
+                .iter()
+                .find(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
+            {
+                let eng::TriggerEffect::Teleport { target } = &trigger.effect else {
+                    unreachable!("the find matched a Teleport effect")
+                };
+                let dest_scene = target.scene.unwrap_or(scene);
+                // Scene existence is checked here (fire time), never at ingress
+                // (`validate_engine_tree` is pure — no repository access).
+                let scene_exists = match repo.get_document(dest_scene).await {
+                    Ok(Some(doc)) => doc.doc_type == "scene",
+                    _ => false,
+                };
+                if !scene_exists {
+                    failures.push(format!("teleport target scene {dest_scene} does not exist"));
+                } else if token_eng.is_none() {
+                    failures.push("token has no engine body to teleport".to_string());
+                } else {
+                    let t = token_eng.as_ref().expect("checked non-None above");
+                    let mut update_changes = Vec::new();
+                    update_changes.push(crate::data::command::FieldChange {
+                        path: "/engine/x".to_string(),
+                        old: serde_json::json!(t.x),
+                        new: serde_json::json!(target.x),
+                        remove: false,
+                    });
+                    update_changes.push(crate::data::command::FieldChange {
+                        path: "/engine/y".to_string(),
+                        old: serde_json::json!(t.y),
+                        new: serde_json::json!(target.y),
+                        remove: false,
+                    });
+                    if let Some(new_elev) = target.elevation {
+                        update_changes.push(crate::data::command::FieldChange {
+                            path: "/engine/elevation".to_string(),
+                            old: serde_json::json!(t.elevation),
+                            new: serde_json::json!(new_elev),
+                            remove: false,
+                        });
+                    }
+                    if dest_scene != scene {
+                        ops.push(Operation::Move {
+                            doc_id: token,
+                            parent_id: Some(dest_scene),
+                            old_parent_id: Some(scene),
+                        });
+                        // Active-combat visibility: the budget decrement for the walk that
+                        // entered the portal already happened; this notice only makes the
+                        // scene-change visible.
+                        if self
+                            .scene
+                            .read()
+                            .await
+                            .active_combat_for_scene(scene)
+                            .is_some()
+                        {
+                            let notice = build_message_doc(
+                                self.world_id,
+                                ctx.user_id,
+                                MessageDraft {
+                                    channel: "region".to_string(),
+                                    actor_owner: None,
+                                    audience: Audience::GmOnly,
+                                    kind: MessageKind::System,
+                                    content: vec![Segment::Text {
+                                        text: format!(
+                                            "Token {token} teleported off scene {scene} while an active combat is running there"
+                                        ),
+                                    }],
+                                    source: None,
+                                },
+                                ts,
+                            );
+                            ops.push(Operation::Create { doc: notice });
+                        }
+                    }
+                    ops.push(Operation::Update {
+                        doc_id: token,
+                        changes: update_changes,
+                    });
+                    teleported = Some(dest_scene);
+                }
+            }
+        } else if fired
+            .iter()
+            .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
+        {
+            failures.push("chained portal refused (one hop per move)".to_string());
+        }
+
         // --- Chat notices, in fired order ---
         for (region, trigger) in &fired {
             if let eng::TriggerEffect::ChatNotice { text, audience } = &trigger.effect {
@@ -2111,15 +2227,59 @@ impl Room {
         if ops.is_empty() {
             return;
         }
-        if let Err(err) = self
+        match self
             .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::Trigger)
             .await
         {
-            tracing::debug!(
-                %scene, %token, ?err,
-                "region-trigger commit failed after the triggering write already committed; \
-                 the write stands, the effects were not applied"
-            );
+            Err(err) => {
+                tracing::debug!(
+                    %scene, %token, ?err,
+                    "region-trigger commit failed after the triggering write already committed; \
+                     the write stands, the effects were not applied"
+                );
+            }
+            Ok(_) => {
+                // A teleport that committed re-fires `Enter` on the destination cells — EXCEPT
+                // another Teleport (`allow_teleport: false`): one hop per move, so a portal
+                // chain can never loop. The destination's other effects (conditions, resources,
+                // notices) fire exactly as if the token had been placed there.
+                if let Some(dest_scene) = teleported {
+                    let new_cells = {
+                        let ecs = self.scene.read().await;
+                        // The same footprint-cell computation `fire_placement_triggers` runs —
+                        // never a second footprint formula. `None` (the token or its scene
+                        // unreadable, or a refused footprint) skips the re-fire silently,
+                        // mirroring placement's own `continue`.
+                        (|| {
+                            let (_, pos, _) = ecs.token_move(token, &[])?;
+                            let &cell = ecs.scene_grid_sizes().get(&dest_scene)?;
+                            let radius = ecs.resolve_token_footprint(token, dest_scene)?;
+                            let grid = ecs.resolve_grid_shape(dest_scene, cell);
+                            Some(grid.footprint_cells(
+                                grid.cell_of(pos),
+                                pos,
+                                radius.max(0.0) * cell,
+                                cell,
+                            ))
+                        })()
+                    };
+                    if let Some(entered) = new_cells {
+                        Box::pin(self.fire_region_triggers(
+                            repo,
+                            ctx,
+                            TriggerReport {
+                                scene: dest_scene,
+                                token,
+                                entered,
+                                arrest_stop: None,
+                            },
+                            ts,
+                            false,
+                        ))
+                        .await;
+                    }
+                }
+            }
         }
     }
 
@@ -2175,7 +2335,7 @@ impl Room {
             }
         }
         for report in reports {
-            self.fire_region_triggers(repo, ctx, report, ts).await;
+            self.fire_region_triggers(repo, ctx, report, ts, true).await;
         }
     }
 
