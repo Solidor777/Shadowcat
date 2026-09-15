@@ -132,6 +132,9 @@ export interface VfxNodeSpec {
   /** `true` loops for the node's lifetime; `false` removes itself on completion
    * (`DisplayBackend.setVfx`'s node calls back through `onDone`). */
   loop: boolean;
+  /** `true` freezes the node at its sequence's final frame on load (reduced-motion emitters)
+   * — the backend jumps `elapsedMs` to the sequence total rather than playing through first. */
+  startAtEnd?: boolean;
   /** Draw order among simultaneous vfx nodes at the same point: `"below"` (0), `"token"` (1),
    * `"above"` (2) for an emitter — see `VfxAnchor`'s own doc for the placement rule this
    * mirrors; `"point"` (also 1) for a one-shot, which has no token to anchor relative to. */

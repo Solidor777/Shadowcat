@@ -39,6 +39,9 @@ export function vfxAnchorZIndex(anchor: VfxAnchor | "point"): number {
 interface OneShotState {
   /** The node id (`oneshot:<id>`). */
   id: string;
+  /** The scene the one-shot plays on — a scene switch drops every one-shot not on the newly
+   * viewed scene (its scene coordinates are meaningless over the new scene's grid). */
+  scene: string;
   /** Accumulated elapsed time since `play()`, in ms. */
   elapsedMs: number;
   /** The external duration cap, or `undefined` for "one natural loop". */
@@ -49,8 +52,9 @@ interface OneShotState {
  * transient one-shots (`ServerMsg::Vfx` → `play`). The `PingView`/`EmoteView` pattern: pure
  * state + reconcile/tick, no document writes, backend-agnostic. */
 export class VfxView {
-  /** Currently-pushed emitter node ids (`emitter:<token>`), for reconcile's diff. */
-  private readonly emitterIds = new Set<string>();
+  /** Currently-pushed emitter node specs, keyed by node id (`emitter:<token>`) — reconcile's
+   * diff state AND the per-tick transform pass's re-push base. */
+  private readonly emitters = new Map<string, VfxNodeSpec>();
   /** Live one-shots, oldest first (insertion order — the eviction/tick order). */
   private oneShots: OneShotState[] = [];
 
@@ -108,14 +112,24 @@ export class VfxView {
    * ```
    */
   reconcile(): void {
+    const viewed = this.viewedSceneId();
     if (!this.vfxEnabled()) {
       // Disabled tears down EVERY node — emitters and any live one-shots alike — so the
       // layer carries nothing while the setting is off.
-      for (const id of this.emitterIds) this.backend.removeVfx(id);
-      this.emitterIds.clear();
+      for (const id of this.emitters.keys()) this.backend.removeVfx(id);
+      this.emitters.clear();
       for (const s of this.oneShots) this.backend.removeVfx(s.id);
       this.oneShots = [];
       return;
+    }
+    // A one-shot's scene coordinates are meaningless over a different scene: drop every
+    // one-shot not on the newly viewed scene (emitters are already scene-scoped by the
+    // store query below).
+    const offScene = this.oneShots.filter((s) => viewed !== null && s.scene !== viewed);
+    for (const s of offScene) this.backend.removeVfx(s.id);
+    if (offScene.length > 0) {
+      const drop = new Set(offScene.map((s) => s.id));
+      this.oneShots = this.oneShots.filter((s) => !drop.has(s.id));
     }
     const seen = new Set<string>();
     for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId)) {
@@ -128,11 +142,12 @@ export class VfxView {
       const pushed = this.pushEmitter(id, doc.id, vfx, source);
       if (pushed) seen.add(id);
     }
-    for (const id of this.emitterIds) {
+    for (const id of this.emitters.keys()) {
       if (!seen.has(id)) this.backend.removeVfx(id);
     }
-    this.emitterIds.clear();
-    for (const id of seen) this.emitterIds.add(id);
+    for (const id of [...this.emitters.keys()]) {
+      if (!seen.has(id)) this.emitters.delete(id);
+    }
   }
 
   /** Resolve + push one emitter node. Returns `false` (and removes any stale node) when the
@@ -174,8 +189,12 @@ export class VfxView {
       loop: vfx.loop && !this.reducedMotion(),
       anchor: vfx.anchor,
       token: tokenId,
+      // Reduced motion additionally freezes the emitter at the sequence's LAST frame on load
+      // (never plays through first) — the backend jumps `elapsedMs` to the sequence total.
+      startAtEnd: this.reducedMotion(),
     };
     this.backend.setVfx(id, node);
+    this.emitters.set(id, node);
     return true;
   }
 
@@ -205,7 +224,7 @@ export class VfxView {
       const oldest = this.oneShots.shift();
       if (oldest) this.backend.removeVfx(oldest.id);
     }
-    this.oneShots.push({ id, elapsedMs: 0, durationMs: req.durationMs });
+    this.oneShots.push({ id, scene: req.scene, elapsedMs: 0, durationMs: req.durationMs });
     this.backend.setVfx(id, {
       layer: "vfx",
       x: req.x,
@@ -237,12 +256,31 @@ export class VfxView {
    * ```
    */
   tick(dtMs: number): void {
+    // Per-tick emitter-transform pass: re-read each emitter's LIVE tweened transform and
+    // re-push on change (the backend's source-key short-circuit makes a transform-only
+    // re-push cheap — no texture reload). This is what lets an effect follow a moving token
+    // between store commits; the full reconcile diff runs only on commits/scene switches.
+    for (const [id, spec] of this.emitters) {
+      if (!spec.token) continue;
+      const t = this.tokenTransform(spec.token);
+      if (!t) continue;
+      const tokenSpec = this.tokenSpec(spec.token);
+      if (!tokenSpec) continue;
+      const offset = spec.anchor === "below" ? tokenSpec.h / 2 : spec.anchor === "above" ? -tokenSpec.h / 2 : 0;
+      if (spec.x === t.x && spec.y === t.y + offset) continue;
+      spec.x = t.x;
+      spec.y = t.y + offset;
+      this.backend.setVfx(id, spec);
+    }
     for (const s of this.oneShots) s.elapsedMs += dtMs;
     const expired = this.oneShots.filter((s) => s.durationMs !== undefined && s.elapsedMs >= s.durationMs);
     for (const s of expired) this.backend.removeVfx(s.id);
     const expiredIds = new Set(expired.map((s) => s.id));
     this.oneShots = this.oneShots.filter((s) => !expiredIds.has(s.id));
     this.backend.tickVfx(dtMs, (id) => {
+      // A naturally-completed one-shot (or one whose load failed — the backend surfaces both
+      // through this callback) leaves the display list AND the bookkeeping.
+      this.backend.removeVfx(id);
       this.oneShots = this.oneShots.filter((s) => s.id !== id);
     });
   }
@@ -261,6 +299,6 @@ export class VfxView {
    * ```
    */
   count(): number {
-    return this.emitterIds.size + this.oneShots.length;
+    return this.emitters.size + this.oneShots.length;
   }
 }

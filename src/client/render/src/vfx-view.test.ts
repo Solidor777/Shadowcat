@@ -110,6 +110,26 @@ describe("VfxView emitters", () => {
     expect(backend.vfx.get("emitter:tok1")!.y).toBe(24);
   });
 
+  it("re-reads the live transform every TICK, so an emitter follows a token mid-tween", () => {
+    const store = storeWithToken(vfxEmission());
+    const backend = new MockBackend();
+    let live = { x: 10, y: 20, rotation: 0 };
+    const view = makeView({ store, backend, transform: () => live });
+    view.reconcile();
+    expect(backend.vfx.get("emitter:tok1")!.x).toBe(10);
+    // The token moves AFTER the last store commit — no reconcile runs; the per-tick
+    // transform pass must carry the emitter along on the next tick.
+    live = { x: 35, y: 44, rotation: 0 };
+    view.tick(16);
+    expect(backend.vfx.get("emitter:tok1")!.x).toBe(35);
+    expect(backend.vfx.get("emitter:tok1")!.y).toBe(44);
+    // A tick with an unchanged transform does not re-push (same object recorded).
+    const pushed = backend.vfx.get("emitter:tok1");
+    view.tick(16);
+    expect(backend.vfx.get("emitter:tok1")!.x).toBe(35);
+    expect(backend.vfx.get("emitter:tok1")).toBe(pushed);
+  });
+
   it("offsets below/above anchors by half the token height and orders all anchors", () => {
     const store = storeWithToken(vfxEmission({ anchor: "below" }));
     const backend = new MockBackend();
@@ -125,11 +145,13 @@ describe("VfxView emitters", () => {
     expect(vfxAnchorZIndex("point")).toBe(1);
   });
 
-  it("still renders an emitter under reduced motion, frozen (loop:false)", () => {
+  it("still renders an emitter under reduced motion, frozen at the last frame (startAtEnd, never plays through)", () => {
     const store = storeWithToken(vfxEmission({ loop: true }));
     const backend = new MockBackend();
     makeView({ store, backend, reducedMotion: () => true }).reconcile();
-    expect(backend.vfx.get("emitter:tok1")!.loop).toBe(false);
+    const node = backend.vfx.get("emitter:tok1")!;
+    expect(node.loop).toBe(false);
+    expect(node.startAtEnd).toBe(true);
   });
 
   it("vfxEnabled === false tears down emitters AND live one-shots, and makes play() a no-op", () => {
@@ -164,7 +186,7 @@ describe("VfxView one-shots", () => {
     expect(node!.loop).toBe(false); // no durationMs: exactly one natural loop
   });
 
-  it("removes a one-shot on the backend's onDone", () => {
+  it("removes a one-shot on the backend's onDone — from the bookkeeping AND the display list", () => {
     const backend = new MockBackend();
     const view = makeView({ store: new DocumentStore(), backend });
     view.play({ scene: "scene1", asset: "fx1", x: 0, y: 0, id: "one" });
@@ -172,6 +194,29 @@ describe("VfxView one-shots", () => {
     backend.completeVfxForTest("oneshot:one");
     view.tick(16);
     expect(view.count()).toBe(0);
+    expect(backend.vfx.has("oneshot:one")).toBe(false); // no forever-rendered final frame
+  });
+
+  it("drops one-shots that do not belong to the viewed scene on the next reconcile", () => {
+    const backend = new MockBackend();
+    let viewed: string | null = "s1";
+    const store = new DocumentStore();
+    const view = new VfxView(
+      store,
+      backend,
+      () => viewed,
+      (id) => (id === "fx1" ? SHEET : null),
+      () => undefined,
+      () => undefined,
+    );
+    view.play({ scene: "s1", asset: "fx1", x: 0, y: 0, id: "one" });
+    view.play({ scene: "s2", asset: "fx1", x: 1, y: 1, id: "two" });
+    expect(view.count()).toBe(2);
+    viewed = "s2";
+    view.reconcile();
+    expect(backend.vfx.has("oneshot:one")).toBe(false); // scene-1 coords mean nothing over s2
+    expect(backend.vfx.has("oneshot:two")).toBe(true);
+    expect(view.count()).toBe(1);
   });
 
   it("force-removes a durationMs-capped one-shot once elapsed exceeds the cap", () => {
