@@ -14,6 +14,9 @@ pub mod fake;
 /// Linux backend (PipeWire).
 #[cfg(target_os = "linux")]
 pub mod linux;
+/// Windows backend (WASAPI `IAudioSessionManager2`/`IAudioMeterInformation`).
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 /// One watched process's current peak output level, already basename-reduced and clamped.
 ///
@@ -110,11 +113,15 @@ pub trait SessionMonitor: Send {
 /// let _outcome = platform_monitor();
 /// ```
 pub fn platform_monitor() -> Result<Box<dyn SessionMonitor>, MonitorError> {
+    #[cfg(target_os = "windows")]
+    {
+        return windows::WindowsMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
+    }
     #[cfg(target_os = "linux")]
     {
         return linux::LinuxMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         Err(MonitorError::Unsupported(
             "this operating system".to_string(),
