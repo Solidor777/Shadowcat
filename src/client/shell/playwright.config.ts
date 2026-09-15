@@ -81,6 +81,9 @@ export default defineConfig({
     // ANGLE falls back to SwiftShader by itself where no device exists, so the flag is safe on a
     // GPU-less runner rather than something to gate per environment. It also makes the suite
     // exercise the same rendering path a browser actually gives a user.
-    launchOptions: { args: ["--use-gl=angle"] },
+    // `--autoplay-policy=no-user-gesture-required`: the audio engine's `AudioContext` is
+    // constructed before any click, and Chromium's default gesture requirement would otherwise
+    // keep it suspended for the rest of the test no matter what gets clicked afterward.
+    launchOptions: { args: ["--use-gl=angle", "--autoplay-policy=no-user-gesture-required"] },
   },
 });

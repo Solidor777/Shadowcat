@@ -144,9 +144,10 @@ describe("AudioPanel", () => {
     expect(audio.transport).toHaveBeenCalledWith({ type: "stop_all" });
   });
 
-  it("live search sends docTypes: [playlist] and create dispatches a playlist document", async () => {
+  it("live search sends docTypes: [playlist] and create dispatches a playlist document then opens its sheet", async () => {
     const searchDocuments = vi.fn().mockResolvedValue({ unsubscribe: () => {} });
     const calls: unknown[] = [];
+    const openDocument = vi.fn();
     render(AudioPanel, {
       context: setAppContextForTest({
         role: "gm",
@@ -156,6 +157,7 @@ describe("AudioPanel", () => {
         searchDocuments: searchDocuments as never,
         canCreate: () => true,
         canDelete: () => false,
+        openDocument,
         dispatchIntent: (ops) => calls.push(ops),
       }),
     });
@@ -175,6 +177,7 @@ describe("AudioPanel", () => {
     expect(ops[0].op).toBe("create");
     expect(ops[0].doc.doc_type).toBe("playlist");
     expect(ops[0].doc.name).toBe("Tavern Loop");
+    expect(openDocument).toHaveBeenCalledWith({ docId: ops[0].doc.id });
   });
 
   it("hides create when canCreate is false and delete when canDelete is false", async () => {

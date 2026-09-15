@@ -141,7 +141,8 @@
   }
 
   /** Create a playlist document from the name field and dispatch it (owner = this user, so
-   * the creator manages their own playlist).
+   * the creator manages their own playlist), then open its sheet — creating a playlist takes
+   * you straight to its track editor.
    * @example
    * ```
    * // private handler; exercised through `AudioPanel.test.ts`'s create case
@@ -157,6 +158,7 @@
       { owner: ctx.selfId },
     );
     ctx.dispatchIntent([{ op: "create", doc }]);
+    ctx.openDocument({ docId: doc.id });
     newName = "";
   }
 
