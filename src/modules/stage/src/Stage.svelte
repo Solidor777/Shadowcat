@@ -9,6 +9,7 @@
   } from "@shadowcat/render";
   import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
+  import LevelSwitcher from "./LevelSwitcher.svelte";
 
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
    * (jsdom has no WebGL — real GL is covered by Playwright).
@@ -433,6 +434,11 @@
 
 <div class="stage-host" bind:this={host}>
   <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+  <LevelSwitcher
+    levels={(documents.query("scene").find((s) => s.id === ctx.viewedSceneId)?.engine as SceneEngine | undefined)?.levels ?? []}
+    active={ctx.viewedLevel}
+    onSelect={(id) => ctx.setViewedLevel(id)}
+  />
   {#if role === "gm"}
     <select
       class="gm-view"

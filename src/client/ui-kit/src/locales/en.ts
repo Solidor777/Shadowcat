@@ -683,4 +683,5 @@ export const en: Messages = {
   "tables.draw": "Draw",
   "tables.delete": "Delete",
   "tables.empty": "No tables yet.",
+  "levels.switcher": "Floor",
 };
