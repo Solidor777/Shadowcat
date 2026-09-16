@@ -120,6 +120,11 @@
       return session.footprints;
     },
     setGmViewedScene: (id) => session.setGmViewedScene(id),
+    // TODO: wire to WorldSession.viewedLevel/setViewedLevel once implemented.
+    get viewedLevel() {
+      return null;
+    },
+    setViewedLevel: () => {},
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
     sceneSelection,
     speakAsToken,

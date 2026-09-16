@@ -799,7 +799,7 @@ test("the session subscribes to footprints itself and publishes each frame's res
     computed_at_seq: 0,
     payload: {
       scenes: [
-        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 } }] },
+        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 }, level: null }] },
       ],
     },
   });

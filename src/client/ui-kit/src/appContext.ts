@@ -351,6 +351,16 @@ export interface AppContext {
    * render a panel-dock strip elsewhere. No-ops/empty (with a one-time console
    * warning on a write call) until the panel host binds; see `PanelsBridge`. */
   panels: PanelsApi & PanelsChipsView;
+  /** The level (of the viewed scene) this client renders/subscribes to; `null` for a
+   * level-less scene, or before any scene/level is known. For a player: `levelOf` of their
+   * primary token, tracked live (follows the token through a portal). For a GM: the last
+   * chosen level for the viewed scene (persisted, `ui_state.worlds[id].viewedLevel`). */
+  viewedLevel: string | null;
+  /** Set the viewed level (GM local override; a no-op/warn for a player — mirrors
+   * `setGmViewedScene`'s role gate). `WorldSession` re-subscribes the `"vision"` channel with
+   * the new level.
+   * @param id - The level to view, or `null` to clear to the scene's first level. */
+  setViewedLevel: (id: string | null) => void;
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */
