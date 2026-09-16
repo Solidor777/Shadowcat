@@ -396,6 +396,15 @@ pub enum ClientMsg {
         /// The transport operation to apply.
         op: AudioOp,
     },
+    /// Set (or clear) this connection's spatial-audio listening token, independent of the
+    /// connection's own owned tokens — a GM preview seam (see `scene::audibility::select_listener`).
+    /// Applies to every current and future `"audibility"` scene subscription on this connection;
+    /// takes effect on the next debounced re-eval (`ws::conn`'s existing scene-channel sweep).
+    AudioListenAs {
+        /// The token to listen as, or `None` to clear the override (falls back to
+        /// `select_listener`'s owned-token rule).
+        token: Option<Uuid>,
+    },
 }
 
 /// One audio-transport operation (`ClientMsg::AudioTransport`). GM-only; the server resolves

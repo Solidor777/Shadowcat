@@ -2151,6 +2151,26 @@ impl SceneEcs {
         ids
     }
 
+    /// Whether `ctx` can see scene `scene`'s document at all — the ONE scene-visibility
+    /// predicate every enumerating derived channel gates on (`resolved_footprints`'s scene loop
+    /// and `compute_derived`'s `"audibility"` arm both read it, so the two channels can never
+    /// disagree about which scene ids a recipient may learn of). Wraps `ctx_can_see_engine`
+    /// against the scene's own document.
+    pub(crate) fn scene_visible_to(
+        &self,
+        ctx: &PermissionContext,
+        world_defaults: &crate::data::document::WorldCapDefaults,
+        scene: Uuid,
+    ) -> bool {
+        let Some(&e) = self.index.get(&scene) else {
+            return false;
+        };
+        let Ok(c) = self.world.get::<&SceneEntity>(e) else {
+            return false;
+        };
+        c.doc.doc_type == "scene" && self.ctx_can_see_engine(ctx, world_defaults, &c.doc)
+    }
+
     /// The recipient's line of sight in `scene` — see `SightSources`. Sources come from
     /// `gather_vision_sources_in_scene` (never a second admission rule), each raycast through
     /// `source_los_poly` at its own elevation's walls. A scene with no document yields no
@@ -3310,7 +3330,7 @@ impl SceneEcs {
         let grid_sizes = self.scene_grid_sizes();
         for e in self.world.query::<&SceneEntity>().iter() {
             let doc = &e.doc;
-            if doc.doc_type != "scene" || !self.ctx_can_see_engine(ctx, world_defaults, doc) {
+            if doc.doc_type != "scene" || !self.scene_visible_to(ctx, world_defaults, doc.id) {
                 continue;
             }
             let Some(cell) = grid_sizes.get(&doc.id).copied() else {
@@ -4546,7 +4566,10 @@ impl Default for SceneEcs {
 /// payload is non-sensitive and global. `world_defaults` supplies the same
 /// world-level capability grants document egress resolves READ against, so the
 /// footprints channel cannot disclose a token the recipient's own document
-/// stream withholds.
+/// stream withholds. `listen_as` is the connection's spatial-audio listening
+/// override, consulted only by the `"audibility"` arm (every other channel
+/// ignores it — it is passed uniformly so no channel-name branch lives at the
+/// call sites).
 ///
 /// # Examples
 ///
@@ -4558,13 +4581,14 @@ impl Default for SceneEcs {
 /// let ecs = SceneEcs::new();
 /// let ctx = PermissionContext { user_id: uuid::Uuid::new_v4(), world_role: WorldRole::Player };
 /// let defaults = WorldCapDefaults::default();
-/// assert!(compute_derived("not-a-real-channel", &ecs, &ctx, &defaults).is_none());
+/// assert!(compute_derived("not-a-real-channel", &ecs, &ctx, &defaults, None).is_none());
 /// ```
 pub fn compute_derived(
     channel: &str,
     ecs: &SceneEcs,
     ctx: &PermissionContext,
     world_defaults: &crate::data::document::WorldCapDefaults,
+    listen_as: Option<Uuid>,
 ) -> Option<serde_json::Value> {
     match channel {
         // Debug seam proof (non-sensitive, global); absent in release.
@@ -4573,6 +4597,23 @@ pub fn compute_derived(
         // The resolved drawn footprint of every readable token, so the client renders and
         // hit-tests the authoritative geometry instead of re-deriving it from a second formula.
         "footprints" => serde_json::to_value(ecs.resolved_footprints(ctx, world_defaults)).ok(),
+        // One `SceneAudibility` slice per scene with at least one token (`token_scene_ids`)
+        // that the recipient can SEE — `scene_visible_to` is the `ctx_can_see_engine` gate
+        // `resolved_footprints` applies, so this channel never discloses a scene id the
+        // footprints channel withholds. A GM roaming a scene independently of the party's
+        // active one still receives that scene's audibility, and the client filters to the one
+        // it renders. A world with no visible tokened scene yields `scenes: []`, never a
+        // sentinel the client must special-case. `listen_as` is the connection's spatial-audio
+        // listening override (`ClientMsg::AudioListenAs`); only this arm consults it.
+        "audibility" => {
+            let scenes: Vec<audibility::SceneAudibility> = ecs
+                .token_scene_ids()
+                .into_iter()
+                .filter(|scene| ecs.scene_visible_to(ctx, world_defaults, *scene))
+                .map(|scene| ecs.compute_audibility(ctx, world_defaults, scene, listen_as))
+                .collect();
+            serde_json::to_value(audibility::AudibilityPayload { scenes }).ok()
+        }
         // Server-resolved combat resource numbers and movement budgets, per recipient — the
         // client evaluates and stores nothing (`SceneEcs::resolved_combats`'s own doc comment).
         "combat" => serde_json::to_value(ecs.resolved_combats(ctx, world_defaults)).ok(),

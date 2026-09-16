@@ -361,4 +361,9 @@ child_id: string, } | { "type": "audio_transport",
 /**
  * The transport operation to apply.
  */
-op: AudioOp, };
+op: AudioOp, } | { "type": "audio_listen_as", 
+/**
+ * The token to listen as, or `None` to clear the override (falls back to
+ * `select_listener`'s owned-token rule).
+ */
+token: string | null, };

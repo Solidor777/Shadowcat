@@ -16,7 +16,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -181,7 +181,7 @@ impl SceneEcs {
 /// };
 /// assert!(emitter.loop_);
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AudibleEmitter {
@@ -217,7 +217,7 @@ pub struct AudibleEmitter {
 /// };
 /// assert!(slice.emitters.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct SceneAudibility {
@@ -249,7 +249,7 @@ pub struct SceneAudibility {
 /// let payload = shadowcat::scene::audibility::AudibilityPayload { scenes: Vec::new() };
 /// assert!(payload.scenes.is_empty());
 /// ```
-#[derive(Debug, Clone, PartialEq, Serialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 #[serde(rename_all = "camelCase")]
 pub struct AudibilityPayload {

@@ -100,6 +100,13 @@ enum Egress {
         /// The subscription to cancel.
         request_id: Uuid,
     },
+    /// Set (or clear) the connection's spatial-audio listening override (`ClientMsg::
+    /// AudioListenAs`'s forward); the egress task owns the value every `compute_derived`
+    /// call this connection makes reads.
+    AudioListenAs {
+        /// The token to listen as, or `None` to clear the override.
+        token: Option<Uuid>,
+    },
 }
 
 /// Max live search subscriptions per connection; a subscribe beyond this is
@@ -599,6 +606,12 @@ async fn handle_socket(
                                             })))
                                             .await;
                                     }
+                                }
+                                Ok(ClientMsg::AudioListenAs { token }) => {
+                                    // The egress task owns the value (every `compute_derived`
+                                    // call lives there) — forward like every other
+                                    // connection-local scene control.
+                                    let _ = etx.send(Egress::AudioListenAs { token }).await;
                                 }
                                 Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
                                     // Server-authoritative move execution. On success, broadcasts
@@ -1829,6 +1842,10 @@ async fn egress_loop<S>(
     let mut scene_subs: std::collections::HashMap<Uuid, SceneSub> =
         std::collections::HashMap::new();
     let mut reeval_deadline: Option<tokio::time::Instant> = None;
+    // The connection's spatial-audio listening override (`ClientMsg::AudioListenAs`); read by
+    // every `compute_derived` call this connection makes, for every channel (only the
+    // `"audibility"` arm consults it — passing it uniformly avoids a channel-name branch here).
+    let mut listen_as: Option<Uuid> = None;
 
     let mut next_expected = current_seq + 1;
     loop {
@@ -1902,6 +1919,14 @@ async fn egress_loop<S>(
                 Some(Egress::Unsubscribe { request_id }) => {
                     subs.remove(&request_id);
                 }
+                Some(Egress::AudioListenAs { token }) => {
+                    listen_as = token;
+                    // Fire the existing debounced scene-channel re-eval on the very next loop
+                    // iteration (never later than an already-armed in-flight window — bringing
+                    // it forward is always safe, since the recompute reads the now-updated
+                    // `listen_as` regardless of when it fires).
+                    reeval_deadline = Some(tokio::time::Instant::now());
+                }
                 Some(Egress::SceneSubscribe { request_id, channel, as_user }) => {
                     if scene_subs.contains_key(&request_id) {
                         // A duplicate id would silently orphan the prior sub (mirrors the search path).
@@ -1941,7 +1966,7 @@ async fn egress_loop<S>(
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
                         let (payload, seq, grid, grid_shapes) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                         };
                         match payload {
                             Some(mut p) => {
@@ -2163,7 +2188,7 @@ async fn egress_loop<S>(
                             *id,
                             s.channel.clone(),
                             s.view_ctx,
-                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults),
+                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults, listen_as),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
