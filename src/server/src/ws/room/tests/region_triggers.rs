@@ -739,6 +739,107 @@ async fn cross_scene_teleport_reparents_and_repositions_in_one_command() {
     );
 }
 
+/// Drains every currently-buffered broadcast off `rx` (non-blocking) and returns how many were
+/// `ServerMsg::Vfx` frames.
+fn count_vfx_frames(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) -> usize {
+    use tokio::sync::broadcast::error::TryRecvError;
+    let mut n = 0;
+    loop {
+        match rx.try_recv() {
+            Ok(RoomEvent::Other(msg)) => {
+                if matches!(&*msg, ServerMsg::Vfx { .. }) {
+                    n += 1;
+                }
+            }
+            Ok(RoomEvent::Event(_)) => {}
+            // A skipped-messages notification, not a stop condition — keep draining what
+            // remains resident in the ring so a Vfx frame after the gap is still counted.
+            Err(TryRecvError::Lagged(_)) => {}
+            Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => break,
+        }
+    }
+    n
+}
+
+/// A region whose `enter` trigger carries BOTH a same-scene teleport with a carried `vfx` asset
+/// AND an unrelated `chat_notice` — lets a test distinguish "the whole batch was dropped" from
+/// "only the VFX broadcast was throttled".
+async fn place_vfx_teleport_region(h: &MovementHandle, id: u128, cell: (i32, i32)) -> Uuid {
+    place_region(
+        h,
+        id,
+        cell,
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 450.0, "y": 450.0, "elevation": null, "vfx": "portal-flash" } } },
+            { "on": "enter", "effect": { "type": "chat_notice", "text": "A portal hums.", "audience": "public" } },
+        ]),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn teleport_vfx_plays_at_both_ends_when_the_shared_budget_has_room() {
+    // Positive control (see the "a green gate can be inert" lesson): proves the detector FIRES
+    // under budget before the throttled test below proves it refuses over budget.
+    let h = movement_scene("unrestricted", false).await;
+    place_vfx_teleport_region(&h, 0x7B8, (1, 0)).await;
+    let (mut rx, _) = h.room.subscribe();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    assert_eq!(
+        count_vfx_frames(&mut rx),
+        2,
+        "a carried vfx plays once at the origin and once at the destination when the bucket has room"
+    );
+    let notices = region_notices(&h).await;
+    assert_eq!(notices.len(), 1, "the unrelated chat_notice still commits");
+}
+
+#[tokio::test]
+async fn teleport_vfx_is_throttled_by_the_shared_vfx_rate_bucket_like_repeated_fx_calls() {
+    let h = movement_scene("unrestricted", false).await;
+    place_vfx_teleport_region(&h, 0x7B9, (1, 0)).await;
+    let (mut rx, _) = h.room.subscribe();
+
+    // Exhaust the SAME bucket `ws::conn`'s `PlayVfx` arm and `chat::fx` charge, keyed on the
+    // token's effective owner (the fixture token is player-owned — see `movement_scene`'s own
+    // doc) — mirroring a player who already spent their 30/min budget via repeated `/fx` calls.
+    // Charged at real wall-clock time (`PingRateLimiter::check`'s window is relative to the
+    // `now_ms` each call passes, not absolute): `move_token` below fires the trigger moments
+    // later via its own fresh `now_millis()`, which must land inside the SAME trailing-60s
+    // window as these charges or `retain` prunes them all before the trigger's own check runs.
+    let now = crate::ws::time::now_millis();
+    for i in 0..30 {
+        assert!(h.room.vfx_rate.check(h.player.user_id, now + i, 30));
+    }
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    assert_eq!(
+        count_vfx_frames(&mut rx),
+        0,
+        "the portal's carried vfx is refused once the shared budget is exhausted, exactly like a \
+         31st /fx call would be"
+    );
+    // The teleport itself and the unrelated same-batch chat_notice are NOT throttled — only the
+    // vfx broadcast is refused (never-fork: the budget gates the one-shot, not the whole batch).
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(eng["x"], json!(450.0), "the teleport still committed");
+    assert_eq!(eng["y"], json!(450.0));
+    let notices = region_notices(&h).await;
+    assert_eq!(
+        notices.len(),
+        1,
+        "the unrelated chat_notice still commits when only the vfx broadcast is throttled"
+    );
+}
+
 #[tokio::test]
 async fn teleport_to_a_missing_scene_notices_the_gm_and_moves_nothing() {
     let h = movement_scene("unrestricted", false).await;

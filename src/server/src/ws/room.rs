@@ -24,6 +24,7 @@ use crate::data::snapshot::StoredCommand;
 use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
+use crate::ws::PingRateLimiter;
 
 /// The room-facing result of a server-authoritative token move. Production code reads only
 /// `frame` (the wire `MoveStream`, already registered in the room's in-flight registry); the
@@ -664,6 +665,12 @@ pub struct Room {
     /// frame on every socket open (`WsClient`'s `open()`), so every connection this room ever
     /// sees establishes its floor before it could plausibly send a `ResyncRequest`.
     resync_floor_enforced_flag: bool,
+    /// Per-user VFX one-shot budget for trigger-fired plays (`fire_region_triggers`'s Teleport
+    /// arm) — the SAME `Arc<PingRateLimiter>` instance `RoomRegistry::vfx_rate` hands to
+    /// `WsState::vfx_rate`, so a portal's carried VFX draws from the identical bucket the raw
+    /// `ClientMsg::PlayVfx` frame and `/fx` already share, rather than a parallel unthrottled
+    /// path (never-fork: one validation+authz/budget source per one-shot family).
+    vfx_rate: Arc<PingRateLimiter>,
 }
 
 /// One firing report: the token that entered, the scene it happened in, the cells it
@@ -695,6 +702,7 @@ impl Room {
         scene: SceneEcs,
         broadcast_capacity: usize,
         resync_floor_enforced: bool,
+        vfx_rate: Arc<PingRateLimiter>,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Self {
@@ -708,6 +716,7 @@ impl Room {
             moving: Mutex::new(HashMap::new()),
             session_floors: Mutex::new(HashMap::new()),
             resync_floor_enforced_flag: resync_floor_enforced,
+            vfx_rate,
         }
     }
 
@@ -2357,34 +2366,52 @@ impl Room {
                     // on the ORIGIN scene (where the token just vanished from) and the
                     // destination position on `dest_scene` (where it now stands) — mirroring
                     // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
-                    // out-of-band, no seq, one fresh id per broadcast).
+                    // out-of-band, no seq, one fresh id per broadcast). Charged against
+                    // `self.vfx_rate` BEFORE either broadcast — the SAME `Arc<PingRateLimiter>`
+                    // `RoomRegistry::vfx_rate` hands to `WsState::vfx_rate`, which the raw
+                    // `ClientMsg::PlayVfx` frame and `/fx` already share — so repeatedly walking
+                    // into and out of a portal's trigger region cannot emit unlimited,
+                    // unthrottled broadcasts the way an unthrottled third VFX-broadcast site
+                    // would (never-fork: one budget source per one-shot family). Keyed on the
+                    // token's effective owner: a GM-owned/NPC-moved token
+                    // (`effective_owner: None`) has no attributable player to charge and is
+                    // admitted uncharged, matching this codebase's broader pattern of GM actions
+                    // being less restricted than player ones; a player-owned token charges that
+                    // player's bucket exactly once per fire (one check covers both ends of the
+                    // hop, not two).
                     if let Some(asset) = &target.vfx {
-                        self.broadcast_aux(ServerMsg::Vfx {
-                            scene,
-                            user: ctx.user_id,
-                            asset: asset.clone(),
-                            x: t.x,
-                            y: t.y,
-                            scale: None,
-                            rotation: None,
-                            duration_ms: None,
-                            sound: None,
-                            elevation: t.elevation,
-                            id: Uuid::new_v4(),
-                        });
-                        self.broadcast_aux(ServerMsg::Vfx {
-                            scene: dest_scene,
-                            user: ctx.user_id,
-                            asset: asset.clone(),
-                            x: target.x,
-                            y: target.y,
-                            scale: None,
-                            rotation: None,
-                            duration_ms: None,
-                            sound: None,
-                            elevation: target.elevation,
-                            id: Uuid::new_v4(),
-                        });
+                        let vfx_admitted = match effective_owner {
+                            Some(owner) => self.vfx_rate.check(owner, ts, 30),
+                            None => true,
+                        };
+                        if vfx_admitted {
+                            self.broadcast_aux(ServerMsg::Vfx {
+                                scene,
+                                user: ctx.user_id,
+                                asset: asset.clone(),
+                                x: t.x,
+                                y: t.y,
+                                scale: None,
+                                rotation: None,
+                                duration_ms: None,
+                                sound: None,
+                                elevation: t.elevation,
+                                id: Uuid::new_v4(),
+                            });
+                            self.broadcast_aux(ServerMsg::Vfx {
+                                scene: dest_scene,
+                                user: ctx.user_id,
+                                asset: asset.clone(),
+                                x: target.x,
+                                y: target.y,
+                                scale: None,
+                                rotation: None,
+                                duration_ms: None,
+                                sound: None,
+                                elevation: target.elevation,
+                                id: Uuid::new_v4(),
+                            });
+                        }
                     }
                     teleported = Some(dest_scene);
                 }
@@ -2809,6 +2836,11 @@ pub struct RoomRegistry {
     /// production constructor: the client unconditionally sends a cold-start `Hello`
     /// as the first frame on every socket open, so enforcement is always safe.
     resync_floor_enforced: bool,
+    /// Per-user VFX one-shot budget shared by every room this registry creates. `WsState::new`
+    /// clones this SAME instance into `WsState.vfx_rate` (via `RoomRegistry::vfx_rate`), so the
+    /// raw `ClientMsg::PlayVfx` frame, `/fx`, and any `Room`-internal trigger-fired VFX draw from
+    /// one bucket rather than three independent ones.
+    vfx_rate: Arc<PingRateLimiter>,
 }
 
 impl RoomRegistry {
@@ -2830,6 +2862,7 @@ impl RoomRegistry {
             deleting: DashSet::new(),
             broadcast_capacity: BROADCAST_CAPACITY,
             resync_floor_enforced: true,
+            vfx_rate: Arc::new(PingRateLimiter::new()),
         }
     }
 
@@ -2851,7 +2884,24 @@ impl RoomRegistry {
             deleting: DashSet::new(),
             broadcast_capacity,
             resync_floor_enforced: true,
+            vfx_rate: Arc::new(PingRateLimiter::new()),
         }
+    }
+
+    /// The registry's shared VFX-budget limiter — the same instance every `Room` it creates
+    /// charges against for a trigger-fired one-shot. `WsState::new` clones this into
+    /// `WsState.vfx_rate` so the raw `PlayVfx` frame and `/fx` share the identical bucket.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// let reg = RoomRegistry::new();
+    /// assert!(reg.vfx_rate().check(uuid::Uuid::nil(), 0, 30));
+    /// ```
+    pub fn vfx_rate(&self) -> Arc<PingRateLimiter> {
+        self.vfx_rate.clone()
     }
 
     /// Get the room for an existing world, creating it (seeded from the world's
@@ -2975,6 +3025,7 @@ impl RoomRegistry {
                     scene_ecs,
                     self.broadcast_capacity,
                     self.resync_floor_enforced,
+                    self.vfx_rate.clone(),
                 ))
             })
             .clone();
