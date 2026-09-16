@@ -18,6 +18,7 @@ import {
   FieldChangeSchema,
   CapabilityGrantsSchema,
   actorOwnerRefSchemaImpl,
+  audioOpSchemaImpl,
   audienceSchemaImpl,
   capabilityGrantsSchemaImpl,
   capabilityRequirementSchemaImpl,
@@ -40,6 +41,7 @@ import {
   type ClientMsg,
   type WireOperation,
   type WireAudience,
+  type WireAudioOp,
   type WireActorOwnerRef,
   type WireCapabilityGrants,
   type WireCapabilityRequirement,
@@ -152,6 +154,13 @@ describe("wire drift guard — message discriminants", () => {
 describe("wire drift guard — non-vacuous schema/type assertions", () => {
   it("ActorOwnerRef", () => {
     expectTypeOf<z.infer<typeof actorOwnerRefSchemaImpl>>().toEqualTypeOf<WireActorOwnerRef>();
+  });
+  it("AudioOp", () => {
+    expectTypeOf<z.infer<typeof audioOpSchemaImpl>>().toEqualTypeOf<WireAudioOp>();
+  });
+  it("AudioOp track_ended validates and round-trips", () => {
+    expect(audioOpSchemaImpl.safeParse({ type: "track_ended", id: "e1" }).success).toBe(true);
+    expect(audioOpSchemaImpl.safeParse({ type: "track_ended" }).success).toBe(false);
   });
   it("Audience", () => {
     expectTypeOf<z.infer<typeof audienceSchemaImpl>>().toEqualTypeOf<WireAudience>();
@@ -634,6 +643,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       truncated: null,
     },
     evicted: { type: "evicted", user: null },
+    audio_error: { type: "audio_error", reason: "forbidden" },
     vfx: {
       type: "vfx",
       scene: "s",

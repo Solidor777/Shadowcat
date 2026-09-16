@@ -110,6 +110,8 @@ CREATE TABLE assets (
   original_byte_size    INTEGER NOT NULL DEFAULT 0,
   original_retained     INTEGER NOT NULL DEFAULT 0,
   conversion_note       TEXT,
+  duration_ms           INTEGER,
+  sample_rate           INTEGER,
   -- Flat columns for the server-derived grid sheet (animated sources only);
   -- sheet_rows NULL <=> AssetMeta.sheet == None. sheet_frame_ms is a JSON
   -- array of per-frame durations.

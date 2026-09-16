@@ -462,7 +462,7 @@ fn compute_derived_carries_perceived_in_the_masked_payload_only() {
         0,
     );
 
-    let pv = compute_derived("vision", &ecs, &player_ctx(user), &no_grants()).unwrap();
+    let pv = compute_derived("vision", &ecs, &player_ctx(user), &no_grants(), None).unwrap();
     assert_eq!(pv["mode"], "masked");
     let perceived = pv["perceived"]
         .as_array()
@@ -473,7 +473,7 @@ fn compute_derived_carries_perceived_in_the_masked_payload_only() {
 
     // The see-as shape: a `PermissionContext` for the other user yields their set, not
     // the first user's.
-    let sv = compute_derived("vision", &ecs, &player_ctx(seer), &no_grants()).unwrap();
+    let sv = compute_derived("vision", &ecs, &player_ctx(seer), &no_grants(), None).unwrap();
     assert_eq!(sv["perceived"][0]["tokens"], json!([Uuid::from_u128(14)]));
 
     // The GM arm carries none — a GM sees all, so there is nothing to perceive.
@@ -481,7 +481,7 @@ fn compute_derived_carries_perceived_in_the_masked_payload_only() {
         user_id: Uuid::from_u128(1),
         world_role: WorldRole::Gm,
     };
-    let gv = compute_derived("vision", &ecs, &gm, &no_grants()).unwrap();
+    let gv = compute_derived("vision", &ecs, &gm, &no_grants(), None).unwrap();
     assert_eq!(gv["mode"], "all");
     assert!(gv.get("perceived").is_none());
 }

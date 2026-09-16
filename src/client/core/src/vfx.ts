@@ -22,8 +22,8 @@ export interface VfxPlayRequest {
   rotation?: number;
   /** Playback duration cap in ms; omitted = one loop of the asset. */
   durationMs?: number;
-  /** Paired sound asset id; no consumer plays it yet — carried through to `ServerMsg::Vfx`
-   * untouched until an audio integration wires `AudioApi.playOneShot` to it. */
+  /** Paired sound asset id; carried through to `ServerMsg::Vfx` and played back through
+   * `AudioApi.playOneShot` by the relaying client's Stage. */
   sound?: string;
   /** Elevation the effect plays at; the render layer filters by the viewed level. */
   elevation?: number;

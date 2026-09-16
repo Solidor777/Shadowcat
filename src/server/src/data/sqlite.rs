@@ -16,9 +16,9 @@ use crate::data::document::{
     World, WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
-    CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
-    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE,
-    SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    CombatEngine, AUDIO_STATE_DOC_TYPE, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE,
+    COMBAT_HISTORY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE,
+    RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::permission::{
@@ -47,6 +47,7 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     CONDITION_REGISTRY_DOC_TYPE,
     RESOURCE_REGISTRY_DOC_TYPE,
     SYSTEM_DEFAULTS_DOC_TYPE,
+    AUDIO_STATE_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
     crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
@@ -529,6 +530,13 @@ where
     if doc.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
         return Err(DataError::Forbidden);
     }
+    // `audio-state` is server-authored, created exactly once by the world-seed path: the
+    // world's singleton transport state. Reserved to `ConfigSeed` (the same origin
+    // `system-defaults` reserves Create to, immediately above) — `AudioTransport` never
+    // creates this singleton, only updates the one `world_seed` already made.
+    if doc.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+        return Err(DataError::Forbidden);
+    }
     let create_owner = SqliteRepository::load_effective_owner(executor, doc).await?;
     let access = resolve_access_world(
         ctx.user_id,
@@ -627,6 +635,14 @@ where
     // matching rejection): rejected against the authoritative STORED doc_type for
     // every origin but the world-config seed/refresh path's `ConfigSeed`.
     if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+        return Err(DataError::Forbidden);
+    }
+    // `audio-state` Updates are reserved to the audio transport path — rejected against the
+    // authoritative STORED doc_type for every origin but `audio::transport::handle_transport`'s
+    // `AudioTransport`. Unlike `system-defaults` (whose ConfigSeed refresh also Updates it),
+    // `audio-state`'s ConfigSeed writer only ever Creates the singleton once, so Update is
+    // guarded to the OTHER origin, not the same one Create/Delete use.
+    if cur.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::AudioTransport {
         return Err(DataError::Forbidden);
     }
     // A `ServerMessageRevision` handler has ALREADY vetted owner-or-GM authority
@@ -1750,7 +1766,8 @@ impl Repository for SqliteRepository {
                         return Err(Self::self_parent_error());
                     }
                     // Authorization: the ONE shared statement of the Create
-                    // capability floor (`authorize_create_intent`) — the
+                    // capability floor (`authorize_create_intent`, which also reserves
+                    // `system-defaults`/`audio-state` Create to `WriteOrigin::ConfigSeed`) — the
                     // pre-transaction validator screen above consults the same
                     // function, so the two can never disagree. A capability-
                     // skipping server-authored origin (`WriteOrigin::
@@ -1816,6 +1833,11 @@ impl Repository for SqliteRepository {
                     {
                         return Err(DataError::Forbidden);
                     }
+                    // `audio-state` deletion is reserved to the config-seed path, same as
+                    // Create — against the authoritative STORED doc_type.
+                    if cur.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+                        return Err(DataError::Forbidden);
+                    }
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
                     // Capability-skipping origins (`WriteOrigin::
                     // skips_capability_gates`) skip this gate — see the Create
@@ -1847,13 +1869,14 @@ impl Repository for SqliteRepository {
                     }
                     check_command_scope(&cur, world_id)?;
                     // Stored-type rejections and access resolution: the ONE shared
-                    // statement (`authorize_update_access`) the pre-transaction
-                    // validator screen also consults — see `authorize_create_intent`
-                    // for the never-fork rationale. The `ServerMessageRevision`
-                    // branch trusts the calling handler to have already vetted
-                    // owner-or-GM authority; the storage layer only authorizes the
-                    // write's SHAPE (a scoped READ + WRITE_FIELDS grant, never
-                    // `all: true`).
+                    // statement (`authorize_update_access`, which also reserves
+                    // `audio-state` Update to `WriteOrigin::AudioTransport`) the
+                    // pre-transaction validator screen also consults — see
+                    // `authorize_create_intent` for the never-fork rationale. The
+                    // `ServerMessageRevision` branch trusts the calling handler to have
+                    // already vetted owner-or-GM authority; the storage layer only
+                    // authorizes the write's SHAPE (a scoped READ + WRITE_FIELDS grant,
+                    // never `all: true`).
                     let (access, is_server_message_revision) =
                         authorize_update_access(&mut *tx, ctx, &cur, origin, &world_defaults)
                             .await?;

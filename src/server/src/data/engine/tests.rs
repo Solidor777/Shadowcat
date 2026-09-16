@@ -945,6 +945,7 @@ fn engine_literal_defaults_match_client_default() {
             "animation": null,
             "activeScene": null,
             "combat": null,
+            "audio": null,
         })
     );
 }

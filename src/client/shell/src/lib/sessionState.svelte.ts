@@ -382,6 +382,60 @@ export function writeThemeMirror(storage: Pick<Storage, "setItem">, value: Persi
   }
 }
 
+/** The single localStorage key holding the per-device audio mirror: channel gains/mutes and
+ * duck depth. Per-device by design: a phone and a desktop want different volumes. */
+export const AUDIO_MIRROR_STORAGE_KEY = "shadowcat.audio";
+
+/** The persisted shape `readAudioMirror`/`writeAudioMirror` round-trip. */
+export interface PersistedAudioMirror {
+  /** Per-channel gain/mute, keyed by `AudioChannelId`. */
+  channels: Record<string, {
+    /** Device gain multiplier, `0..=1`. */
+    gain: number;
+    /** Whether the channel is muted. */
+    muted: boolean;
+  }>;
+  /** Duck depth, `0..=1` (see `@shadowcat/audio`'s `DuckControllerImpl` constructor). */
+  duckDepth: number;
+}
+
+/** Reads the audio mirror, garbage-tolerantly — same posture as `readThemeMirror`.
+ * @param storage The storage to read (injectable for tests; the app entry passes `localStorage`).
+ * @returns The mirrored value, or `undefined` when absent or unreadable.
+ * @example
+ * ```ts
+ * const mirror = readAudioMirror(localStorage);
+ * ```
+ */
+export function readAudioMirror(storage: Pick<Storage, "getItem">): PersistedAudioMirror | undefined {
+  const raw = storage.getItem(AUDIO_MIRROR_STORAGE_KEY);
+  if (raw === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    return parsed as PersistedAudioMirror;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes the audio mirror; a throwing storage is swallowed with a log — same posture as
+ * `writeThemeMirror`.
+ * @param storage The storage to write (injectable for tests; callers pass `localStorage`).
+ * @param value The mirror to persist.
+ * @example
+ * ```ts
+ * writeAudioMirror(localStorage, { channels: {}, duckDepth: 0.7 });
+ * ```
+ */
+export function writeAudioMirror(storage: Pick<Storage, "setItem">, value: PersistedAudioMirror): void {
+  try {
+    storage.setItem(AUDIO_MIRROR_STORAGE_KEY, JSON.stringify(value));
+  } catch (e) {
+    logger.warn("audio mirror write failed", e);
+  }
+}
+
 /** Reads the performance mirror, garbage-tolerantly: an absent key is `undefined` (which
  * `PerformanceController.load` resolves via `resolveAuto`); a present-but-garbled value still
  * parses through `parsePersisted`'s own fail-closed validation, never `undefined`.

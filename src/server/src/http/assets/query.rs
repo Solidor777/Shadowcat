@@ -224,6 +224,7 @@ fn parse(q: AssetQuery) -> Result<Parsed, AppError> {
     let kind = match q.kind.as_deref() {
         None => None,
         Some("image") => Some(AssetKind::Image),
+        Some("audio") => Some(AssetKind::Audio),
         Some("other") => Some(AssetKind::Other),
         Some(other) => {
             return Err(AppError::BadRequest(format!("unknown kind '{other}'")));

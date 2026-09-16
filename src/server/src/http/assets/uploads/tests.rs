@@ -11,6 +11,7 @@ fn session(id: u128, byte_size: u64, last_touch_ms: i64) -> UploadSession {
         received: 0,
         folder_id: None,
         tags: vec![],
+        audio_containers: Default::default(),
         staged: PathBuf::from("unused"),
         rate_hit_ms: last_touch_ms,
         last_touch_ms,

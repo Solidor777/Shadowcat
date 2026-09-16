@@ -1090,7 +1090,62 @@ impl Room {
                 }
             }
         }
+        // Active-scene change detector: a `world-settings` Update touching
+        // `/engine/activeScene` swaps the world's ambience playlist server-side
+        // (`audio::transport::on_active_scene`). Same shape as `placement_tokens`: detect
+        // BEFORE commit from the ops/pre-image, act AFTER commit from the now-updated ECS.
+        let active_scene_write: Option<uuid::Uuid> = {
+            let scene = self.scene.read().await;
+            let ws_doc_id = scene.world_settings_doc().map(|d| d.id);
+            ops.iter().find_map(|op| match op {
+                Operation::Update { doc_id, changes }
+                    if Some(*doc_id) == ws_doc_id
+                        && changes.iter().any(|c| c.path == "/engine/activeScene") =>
+                {
+                    Some(*doc_id)
+                }
+                _ => None,
+            })
+        };
+        let old_active_scene = if active_scene_write.is_some() {
+            self.scene
+                .read()
+                .await
+                .world_settings_doc()
+                .map(|d| {
+                    crate::data::engine::engine_of::<crate::data::engine::WorldSettingsEngine>(d)
+                        .active_scene
+                })
+                .unwrap_or(None)
+        } else {
+            None
+        };
         let command = self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
+        if let Some(ws_doc_id) = active_scene_write {
+            let new_active_scene = self
+                .scene
+                .read()
+                .await
+                .world_settings_doc()
+                .filter(|d| d.id == ws_doc_id)
+                .map(|d| {
+                    crate::data::engine::engine_of::<crate::data::engine::WorldSettingsEngine>(d)
+                        .active_scene
+                })
+                .unwrap_or(None);
+            if new_active_scene != old_active_scene {
+                crate::audio::transport::on_active_scene(
+                    repo,
+                    ctx,
+                    self,
+                    self.world_id,
+                    old_active_scene,
+                    new_active_scene,
+                    ts,
+                )
+                .await;
+            }
+        }
         if !placement_tokens.is_empty() {
             self.fire_placement_triggers(repo, ctx, placement_tokens, ts)
                 .await;
@@ -1175,6 +1230,23 @@ impl Room {
     ) -> Result<Command, DataError> {
         let _guard = self.publish_guard.lock().await;
         self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+            .await
+    }
+
+    /// The audio-transport counterpart of `commit_combat`'s guard discipline: the
+    /// read→apply→commit section (`audio::transport::handle_transport_locked`) runs INSIDE a
+    /// freshly-acquired `publish_guard`, so two transports can never interleave a stale
+    /// `audio-state` read with the other's commit. `on_active_scene` must NOT route through
+    /// here: `publish` already holds the guard and a tokio Mutex is non-reentrant.
+    pub(crate) async fn commit_audio_transport(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        op: crate::ws::protocol::AudioOp,
+        ts: i64,
+    ) -> Result<(), crate::audio::transport::TransportError> {
+        let _guard = self.publish_guard.lock().await;
+        crate::audio::transport::handle_transport_locked(repo, ctx, self, self.world_id, op, ts)
             .await
     }
 

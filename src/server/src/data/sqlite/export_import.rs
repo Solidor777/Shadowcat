@@ -759,8 +759,9 @@ impl SqliteRepository {
                  (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
                   created_at, version, folder_id, width, height, has_alpha, animated, \
                   original_content_type, original_byte_size, original_retained, conversion_note, \
+                  duration_ms, sample_rate, \
                   sheet_rows, sheet_cols, sheet_count, sheet_frame_ms, sheet_width, sheet_height) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(row.id.to_string())
             .bind(world.to_string())
@@ -780,6 +781,8 @@ impl SqliteRepository {
             .bind(meta.original_byte_size)
             .bind(i64::from(meta.original_retained))
             .bind(&meta.conversion_note)
+            .bind(meta.duration_ms)
+            .bind(meta.sample_rate)
             .bind(meta.sheet.as_ref().map(|s| i64::from(s.rows)))
             .bind(meta.sheet.as_ref().map(|s| i64::from(s.cols)))
             .bind(meta.sheet.as_ref().map(|s| i64::from(s.count)))

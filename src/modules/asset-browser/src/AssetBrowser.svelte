@@ -52,6 +52,10 @@
   const compact = $derived(sizeClass() === "compact");
   /** Mutation affordances render only in the managing panel, never pick mode. */
   const mutable = $derived(mode === "manage");
+  /** The audio derivative container selection applied to uploads (`"both"` = the `.opus.ogg`
+   * AND `.opus.webm` siblings — the default, since any file may be looped and a WebKit client
+   * needs the WebM one). */
+  let audioContainers = $state<"ogg" | "webm" | "both">("both");
   /** The single selected asset shown in the preview pane, or null. */
   const previewAsset = $derived(
     selected.length === 1 ? (items.find((a) => a.id === selected[0]) ?? null) : null,
@@ -246,10 +250,24 @@
           onchange={(e) => {
             const files = Array.from(e.currentTarget.files ?? []);
             e.currentTarget.value = "";
-            if (files.length > 0) uploads.enqueue(files, selectedFolder);
+            if (files.length > 0) uploads.enqueue(files, selectedFolder, audioContainers);
           }}
         />
       </label>
+      {#if uploads.entries.some((e) => e.file.type.startsWith("audio/"))}
+        <label class="audio-containers">
+          {t("assetBrowser.audioContainers")}
+          <select
+            aria-label={t("assetBrowser.audioContainers")}
+            data-testid="audio-containers"
+            bind:value={audioContainers}
+          >
+            <option value="both">{t("assetBrowser.containersBoth")}</option>
+            <option value="ogg">{t("assetBrowser.containersOgg")}</option>
+            <option value="webm">{t("assetBrowser.containersWebm")}</option>
+          </select>
+        </label>
+      {/if}
     {/if}
     {#if error}
       <p class="error">{error}</p>

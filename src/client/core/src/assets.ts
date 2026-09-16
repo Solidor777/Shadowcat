@@ -6,9 +6,25 @@ import type { Asset } from "@shadowcat/types";
 export type AssetOp = "created" | "replaced" | "moved" | "deleted";
 
 /** A derivative servable via `?variant=`: `thumb` (≤128px) or `preview` (≤512px) size classes,
- * or `sheet` (the server-derived grid sheet, present only for an animated source whose
- * `AssetMeta.sheet` is set). */
-export type AssetVariant = "thumb" | "preview" | "sheet";
+ * `sheet` (the server-derived grid sheet, present only for an animated source whose
+ * `AssetMeta.sheet` is set), or the two Opus derivatives (`opus`/`opus-webm`). */
+export type AssetVariant = "thumb" | "preview" | "sheet" | "opus" | "opus-webm";
+
+/** The playback URL set `AssetResolver.audioUrl` returns for an audio asset: both Opus
+ * derivatives plus the canonical original, with the derivatives' MIME strings for
+ * `canPlayType` checks. */
+export interface AudioUrls {
+  /** The `.opus.ogg` derivative (`?variant=opus`) — preferred for looped playback. */
+  ogg: string;
+  /** The `.opus.webm` derivative (`?variant=opus-webm`) — the WebKit-friendly alternative. */
+  webm: string;
+  /** The canonical original — preferred for one-shots; every non-GM player's fallback. */
+  fallback: string;
+  /** MIME string of the `ogg` URL (`"audio/ogg; codecs=opus"`). */
+  oggType: string;
+  /** MIME string of the `webm` URL (`"audio/webm; codecs=opus"`). */
+  webmType: string;
+}
 
 /** An out-of-band asset mutation notice; carries no seq. Shared by
  * `AssetResolver.onAssetChanged` and `WsClientHandlers.onAssetChanged` — both consume the
@@ -84,6 +100,32 @@ export class AssetResolver {
     if (variant !== undefined) params.push(`variant=${variant}`);
     if (rev !== undefined) params.push(`v=${rev}`);
     return params.length === 0 ? `/api/assets/${uuid}` : `/api/assets/${uuid}?${params.join("&")}`;
+  }
+
+  /** Resolves an audio asset to its playback URL set: BOTH Opus derivatives plus the
+   * canonical original. The caller picks per use — a looped track prefers `ogg` (decoding via
+   * the WASM fallback where `canPlayType(oggType)` is empty, e.g. WebKit), a one-shot prefers
+   * the native `fallback`, and every candidate is checked through
+   * `HTMLMediaElement.canPlayType` or a decode-failure fallback, never assumed playable (see
+   * `@shadowcat/audio`'s players, which perform exactly those checks).
+   * @param uuid The asset's stable uuid.
+   * @returns Both derivative URLs, the canonical fallback, and the derivatives' MIME strings.
+   * @example
+   * ```ts
+   * import { AssetResolver } from "@shadowcat/core";
+   *
+   * const resolver = new AssetResolver();
+   * const { ogg, webm, fallback } = resolver.audioUrl("00000000-0000-0000-0000-000000000001");
+   * ```
+   */
+  audioUrl(uuid: string): AudioUrls {
+    return {
+      ogg: this.url(uuid, "opus"),
+      webm: this.url(uuid, "opus-webm"),
+      fallback: this.url(uuid),
+      oggType: "audio/ogg; codecs=opus",
+      webmType: "audio/webm; codecs=opus",
+    };
   }
 
   /** Subscribe to listing-invalidating notices (`created`, `moved`, `deleted`): the
@@ -207,6 +249,8 @@ export class AssetResolver {
    *     original_byte_size: 1n,
    *     original_retained: false,
    *     conversion_note: null,
+   *     duration_ms: null,
+   *     sample_rate: null,
    *     sheet: null,
    *   },
    * ]);

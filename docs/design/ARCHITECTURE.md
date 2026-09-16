@@ -57,6 +57,10 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | UI framework | Svelte 5 (runes) | MIT | Vendor | Compiled, lean output; default UI only — modders use any framework. |
 | Canvas renderer | PixiJS v8 | MIT | Vendor | Mature WebGL 2D: sprite batching, filter pipeline, mask compositing. Rebuilding this is the largest avoidable cost in the project. |
 | Build tooling | Cargo, Vite, pnpm | MIT | Vendor | pnpm is build-time only; output embeds into the binary. |
+| Audio decode | symphonia 0.6 | MPL-2.0 | Vendor | Pure-Rust decode of every format a GM uploads (mp3/flac/wav/ogg-vorbis/aac/isomp4/webm) — no FFmpeg, no C toolchain for decode, mirroring the image pipeline's dependency posture. |
+| Audio resample | rubato 5 | MIT/Apache-2.0 | Vendor | Resamples to the 48kHz Opus wants before encoding. |
+| Audio encode | opus 0.4 (binds libopus via `opusic-sys`'s bundled cmake build) | MIT/Apache-2.0 (binding) / BSD-3-Clause (`opusic-sys`) | Vendor | Royalty-free, the de facto web-audio codec; requires cmake — measured per-OS availability in the M23 design spec §2.3. |
+| Audio container | ogg 0.9 | BSD-3-Clause | Vendor | Muxes encoded Opus frames into the `.opus.ogg` sibling derivative (a WebM sibling is muxed by the pipeline's own minimal EBML writer, no extra dependency). |
 | Sandboxed validators | wasmi (pure-Rust interpreter) | MIT/Apache-2.0 | Vendor | Third-party server-side WASM code, opt-in per world per module, fuel/memory/instance-limited; no JIT, no host imports beyond a rate-limited debug log — see `docs/design/sandboxed-validators.md`. |
 
 ## 4. Deferred behind abstractions
@@ -67,11 +71,10 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 |---|---|---|
 | PostgreSQL | `Repository` trait | A real multi-tenant / many-concurrent-world hosted deployment. |
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
-| Asset conversion — audio (`symphonia` + `opus`/`vorbis_rs`); animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (audio, animation). No FFmpeg; all replacements are royalty-free. |
+| Animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (animation). |
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
-| Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
-| Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
+| Discord audio ducking | `@shadowcat/audio`'s `DuckController` (realized in M23, currently driven by in-app sources only); secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
 | ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |

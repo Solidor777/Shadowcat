@@ -1,9 +1,15 @@
 //! Image processing for the asset pipeline: WebP conversion of a staged
 //! upload (original retained beside it when configured) plus thumb/preview
-//! derivatives. Every function here is BLOCKING (`image` decode/encode is
-//! CPU-bound) — callers run it under `tokio::task::spawn_blocking`.
+//! derivatives, and the audio transcode in the `audio` submodule (a sibling
+//! derivative off the untouched canonical). Every function here is BLOCKING
+//! (`image` decode/encode is CPU-bound) — callers run it under
+//! `tokio::task::spawn_blocking`.
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
+
+/// The audio transcode (Opus sibling derivatives), dispatched from
+/// `process_staged` before the image branch.
+pub mod audio;
 
 use super::AssetMeta;
 use image::imageops::FilterType;
@@ -56,15 +62,17 @@ const SHEET_MAX_PX: u32 = 4096;
 /// of magnitude).
 const MIN_FRAME_MS: u32 = 100;
 
-/// Every artifact that can sit beside a canonical: the retained original, the two
-/// derivatives, and the two grid-sheet siblings (animated sources only). The single
-/// statement of the sibling set — commit, replace, delete and export all iterate this
-/// rather than re-spelling it. The world bundle accepts exactly this set under
+/// Every artifact that can sit beside a canonical: the retained original, the two image
+/// derivatives, the two audio derivatives, and the two grid-sheet siblings (animated sources
+/// only). The single statement of the sibling set — commit, replace, delete and export all
+/// iterate this rather than re-spelling it. The world bundle accepts exactly this set under
 /// `assets/<id><suffix>`.
-pub const SIBLING_SUFFIXES: [&str; 5] = [
+pub const SIBLING_SUFFIXES: [&str; 7] = [
     ORIGINAL_SUFFIX,
     ".thumb.webp",
     ".preview.webp",
+    audio::OPUS_SUFFIX,
+    audio::WEBM_SUFFIX,
     SHEET_SUFFIX,
     SHEET_JSON_SUFFIX,
 ];
@@ -109,8 +117,10 @@ impl Variant {
 
 /// `path` with `suffix` appended to its final component (`<uuid>` →
 /// `<uuid>.thumb.webp`), keeping the directory. Built on the OS string, never
-/// a separator literal, so it is the same on every platform.
-fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+/// a separator literal, so it is the same on every platform. `pub(crate)`:
+/// `http::assets` resolves the Opus siblings through the same seam — never a
+/// re-spelled suffix join.
+pub(crate) fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     let mut os = path.as_os_str().to_owned();
     os.push(suffix);
     PathBuf::from(os)
@@ -164,10 +174,10 @@ pub fn sheet_path(canonical: &Path) -> PathBuf {
     with_suffix(canonical, SHEET_SUFFIX)
 }
 
-/// Every artifact that can sit beside a canonical: the retained original and
-/// the two derivatives, plus the two grid-sheet siblings for an animated
-/// source. The single statement of the sibling set — commit, replace, delete
-/// and export all iterate this rather than re-spelling it.
+/// Every artifact that can sit beside a canonical: the retained original, the two image
+/// derivatives, the two audio derivatives, and the two grid-sheet siblings for an animated
+/// source. The single statement of the sibling set — commit, replace, delete and export all
+/// iterate this rather than re-spelling it.
 ///
 /// # Examples
 ///
@@ -177,10 +187,10 @@ pub fn sheet_path(canonical: &Path) -> PathBuf {
 ///
 /// let canonical = Path::new("data").join("uuid");
 /// let siblings = sibling_paths(&canonical);
-/// assert_eq!(siblings.len(), 5);
+/// assert_eq!(siblings.len(), 7);
 /// assert!(siblings[0].to_string_lossy().ends_with(".orig"));
 /// ```
-pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
+pub fn sibling_paths(canonical: &Path) -> [PathBuf; 7] {
     SIBLING_SUFFIXES.map(|suffix| with_suffix(canonical, suffix))
 }
 
@@ -189,7 +199,7 @@ pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::asset::process::{process_staged, Processed};
+/// use shadowcat::data::asset::process::{audio::AudioContainers, process_staged, Processed};
 /// use std::io::Cursor;
 ///
 /// // A directory outside the repo tree — never written to source control.
@@ -203,7 +213,7 @@ pub fn sibling_paths(canonical: &Path) -> [PathBuf; 5] {
 /// // A real PNG decodes and re-encodes: `converted`/`content_type` come from the
 /// // pipeline's own decision, not from a literal.
 /// let processed: Processed =
-///     process_staged(&staged, "image/png", png.len() as i64, false).unwrap();
+///     process_staged(&staged, "image/png", png.len() as i64, false, AudioContainers::default()).unwrap();
 /// assert!(processed.converted);
 /// assert_eq!(processed.content_type, "image/webp");
 /// ```
@@ -555,11 +565,11 @@ fn pass_through(
 /// # Examples
 ///
 /// ```
-/// use shadowcat::data::asset::process::process_staged;
+/// use shadowcat::data::asset::process::{audio::AudioContainers, process_staged};
 /// use std::path::Path;
 ///
 /// // A missing staged file fails to open rather than panicking.
-/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true)
+/// let err = process_staged(Path::new("no-such-staged-upload"), "image/png", 0, true, AudioContainers::default())
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 /// ```
@@ -568,7 +578,16 @@ pub fn process_staged(
     original_content_type: &str,
     original_byte_size: i64,
     retain_originals: bool,
+    audio_containers: audio::AudioContainers,
 ) -> io::Result<Processed> {
+    if original_content_type.starts_with("audio/") {
+        return audio::process_staged_audio(
+            staged,
+            original_content_type,
+            original_byte_size,
+            audio_containers,
+        );
+    }
     if !original_content_type.starts_with("image/") {
         return Ok(pass_through(
             original_content_type,
@@ -672,6 +691,8 @@ pub fn process_staged(
             original_byte_size,
             original_retained: retain_originals,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
             sheet: None,
         },
         converted: true,

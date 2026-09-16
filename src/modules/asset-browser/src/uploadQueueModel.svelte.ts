@@ -14,6 +14,9 @@ export interface UploadEntry {
   file: File;
   /** Destination folder (`null` = world root). */
   folderId: string | null;
+  /** Which Opus derivative container(s) this file emits when it is audio; absent = the
+   * server's default (`"both"`). */
+  audioContainers?: "ogg" | "webm" | "both";
   /** Bytes the server has accepted so far. */
   sent: number;
   /** The file's size. */
@@ -61,6 +64,8 @@ export class UploadQueue {
   /** Appends files and starts the runner if idle.
    * @param files - The files to upload, in order.
    * @param folderId - Their destination folder (`null` = root).
+   * @param audioContainers - Which Opus derivative container(s) an audio file emits;
+   * absent = the server's default (`"both"`). Ignored for non-audio files.
    * @example
    * ```ts
    * import { UploadQueue } from "@shadowcat/module-asset-browser";
@@ -69,11 +74,12 @@ export class UploadQueue {
    * q.enqueue([new File([new Uint8Array([1])], "x.png")], null);
    * ```
    */
-  enqueue(files: File[], folderId: string | null): void {
+  enqueue(files: File[], folderId: string | null, audioContainers?: "ogg" | "webm" | "both"): void {
     for (const file of files) {
       this.entries.push({
         file,
         folderId,
+        audioContainers,
         sent: 0,
         total: file.size,
         status: "queued",
@@ -144,6 +150,7 @@ export class UploadQueue {
         try {
           await startChunkedUpload(this.world, entry.file, {
             folderId: entry.folderId,
+            audioContainers: entry.audioContainers,
             onProgress: (sent, total) => {
               entry.sent = sent;
               entry.total = total;

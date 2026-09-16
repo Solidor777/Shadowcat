@@ -7,6 +7,9 @@
 //! running inside a fuel/memory-limited `wasmi` interpreter with no host
 //! imports beyond a rate-limited debug log.
 
+/// Server-side audio: the pure transport-state engine (`audio::state::apply`)
+/// and the GM-only `AudioTransport` handler (`audio::transport`).
+pub mod audio;
 /// Accounts, sessions, password hashing, and the first-run setup flow.
 pub mod auth;
 pub mod backup;

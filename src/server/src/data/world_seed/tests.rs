@@ -18,9 +18,9 @@ fn seed_docs(now: i64) -> Vec<Document> {
 }
 
 #[test]
-fn empty_world_yields_ten_creates_with_seed_bodies() {
+fn empty_world_yields_eleven_creates_with_seed_bodies() {
     let docs = seed_docs(5);
-    assert_eq!(docs.len(), 10);
+    assert_eq!(docs.len(), 11);
     for doc in &docs {
         assert_eq!(doc.scope, Scope::World { world_id: world() });
         assert_eq!(doc.owner, None);
@@ -85,6 +85,30 @@ fn empty_world_yields_ten_creates_with_seed_bodies() {
         body(SYSTEM_DEFAULTS_DOC_TYPE),
         serde_json::to_value(SystemDefaultsEngine::default()).unwrap()
     );
+    assert_eq!(
+        body(AUDIO_STATE_DOC_TYPE),
+        serde_json::to_value(AudioStateEngine::default()).unwrap()
+    );
+}
+
+#[test]
+fn missing_config_ops_seeds_audio_state() {
+    let ops = missing_config_ops(&[], world(), None, 1);
+    let audio_ops: Vec<&Operation> = ops
+        .iter()
+        .filter(
+            |op| matches!(op, Operation::Create { doc } if doc.doc_type == AUDIO_STATE_DOC_TYPE),
+        )
+        .collect();
+    assert_eq!(audio_ops.len(), 1);
+    match audio_ops[0] {
+        Operation::Create { doc } => {
+            let engine: AudioStateEngine =
+                serde_json::from_value(doc.engine.clone().unwrap()).unwrap();
+            assert_eq!(engine, AudioStateEngine::default());
+        }
+        other => panic!("expected a Create, got {other:?}"),
+    }
 }
 
 #[test]

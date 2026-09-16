@@ -96,7 +96,23 @@
 </script>
 
 <div class="preview-pane" data-testid="preview-pane">
-  <img class="preview" src={ctx.assets.url(asset.id, "preview")} alt={asset.original_name} />
+  {#if asset.content_type.startsWith("audio/")}
+    <div class="preview audio-preview" data-testid="preview-audio">
+      <button
+        type="button"
+        data-testid="preview-audio-play"
+        aria-label={t("assetBrowser.previewAudioPlay")}
+        onclick={() => ctx.audio.playOneShot(asset.id)}
+      >▶</button>
+      {#if asset.duration_ms != null}
+        <!-- i64-sourced wire values normalize through Number(), the same way `fmtBytes`'s own
+             `n: number | bigint` parameter does below — never a raw bigint in arithmetic. -->
+        <span>{(Number(asset.duration_ms) / 1000).toFixed(1)}s</span>
+      {/if}
+    </div>
+  {:else}
+    <img class="preview" src={ctx.assets.url(asset.id, "preview")} alt={asset.original_name} />
+  {/if}
 
   {#if renaming && mutable}
     <input

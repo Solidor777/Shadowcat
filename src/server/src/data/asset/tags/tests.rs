@@ -10,6 +10,8 @@ fn meta(width: Option<u32>, height: Option<u32>, has_alpha: bool, animated: bool
         original_byte_size: 1,
         original_retained: false,
         conversion_note: None,
+        duration_ms: None,
+        sample_rate: None,
         sheet: None,
     }
 }

@@ -19,6 +19,10 @@ export interface ChunkedUploadOptions {
   folderId?: string | null;
   /** Explicit tags to record on the asset. */
   tags?: string[];
+  /** Which Opus derivative container(s) an audio upload emits (`"both"` = the `.opus.ogg`
+   * AND `.opus.webm` siblings; absent = the server's own default, also `"both"`). Ignored
+   * for a non-audio upload. */
+  audioContainers?: "ogg" | "webm" | "both";
   /** Progress callback, called after each accepted chunk (and once for a single-shot upload).
    * @param sent Bytes the server has accepted so far.
    * @param total The file's size.
@@ -116,7 +120,7 @@ export async function startChunkedUpload(
   const hasPlacement = opts.folderId != null || (opts.tags?.length ?? 0) > 0;
 
   if (total <= CHUNK_THRESHOLD_BYTES) {
-    const created = await uploadAsset(world, file);
+    const created = await uploadAsset(world, file, opts.audioContainers);
     opts.onProgress?.(total, total);
     if (!hasPlacement) return created;
     try {
@@ -145,6 +149,7 @@ export async function startChunkedUpload(
       byte_size: total,
       folder_id: opts.folderId ?? null,
       tags: opts.tags ?? [],
+      audio_containers: opts.audioContainers ?? null,
     }),
     signal: opts.signal,
   });

@@ -400,7 +400,12 @@ request_id: string,
 /**
  * Why it was refused.
  */
-reason: MergeErrorKind, } | { "type": "vfx", 
+reason: MergeErrorKind, } | { "type": "audio_error", 
+/**
+ * Player-presentable failure text (`audio::state::AudioError`'s `Display`, or
+ * "forbidden" for the not-GM case).
+ */
+reason: string, } | { "type": "vfx", 
 /**
  * Scene the effect plays on.
  */

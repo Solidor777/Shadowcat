@@ -76,7 +76,14 @@ fn png_with_alpha_converts_lossless_and_retains_original() {
     let dir = tempfile::tempdir().unwrap();
     let input = png_rgba(300, 200);
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/png", input.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/png",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
 
     assert_eq!(p.content_type, "image/webp");
     assert!(p.converted);
@@ -120,7 +127,14 @@ fn jpeg_converts_lossy_without_alpha() {
     let dir = tempfile::tempdir().unwrap();
     let input = jpeg_rgb(600, 400);
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/jpeg", input.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/jpeg",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(p.content_type, "image/webp");
     assert!(p.converted);
     assert!(!p.meta.has_alpha);
@@ -137,7 +151,14 @@ fn retain_false_writes_no_orig() {
     let dir = tempfile::tempdir().unwrap();
     let input = png_rgba(16, 16);
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/png", input.len() as i64, false).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/png",
+        input.len() as i64,
+        false,
+        Default::default(),
+    )
+    .unwrap();
     assert!(p.converted);
     assert!(!p.meta.original_retained);
     assert!(!original_path(&staged).exists());
@@ -154,7 +175,14 @@ fn animated_gif_is_passthrough_with_note() {
     let dir = tempfile::tempdir().unwrap();
     let input = gif_two_frames();
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/gif", input.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/gif",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(p.content_type, "image/gif");
     assert!(!p.converted);
     assert!(p.meta.animated);
@@ -173,11 +201,25 @@ fn static_webp_is_passthrough_without_note() {
     // Produce a real static WebP by converting a PNG first.
     let png = png_rgba(20, 10);
     let first = stage(dir.path(), &png);
-    process_staged(&first, "image/png", png.len() as i64, false).unwrap();
+    process_staged(
+        &first,
+        "image/png",
+        png.len() as i64,
+        false,
+        Default::default(),
+    )
+    .unwrap();
     let webp_bytes = std::fs::read(&first).unwrap();
 
     let staged = stage(dir.path(), &webp_bytes);
-    let p = process_staged(&staged, "image/webp", webp_bytes.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/webp",
+        webp_bytes.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(p.content_type, "image/webp");
     assert!(!p.converted);
     assert_eq!(p.meta.conversion_note, None);
@@ -192,7 +234,14 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
 
     let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
     let staged = stage(dir.path(), svg);
-    let p = process_staged(&staged, "image/svg+xml", svg.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/svg+xml",
+        svg.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(p.content_type, "image/svg+xml");
     assert!(!p.converted);
     assert_eq!(p.meta.conversion_note.as_deref(), Some("svg"));
@@ -201,7 +250,14 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
 
     let garbage = b"\x89PNG\r\n\x1a\nthis is not a png";
     let staged = stage(dir.path(), garbage);
-    let p = process_staged(&staged, "image/png", garbage.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/png",
+        garbage.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(p.content_type, "image/png");
     assert!(!p.converted);
     assert!(p
@@ -214,7 +270,14 @@ fn svg_and_undecodable_and_non_image_are_passthrough() {
 
     let pdf = b"%PDF-1.7";
     let staged = stage(dir.path(), pdf);
-    let p = process_staged(&staged, "application/pdf", pdf.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "application/pdf",
+        pdf.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert_eq!(p.content_type, "application/pdf");
     assert_eq!(p.meta.conversion_note.as_deref(), Some("not an image"));
     assert!(!p.meta.original_retained);
@@ -239,7 +302,14 @@ fn gif_with_huge_declared_canvas_is_refused_before_any_canvas_allocates() {
     let staged = stage(dir.path(), &input);
     // If either the animation probe or the decode allocated the declared
     // canvas this test would exhaust memory instead of returning.
-    let p = process_staged(&staged, "image/gif", input.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/gif",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert!(!p.converted);
     assert_eq!(p.content_type, "image/gif");
     assert!(!p.meta.animated);
@@ -263,7 +333,14 @@ fn png_over_the_axis_bound_is_refused() {
     img.write_to(&mut out, ImageFormat::Png).unwrap();
     let input = out.into_inner();
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/png", input.len() as i64, true).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/png",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     assert!(!p.converted);
     assert_eq!(p.meta.width, None);
     assert!(p
@@ -278,7 +355,14 @@ fn write_derivatives_regenerates_from_canonical() {
     let dir = tempfile::tempdir().unwrap();
     let input = jpeg_rgb(1024, 256);
     let staged = stage(dir.path(), &input);
-    process_staged(&staged, "image/jpeg", input.len() as i64, false).unwrap();
+    process_staged(
+        &staged,
+        "image/jpeg",
+        input.len() as i64,
+        false,
+        Default::default(),
+    )
+    .unwrap();
     let thumb = derivative_path(&staged, Variant::Thumb);
     let preview = derivative_path(&staged, Variant::Preview);
     std::fs::remove_file(&thumb).unwrap();
@@ -302,6 +386,14 @@ fn sibling_suffixes_are_the_variant_suffixes_plus_orig_and_sheet() {
             original_path(c),
             derivative_path(c, Variant::Thumb),
             derivative_path(c, Variant::Preview),
+            crate::data::asset::process::with_suffix(
+                c,
+                crate::data::asset::process::audio::OPUS_SUFFIX
+            ),
+            crate::data::asset::process::with_suffix(
+                c,
+                crate::data::asset::process::audio::WEBM_SUFFIX
+            ),
             with_suffix(c, ".sheet.webp"),
             with_suffix(c, ".sheet.json"),
         ]
@@ -312,6 +404,8 @@ fn sibling_suffixes_are_the_variant_suffixes_plus_orig_and_sheet() {
             ".orig",
             ".thumb.webp",
             ".preview.webp",
+            ".opus.ogg",
+            ".opus.webm",
             ".sheet.webp",
             ".sheet.json"
         ]
@@ -386,7 +480,14 @@ fn a_still_image_produces_no_sheet() {
     let dir = tempfile::tempdir().unwrap();
     let input = png_rgba(16, 16);
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/png", input.len() as i64, false).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/png",
+        input.len() as i64,
+        false,
+        Default::default(),
+    )
+    .unwrap();
     assert!(p.meta.sheet.is_none());
     assert!(!with_suffix(&staged, ".sheet.webp").exists());
     assert!(!with_suffix(&staged, ".sheet.json").exists());
@@ -419,9 +520,23 @@ fn reprocessing_the_same_animation_regenerates_an_identical_sheet() {
     let dir = tempfile::tempdir().unwrap();
     let input = gif_two_frames();
     let first = stage(dir.path(), &input);
-    let p1 = process_staged(&first, "image/gif", input.len() as i64, true).unwrap();
+    let p1 = process_staged(
+        &first,
+        "image/gif",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     let second = stage(dir.path(), &input);
-    let p2 = process_staged(&second, "image/gif", input.len() as i64, true).unwrap();
+    let p2 = process_staged(
+        &second,
+        "image/gif",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     let s1 = p1.meta.sheet.expect("first processing derives a sheet");
     let s2 = p2.meta.sheet.expect("reprocessing regenerates a sheet");
     assert_eq!(s1, s2);

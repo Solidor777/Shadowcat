@@ -145,6 +145,7 @@
       setChatRead: (blob) => setChatRead(session.world!, blob),
     },
     panels,
+    audio: session.audio,
     performance: performanceController,
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     reconcileInstalledModules: () => session.reconcileInstalledModules(),

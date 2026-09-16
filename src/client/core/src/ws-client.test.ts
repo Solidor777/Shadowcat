@@ -1589,6 +1589,54 @@ describe("WsClient", () => {
       expect(sent.some((s) => (JSON.parse(s) as ClientMsg).type === "resync_request")).toBe(false);
     });
   });
+
+  it("an audio_error frame invokes onAudioError with the frame's reason", async () => {
+    let onMessage: (d: string) => void = () => {};
+    const onAudioError = vi.fn();
+    const client = new WsClient({
+      world: "w1",
+      connect: (h) => {
+        onMessage = h.onMessage;
+        return Promise.resolve({ send: () => {}, close: () => {} });
+      },
+      handlers: { ...noop, onAudioError },
+    });
+    await client.start();
+    onMessage(JSON.stringify({ type: "audio_error", reason: "no such playing track" }));
+    expect(onAudioError).toHaveBeenCalledWith("no such playing track");
+  });
+
+  it("audioTransport sends the fire-and-forget audio_transport frame", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    client.audioTransport({ type: "stop_all" });
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({
+      type: "audio_transport",
+      op: { type: "stop_all" },
+    });
+    expect(sent.find((s) => JSON.parse(s).type === "audio_transport")).toBe(
+      JSON.stringify({ type: "audio_transport", op: { type: "stop_all" } }),
+    );
+  });
+
+  it("audioListenAs sends the fire-and-forget audio_listen_as frame (null clears)", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    client.audioListenAs("tok-1");
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({ type: "audio_listen_as", token: "tok-1" });
+    client.audioListenAs(null);
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({ type: "audio_listen_as", token: null });
+  });
 });
 
 describe("WsClient VFX frames", () => {

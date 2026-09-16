@@ -1,4 +1,4 @@
-import { test, expect, vi } from "vitest";
+import { test, expect, vi, beforeEach, describe } from "vitest";
 import { render } from "@testing-library/svelte";
 import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
@@ -1942,4 +1942,219 @@ test("a module whose activation fails gets no stylesheet link", async () => {
   await new Promise((r) => setTimeout(r, 0));
   expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
   session.leave();
+});
+
+describe("WorldSession.audio", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function audioSession(): WorldSession {
+    return new WorldSession({
+      selfId: "u1",
+      connect: mockConnect(),
+      modules: [coreUiStub],
+      logger: silentLogger,
+    });
+  }
+
+  test("the audio getter's setChannel persists channels and duck depth to the mirror", async () => {
+    const session = audioSession();
+    session.audio.setChannel("sfx", { gain: 0.5, muted: true });
+    const raw = localStorage.getItem("shadowcat.audio");
+    expect(raw).not.toBeNull();
+    const mirror = JSON.parse(raw!) as { channels: Record<string, { gain: number; muted: boolean }>; duckDepth: number };
+    expect(mirror.channels.sfx).toEqual({ gain: 0.5, muted: true });
+    expect(mirror.duckDepth).toBe(session.audio.duck.depth);
+    session.leave();
+  });
+
+  test("duck.setDepth persists duckDepth to the SAME mirror without disturbing channels", async () => {
+    const session = audioSession();
+    session.audio.setChannel("music", { gain: 0.4 });
+    session.audio.duck.setDepth(0.3);
+    const mirror = JSON.parse(localStorage.getItem("shadowcat.audio")!) as {
+      channels: Record<string, { gain: number; muted: boolean }>;
+      duckDepth: number;
+    };
+    expect(mirror.duckDepth).toBe(0.3);
+    expect(mirror.channels.music).toEqual({ gain: 0.4, muted: false });
+    session.leave();
+  });
+
+  test("construction from a pre-seeded mirror reports the persisted duck depth", () => {
+    localStorage.setItem(
+      "shadowcat.audio",
+      JSON.stringify({ channels: { sfx: { gain: 0.1, muted: true } }, duckDepth: 0.2 }),
+    );
+    const session = audioSession();
+    expect(session.audio.duck.depth).toBe(0.2);
+    expect(session.audio.channels.sfx).toEqual({ gain: 0.1, muted: true });
+    session.leave();
+  });
+
+  test("audio.serverNow and audio.transport forward to the session's WsClient", async () => {
+    const { WsClient } = await import("@shadowcat/core");
+    const serverNow = vi.spyOn(WsClient.prototype, "serverNow").mockReturnValue(1234);
+    const audioTransport = vi.spyOn(WsClient.prototype, "audioTransport").mockImplementation(() => {});
+    const session = audioSession();
+    await session.enter("w1");
+    expect(session.audio.serverNow()).toBe(1234);
+    expect(serverNow).toHaveBeenCalled();
+    session.audio.transport({ type: "stop_all" });
+    expect(audioTransport).toHaveBeenCalledWith({ type: "stop_all" });
+    session.leave();
+  });
+
+  test("the AudioEngine's spatial opt reads the shared performanceController's spatialAudio setting", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const { performanceController } = await import("@shadowcat/ui-kit");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      // Constructed once, in `WorldSession`'s own constructor — no `enter()`/`leave()` needed
+      // (and `leave()` is deliberately not called: spying on the constructor breaks its `new`
+      // semantics for the produced instance, which is irrelevant here — only the captured
+      // construction options are under test).
+      audioSession();
+      expect(ctorSpy).toHaveBeenCalledTimes(1);
+      const opts = ctorSpy.mock.calls[0][0];
+      const base = performanceController.current;
+      performanceController.set({ ...base, spatialAudio: false });
+      expect(opts.spatial?.()).toBe(false);
+      performanceController.set({ ...base, spatialAudio: true });
+      expect(opts.spatial?.()).toBe(true);
+    } finally {
+      // The spy replaces the module's `AudioEngine` export itself (not a prototype method),
+      // so every later test in this file constructing a `WorldSession` needs the real class
+      // restored — unlike the sibling `AudioEngine.prototype.*` spies below, which restore
+      // via the shared `afterEach`.
+      ctorSpy.mockRestore();
+    }
+  });
+
+  test("an audio-state document-store update drives AudioEngine.applyState", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyState = vi.spyOn(AudioEngine.prototype, "applyState").mockImplementation(() => {});
+    const session = audioSession();
+    await session.enter("w1");
+    const doc = {
+      ...buildWorldSettingsDoc("w1", {}),
+      doc_type: "audio-state",
+      name: null,
+      engine: { playing: [], shuffleSeed: 0 },
+    };
+    applyState.mockClear();
+    session.documents.seedDocuments([doc as never]);
+    expect(applyState).toHaveBeenCalledWith({ playing: [], shuffleSeed: 0 });
+    session.leave();
+  });
+
+  /** A minimal scene document for the audibility tests (`resolveViewedScene`'s first-scene
+   * fallback picks the seeded order's first). */
+  function sceneDoc(id: string) {
+    return {
+      ...buildWorldSettingsDoc("w1", {}),
+      id,
+      doc_type: "scene",
+      name: null,
+      engine: { grid: { kind: "square", size: 100 }, background: null },
+    };
+  }
+
+  /** A two-scene audibility payload: each scene carries exactly one emitter naming the scene. */
+  function twoScenePayload() {
+    return {
+      scenes: [
+        {
+          scene: "scene-1",
+          listener: "tok-1",
+          spatial: true,
+          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+        },
+        {
+          scene: "scene-2",
+          listener: "tok-2",
+          spatial: true,
+          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+        },
+      ],
+    };
+  }
+
+  test("an audibility frame drives applyAudibility with ONLY the viewed scene's slice", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyAudibility = vi.spyOn(AudioEngine.prototype, "applyAudibility").mockImplementation(() => {});
+    const sent: Array<Record<string, unknown>> = [];
+    const { connect, push } = pushConnect(sent);
+    const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+    await session.enter("w1");
+    push(welcomeFrame);
+    await vi.waitFor(() => expect(session.role).toBe("player"));
+    session.documents.seedDocuments([sceneDoc("scene-1") as never, sceneDoc("scene-2") as never]);
+    await vi.waitFor(() => expect(session.viewedSceneId).toBe("scene-1"));
+
+    const req = await vi.waitFor(() => {
+      const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "audibility");
+      expect(m).toBeDefined();
+      return m!;
+    });
+    push({
+      type: "scene_derived",
+      request_id: req.request_id,
+      channel: "audibility",
+      computed_at_seq: 0,
+      payload: twoScenePayload(),
+    });
+    await vi.waitFor(() =>
+      expect(applyAudibility).toHaveBeenCalledWith({
+        scene: "scene-1",
+        listener: "tok-1",
+        spatial: true,
+        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+      }),
+    );
+    expect(applyAudibility).not.toHaveBeenCalledWith(
+      expect.objectContaining({ scene: "scene-2" }),
+      "the OTHER scene's slice never reaches the engine while scene-1 is viewed",
+    );
+    session.leave();
+  });
+
+  test("setGmViewedScene immediately re-applies the roamed-to scene's cached slice", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyAudibility = vi.spyOn(AudioEngine.prototype, "applyAudibility").mockImplementation(() => {});
+    const sent: Array<Record<string, unknown>> = [];
+    const { connect, push } = pushConnect(sent);
+    const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+    await session.enter("w1");
+    push({ ...welcomeFrame, user_role: "gm" });
+    await vi.waitFor(() => expect(session.role).toBe("gm"));
+    session.documents.seedDocuments([sceneDoc("scene-1") as never, sceneDoc("scene-2") as never]);
+    await vi.waitFor(() => expect(session.viewedSceneId).toBe("scene-1"));
+
+    const req = await vi.waitFor(() => {
+      const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "audibility");
+      expect(m).toBeDefined();
+      return m!;
+    });
+    push({
+      type: "scene_derived",
+      request_id: req.request_id,
+      channel: "audibility",
+      computed_at_seq: 0,
+      payload: twoScenePayload(),
+    });
+    await vi.waitFor(() => expect(applyAudibility).toHaveBeenCalledWith(expect.objectContaining({ scene: "scene-1" })));
+
+    // The roam: scene-2's slice applies AT ONCE from the cached payload — no new server frame.
+    applyAudibility.mockClear();
+    session.setGmViewedScene("scene-2");
+    expect(applyAudibility).toHaveBeenCalledWith({
+      scene: "scene-2",
+      listener: "tok-2",
+      spatial: true,
+      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+    });
+    session.leave();
+  });
 });

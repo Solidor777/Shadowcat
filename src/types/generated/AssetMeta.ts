@@ -53,6 +53,19 @@ original_retained: boolean,
  */
 conversion_note: string | null, 
 /**
+ * Decoded audio duration, milliseconds; `None` for a non-audio asset or a decode
+ * failure. `f64`-adjacent precision is unnecessary here — this is metadata display, not
+ * a sync anchor (unlike `PlayingTrack.startedAt`), so a plain `i64` is fine: it is
+ * consumed only by `AssetResolver`/display code, never round-tripped through a
+ * client-authored write.
+ */
+duration_ms: bigint | null, 
+/**
+ * Decoded audio sample rate, Hz (the SOURCE rate, before the pipeline's 48 kHz Opus
+ * resample); `None` for a non-audio asset or a decode failure.
+ */
+sample_rate: bigint | null, 
+/**
  * Server-derived grid-sheet geometry/timing for an animated source, or `None` for a
  * non-animated asset or one whose sheet generation produced nothing (fewer than 2 decoded
  * frames, or a write failure) — a `None` here is not itself an error; `VfxEmission`/`PlayVfx`

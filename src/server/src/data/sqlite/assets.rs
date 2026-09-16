@@ -538,8 +538,9 @@ impl SqliteRepository {
              (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
               created_at, version, folder_id, width, height, has_alpha, animated, \
               original_content_type, original_byte_size, original_retained, conversion_note, \
+              duration_ms, sample_rate, \
               sheet_rows, sheet_cols, sheet_count, sheet_frame_ms, sheet_width, sheet_height) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(a.id.to_string())
         .bind(a.world_id.to_string())
@@ -559,6 +560,8 @@ impl SqliteRepository {
         .bind(a.meta.original_byte_size)
         .bind(i64::from(a.meta.original_retained))
         .bind(&a.meta.conversion_note)
+        .bind(a.meta.duration_ms)
+        .bind(a.meta.sample_rate)
         .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.rows)))
         .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.cols)))
         .bind(a.meta.sheet.as_ref().map(|s| i64::from(s.count)))
@@ -615,6 +618,8 @@ impl SqliteRepository {
                 original_byte_size: row.get("original_byte_size"),
                 original_retained: row.get::<i64, _>("original_retained") != 0,
                 conversion_note: row.get("conversion_note"),
+                duration_ms: row.get("duration_ms"),
+                sample_rate: row.get("sample_rate"),
                 sheet: {
                     let dim32 = |v: Option<i64>| v.and_then(|n| u32::try_from(n).ok());
                     dim32(row.get::<Option<i64>, _>("sheet_rows")).map(|rows| {
@@ -768,6 +773,7 @@ impl SqliteRepository {
             "UPDATE assets SET storage_key = ?, content_type = ?, byte_size = ?, \
              width = ?, height = ?, has_alpha = ?, animated = ?, original_content_type = ?, \
              original_byte_size = ?, original_retained = ?, conversion_note = ?, \
+             duration_ms = ?, sample_rate = ?, \
              sheet_rows = ?, sheet_cols = ?, sheet_count = ?, sheet_frame_ms = ?, \
              sheet_width = ?, sheet_height = ?, \
              version = version + 1 \
@@ -784,6 +790,8 @@ impl SqliteRepository {
         .bind(meta.original_byte_size)
         .bind(i64::from(meta.original_retained))
         .bind(&meta.conversion_note)
+        .bind(meta.duration_ms)
+        .bind(meta.sample_rate)
         .bind(meta.sheet.as_ref().map(|s| i64::from(s.rows)))
         .bind(meta.sheet.as_ref().map(|s| i64::from(s.cols)))
         .bind(meta.sheet.as_ref().map(|s| i64::from(s.count)))
@@ -1047,8 +1055,13 @@ impl SqliteRepository {
             Some(AssetKind::Image) => {
                 qb.push(" AND a.content_type LIKE 'image/%'");
             }
+            Some(AssetKind::Audio) => {
+                qb.push(" AND a.content_type LIKE 'audio/%'");
+            }
             Some(AssetKind::Other) => {
-                qb.push(" AND a.content_type NOT LIKE 'image/%'");
+                qb.push(
+                    " AND a.content_type NOT LIKE 'image/%' AND a.content_type NOT LIKE 'audio/%'",
+                );
             }
         }
         if let Some(q) = &filter.query {

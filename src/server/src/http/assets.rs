@@ -60,6 +60,56 @@ pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
+/// Sniff an AUDIO container from the leading bytes — the upload pipeline's "the bytes decide"
+/// counterpart to `detect_image_type`, so a mislabeled upload (`application/octet-stream` on
+/// a real WAV) still reaches the transcode arm. Only audio-unambiguous magics are claimed
+/// (RIFF/WAVE, FLAC, MP3, Ogg, and ISO-BMFF with an audio-only major brand); EBML/Matroska is
+/// deliberately NOT sniffed here — a WebM file may be video, and its declared label stands —
+/// and a generic `isom`/`mp42` brand is likewise left alone (an MP4 may be video; only the
+/// audio-only brands `M4A `/`M4B ` are claimed). The returned label is a candidate for
+/// `process_staged`'s audio arm; `process::audio`'s own symphonia probe remains the real
+/// container decision.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::http::assets::detect_audio_type;
+///
+/// assert_eq!(detect_audio_type(b"RIFF\x00\x00\x00\x00WAVE"), Some("audio/wav"));
+/// assert_eq!(detect_audio_type(b"fLaC\x00"), Some("audio/flac"));
+/// assert_eq!(detect_audio_type(b"ID3\x04"), Some("audio/mpeg"));
+/// assert_eq!(detect_audio_type(&[0xFF, 0xFB, 0x90, 0x00]), Some("audio/mpeg"));
+/// assert_eq!(detect_audio_type(b"OggS\x00"), Some("audio/ogg"));
+/// assert_eq!(detect_audio_type(b"\x00\x00\x00\x18ftypM4A \x00"), Some("audio/mp4"));
+/// assert_eq!(detect_audio_type(b"\x00\x00\x00\x18ftypisom\x00"), None);
+/// assert_eq!(detect_audio_type(b"not audio"), None);
+/// ```
+pub fn detect_audio_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        return Some("audio/wav");
+    }
+    if bytes.starts_with(b"fLaC") {
+        return Some("audio/flac");
+    }
+    if bytes.starts_with(b"ID3")
+        || (bytes.len() >= 2 && bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0)
+    {
+        return Some("audio/mpeg");
+    }
+    if bytes.starts_with(b"OggS") {
+        return Some("audio/ogg");
+    }
+    // ISO-BMFF: the `ftyp` box's major brand at offset 8; only the audio-only brands are
+    // claimed (an `isom`/`mp42` major brand may be video — the same caution EBML gets).
+    if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && (&bytes[8..12] == b"M4A " || &bytes[8..12] == b"M4B ")
+    {
+        return Some("audio/mp4");
+    }
+    None
+}
+
 /// Per-user sliding-window upload limiter (trailing 60s). In-memory; resets on
 /// restart, which is acceptable for an abuse backstop.
 ///
@@ -158,6 +208,7 @@ impl Default for UploadRateLimiter {
 }
 
 use crate::auth::session::AuthUser;
+use crate::data::asset::process::audio::{self, AudioContainers};
 use crate::data::asset::process::{derivative_path, sibling_paths, write_derivatives, Variant};
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
@@ -176,18 +227,19 @@ use tokio::io::AsyncWriteExt;
 
 /// Stream a multipart "file" field to `dest`, enforcing `max_bytes` as bytes
 /// arrive (never buffering the whole body). Returns
-/// `(content_type, byte_size, original_name)`, where `content_type` is the
+/// `(content_type, byte_size, original_name, containers)`, where `content_type` is the
 /// type SNIFFED from the leading bytes when they are a supported image; when
 /// they are not, the client's declared type is used as a plain label —
 /// unless it CLAIMS `image/*`, which the bytes just disproved, in which case
 /// the label is `application/octet-stream`. The bytes are the validation
-/// boundary; a client's image claim is never trusted. On any failure the
-/// partial file is removed.
+/// boundary; a client's image claim is never trusted. `containers` is the
+/// optional trailing text field selecting the audio derivative container(s).
+/// On any failure the partial file is removed.
 async fn store_streamed(
     mut multipart: Multipart,
     dest: &std::path::Path,
     max_bytes: u64,
-) -> Result<(String, i64, String), AppError> {
+) -> Result<(String, i64, String, Option<String>), AppError> {
     let field = multipart
         .next_field()
         .await
@@ -236,21 +288,82 @@ async fn store_streamed(
     }
     file.flush().await.map_err(|_| AppError::Internal)?;
 
-    let content_type = label_content_type(detect_image_type(&head), declared.as_deref());
-    Ok((content_type, total as i64, original_name))
+    // An optional trailing `containers` text field selects the audio derivative container(s)
+    // (`data::asset::process::audio::AudioContainers`'s snake_case names); the file field is
+    // always first, so anything after it that is not this field is ignored. The read is
+    // bounded (a form field naming a 4-byte enum never needs more than 64 bytes).
+    let mut containers: Option<String> = None;
+    while let Ok(Some(field)) = multipart.next_field().await {
+        if field.name() == Some("containers") {
+            let mut text = String::new();
+            let mut field = field;
+            loop {
+                match field.chunk().await {
+                    Ok(Some(c)) => {
+                        if text.len() + c.len() > 64 {
+                            let _ = tokio::fs::remove_file(dest).await;
+                            return Err(AppError::BadRequest("containers field too long".into()));
+                        }
+                        text.push_str(&String::from_utf8_lossy(&c));
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        let _ = tokio::fs::remove_file(dest).await;
+                        return Err(AppError::BadRequest(format!("multipart error: {e}")));
+                    }
+                }
+            }
+            containers = Some(text.trim().to_string());
+        }
+    }
+
+    let content_type = label_content_type(
+        detect_image_type(&head),
+        detect_audio_type(&head),
+        declared.as_deref(),
+    );
+    Ok((content_type, total as i64, original_name, containers))
 }
 
 /// The content type recorded for an upload: the sniffed image type when the
-/// bytes are a supported image; otherwise the declared type as a label,
+/// bytes are a supported image, else the sniffed audio type when the bytes are
+/// a recognized audio container; otherwise the declared type as a label,
 /// except that a declared `image/*` the bytes disproved becomes
-/// `application/octet-stream`.
-pub(super) fn label_content_type(sniffed: Option<&'static str>, declared: Option<&str>) -> String {
-    if let Some(ct) = sniffed {
+/// `application/octet-stream`. The BYTES win over the declared label for both media
+/// families: a mislabeled audio upload (`application/octet-stream` on a real WAV) is
+/// classified audio and reaches the transcode arm, and a declared `image/*` the bytes
+/// disproved stays `application/octet-stream` (a browser must never be told a non-image is
+/// an image).
+pub(super) fn label_content_type(
+    sniffed_image: Option<&'static str>,
+    sniffed_audio: Option<&'static str>,
+    declared: Option<&str>,
+) -> String {
+    if let Some(ct) = sniffed_image {
+        return ct.to_string();
+    }
+    if let Some(ct) = sniffed_audio {
         return ct.to_string();
     }
     match declared {
         Some(d) if !d.starts_with("image/") && !d.is_empty() => d.to_string(),
         _ => "application/octet-stream".to_string(),
+    }
+}
+
+/// Parse the optional `containers` multipart field into an audio derivative selection
+/// (absent/empty ⇒ the default). The snake_case spellings are
+/// `AudioContainers`'s own serde names — one statement of the accepted set, beside the one
+/// multipart reader that produces the raw string.
+fn parse_containers_field(value: Option<&str>) -> Result<AudioContainers, AppError> {
+    match value {
+        None | Some("") => Ok(AudioContainers::default()),
+        Some("ogg") => Ok(AudioContainers::Ogg),
+        Some("webm") => Ok(AudioContainers::WebM),
+        Some("both") => Ok(AudioContainers::Both),
+        Some(other) => Err(AppError::BadRequest(format!(
+            "unknown containers '{other}'"
+        ))),
     }
 }
 
@@ -345,16 +458,29 @@ pub async fn upload(
     // rate-limit hit `check` recorded — a rejected upload must not burn quota.
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
-        let (arrived_type, arrived_size, original_name) =
+        let (arrived_type, arrived_size, original_name, containers_field) =
             store_streamed(multipart, &tmp_path, max).await?;
+        let containers = match parse_containers_field(containers_field.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                // The staged tmp is already on disk; a rejected selection must not strand it.
+                remove_asset_files(&tmp_path).await;
+                return Err(e);
+            }
+        };
         // CPU-bound conversion, off the async runtime and BEFORE the barrier.
-        let processed =
-            process_staged_blocking(tmp_path.clone(), arrived_type, arrived_size, retain)
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, %id, "asset processing failed");
-                    AppError::Internal
-                })?;
+        let processed = process_staged_blocking(
+            tmp_path.clone(),
+            arrived_type,
+            arrived_size,
+            retain,
+            containers,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, %id, "asset processing failed");
+            AppError::Internal
+        })?;
         // Single-shot uploads land in the world root: no folder segments.
         let derived = derive(DeriveInput {
             content_type: &processed.content_type,
@@ -421,7 +547,7 @@ pub async fn upload(
 /// ```
 #[derive(Debug, serde::Deserialize)]
 pub struct ServeQuery {
-    /// `thumb` | `preview` | `sheet`; absent = the canonical file.
+    /// `thumb` | `preview` | `sheet` | `opus` | `opus-webm`; absent = the canonical file.
     pub variant: Option<String>,
 }
 
@@ -477,6 +603,49 @@ pub async fn serve(
     Query(q): Query<ServeQuery>,
     headers: HeaderMap,
 ) -> Result<Response, AppError> {
+    // The Opus derivatives are NOT `Variant`s and bypass `ensure_derivative` entirely: a
+    // minutes-long transcode is never regenerated on serve, so a missing sibling is a plain
+    // 404 — derivatives are produced at commit time or not at all.
+    if matches!(q.variant.as_deref(), Some("opus") | Some("opus-webm")) {
+        let (suffix, content_type, etag_suffix) = if q.variant.as_deref() == Some("opus") {
+            (audio::OPUS_SUFFIX, audio::OPUS_CONTENT_TYPE, "opus")
+        } else {
+            (audio::WEBM_SUFFIX, audio::WEBM_CONTENT_TYPE, "opus-webm")
+        };
+        let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+        // Same read-gate as the canonical path: any member of the asset's world may read.
+        state
+            .repo
+            .permission_context(asset.world_id, user.id, user.role)
+            .await?;
+        // ETag BEFORE the file read (a 304 costs no disk I/O, same as the canonical path),
+        // and the 304 carries the ETag back so a cache can refresh its validator.
+        let etag = format!("\"{id}-{}-{etag_suffix}\"", asset.version);
+        let if_none_match = headers
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if if_none_match.split(',').any(|t| t.trim() == etag) {
+            return Ok(([(header::ETAG, etag)], StatusCode::NOT_MODIFIED).into_response());
+        }
+        let canonical = state.config.assets_path().join(&asset.storage_key);
+        let sibling = crate::data::asset::process::with_suffix(&canonical, suffix);
+        let bytes = tokio::fs::read(&sibling)
+            .await
+            .map_err(|_| AppError::NotFound)?;
+        // `inline` is safe here regardless of `INLINE_CONTENT_TYPES`'s raster-only scope: an
+        // audio derivative embeds via `<audio src>`, never `<img>` or a navigation.
+        return Ok((
+            [
+                (header::CONTENT_TYPE, content_type.to_string()),
+                (header::CONTENT_DISPOSITION, "inline".to_string()),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                (header::ETAG, etag),
+            ],
+            Body::from(bytes),
+        )
+            .into_response());
+    }
     let variant = match q.variant.as_deref() {
         None => None,
         Some("thumb") => Some(Variant::Thumb),
@@ -770,14 +939,35 @@ pub async fn replace(
     // recorded — a rejected replace must not burn quota.
     let retain = state.config.retain_originals;
     let outcome: Result<Asset, AppError> = async {
-        let (arrived_type, arrived_size, _name) = store_streamed(multipart, &tmp_path, max).await?;
-        let processed =
-            process_staged_blocking(tmp_path.clone(), arrived_type, arrived_size, retain)
-                .await
-                .map_err(|e| {
-                    tracing::error!(?e, %id, "asset processing failed");
-                    AppError::Internal
-                })?;
+        let (arrived_type, arrived_size, _name, containers_field) =
+            store_streamed(multipart, &tmp_path, max).await?;
+        // No explicit selection on a replace re-emits the derivative set the asset already
+        // has (`audio::effective_reencode_selection`), never silently widening or narrowing it.
+        let containers = match containers_field.as_deref() {
+            Some(_) => match parse_containers_field(containers_field.as_deref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    remove_asset_files(&tmp_path).await;
+                    return Err(e);
+                }
+            },
+            None => audio::effective_reencode_selection(
+                audio::has_sibling(&final_path, audio::OPUS_SUFFIX),
+                audio::has_sibling(&final_path, audio::WEBM_SUFFIX),
+            ),
+        };
+        let processed = process_staged_blocking(
+            tmp_path.clone(),
+            arrived_type,
+            arrived_size,
+            retain,
+            containers,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, %id, "asset processing failed");
+            AppError::Internal
+        })?;
         commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await
     }
     .await;

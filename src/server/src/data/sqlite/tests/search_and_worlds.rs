@@ -1716,6 +1716,8 @@ async fn import_keeps_folder_tags_and_meta_but_clears_original_retained_without_
             original_byte_size: 20,
             original_retained: true,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
             sheet: Some(crate::data::asset::process::SheetMeta {
                 rows: 2,
                 cols: 2,

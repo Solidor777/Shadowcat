@@ -47,7 +47,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, audio, onMoveOutcome, role, members } = ctx;
 
   /** Per-world-session cache of asset metadata for VFX resolution (never bytes). Module
    * scope, so it survives an `$effect` re-run and warms are never re-fetched needlessly. */
@@ -382,6 +382,7 @@
             elevation: m.elevation ?? undefined, id: m.id,
           });
         });
+        if (m.sound) audio.playOneShot(m.sound, { channel: "sfx" });
       });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
