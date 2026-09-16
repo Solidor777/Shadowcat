@@ -9,7 +9,7 @@ import { ToolController, makeLightTool, type ToolContext } from "./controller.sv
 
 const ev = {} as PointerEvent;
 
-function setup(withScene = true) {
+function setup(withScene = true, viewedLevelBottom?: () => number | null) {
   const docs = new DocumentStore();
   if (withScene) docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "scene-1") }] });
   let previews = 0;
@@ -17,7 +17,7 @@ function setup(withScene = true) {
   const bridge = new SceneInteractionBridge();
   bridge.attach(fakeSceneHost({ previewOverlay: () => { previews++; }, clearOverlay: () => { cleared++; } }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBottom };
   const controller = new ToolController(ctx);
   return { tool: makeLightTool(ctx, controller), controller, docs, sent, previews: () => previews, clears: () => cleared };
 }
@@ -106,4 +106,18 @@ test("a light out of marker tolerance is not picked (a click beside it places in
     expect((op.doc.engine as LightEngine).emission.enabled).toBe(true);
     expect(controller.editingEntity).toEqual({ kind: "light", id: op.doc.id });
   }
+});
+
+test("with viewedLevelBottom set, a new light's engine body carries the expected elevation", () => {
+  const { tool, sent } = setup(true, () => 10);
+  tool.onPointerDown({ x: 103, y: 48 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: 10 });
+});
+
+test("with viewedLevelBottom unset, a new light's engine body's elevation stays null", () => {
+  const { tool, sent } = setup();
+  tool.onPointerDown({ x: 103, y: 48 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
 });

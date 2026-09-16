@@ -3,10 +3,21 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
 import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
+
+/** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
+ * `ElevationBand`, whose `bottom`/`top` are independently nullable to express an unbounded
+ * occlusion band) — a `SceneLevel` always declares both ends. Returned by `ToolRail`'s
+ * `resolvedViewedLevel` and read through `ToolContext.viewedLevelBand`. */
+export interface ViewedLevelBand {
+  /** The level's lower elevation bound, in scene units. */
+  bottom: number;
+  /** The level's upper elevation bound, in scene units. */
+  top: number;
+}
 
 /** A tool id, keying `ToolController.#tools` and gating `ToolRail`'s per-role visibility. */
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region" | "light";
@@ -91,6 +102,17 @@ export interface ToolContext {
    * second copy of the catalog strings would fork the catalog, and a host that forgets to wire
    * it would silently render that copy for every locale. */
   t: TFunc;
+  /** The viewed scene's viewed-level band (`{bottom, top}` of the `SceneLevel` `ctx.viewedLevel`
+   * names, or `null` for a level-less scene/no viewed level). `ToolRail` derives this from
+   * `ctx.viewedLevel` + the viewed scene's `levels` array; `makeWallTool`/`makeRegionTool`/
+   * `makeDrawTool`/`makeTemplateTool` stamp it onto newly-created geometry's `/engine/elevation`
+   * so authoring on a floor bands the new shape to that floor. Absent/`null` ⇒ `elevation: null`
+   * (today's behavior, unchanged). */
+  viewedLevelBand?: () => ViewedLevelBand | null;
+  /** The viewed level's `bottom` (a POINT value, not a band) — stamped onto newly-placed tokens/
+   * lights' `/engine/elevation` by `makePlaceTool`/`makeLightTool`. Absent/`null` ⇒
+   * `elevation: null` (today's behavior, unchanged). */
+  viewedLevelBottom?: () => number | null;
 }
 
 /** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
@@ -341,7 +363,12 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
            * (embeds a frozen copy) rather than links (shares the live document). */
           prototype?: boolean;
         } | undefined)?.prototype ? "instance" : "link";
-        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, footprintsOf(ctx).unit(scene.id)) }]);
+        const actorToken = buildTokenFromActor(ctx.world, scene.id, actor, mode, c, footprintsOf(ctx).unit(scene.id));
+        // buildTokenFromActor stamps `elevation: null` unconditionally (no override param on
+        // that shared @shadowcat/core builder); patch it post-construction, mirroring the
+        // authored-asset placement path just below.
+        (actorToken.engine as TokenEngine).elevation = ctx.viewedLevelBottom?.() ?? null;
+        ctx.dispatchIntent([{ op: "create", doc: actorToken }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
         // (keepAfterPlace). Instanced actors always stay selected for placing many.
@@ -357,7 +384,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: ctx.viewedLevelBottom?.() ?? null }),
         },
       ]);
       return true;
@@ -431,7 +458,7 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
               blocksSight: true,
               blocksMove: true,
               blocksLight: true,
-              elevation: null,
+              elevation: ctx.viewedLevelBand?.() ?? null,
             }),
           },
         ]);
@@ -541,7 +568,7 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
         return true;
       }
       const at = ctx.scene.snap(p);
-      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, elevation: null, emission: { ...NEW_LIGHT_EMISSION } });
+      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, elevation: ctx.viewedLevelBottom?.() ?? null, emission: { ...NEW_LIGHT_EMISSION } });
       ctx.dispatchIntent([{ op: "create", doc }]);
       // Placing selects the new light so the rail editor targets it immediately (a second
       // click would place ANOTHER light, not select this one).
@@ -643,7 +670,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
           // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
           // array wraps its contents in is not cloneable.
           triggers: $state.snapshot(controller.regionTriggers),
-          elevation: null,
+          elevation: ctx.viewedLevelBand?.() ?? null,
         };
         const doc = buildRegionDoc(ctx.world, scene.id, engine);
         if (controller.regionSecret) setRegionVisibility(doc, true);
@@ -1335,6 +1362,7 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
               shape: { kind: mode, points },
               stroke: { color: controller.strokeColor, width: 2 },
               fill: null,
+              elevation: ctx.viewedLevelBand?.() ?? null,
             }),
           },
         ]);
@@ -1465,6 +1493,7 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
             doc: buildSceneEntityDoc(ctx.world, scene.id, "template", {
               shape: { kind: controller.templateMode, x: anchor.x, y: anchor.y, size, direction },
               color: controller.templateColor,
+              elevation: ctx.viewedLevelBand?.() ?? null,
             }),
           },
         ]);

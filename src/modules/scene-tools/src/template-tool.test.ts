@@ -9,7 +9,11 @@ import { ToolController, makeTemplateTool, type ToolContext, type TemplateMode }
 
 const ev = {} as PointerEvent;
 
-function setup(mode: TemplateMode, snap: (p: { x: number; y: number }) => { x: number; y: number } = (p) => p) {
+function setup(
+  mode: TemplateMode,
+  snap: (p: { x: number; y: number }) => { x: number; y: number } = (p) => p,
+  viewedLevelBand?: () => { bottom: number; top: number } | null,
+) {
   const docs = new DocumentStore();
   docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "scene-1") }] });
   const previews: Array<Array<{ closed: boolean }>> = [];
@@ -21,7 +25,7 @@ function setup(mode: TemplateMode, snap: (p: { x: number; y: number }) => { x: n
     snap,
   }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBand };
   const controller = new ToolController(ctx);
   controller.templateMode = mode;
   return { tool: makeTemplateTool(ctx, controller), previews, sent, clears: () => cleared };
@@ -90,4 +94,20 @@ test("a genuine drag in a snapping scene still produces the dragged size/directi
   if (op.op === "create") {
     expect(op.doc.engine).toMatchObject({ shape: { kind: "circle", x: 0, y: 0, size: 500 } }); // hypot(300,400)
   }
+});
+
+test("with viewedLevelBand set, a new template's engine body carries the expected elevation", () => {
+  const { tool, sent } = setup("circle", (p) => p, () => ({ bottom: 10, top: 20 }));
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 30, y: 40 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: { bottom: 10, top: 20 } });
+});
+
+test("with viewedLevelBand unset, a new template's engine body's elevation stays null", () => {
+  const { tool, sent } = setup("circle");
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 30, y: 40 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
 });

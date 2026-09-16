@@ -1,16 +1,39 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
-  import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand } from "@shadowcat/core";
+  import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
 
   const ctx = getAppContext();
+
+  /**
+   * Resolves the `SceneLevel` `ctx.viewedLevel` names on the viewed scene, or `null` (no scene,
+   * no viewed level, or the level id no longer names a declared level).
+   * @returns The resolved `SceneLevel`, or `null`.
+   * @example
+   * ```
+   * // private helper; not part of the public API — read by viewedLevelBand/viewedLevelBottom
+   * resolvedViewedLevel();
+   * ```
+   */
+  function resolvedViewedLevel(): ViewedLevelBand | null {
+    const sceneId = ctx.viewedSceneId;
+    const level = ctx.viewedLevel;
+    if (sceneId === null || level === null) return null;
+    const scene = ctx.documents.query("scene").find((s) => s.id === sceneId);
+    const levels = (scene?.engine as SceneEngine | undefined)?.levels ?? [];
+    const found = levels.find((l) => l.id === level);
+    return found ? { bottom: found.bottom, top: found.top } : null;
+  }
+
   // The controller is fixed per ToolRail instance; capturing the context once is intended.
   // `satisfies HostToolContext` makes every AppContext-supplied ToolContext member mandatory
   // here, so a seam the host has can never be left out of this literal without a type error.
+  // The two viewedLevel* fields below are ToolContext-only (no AppContext counterpart), so they
+  // sit OUTSIDE this checked literal — spread in below — rather than widening the check itself.
   // svelte-ignore state_referenced_locally
-  const controller = new ToolController({
+  const hostToolContext = {
     scene: ctx.scene,
     actorSelection: ctx.actorSelection,
     tokenSelection: ctx.tokenSelection,
@@ -26,7 +49,12 @@
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
     t: ctx.t,
-  } satisfies HostToolContext);
+  } satisfies HostToolContext;
+  const controller = new ToolController({
+    ...hostToolContext,
+    viewedLevelBand: () => resolvedViewedLevel(),
+    viewedLevelBottom: () => resolvedViewedLevel()?.bottom ?? null,
+  });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   // Gating is PER TOOL, not per component: the controller is constructed for every user so
@@ -290,10 +318,35 @@
     editSelected("/engine/elevation", old, next);
   }
 
-  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end.
-   * An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field writes
-   * `null` (canonical "occludes every elevation" — an absent band, matching
-   * `wall_occludes`). `old` is the raw stored band object (or `null`).
+  /** Write one end of an edited entity's `/engine/elevation` band, preserving the other end —
+   * the shared body behind `editWallElevation` (and any future region/drawing/template band
+   * editor: wall, region, drawing and template all carry the identical `Option<ElevationBand>`
+   * shape). An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field
+   * resolves to `null` (canonical "every elevation" — an absent band, matching
+   * `band_contains`/`wall_occludes`).
+   * @param old The raw stored band object (or `null`).
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @returns The next band value, or `undefined` when `raw` doesn't parse (no write).
+   * @example
+   * ```
+   * editElevationBand(null, "bottom", "2"); // { bottom: 2, top: null }
+   * ```
+   */
+  function editElevationBand(
+    old: ElevationBand | null,
+    end: "bottom" | "top",
+    raw: string,
+  ): ElevationBand | null | undefined {
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return undefined;
+    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
+    const top = end === "top" ? parsed : (old?.top ?? null);
+    return bottom === null && top === null ? null : { bottom, top };
+  }
+
+  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end. `old`
+   * is the raw stored band object (or `null`). Thin wrapper over `editElevationBand`.
    * @param end Which band end this edit changes; the other end is carried forward unchanged.
    * @param raw The input's raw string value.
    * @example
@@ -305,12 +358,9 @@
     const doc = editingDoc;
     if (!doc) return;
     const eng = doc.engine as WallEngine;
-    const parsed = parseElevation(raw);
-    if (parsed === undefined) return;
     const old = eng.elevation ?? null;
-    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
-    const top = end === "top" ? parsed : (old?.top ?? null);
-    const next = bottom === null && top === null ? null : { bottom, top };
+    const next = editElevationBand(old, end, raw);
+    if (next === undefined) return;
     editSelected("/engine/elevation", old, next);
   }
 
