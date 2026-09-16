@@ -299,4 +299,26 @@ describe("AudioPanel", () => {
     });
     expect(screen.queryByTestId("audio-listen-as")).toBeNull();
   });
+
+  it("the now-playing position readout advances after time passes with playback active", async () => {
+    vi.useFakeTimers();
+    try {
+      let now = 10_000;
+      const documents = storeWith(audioStateDoc([track("e1", { startedAt: 0 })]));
+      const { container } = render(AudioPanel, {
+        context: setAppContextForTest({
+          role: "gm",
+          documents,
+          audio: audioFixture({ serverNow: () => now }),
+        }),
+      });
+      const readout = () => container.querySelector(".playing-pos")?.textContent;
+      const before = readout();
+      now += 5_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(readout()).not.toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

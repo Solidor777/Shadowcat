@@ -97,6 +97,17 @@
     return ctx.documents.query("token").filter((d) => d.parent_id === scene);
   });
 
+  // Ticks the now-playing position readout at ~1Hz — a plain `ctx.audio.serverNow()` call
+  // establishes no Svelte dependency, so without this the readout only re-renders when an
+  // unrelated reactive value changes and otherwise freezes between events. Cleared on unmount.
+  let positionTick = $state(0);
+  $effect(() => {
+    const id = setInterval(() => {
+      positionTick++;
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
   /** The entry's current position in seconds (frozen at `pausedAt` when paused), clamped
    * non-negative.
    * @param p The playing entry.
@@ -107,6 +118,7 @@
    * ```
    */
   function positionSecs(p: PlayingTrack): number {
+    void positionTick; // establishes the reactive dependency that ticks this readout live
     return Math.max(0, ((p.pausedAt ?? ctx.audio.serverNow()) - p.startedAt) / 1000);
   }
 
