@@ -39,8 +39,8 @@
     if (id) fxToolState.assetId = id;
   }
 
-  /** Opens the asset picker for a paired sound; the asset browser has no audio kind, so the
-   * picker filters to `other`. Stores or clears the pick.
+  /** Opens the asset picker for a paired sound; the picker filters to the asset browser's
+   * audio kind. Stores or clears the pick.
    * @example
    * ```
    * // private function; wired to the Pick sound button below
@@ -48,7 +48,7 @@
    * ```
    */
   async function pickSound(): Promise<void> {
-    const id = await ctx.pickAsset({ kind: "other" });
+    const id = await ctx.pickAsset({ kind: "audio" });
     if (id) fxToolState.soundId = id;
   }
 </script>

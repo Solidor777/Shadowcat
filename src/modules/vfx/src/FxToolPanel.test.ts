@@ -40,13 +40,15 @@ describe("FxToolPanel", () => {
     expect(fxToolState.scale).toBe(2.5);
   });
 
-  it("picking then clearing a sound toggles the shared state and the clear button", async () => {
+  it("picking then clearing a sound toggles the shared state and the clear button, filtered to the audio asset kind", async () => {
+    const pickAsset = vi.fn(async () => "snd-1");
     render(FxToolPanel, {
-      context: setAppContextForTest({ pickAsset: (async () => "snd-1") as never }),
+      context: setAppContextForTest({ pickAsset: pickAsset as never }),
     });
     expect(screen.queryByTestId("fx-clear-sound")).toBeNull();
     await fireEvent.click(screen.getByTestId("fx-pick-sound"));
     await vi.waitFor(() => expect(fxToolState.soundId).toBe("snd-1"));
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "audio" });
     await fireEvent.click(screen.getByTestId("fx-clear-sound"));
     expect(fxToolState.soundId).toBeNull();
     expect(screen.queryByTestId("fx-clear-sound")).toBeNull();
