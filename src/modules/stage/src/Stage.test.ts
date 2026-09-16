@@ -774,6 +774,7 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
   );
   vi.stubGlobal("fetch", fetchMock);
   const store = new DocumentStore();
+  const playOneShot = vi.fn();
   const { container } = render(Stage, {
     props: { createBackend },
     context: setAppContextForTest({
@@ -782,11 +783,25 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
       assets: new AssetResolver(),
       subscribeScene: () => ({ unsubscribe() {} }),
       vfx: { play: () => {}, onVfx: (cb: (msg: never) => void) => { vfxCb = cb as (msg: unknown) => void; return () => {}; } },
+      audio: {
+        channels: {
+          master: { gain: 1, muted: false }, music: { gain: 1, muted: false },
+          ambience: { gain: 1, muted: false }, sfx: { gain: 1, muted: false }, ui: { gain: 1, muted: false },
+        },
+        setChannel: () => {},
+        unlock: async () => {},
+        duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
+        playOneShot,
+        serverNow: () => 0,
+        transport: () => {},
+        listenAs: () => {},
+      },
     }),
   });
   const host = container.querySelector(".stage-host") as HTMLElement;
   await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
   expect(vfxCb).not.toBeNull();
+  // A one-shot with no paired sound never touches the audio API.
   vfxCb!({
     scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
     scale: null, rotation: null, durationMs: null, sound: null, elevation: null, id: "one",
@@ -798,6 +813,13 @@ test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count b
     backend.tick!(16);
     expect(host.dataset.vfxCount).toBe("1");
   });
+  expect(playOneShot).not.toHaveBeenCalled();
+  // A one-shot WITH a paired sound plays it through the sfx channel.
+  vfxCb!({
+    scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
+    scale: null, rotation: null, durationMs: null, sound: "snd1", elevation: null, id: "two",
+  });
+  await vi.waitFor(() => expect(playOneShot).toHaveBeenCalledWith("snd1", { channel: "sfx" }));
   vi.unstubAllGlobals();
 });
 
