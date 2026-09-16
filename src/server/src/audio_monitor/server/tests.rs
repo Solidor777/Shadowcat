@@ -68,6 +68,60 @@ async fn hello_then_levels_frames_are_watch_filtered() {
 }
 
 #[tokio::test]
+async fn an_oversized_watch_frame_is_dropped_and_the_previous_list_survives() {
+    let port = free_port().await;
+    let args = AudioMonitorArgs {
+        port,
+        allow_origin: vec!["http://localhost:30000".to_string()],
+        watch: vec!["discord".to_string()],
+    };
+    let monitor = FakeMonitor::new(vec![Ok(vec![SessionLevel {
+        process: "discord".to_string(),
+        peak: 0.5,
+    }])]);
+    let server = tokio::spawn(run_with_monitor(args, true, None, Some(Box::new(monitor))));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut req = format!("ws://127.0.0.1:{port}/levels")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Origin", "http://localhost:30000".parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let _hello = ws.next().await.unwrap().unwrap();
+
+    let oversized: Vec<String> = (0..100).map(|i| format!("name{i}")).collect();
+    ws.send(TMessage::Text(
+        serde_json::json!({ "type": "watch", "names": oversized }).to_string(),
+    ))
+    .await
+    .unwrap();
+
+    // The oversized frame must be dropped: "discord" (the original watch list) keeps matching.
+    let mut saw_discord = false;
+    for _ in 0..10 {
+        let msg = ws.next().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+        if parsed["type"] == "levels"
+            && parsed["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["process"] == "discord")
+        {
+            saw_discord = true;
+            break;
+        }
+    }
+    assert!(
+        saw_discord,
+        "an oversized watch frame must be dropped, leaving the previous watch list in place"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn unlisted_origin_is_refused_before_the_hello_frame() {
     let port = free_port().await;
     let args = AudioMonitorArgs {

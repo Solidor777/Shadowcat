@@ -2,6 +2,7 @@
 //! the `hello`/`levels`/`watch` frame protocol, and the 10 Hz broadcast loop.
 
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -21,8 +22,25 @@ use crate::config::AudioMonitorArgs;
 /// How often the loop polls the backend and broadcasts a `levels` frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// Sets its shared flag to `true` on drop — the signal the OS polling thread's loop condition
+/// reads. See `run_with_monitor`'s `_shutdown_guard`.
+struct ShutdownGuard(Arc<AtomicBool>);
+
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
 /// Default watched-process substring when `--watch`/the live `watch` frame is empty.
 const DEFAULT_WATCH: &str = "discord";
+
+/// Caps on an untrusted `watch` frame's `names`, matching this codebase's other
+/// untrusted-input-size caps (dice notation, chat egress): a client cannot force this
+/// process's memory to grow unboundedly through a live-reconfigurable list.
+const MAX_WATCH_ENTRIES: usize = 64;
+/// Max characters per watch-list entry.
+const MAX_WATCH_ENTRY_CHARS: usize = 256;
 
 /// The `hello` frame — sent once, immediately after a connection is accepted.
 #[derive(Debug, Clone, Serialize)]
@@ -139,12 +157,20 @@ pub(super) async fn run_with_monitor(
 
     let latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>> =
         Arc::new(Mutex::new(Ok(Vec::new())));
+    // Signals the OS polling thread below to exit its loop. Held by `_shutdown_guard`, whose
+    // `Drop` sets it — that fires both on a normal return from this function AND when the
+    // enclosing tokio task is aborted (an aborted future's live locals are dropped in place),
+    // so an integration test calling `JoinHandle::abort()` cannot leak the thread.
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let _shutdown_guard = ShutdownGuard(shutdown.clone());
     if let Some(mut m) = monitor {
         let latest = latest.clone();
-        std::thread::spawn(move || loop {
-            let result = m.poll();
-            *latest.lock().expect("audio-monitor poll state poisoned") = result;
-            std::thread::sleep(POLL_INTERVAL);
+        std::thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                let result = m.poll();
+                *latest.lock().expect("audio-monitor poll state poisoned") = result;
+                std::thread::sleep(POLL_INTERVAL);
+            }
         });
     }
 
@@ -228,7 +254,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if let Ok(IncomingFrame::Watch { names }) = serde_json::from_str(text.as_str()) {
-                            *state.watch.lock().expect("audio-monitor watch list poisoned") = names;
+                            if let Some(names) = validate_watch_names(names) {
+                                *state.watch.lock().expect("audio-monitor watch list poisoned") = names;
+                            }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => return,
@@ -238,6 +266,22 @@ async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
             }
         }
     }
+}
+
+/// Rejects a `watch` frame's `names` outright when it exceeds `MAX_WATCH_ENTRIES` or any entry
+/// exceeds `MAX_WATCH_ENTRY_CHARS` — the same silent-drop shape this handler already uses for a
+/// malformed frame (the previous watch list is left in place rather than partially applied).
+fn validate_watch_names(names: Vec<String>) -> Option<Vec<String>> {
+    if names.len() > MAX_WATCH_ENTRIES {
+        return None;
+    }
+    if names
+        .iter()
+        .any(|n| n.chars().count() > MAX_WATCH_ENTRY_CHARS)
+    {
+        return None;
+    }
+    Some(names)
 }
 
 /// Serializes and sends one JSON text frame, mapping any send failure to `Err(())` so the
