@@ -1470,6 +1470,22 @@ export class WsClient {
   }
 
   /**
+   * Set (or clear) this connection's spatial-audio listening token. Fire-and-forget: sends
+   * `{"type":"audio_listen_as","token":...}` with no correlated reply; takes effect on the next
+   * `"audibility"` channel push.
+   * @param token The token to listen as, or `null` to clear the override.
+   * @example
+   * ```ts
+   * declare const client: WsClient;
+   * client.audioListenAs("tok-1");
+   * client.audioListenAs(null); // clears the override
+   * ```
+   */
+  audioListenAs(token: string | null): void {
+    this.send({ type: "audio_listen_as", token });
+  }
+
+  /**
    * Subscribe to broadcast MoveStream frames. Called for every recipient (mover + observers)
    * whenever a token's server-authoritative move completes. Returns an unsubscribe function.
    * Listeners survive reconnects; a caller that subscribes once keeps receiving across drops.

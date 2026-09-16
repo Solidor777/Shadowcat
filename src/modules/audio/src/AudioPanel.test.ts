@@ -73,6 +73,7 @@ function audioFixture(over: Partial<AudioApi> = {}): AudioApi {
     playOneShot: vi.fn(),
     serverNow: () => 10_000,
     transport: vi.fn(),
+    listenAs: vi.fn(),
     ...over,
   } as unknown as AudioApi;
 }
@@ -221,5 +222,46 @@ describe("AudioPanel", () => {
     // The Play and Open affordances are permission-independent for a GM.
     expect(screen.getByTestId("playlist-play")).toBeTruthy();
     expect(screen.getByTestId("playlist-open")).toBeTruthy();
+  });
+
+  it("the GM listen-as picker sends the selected token id, or null for follow-my-own", async () => {
+    const tokenDoc = (id: string, name: string | null, scene: string | null): WireDocument =>
+      ({
+        ...audioStateDoc([]),
+        id,
+        doc_type: "token",
+        name,
+        parent_id: scene,
+        engine: { x: 0, y: 0, w: 100, h: 100, rotation: 0 },
+      }) as WireDocument;
+    const listenAs = vi.fn();
+    const documents = storeWith(
+      tokenDoc("tok-1", "Fighter", "scene-1"),
+      tokenDoc("tok-2", null, "scene-1"),
+      tokenDoc("tok-9", "Elsewhere", "scene-2"),
+    );
+    const { unmount } = render(AudioPanel, {
+      context: setAppContextForTest({
+        role: "gm",
+        documents,
+        viewedSceneId: "scene-1",
+        audio: audioFixture({ listenAs }),
+      }),
+    });
+    const select = screen.getByTestId("audio-listen-as");
+    // Only the viewed scene's tokens are candidates (tok-9 of scene-2 is absent).
+    const values = Array.from(select.querySelectorAll("option")).map((o) => (o as HTMLOptionElement).value);
+    expect(values).toEqual(["", "tok-1", "tok-2"]);
+    await fireEvent.change(select, { target: { value: "tok-1" } });
+    expect(listenAs).toHaveBeenCalledWith("tok-1");
+    await fireEvent.change(select, { target: { value: "" } });
+    expect(listenAs).toHaveBeenCalledWith(null);
+    unmount();
+
+    // A player never sees the picker.
+    render(AudioPanel, {
+      context: setAppContextForTest({ role: "player", documents: storeWith(), audio: audioFixture() }),
+    });
+    expect(screen.queryByTestId("audio-listen-as")).toBeNull();
   });
 });

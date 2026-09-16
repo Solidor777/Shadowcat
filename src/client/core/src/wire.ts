@@ -1411,6 +1411,15 @@ export type WireResourceOp =
       value: number;
     };
 
+/** Client mirror of `ClientMsg::AudioListenAs`: set (or clear) this connection's
+ * spatial-audio listening token. Fire-and-forget — no correlated reply. */
+export interface WireAudioListenAs {
+  /** The frame's `type` discriminant. */
+  type: "audio_listen_as";
+  /** The token to listen as, or `null` to clear the override. */
+  token: string | null;
+}
+
 /** One audio-transport operation (`ClientMsg::AudioTransport.op`). Mirrors
  * `ws::protocol::AudioOp` exactly (a discriminated union on `type`). */
 export type WireAudioOp =
@@ -1874,7 +1883,8 @@ export type ClientMsg =
       type: "audio_transport";
       /** The transport operation to apply. */
       op: WireAudioOp;
-    };
+    }
+  | WireAudioListenAs;
 
 /**
  * Standalone Zod mirror of the `send_message` `ClientMsg` variant. `ClientMsg`

@@ -86,6 +86,8 @@ export interface StubAudioContext extends AudioContextLike {
   sources: BufferSourceNodeLike[];
   /** Every gain node the stub created, in creation order (spy targets). */
   gains: GainNodeLike[];
+  /** Every stereo panner the stub created, in creation order (spy targets). */
+  panners: PannerNodeLike[];
   /** Every media-element source the stub created, in creation order (spy targets). */
   mediaSources: MediaElementSourceNodeLike[];
 }
@@ -106,10 +108,12 @@ export function stubAudioContext(): StubAudioContext {
   let state: "suspended" | "running" | "closed" = "suspended";
   const sources: BufferSourceNodeLike[] = [];
   const gains: GainNodeLike[] = [];
+  const panners: PannerNodeLike[] = [];
   const mediaSources: MediaElementSourceNodeLike[] = [];
   return {
     sources,
     gains,
+    panners,
     mediaSources,
     /** The stub's running state (flips to `"running"` on `resume`).
      * @returns The state.
@@ -128,7 +132,11 @@ export function stubAudioContext(): StubAudioContext {
       gains.push(node);
       return node;
     },
-    createStereoPanner: stubPanner,
+    createStereoPanner: () => {
+      const node = stubPanner();
+      panners.push(node);
+      return node;
+    },
     createBufferSource: (): BufferSourceNodeLike => {
       const source: BufferSourceNodeLike = {
         buffer: null,

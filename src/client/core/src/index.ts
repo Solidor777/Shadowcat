@@ -145,6 +145,8 @@ export { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName,
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { parseFootprints, EMPTY_FOOTPRINTS } from "./footprints";
 export type { FootprintExtent, FootprintLookup } from "./footprints";
+export { parseAudibility, sceneAudibility, EMPTY_AUDIBILITY, EMPTY_SCENE_AUDIBILITY } from "./audibility";
+export type { AudibleEmitter, AudibilityPayload, SceneAudibility } from "./audibility";
 export { COMBAT_SERVICE, CombatController, CombatClientError } from "./combat";
 export type {
   CombatApi,

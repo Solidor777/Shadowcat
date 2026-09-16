@@ -1912,4 +1912,113 @@ describe("WorldSession.audio", () => {
     expect(applyState).toHaveBeenCalledWith({ playing: [], shuffleSeed: 0 });
     session.leave();
   });
+
+  /** A minimal scene document for the audibility tests (`resolveViewedScene`'s first-scene
+   * fallback picks the seeded order's first). */
+  function sceneDoc(id: string) {
+    return {
+      ...buildWorldSettingsDoc("w1", {}),
+      id,
+      doc_type: "scene",
+      name: null,
+      engine: { grid: { kind: "square", size: 100 }, background: null },
+    };
+  }
+
+  /** A two-scene audibility payload: each scene carries exactly one emitter naming the scene. */
+  function twoScenePayload() {
+    return {
+      scenes: [
+        {
+          scene: "scene-1",
+          listener: "tok-1",
+          spatial: true,
+          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+        },
+        {
+          scene: "scene-2",
+          listener: "tok-2",
+          spatial: true,
+          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+        },
+      ],
+    };
+  }
+
+  test("an audibility frame drives applyAudibility with ONLY the viewed scene's slice", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyAudibility = vi.spyOn(AudioEngine.prototype, "applyAudibility").mockImplementation(() => {});
+    const sent: Array<Record<string, unknown>> = [];
+    const { connect, push } = pushConnect(sent);
+    const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+    await session.enter("w1");
+    push(welcomeFrame);
+    await vi.waitFor(() => expect(session.role).toBe("player"));
+    session.documents.seedDocuments([sceneDoc("scene-1") as never, sceneDoc("scene-2") as never]);
+    await vi.waitFor(() => expect(session.viewedSceneId).toBe("scene-1"));
+
+    const req = await vi.waitFor(() => {
+      const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "audibility");
+      expect(m).toBeDefined();
+      return m!;
+    });
+    push({
+      type: "scene_derived",
+      request_id: req.request_id,
+      channel: "audibility",
+      computed_at_seq: 0,
+      payload: twoScenePayload(),
+    });
+    await vi.waitFor(() =>
+      expect(applyAudibility).toHaveBeenCalledWith({
+        scene: "scene-1",
+        listener: "tok-1",
+        spatial: true,
+        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+      }),
+    );
+    expect(applyAudibility).not.toHaveBeenCalledWith(
+      expect.objectContaining({ scene: "scene-2" }),
+      "the OTHER scene's slice never reaches the engine while scene-1 is viewed",
+    );
+    session.leave();
+  });
+
+  test("setGmViewedScene immediately re-applies the roamed-to scene's cached slice", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyAudibility = vi.spyOn(AudioEngine.prototype, "applyAudibility").mockImplementation(() => {});
+    const sent: Array<Record<string, unknown>> = [];
+    const { connect, push } = pushConnect(sent);
+    const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+    await session.enter("w1");
+    push({ ...welcomeFrame, user_role: "gm" });
+    await vi.waitFor(() => expect(session.role).toBe("gm"));
+    session.documents.seedDocuments([sceneDoc("scene-1") as never, sceneDoc("scene-2") as never]);
+    await vi.waitFor(() => expect(session.viewedSceneId).toBe("scene-1"));
+
+    const req = await vi.waitFor(() => {
+      const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "audibility");
+      expect(m).toBeDefined();
+      return m!;
+    });
+    push({
+      type: "scene_derived",
+      request_id: req.request_id,
+      channel: "audibility",
+      computed_at_seq: 0,
+      payload: twoScenePayload(),
+    });
+    await vi.waitFor(() => expect(applyAudibility).toHaveBeenCalledWith(expect.objectContaining({ scene: "scene-1" })));
+
+    // The roam: scene-2's slice applies AT ONCE from the cached payload — no new server frame.
+    applyAudibility.mockClear();
+    session.setGmViewedScene("scene-2");
+    expect(applyAudibility).toHaveBeenCalledWith({
+      scene: "scene-2",
+      listener: "tok-2",
+      spatial: true,
+      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+    });
+    session.leave();
+  });
 });

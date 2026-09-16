@@ -89,6 +89,13 @@
 
   const canCreate = $derived(ctx.canCreate(PLAYLIST_DOC_TYPE));
   const isGm = $derived(ctx.role === "gm");
+  // The GM listen-as picker's candidates: every token of the viewed scene (the
+  // reactive-subscription bridge every other derived read in this panel uses).
+  const sceneTokens = $derived.by((): WireDocument[] => {
+    subscribe();
+    const scene = ctx.viewedSceneId;
+    return ctx.documents.query("token").filter((d) => d.parent_id === scene);
+  });
 
   /** The entry's current position in seconds (frozen at `pausedAt` when paused), clamped
    * non-negative.
@@ -211,8 +218,23 @@
     </div>
   {/each}
 
-  <h3>{t("audio.nowPlaying")}</h3>
-  <ul class="now-playing">
+  {#if isGm}
+    <label>
+      {t("audio.listenAs")}
+      <select
+        data-testid="audio-listen-as"
+        aria-label={t("audio.listenAs")}
+        onchange={(e) => ctx.audio.listenAs((e.currentTarget as HTMLSelectElement).value || null)}
+      >
+        <option value="">{t("audio.listenAsOwn")}</option>
+        {#each sceneTokens as tok (tok.id)}
+          <option value={tok.id}>{tok.name ?? tok.id}</option>
+        {/each}
+      </select>
+    </label>
+  {/if}
+
+  <h3>{t("audio.nowPlaying")}</h3>  <ul class="now-playing">
     {#each audioState?.playing ?? [] as p (p.id)}
       <li data-testid="playing-row" data-playing-id={p.id}>
         <span class="playing-name">{displayName(p)}</span>

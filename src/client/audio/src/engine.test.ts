@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { AssetResolver, type AudioStateEngine, type PlayingTrack } from "@shadowcat/core";
+import { AssetResolver, type AudioStateEngine, type PlayingTrack, type SceneAudibility } from "@shadowcat/core";
 import { AudioEngine, type AudioEngineOpts } from "./engine";
 import { setMediaElementFactory } from "./track-player";
 import { stubAudioContext, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
@@ -249,5 +249,89 @@ describe("AudioEngine", () => {
     expect(created[0].src).toContain("variant=opus");
     expect(created[0].volume).toBeCloseTo(0.5);
     expect(created[0].loop).toBe(false);
+  });
+
+  it("applyAudibility diffs emitters by token id: create, keep, remove", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
+    const engine = new AudioEngine(makeOpts());
+    await engine.unlock();
+    const slice = (...tokens: string[]): SceneAudibility => ({
+      scene: "s1",
+      listener: "tok-listener",
+      spatial: true,
+      emitters: tokens.map((token) => ({ token, asset: "a-wind", gain: 0.5, pan: 0.2, loop: true })),
+    });
+    engine.applyAudibility(slice("a", "b"));
+    engine.applyAudibility(slice("b", "c"));
+    engine.applyAudibility(slice());
+  });
+
+  it("applyAudibility is queued until unlock, then replays", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
+    const ctx = stubAudioContext();
+    const engine = new AudioEngine(makeOpts({ createContext: () => ctx }));
+    engine.applyAudibility({
+      scene: "s1",
+      listener: "tok-listener",
+      spatial: true,
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+    });
+    expect(ctx.sources).toHaveLength(0);
+    await engine.unlock();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ctx.sources, "the queued slice produced exactly one live emitter").toHaveLength(1);
+  });
+
+  it("the local spatial() override composes with payload.spatial via AND, never touching gain", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(wavBytes()));
+    const ctx = stubAudioContext();
+    const engine = new AudioEngine(makeOpts({ createContext: () => ctx, spatial: () => false }));
+    await engine.unlock();
+    engine.applyAudibility({
+      scene: "s1",
+      listener: "tok-listener",
+      spatial: true,
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.9, loop: true }],
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ctx.panners[0].pan.value, "the local opt-out centers panning").toBe(0);
+    expect(ctx.gains[ctx.gains.length - 1].gain.value, "gain is never second-guessed").toBe(0.5);
+  });
+
+  it("in the degraded mode, emitters play through bare elements with loop and composed volume", async () => {
+    const created: ReturnType<typeof stubMediaElement>[] = [];
+    setMediaElementFactory(() => {
+      const el = stubMediaElement();
+      created.push(el);
+      return el;
+    });
+    const engine = new AudioEngine(
+      makeOpts({
+        createContext: () => {
+          throw new TypeError("undefined is not a constructor");
+        },
+      }),
+    );
+    await engine.unlock();
+    engine.applyAudibility({
+      scene: "s1",
+      listener: "tok-listener",
+      spatial: true,
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: 0.5, pan: 0.9, loop: true }],
+    });
+    expect(created).toHaveLength(1);
+    expect(created[0].loop).toBe(true);
+    expect(created[0].volume).toBeCloseTo(0.5);
+    engine.setChannel("sfx", { muted: true });
+    expect(created[0].volume, "a bus mute zeroes the degraded emitter immediately").toBe(0);
+    // Removal pauses the element.
+    engine.applyAudibility({ scene: "s1", listener: null, spatial: true, emitters: [] });
+    engine.applyAudibility({
+      scene: "s1",
+      listener: null,
+      spatial: true,
+      emitters: [{ token: "tok-2", asset: "a-rain", gain: 1, pan: 0, loop: false }],
+    });
+    expect(created).toHaveLength(2);
   });
 });

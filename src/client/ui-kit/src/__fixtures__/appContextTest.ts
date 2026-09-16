@@ -118,6 +118,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       playOneShot: () => {},
       serverNow: () => 0,
       transport: () => {},
+      listenAs: () => {},
     },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     viewedSceneId: over.viewedSceneId ?? null,

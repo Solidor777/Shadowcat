@@ -103,4 +103,12 @@ export interface AudioApi {
    * `onAudioError`.
    * @param op The transport operation to apply. */
   transport(op: WireAudioOp): void;
+  /** GM-only: set (or clear) this device's spatial-audio listening token — a preview seam
+   * independent of any token this connection owns (`ClientMsg::AudioListenAs`). Fire-and-forget,
+   * no correlated reply (mirrors `transport`'s own contract): takes effect on the next
+   * `"audibility"` channel push. A non-GM caller is a no-op server-side (the frame is simply
+   * ignored — `AudioListenAs` carries no refusal path since it can never disclose anything a
+   * GM does not already see).
+   * @param token The token to listen as, or `null` to clear the override. */
+  listenAs(token: string | null): void;
 }

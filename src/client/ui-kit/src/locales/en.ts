@@ -712,6 +712,8 @@ export const en: Messages = {
   "audio.play": "Play",
   "audio.delete": "Delete",
   "audio.open": "Open",
+  "audio.listenAs": "Listen as",
+  "audio.listenAsOwn": "Follow my own token",
   "sheetPlaylist.name": "Name",
   "sheetPlaylist.mode": "Playback mode",
   "sheetPlaylist.modeSequential": "Play once, in order",

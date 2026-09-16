@@ -6,14 +6,28 @@ import type {
   AudioStateEngine,
   DuckController,
   PlayingTrack,
+  SceneAudibility,
   WireAudioOp,
 } from "@shadowcat/core";
-import type { AudioContextLike, GainNodeLike, WasmOpusDecoderLike } from "./context";
+import type { AudioContextLike, GainNodeLike, MediaElementLike, WasmOpusDecoderLike } from "./context";
 import { DEFAULT_DUCK_DEPTH, DuckControllerImpl } from "./duck-controller";
+import { EmitterPlayer } from "./emitter-player";
 import { FallbackTrackPlayer } from "./fallback-player";
 import { OneShotPlayer } from "./one-shot-player";
 import { createMediaElement, pickStreamSrc, TrackPlayer } from "./track-player";
 import { createOggOpusDecoder } from "./wasm";
+
+/** A degraded-mode carried emitter's playback state (`AudioEngine.#fallbackEmitters`): the bare
+ * element, the asset it currently plays (the restart key), and the server's resolved gain from
+ * the latest audibility frame (recomposed with the live channel state on every `setChannel`). */
+interface FallbackEmitter {
+  /** The bare element (the ONLY playback object — there is no graph). */
+  el: MediaElementLike;
+  /** The asset the element currently plays. */
+  asset: string;
+  /** The server's resolved emitter gain from the latest audibility frame. */
+  gain: number;
+}
 
 /** Channels every `AudioEngine` mixer graph carries (server-known three plus the two
  * client-only buses `AudioApi.channels` exposes device volume/mute for). */
@@ -44,6 +58,15 @@ export interface AudioEngineOpts {
    * document's own `fadeMs`, looked up by the caller (this package never touches the
    * document store). `0`/absent = hard cut. */
   fadeMsFor?: (playlistId: string | null) => number;
+  /** Sets (or clears) the connection's spatial-audio listening override — connection state the
+   * shell forwards to `WsClient.audioListenAs`, injected for the same reason `transport` is
+   * (this framework-neutral package never references `WsClient` directly). Optional: a host
+   * with no listen-as surface leaves it unset and `AudioEngine.listenAs` is a no-op. */
+  listenAs?: (token: string | null) => void;
+  /** Local device override for spatial rendering — the performance-settings seam
+   * (`ctx.performance.current.spatialAudio`). Defaults to always-on when omitted, so every
+   * environment without that wiring renders full spatial panning unconditionally. */
+  spatial?: () => boolean;
   /** Starting duck depth, `0..=1` — seeded from this device's persisted audio mirror by the
    * caller; defaults to `DEFAULT_DUCK_DEPTH` when the caller has no persisted value. */
   duckDepth?: number;
@@ -76,11 +99,18 @@ export class AudioEngine implements AudioApi {
   #oneShot: OneShotPlayer | null = null;
   /** Live track players, by `PlayingTrack.id`. */
   #trackPlayers = new Map<string, TrackPlayer>();
+  /** Live carried-emitter players, by emitter token id (`applyAudibility`'s diff key). */
+  #emitterPlayers = new Map<string, EmitterPlayer>();
+  /** Pending audibility slice to apply once `unlock()` completes — same rationale as
+   * `#pendingState`. */
+  #pendingAudibility: SceneAudibility | null = null;
   /** True once `unlock()` found no Web Audio API at all — every playback path then degrades
    * to bare `<audio>` elements (`FallbackTrackPlayer` / a fire-and-forget one-shot element). */
   #noWebAudio = false;
   /** Live degraded players (`#noWebAudio` mode only), by `PlayingTrack.id`. */
   #fallbackPlayers = new Map<string, FallbackTrackPlayer>();
+  /** Live degraded carried emitters (`#noWebAudio` mode only), by emitter token id. */
+  #fallbackEmitters = new Map<string, FallbackEmitter>();
   /** Pending state to apply once `unlock()` completes — Web Audio node creation before a
    * context exists is impossible, so a `PlayingTrack` set arriving before unlock is tracked
    * here and replayed by `unlock()`'s own tail. */
@@ -141,6 +171,18 @@ export class AudioEngine implements AudioApi {
     this.#opts.transport(op);
   }
 
+  /** Set (or clear) the spatial-audio listening override (thin forwarder to
+   * `AudioEngineOpts.listenAs`; a no-op when the host wired none).
+   * @param token The token to listen as, or `null` to clear the override.
+   * @example
+   * ```ts
+   * // implements `AudioApi.listenAs` — see that interface's own doc
+   * ```
+   */
+  listenAs(token: string | null): void {
+    this.#opts.listenAs?.(token);
+  }
+
   /** Adjust one channel's device gain and/or mute state; omitted fields are unchanged. A live
    * channel node follows immediately (muted ⇒ gain 0).
    * @param id The channel to adjust.
@@ -165,9 +207,12 @@ export class AudioEngine implements AudioApi {
       node.gain.value = this.#channelState[id].muted ? 0 : this.#channelState[id].gain;
     }
     if (this.#noWebAudio) {
-      // Degraded players have no gain node — their element volume recomputes now, not on the
-      // next sync tick.
+      // Degraded players and emitters have no gain node — their element volume recomputes now,
+      // not on the next sync tick.
       for (const player of this.#fallbackPlayers.values()) player.applyChannelGain();
+      for (const entry of this.#fallbackEmitters.values()) {
+        entry.el.volume = this.#degradedVolume("sfx", entry.gain);
+      }
     }
   }
 
@@ -235,6 +280,10 @@ export class AudioEngine implements AudioApi {
       this.applyState(this.#pendingState);
       this.#pendingState = null;
     }
+    if (this.#pendingAudibility) {
+      this.applyAudibility(this.#pendingAudibility);
+      this.#pendingAudibility = null;
+    }
     this.#startDuckLoop();
   }
 
@@ -280,10 +329,7 @@ export class AudioEngine implements AudioApi {
       // device (no graph, no LRU — nothing tracks the element after `play()`).
       const el = createMediaElement();
       el.src = pickStreamSrc(el, this.#opts.resolver.audioUrl(asset));
-      const channel = this.#channelState[opts?.channel ?? "sfx"];
-      const master = this.#channelState.master;
-      el.volume =
-        channel.muted || master.muted ? 0 : Math.min(1, (opts?.gain ?? 1) * channel.gain * master.gain);
+      el.volume = this.#degradedVolume(opts?.channel ?? "sfx", opts?.gain ?? 1);
       void el.play();
       return;
     }
@@ -394,6 +440,105 @@ export class AudioEngine implements AudioApi {
     }
   }
 
+  /** Diff `payload.emitters` by token id against the live `EmitterPlayer` set: create/sync/
+   * dispose exactly like `applyState`'s own `TrackPlayer` diff. No-ops (tracks the payload for
+   * replay) until `unlock()` has run. Takes ONE scene's already-filtered slice — the caller
+   * picks it out of the full multi-scene `AudibilityPayload` via `sceneAudibility`.
+   *
+   * The LOCAL `spatial()` override (a device-performance opt-out, distinct from the SERVER's
+   * own world-level `payload.spatial` overlay) affects panning ONLY, never gain: disabling
+   * panning is a CPU/accessibility choice (mono mixdown), while `payload.gain` already folds in
+   * the server's own distance falloff as a plain volume decision no client should second-guess
+   * by trying to reconstruct an un-attenuated volume it was never sent.
+   * @param payload The viewed scene's current `"audibility"` slice.
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s applyAudibility diff cases
+   * ```
+   */
+  applyAudibility(payload: SceneAudibility): void {
+    if (this.#noWebAudio) {
+      this.#applyAudibilityFallback(payload);
+      return;
+    }
+    if (!this.#context) {
+      this.#pendingAudibility = payload;
+      return;
+    }
+    const spatialOverride = payload.spatial && (this.#opts.spatial?.() ?? true);
+    const seen = new Set<string>();
+    for (const emitter of payload.emitters) {
+      seen.add(emitter.token);
+      let player = this.#emitterPlayers.get(emitter.token);
+      if (!player) {
+        player = new EmitterPlayer(this.#context, this.#oneShot!, this.#channelNodes.get("sfx")!);
+        this.#emitterPlayers.set(emitter.token, player);
+      }
+      void player.sync(emitter, spatialOverride);
+    }
+    for (const [token, player] of this.#emitterPlayers) {
+      if (!seen.has(token)) {
+        player.dispose();
+        this.#emitterPlayers.delete(token);
+      }
+    }
+  }
+
+  /** The degraded-mode `applyAudibility` arm: each emitter plays through a bare element —
+   * `loop` from the emission (the element-seam hiccup, accepted), the server's resolved gain
+   * composed with the live sfx/master buses on the element's `volume` (panning does not exist
+   * without a graph, so there is nothing to center).
+   * @param payload The viewed scene's current `"audibility"` slice.
+   * @example
+   * ```
+   * // private arm; exercised through `engine.test.ts`'s degraded-mode cases
+   * ```
+   */
+  #applyAudibilityFallback(payload: SceneAudibility): void {
+    const seen = new Set<string>();
+    for (const emitter of payload.emitters) {
+      seen.add(emitter.token);
+      let entry = this.#fallbackEmitters.get(emitter.token);
+      if (!entry) {
+        const el = createMediaElement();
+        el.src = pickStreamSrc(el, this.#opts.resolver.audioUrl(emitter.asset));
+        el.loop = emitter.loop;
+        entry = { el, asset: emitter.asset, gain: emitter.gain };
+        this.#fallbackEmitters.set(emitter.token, entry);
+      } else if (entry.asset !== emitter.asset) {
+        entry.el.src = pickStreamSrc(entry.el, this.#opts.resolver.audioUrl(emitter.asset));
+        entry.el.loop = emitter.loop;
+        entry.asset = emitter.asset;
+      }
+      entry.gain = emitter.gain;
+      entry.el.volume = this.#degradedVolume("sfx", emitter.gain);
+      void entry.el.play();
+    }
+    for (const [token, entry] of this.#fallbackEmitters) {
+      if (!seen.has(token)) {
+        entry.el.pause();
+        this.#fallbackEmitters.delete(token);
+      }
+    }
+  }
+
+  /** The degraded-mode volume product: `gain` × channel bus × master bus, any mute zeroing it,
+   * clamped to the element's 0..=1 range (shared by `FallbackTrackPlayer`'s one-shot path and
+   * `#applyAudibilityFallback`).
+   * @param id The channel bus to compose.
+   * @param gain The per-source gain (entry gain, one-shot gain, or emitter gain).
+   * @returns The element volume.
+   * @example
+   * ```
+   * // private helper; exercised through `engine.test.ts`'s degraded-mode cases
+   * ```
+   */
+  #degradedVolume(id: AudioChannelId, gain: number): number {
+    const channel = this.#channelState[id];
+    const master = this.#channelState.master;
+    return channel.muted || master.muted ? 0 : Math.min(1, gain * channel.gain * master.gain);
+  }
+
   /** Release every node, player, and the duck-loop `raf` handle; the `AudioContext` itself is
    * left to the shell (one `AudioEngine` per world session — the context's own lifecycle is the
    * shell's, not this class's, since `unlock()` may be called again on rejoin).
@@ -405,8 +550,12 @@ export class AudioEngine implements AudioApi {
   dispose(): void {
     for (const player of this.#trackPlayers.values()) player.dispose();
     this.#trackPlayers.clear();
+    for (const player of this.#emitterPlayers.values()) player.dispose();
+    this.#emitterPlayers.clear();
     for (const player of this.#fallbackPlayers.values()) player.dispose();
     this.#fallbackPlayers.clear();
+    for (const entry of this.#fallbackEmitters.values()) entry.el.pause();
+    this.#fallbackEmitters.clear();
     if (this.#duckLoopHandle !== null) {
       this.#opts.caf(this.#duckLoopHandle);
       this.#duckLoopHandle = null;

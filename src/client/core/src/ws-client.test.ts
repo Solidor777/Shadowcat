@@ -1623,4 +1623,18 @@ describe("WsClient", () => {
       JSON.stringify({ type: "audio_transport", op: { type: "stop_all" } }),
     );
   });
+
+  it("audioListenAs sends the fire-and-forget audio_listen_as frame (null clears)", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    client.audioListenAs("tok-1");
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({ type: "audio_listen_as", token: "tok-1" });
+    client.audioListenAs(null);
+    expect(sent.map((s) => JSON.parse(s))).toContainEqual({ type: "audio_listen_as", token: null });
+  });
 });

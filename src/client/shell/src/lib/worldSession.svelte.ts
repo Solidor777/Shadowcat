@@ -20,6 +20,10 @@ import {
   parseFootprints,
   EMPTY_FOOTPRINTS,
   type FootprintLookup,
+  parseAudibility,
+  sceneAudibility,
+  EMPTY_AUDIBILITY,
+  type AudibilityPayload,
   CombatController,
   defineCombatHooks,
   CombatHookEmitter,
@@ -266,6 +270,14 @@ export class WorldSession {
   /** Handle for the session-owned `"combat"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #combatSub: SceneSubscription | null = null;
+  /** Handle for the session-owned `"audibility"` subscription; dropped in `leave()` so a
+   * second `enter()` does not stack a duplicate record. */
+  #audibilitySub: SceneSubscription | null = null;
+  /** The full multi-scene payload from the latest `"audibility"` frame — cached (not just
+   * forwarded) so `setGmViewedScene` can re-derive and re-apply the newly-viewed scene's slice
+   * immediately on a roam, without waiting for the next server push (the SAME reason
+   * `#footprints` caches its own multi-scene lookup rather than discarding it after use). */
+  #audibilityPayload: AudibilityPayload = EMPTY_AUDIBILITY;
   /** userId → username for the world's members, fetched on every role's Welcome
    * (chat author/whisper-recipient name resolution; the GM additionally uses it
    * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
@@ -331,10 +343,11 @@ export class WorldSession {
   }
 
   /** The per-device audio seam (`AppContext.audio`). `AudioEngine` implements `AudioApi`
-   * directly for everything but `setChannel` and `duck.setDepth`: those two additionally
-   * persist to this device's `shadowcat.audio` mirror — a `localStorage` dependency
-   * `AudioEngine` itself deliberately does not have, staying framework/platform-neutral —
-   * so this getter wraps exactly those two surfaces.
+   * directly for everything but `setChannel`/`duck.setDepth`: those two additionally persist to
+   * this device's `shadowcat.audio` mirror — a `localStorage` dependency `AudioEngine` itself
+   * deliberately does not have, staying framework/platform-neutral — so this getter wraps
+   * exactly those two surfaces. (`listenAs`, like `transport`, is the engine's own forwarder to
+   * the `AudioEngineOpts` seam this session wires to `WsClient`.)
    * @returns The audio API the shell publishes on `AppContext.audio`. */
   get audio(): AudioApi {
     const engine = this.#audioEngine;
@@ -371,6 +384,7 @@ export class WorldSession {
       playOneShot: (asset, opts) => engine.playOneShot(asset, opts),
       serverNow: () => engine.serverNow(),
       transport: (op) => engine.transport(op),
+      listenAs: (token) => engine.listenAs(token),
     };
   }
 
@@ -394,6 +408,9 @@ export class WorldSession {
     this.#gmViewedScene = id;
     const entering = this.viewedSceneId;
     this.tokenSelection.set(entering ? (this.#tokenSelectionByScene.get(entering) ?? []) : []);
+    // A roam carries no new server frame: re-apply the newly-viewed scene's slice from the
+    // already-cached multi-scene payload immediately, rather than waiting for the next push.
+    this.#audioEngine.applyAudibility(sceneAudibility(this.#audibilityPayload, entering));
   }
 
   /** Live full-text search over documents (subscription seam). Ephemeral: NOT re-established
@@ -622,6 +639,7 @@ export class WorldSession {
       resolver: this.assets,
       serverNow: () => this.#ws?.serverNow() ?? 0,
       transport: (op) => this.#ws?.audioTransport(op),
+      listenAs: (token) => this.#ws?.audioListenAs(token),
       createContext: createDeviceAudioContext,
       onTrackEnded: (id) => this.#ws?.audioTransport({ type: "track_ended", id }),
       fadeMsFor: (playlistId) => {
@@ -1259,6 +1277,12 @@ export class WorldSession {
     this.#combatSub = this.subscribeScene("combat", (f) => {
       this.#combat.setResolved(parseCombats(f.payload, this.#logger));
     });
+    // Same lifecycle as `#combatSub`: server-resolved spatial audio, never client-derived
+    // geometry — `AudioEngine.applyAudibility` performs no falloff/occlusion math of its own.
+    this.#audibilitySub = this.subscribeScene("audibility", (f) => {
+      this.#audibilityPayload = parseAudibility(f.payload);
+      this.#audioEngine.applyAudibility(sceneAudibility(this.#audibilityPayload, this.viewedSceneId));
+    });
     // The audio-state singleton drives the device mixer: every authoritative change (this
     // world's own transport echoes included) reconciles the live TrackPlayer set. Plain
     // store-level subscription (this class is not a Svelte component), applied once
@@ -1652,6 +1676,9 @@ export class WorldSession {
     this.#combatSub?.unsubscribe();
     this.#combatSub = null;
     this.#combat.setResolved(EMPTY_COMBATS);
+    this.#audibilitySub?.unsubscribe();
+    this.#audibilitySub = null;
+    this.#audibilityPayload = EMPTY_AUDIBILITY;
     this.#audioUnsub?.();
     this.#audioUnsub = null;
     this.#audioEngine.dispose();
