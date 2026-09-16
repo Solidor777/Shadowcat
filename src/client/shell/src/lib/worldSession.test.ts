@@ -2006,6 +2006,32 @@ describe("WorldSession.audio", () => {
     session.leave();
   });
 
+  test("the AudioEngine's spatial opt reads the shared performanceController's spatialAudio setting", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const { performanceController } = await import("@shadowcat/ui-kit");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      // Constructed once, in `WorldSession`'s own constructor — no `enter()`/`leave()` needed
+      // (and `leave()` is deliberately not called: spying on the constructor breaks its `new`
+      // semantics for the produced instance, which is irrelevant here — only the captured
+      // construction options are under test).
+      audioSession();
+      expect(ctorSpy).toHaveBeenCalledTimes(1);
+      const opts = ctorSpy.mock.calls[0][0];
+      const base = performanceController.current;
+      performanceController.set({ ...base, spatialAudio: false });
+      expect(opts.spatial?.()).toBe(false);
+      performanceController.set({ ...base, spatialAudio: true });
+      expect(opts.spatial?.()).toBe(true);
+    } finally {
+      // The spy replaces the module's `AudioEngine` export itself (not a prototype method),
+      // so every later test in this file constructing a `WorldSession` needs the real class
+      // restored — unlike the sibling `AudioEngine.prototype.*` spies below, which restore
+      // via the shared `afterEach`.
+      ctorSpy.mockRestore();
+    }
+  });
+
   test("an audio-state document-store update drives AudioEngine.applyState", async () => {
     const { AudioEngine } = await import("@shadowcat/audio");
     const applyState = vi.spyOn(AudioEngine.prototype, "applyState").mockImplementation(() => {});

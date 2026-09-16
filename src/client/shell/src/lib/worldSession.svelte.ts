@@ -66,7 +66,7 @@ import {
   type AudioStateEngine,
 } from "@shadowcat/core";
 import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
-import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
@@ -672,6 +672,7 @@ export class WorldSession {
       duckDepth: mirror?.duckDepth ?? DEFAULT_DUCK_DEPTH,
       raf: (cb) => requestAnimationFrame(cb),
       caf: (handle) => cancelAnimationFrame(handle),
+      spatial: () => performanceController.current.spatialAudio,
     });
     setMediaElementFactory(() => document.createElement("audio"));
     if (mirror) {
