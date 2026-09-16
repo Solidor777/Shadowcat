@@ -159,4 +159,30 @@ describe("SceneBrowserPanel", () => {
 
     expect(queryAllByRole("button", { name: "bg.png" })).toHaveLength(0);
   });
+
+  it("opening the levels editor and adding a level dispatches an Update on /engine/levels with the new row alongside any pre-existing ones", async () => {
+    const store = new DocumentStore();
+    store.applyCommand({
+      seq: 1,
+      world_id: "w1",
+      author: "u",
+      ts: 0,
+      ops: [{ op: "create", doc: buildSceneDoc("w1", { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }] }, "sA") }],
+    });
+    const sent: unknown[] = [];
+    const context = setAppContextForTest({ documents: store, store, role: "gm", dispatchIntent: (ops) => sent.push(ops) });
+    const { getAllByRole } = render(SceneBrowserPanel, { context });
+
+    await fireEvent.click(getAllByRole("button", { name: "levels.editorTitle" })[0]);
+    await fireEvent.click(getAllByRole("button", { name: "levels.addLevel" })[0]);
+
+    const op = (sent[0] as { op: string; doc_id: string; changes: { path: string; old: unknown; new: unknown }[] }[])[0];
+    expect(op.op).toBe("update");
+    expect(op.changes[0].path).toBe("/engine/levels");
+    expect(op.changes[0].old).toEqual([{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }]);
+    const newLevels = op.changes[0].new as { id: string; name: string; bottom: number; top: number; background: null }[];
+    expect(newLevels).toHaveLength(2);
+    expect(newLevels[0]).toEqual({ id: "l1", name: "Ground", bottom: 0, top: 10, background: null });
+    expect(newLevels[1]).toMatchObject({ bottom: 0, top: 10, background: null });
+  });
 });

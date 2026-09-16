@@ -684,4 +684,12 @@ export const en: Messages = {
   "tables.delete": "Delete",
   "tables.empty": "No tables yet.",
   "levels.switcher": "Floor",
+  "levels.editorTitle": "Levels",
+  "levels.addLevel": "Add level",
+  "levels.removeLevel": "Remove",
+  "levels.name": "Level name",
+  "levels.bottom": "Bottom",
+  "levels.top": "Top",
+  "levels.background": "Background",
+  "levels.backgroundClear": "Clear background",
 };

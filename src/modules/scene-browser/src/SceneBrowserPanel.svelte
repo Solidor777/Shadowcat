@@ -1,8 +1,9 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext } from "@shadowcat/ui-kit";
-  import { buildSceneDoc, listAssets, buildUpdate, type WireDocument, type WorldSettingsEngine, type SceneEngine } from "@shadowcat/core";
+  import { buildSceneDoc, listAssets, buildUpdate, type WireDocument, type WorldSettingsEngine, type SceneEngine, type SceneLevel } from "@shadowcat/core";
   import type { Asset } from "@shadowcat/types";
+  import LevelsEditor from "./LevelsEditor.svelte";
 
   const ctx = getAppContext();
   const t = ctx.t;
@@ -33,6 +34,8 @@
 
   /** The scene id whose background picker is currently open, or `null` when none is. */
   let pickerOpenFor = $state<string | null>(null);
+  /** The scene id whose levels editor is currently open, or `null` when none is. */
+  let levelsEditorFor = $state<string | null>(null);
 
   // Reactive bridge (mandatory): register a dependency on the doc store so the list re-renders on
   // create/activate and the viewed/active badges track edits.
@@ -70,6 +73,39 @@
    */
   function bgOf(scene: WireDocument): string | null {
     return (scene.engine as SceneEngine | undefined)?.background ?? null;
+  }
+
+  /**
+   * The scene's authored floors, if any — feeds `LevelsEditor`'s `levels` prop.
+   * @param scene The scene document to read `engine.levels` from.
+   * @returns The declared levels, or an empty array if the scene has none.
+   * @example
+   * ```
+   * declare const sceneDoc: WireDocument;
+   * // private helper; not part of the public API
+   * levelsOf(sceneDoc);
+   * ```
+   */
+  function levelsOf(scene: WireDocument): SceneLevel[] {
+    return (scene.engine as SceneEngine | undefined)?.levels ?? [];
+  }
+
+  /**
+   * Writes a scene's whole `engine.levels` array, OCC-dispatched with the RAW current stored
+   * value as `old` — mirrors `setBackground`'s convention.
+   * @param scene The scene document to update.
+   * @param next The whole updated levels array (see `LevelsEditor.onCommit`).
+   * @returns Nothing; dispatches an intent as a side effect.
+   * @example
+   * ```
+   * declare const scene: WireDocument;
+   * declare const next: SceneLevel[];
+   * // private helper; not part of the public API — invoked from LevelsEditor.onCommit
+   * setLevels(scene, next);
+   * ```
+   */
+  function setLevels(scene: WireDocument, next: SceneLevel[]): void {
+    ctx.dispatchIntent([buildUpdate(scene.id, [{ path: "/engine/levels", old: levelsOf(scene), value: next }])]);
   }
 
   /**
@@ -212,7 +248,17 @@
           <button type="button" onclick={() => activate(scene.id)} disabled={!ws || scene.id === activeSceneId}>{t("sceneBrowser.activate")}</button>
           <button type="button" onclick={() => view(scene.id)}>{t("sceneBrowser.view")}</button>
           <button type="button" onclick={() => configure(scene.id)}>{t("sceneBrowser.configure")}</button>
+          <button
+            type="button"
+            data-testid="levels-toggle"
+            onclick={() => (levelsEditorFor = levelsEditorFor === scene.id ? null : scene.id)}
+          >
+            {t("levels.editorTitle")}
+          </button>
         </div>
+        {#if levelsEditorFor === scene.id}
+          <LevelsEditor levels={levelsOf(scene)} onCommit={(next) => setLevels(scene, next)} />
+        {/if}
       </li>
     {/each}
   </ul>
