@@ -28,6 +28,13 @@ test("holding the bound push-to-duck key drops the audio panel's duck gain, rele
 }) => {
   await enterFreshWorld(page, "Ducking World", account);
 
+  // Unlocks this device's `AudioContext` from the click gesture (`StatusBar`'s `audio-unlock`
+  // control) — `AudioEngine.unlock()` is what starts the duck-gain smoothing loop
+  // (`AudioEngine.#startDuckLoop`, driven off `requestAnimationFrame`); before it runs,
+  // `DuckControllerImpl.tick()` is never called and `duck.gain` stays pinned at 1 no matter what
+  // demand a source reports. `audio.spec.ts` establishes the same precedent.
+  await page.getByTestId("audio-unlock").click();
+
   await page.getByTestId("topbar-settings").click();
   await expect(page.getByLabel("Enable voice ducking")).toBeChecked();
   await page.getByLabel("Enable push-to-duck key").check();
@@ -47,7 +54,12 @@ test("holding the bound push-to-duck key drops the audio panel's duck gain, rele
     .toBeLessThan(1);
 
   await page.keyboard.up("Backquote");
+  // `DuckControllerImpl.tick` is exponential one-pole smoothing (`approach`'s `1 -
+  // exp(-elapsedMs/tauMs)` shape): it asymptotically approaches the released target of 1 but
+  // never reaches it exactly within this test's window (reaching bit-exact `1` needs the
+  // smoothed demand to underflow double precision's spacing near 1, tens of seconds past the
+  // release tau) — so this asserts "recovered", not "bit-identical to the pre-duck reading".
   await expect
     .poll(async () => Number(await page.locator("[data-duck-gain]").getAttribute("data-duck-gain")))
-    .toBe(1);
+    .toBeGreaterThan(0.99);
 });
