@@ -4,6 +4,7 @@
   import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
+  import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
 
   const ctx = getAppContext();
 
@@ -49,6 +50,7 @@
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
     t: ctx.t,
+    setGmViewedScene: ctx.setGmViewedScene,
   } satisfies HostToolContext;
   const controller = new ToolController({
     ...hostToolContext,
@@ -392,7 +394,7 @@
   const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
   type TriggerEffectType = RegionTrigger["effect"]["type"];
-  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice"];
+  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport"];
   const noticeAudiences: NoticeAudience[] = ["public", "gm_only", "owner"];
 
   /** Append a blank trigger row (a `condition_add` on `enter`) to the region tool's authored
@@ -422,6 +424,7 @@
       case "condition_remove": trig.effect = { type: "condition_remove", condition: "" }; break;
       case "resource_delta": trig.effect = { type: "resource_delta", resource: "", amount: 0 }; break;
       case "chat_notice": trig.effect = { type: "chat_notice", text: "", audience: "gm_only" }; break;
+      case "teleport": trig.effect = { type: "teleport", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null } }; break;
       default: trig.effect = { type: "condition_add", condition: "" };
     }
   }
@@ -582,6 +585,8 @@
               <select data-testid="region-trigger-audience" aria-label={t("tools.triggerAudience")} bind:value={trig.effect.audience}>
                 {#each noticeAudiences as a (a)}<option value={a}>{a}</option>{/each}
               </select>
+            {:else if trig.effect.type === "teleport"}
+              <RegionTriggerTeleportEditor bind:target={trig.effect.target} row={i} {controller} />
             {/if}
             <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
           </div>

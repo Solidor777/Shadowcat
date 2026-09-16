@@ -550,6 +550,122 @@ test("the light editor's elevation input writes /engine/elevation, normalizing g
   });
 });
 
+// --- Region trigger `Teleport` editor ---
+
+/** Activates the region tool and adds one trigger row, ready for effect-type selection. */
+async function openRegionTriggerRow(): Promise<void> {
+  await fireEvent.click(screen.getByTestId("tool-region"));
+  await fireEvent.click(screen.getByTestId("region-trigger-add"));
+}
+
+test("selecting teleport seeds the default target (same scene, origin, no elevation/vfx override)", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene }) });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("0");
+  expect((screen.getByTestId("region-trigger-teleport-y") as HTMLInputElement).value).toBe("0");
+  expect((screen.getByTestId("region-trigger-teleport-elevation") as HTMLInputElement).value).toBe("");
+});
+
+test("editing scene/x/y/elevation/vfx updates the trigger row's target", async () => {
+  const { scene } = captureScene();
+  const vaultDoc = buildSceneDoc("w1", {}, "scene-2");
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm",
+      scene,
+      searchDocuments: (_q, _opts, onUpdate) => {
+        onUpdate([{ document: vaultDoc, score: 0, snippet: "" }]);
+        return Promise.resolve({ unsubscribe: () => {} });
+      },
+      pickAsset: (async () => "vfx-asset-1") as never,
+    }),
+  });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+
+  await fireEvent.input(screen.getByTestId("region-trigger-teleport-scene"), { target: { value: "vault" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-teleport-scene-hit"));
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-x"), { target: { value: "50" } });
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-y"), { target: { value: "75" } });
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-elevation"), { target: { value: "12" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-teleport-vfx"));
+
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("50");
+  expect((screen.getByTestId("region-trigger-teleport-y") as HTMLInputElement).value).toBe("75");
+  expect((screen.getByTestId("region-trigger-teleport-elevation") as HTMLInputElement).value).toBe("12");
+  expect(screen.getByTestId("region-trigger-teleport-vfx").textContent).toContain("vfx-asset-1");
+});
+
+test("a persisted region document's triggers includes the authored Teleport effect verbatim", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, documents: sceneStore(),
+      dispatchIntent: (ops) => dispatched.push(ops),
+    }),
+  });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-x"), { target: { value: "50" } });
+  await fireEvent.change(screen.getByTestId("region-trigger-teleport-y"), { target: { value: "75" } });
+
+  const tool = tools.at(-1)!;
+  tool.onPointerDown({ x: 0, y: 0 }, {} as PointerEvent);
+  tool.onPointerUp({ x: 100, y: 100 }, {} as PointerEvent);
+
+  const op = dispatched.at(-1)![0];
+  expect(op.op).toBe("create");
+  if (op.op === "create") {
+    const engine = op.doc.engine as { triggers: Array<{ on: string; effect: unknown }> };
+    expect(engine.triggers).toEqual([
+      { on: "enter", effect: { type: "teleport", target: { scene: null, x: 50, y: 75, elevation: null, vfx: null } } },
+    ]);
+  }
+});
+
+test("beginPickPortalTarget switches ctx.setGmViewedScene and overrides the active tool; endPickPortalTarget restores both and writes the captured point", async () => {
+  const { scene, tools } = captureScene();
+  const gmViewedScenes: (string | null)[] = [];
+  const vaultDoc = buildSceneDoc("w1", {}, "scene-2");
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene, viewedSceneId: "s1",
+      setGmViewedScene: (id) => gmViewedScenes.push(id),
+      searchDocuments: (_q, _opts, onUpdate) => {
+        onUpdate([{ document: vaultDoc, score: 0, snippet: "" }]);
+        return Promise.resolve({ unsubscribe: () => {} });
+      },
+    }),
+  });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+  // Author a destination scene distinct from the viewed one, so beginPickPortalTarget has
+  // somewhere to roam to.
+  await fireEvent.input(screen.getByTestId("region-trigger-teleport-scene"), { target: { value: "vault" } });
+  await fireEvent.click(screen.getByTestId("region-trigger-teleport-scene-hit"));
+
+  await fireEvent.click(screen.getByTestId("region-trigger-teleport-pick"));
+  expect(screen.getByTestId("region-trigger-teleport-pick").textContent).toBe("tools.triggerTeleportPicking");
+  // The roam call fires with the authored target scene, switching away from the viewed one.
+  expect(gmViewedScenes).toEqual(["scene-2"]);
+  const pickTool = tools.at(-1)!;
+  expect(pickTool).not.toBeNull();
+
+  pickTool!.onPointerDown({ x: 33, y: 44 }, {} as PointerEvent);
+  await new Promise((r) => setTimeout(r, 0)); // drain the $state update microtask
+  expect(screen.getByTestId("region-trigger-teleport-pick").textContent).toBe("tools.triggerTeleportPick");
+  expect((screen.getByTestId("region-trigger-teleport-x") as HTMLInputElement).value).toBe("33");
+  expect((screen.getByTestId("region-trigger-teleport-y") as HTMLInputElement).value).toBe("44");
+  // The original viewed scene is restored once the pick ends.
+  expect(gmViewedScenes).toEqual(["scene-2", "s1"]);
+  // The tool active before the pick began (the region tool) is restored, not left null.
+  expect(tools.at(-1)).not.toBe(pickTool);
+});
+
 test("the wall editor's band inputs write the whole /engine/elevation object, preserving the other end; both empty writes null", async () => {
   const { scene, tools } = captureScene();
   const dispatched: WireOperation[][] = [];

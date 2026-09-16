@@ -113,6 +113,12 @@ export interface ToolContext {
    * lights' `/engine/elevation` by `makePlaceTool`/`makeLightTool`. Absent/`null` ⇒
    * `elevation: null` (today's behavior, unchanged). */
   viewedLevelBottom?: () => number | null;
+  /** GM roaming-scene override (from `AppContext.setGmViewedScene`). `beginPickPortalTarget`
+   * calls this to temporarily switch the viewed scene to a `Teleport` trigger's authored target
+   * scene while the GM picks the destination point on stage, then `endPickPortalTarget` restores
+   * the original scene through the same seam. Absent ⇒ pick-on-stage cannot switch scenes (the
+   * GM picks within whichever scene is already viewed). */
+  setGmViewedScene?: (id: string | null) => void;
 }
 
 /** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
@@ -287,6 +293,12 @@ export class ToolController {
    * empty list persists a plain movement-only region). Editing a row in the rail must never
    * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
   regionTriggers = $state<RegionTrigger[]>([]);
+  /** The `regionTriggers` row index currently awaiting a stage click to capture a `Teleport`
+   * trigger's target x/y, or `null` when no pick is in progress. `ToolRail` reads this to show
+   * the in-progress "click on stage" prompt on the row's pick button. */
+  pickingPortalRow = $state<number | null>(null);
+  /** Original viewed scene, stashed while a portal-target pick temporarily switches it. */
+  #pickOriginalScene: string | null = null;
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -328,6 +340,61 @@ export class ToolController {
     if (this.active) this.#tools[this.active].onDeactivate?.();
     this.editingEntity = null; // an edit selection never survives a tool switch
     this.active = this.active === id ? null : id;
+    this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
+  }
+
+  /** Begin capturing one stage click as `regionTriggers[row]`'s teleport target x/y. Switches
+   * the viewed scene to the trigger's currently-authored target scene (or stays put if none is
+   * set yet) and overrides the active tool's pointer handling with a one-shot picker.
+   * @param row Index into `regionTriggers` of the `teleport` trigger being edited.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.beginPickPortalTarget(0);
+   * ```
+   */
+  beginPickPortalTarget(row: number): void {
+    const trig = this.regionTriggers[row];
+    if (!trig || trig.effect.type !== "teleport") return;
+    this.#pickOriginalScene = this.ctx.viewedSceneId?.() ?? null;
+    const targetScene = trig.effect.target.scene;
+    if (targetScene && targetScene !== this.#pickOriginalScene) {
+      this.ctx.setGmViewedScene?.(targetScene);
+    }
+    this.pickingPortalRow = row;
+    this.ctx.scene.setActiveTool({
+      onPointerDown: (p: Point) => {
+        this.endPickPortalTarget(p);
+        return true;
+      },
+      onPointerMove: () => {},
+      onPointerUp: () => {},
+    });
+  }
+
+  /** End a portal-target pick: write the captured point (if any) into the row's target, restore
+   * the original viewed scene and the tool that was active when the pick began.
+   * @param pos The captured stage point, or `null` to cancel without writing.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.endPickPortalTarget({ x: 10, y: 20 });
+   * ```
+   */
+  endPickPortalTarget(pos: Point | null): void {
+    const row = this.pickingPortalRow;
+    this.pickingPortalRow = null;
+    if (row !== null && pos) {
+      const trig = this.regionTriggers[row];
+      if (trig?.effect.type === "teleport") {
+        trig.effect.target.x = pos.x;
+        trig.effect.target.y = pos.y;
+      }
+    }
+    if (this.#pickOriginalScene !== null) {
+      this.ctx.setGmViewedScene?.(this.#pickOriginalScene);
+      this.#pickOriginalScene = null;
+    }
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
   }
 }
