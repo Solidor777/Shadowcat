@@ -253,10 +253,9 @@ function topShapeAt(docs: WireDocument[], p: Point, toSpec: (doc: WireDocument) 
   return closedHit ?? openHit;
 }
 
-/** The id of the topmost region whose geometry contains (or, for the rare open shape, passes
- * within tolerance of) `p`, or `null`. See `topShapeAt` for the shared picking rule; region
- * shapes (`rect`/`circle`/`polygon`) are always closed, so this always resolves via
- * `pointInPolygon`. Cull the candidate list to the viewed scene before calling (callers pass
+/** The id of the topmost region whose geometry contains `p`, or `null`. See `topShapeAt` for
+ * the shared picking rule; region shapes (`rect`/`circle`/`polygon`) are always closed, so this
+ * always resolves via `pointInPolygon`. Cull the candidate list to the viewed scene before calling (callers pass
  * `parent_id`-filtered docs).
  * @param regions The candidate region documents (typically `store.query("region")`, scene-scoped).
  * @param p The point to test (scene coords).

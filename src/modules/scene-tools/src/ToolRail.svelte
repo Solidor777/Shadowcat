@@ -321,9 +321,9 @@
   }
 
   /** Write one end of an edited entity's `/engine/elevation` band, preserving the other end —
-   * the shared body behind `editWallElevation` (and any future region/drawing/template band
-   * editor: wall, region, drawing and template all carry the identical `Option<ElevationBand>`
-   * shape). An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field
+   * the shared body behind `editEntityElevation`, the one band editor every band-shaped kind
+   * (wall, region, drawing, template) uses: they all carry the identical `Option<ElevationBand>`
+   * shape. An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field
    * resolves to `null` (canonical "every elevation" — an absent band, matching
    * `band_contains`/`wall_occludes`).
    * @param old The raw stored band object (or `null`).
@@ -347,76 +347,24 @@
     return bottom === null && top === null ? null : { bottom, top };
   }
 
-  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end. `old`
-   * is the raw stored band object (or `null`). Thin wrapper over `editElevationBand`.
+  /** Write one end of the edited entity's `/engine/elevation` band, preserving the other end.
+   * `old` is the raw stored band object (or `null`). One shared body for every band-shaped kind
+   * (wall/region/drawing/template) — they all carry the identical `elevation: ElevationBand |
+   * null` engine field, so a per-kind cast would only fork this decision, never change it.
    * @param end Which band end this edit changes; the other end is carried forward unchanged.
    * @param raw The input's raw string value.
    * @example
    * ```
-   * editWallElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * editEntityElevation("bottom", "2"); // band starts at elevation 2, top unchanged
    * ```
    */
-  function editWallElevation(end: "bottom" | "top", raw: string): void {
+  function editEntityElevation(end: "bottom" | "top", raw: string): void {
     const doc = editingDoc;
     if (!doc) return;
-    const eng = doc.engine as WallEngine;
-    const old = eng.elevation ?? null;
-    const next = editElevationBand(old, end, raw);
-    if (next === undefined) return;
-    editSelected("/engine/elevation", old, next);
-  }
-
-  /** Write one end of the edited region's `/engine/elevation` band, preserving the other end.
-   * Thin wrapper over `editElevationBand`, mirroring `editWallElevation`.
-   * @param end Which band end this edit changes; the other end is carried forward unchanged.
-   * @param raw The input's raw string value.
-   * @example
-   * ```
-   * editRegionElevation("bottom", "2"); // band starts at elevation 2, top unchanged
-   * ```
-   */
-  function editRegionElevation(end: "bottom" | "top", raw: string): void {
-    const doc = editingDoc;
-    if (!doc) return;
-    const eng = doc.engine as RegionEngine;
-    const old = eng.elevation ?? null;
-    const next = editElevationBand(old, end, raw);
-    if (next === undefined) return;
-    editSelected("/engine/elevation", old, next);
-  }
-
-  /** Write one end of the edited drawing's `/engine/elevation` band, preserving the other end.
-   * Thin wrapper over `editElevationBand`, mirroring `editWallElevation`.
-   * @param end Which band end this edit changes; the other end is carried forward unchanged.
-   * @param raw The input's raw string value.
-   * @example
-   * ```
-   * editDrawingElevation("bottom", "2"); // band starts at elevation 2, top unchanged
-   * ```
-   */
-  function editDrawingElevation(end: "bottom" | "top", raw: string): void {
-    const doc = editingDoc;
-    if (!doc) return;
-    const eng = doc.engine as DrawingEngine;
-    const old = eng.elevation ?? null;
-    const next = editElevationBand(old, end, raw);
-    if (next === undefined) return;
-    editSelected("/engine/elevation", old, next);
-  }
-
-  /** Write one end of the edited template's `/engine/elevation` band, preserving the other end.
-   * Thin wrapper over `editElevationBand`, mirroring `editWallElevation`.
-   * @param end Which band end this edit changes; the other end is carried forward unchanged.
-   * @param raw The input's raw string value.
-   * @example
-   * ```
-   * editTemplateElevation("bottom", "2"); // band starts at elevation 2, top unchanged
-   * ```
-   */
-  function editTemplateElevation(end: "bottom" | "top", raw: string): void {
-    const doc = editingDoc;
-    if (!doc) return;
-    const eng = doc.engine as TemplateEngine;
+    const eng = doc.engine as {
+      /** The raw stored elevation band; absent/`null` means "every elevation". */
+      elevation?: ElevationBand | null;
+    };
     const old = eng.elevation ?? null;
     const next = editElevationBand(old, end, raw);
     if (next === undefined) return;
@@ -721,7 +669,7 @@
             step="1"
             data-testid="wall-elevation-bottom"
             value={eng.elevation?.bottom ?? ""}
-            onchange={(e) => editWallElevation("bottom", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
           />
         </label>
         <label>
@@ -731,7 +679,7 @@
             step="1"
             data-testid="wall-elevation-top"
             value={eng.elevation?.top ?? ""}
-            onchange={(e) => editWallElevation("top", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
         <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
@@ -748,7 +696,7 @@
             step="1"
             data-testid="region-elevation-bottom"
             value={eng.elevation?.bottom ?? ""}
-            onchange={(e) => editRegionElevation("bottom", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
           />
         </label>
         <label>
@@ -758,7 +706,7 @@
             step="1"
             data-testid="region-elevation-top"
             value={eng.elevation?.top ?? ""}
-            onchange={(e) => editRegionElevation("top", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
         <button type="button" class="tool" data-testid="region-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
@@ -774,7 +722,7 @@
             step="1"
             data-testid="drawing-elevation-bottom"
             value={eng.elevation?.bottom ?? ""}
-            onchange={(e) => editDrawingElevation("bottom", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
           />
         </label>
         <label>
@@ -784,7 +732,7 @@
             step="1"
             data-testid="drawing-elevation-top"
             value={eng.elevation?.top ?? ""}
-            onchange={(e) => editDrawingElevation("top", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
         <button type="button" class="tool" data-testid="drawing-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
@@ -800,7 +748,7 @@
             step="1"
             data-testid="template-elevation-bottom"
             value={eng.elevation?.bottom ?? ""}
-            onchange={(e) => editTemplateElevation("bottom", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
           />
         </label>
         <label>
@@ -810,7 +758,7 @@
             step="1"
             data-testid="template-elevation-top"
             value={eng.elevation?.top ?? ""}
-            onchange={(e) => editTemplateElevation("top", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
         <button type="button" class="tool" data-testid="template-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
