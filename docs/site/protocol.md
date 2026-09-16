@@ -282,3 +282,16 @@ combat resources: a hidden combatant is absent from the payload entirely, and a 
 combatant's `resources` is `null` for a recipient the `/engine/resources` property tier does not
 admit (a non-owner, non-GM reader) — the same two-gate discipline the `"footprints"` channel
 follows.
+
+## Local audio-monitor protocol
+
+`shadowcat audio-monitor` is a SEPARATE localhost WebSocket, unrelated to the `/ws` protocol
+above — no login, no world, no `ClientMsg`/`ServerMsg`. The ducking module's `OsMonitorSource`
+connects to `ws://127.0.0.1:<port>/levels`; the connection's `Origin` header must be in the
+monitor's allowlist or it is refused before any frame is sent.
+
+| Frame | Direction | Shape |
+|---|---|---|
+| `hello` | monitor → client | `{ "type": "hello", "os": string, "supported": boolean, "reason"?: string }`, sent once on connect |
+| `levels` | monitor → client | `{ "type": "levels", "sessions": [{ "process": string, "peak": number }] }`, at 10 Hz, already filtered to the watch list |
+| `watch` | client → monitor | `{ "type": "watch", "names": string[] }`, replaces the live watch list without a restart |

@@ -57,6 +57,9 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | UI framework | Svelte 5 (runes) | MIT | Vendor | Compiled, lean output; default UI only — modders use any framework. |
 | Canvas renderer | PixiJS v8 | MIT | Vendor | Mature WebGL 2D: sprite batching, filter pipeline, mask compositing. Rebuilding this is the largest avoidable cost in the project. |
 | Build tooling | Cargo, Vite, pnpm | MIT | Vendor | pnpm is build-time only; output embeds into the binary. |
+| OS audio-session monitor (Windows) | `windows` crate (WASAPI) | MIT OR Apache-2.0 | Vendor | `shadowcat audio-monitor`'s Windows backend; per-session peak metering, never the Discord SDK. |
+| OS audio-session monitor (macOS) | Core Audio process tap (macOS 14.2+), hand-bound FFI over `core-foundation` | MIT OR Apache-2.0 | Vendor | Same subcommand's macOS backend; older macOS reports itself unsupported. |
+| OS audio-session monitor (Linux) | `pipewire` crate (libpipewire) | MIT | Vendor | Same subcommand's Linux backend; the tree's first system-library (`libpipewire-0.3-dev`) CI dependency. |
 
 ## 4. Deferred behind abstractions
 
@@ -70,7 +73,6 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
 | Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
-| Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
 | VFX, post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Server-side untrusted execution (sandbox) | engine-grammar evaluation is server-side already (formulas, dice, schemas) and needs no sandbox; only third-party *code* would | Only if a marketplace with untrusted authors is pursued — then WASM (wasmtime/extism) or rquickjs, never Deno. |
@@ -86,7 +88,7 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 - **FFmpeg as a hard dependency** — GPL contamination risk (libx264 etc.), LGPL static-link friction, and H.264/H.265/AAC patent exposure. Replaced by small royalty-free libraries.
 - **Tantivy in v1** — a third, non-transactional storage system; FTS5 is crash-consistent (updates inside the row's transaction) and sufficient at VTT scale.
 - **`steamworks` crate / Steam Rich Presence** — requires redistributing Valve's proprietary `steam_api`. Steam stays OpenID 2.0 auth + plain-executable distribution only.
-- **Discord Game SDK** — proprietary. Discord audio ducking (deferred) is implemented via OS audio-session APIs, never the SDK.
+- **Discord Game SDK** — proprietary. Voice ducking is implemented by `shadowcat audio-monitor` over OS audio-session APIs (WASAPI / Core Audio process taps / PipeWire), never the SDK.
 - **specta / tauri-specta** — stuck in multi-year RC; `ts-rs` 12 is stable and maintained.
 - **Pure-Rust/WASM frontend** — would discard PixiJS and eliminate first-class UI moddability (modders would have to write Rust).
 

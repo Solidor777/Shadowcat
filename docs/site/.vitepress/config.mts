@@ -63,6 +63,7 @@ export default defineConfig({
             { text: "sheet-item", link: "/modules/sheet-item" },
             { text: "sheet-note", link: "/modules/sheet-note" },
             { text: "sheet-table", link: "/modules/sheet-table" },
+            { text: "ducking", link: "/modules/ducking" },
           ],
         },
       ],

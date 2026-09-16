@@ -38,6 +38,7 @@ Community modules follow the same model — see
 | [sheet-item](/modules/sheet-item) | Generic item sheet (priority 0) |
 | [sheet-note](/modules/sheet-note) | Note sheet: title/visibility/body/tree (priority 0) |
 | [sheet-table](/modules/sheet-table) | Rollable-table sheet: rows, draw rule, draw-to-chat (priority 0) |
+| [ducking](/modules/ducking) | Voice ducking: mic VAD, OS audio-session monitor, push-to-duck key |
 
 The table covers this repository's first-party modules only. An out-of-tree
 module documents itself in its own repository, wherever its checkout sits.
