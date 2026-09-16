@@ -14,6 +14,10 @@ import type { OneShotPlayer } from "./one-shot-player";
 export const SYNC_SEEK_THRESHOLD_SECS = 0.25;
 /** Playback-rate nudge applied inside the seek threshold to close small drift inaudibly. */
 export const SYNC_RATE_NUDGE = 0.02;
+/** `AudioParam.setTargetAtTime`'s time constant for a `sync`-driven gain update outside an
+ * active crossfade, seconds — a gain change (transport SetGain) arrives step-free without a
+ * direct `.value` write that would click (or cancel an in-flight fade's automation). */
+export const GAIN_RAMP_TAU_SECS = 0.05;
 
 /** Pick the `<audio>`-element source for a streaming track: the first candidate the element
  * reports playable (Ogg derivative, then WebM, then the native original). Shared by
@@ -64,6 +68,10 @@ export class TrackPlayer {
   #gain: GainNodeLike;
   /** The current target gain (the entry's own gain; `fadeIn` ramps from 0 toward it). */
   #targetGain: number;
+  /** The context-time the active crossfade's automation ends, or `null` outside a fade —
+   * `sync` must never write the gain directly while one is in flight (a direct write cancels
+   * the scheduled ramp and snaps to full volume). */
+  #fadeUntil: number | null = null;
   /** Streaming-mode element (null in buffered mode). */
   #el: MediaElementLike | null = null;
   /** Streaming-mode graph source (null in buffered mode). */
@@ -212,7 +220,17 @@ export class TrackPlayer {
    */
   sync(entry: PlayingTrack, serverNow: number): void {
     this.#targetGain = entry.gain;
-    this.#gain.gain.value = entry.gain;
+    const now = this.#context.currentTime;
+    if (this.#fadeUntil !== null && now < this.#fadeUntil) {
+      // A crossfade's automation is driving the gain toward its scheduled end — a direct
+      // `.value` write here would cancel the ramp and snap to full volume, so the automation
+      // is RE-TARGETED (never rewritten): the new target is approached over the fade's
+      // remaining time (tau = remaining/3, the same 3τ ≈ full-fade shape fadeIn schedules).
+      this.#gain.gain.setTargetAtTime(entry.gain, now, (this.#fadeUntil - now) / 3);
+    } else {
+      this.#fadeUntil = null;
+      this.#gain.gain.setTargetAtTime(entry.gain, now, GAIN_RAMP_TAU_SECS);
+    }
     // Clamped ≥ 0: a negatively-skewed clock calibration must never reach
     // `source.start(0, negative)` or `el.currentTime = negative` (both throw).
     const targetSecs = Math.max(
@@ -305,6 +323,7 @@ export class TrackPlayer {
     const now = this.#context.currentTime;
     this.#gain.gain.value = 0;
     this.#gain.gain.setTargetAtTime(this.#targetGain, now, fadeMs / 3000);
+    this.#fadeUntil = now + fadeMs / 1000;
   }
 
   /** Ramp this player's gain to 0 over `fadeMs`, then dispose (the outgoing half of a
@@ -319,6 +338,7 @@ export class TrackPlayer {
   fadeOut(fadeMs: number): void {
     const now = this.#context.currentTime;
     this.#gain.gain.setTargetAtTime(0, now, fadeMs / 3000);
+    this.#fadeUntil = now + fadeMs / 1000;
     setTimeout(() => this.dispose(), fadeMs);
   }
 

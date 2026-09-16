@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { AssetResolver, type PlayingTrack } from "@shadowcat/core";
-import type { GainNodeLike } from "./context";
+import type { AudioParamLike, GainNodeLike } from "./context";
 import { OneShotPlayer } from "./one-shot-player";
 import { setMediaElementFactory, SYNC_SEEK_THRESHOLD_SECS, TrackPlayer } from "./track-player";
 import { stubAudioContext, stubMediaElement, stubWasmDecoder, wavBytes } from "./__fixtures__/stubContext";
@@ -159,6 +159,43 @@ describe("TrackPlayer — buffered loop mode", () => {
     expect(first.stop).toHaveBeenCalledTimes(1);
     const second = ctx.sources[1];
     expect(second.start).toHaveBeenCalledWith(0, expect.closeTo(0.3, 10));
+    player.dispose();
+  });
+
+  it("a mid-fade sync re-targets the fade's automation rather than snapping the gain directly", () => {
+    const ctx = stubAudioContext();
+    const e = entry({ id: "e-fade", gain: 0.8 });
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), e, dest(), () => {});
+    // Swap the player's gain param for a recording one: a direct `.value` write during a fade
+    // is exactly the defect under test; an automation call is the correct re-target.
+    const directWrites: number[] = [];
+    const ramp = vi.fn();
+    let current = 0.8;
+    (ctx.gains[0] as { gain: AudioParamLike }).gain = {
+      get value() {
+        return current;
+      },
+      set value(v: number) {
+        current = v;
+        directWrites.push(v);
+      },
+      setTargetAtTime: (target: number, at: number, tau: number) => ramp(target, at, tau),
+    };
+    player.fadeIn(1_000);
+    expect(directWrites, "fadeIn zeroes the gain directly, then automates").toEqual([0]);
+    directWrites.length = 0;
+    ramp.mockClear();
+
+    player.sync(e, 0); // mid-fade (stub context sits at currentTime 0)
+    expect(directWrites, "no direct write may cancel the in-flight fade").toEqual([]);
+    expect(ramp, "the automation is re-targeted over the fade's remaining time").toHaveBeenCalledTimes(1);
+
+    // Past the fade's end a sync ramps normally again (small tau — no click, no snap).
+    (ctx as { currentTime: number }).currentTime = 2;
+    ramp.mockClear();
+    player.sync(e, 0);
+    expect(directWrites).toEqual([]);
+    expect(ramp).toHaveBeenCalledWith(0.8, 2, expect.any(Number));
     player.dispose();
   });
 });
