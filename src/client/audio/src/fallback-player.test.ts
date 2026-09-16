@@ -90,6 +90,19 @@ describe("FallbackTrackPlayer", () => {
     player.dispose();
   });
 
+  it("clamps a negative server-sent gain to 0 rather than reaching el.volume as negative", () => {
+    const channels = channelStates();
+    const player = new FallbackTrackPlayer(
+      new AssetResolver(),
+      channels.get,
+      entry("e1", { gain: -0.6 }),
+      () => {},
+    );
+    expect(els[0].volume).toBeGreaterThanOrEqual(0);
+    expect(els[0].volume).toBe(0);
+    player.dispose();
+  });
+
   it("sync pauses and resumes against the authoritative entry and hard-seeks past the drift threshold", () => {
     const player = new FallbackTrackPlayer(new AssetResolver(), channelStates().get, entry("e1"), () => {});
     const el = els[0];

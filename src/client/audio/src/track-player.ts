@@ -133,8 +133,10 @@ export class TrackPlayer {
     this.#playlist = entry.playlist;
     this.#onTrackEnded = onTrackEnded;
     this.#gain = context.createGain();
-    this.#targetGain = entry.gain;
-    this.#gain.gain.value = entry.gain;
+    // Clamped: the server validates only finiteness (`0..=1` is a convention, not enforced).
+    const gain = Math.max(0, Math.min(1, entry.gain));
+    this.#targetGain = gain;
+    this.#gain.gain.value = gain;
     this.#gain.connect(dest);
     if (!this.#loop) {
       this.#el = createMediaElement();
@@ -219,17 +221,20 @@ export class TrackPlayer {
    * ```
    */
   sync(entry: PlayingTrack, serverNow: number): void {
-    this.#targetGain = entry.gain;
+    // Clamped: the server validates only finiteness (`0..=1` is a convention, not enforced),
+    // and a negative value must never reach a real `AudioParam`.
+    const gain = Math.max(0, Math.min(1, entry.gain));
+    this.#targetGain = gain;
     const now = this.#context.currentTime;
     if (this.#fadeUntil !== null && now < this.#fadeUntil) {
       // A crossfade's automation is driving the gain toward its scheduled end — a direct
       // `.value` write here would cancel the ramp and snap to full volume, so the automation
       // is RE-TARGETED (never rewritten): the new target is approached over the fade's
       // remaining time (tau = remaining/3, the same 3τ ≈ full-fade shape fadeIn schedules).
-      this.#gain.gain.setTargetAtTime(entry.gain, now, (this.#fadeUntil - now) / 3);
+      this.#gain.gain.setTargetAtTime(gain, now, (this.#fadeUntil - now) / 3);
     } else {
       this.#fadeUntil = null;
-      this.#gain.gain.setTargetAtTime(entry.gain, now, GAIN_RAMP_TAU_SECS);
+      this.#gain.gain.setTargetAtTime(gain, now, GAIN_RAMP_TAU_SECS);
     }
     // Clamped ≥ 0: a negatively-skewed clock calibration must never reach
     // `source.start(0, negative)` or `el.currentTime = negative` (both throw).

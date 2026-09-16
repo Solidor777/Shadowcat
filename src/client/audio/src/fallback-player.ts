@@ -83,7 +83,9 @@ export class FallbackTrackPlayer {
     const channel = this.#channelState(this.#channel);
     const master = this.#channelState("master");
     this.#el.volume =
-      channel.muted || master.muted ? 0 : Math.min(1, this.#entryGain * channel.gain * master.gain);
+      channel.muted || master.muted
+        ? 0
+        : Math.max(0, Math.min(1, this.#entryGain * channel.gain * master.gain));
   }
 
   /** Reconcile playback position/rate against the server-authoritative entry — the same

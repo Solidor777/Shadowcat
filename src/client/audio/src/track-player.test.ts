@@ -84,6 +84,18 @@ describe("TrackPlayer — streaming mode", () => {
     player.sync(entry({ pausedAt: 5_000 }), 20_000);
     expect(el.currentTime).toBeCloseTo(5, 5);
   });
+
+  it("clamps a negative server-sent gain to 0, both at construction and on sync", () => {
+    const ctx = stubAudioContext();
+    setMediaElementFactory(() => stubMediaElement());
+    new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry({ gain: -0.3 }), dest(), () => {});
+    expect(ctx.gains[0].gain.value).toBe(0);
+
+    const player = new TrackPlayer(ctx, new AssetResolver(), oneShotFor(ctx), entry(), dest(), () => {});
+    player.sync(entry({ gain: -1.5 }), 0);
+    expect(ctx.gains[1].gain.value).toBeGreaterThanOrEqual(0);
+    expect(ctx.gains[1].gain.value).toBe(0);
+  });
 });
 
 describe("TrackPlayer — track-end report", () => {
