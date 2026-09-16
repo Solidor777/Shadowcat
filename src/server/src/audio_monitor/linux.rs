@@ -10,21 +10,23 @@
 //! re-derives it regardless). Peak measurement links a passive capture stream to each node's
 //! monitor port and tracks the maximum absolute sample seen since the last publish.
 //!
-//! Verification note: the enumeration-side `pipewire` crate surface this file uses
-//! (`pipewire::init`, `main_loop::MainLoop::new`/`run`, `context::Context::new`/`connect`,
-//! `Core::get_registry`, `Registry`'s listener builder, `GlobalObject`'s `props`, and
-//! `spa::utils::dict::DictRef::get`) matches the resolved 0.8 crate's published sources. The
-//! remaining piece is the passive monitor-port capture stream per node (a
-//! `pipewire::stream::Stream` whose `process` callback computes the window's maximum absolute
-//! sample into this node's `peak` field); its exact parameter-negotiation surface must be
-//! checked against the resolved crate's own docs on a Linux host before it compiles — this
-//! file's shape (one dedicated thread, node-class filter, passive monitor-port capture,
-//! shared `Arc<Mutex<HashMap<u32, SessionLevel>>>`) is the design to preserve.
+//! Verification note: every `pipewire`/`libspa` 0.8 symbol this file uses — `pipewire::init`,
+//! `main_loop::MainLoop::new`/`run`, `context::Context::new`/`connect`, `Core::get_registry`,
+//! `Registry`'s listener builder (`global`/`global_remove`), `GlobalObject`'s `props`,
+//! `spa::utils::dict::DictRef::get`, `stream::Stream::new`/`connect`/`add_local_listener`,
+//! `StreamListener`, `StreamFlags::{AUTOCONNECT, PASSIVE}`, `Stream::dequeue_buffer`,
+//! `Buffer::datas_mut`, `Data::data`, `spa::param::audio::AudioInfoRaw`,
+//! `spa::pod::serialize::PodSerializer`, and `spa::pod::Pod::from_bytes` — was checked against
+//! the resolved crate's own vendored source (`~/.cargo/registry/src/…/pipewire-0.8.0`) and its
+//! `examples/audio-capture.rs`, not merely against documentation.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use pipewire as pw;
+use pw::spa;
 
 use super::{MonitorError, SessionLevel, SessionMonitor};
 
@@ -151,6 +153,14 @@ fn run_pipewire_loop(
         }
     };
 
+    // Capture streams must outlive the `global` callback that creates them, and this closure
+    // is `Fn` (not `FnMut`), so the per-node stream/listener pairs live behind `Rc<RefCell<_>>`
+    // rather than a captured mutable binding. Everything here runs on this single dedicated
+    // thread, so `Rc`/`RefCell` (not `Arc`/`Mutex`) is the right tool.
+    let streams: Rc<RefCell<HashMap<u32, (pw::stream::Stream, pw::stream::StreamListener<()>)>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    let core_for_streams = core.clone();
+
     let _listener = registry
         .add_listener_local()
         .global(move |g| {
@@ -166,17 +176,96 @@ fn run_pipewire_loop(
                 .lock()
                 .expect("node state lock poisoned")
                 .insert(g.id, NodeState { process, peak: 0.0 });
-            // A passive monitor-port capture stream per node is attached here in the full
-            // implementation (a `pipewire::stream::Stream` linked to node `g.id`'s monitor
-            // ports via `StreamFlags::AUTOCONNECT | StreamFlags::PASSIVE`, whose `process`
-            // callback computes `samples.iter().fold(0f32, |m, s| m.max(s.abs()))` into this
-            // node's `peak` field). See this file's module doc for the exact-API
-            // verification note this step still owes.
+
+            let Some(handle) = attach_monitor_stream(&core_for_streams, g.id, nodes.clone()) else {
+                return;
+            };
+            streams.borrow_mut().insert(g.id, handle);
+        })
+        .global_remove({
+            let streams = streams.clone();
+            let nodes = nodes.clone();
+            move |id| {
+                streams.borrow_mut().remove(&id);
+                nodes.lock().expect("node state lock poisoned").remove(&id);
+            }
         })
         .register();
 
     let _ = ready.send(Ok(()));
     main_loop.run();
+}
+
+/// Creates a passive `Stream::Input` connected directly to node `node_id`'s own ports
+/// (`StreamFlags::AUTOCONNECT | StreamFlags::PASSIVE`), whose `process` callback folds each
+/// buffer's interleaved `F32LE` samples into that node's `peak` field via
+/// `max-abs-sample`. Returns `None` on any negotiation failure (logged by discarding — a
+/// single node's capture failing must never take down the whole discovery loop).
+fn attach_monitor_stream(
+    core: &pw::core::Core,
+    node_id: u32,
+    nodes: Arc<Mutex<HashMap<u32, NodeState>>>,
+) -> Option<(pw::stream::Stream, pw::stream::StreamListener<()>)> {
+    let props = pw::properties::properties! {
+        *pw::keys::MEDIA_TYPE => "Audio",
+        *pw::keys::MEDIA_CATEGORY => "Monitor",
+        *pw::keys::MEDIA_ROLE => "Music",
+    };
+    let stream = pw::stream::Stream::new(core, "shadowcat-level-monitor", props).ok()?;
+
+    let listener = stream
+        .add_local_listener::<()>()
+        .process(move |stream, _: &mut ()| {
+            let Some(mut buffer) = stream.dequeue_buffer() else {
+                return;
+            };
+            let datas = buffer.datas_mut();
+            let Some(data) = datas.first_mut() else {
+                return;
+            };
+            let Some(samples) = data.data() else {
+                return;
+            };
+            let peak = samples
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
+                .fold(0f32, f32::max);
+            if let Ok(mut guard) = nodes.lock() {
+                if let Some(state) = guard.get_mut(&node_id) {
+                    state.peak = state.peak.max(peak);
+                }
+            }
+        })
+        .register()
+        .ok()?;
+
+    let mut audio_info = spa::param::audio::AudioInfoRaw::new();
+    audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
+    let obj = spa::pod::Object {
+        type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+        id: spa::param::ParamType::EnumFormat.as_raw(),
+        properties: audio_info.into(),
+    };
+    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &spa::pod::Value::Object(obj),
+    )
+    .ok()?
+    .0
+    .into_inner();
+    let pod = spa::pod::Pod::from_bytes(&values)?;
+    let mut params = [pod];
+
+    stream
+        .connect(
+            spa::utils::Direction::Input,
+            Some(node_id),
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::PASSIVE,
+            &mut params,
+        )
+        .ok()?;
+
+    Some((stream, listener))
 }
 
 #[cfg(test)]
