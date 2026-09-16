@@ -1,7 +1,7 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand } from "@shadowcat/core";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand } from "@shadowcat/core";
   import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
   import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
@@ -235,7 +235,7 @@
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
 
-  // The light/wall editor's target document, resolved live from the shared editing selection
+  // The open editor's target document, resolved live from the shared editing selection
   // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
   const editingDoc = $derived.by((): WireDocument | null => {
     subscribe();
@@ -251,7 +251,7 @@
     if (controller.editingEntity && !editingDoc) controller.editingEntity = null;
   });
 
-  /** Dispatch one field-level update against the light/wall being edited. `old` MUST be the
+  /** Dispatch one field-level update against the entity open in the editor. `old` MUST be the
    * RAW stored value at `path` (the server's field-level optimistic-concurrency check compares
    * against it) — never a resolved/defaulted value. The standing raw-`old` convention.
    * @param path The engine-band JSON pointer being written.
@@ -366,7 +366,64 @@
     editSelected("/engine/elevation", old, next);
   }
 
-  /** Escape backs out of an open light/wall editor (clears the editing selection). Tool
+  /** Write one end of the edited region's `/engine/elevation` band, preserving the other end.
+   * Thin wrapper over `editElevationBand`, mirroring `editWallElevation`.
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * editRegionElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * ```
+   */
+  function editRegionElevation(end: "bottom" | "top", raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as RegionEngine;
+    const old = eng.elevation ?? null;
+    const next = editElevationBand(old, end, raw);
+    if (next === undefined) return;
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Write one end of the edited drawing's `/engine/elevation` band, preserving the other end.
+   * Thin wrapper over `editElevationBand`, mirroring `editWallElevation`.
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * editDrawingElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * ```
+   */
+  function editDrawingElevation(end: "bottom" | "top", raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as DrawingEngine;
+    const old = eng.elevation ?? null;
+    const next = editElevationBand(old, end, raw);
+    if (next === undefined) return;
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Write one end of the edited template's `/engine/elevation` band, preserving the other end.
+   * Thin wrapper over `editElevationBand`, mirroring `editWallElevation`.
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @example
+   * ```
+   * editTemplateElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * ```
+   */
+  function editTemplateElevation(end: "bottom" | "top", raw: string): void {
+    const doc = editingDoc;
+    if (!doc) return;
+    const eng = doc.engine as TemplateEngine;
+    const old = eng.elevation ?? null;
+    const next = editElevationBand(old, end, raw);
+    if (next === undefined) return;
+    editSelected("/engine/elevation", old, next);
+  }
+
+  /** Escape backs out of any open scene-entity editor (clears the editing selection). Tool
    * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
    * @param event The window keydown event.
    * @example
@@ -595,11 +652,12 @@
       </div>
     {/if}
 
-    <!-- The light/wall editors key off the shared editing selection, not the active tool:
+    <!-- Every entity editor below keys off the shared editing selection, not the active tool:
          both the select tool and the light tool can open one. The light editor reuses
          `LightEmissionEditor` (the same field set every emission surface edits) and commits the
          WHOLE `/engine/emission` payload with the raw stored emission as `old` — the same
-         whole-payload convention the actor/sheet/token surfaces use. -->
+         whole-payload convention the actor/sheet/token surfaces use. The wall/region/drawing/
+         template editors share `editElevationBand` for their `/engine/elevation` band inputs. -->
     {#if editingDoc && controller.editingEntity?.kind === "light"}
       {@const eng = editingDoc.engine as LightEngine}
       <div class="controls" data-testid="light-editor">
@@ -677,6 +735,85 @@
           />
         </label>
         <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "region"}
+      <!-- The elevation band a region's geometry occupies; both ends empty = unbounded
+           (stored as an absent band, occupying every level — `band_contains`). -->
+      {@const eng = editingDoc.engine as RegionEngine}
+      <div class="controls" data-testid="region-editor">
+        <label>
+          {t("tools.regionElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="region-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editRegionElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.regionElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="region-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editRegionElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="region-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "drawing"}
+      <!-- The elevation band a drawing's geometry occupies; both ends empty = unbounded. -->
+      {@const eng = editingDoc.engine as DrawingEngine}
+      <div class="controls" data-testid="drawing-editor">
+        <label>
+          {t("tools.drawingElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="drawing-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editDrawingElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.drawingElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="drawing-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editDrawingElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="drawing-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "template"}
+      <!-- The elevation band a template's geometry occupies; both ends empty = unbounded. -->
+      {@const eng = editingDoc.engine as TemplateEngine}
+      <div class="controls" data-testid="template-editor">
+        <label>
+          {t("tools.templateElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="template-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editTemplateElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.templateElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="template-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editTemplateElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="template-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
   {/if}

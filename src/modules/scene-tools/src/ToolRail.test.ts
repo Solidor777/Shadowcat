@@ -4,7 +4,7 @@ import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, type WireOperation } from "@shadowcat/core";
 import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
@@ -410,7 +410,10 @@ test("select/input controls fit the rail's content box instead of overflowing it
 
 // --- Light/wall editors (the shared editing selection) ---
 
-/** A store with one scene, one light at (200,200), one wall along y=700. */
+/** A store with one scene, one light at (200,200), one wall along y=700, one rect region at
+ * (1000,1000)-(1100,1100), one rect drawing at (1300,1300)-(1400,1400), and one circle template
+ * at (1600,1600) r=50 — every shape spatially disjoint so the select tool's light→wall→region→
+ * drawing→template pick precedence never has to arbitrate between fixtures. */
 function editorStore(): DocumentStore {
   const docs = sceneStore();
   docs.applyCommand({
@@ -429,6 +432,27 @@ function editorStore(): DocumentStore {
         doc: buildSceneEntityDoc("w1", "s1", "wall", {
           seg: { x1: 0, y1: 700, x2: 400, y2: 700 }, blocksSight: true, blocksMove: true, blocksLight: true,
         }),
+      },
+      {
+        op: "create",
+        doc: buildRegionDoc("w1", "s1", {
+          shape: { kind: "rect", points: [1000, 1000, 1100, 1100] },
+          behavior: "terrain", cost: 1, enabled: true, triggers: [], elevation: null,
+        }, "region-1"),
+      },
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "drawing", {
+          shape: { kind: "rect", points: [1300, 1300, 1400, 1400] },
+          stroke: null, fill: null, elevation: null,
+        }, "drawing-1"),
+      },
+      {
+        op: "create",
+        doc: buildSceneEntityDoc("w1", "s1", "template", {
+          shape: { kind: "circle", x: 1600, y: 1600, size: 50, direction: 0 },
+          color: "#3388ff", elevation: null,
+        }, "template-1"),
       },
     ],
   });
@@ -733,4 +757,103 @@ test("the wall editor's band inputs write the whole /engine/elevation object, pr
     op: "update", doc_id: wallId,
     changes: [{ path: "/engine/elevation", old: { bottom: null, top: 10 }, new: null }],
   });
+});
+
+test("selecting a region with the select tool opens its elevation editor; the band inputs write /engine/elevation", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1050, y: 1050 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("region-editor")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("region-elevation-bottom"), { target: { value: "2" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "region-1",
+    changes: [{ path: "/engine/elevation", old: null, new: { bottom: 2, top: null } }],
+  });
+});
+
+test("the region editor's delete dispatches the full pre-image and closes the editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1050, y: 1050 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("region-editor");
+  await fireEvent.click(screen.getByTestId("region-delete"));
+  const op = dispatched.at(-1)![0];
+  expect(op.op).toBe("delete");
+  if (op.op === "delete") expect(op.doc.id).toBe("region-1");
+  expect(screen.queryByTestId("region-editor")).toBeNull();
+});
+
+test("selecting a drawing with the select tool opens its elevation editor; the band inputs write /engine/elevation", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1350, y: 1350 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("drawing-editor")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("drawing-elevation-bottom"), { target: { value: "3" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "drawing-1",
+    changes: [{ path: "/engine/elevation", old: null, new: { bottom: 3, top: null } }],
+  });
+});
+
+test("the drawing editor's delete dispatches the full pre-image and closes the editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1350, y: 1350 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("drawing-editor");
+  await fireEvent.click(screen.getByTestId("drawing-delete"));
+  const op = dispatched.at(-1)![0];
+  expect(op.op).toBe("delete");
+  if (op.op === "delete") expect(op.doc.id).toBe("drawing-1");
+  expect(screen.queryByTestId("drawing-editor")).toBeNull();
+});
+
+test("selecting a template with the select tool opens its elevation editor; the band inputs write /engine/elevation", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1600, y: 1600 }, { shiftKey: false } as PointerEvent);
+  expect(await screen.findByTestId("template-editor")).toBeTruthy();
+
+  await fireEvent.change(screen.getByTestId("template-elevation-bottom"), { target: { value: "4" } });
+  expect(dispatched.at(-1)![0]).toEqual({
+    op: "update", doc_id: "template-1",
+    changes: [{ path: "/engine/elevation", old: null, new: { bottom: 4, top: null } }],
+  });
+});
+
+test("the template editor's delete dispatches the full pre-image and closes the editor", async () => {
+  const { scene, tools } = captureScene();
+  const dispatched: WireOperation[][] = [];
+  render(ToolRail, {
+    context: setAppContextForTest({ role: "gm", scene, documents: editorStore(), dispatchIntent: (ops) => dispatched.push(ops) }),
+  });
+  await fireEvent.click(screen.getByTestId("tool-select"));
+  tools.at(-1)!.onPointerDown({ x: 1600, y: 1600 }, { shiftKey: false } as PointerEvent);
+  await screen.findByTestId("template-editor");
+  await fireEvent.click(screen.getByTestId("template-delete"));
+  const op = dispatched.at(-1)![0];
+  expect(op.op).toBe("delete");
+  if (op.op === "delete") expect(op.doc.id).toBe("template-1");
+  expect(screen.queryByTestId("template-editor")).toBeNull();
 });
