@@ -6,7 +6,7 @@ import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, pars
 import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
-import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
+import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt } from "./hit-test";
 
 /** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
  * `ElevationBand`, whose `bottom`/`top` are independently nullable to express an unbounded
@@ -277,14 +277,14 @@ export class ToolController {
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
-  /** The non-token scene entity currently open for editing (a light or a wall picked with the
-   * select or light tool), or `null`. Cleared on every tool switch (`toggle`) and on a GM's
-   * empty-canvas click with the select tool; `ToolRail` renders the matching editor while it is
-   * set. One shared selection source for both tools, so the editor can never disagree with the
-   * canvas about which entity is being edited. */
+  /** The non-token scene entity currently open for editing (a light, wall, region, drawing or
+   * template picked with the select or light tool), or `null`. Cleared on every tool switch
+   * (`toggle`) and on a GM's empty-canvas click with the select tool; `ToolRail` renders the
+   * matching editor while it is set. One shared selection source for every entity kind, so the
+   * editor can never disagree with the canvas about which entity is being edited. */
   editingEntity = $state<{
     /** Which kind of scene entity is being edited. */
-    kind: "light" | "wall";
+    kind: "light" | "wall" | "region" | "drawing" | "template";
     /** The edited document's id. */
     id: string;
   } | null>(null);
@@ -695,15 +695,16 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
 }
 
 /** Region preview stroke color (distinct from walls/measure route). Actual persisted fill/stroke
- * is behavior-tinted by the render layer (`RegionView.toSpec`); this is just the drag preview. */
+ * is behavior-tinted by the render layer (`regionShapeSpec`); this is just the drag preview. */
 const REGION_PREVIEW_COLOR = 0xd0a030;
 
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
  * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
  * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
- * Create-only (no edit UI) — a GM re-authors an existing region by delete+recreate, or toggles
- * `enabled` server-side. (Walls and lights, by contrast, are editable after placement: the
- * select tool picks one into `ToolController.editingEntity` and the rail editor writes it.)
+ * Create-only for shape/behavior/cost/secrecy/triggers (no edit UI for those — a GM re-authors
+ * by delete+recreate, or toggles `enabled` server-side); the ELEVATION band is editable after
+ * placement, like walls/lights: the select tool picks a region into
+ * `ToolController.editingEntity` and the rail's region editor writes `/engine/elevation`.
  * The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
@@ -1610,11 +1611,11 @@ const DRAG_THROTTLE_MS = 50;
  * the selection and yields the gesture to the camera. The selection itself is signified on the
  * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
  * `tokenSelection` state), never by a tool overlay. For a GM, an empty-space click additionally
- * picks a light marker or wall segment into `controller.editingEntity` (the rail editor's
- * selection source); a token hit clears it.
+ * picks a light marker, wall segment, or region/drawing/template shape into
+ * `controller.editingEntity` (the rail editor's selection source); a token hit clears it.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
- * @param controller Receives the light/wall editing selection (`editingEntity`).
+ * @param controller Receives the scene-entity editing selection (`editingEntity`).
  * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
  * @example
  * ```
@@ -1738,23 +1739,31 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
       const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents, footprintsOf(ctx));
       if (!id) {
         // GM-only scene-entity editing: a click that hits no token picks a light marker, then a
-        // wall segment, into the shared editing selection the rail editor reads. Both write
-        // paths are GM-gated (the server rejects a non-GM's document write regardless; this
-        // branch only decides which editor opens, and a player gets no editor affordance).
+        // wall segment, then a region/drawing/template shape, into the shared editing selection
+        // the rail editor reads. Every write path is GM-gated (the server rejects a non-GM's
+        // document write regardless; this branch only decides which editor opens, and a player
+        // gets no editor affordance).
         if (ctx.role === "gm") {
           const scene = activeScene(ctx);
-          const lightHit = scene
-            ? topLightAt(ctx.documents.query("light").filter((d) => d.parent_id === scene.id), p)
-            : null;
-          const wallHit =
-            !lightHit && scene
-              ? topWallAt(ctx.documents.query("wall").filter((d) => d.parent_id === scene.id), p)
-              : null;
+          const inScene = (docType: string) =>
+            scene ? ctx.documents.query(docType).filter((d) => d.parent_id === scene.id) : [];
+          const lightHit = topLightAt(inScene("light"), p);
+          const wallHit = !lightHit ? topWallAt(inScene("wall"), p) : null;
+          const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p) : null;
+          const drawingHit = !lightHit && !wallHit && !regionHit ? topDrawingAt(inScene("drawing"), p) : null;
+          const templateHit =
+            !lightHit && !wallHit && !regionHit && !drawingHit ? topTemplateAt(inScene("template"), p) : null;
           controller.editingEntity = lightHit
             ? { kind: "light", id: lightHit }
             : wallHit
               ? { kind: "wall", id: wallHit }
-              : null;
+              : regionHit
+                ? { kind: "region", id: regionHit }
+                : drawingHit
+                  ? { kind: "drawing", id: drawingHit }
+                  : templateHit
+                    ? { kind: "template", id: templateHit }
+                    : null;
         }
         sel?.clear();
         ctx.scene.clearOverlay();
