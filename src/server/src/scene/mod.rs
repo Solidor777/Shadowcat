@@ -5,6 +5,7 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_docs_in_private_items)]
 
+pub mod audibility;
 pub(crate) mod elevation;
 pub(crate) mod emitters;
 pub mod explored;

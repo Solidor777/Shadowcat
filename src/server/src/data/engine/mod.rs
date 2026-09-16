@@ -43,10 +43,10 @@ pub use registries::{
     FactionRegistryEngine, FactionStance,
 };
 pub use scene::{
-    AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, FalloffCurve, Grid,
-    GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode, MovementModel,
-    MovementRestriction, Pathfinding, Perception, SceneDimensions, SceneEngine,
-    SceneLightingOverrides, SceneVisionOverrides, VisionMode, VisionModesEngine,
+    AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
+    FalloffCurve, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode,
+    MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception, SceneDimensions,
+    SceneEngine, SceneLightingOverrides, SceneVisionOverrides, VisionMode, VisionModesEngine,
     WorldSceneDefaults, WorldSettingsEngine,
 };
 pub use system_defaults::{
@@ -55,7 +55,7 @@ pub use system_defaults::{
 pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
-    Size, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
+    Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
 };
 
 use crate::data::DataError;
