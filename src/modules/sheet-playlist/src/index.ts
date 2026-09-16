@@ -10,7 +10,7 @@ export const sheetPlaylist: Module = {
   manifest: {
     id: "sheet-playlist",
     version: "0.1.0",
-    dependencies: { "core-ui": "^0.1.0" },
+    dependencies: {},
     requires: [],
     provides: [{ contract: sheetContract(PLAYLIST_DOC_TYPE), cardinality: "multi" }],
   },
