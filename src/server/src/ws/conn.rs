@@ -623,10 +623,15 @@ async fn handle_socket(
                                     }
                                 }
                                 Ok(ClientMsg::AudioListenAs { token }) => {
-                                    // The egress task owns the value (every `compute_derived`
-                                    // call lives there) — forward like every other
-                                    // connection-local scene control.
-                                    let _ = etx.send(Egress::AudioListenAs { token }).await;
+                                    // GM-only preview seam (see the type's own doc comment):
+                                    // silent drop on a non-GM sender, same shape as
+                                    // `ScenePing`/`Emote` (no error frame, so a non-GM never
+                                    // learns the check ran). The egress task owns the value
+                                    // (every `compute_derived` call lives there) — forward like
+                                    // every other connection-local scene control.
+                                    if audio_listen_as_permitted(&ctx) {
+                                        let _ = etx.send(Egress::AudioListenAs { token }).await;
+                                    }
                                 }
                                 Ok(ClientMsg::PlayVfx { scene, asset, x, y, scale, rotation, duration_ms, sound, elevation }) => {
                                     // Out-of-band relay, same shape as `ScenePing`/`Emote`
@@ -1054,6 +1059,13 @@ async fn scene_ping_permitted(
         crate::data::permission::effective_owner(&doc, None),
     );
     access.has(crate::data::permission::cap::READ)
+}
+
+/// Whether `ctx` may send `ClientMsg::AudioListenAs`: a GM-only preview seam (see that type's
+/// own doc comment), no scene/token lookup needed. Denial is a silent drop at the call site,
+/// same convention as `scene_ping_permitted`/`token_emote_permitted`.
+fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
+    ctx.world_role == crate::data::document::WorldRole::Gm
 }
 
 /// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call

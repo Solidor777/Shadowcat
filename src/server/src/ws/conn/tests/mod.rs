@@ -1337,6 +1337,25 @@ async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
     );
 }
 
+/// `audio_listen_as_permitted` admits only the GM: `ClientMsg::AudioListenAs` is a GM-only
+/// preview seam, and a non-GM sender's frame must have no effect on the audibility channel.
+#[test]
+fn audio_listen_as_permitted_admits_only_the_gm() {
+    use crate::data::document::WorldRole;
+    use crate::data::membership::PermissionContext;
+
+    let gm = PermissionContext {
+        user_id: Uuid::new_v4(),
+        world_role: WorldRole::Gm,
+    };
+    let player = PermissionContext {
+        user_id: Uuid::new_v4(),
+        world_role: WorldRole::Player,
+    };
+    assert!(audio_listen_as_permitted(&gm));
+    assert!(!audio_listen_as_permitted(&player));
+}
+
 /// A `Pathfind` naming a scene the requester controls no token in is refused, even when that
 /// scene is `unrestricted` (no visibility mask to fail closed on). Otherwise a player could
 /// route-preview inside a scene they have never entered and read its `blocksMove` wall layout
