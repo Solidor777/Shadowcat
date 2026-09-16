@@ -820,6 +820,84 @@ async fn reconvert_bumps_version_and_broadcasts_replaced() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reconvert_reclassifies_a_mislabeled_unretained_audio() {
+    use shadowcat::data::asset::Asset;
+    let h = spawn().await;
+    let wav = silent_wav();
+    let id = uuid::Uuid::from_u128(0xA11);
+    // The pre-sniff stored shape: a real WAV labeled `application/octet-stream`, nothing
+    // retained (`AssetMeta::unprocessed`). The canonical bytes must route the retry through
+    // the audio arm regardless — the label never decides against the bytes.
+    h.repo
+        .insert_asset(&Asset {
+            id,
+            world_id: h.world,
+            storage_key: format!("{}/{}", h.world, id),
+            original_name: "tone.wav".into(),
+            content_type: "application/octet-stream".into(),
+            byte_size: wav.len() as i64,
+            created_by: Some(h.user),
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: shadowcat::data::asset::AssetMeta::unprocessed(
+                "application/octet-stream",
+                wav.len() as i64,
+            ),
+        })
+        .await
+        .unwrap();
+    let dir = h.assets_dir.join(h.world.to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(id.to_string()), &wav).unwrap();
+
+    let res = h
+        .client
+        .post(format!("http://{}/api/assets/{id}/reconvert", h.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "{:?}", res.text().await);
+    let updated: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(
+        updated["content_type"], "audio/wav",
+        "the sniffed type wins the stored row"
+    );
+    assert_eq!(updated["version"], 2);
+    assert!(
+        updated["duration_ms"].as_i64().unwrap_or(0) > 0,
+        "the audio arm's transcode ran and recorded a duration"
+    );
+    assert!(dir.join(format!("{id}.opus.ogg")).exists());
+    assert!(dir.join(format!("{id}.opus.webm")).exists());
+}
+
+/// A minimal PCM16 mono 8 kHz WAV (~0.2 s of silence): small, but enough for the audio
+/// pipeline's decoder to report a non-zero duration.
+fn silent_wav() -> Vec<u8> {
+    let sample_rate = 8000u32;
+    let samples = 1600usize;
+    let data_len = (samples * 2) as u32;
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    wav.extend(std::iter::repeat(0u8).take(samples * 2));
+    wav
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn delete_removes_canonical_and_siblings() {
     let h = spawn().await;
     let asset: serde_json::Value = h

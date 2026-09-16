@@ -63,9 +63,10 @@ pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
 /// Sniff an AUDIO container from the leading bytes — the upload pipeline's "the bytes decide"
 /// counterpart to `detect_image_type`, so a mislabeled upload (`application/octet-stream` on
 /// a real WAV) still reaches the transcode arm. Only audio-unambiguous magics are claimed
-/// (RIFF/WAVE, FLAC, MP3, Ogg); EBML/Matroska is deliberately NOT sniffed here — a WebM file
-/// may be video, and its declared label stands (the transcode probe would pass it through
-/// harmlessly either way). The returned label is a candidate for
+/// (RIFF/WAVE, FLAC, MP3, Ogg, and ISO-BMFF with an audio-only major brand); EBML/Matroska is
+/// deliberately NOT sniffed here — a WebM file may be video, and its declared label stands —
+/// and a generic `isom`/`mp42` brand is likewise left alone (an MP4 may be video; only the
+/// audio-only brands `M4A `/`M4B ` are claimed). The returned label is a candidate for
 /// `process_staged`'s audio arm; `process::audio`'s own symphonia probe remains the real
 /// container decision.
 ///
@@ -79,6 +80,8 @@ pub fn detect_image_type(bytes: &[u8]) -> Option<&'static str> {
 /// assert_eq!(detect_audio_type(b"ID3\x04"), Some("audio/mpeg"));
 /// assert_eq!(detect_audio_type(&[0xFF, 0xFB, 0x90, 0x00]), Some("audio/mpeg"));
 /// assert_eq!(detect_audio_type(b"OggS\x00"), Some("audio/ogg"));
+/// assert_eq!(detect_audio_type(b"\x00\x00\x00\x18ftypM4A \x00"), Some("audio/mp4"));
+/// assert_eq!(detect_audio_type(b"\x00\x00\x00\x18ftypisom\x00"), None);
 /// assert_eq!(detect_audio_type(b"not audio"), None);
 /// ```
 pub fn detect_audio_type(bytes: &[u8]) -> Option<&'static str> {
@@ -95,6 +98,14 @@ pub fn detect_audio_type(bytes: &[u8]) -> Option<&'static str> {
     }
     if bytes.starts_with(b"OggS") {
         return Some("audio/ogg");
+    }
+    // ISO-BMFF: the `ftyp` box's major brand at offset 8; only the audio-only brands are
+    // claimed (an `isom`/`mp42` major brand may be video — the same caution EBML gets).
+    if bytes.len() >= 12
+        && &bytes[4..8] == b"ftyp"
+        && (&bytes[8..12] == b"M4A " || &bytes[8..12] == b"M4B ")
+    {
+        return Some("audio/mp4");
     }
     None
 }

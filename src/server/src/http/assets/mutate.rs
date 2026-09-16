@@ -170,12 +170,24 @@ pub async fn reconvert(
     let final_path = state.config.assets_path().join(&existing.storage_key);
     let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", Uuid::new_v4()));
 
-    if existing.content_type.starts_with("audio/") {
+    // The bytes win over the stored label here exactly as they do at upload
+    // (`label_content_type`): sniff the CANONICAL head FIRST, so a mislabeled audio asset
+    // (an `application/octet-stream` WAV stored before the upload sniff existed, a
+    // wrong-labeled .m4a) routes through the audio re-transcode arm regardless of the stored
+    // label. Audio's canonical is NEVER converted, so the canonical IS the source bytes and
+    // the audio arm needs no `original_retained` precondition — placing the probe behind
+    // that check left exactly its stated case (an unprocessed, un-retained, mislabeled
+    // audio) unreachable.
+    let head = read_head(&final_path).await?;
+    let audio_sniff = detect_audio_type(&head);
+
+    if existing.content_type.starts_with("audio/") || audio_sniff.is_some() {
         // Audio's `original_retained` precondition holds by construction: the canonical is
         // NEVER converted (only sibling derivatives are emitted), so the "original" a retry
         // re-processes is the canonical file itself. This is audio's only recovery from an
         // over-cap/failed transcode; a stale derivative of a previous success is removed by
-        // `commit_replacement`'s sibling swap when the retry emits none.
+        // `commit_replacement`'s sibling swap when the retry emits none. The sniffed type
+        // reclassifies a mislabeled canonical; a correctly labeled one sniffs identically.
         let copied = tokio::fs::copy(&final_path, &tmp_path).await;
         if let Err(e) = copied {
             tracing::error!(?e, %id, "audio canonical missing for existing record");
@@ -193,7 +205,9 @@ pub async fn reconvert(
         );
         let processed = process_staged_blocking(
             tmp_path.clone(),
-            existing.content_type.clone(),
+            audio_sniff
+                .map(str::to_string)
+                .unwrap_or_else(|| existing.content_type.clone()),
             existing.meta.original_byte_size,
             state.config.retain_originals,
             containers,
@@ -216,32 +230,9 @@ pub async fn reconvert(
         tracing::error!(?e, %id, "retained original missing for existing record");
         return Err(AppError::Internal);
     }
-    // An upload whose label missed the bytes (e.g. stored `application/octet-stream` on a
-    // real WAV before audio sniffing existed) is probed here: a sniffed audio container
-    // reclassifies the retry as an audio re-transcode instead of an image reconvert.
-    let head = {
-        use tokio::io::AsyncReadExt;
-        let mut head = vec![0u8; 16];
-        let mut f = tokio::fs::File::open(&tmp_path)
-            .await
-            .map_err(|_| AppError::Internal)?;
-        let mut read = 0usize;
-        while read < head.len() {
-            match f.read(&mut head[read..]).await {
-                Ok(0) => break,
-                Ok(n) => read += n,
-                Err(_) => return Err(AppError::Internal),
-            }
-        }
-        head.truncate(read);
-        head
-    };
-    let audio_sniff = detect_audio_type(&head);
     let processed = process_staged_blocking(
         tmp_path.clone(),
-        audio_sniff
-            .map(str::to_string)
-            .unwrap_or_else(|| existing.meta.original_content_type.clone()),
+        existing.meta.original_content_type.clone(),
         existing.meta.original_byte_size,
         state.config.retain_originals,
         Default::default(),
@@ -253,6 +244,27 @@ pub async fn reconvert(
     })?;
     let asset = commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await?;
     Ok(Json(asset))
+}
+
+/// Read the leading bytes of `path` for the magic-byte sniffs (`detect_audio_type`/
+/// `detect_image_type`): up to 16 bytes, fewer near EOF. A missing/unreadable file is
+/// `AppError::Internal`, the same failure the reprocess copy that follows would report.
+async fn read_head(path: &std::path::Path) -> Result<Vec<u8>, AppError> {
+    use tokio::io::AsyncReadExt;
+    let mut head = vec![0u8; 16];
+    let mut f = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    let mut read = 0usize;
+    while read < head.len() {
+        match f.read(&mut head[read..]).await {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(_) => return Err(AppError::Internal),
+        }
+    }
+    head.truncate(read);
+    Ok(head)
 }
 
 /// `PATCH /api/assets/{uuid}` body. Every field optional; an absent field is
