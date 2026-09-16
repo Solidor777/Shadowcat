@@ -49,13 +49,24 @@
       }
       return mic.enable();
     };
+    controller.micSetSensitivity = (sensitivity: number) => mic?.setSensitivity(sensitivity);
   });
 
   onDestroy(() => {
     controller.micToggle = null;
+    controller.micSetSensitivity = null;
+    // `WorldSession.leave()` never calls `ModuleRegistry.unload()` on an ordinary world leave,
+    // so `unregister()`'s later `controller.dispose()` is unreachable in production — THIS is
+    // the module's only reliably-firing teardown hook, so the key/OS-monitor sources are
+    // stopped here too (idempotent: `unregister()` calling `dispose()` again, if it ever runs,
+    // is a harmless no-op on already-stopped sources).
+    controller.dispose();
+    // Stop the mic BEFORE removing its sink: `DuckControllerImpl`'s sink `set()` closure
+    // unconditionally re-inserts into the demand map even after `removeSource`, so
+    // `disable()`'s later `sink.set(0)` would silently re-add the entry if this ran second.
+    mic?.disable();
     ctx.audio.duck.removeSource("ducking:key");
     ctx.audio.duck.removeSource("ducking:os-monitor");
     if (mic) ctx.audio.duck.removeSource("ducking:mic");
-    mic?.disable();
   });
 </script>

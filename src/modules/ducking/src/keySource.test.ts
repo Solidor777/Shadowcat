@@ -64,6 +64,17 @@ describe("KeySource", () => {
     source.stop();
   });
 
+  it("resets demand to 0 on window blur while the bound key is held", () => {
+    const calls: number[] = [];
+    const source = new KeySource({ set: (v) => calls.push(v) }, "Backquote");
+    source.start();
+    press("keydown", "Backquote");
+    expect(calls).toEqual([1]);
+    window.dispatchEvent(new Event("blur"));
+    expect(calls).toEqual([1, 0]);
+    source.stop();
+  });
+
   it("the default sink discards every demand change", () => {
     expect(() => NULL_SINK.set(1)).not.toThrow();
   });

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { getAppContext } from "@shadowcat/ui-kit";
   import type { DuckSourcesController } from "./controller";
   import type { MicVadDenialReason } from "./micVad";
@@ -27,9 +27,23 @@
   let capturingKey = $state(false);
   let watchListText = $state(prefs.watchList.join(", "));
 
+  /** The in-progress key-capture listener, tracked so `onDestroy`/`cancelKeyCapture` can
+   * remove it even if no keydown ever fires — `startKeyCapture`'s own inline listener had no
+   * way to reach it from outside the closure that added it. */
+  let activeKeyCaptureListener: ((e: KeyboardEvent) => void) | null = null;
+
   onMount(() => {
     controller.applyPreferences(prefs);
     return controller.osMonitor.onStatusChange((s) => (osStatus = s));
+  });
+
+  onDestroy(() => {
+    // A capture started then abandoned by navigating away, without this, leaves a capturing
+    // `keydown` listener on `window` forever, hijacking the next keydown anywhere in the app.
+    if (activeKeyCaptureListener) {
+      window.removeEventListener("keydown", activeKeyCaptureListener, true);
+      activeKeyCaptureListener = null;
+    }
   });
 
   /**
@@ -57,11 +71,14 @@
     capturingKey = true;
     const onKeydown = (e: KeyboardEvent) => {
       e.preventDefault();
-      prefs.keyBinding = e.code;
-      capturingKey = false;
       window.removeEventListener("keydown", onKeydown, true);
+      activeKeyCaptureListener = null;
+      capturingKey = false;
+      if (e.code === "Escape") return; // cancels the capture rather than binding as the key
+      prefs.keyBinding = e.code;
       persist();
     };
+    activeKeyCaptureListener = onKeydown;
     window.addEventListener("keydown", onKeydown, true);
   }
 
@@ -147,12 +164,16 @@
         max="6"
         step="0.1"
         value={prefs.micSensitivity}
-        oninput={(e) => { prefs.micSensitivity = Number(e.currentTarget.value); persist(); }}
+        oninput={(e) => {
+          prefs.micSensitivity = Number(e.currentTarget.value);
+          persist();
+          controller.micSetSensitivity?.(prefs.micSensitivity);
+        }}
       />
     </label>
-    {#if micDenial}
-      <p class="denial">{t(`ducking.micSource.denied.${micDenial}`)}</p>
-    {/if}
+    <p class="denial" role="alert" aria-live="assertive">
+      {#if micDenial}{t(`ducking.micSource.denied.${micDenial}`)}{/if}
+    </p>
   </fieldset>
 
   <fieldset disabled={!prefs.masterEnabled}>
@@ -193,7 +214,7 @@
         onchange={commitWatchList}
       />
     </label>
-    <p>{t(`ducking.osSource.status.${osStatus}`)}</p>
+    <p aria-live="polite">{t(`ducking.osSource.status.${osStatus}`)}</p>
     <p class="command-line">{t("ducking.osSource.commandLine")}: <code>{commandLine}</code></p>
   </fieldset>
 

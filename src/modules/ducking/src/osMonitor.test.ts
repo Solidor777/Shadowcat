@@ -18,6 +18,12 @@ class FakeSocket {
   }
   close(): void {
     this.readyState = 3;
+    // A real WebSocket's `close` event fires asynchronously, never synchronously inside the
+    // `close()` call itself — `fireClose()` lets a test simulate that later firing explicitly,
+    // exercising the generation guard a superseded socket's late close must respect.
+  }
+  fireClose(): void {
+    this.onclose?.();
   }
   open(): void {
     this.readyState = FakeSocket.OPEN;
@@ -143,6 +149,36 @@ describe("OsMonitorSource", () => {
     source.start();
     source.setPort(31999);
     expect(createdPorts).toEqual([31998, 31999]);
+    source.stop();
+  });
+
+  it("a stale close from the socket setPort superseded does not orphan the new connection", () => {
+    vi.useFakeTimers();
+    const sockets: FakeSocket[] = [];
+    const source = new OsMonitorSource({
+      port: 31998,
+      watch: [],
+      logger,
+      createSocket: () => {
+        const s = new FakeSocket();
+        sockets.push(s);
+        return s as unknown as WebSocket;
+      },
+    });
+    const statuses: string[] = [];
+    source.onStatusChange((s) => statuses.push(s));
+    source.start();
+    const old = sockets[0]!;
+    source.setPort(31999); // closes `old` and connects anew; `old`'s own close event has not
+                            // fired yet (real WebSockets fire it asynchronously)
+    expect(sockets.length).toBe(2);
+    sockets[1]!.open();
+
+    // `old`'s close event arrives LATE, after the new connection is already open — it must be
+    // a no-op: no extra reconnect scheduled, no status regression against the good connection.
+    old.fireClose();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(statuses).not.toContain("not-running");
     source.stop();
   });
 });

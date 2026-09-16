@@ -25,6 +25,12 @@ export class DuckSourcesController {
    * `DuckingRuntime`'s own mount sees whatever is currently set (still persists the preference
    * either way; see `DuckingSettings.svelte`'s `toggleMic`). */
   micToggle: ((enabled: boolean) => Promise<MicVadDenialReason | null>) | null = null;
+  /** Forwards a live sensitivity change to the currently-enabled `MicVadSource` (owned by
+   * `DuckingRuntime`, which wires this the same way it wires `micToggle` — `MicVadSource`
+   * itself only applies a changed sensitivity on its NEXT `enable()` cycle, so a live slider
+   * drag needs this seam to reach the running instance rather than waiting for a re-enable).
+   * `null` until `DuckingRuntime` has wired it, same lifecycle as `micToggle`. */
+  micSetSensitivity: ((sensitivity: number) => void) | null = null;
 
   /**
    * Constructs a controller owning the key and OS-monitor sources.
@@ -60,8 +66,9 @@ export class DuckSourcesController {
   }
 
   /**
-   * Wires both sources' demand output to real `DuckSource` sinks (this plan's integration
-   * task, once `ctx.audio.duck` exists).
+   * Wires both sources' demand output to real `DuckSource` sinks. `DuckingRuntime` calls this
+   * from `onMount`, since `ctx.audio.duck` is reachable only through the Svelte-side
+   * `AppContext`, not `register(ctx)`'s framework-neutral `ModuleContext`.
    * @param keySink The sink for the key source's demand.
    * @param osSink The sink for the OS monitor source's demand.
    * @example

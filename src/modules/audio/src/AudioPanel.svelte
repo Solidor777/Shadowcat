@@ -205,6 +205,9 @@
 </script>
 
 <section class="audio-panel" data-testid="audio-panel" data-audio-playing={liveCount}>
+  <p class="duck-gain" data-testid="duck-gain" data-duck-gain={ctx.audio.duck.gain}>
+    {t("audio.duckGain", { gain: ctx.audio.duck.gain.toFixed(2) })}
+  </p>
   <h3>{t("audio.channelsTitle")}</h3>
   {#each CHANNELS as id (id)}
     <div class="channel-row">

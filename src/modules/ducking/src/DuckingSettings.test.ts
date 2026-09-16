@@ -76,6 +76,34 @@ describe("DuckingSettings", () => {
     controller.dispose();
   });
 
+  it("Escape cancels an in-progress key capture instead of binding it", async () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const context = setAppContextForTest({ audio: audioFixture() });
+    render(DuckingSettings, { props: { controller }, context });
+    await fireEvent.click(screen.getByRole("button", { name: /ducking\.keySource\.bind/ }));
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "{}");
+      expect(stored.keyBinding).toBeUndefined();
+    });
+    expect(screen.queryByRole("button", { name: /ducking\.keySource\.bindPrompt/ })).toBeNull();
+    controller.dispose();
+  });
+
+  it("removes an abandoned key-capture listener on unmount, so it never hijacks a later keydown", () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const context = setAppContextForTest({ audio: audioFixture() });
+    const { unmount } = render(DuckingSettings, { props: { controller }, context });
+    fireEvent.click(screen.getByRole("button", { name: /ducking\.keySource\.bind/ }));
+    unmount();
+    const stored = JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "{}");
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyZ" }));
+    // The listener must be gone: the mirror (written only by the component's own persist())
+    // is unchanged by a keydown dispatched after unmount.
+    expect(JSON.parse(localStorage.getItem(DUCKING_MIRROR_STORAGE_KEY) ?? "{}")).toEqual(stored);
+    controller.dispose();
+  });
+
   it("commits the watch-list text as a trimmed, filtered array on change", async () => {
     const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
     const context = setAppContextForTest({ audio: audioFixture() });

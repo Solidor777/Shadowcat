@@ -694,6 +694,7 @@ export const en: Messages = {
   "assetBrowser.containersOgg": "Ogg only",
   "assetBrowser.containersWebm": "WebM only",
   "audio.tab": "Audio",
+  "audio.duckGain": "Duck gain: {gain}",
   "audio.channelsTitle": "Channels",
   "audio.channelMaster": "Master",
   "audio.channelMusic": "Music",

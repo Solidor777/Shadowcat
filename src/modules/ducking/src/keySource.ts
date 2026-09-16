@@ -57,6 +57,19 @@ export class KeySource {
     if (e.code !== this.key) return;
     this.sink.set(0);
   };
+  /**
+   * Resets demand to 0 when the window loses focus while the bound key is held (alt-tab, OS
+   * focus switch) — `window` never receives the matching `keyup` in that case, so without this
+   * demand would latch at 1 forever.
+   * @example
+   * ```
+   * // private field; not part of the public API — attached to `window` by `start()`
+   * window.addEventListener("blur", this.onBlur);
+   * ```
+   */
+  private readonly onBlur = (): void => {
+    this.sink.set(0);
+  };
 
   /**
    * Constructs a push-to-duck key source.
@@ -85,6 +98,7 @@ export class KeySource {
     this.started = true;
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    window.addEventListener("blur", this.onBlur);
   }
 
   /**
@@ -100,11 +114,13 @@ export class KeySource {
     this.started = false;
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    window.removeEventListener("blur", this.onBlur);
     this.sink.set(0);
   }
 
   /**
-   * Replaces the sink demand is forwarded to (the integration task wires the real one).
+   * Replaces the sink demand is forwarded to. `DuckSourcesController.wireToAudioDuck` calls
+   * this with the real `ctx.audio.duck`-backed sink once `DuckingRuntime` constructs it.
    * @param sink The replacement sink.
    * @example
    * ```

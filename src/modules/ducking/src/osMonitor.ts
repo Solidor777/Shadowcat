@@ -79,6 +79,13 @@ export class OsMonitorSource {
   private threshold = DEFAULT_THRESHOLD;
   /** The active socket, or `null` while disconnected. */
   private socket: WebSocket | null = null;
+  /** Identifies the CURRENT connection attempt (`connect()` increments this and closes over
+   * its new value); every socket event handler compares against it and no-ops when stale. A
+   * superseded socket's async `close` event still fires after `setPort`/`connect` has already
+   * installed a new socket, and without this its `onclose` closure would not know it is stale
+   * — it would increment `attempts` and schedule an extra reconnect, orphaning the good
+   * connection `setPort` just made. */
+  private connectionGeneration = 0;
   /** Consecutive failed connection attempts since the last successful `onopen`. */
   private attempts = 0;
   /** The pending reconnect timer, or `null` when none is scheduled. */
@@ -139,7 +146,8 @@ export class OsMonitorSource {
   }
 
   /**
-   * Replaces the sink demand is forwarded to (the integration task wires the real one).
+   * Replaces the sink demand is forwarded to. `DuckSourcesController.wireToAudioDuck` calls
+   * this with the real `ctx.audio.duck`-backed sink once `DuckingRuntime` constructs it.
    * @param sink The replacement sink.
    * @example
    * ```
@@ -255,25 +263,29 @@ export class OsMonitorSource {
    */
   private connect(): void {
     if (!this.started) return;
+    const generation = ++this.connectionGeneration;
     const socket = this.createSocket(`ws://127.0.0.1:${this.port}/levels`);
     this.socket = socket;
     socket.onopen = () => {
+      if (generation !== this.connectionGeneration) return;
       this.attempts = 0;
       if (this.watch.length > 0) {
         socket.send(JSON.stringify({ type: "watch", names: this.watch }));
       }
     };
     socket.onmessage = (event) => {
+      if (generation !== this.connectionGeneration) return;
       this.handleMessage(String(event.data));
     };
     socket.onclose = () => {
-      if (!this.started) return;
+      if (!this.started || generation !== this.connectionGeneration) return;
       this.attempts += 1;
       this.setStatus(this.attempts >= NOT_RUNNING_AFTER_ATTEMPTS ? "not-running" : "connecting");
       const delay = RECONNECT_BACKOFF_MS[Math.min(this.attempts - 1, RECONNECT_BACKOFF_MS.length - 1)];
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
     };
     socket.onerror = () => {
+      if (generation !== this.connectionGeneration) return;
       this.logger.warn("audio-monitor socket error");
     };
   }

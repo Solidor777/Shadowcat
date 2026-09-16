@@ -70,6 +70,18 @@ describe("DuckingRuntime", () => {
     controller.dispose();
   });
 
+  it("stops the key and OS-monitor sources on unmount — the only reliably-firing teardown hook in production, since WorldSession.leave() never calls ModuleRegistry.unload()", () => {
+    const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
+    const keyStop = vi.spyOn(controller.key, "stop");
+    const osStop = vi.spyOn(controller.osMonitor, "stop");
+    const { audio } = audioFixture();
+    const context = setAppContextForTest({ audio });
+    const { unmount } = render(DuckingRuntime, { props: { controller }, context });
+    unmount();
+    expect(keyStop).toHaveBeenCalled();
+    expect(osStop).toHaveBeenCalled();
+  });
+
   it("micToggle('unknown') denies enabling before the engine's AudioContext is unlocked", async () => {
     const controller = new DuckSourcesController(DEFAULT_DUCKING_PREFERENCES, logger);
     const { audio } = audioFixture();

@@ -244,7 +244,8 @@ export class MicVadSource {
   }
 
   /**
-   * Replaces the sink demand is forwarded to (the integration task wires the real one).
+   * Replaces the sink demand is forwarded to. `DuckingRuntime` wires the real
+   * `ctx.audio.duck`-backed sink once it constructs this instance.
    * @param sink The replacement sink.
    * @example
    * ```
@@ -270,8 +271,8 @@ export class MicVadSource {
     if (this.workletNode) {
       // The running processor's own VadEngine instance keeps its already-constructed
       // sensitivity — a live change takes effect on the NEXT `enable()` cycle, matching the
-      // worklet's `processorOptions`-only construction seam (no live-parameter channel is
-      // wired for this milestone's scope).
+      // worklet's `processorOptions`-only construction seam (no live-parameter channel exists
+      // from the main thread into a running `AudioWorkletProcessor`).
     }
   }
 
