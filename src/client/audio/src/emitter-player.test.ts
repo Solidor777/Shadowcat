@@ -83,4 +83,67 @@ describe("EmitterPlayer", () => {
     expect(gainDisc).toHaveBeenCalledTimes(1);
     expect(panDisc).toHaveBeenCalledTimes(1);
   });
+
+  it("the LATEST sync call's asset wins regardless of decode-resolution order", async () => {
+    const ctx = stubAudioContext();
+    const oneShot = oneShotFor(ctx);
+    let resolveFirst!: (b: Awaited<ReturnType<OneShotPlayer["getBuffer"]>>) => void;
+    let resolveSecond!: (b: Awaited<ReturnType<OneShotPlayer["getBuffer"]>>) => void;
+    let call = 0;
+    vi.spyOn(oneShot, "getBuffer").mockImplementation(() => {
+      call += 1;
+      if (call === 1) return new Promise((res) => (resolveFirst = res));
+      return new Promise((res) => (resolveSecond = res));
+    });
+    const player = new EmitterPlayer(ctx, oneShot, dest());
+
+    const first = player.sync(emitter({ asset: "a-wind" }), true);
+    const second = player.sync(emitter({ asset: "a-rain" }), true);
+
+    const buffer = { duration: 1, sampleRate: 48000, numberOfChannels: 1 } as Awaited<
+      ReturnType<OneShotPlayer["getBuffer"]>
+    >;
+    // The SECOND (latest) call's decode resolves FIRST.
+    resolveSecond(buffer);
+    await second;
+    resolveFirst(buffer);
+    await first;
+
+    // Only one source was ever started, and it plays the latest-requested asset.
+    expect(ctx.sources).toHaveLength(1);
+  });
+
+  it("dispose during an in-flight sync means the continuation never creates a source", async () => {
+    const ctx = stubAudioContext();
+    const oneShot = oneShotFor(ctx);
+    let resolve!: (b: Awaited<ReturnType<OneShotPlayer["getBuffer"]>>) => void;
+    vi.spyOn(oneShot, "getBuffer").mockImplementation(
+      () => new Promise((res) => (resolve = res)),
+    );
+    const player = new EmitterPlayer(ctx, oneShot, dest());
+
+    const pending = player.sync(emitter(), true);
+    player.dispose();
+    resolve({ duration: 1, sampleRate: 48000, numberOfChannels: 1 } as Awaited<
+      ReturnType<OneShotPlayer["getBuffer"]>
+    >);
+    await pending;
+
+    expect(ctx.sources).toHaveLength(0);
+  });
+
+  it("clamps a negative server-sent gain to 0 before writing to the AudioParam", async () => {
+    const ctx = stubAudioContext();
+    const player = new EmitterPlayer(ctx, oneShotFor(ctx), dest());
+    await player.sync(emitter({ gain: -0.4 }), true);
+    expect(ctx.gains[0].gain.value).toBeGreaterThanOrEqual(0);
+    expect(ctx.gains[0].gain.value).toBe(0);
+  });
+
+  it("clamps a gain above 1 to 1 before writing to the AudioParam", async () => {
+    const ctx = stubAudioContext();
+    const player = new EmitterPlayer(ctx, oneShotFor(ctx), dest());
+    await player.sync(emitter({ gain: 1.7 }), true);
+    expect(ctx.gains[0].gain.value).toBe(1);
+  });
 });

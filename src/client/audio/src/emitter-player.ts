@@ -29,6 +29,15 @@ export class EmitterPlayer {
   #source: BufferSourceNodeLike | null = null;
   /** The asset the live source plays (`null` before the first `sync`), the restart key. */
   #asset: string | null = null;
+  /** Set on `dispose()`; the async decode continuation checks it before touching the graph
+   * (mirrors `TrackPlayer`/`FallbackTrackPlayer`'s own `#disposed` guard). */
+  #disposed = false;
+  /** Bumped on every asset-changing `sync` call; a decode continuation only (re)starts the
+   * source when its own token still matches on resolution — an earlier call's decode
+   * resolving after a later one is a stale write and is dropped. Mirrors
+   * `TrackPlayer#decodeStarted`/`#pending`'s latest-sync-wins discipline, generalized for a
+   * player whose asset can change many times over its lifetime rather than exactly once. */
+  #decodeToken = 0;
 
   /** Construct a player routed `gain → panner → dest` (no source yet — the first `sync`
    * decodes and starts it).
@@ -66,7 +75,13 @@ export class EmitterPlayer {
   async sync(emitter: AudibleEmitter, spatialOverride: boolean): Promise<void> {
     if (this.#asset !== emitter.asset) {
       this.#asset = emitter.asset;
+      const token = ++this.#decodeToken;
       const buffer = await this.#oneShot.getBuffer(emitter.asset, emitter.loop ? "loop" : "oneshot");
+      // A later `sync` call's decode may have resolved first, or `dispose()` may have run
+      // meanwhile — either way, a stale continuation must never touch the graph (the former
+      // would reconnect a source over a newer one; the latter would leak a source onto an
+      // already-disconnected gain).
+      if (this.#disposed || token !== this.#decodeToken) return;
       this.#source?.stop();
       const source = this.#context.createBufferSource();
       source.buffer = buffer;
@@ -76,7 +91,10 @@ export class EmitterPlayer {
       this.#source = source;
     }
     const now = this.#context.currentTime;
-    this.#gain.gain.setTargetAtTime(emitter.gain, now, AUDIBILITY_RAMP_TAU_SECS);
+    // Clamped: the server validates only finiteness (`0..=1` is a convention, not enforced),
+    // and a negative value THROWS against a real `AudioParam`.
+    const gain = Math.max(0, Math.min(1, emitter.gain));
+    this.#gain.gain.setTargetAtTime(gain, now, AUDIBILITY_RAMP_TAU_SECS);
     this.#panner.pan.setTargetAtTime(spatialOverride ? emitter.pan : 0, now, AUDIBILITY_RAMP_TAU_SECS);
   }
 
@@ -87,6 +105,7 @@ export class EmitterPlayer {
    * ```
    */
   dispose(): void {
+    this.#disposed = true;
     this.#source?.stop();
     this.#gain.disconnect();
     this.#panner.disconnect();
