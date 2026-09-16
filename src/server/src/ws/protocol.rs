@@ -510,12 +510,13 @@ pub enum AudioOp {
     Seek {
         /// The entry to seek.
         id: Uuid,
-        /// Target position, milliseconds from the track's own start. `u32`, not `u64`:
-        /// the transcode pipeline's own 30-minute admission cap bounds any real track at
-        /// 1.8M ms, and `u64` would generate as TS `bigint` while the client mirror reads a
-        /// plain `number` (the documented bigint-drift class; see
-        /// `data::engine::audio::PlayingTrack.started_at`'s own rationale).
-        position_ms: u32,
+        /// Target position, milliseconds from the track's own start. `u64`, matching every
+        /// other duration field on this enum: `ClientMsg` is fully hand-mirrored in
+        /// `wire.ts`'s `WireAudioOp` (never through the generated ts-rs binding, which nothing
+        /// imports), so the bigint-drift class this codebase otherwise guards against does not
+        /// apply to this type — a `u32` here would only under-declare the real range for no
+        /// benefit.
+        position_ms: u64,
     },
     /// Advance to the next track per the source playlist's mode. GM-only: an EXPLICIT skip,
     /// applied unconditionally (no elapsed-duration gate — that gate belongs to `TrackEnded`,

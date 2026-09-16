@@ -62,13 +62,14 @@ id: string, } | { "type": "stop_all" } | { "type": "seek",
  */
 id: string, 
 /**
- * Target position, milliseconds from the track's own start. `u32`, not `u64`:
- * the transcode pipeline's own 30-minute admission cap bounds any real track at
- * 1.8M ms, and `u64` would generate as TS `bigint` while the client mirror reads a
- * plain `number` (the documented bigint-drift class; see
- * `data::engine::audio::PlayingTrack.started_at`'s own rationale).
+ * Target position, milliseconds from the track's own start. `u64`, matching every
+ * other duration field on this enum: `ClientMsg` is fully hand-mirrored in
+ * `wire.ts`'s `WireAudioOp` (never through the generated ts-rs binding, which nothing
+ * imports), so the bigint-drift class this codebase otherwise guards against does not
+ * apply to this type — a `u32` here would only under-declare the real range for no
+ * benefit.
  */
-position_ms: number, } | { "type": "next", 
+position_ms: bigint, } | { "type": "next", 
 /**
  * The entry to advance.
  */
