@@ -3561,4 +3561,12 @@ and `pipewire`/`libspa` 0.8.0 (MIT, binds `libpipewire-0.3`, also MIT) all PASS;
 `docs`. Tests: `cargo test --all` 3787 passed 0 failed (2787 lib unit + 130 integration + 870
 doc-tests); `pnpm -r test` all packages green (`@shadowcat/module-ducking` 41 tests across 9
 files). e2e: `ducking.spec.ts` written, NOT run by this milestone (dispatcher-run per master §4).
+Verification caveat: `linux.rs`'s passive monitor-port capture stream and `macos.rs`'s
+process-tap IO callback (peak measurement on both platforms) are implemented against the
+published `pipewire`/`libspa` 0.8 and Core Audio process-tap API surfaces, but are unverified
+end-to-end without a real Linux/macOS host with audio hardware in this development environment
+— `macos.rs`'s `CATapDescription` construction in particular goes through hand-transcribed
+Objective-C runtime calls with no `objc`/`objc2` dependency, the single highest-risk surface in
+the file. Both backends' non-capture surface (node/process enumeration, naming) was checked
+against the resolved crates' vendored source.
 
