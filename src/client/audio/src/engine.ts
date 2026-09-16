@@ -146,6 +146,24 @@ export class AudioEngine implements AudioApi {
     return this.#channelState;
   }
 
+  /** The shared engine `AudioContext` (thin accessor over `#context`).
+   * @returns The real `AudioContext`, or `null` before `unlock()` resolves.
+   * @example
+   * ```ts
+   * // implements `AudioApi.context` — see that interface's own doc
+   * ```
+   */
+  context(): AudioContext | null {
+    // `#context` is typed `AudioContextLike` (the injected abstraction every other member of
+    // this class uses), but `AudioEngineOpts.createContext`'s production implementation
+    // constructs a real DOM `AudioContext`, which structurally satisfies `AudioContextLike`
+    // (see `AudioNodeLike`'s own doc for the same real-class-satisfies-the-`*Like`-interface
+    // precedent). A consumer needing `AudioWorkletNode` construction (`MicVadSource`) needs the
+    // real type the abstraction does not model; a test double is never routed through this
+    // accessor by production code.
+    return this.#context as unknown as AudioContext | null;
+  }
+
   /** The shared ducking bus.
    * @returns The duck controller. */
   get duck(): DuckController {

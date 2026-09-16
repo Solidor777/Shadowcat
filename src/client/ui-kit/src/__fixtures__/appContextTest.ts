@@ -115,6 +115,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       },
       setChannel: () => {},
       unlock: async () => {},
+      context: () => null,
       duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
       playOneShot: () => {},
       serverNow: () => 0,

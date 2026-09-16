@@ -116,6 +116,16 @@ describe("AudioEngine", () => {
     expect(engine.duck.depth).toBe(0.2);
   });
 
+  it("context() is null before unlock and the constructed context after", async () => {
+    const opts = makeOpts();
+    const ctx = stubAudioContext();
+    opts.createContext = () => ctx;
+    const engine = new AudioEngine(opts);
+    expect(engine.context()).toBeNull();
+    await engine.unlock();
+    expect(engine.context()).toBe(ctx);
+  });
+
   it("subscribe fires on setChannel and notifyAudioChanged, and unsubscribe stops it", () => {
     const engine = new AudioEngine(makeOpts());
     const calls: number[] = [];

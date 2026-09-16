@@ -77,6 +77,12 @@ export interface AudioApi {
    * calling it again after a successful unlock resolves immediately.
    * @returns Resolves once the context is running. */
   unlock(): Promise<void>;
+  /** The shared engine `AudioContext`, for a consumer that needs to register its own
+   * `AudioWorkletNode` against the SAME graph `AudioApi` otherwise owns entirely (the
+   * ducking module's `MicVadSource`). `null` until `unlock()` resolves —
+   * Web Audio requires a user gesture before a context exists at all.
+   * @returns The engine's `AudioContext`, or `null` before `unlock()` resolves. */
+  context(): AudioContext | null;
   /** The shared ducking bus (see `DuckController`). */
   readonly duck: DuckController;
   /** Play a one-shot sound effect by asset id, at channel gain (times an optional per-call
