@@ -2,9 +2,9 @@
 // Exercises plain state and pure functions: no component render and no DOM API use, so
 // the package-default jsdom environment would be constructed per file and never touched.
 import { expect, test } from "vitest";
-import { topTokenAt } from "./hit-test";
-import { buildSceneDoc, buildActorDoc, buildTokenFromActor, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
-import type { ReadableDocuments, WireDocument, FootprintLookup } from "@shadowcat/core";
+import { topTokenAt, topRegionAt, topDrawingAt, topTemplateAt } from "./hit-test";
+import { buildSceneDoc, buildActorDoc, buildTokenFromActor, buildTokenDoc, buildRegionDoc, buildSceneEntityDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
+import type { ReadableDocuments, WireDocument, FootprintLookup, RegionEngine, DrawingEngine, TemplateEngine } from "@shadowcat/core";
 
 function fakeStore(docs: WireDocument[]): ReadableDocuments {
   return { get: (id) => docs.find((d) => d.id === id), query: (type) => docs.filter((d) => d.doc_type === type), subscribe: () => () => {}, appliedSeq: 0 } as ReadableDocuments;
@@ -65,4 +65,102 @@ test("raw token uses its own box; topmost (last) wins on overlap", () => {
   const a = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null }, "a");
   const b = buildTokenDoc("w1", "scene1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "x" }, actor_id: null, overrides: null, face: null, elevation: null }, "b");
   expect(topTokenAt([a, b], { x: 0, y: 0 }, fakeStore([a, b]), EMPTY_FOOTPRINTS)).toBe("b");
+});
+
+// --- topRegionAt ---
+
+const regionEngine = (over: Partial<RegionEngine> = {}): RegionEngine => ({
+  shape: { kind: "rect", points: [0, 0, 10, 10] },
+  behavior: "terrain",
+  cost: 1,
+  enabled: true,
+  triggers: [],
+  elevation: null,
+  ...over,
+});
+
+test("topRegionAt: a rect region hits inside its bbox and misses outside", () => {
+  const region = buildRegionDoc("w1", "scene1", regionEngine(), "r1");
+  expect(topRegionAt([region], { x: 5, y: 5 })).toBe("r1");
+  expect(topRegionAt([region], { x: 50, y: 50 })).toBeNull();
+});
+
+test("topRegionAt: a circle region hits inside its radius and misses outside", () => {
+  const region = buildRegionDoc("w1", "scene1", regionEngine({ shape: { kind: "circle", points: [0, 0, 5] } }), "r1");
+  expect(topRegionAt([region], { x: 0, y: 0 })).toBe("r1");
+  expect(topRegionAt([region], { x: 10, y: 10 })).toBeNull();
+});
+
+test("topRegionAt: overlapping regions pick the topmost (last-in-order) on containment", () => {
+  const a = buildRegionDoc("w1", "scene1", regionEngine(), "a");
+  const b = buildRegionDoc("w1", "scene1", regionEngine(), "b");
+  expect(topRegionAt([a, b], { x: 5, y: 5 })).toBe("b");
+});
+
+test("topRegionAt: a malformed shape (bad point count) never renders or picks", () => {
+  const region = buildRegionDoc("w1", "scene1", regionEngine({ shape: { kind: "rect", points: [0, 0, 10] } }), "r1");
+  expect(topRegionAt([region], { x: 5, y: 5 })).toBeNull();
+});
+
+// --- topDrawingAt ---
+
+const drawingEngine = (over: Partial<DrawingEngine> = {}): DrawingEngine => ({
+  shape: { kind: "rect", points: [0, 0, 10, 10] },
+  stroke: null,
+  fill: null,
+  elevation: null,
+  ...over,
+});
+
+test("topDrawingAt: a closed rect drawing hits inside its bbox", () => {
+  const drawing = buildSceneEntityDoc("w1", "scene1", "drawing", drawingEngine(), "d1");
+  expect(topDrawingAt([drawing], { x: 5, y: 5 })).toBe("d1");
+  expect(topDrawingAt([drawing], { x: 50, y: 50 })).toBeNull();
+});
+
+test("topDrawingAt: an open freehand line picks nearest-within-tolerance, not containment", () => {
+  const drawing = buildSceneEntityDoc(
+    "w1", "scene1", "drawing",
+    drawingEngine({ shape: { kind: "freehand", points: [0, 0, 10, 0, 20, 0] } }),
+    "d1",
+  );
+  expect(topDrawingAt([drawing], { x: 10, y: 2 })).toBe("d1"); // within tolerance of the polyline
+  expect(topDrawingAt([drawing], { x: 10, y: 20 })).toBeNull(); // far from every segment
+});
+
+test("topDrawingAt: overlapping closed drawings pick the topmost (last-in-order) on containment", () => {
+  const a = buildSceneEntityDoc("w1", "scene1", "drawing", drawingEngine(), "a");
+  const b = buildSceneEntityDoc("w1", "scene1", "drawing", drawingEngine(), "b");
+  expect(topDrawingAt([a, b], { x: 5, y: 5 })).toBe("b");
+});
+
+// --- topTemplateAt ---
+
+const templateEngine = (over: Partial<TemplateEngine> = {}): TemplateEngine => ({
+  shape: { kind: "circle", x: 0, y: 0, size: 10, direction: 0 },
+  color: "#3388ff",
+  elevation: null,
+  ...over,
+});
+
+test("topTemplateAt: a circle template hits inside its radius and misses outside", () => {
+  const template = buildSceneEntityDoc("w1", "scene1", "template", templateEngine(), "t1");
+  expect(topTemplateAt([template], { x: 0, y: 0 })).toBe("t1");
+  expect(topTemplateAt([template], { x: 50, y: 50 })).toBeNull();
+});
+
+test("topTemplateAt: an open line template picks nearest-within-tolerance, not containment", () => {
+  const template = buildSceneEntityDoc(
+    "w1", "scene1", "template",
+    templateEngine({ shape: { kind: "line", x: 0, y: 0, size: 20, direction: 0 } }),
+    "t1",
+  );
+  expect(topTemplateAt([template], { x: 10, y: 2 })).toBe("t1"); // within tolerance of the segment
+  expect(topTemplateAt([template], { x: 10, y: 20 })).toBeNull(); // far from the segment
+});
+
+test("topTemplateAt: overlapping closed templates pick the topmost (last-in-order) on containment", () => {
+  const a = buildSceneEntityDoc("w1", "scene1", "template", templateEngine(), "a");
+  const b = buildSceneEntityDoc("w1", "scene1", "template", templateEngine(), "b");
+  expect(topTemplateAt([a, b], { x: 0, y: 0 })).toBe("b");
 });
