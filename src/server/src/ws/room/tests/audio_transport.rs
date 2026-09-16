@@ -396,6 +396,77 @@ async fn track_ended_reports_obey_the_pause_aware_elapsed_gate() {
     assert_eq!(audio_state(&repo, world).await.playing[0].id, second_id);
 }
 
+/// An audio asset row whose duration was never probed (`meta.duration_ms == None`) — the
+/// reachable state after a transcode failure or an over-cap upload.
+async fn insert_audio_asset_no_duration(repo: &SqliteRepository, world: Uuid, id: Uuid) {
+    repo.insert_asset(&crate::data::asset::Asset {
+        id,
+        world_id: world,
+        storage_key: format!("{world}/{id}"),
+        original_name: "loop.wav".into(),
+        content_type: "audio/wav".into(),
+        byte_size: 100,
+        created_by: None,
+        created_at: 0,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: crate::data::asset::AssetMeta::unprocessed("audio/wav", 100),
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn track_ended_with_an_unresolvable_duration_never_advances() {
+    let (repo, world, ctx) = repo_with_world().await;
+    let room = seeded_room(&repo, world, &ctx).await;
+    let asset = Uuid::new_v4();
+    insert_audio_asset_no_duration(&repo, world, asset).await;
+    let playlist = playlist_doc_with_asset(world, asset);
+    let playlist_id = playlist.id;
+    repo.apply_intent(
+        &ctx,
+        world,
+        vec![Operation::Create { doc: playlist }],
+        1,
+        WriteOrigin::Client,
+    )
+    .await
+    .unwrap();
+    gm_play(&repo, &ctx, &room, playlist_id, 1_000).await;
+    let first_id = audio_state(&repo, world).await.playing[0].id;
+
+    let player = repo
+        .create_user("p", None, ServerRole::User, 0)
+        .await
+        .unwrap();
+    repo.add_member(world, player, WorldRole::Player)
+        .await
+        .unwrap();
+    let player_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    // A report arriving well after any plausible track length still refuses: with no
+    // resolvable duration, the report can never be confirmed non-premature.
+    handle_transport(
+        &repo,
+        &player_ctx,
+        &room,
+        AudioOp::TrackEnded { id: first_id },
+        1_000_000,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        audio_state(&repo, world).await.playing[0].id,
+        first_id,
+        "an unresolvable duration must never let TrackEnded advance the track"
+    );
+}
+
 #[tokio::test]
 async fn a_gm_next_skips_unconditionally_even_before_the_duration_elapses() {
     let (repo, world, ctx) = repo_with_world().await;

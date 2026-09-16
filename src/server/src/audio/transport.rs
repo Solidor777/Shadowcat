@@ -139,15 +139,24 @@ pub(crate) async fn handle_transport_locked(
             let Some(track) = state.playing.iter().find(|t| t.id == id) else {
                 return Ok(()); // stale id: already advanced by an earlier report
             };
-            if let Ok(asset_id) = Uuid::parse_str(&track.asset) {
-                if let Ok(Some(asset)) = repo.get_asset(asset_id).await {
-                    if let Some(duration_ms) = asset.meta.duration_ms {
-                        let elapsed = track.paused_at.unwrap_or(now_f) - track.started_at;
-                        if elapsed < duration_ms as f64 {
-                            return Ok(()); // premature report
-                        }
-                    }
-                }
+            // The duration must be resolvable to confirm a report is not premature: an
+            // unparsable asset id, a missing asset row, or an asset whose duration was never
+            // probed (`meta.duration_ms == None` — a reachable state after a transcode
+            // failure or an over-cap upload) is treated as premature rather than falling
+            // through to an unconditional advance, which would let any world member skip a
+            // track early by spamming `TrackEnded`.
+            let Ok(asset_id) = Uuid::parse_str(&track.asset) else {
+                return Ok(());
+            };
+            let Ok(Some(asset)) = repo.get_asset(asset_id).await else {
+                return Ok(());
+            };
+            let Some(duration_ms) = asset.meta.duration_ms else {
+                return Ok(());
+            };
+            let elapsed = track.paused_at.unwrap_or(now_f) - track.started_at;
+            if elapsed < duration_ms as f64 {
+                return Ok(()); // premature report
             }
             // The gate passed: advance exactly as an explicit Next would.
             AudioOp::Next { id }
