@@ -21,3 +21,4 @@ export { Compositor } from "./compositor";
 export { RenderEngine, type RenderEngineOpts, type SubscribeScene, type SceneSubscription, type ThemeColors } from "./engine";
 export { PixiBackend, createPixiBackend, composeTokenFxMatrix } from "./pixi-backend";
 export { parseColor, rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints } from "./geometry";
+export { sceneScopedDocs } from "./scene-scope";

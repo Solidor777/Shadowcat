@@ -648,3 +648,44 @@ test("a viewedLevel function scopes reconcile() via levelOf over each token's ow
   expect(backend.tokens.has("tok-ground")).toBe(true);
   expect(backend.tokens.has("tok-upper")).toBe(false);
 });
+
+test("ghostOtherLevels: () => true renders an other-level token with the ghost TokenFx", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  const view = new TokenView(
+    store, new AssetResolver(), backend, () => "s1", () => "l1",
+    () => EMPTY_FOOTPRINTS, () => new Set(), () => new Set(), () => true,
+  );
+  view.reconcile();
+  // Both tokens now render (the level filter is off while ghosting).
+  expect(backend.tokens.has("tok-ground")).toBe(true);
+  expect(backend.tokens.has("tok-upper")).toBe(true);
+  // Only the OTHER-level token gets the ghost fx; the viewed-level one gets none.
+  expect(backend.tokens.get("tok-ground")!.fx).toBeUndefined();
+  expect(backend.tokens.get("tok-upper")!.fx).toEqual([{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }]);
+});
+
+test("ghostOtherLevels: () => false (default) excludes the other-level token entirely, matching plain level-scoping", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  const view = new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1");
+  view.reconcile();
+  expect(backend.tokens.has("tok-ground")).toBe(true);
+  expect(backend.tokens.has("tok-upper")).toBe(false);
+});

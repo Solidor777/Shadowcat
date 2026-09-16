@@ -699,4 +699,5 @@ export const en: Messages = {
   "levels.top": "Top",
   "levels.background": "Background",
   "levels.backgroundClear": "Clear background",
+  "levels.ghostOtherLevels": "Ghost other levels",
 };

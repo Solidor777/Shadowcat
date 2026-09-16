@@ -4,6 +4,7 @@
   import {
     RenderEngine,
     createPixiBackend,
+    sceneScopedDocs,
     type DisplayBackend,
     type Point,
   } from "@shadowcat/render";
@@ -40,7 +41,7 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members, t } = ctx;
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -53,6 +54,11 @@
   /** Candidate see-as targets: distinct token owners the GM sees (best-effort; usernames need a
    * members source — labeled by short id for now). */
   let playerOptions = $state<string[]>([]);
+  /** GM-only ghost-other-levels toggle (`ghost-other-levels` control below): forwarded into
+   * `RenderEngineOpts.ghostOtherLevels`, read fresh via the getter so flipping it re-renders
+   * immediately without a manual reconcile call. Gated to GM-only at the control itself — this
+   * flag carries no server round-trip and is never read for a non-GM (the control never mounts). */
+  let ghostOtherLevels = $state(false);
 
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
@@ -140,6 +146,7 @@
         viewedLevel: () => ctx.viewedLevel,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
+        ghostOtherLevels: () => ghostOtherLevels,
         onDerivedApplied: (input) => {
           host.dataset.sceneDerived = "1";
           host.dataset.visionMode = input.mode;
@@ -147,6 +154,14 @@
           // id-sorted so the string is order-independent. This is the set `TokenView` raises
           // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
           host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
+          // Level observability: written here too (not just in the store-commit reconcile
+          // below) so a level SWITCH — which resubscribes vision (`reapplyViewedLevel`) and
+          // thus fires a fresh derived frame without necessarily committing a document — still
+          // updates both attributes promptly.
+          host.dataset.level = ctx.viewedLevel ?? "";
+          host.dataset.tokenCount = String(
+            sceneScopedDocs(documents, "token", () => ctx.viewedSceneId, () => ctx.viewedLevel).length,
+          );
         },
         // Mirrors a scene tool's route-preview label (a combat movement-budget overage/stop
         // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
@@ -270,7 +285,13 @@
           e.setAnimation({ speedCellsPerSec: anim.speedCellsPerSec, easing: anim.easing });
         }
         const sceneTokens = documents.query("token").filter((t) => !vsid || t.parent_id === vsid);
-        host.dataset.tokenCount = String(sceneTokens.length);
+        // Level-scoped, mirroring `onDerivedApplied`'s own write of the same two attributes —
+        // both sites stay in sync so a level switch OR a document commit (e.g. a token's
+        // elevation moving it across the viewed level's boundary) updates them promptly.
+        host.dataset.level = ctx.viewedLevel ?? "";
+        host.dataset.tokenCount = String(
+          sceneScopedDocs(documents, "token", () => ctx.viewedSceneId, () => ctx.viewedLevel).length,
+        );
         // Read-only observability signal: each viewed-scene token's COMMITTED
         // `/engine/x,y` as `id:x,y`, id-sorted so the string is order-independent of
         // the store's iteration. Mirrors data-token-count/data-last-ping. Because the
@@ -440,6 +461,10 @@
     onSelect={(id) => ctx.setViewedLevel(id)}
   />
   {#if role === "gm"}
+    <label class="ghost-toggle">
+      <input type="checkbox" data-testid="ghost-other-levels" bind:checked={ghostOtherLevels} />
+      {t("levels.ghostOtherLevels")}
+    </label>
     <select
       class="gm-view"
       data-testid="gm-view-select"
@@ -466,6 +491,21 @@
   }
   canvas {
     display: block;
+  }
+  .ghost-toggle {
+    position: absolute;
+    top: var(--space-2);
+    right: calc(var(--space-2) + 9rem);
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    cursor: pointer;
   }
   .gm-view {
     position: absolute;

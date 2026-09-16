@@ -109,6 +109,23 @@ test("see-as picker falls back to the short id for an unknown owner", async () =
   await vi.waitFor(() => expect(getByText(`See as ${OWNER.slice(0, 8)}`)).toBeTruthy());
 });
 
+test("the ghost-other-levels toggle is GM-only", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const gm = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ role: "gm", documents: tokenDocs(), subscribeScene: () => ({ unsubscribe() {} }) }),
+  });
+  await vi.waitFor(() => expect(gm.getByTestId("ghost-other-levels")).toBeTruthy());
+  gm.unmount();
+
+  const player = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ role: "player", documents: tokenDocs(), subscribeScene: () => ({ unsubscribe() {} }) }),
+  });
+  await vi.waitFor(() => expect(player.container.querySelector(".stage-host")).toBeTruthy());
+  expect(player.queryByTestId("ghost-other-levels")).toBeNull();
+});
+
 test("a backend-init failure logs through the injected logger, not silently", async () => {
   const failure = new Error("no webgl context");
   const createBackend = vi.fn(async () => {
@@ -718,6 +735,75 @@ test("a viewedLevel context change re-subscribes vision exactly once per genuine
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(spy).toHaveBeenCalledTimes(1);
   spy.mockRestore();
+});
+
+test("data-level reflects ctx.viewedLevel", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildSceneDoc(
+          "w1",
+          { grid: { kind: "square", size: 100, distance: null }, levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+          "sA",
+        ),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      viewedLevel: "l2",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  await vi.waitFor(() => expect(host.dataset.level).toBe("l2"));
+});
+
+test("data-token-count reflects the level-scoped token count, changing when a token's elevation moves it across the viewed level's boundary", async () => {
+  const store = new DocumentStore();
+  const scene = buildSceneDoc(
+    "w1",
+    { grid: { kind: "square", size: 100, distance: null }, levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "sA",
+  );
+  const token = buildTokenDoc(
+    "w1", "sA",
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 },
+    "t1",
+  );
+  store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: scene }, { op: "create", doc: token }] } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      viewedLevel: "l1",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  await vi.waitFor(() => expect(host.dataset.tokenCount).toBe("1")); // t1 is on the viewed level (l1)
+
+  // Move t1's elevation into l2's band: the level-scoped count on l1 must drop to 0.
+  store.applyCommand({
+    seq: 2, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/elevation", old: 0, new: 15 }] }],
+  } as never);
+  await vi.waitFor(() => expect(host.dataset.tokenCount).toBe("0"));
 });
 
 test("a new footprints lookup re-projects the tokens exactly once per genuine change", async () => {

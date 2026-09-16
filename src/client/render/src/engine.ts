@@ -118,6 +118,12 @@ export interface RenderEngineOpts {
    * selection change carries no store commit, so the host must call
    * {@link RenderEngine.reapplyTokenSelection} to re-project. */
   selectedTokens?: () => ReadonlySet<string>;
+  /** The GM-only ghost-other-levels toggle (Stage → a local `$state<boolean>`, gated on
+   * `ctx.role === "gm"` at the control itself — this option only forwards it). Absent/`() =>
+   * false` ⇒ today's behavior: `TokenView.reconcile` scopes strictly to `viewedLevel`, an
+   * other-level token is absent entirely. `true` additionally renders every other-level token
+   * on the viewed scene, ghosted (`TokenView`'s `GHOST_FX`). */
+  ghostOtherLevels?: () => boolean;
 }
 
 /** Theme-driven colors applied to the stage canvas at runtime by
@@ -332,7 +338,7 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
     this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
