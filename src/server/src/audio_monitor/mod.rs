@@ -107,28 +107,39 @@ pub trait SessionMonitor: Send {
 
 /// Constructs the platform-appropriate `SessionMonitor`, or `MonitorError::Unsupported` when
 /// this OS/OS-version has none (macOS < 14.2, Linux with no PipeWire socket running, or a
-/// build for any other target).
+/// build for any other target). `shutdown` is threaded into the macOS/Linux backends' own
+/// dedicated OS thread (Windows holds no long-lived OS resource across polls, so it ignores
+/// it): setting it asks that thread to tear down its live resources (Core Audio taps, the
+/// PipeWire connection) and exit, rather than running for the rest of the process's lifetime
+/// with no way to stop it.
 ///
 /// # Examples
 ///
 /// ```
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
 /// use shadowcat::audio_monitor::platform_monitor;
 ///
 /// // Never panics: a host without a working backend reports `Unsupported` instead.
-/// let _outcome = platform_monitor();
+/// let _outcome = platform_monitor(Arc::new(AtomicBool::new(false)));
 /// ```
-pub fn platform_monitor() -> Result<Box<dyn SessionMonitor>, MonitorError> {
+pub fn platform_monitor(
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Box<dyn SessionMonitor>, MonitorError> {
+    // Referenced unconditionally so a target with no OS-thread-owning backend (Windows, or any
+    // other target) never trips an unused-parameter warning.
+    let _ = &shutdown;
     #[cfg(target_os = "windows")]
     {
         windows::WindowsMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>)
     }
     #[cfg(target_os = "macos")]
     {
-        macos::MacosMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>)
+        macos::MacosMonitor::new(shutdown).map(|m| Box::new(m) as Box<dyn SessionMonitor>)
     }
     #[cfg(target_os = "linux")]
     {
-        linux::LinuxMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>)
+        linux::LinuxMonitor::new(shutdown).map(|m| Box::new(m) as Box<dyn SessionMonitor>)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {

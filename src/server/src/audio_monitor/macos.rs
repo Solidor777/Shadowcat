@@ -2,7 +2,7 @@
 //! macOS 14.2 — new enough that `coreaudio-sys` does not wrap it in the resolved version, so
 //! this file binds the small entry-point surface it needs directly
 //! via `extern "C"` against the `CoreAudio`/`AudioToolbox` frameworks, using `core-foundation`
-//! only for `CFString`/`CFRelease` handling. On macOS < 14.2 (detected by
+//! only for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling. On macOS < 14.2 (detected by
 //! `macos_at_least_14_2`'s Darwin-kernel version probe), `MacosMonitor::new` returns
 //! `MonitorError::Unsupported("macOS 14.2 or newer")` — the hello frame says so verbatim.
 //!
@@ -27,10 +27,11 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use core_foundation::array::CFArray;
-use core_foundation::base::{CFRelease, TCFType};
+use core_foundation::base::TCFType;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::CFString;
@@ -238,10 +239,12 @@ extern "C" fn tap_io_proc(
 /// # Examples
 ///
 /// ```
+/// use std::sync::atomic::AtomicBool;
+/// use std::sync::Arc;
 /// use shadowcat::audio_monitor::macos::MacosMonitor;
 ///
 /// // Below macOS 14.2 construction reports `Unsupported`; at or above it never panics.
-/// let _outcome = MacosMonitor::new();
+/// let _outcome = MacosMonitor::new(Arc::new(AtomicBool::new(false)));
 /// ```
 pub struct MacosMonitor {
     /// Shared latest reading, updated by the background thread every poll interval.
@@ -250,26 +253,31 @@ pub struct MacosMonitor {
 
 impl MacosMonitor {
     /// Checks the macOS version, then spawns the dedicated Core Audio thread. Returns
-    /// `MonitorError::Unsupported("macOS 14.2 or newer")` below that version.
+    /// `MonitorError::Unsupported("macOS 14.2 or newer")` below that version. `shutdown` is
+    /// polled by the dedicated thread's loop; when the caller sets it, the thread tears down
+    /// every live tap (`teardown_tap`) and exits rather than leaking Core Audio resources for
+    /// the rest of the process's lifetime.
     ///
     /// # Examples
     ///
     /// ```
+    /// use std::sync::atomic::AtomicBool;
+    /// use std::sync::Arc;
     /// use shadowcat::audio_monitor::macos::MacosMonitor;
     /// use shadowcat::audio_monitor::SessionMonitor;
     ///
-    /// if let Ok(mut monitor) = MacosMonitor::new() {
+    /// if let Ok(mut monitor) = MacosMonitor::new(Arc::new(AtomicBool::new(false))) {
     ///     let _levels = monitor.poll();
     /// }
     /// ```
-    pub fn new() -> Result<Self, MonitorError> {
+    pub fn new(shutdown: Arc<AtomicBool>) -> Result<Self, MonitorError> {
         if !macos_at_least_14_2() {
             return Err(MonitorError::Unsupported("macOS 14.2 or newer".to_string()));
         }
         let latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>> =
             Arc::new(Mutex::new(Ok(Vec::new())));
         let thread_latest = latest.clone();
-        std::thread::spawn(move || run_process_tap_loop(thread_latest));
+        std::thread::spawn(move || run_process_tap_loop(thread_latest, shutdown));
         Ok(Self { latest })
     }
 }
@@ -346,17 +354,23 @@ fn teardown_tap(handle: TapHandle) {
 
 /// Runs on its own dedicated Core Audio thread for the process's lifetime: enumerates the
 /// system's process object list, creates a process tap + aggregate device per tapped process
-/// (tearing down a tap whose process has exited), and publishes each process's measured peak
-/// into `latest` every 100 ms.
-fn run_process_tap_loop(latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>>) {
+/// (tearing down a tap whose process has exited via `teardown_tap`, never merely dropping the
+/// `TapHandle` — it holds no `Drop` impl of its own, so a dropped-without-teardown handle would
+/// leak its `AudioDeviceIOProcID`/aggregate device/process tap for the rest of the process's
+/// lifetime), and publishes each process's measured peak into `latest` every 100 ms. Exits (also
+/// tearing down every still-live tap first) once `shutdown` is observed set.
+fn run_process_tap_loop(
+    latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>>,
+    shutdown: Arc<AtomicBool>,
+) {
     let peaks: Arc<Mutex<HashMap<i32, f32>>> = Arc::new(Mutex::new(HashMap::new()));
     *TAP_PEAKS.lock().expect("tap peak map lock poisoned") = Some(peaks.clone());
     let mut taps: HashMap<i32, TapHandle> = HashMap::new();
 
-    loop {
+    while !shutdown.load(Ordering::Relaxed) {
         let (result, pids) = enumerate_processes(&peaks);
         let live: std::collections::HashSet<i32> = pids.into_iter().collect();
-        taps.retain(|pid, _| live.contains(pid));
+        teardown_departed_taps(&mut taps, &live);
         for pid in &live {
             if !taps.contains_key(pid) {
                 if let Some(handle) = create_tap_for_pid(*pid) {
@@ -371,6 +385,35 @@ fn run_process_tap_loop(latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError
         *latest.lock().expect("Core Audio state lock poisoned") = result;
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    // Shutdown requested: every remaining tap is "departed" relative to an empty live set, so
+    // the same teardown path used every poll cycle also drains the thread's exit.
+    teardown_departed_taps(&mut taps, &std::collections::HashSet::new());
+}
+
+/// Removes and tears down (`teardown_tap`) every tap whose pid is absent from `live`, in place.
+/// The sole path that ever discards a `TapHandle`: `run_process_tap_loop` calls it both every
+/// poll cycle (departed processes) and once more on exit (`live` empty, so every tap departs).
+/// The pid diff itself lives in `departed_pids` so it can be exercised without invoking real
+/// Core Audio teardown calls.
+fn teardown_departed_taps(
+    taps: &mut HashMap<i32, TapHandle>,
+    live: &std::collections::HashSet<i32>,
+) {
+    for pid in departed_pids(taps.keys().copied(), live) {
+        if let Some(handle) = taps.remove(&pid) {
+            teardown_tap(handle);
+        }
+    }
+}
+
+/// Pure diff: which of `present` pids are absent from `live`. Split out from
+/// `teardown_departed_taps` so the "which taps get torn down" decision is unit-testable without
+/// a real Core Audio device/aggregate/tap to release.
+fn departed_pids(
+    present: impl Iterator<Item = i32>,
+    live: &std::collections::HashSet<i32>,
+) -> Vec<i32> {
+    present.filter(|pid| !live.contains(pid)).collect()
 }
 
 /// Reads `pid`'s own `kAudioProcessPropertyPID` property off its Core Audio process object —
@@ -398,9 +441,28 @@ fn read_process_pid(process_object_id: AudioObjectId) -> Option<i32> {
     (status == 0).then_some(pid)
 }
 
+/// Sends an Objective-C `release` message to `instance` — manual (ARC-free) reference counting
+/// for the `alloc`/`init`-owned `CATapDescription` this file builds. `CATapDescription` is a
+/// plain Objective-C class with no documented CoreFoundation toll-free bridging, so releasing it
+/// via `CFRelease` (which relies on retain-count layout compatibility that is undocumented for
+/// an arbitrary non-bridged class) is avoided in favor of the real message send.
+///
+/// # Safety
+/// `instance` must be a live, +1-owned Objective-C object pointer (or null, which this function
+/// treats as a no-op).
+unsafe fn release_objc_instance(instance: *mut c_void) {
+    if instance.is_null() {
+        return;
+    }
+    if let Ok(release_sel_name) = CString::new("release") {
+        objc_msg_send_0(instance, sel_registerName(release_sel_name.as_ptr()));
+    }
+}
+
 /// Builds a `CATapDescription` mixing down `pid`'s own audio, via hand-transcribed
 /// `objc_msgSend` calls (module doc's verification note: this is the file's highest-risk
-/// surface). Returns the owned Objective-C instance pointer (release with `CFRelease`).
+/// surface). Returns the owned Objective-C instance pointer (release with
+/// `release_objc_instance`).
 fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
     // SAFETY: every symbol here is a `dlsym`-resolved libobjc/CoreFoundation entry point;
     // each selector/class name is a static, NUL-terminated C string literal.
@@ -420,6 +482,10 @@ fn build_stereo_mixdown_tap_description(pid: i32) -> Option<*mut c_void> {
         if class_respondsToSelector(class, init_sel) == 0 {
             // The selector this file guesses at is absent from the resolved SDK — fail
             // closed rather than risk `doesNotRecognizeSelector:` aborting the process.
+            // `alloc` above yielded a +1-owned instance; release it here (manual reference
+            // counting, matching every other error path in this function) rather than leaking
+            // one Objective-C object per newly-discovered process.
+            release_objc_instance(instance);
             return None;
         }
         let pid_number = CFNumber::from(pid);
@@ -442,10 +508,11 @@ fn create_tap_for_pid(pid: i32) -> Option<TapHandle> {
     // SAFETY: `description` is a live, owned `CATapDescription*` from the call above;
     // `tap_id` is a valid `AudioObjectID` out-param.
     let status = unsafe { AudioHardwareCreateProcessTap(description, &mut tap_id) };
-    // SAFETY: `description` is a valid Objective-C object pointer this function owns a
-    // reference to (an `alloc`/`init` pair yields a +1 reference); releasing it here matches
-    // that ownership regardless of whether the tap call above succeeded.
-    unsafe { CFRelease(description as *const c_void) };
+    // SAFETY: `description` is a live Objective-C object pointer this function owns a +1
+    // reference to (an `alloc`/`init` pair); `release_objc_instance` matches that ownership
+    // regardless of whether the tap call above succeeded. Uses the real Objective-C message
+    // send rather than `CFRelease` — see `release_objc_instance`'s doc comment.
+    unsafe { release_objc_instance(description) };
     if status != 0 {
         return None;
     }

@@ -4,10 +4,14 @@
 //! non-error result, and a missing endpoint surfaces as a runtime `Backend` error from
 //! `poll`, not a construction failure).
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
 use super::super::platform_monitor;
 
 #[test]
 fn platform_monitor_never_panics_and_reports_a_sane_result() {
-    let mut m = platform_monitor().expect("Windows always has a working WASAPI backend");
+    let mut m = platform_monitor(Arc::new(AtomicBool::new(false)))
+        .expect("Windows always has a working WASAPI backend");
     let _ = m.poll(); // Ok(_) (possibly empty) or MonitorError::Backend — never a panic
 }

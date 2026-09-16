@@ -3,6 +3,8 @@
 //! client (mirroring `shadowcat_test_support`'s spawn-then-connect shape for the main `/ws`
 //! server).
 
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -41,7 +43,13 @@ async fn hello_then_levels_frames_are_watch_filtered() {
             peak: 0.9,
         },
     ])]);
-    let server = tokio::spawn(run_with_monitor(args, true, None, Some(Box::new(monitor))));
+    let server = tokio::spawn(run_with_monitor(
+        args,
+        true,
+        None,
+        Some(Box::new(monitor)),
+        Arc::new(AtomicBool::new(false)),
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await; // give the bind a moment
 
     let mut req = format!("ws://127.0.0.1:{port}/levels")
@@ -79,7 +87,13 @@ async fn an_oversized_watch_frame_is_dropped_and_the_previous_list_survives() {
         process: "discord".to_string(),
         peak: 0.5,
     }])]);
-    let server = tokio::spawn(run_with_monitor(args, true, None, Some(Box::new(monitor))));
+    let server = tokio::spawn(run_with_monitor(
+        args,
+        true,
+        None,
+        Some(Box::new(monitor)),
+        Arc::new(AtomicBool::new(false)),
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut req = format!("ws://127.0.0.1:{port}/levels")
@@ -122,6 +136,70 @@ async fn an_oversized_watch_frame_is_dropped_and_the_previous_list_survives() {
 }
 
 #[tokio::test]
+async fn a_raw_frame_over_the_byte_cap_is_dropped_before_parsing_even_when_entry_shaped() {
+    let port = free_port().await;
+    let args = AudioMonitorArgs {
+        port,
+        allow_origin: vec!["http://localhost:30000".to_string()],
+        watch: vec!["discord".to_string()],
+    };
+    let monitor = FakeMonitor::new(vec![Ok(vec![SessionLevel {
+        process: "discord".to_string(),
+        peak: 0.5,
+    }])]);
+    let server = tokio::spawn(run_with_monitor(
+        args,
+        true,
+        None,
+        Some(Box::new(monitor)),
+        Arc::new(AtomicBool::new(false)),
+    ));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut req = format!("ws://127.0.0.1:{port}/levels")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Origin", "http://localhost:30000".parse().unwrap());
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    let _hello = ws.next().await.unwrap().unwrap();
+
+    // Right at MAX_WATCH_ENTRIES/MAX_WATCH_ENTRY_CHARS' own per-field boundary (64 entries of
+    // 256 chars each), so `validate_watch_names` alone would accept this — only the raw
+    // byte-size cap (JSON framing pushes the serialized frame past 16 KiB) can be catching it.
+    let entry_shaped_but_oversized: Vec<String> = (0..64).map(|_| "y".repeat(256)).collect();
+    let frame =
+        serde_json::json!({ "type": "watch", "names": entry_shaped_but_oversized }).to_string();
+    assert!(
+        frame.len() > 16 * 1024,
+        "test fixture must actually exceed the byte cap to exercise it"
+    );
+    ws.send(TMessage::Text(frame)).await.unwrap();
+
+    let mut saw_discord = false;
+    for _ in 0..10 {
+        let msg = ws.next().await.unwrap().unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
+        if parsed["type"] == "levels"
+            && parsed["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|s| s["process"] == "discord")
+        {
+            saw_discord = true;
+            break;
+        }
+    }
+    assert!(
+        saw_discord,
+        "an over-byte-cap frame must be dropped before parsing, leaving the previous watch list in place"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
 async fn unlisted_origin_is_refused_before_the_hello_frame() {
     let port = free_port().await;
     let args = AudioMonitorArgs {
@@ -130,7 +208,13 @@ async fn unlisted_origin_is_refused_before_the_hello_frame() {
         watch: vec![],
     };
     let monitor = FakeMonitor::new(vec![Ok(vec![])]);
-    let server = tokio::spawn(run_with_monitor(args, true, None, Some(Box::new(monitor))));
+    let server = tokio::spawn(run_with_monitor(
+        args,
+        true,
+        None,
+        Some(Box::new(monitor)),
+        Arc::new(AtomicBool::new(false)),
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut req = format!("ws://127.0.0.1:{port}/levels")
@@ -159,7 +243,13 @@ async fn a_watch_frame_replaces_the_live_list_without_a_restart() {
         process: "firefox".to_string(),
         peak: 0.9,
     }])]);
-    let server = tokio::spawn(run_with_monitor(args, true, None, Some(Box::new(monitor))));
+    let server = tokio::spawn(run_with_monitor(
+        args,
+        true,
+        None,
+        Some(Box::new(monitor)),
+        Arc::new(AtomicBool::new(false)),
+    ));
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let mut req = format!("ws://127.0.0.1:{port}/levels")

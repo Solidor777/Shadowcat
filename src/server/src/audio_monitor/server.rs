@@ -22,8 +22,11 @@ use crate::config::AudioMonitorArgs;
 /// How often the loop polls the backend and broadcasts a `levels` frame.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Sets its shared flag to `true` on drop — the signal the OS polling thread's loop condition
-/// reads. See `run_with_monitor`'s `_shutdown_guard`.
+/// Sets its shared flag to `true` on drop — the signal both the thin polling-wrapper task AND
+/// the real macOS/Linux backend's own dedicated OS thread observe (`platform_monitor` threads
+/// the same `Arc<AtomicBool>` into `MacosMonitor::new`/`LinuxMonitor::new`, so setting this one
+/// flag reaches the thread that actually holds the Core Audio taps / PipeWire connection, not
+/// just the wrapper loop polling it). See `run_with_monitor`'s `_shutdown_guard`.
 struct ShutdownGuard(Arc<AtomicBool>);
 
 impl Drop for ShutdownGuard {
@@ -41,6 +44,14 @@ const DEFAULT_WATCH: &str = "discord";
 const MAX_WATCH_ENTRIES: usize = 64;
 /// Max characters per watch-list entry.
 const MAX_WATCH_ENTRY_CHARS: usize = 256;
+
+/// Cap on a raw incoming text frame's byte size, checked BEFORE `serde_json::from_str` ever
+/// runs — `validate_watch_names`'s entry-count/entry-length caps only apply after a frame has
+/// already parsed successfully, so an oversized-but-well-formed-JSON frame (or an oversized
+/// malformed one) would otherwise reach the parser uncapped. 16 KiB comfortably covers
+/// `MAX_WATCH_ENTRIES` entries of `MAX_WATCH_ENTRY_CHARS` UTF-8 characters each with room to
+/// spare for JSON framing.
+const MAX_INCOMING_FRAME_BYTES: usize = 16 * 1024;
 
 /// The `hello` frame — sent once, immediately after a connection is accepted.
 #[derive(Debug, Clone, Serialize)]
@@ -126,12 +137,16 @@ struct SharedState {
 /// # }
 /// ```
 pub async fn run(args: AudioMonitorArgs) -> anyhow::Result<()> {
-    let (supported, unsupported_reason, monitor) = match platform_monitor() {
+    // Created before the backend so `platform_monitor` can thread it straight into the
+    // macOS/Linux backend's own dedicated OS thread (see `run_with_monitor`'s `_shutdown_guard`
+    // doc comment for why a real exit path all the way down matters).
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let (supported, unsupported_reason, monitor) = match platform_monitor(shutdown.clone()) {
         Ok(m) => (true, None, Some(m)),
         Err(MonitorError::Unsupported(reason)) => (false, Some(reason), None),
         Err(MonitorError::Backend(reason)) => (false, Some(reason), None),
     };
-    run_with_monitor(args, supported, unsupported_reason, monitor).await
+    run_with_monitor(args, supported, unsupported_reason, monitor, shutdown).await
 }
 
 /// The testable core of `run`: takes the backend construction OUTCOME already decided (so
@@ -143,6 +158,7 @@ pub(super) async fn run_with_monitor(
     supported: bool,
     unsupported_reason: Option<String>,
     monitor: Option<Box<dyn SessionMonitor>>,
+    shutdown: Arc<AtomicBool>,
 ) -> anyhow::Result<()> {
     let initial_watch = if args.watch.is_empty() {
         vec![DEFAULT_WATCH.to_string()]
@@ -157,11 +173,12 @@ pub(super) async fn run_with_monitor(
 
     let latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>> =
         Arc::new(Mutex::new(Ok(Vec::new())));
-    // Signals the OS polling thread below to exit its loop. Held by `_shutdown_guard`, whose
-    // `Drop` sets it — that fires both on a normal return from this function AND when the
-    // enclosing tokio task is aborted (an aborted future's live locals are dropped in place),
-    // so an integration test calling `JoinHandle::abort()` cannot leak the thread.
-    let shutdown = Arc::new(AtomicBool::new(false));
+    // Signals both the thin polling-wrapper thread below AND (via the same `Arc` the caller
+    // threaded into `platform_monitor`) the real backend's own OS thread to exit. Held by
+    // `_shutdown_guard`, whose `Drop` sets it — that fires both on a normal return from this
+    // function AND when the enclosing tokio task is aborted (an aborted future's live locals
+    // are dropped in place), so an integration test calling `JoinHandle::abort()` cannot leak
+    // either thread.
     let _shutdown_guard = ShutdownGuard(shutdown.clone());
     if let Some(mut m) = monitor {
         let latest = latest.clone();
@@ -253,6 +270,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
             incoming = stream.next() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
+                        if text.len() > MAX_INCOMING_FRAME_BYTES {
+                            continue;
+                        }
                         if let Ok(IncomingFrame::Watch { names }) = serde_json::from_str(text.as_str()) {
                             if let Some(names) = validate_watch_names(names) {
                                 *state.watch.lock().expect("audio-monitor watch list poisoned") = names;
