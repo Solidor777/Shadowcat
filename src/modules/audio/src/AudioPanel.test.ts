@@ -224,6 +224,41 @@ describe("AudioPanel", () => {
     expect(screen.getByTestId("playlist-open")).toBeTruthy();
   });
 
+  it("channel sliders and mute icons re-render on an external channel-state change", async () => {
+    // A fixture mirroring the shell wrapper's bridge (`AudioEngine.subscribe` behind a
+    // createSubscriber): `channels` reads register the render effect, fired mutations re-run it.
+    const { createSubscriber } = await import("svelte/reactivity");
+    const listeners = new Set<() => void>();
+    const state = {
+      master: { gain: 1, muted: false },
+      music: { gain: 1, muted: false },
+      ambience: { gain: 1, muted: false },
+      sfx: { gain: 1, muted: false },
+      ui: { gain: 1, muted: false },
+    };
+    const bridge = createSubscriber((update) => {
+      listeners.add(update);
+      return () => listeners.delete(update);
+    });
+    const audio = {
+      ...audioFixture(),
+      get channels() {
+        bridge();
+        return state;
+      },
+    } as unknown as AudioApi;
+    render(AudioPanel, {
+      context: setAppContextForTest({ role: "gm", documents: storeWith(), audio }),
+    });
+    const mute = screen.getByTestId("channel-mute-sfx");
+    expect(mute.textContent).toBe("🔊");
+    // An external change (another surface, the mirror restore) flips the state; the panel
+    // must re-render without any action of its own.
+    state.sfx = { gain: 1, muted: true };
+    for (const fn of [...listeners]) fn();
+    await waitFor(() => expect(mute.textContent).toBe("🔇"));
+  });
+
   it("the GM listen-as picker sends the selected token id, or null for follow-my-own", async () => {
     const tokenDoc = (id: string, name: string | null, scene: string | null): WireDocument =>
       ({

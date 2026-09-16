@@ -95,6 +95,9 @@ export class AudioEngine implements AudioApi {
   #channelState: Record<AudioChannelId, AudioChannelState>;
   /** The duck bus implementation. */
   #duckImpl: DuckControllerImpl;
+  /** `subscribe` listeners, fired on every device-state mutation (`setChannel`, and paths
+   * that mutate device state outside it via `notifyAudioChanged`). */
+  #listeners = new Set<() => void>();
   /** The shared one-shot decode/LRU player (`null` until `unlock()`). */
   #oneShot: OneShotPlayer | null = null;
   /** Live track players, by `PlayingTrack.id`. */
@@ -147,6 +150,33 @@ export class AudioEngine implements AudioApi {
    * @returns The duck controller. */
   get duck(): DuckController {
     return this.#duckImpl;
+  }
+
+  /** Subscribe to device-state mutations (channel gain/mute, duck depth) — the shell's
+   * reactivity bridge (`createSubscriber`) hooks here so `AppContext.audio` reads re-render
+   * on change, the same pattern `DocumentStore.subscribe` provides for documents.
+   * @param fn Called synchronously after each mutation.
+   * @returns An unsubscribe function.
+   * @example
+   * ```ts
+   * // consumed by the shell's `AppContext.audio` wrapper — exercised through
+   * // `engine.test.ts`'s subscribe case
+   * ```
+   */
+  subscribe(fn: () => void): () => void {
+    this.#listeners.add(fn);
+    return () => this.#listeners.delete(fn);
+  }
+
+  /** Notify `subscribe` listeners of a device-state change made outside `setChannel` (the
+   * shell's duck-depth persist path mutates `DuckControllerImpl` directly).
+   * @example
+   * ```
+   * // exercised through `engine.test.ts`'s subscribe case
+   * ```
+   */
+  notifyAudioChanged(): void {
+    for (const fn of this.#listeners) fn();
   }
 
   /** The calibrated server clock, ms (thin forwarder to `AudioEngineOpts.serverNow`).
@@ -214,6 +244,7 @@ export class AudioEngine implements AudioApi {
         entry.el.volume = this.#degradedVolume("sfx", entry.gain);
       }
     }
+    this.notifyAudioChanged();
   }
 
   /** Unlock the device's `AudioContext` — constructs the mixer graph on first call, resumes

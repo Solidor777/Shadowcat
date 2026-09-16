@@ -66,7 +66,7 @@ import {
 import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
 import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
 import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
@@ -264,6 +264,11 @@ export class WorldSession {
    * once here (its wire-facing closures read `#ws` lazily, so a pre-`enter()` read is a safe
    * no-op) and disposed in `leave()`. */
   #audioEngine: AudioEngine;
+  /** The audio reactivity bridge, created on the first `audio` read (one per session):
+   * `AudioEngine.subscribe` behind a `createSubscriber`, the same bridge shape
+   * `makeReactiveStore` wraps a `DocumentStore` in — every `channels`/`duck` read through
+   * `AppContext.audio` re-runs its caller's derivation on a device-state change. */
+  #audioSubscribe: ReturnType<typeof createSubscriber> | null = null;
   /** The audio-state document-store subscription driving `#audioEngine.applyState`; dropped
    * in `leave()`. */
   #audioUnsub: (() => void) | null = null;
@@ -351,8 +356,12 @@ export class WorldSession {
    * @returns The audio API the shell publishes on `AppContext.audio`. */
   get audio(): AudioApi {
     const engine = this.#audioEngine;
+    const subscribeAudio = (this.#audioSubscribe ??= createSubscriber((update) =>
+      engine.subscribe(update),
+    ));
     return {
       get channels() {
+        subscribeAudio();
         return engine.channels;
       },
       setChannel: (id, patch) => {
@@ -368,9 +377,11 @@ export class WorldSession {
           addSource: (id: string) => duck.addSource(id),
           removeSource: (id: string) => duck.removeSource(id),
           get gain() {
+            subscribeAudio();
             return duck.gain;
           },
           get depth() {
+            subscribeAudio();
             return duck.depth;
           },
           setDepth: (depth: number) => {
@@ -378,6 +389,7 @@ export class WorldSession {
             if (typeof localStorage !== "undefined") {
               writeAudioMirror(localStorage, { channels: engine.channels, duckDepth: duck.depth });
             }
+            engine.notifyAudioChanged();
           },
         };
       },

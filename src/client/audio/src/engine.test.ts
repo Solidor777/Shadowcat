@@ -116,6 +116,19 @@ describe("AudioEngine", () => {
     expect(engine.duck.depth).toBe(0.2);
   });
 
+  it("subscribe fires on setChannel and notifyAudioChanged, and unsubscribe stops it", () => {
+    const engine = new AudioEngine(makeOpts());
+    const calls: number[] = [];
+    const unsub = engine.subscribe(() => calls.push(1));
+    engine.setChannel("sfx", { gain: 0.5 });
+    engine.notifyAudioChanged();
+    expect(calls).toHaveLength(2);
+    unsub();
+    engine.setChannel("sfx", { gain: 0.7 });
+    // An unsubscribed listener no longer fires.
+    expect(calls).toHaveLength(2);
+  });
+
   it("the duck loop drives the duck GainNode toward 1 - depth and back", async () => {
     const pump = pumpHarness();
     const opts = makeOpts({ raf: pump.raf, caf: pump.caf });
