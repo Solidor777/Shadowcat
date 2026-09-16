@@ -4,10 +4,10 @@ export { Lighting, LIGHTING_FADE_MS, MAX_DARK_ALPHA, TINT_ALPHA, bandAlpha, merg
 export { TokenAnimator, type AnimationConfig } from "./token-animator";
 export type { EasingMode } from "./easing";
 export { TokenView } from "./token-view";
-export { DrawingView } from "./drawing-view";
-export { TemplateView } from "./template-view";
+export { DrawingView, drawingShapeSpec } from "./drawing-view";
+export { TemplateView, templateShapeSpec } from "./template-view";
 export { WallView } from "./wall-view";
-export { RegionView } from "./region-view";
+export { RegionView, regionShapeSpec } from "./region-view";
 export { LightView } from "./light-view";
 export { PingView, type PingRing } from "./ping-view";
 export { EmoteView, type EmoteGlyph } from "./emote-view";

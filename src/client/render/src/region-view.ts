@@ -52,7 +52,7 @@ export class RegionView {
    * Diffs the store's `region` docs (scoped to `viewedSceneId`) against the ids tracked in
    * `ids`: every current doc gets a fresh spec and an upsert via `backend.setShape`, and
    * every tracked id no longer present is torn down via `backend.removeShape`. A doc whose
-   * `toSpec` resolves to `null` (an unrecognized `shape.kind`, a non-finite coordinate, or
+   * `regionShapeSpec` resolves to `null` (an unrecognized `shape.kind`, a non-finite coordinate, or
    * a malformed point count for that kind) is treated as absent — never added to `seen`,
    * so it is torn down on this same pass if it was tracked.
    * @example
@@ -68,7 +68,7 @@ export class RegionView {
   reconcile(): void {
     const seen = new Set<string>();
     for (const doc of sceneScopedDocs(this.store, "region", this.viewedSceneId, this.viewedLevel)) {
-      const spec = toSpec(doc);
+      const spec = regionShapeSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);
       this.ids.add(doc.id);
@@ -90,17 +90,20 @@ export class RegionView {
  * tessellate via `rectPoints`/`circlePoints`, or pass authored polygon points through
  * unchanged. Returns `null` for a missing/malformed `engine.shape`, an unrecognized
  * `kind`, a wrong point count, or any non-finite coordinate — a malformed doc simply
- * doesn't render.
+ * doesn't render. Exported so `scene-tools`' hit-test can reuse the SAME tessellation
+ * this view draws from, rather than forking a second copy of the shape math.
  * @param doc The `region` document to convert.
  * @returns A `ShapeNodeSpec` for the `regions` layer, or `null` if it can't be rendered.
  * @example
- * ```
- * // not exported from @shadowcat/render; internal to RegionView.reconcile
+ * ```ts
+ * import { regionShapeSpec } from "@shadowcat/render";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
  * declare const doc: WireDocument;
- * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
+ * const spec = regionShapeSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */
-function toSpec(doc: WireDocument): ShapeNodeSpec | null {
+export function regionShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as RegionEngine | undefined;
   const shape = s?.shape;
   if (!shape?.kind || !Array.isArray(shape.points)) return null;
