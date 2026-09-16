@@ -57,6 +57,11 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | UI framework | Svelte 5 (runes) | MIT | Vendor | Compiled, lean output; default UI only — modders use any framework. |
 | Canvas renderer | PixiJS v8 | MIT | Vendor | Mature WebGL 2D: sprite batching, filter pipeline, mask compositing. Rebuilding this is the largest avoidable cost in the project. |
 | Build tooling | Cargo, Vite, pnpm | MIT | Vendor | pnpm is build-time only; output embeds into the binary. |
+| Audio decode | symphonia 0.6 | MPL-2.0 | Vendor | Pure-Rust decode of every format a GM uploads (mp3/flac/wav/ogg-vorbis/aac/isomp4/webm) — no FFmpeg, no C toolchain for decode, mirroring the image pipeline's dependency posture. |
+| Audio resample | rubato 5 | MIT/Apache-2.0 | Vendor | Resamples to the 48kHz Opus wants before encoding. |
+| Audio encode | opus 0.4 (binds libopus via `opusic-sys`'s bundled cmake build) | MIT/Apache-2.0 (binding) / BSD-3-Clause (`opusic-sys`) | Vendor | Royalty-free, the de facto web-audio codec; requires cmake — measured per-OS availability in the M23 design spec §2.3. |
+| Audio container | ogg 0.9 | BSD-3-Clause | Vendor | Muxes encoded Opus frames into the `.opus.ogg` sibling derivative (a WebM sibling is muxed by the pipeline's own minimal EBML writer, no extra dependency). |
+| Sandboxed validators | wasmi (pure-Rust interpreter) | MIT/Apache-2.0 | Vendor | Third-party server-side WASM code, opt-in per world per module, fuel/memory/instance-limited; no JIT, no host imports beyond a rate-limited debug log — see `docs/design/sandboxed-validators.md`. |
 | OS audio-session monitor (Windows) | `windows` crate (WASAPI) | MIT OR Apache-2.0 | Vendor | `shadowcat audio-monitor`'s Windows backend; per-session peak metering, never the Discord SDK. |
 | OS audio-session monitor (macOS) | Core Audio process tap (macOS 14.2+), hand-bound FFI over `core-foundation` | MIT OR Apache-2.0 | Vendor | Same subcommand's macOS backend; older macOS reports itself unsupported. |
 | OS audio-session monitor (Linux) | `pipewire` crate (libpipewire) | MIT | Vendor | Same subcommand's Linux backend; the tree's first system-library (`libpipewire-0.3-dev`) CI dependency. |
@@ -69,13 +74,11 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 |---|---|---|
 | PostgreSQL | `Repository` trait | A real multi-tenant / many-concurrent-world hosted deployment. |
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
-| Asset conversion — audio (`symphonia` + `opus`/`vorbis_rs`); animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (audio, animation). No FFmpeg; all replacements are royalty-free. |
+| Animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (animation). |
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
-| Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
-| VFX, post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
+| ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
-| Server-side untrusted execution (sandbox) | engine-grammar evaluation is server-side already (formulas, dice, schemas) and needs no sandbox; only third-party *code* would | Only if a marketplace with untrusted authors is pursued — then WASM (wasmtime/extism) or rquickjs, never Deno. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |
 | Compression (app-level `zstd`), content hashing (blake3, differential sync) | — | When profiling shows storage/transfer cost matters. |
 | Native wrappers (Tauri 2, Capacitor) | embedded-server client | After the web app is feature-complete. |
@@ -84,7 +87,13 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 
 - **Bun / Node as a server runtime** — pure-Rust server; no JS on the server.
 - **PostgreSQL + SQLite in parallel from day one** — doubles the data layer (JSONB vs JSON, two FTS engines, two migration trees) to serve a scale tier v1 does not target.
-- **Deno** — a ~100 MB V8 second runtime undercuts the single binary; its `--allow-*` model is a weak sandbox. Engine grammars are evaluated natively in Rust; no JS runtime is needed server-side.
+- **Deno / wasmtime / extism for the sandboxed-validator runtime** — Deno is a ~100 MB V8
+  second runtime that undercuts the single binary and whose `--allow-*` model is a weak
+  sandbox; `wasmtime`'s Cranelift JIT adds 15–20 MiB and a JIT attack surface a validator run
+  once per write over kilobytes of data does not need. `wasmi` (a pure-Rust interpreter, no
+  JIT, ~1 MiB) is the sandbox this project actually ships — see
+  `docs/design/sandboxed-validators.md`. Engine grammars themselves are still evaluated
+  natively in Rust; no JS runtime is needed server-side for anything the engine defines.
 - **FFmpeg as a hard dependency** — GPL contamination risk (libx264 etc.), LGPL static-link friction, and H.264/H.265/AAC patent exposure. Replaced by small royalty-free libraries.
 - **Tantivy in v1** — a third, non-transactional storage system; FTS5 is crash-consistent (updates inside the row's transaction) and sufficient at VTT scale.
 - **`steamworks` crate / Steam Rich Presence** — requires redistributing Valve's proprietary `steam_api`. Steam stays OpenID 2.0 auth + plain-executable distribution only.

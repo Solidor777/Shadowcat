@@ -95,7 +95,14 @@ intent_id: string,
 /**
  * Why it was refused.
  */
-reason: RejectReason, } | { "type": "resync_begin", 
+reason: RejectReason, 
+/**
+ * Player/GM-presentable detail text — populated for `DataError::OpFailed`/`Validator`
+ * refusals (≤ 512 bytes, control characters stripped at the source that produced the
+ * text — `sandbox::runtime::run_validator` for a validator refusal). Rendered by the
+ * client as a TEXT NODE only, never HTML.
+ */
+detail: string | null, } | { "type": "resync_begin", 
 /**
  * First seq delivered in the replay (inclusive; equals the client's
  * requested `from_seq`).
@@ -393,4 +400,53 @@ request_id: string,
 /**
  * Why it was refused.
  */
-reason: MergeErrorKind, };
+reason: MergeErrorKind, } | { "type": "audio_error", 
+/**
+ * Player-presentable failure text (`audio::state::AudioError`'s `Display`, or
+ * "forbidden" for the not-GM case).
+ */
+reason: string, } | { "type": "vfx", 
+/**
+ * Scene the effect plays on.
+ */
+scene: string, 
+/**
+ * Who fired it (senders receive their own echo).
+ */
+user: string, 
+/**
+ * The spritesheet or animated-source asset id.
+ */
+asset: string, 
+/**
+ * Scene-coordinate x.
+ */
+x: number, 
+/**
+ * Scene-coordinate y.
+ */
+y: number, 
+/**
+ * Uniform scale multiplier; `None` = the asset's native scale (1).
+ */
+scale: number | null, 
+/**
+ * Rotation in degrees; `None` = unrotated.
+ */
+rotation: number | null, 
+/**
+ * Playback duration cap in ms; `None` = one loop of the asset.
+ */
+duration_ms: number | null, 
+/**
+ * Paired sound asset id; carried verbatim (playback wiring is a later integration).
+ */
+sound: string | null, 
+/**
+ * Elevation the effect plays at.
+ */
+elevation: number | null, 
+/**
+ * Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
+ */
+id: string, };

@@ -18,6 +18,10 @@ Two consequences to internalize before you start:
 - **Modules are admin-trusted.** There is no sandbox. An installed module is
   client code at the same trust tier as the Shadowcat binary itself. Install
   modules you trust; ship modules worthy of that trust.
+- **A module's client code is still fully trusted — this has not changed.** A module MAY
+  additionally declare sandboxed, opt-in, SERVER-SIDE validators (a completely separate
+  mechanism, `wasm32-unknown-unknown` code judging only the `system` band of one document
+  type) — see [Creating a validator](creating-a-validator).
 - **The server stays authoritative.** Your module *requests* changes (optimistic
   intents); the server validates, applies, and broadcasts. Nothing your module
   draws or writes locally bypasses server permissions.
@@ -126,6 +130,31 @@ earlier one, including a built-in key, so prefix your keys with your module's id
 by convention to avoid colliding with another module's or the host's own keys (this
 is a convention, not an enforced uniqueness constraint). A key with no registered
 message renders as its literal string.
+
+## Contributing a scene tool
+
+The panel is not the only surface a module can extend. `SCENE_TOOL_CONTRACT`
+(`shadowcat.scene-tool`) is the multi-cardinality contract the scene-tools
+rail renders contributed canvas tools from — any number of modules may each
+add one. A contribution carries `SceneToolMeta` only: an `id`, an `icon`, a
+`labelKey` (resolved against the host catalog like a panel's), and
+`onSceneClick(x, y)`, called with the scene point of each click while the
+tool is active:
+
+<<< @/../../examples/module-initiative-tracker/src/index.ts#scene-tool
+
+The rail activates a contributed tool through `ToolController`'s parallel
+`activeContributedId` field (the built-in `active` union stays closed),
+mutually exclusive with the built-in tools in both directions. A contributed
+tool has no drag or preview behavior of its own — `SceneToolMeta` carries
+exactly one click handler. A tool that needs configuration (an asset pick, a
+scale) keeps it in module-scoped reactive state its own panel edits, and the
+click handler reads through `getAppContext()` — note the registration above
+needs only `ModuleContext` (the hook bus), so it can live in `register()`
+itself; a tool whose click needs `AppContext`-only seams (`ctx.vfx.play`,
+`ctx.viewedSceneId`) must instead register from inside a mounted component's
+`$effect`, where `getAppContext()` is available (the `@shadowcat/module-vfx`
+package's `FxToolPanel` is the worked example of that second shape).
 
 ## Styling and theming
 
@@ -241,7 +270,9 @@ Generated API documentation for every symbol used above:
 - [`Module`](/api/ts/interfaces/_shadowcat_core.Module.html) ·
   [`ModuleManifest`](/api/ts/interfaces/_shadowcat_core.ModuleManifest.html) ·
   [`PANEL_CONTRACT`](/api/ts/variables/_shadowcat_core.PANEL_CONTRACT.html) ·
-  [`PanelMeta`](/api/ts/interfaces/_shadowcat_core.PanelMeta.html)
+  [`PanelMeta`](/api/ts/interfaces/_shadowcat_core.PanelMeta.html) ·
+  [`SCENE_TOOL_CONTRACT`](/api/ts/variables/_shadowcat_core.SCENE_TOOL_CONTRACT.html) ·
+  [`SceneToolMeta`](/api/ts/interfaces/_shadowcat_core.SceneToolMeta.html)
 - [`getAppContext`](/api/ts/functions/_shadowcat_ui-kit.getAppContext.html) ·
   [`AppContext`](/api/ts/interfaces/_shadowcat_ui-kit.AppContext.html) ·
   [`setField`](/api/ts/functions/_shadowcat_ui-kit.setField.html)

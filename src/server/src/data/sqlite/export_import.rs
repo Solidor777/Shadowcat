@@ -421,6 +421,50 @@ impl SqliteRepository {
             .transpose()?
             .unwrap_or_default();
 
+        // The bundle's own enabled-modules record decides which validators run over the
+        // imported documents — the same per-world opt-in `apply_intent` consults, read from
+        // the bundle's `settings` rows for the same single-writer-pool reason `world_schemas`
+        // above is. The band, not the origin, decides: an import is a bulk write of the same
+        // `system` payloads a live Create would carry.
+        let enabled_module_ids: Vec<String> = data
+            .settings
+            .iter()
+            .find(|s| s.key == world_modules_key(world))
+            .map(|s| crate::modules::WorldModuleEntry::parse_legacy_tolerant(&s.value))
+            .transpose()?
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|e| e.validators_enabled)
+            .map(|e| e.id)
+            .collect();
+        let validator_registry = if enabled_module_ids.is_empty() {
+            None
+        } else {
+            match self.modules_dir.clone() {
+                Some(dir) => {
+                    // Blocking filesystem I/O (compile-on-miss), off the async
+                    // worker like `apply_intent`'s own registry fetch — an
+                    // import holding the write transaction must not also park a
+                    // runtime thread on disk latency.
+                    let cache = self.validator_registry_cache.clone();
+                    Some(
+                        tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
+                            .await
+                            .unwrap_or_default(),
+                    )
+                }
+                None => None,
+            }
+        };
+        // Room-less callers policy: an import records fault streaks (via
+        // `sandbox::validate_document`'s own counter) but NEVER auto-disables a
+        // module — the auto-disable lives at `Room::commit_ops_locked`'s error
+        // arm, the one funnel guarded write paths share, and a bulk import must
+        // not flip a world's settings as a side effect of being read in. A
+        // module that faults through an import keeps its streak; the next
+        // guarded write that crosses `sandbox::VALIDATOR_FAULT_LIMIT` disables
+        // it (or the GM disables it by hand).
+
         // Mirrors `apply_intent`'s intra-batch `claimed_singletons` tracking
         // (see `SINGLETON_DOC_TYPES`'s own doc) — a bundle is untrusted
         // input assembled outside any live `apply_intent` call, so nothing
@@ -552,6 +596,40 @@ impl SqliteRepository {
             validation::validate_property_overrides(&document)?;
             validation::validate_engine_tree(&mut document)?;
             validation::validate_system_schema_tree(&document, &world_schemas)?;
+            if let Some(registry) = &validator_registry {
+                match crate::sandbox::validate_document(
+                    registry,
+                    &enabled_module_ids,
+                    &mut document,
+                    // `prior` is always `None` for an import (every document is a Create
+                    // into an empty world), and `prior_permitted` is `true` because the
+                    // importing operator already holds the entire bundle — the READ gate
+                    // exists for live intent writers, not for a bulk import whose input
+                    // the caller supplied wholesale.
+                    None,
+                    true,
+                    world,
+                    &world_schemas,
+                )
+                .await
+                {
+                    // `validate_document`'s structural pre-pass also runs
+                    // `validate_containment`, which this loop's own inline chain above does
+                    // not call until the post-loop placement pass below — so a containment
+                    // violation can surface HERE, before any row is inserted, rather than
+                    // only after the whole bundle is written. `validate_containment` needs
+                    // no other document's state to decide, so an earlier verdict is
+                    // identical to the later one, just reached sooner.
+                    Err(structural_err) => return Err(structural_err),
+                    Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
+                    Ok(crate::sandbox::ValidatorVerdict::Refuse { module, reason }) => {
+                        return Err(DataError::OpFailed(format!("validator {module}: {reason}")));
+                    }
+                    Ok(crate::sandbox::ValidatorVerdict::Fault(fault)) => {
+                        return Err(DataError::Validator(fault));
+                    }
+                }
+            }
             Self::insert_imported_document(&mut tx, &document, row.seq, row.created_seq).await?;
             inserted_documents.push(document);
         }
@@ -680,8 +758,10 @@ impl SqliteRepository {
                 "INSERT INTO assets \
                  (id, world_id, storage_key, original_name, content_type, byte_size, created_by, \
                   created_at, version, folder_id, width, height, has_alpha, animated, \
-                  original_content_type, original_byte_size, original_retained, conversion_note) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  original_content_type, original_byte_size, original_retained, conversion_note, \
+                  duration_ms, sample_rate, \
+                  sheet_rows, sheet_cols, sheet_count, sheet_frame_ms, sheet_width, sheet_height) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(row.id.to_string())
             .bind(world.to_string())
@@ -701,6 +781,18 @@ impl SqliteRepository {
             .bind(meta.original_byte_size)
             .bind(i64::from(meta.original_retained))
             .bind(&meta.conversion_note)
+            .bind(meta.duration_ms)
+            .bind(meta.sample_rate)
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.rows)))
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.cols)))
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.count)))
+            .bind(
+                meta.sheet
+                    .as_ref()
+                    .map(|s| serde_json::to_string(&s.frame_ms).unwrap_or_default()),
+            )
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.width)))
+            .bind(meta.sheet.as_ref().map(|s| i64::from(s.height)))
             .execute(&mut *tx)
             .await?;
             // A bundle is untrusted input: its explicit tags pass the same rule
@@ -744,9 +836,29 @@ impl SqliteRepository {
         }
 
         for row in &data.settings {
+            // An imported world ARRIVES OPTED OUT: the bundle's enabled-module
+            // record is persisted with every `validators_enabled` forced false.
+            // Opting a world into third-party code is the GM's own act (the
+            // same per-world opt-in the enable endpoint gates on), never
+            // something a bundle file — potentially authored anywhere — may
+            // carry in. Note this does NOT affect the import's own validation:
+            // the documents above were judged by the bundle's declared
+            // validators as declared (the operator importing a world sees its
+            // rules enforced on what they import; the world simply does not
+            // keep running them afterward until the GM re-opts-in).
+            let value = if row.key == world_modules_key(world) {
+                let mut entries =
+                    crate::modules::WorldModuleEntry::parse_legacy_tolerant(&row.value)?;
+                for entry in &mut entries {
+                    entry.validators_enabled = false;
+                }
+                serde_json::to_string(&entries)?
+            } else {
+                row.value.clone()
+            };
             sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?)")
                 .bind(&row.key)
-                .bind(&row.value)
+                .bind(&value)
                 .execute(&mut *tx)
                 .await?;
         }

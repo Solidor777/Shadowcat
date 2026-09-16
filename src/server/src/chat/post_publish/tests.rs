@@ -77,6 +77,8 @@ async fn seed_message(room: &Room, repo: &SqliteRepository, ctx: &PermissionCont
             repo,
             ctx,
             rate: &rate,
+            vfx_rate: &rate,
+
             preview: LinkPreviewDeps {
                 client: &build_link_preview_client(),
                 cache: &LinkPreviewCache::new(),
@@ -91,6 +93,7 @@ async fn seed_message(room: &Room, repo: &SqliteRepository, ctx: &PermissionCont
         Audience::Public,
     )
     .await
+    .unwrap()
     .unwrap();
     match &cmd.ops[0] {
         Operation::Create { doc } => doc.id,

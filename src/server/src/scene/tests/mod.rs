@@ -256,6 +256,7 @@ pub(super) fn region_doc(
     )
 }
 
+mod audibility;
 mod combat_index;
 mod cost_parity;
 mod ecs_and_footprints;

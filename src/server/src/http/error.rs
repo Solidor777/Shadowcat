@@ -56,6 +56,9 @@ impl From<crate::data::DataError> for AppError {
                 AppError::Unprocessable(format!("schema violation at {pointer}: {reason}"))
             }
             OpFailed(m) => AppError::BadRequest(m),
+            Validator(fault) => {
+                AppError::BadRequest(format!("validator '{}' faulted", fault.module))
+            }
             Sqlx(e) => {
                 tracing::error!(?e, "database error");
                 AppError::Internal

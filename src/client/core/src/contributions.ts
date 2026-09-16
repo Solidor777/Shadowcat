@@ -79,6 +79,28 @@ export const PANEL_CONTRACT = "shadowcat.panel";
  * returns that winner. */
 export const SYSTEM_CONTRACT = "shadowcat.system";
 
+/** Contract id modules contribute a scene-tool entry under, rendered by the scene-tools
+ * rail. Multi-cardinality: any number of modules may each add a tool. */
+export const SCENE_TOOL_CONTRACT = "shadowcat.scene-tool";
+
+/** Metadata for a `SCENE_TOOL_CONTRACT` contribution — a render-layer-API-style seam letting
+ * an external module add a tool to the rail without the rail knowing anything about it
+ * beyond this shape. */
+export interface SceneToolMeta {
+  /** An id the contributing module is responsible for keeping unique (mirrors
+   * `Contribution.id`'s own uniqueness convention — never enforced by the registry). */
+  id: string;
+  /** Icon identifier the rail resolves to a rendered icon; opaque to core (mirrors
+   * `PanelMeta.icon`). */
+  icon: string;
+  /** i18n key for the tool's button label, resolved by the rail at render (locale-reactive). */
+  labelKey: string;
+  /** Handle a click at scene point `(x, y)` while this tool is active.
+   * @param x The click's scene x-coordinate.
+   * @param y The click's scene y-coordinate. */
+  onSceneClick(x: number, y: number): void;
+}
+
 /** Provider metadata for the `shadowcat.sheet:<doc_type>` contract family.
  * `priority` selects among competing providers (higher wins; the always-registered
  * generic fallback registers at `-Infinity`). `match` is an optional per-document
@@ -135,6 +157,8 @@ export interface Contribution {
   sheet?: SheetMeta;
   /** Settings-section metadata, present iff `contract` is `SETTINGS_SECTION_CONTRACT`. */
   settingsSection?: SettingsSectionMeta;
+  /** Scene-tool metadata, present iff `contract` is `SCENE_TOOL_CONTRACT`. */
+  sceneTool?: SceneToolMeta;
   /** How this contribution relates to the host theme: `"host"` (default)
    * consumes the active theme's tokens like every engine surface; `"isolated"`
    * wraps the content in the theme-isolation class, which re-declares every

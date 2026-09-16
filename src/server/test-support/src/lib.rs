@@ -62,14 +62,6 @@ pub async fn spawn() -> Harness {
 /// Like `spawn`, but `mutate` can tweak the `Config` before the server starts
 /// (e.g. set a tiny upload cap). Uses a per-run tempdir for asset storage.
 pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
-    let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
-    let hash = hash_password("pw").unwrap();
-    let uid = repo
-        .create_user("u", Some(&hash), ServerRole::User, 0)
-        .await
-        .unwrap();
-    let world = repo.create_world_owned("test", uid, 0).await.unwrap();
-
     let assets_dir = std::env::temp_dir().join(format!("shadowcat-assets-{}", Uuid::new_v4()));
     std::fs::create_dir_all(&assets_dir).unwrap();
     let mut cfg = Config {
@@ -77,6 +69,19 @@ pub async fn spawn_with(mutate: impl FnOnce(&mut Config)) -> Harness {
         ..Config::default()
     };
     mutate(&mut cfg);
+
+    let repo = Arc::new(
+        SqliteRepository::connect("sqlite::memory:")
+            .await
+            .unwrap()
+            .with_modules_dir(cfg.modules_path()),
+    );
+    let hash = hash_password("pw").unwrap();
+    let uid = repo
+        .create_user("u", Some(&hash), ServerRole::User, 0)
+        .await
+        .unwrap();
+    let world = repo.create_world_owned("test", uid, 0).await.unwrap();
 
     let state = AppState {
         repo: repo.clone(),

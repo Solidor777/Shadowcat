@@ -11,7 +11,8 @@ deploy.
 Linux staging tree with a `.desktop` entry, or a Windows `shadowcat.exe` (icon
 embedded).
 
-**From source** (needs Rust stable, Node 22, pnpm 9):
+**From source** (needs Rust stable with the `wasm32-unknown-unknown` target —
+`rustup target add wasm32-unknown-unknown` — Node 22, pnpm 9):
 
 ```bash
 pnpm install

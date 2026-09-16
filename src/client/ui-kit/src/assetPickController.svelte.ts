@@ -5,8 +5,9 @@
 
 /** Filters and arity a `pickAsset` caller asks the browser to open with. */
 export interface PickAssetOptions {
-  /** Restrict the browser's kind filter (`image` covers every raster/vector art pick). */
-  kind?: "image" | "other";
+  /** Restrict the browser's kind filter (`image` covers every raster/vector art pick;
+   * `audio` restricts to `playlist`-track source files and other audio assets). */
+  kind?: "image" | "other" | "audio";
   /** Pre-applied tag filter chips (all-of). */
   tags?: string[];
   /** Ordered multi-pick: the promise resolves `string[]` in pick order. */

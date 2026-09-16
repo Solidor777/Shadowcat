@@ -109,7 +109,18 @@ CREATE TABLE assets (
   original_content_type TEXT NOT NULL DEFAULT '',
   original_byte_size    INTEGER NOT NULL DEFAULT 0,
   original_retained     INTEGER NOT NULL DEFAULT 0,
-  conversion_note       TEXT
+  conversion_note       TEXT,
+  duration_ms           INTEGER,
+  sample_rate           INTEGER,
+  -- Flat columns for the server-derived grid sheet (animated sources only);
+  -- sheet_rows NULL <=> AssetMeta.sheet == None. sheet_frame_ms is a JSON
+  -- array of per-frame durations.
+  sheet_rows            INTEGER,
+  sheet_cols            INTEGER,
+  sheet_count           INTEGER,
+  sheet_frame_ms        TEXT,
+  sheet_width           INTEGER,
+  sheet_height          INTEGER
 );
 
 CREATE INDEX idx_assets_world ON assets(world_id);

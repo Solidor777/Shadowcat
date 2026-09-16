@@ -20,6 +20,8 @@
  *     id: "dnd5e".into(),
  *     manifest: serde_json::json!({ "id": "dnd5e", "version": "1.0.0" }),
  *     entry_url: "/modules/dnd5e/index.js".into(),
+ *     has_validators: false,
+ *     validator_load_error: None,
  * };
  * let value = serde_json::to_value(&info).unwrap();
  * assert_eq!(value["id"], "dnd5e");
@@ -38,4 +40,14 @@ manifest: unknown,
 /**
  * Served entry URL: `/modules/<folder-id>/<entry>`.
  */
-entry_url: string, };
+entry_url: string, 
+/**
+ * Whether this module declares any validators (`InstalledModule.validators` non-empty).
+ */
+has_validators: boolean, 
+/**
+ * This module's validator compile diagnostic, if any of its declared validators failed
+ * to load (`sandbox::registry::ValidatorRegistry::load_error_for`) — shown beside the
+ * "Run sandboxed validators" toggle.
+ */
+validator_load_error: string | null, };

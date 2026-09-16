@@ -190,3 +190,30 @@ test("a hash change during the listWorlds await is honored, not the route captur
   expect(enterSpy).not.toHaveBeenCalledWith("stale-world");
   vi.unstubAllGlobals();
 });
+
+test("a reject's detail renders as a literal text node, never markup", async () => {
+  vi.stubGlobal("WebSocket", class { addEventListener() {} send() {} close() {} } as unknown);
+  vi.spyOn(api, "getMe").mockResolvedValue({ id: "u1", username: "gm", server_role: "user" });
+  vi.spyOn(api, "getUiState").mockResolvedValue({ global: { locale: "en", lastWorld: "w1" }, worlds: {} });
+  vi.spyOn(api, "putUiState").mockResolvedValue();
+  vi.spyOn(api, "listWorlds").mockResolvedValue([{ id: "w1", name: "W", role: "gm" }]);
+  const { activeNotifications } = await import("@shadowcat/ui-kit");
+  let capturedOnReject: ((reason: string, detail: string | null) => void) | undefined;
+  vi.spyOn(WorldSession.prototype, "enter").mockImplementation(function (this: WorldSession) {
+    capturedOnReject = (
+      this as unknown as { opts: { onReject?: typeof capturedOnReject } }
+    ).opts.onReject;
+    return Promise.resolve();
+  });
+  render(App);
+  await vi.waitFor(() => expect(capturedOnReject).toBeDefined());
+
+  capturedOnReject?.("invalid", "<b>evil</b>");
+
+  const notice = activeNotifications().at(-1);
+  // The detail is carried as plain string data inside the toast message — the
+  // notification renderer turns it into a DOM text node, so markup arrives
+  // literally rather than being parsed.
+  expect(notice?.message).toContain("<b>evil</b>");
+  vi.unstubAllGlobals();
+});

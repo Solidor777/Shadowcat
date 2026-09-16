@@ -37,8 +37,8 @@ export type { ImportFn, ModuleEntry, ModuleLoadFailure, ModuleLoadResult } from 
 export { resolveCaps, canWritePath, canCreateDoc } from "./capabilities";
 export { DocumentStore, setPointer, removePointer, getPointer, applyOperation } from "./store";
 export type { Listener, ReadableDocuments } from "./store";
-export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, SETTINGS_SECTION_CONTRACT } from "./contributions";
-export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, SettingsSectionMeta } from "./contributions";
+export { ContributionRegistry, PANEL_CONTRACT, SYSTEM_CONTRACT, SETTINGS_SECTION_CONTRACT, SCENE_TOOL_CONTRACT } from "./contributions";
+export type { Contribution, Cardinality, PanelMeta, PanelBadge, DefaultPlacement, ZoneId, SheetMeta, SettingsSectionMeta, SceneToolMeta } from "./contributions";
 export { reconcileTopology } from "./topology";
 export { I18n } from "./i18n";
 export type { Messages, I18nParams, AddMessagesOptions } from "./i18n";
@@ -57,6 +57,7 @@ export type {
   MoveVisionSample,
   MoveLightSample,
   MoveStream,
+  VfxNotice,
   SubscriptionHandle,
   SceneFrame,
   SceneSubscription,
@@ -99,6 +100,7 @@ export type {
   WireRecalcOp,
   WireCombatRollEntry,
   WireResourceOp,
+  WireAudioOp,
   CombatsView,
   CombatView,
   CombatantView,
@@ -114,11 +116,13 @@ export { AssetResolver } from "./assets";
 export type {
   AssetOp,
   AssetVariant,
+  AudioUrls,
   AssetChangedNotice,
   ListingInvalidatedHandler,
 } from "./assets";
 export {
   listAssets,
+  getAssetMeta,
   uploadAsset,
   replaceAsset,
   deleteAsset,
@@ -131,6 +135,9 @@ export {
   deleteAssetFolder,
 } from "./asset-rest";
 export type { AssetQuery } from "./asset-rest";
+export { AssetMetaCache } from "./asset-meta";
+export { resolveVfxSource } from "./vfx";
+export type { VfxPlayRequest, VfxOneShotRequest, ResolvedVfxSource } from "./vfx";
 export { startChunkedUpload, ChunkedUploadError, CHUNK_THRESHOLD_BYTES } from "./asset-upload";
 export type { ChunkedUploadOptions } from "./asset-upload";
 export { listInstalledModules, getEnabledModules, setEnabledModules } from "./module-rest";
@@ -138,11 +145,13 @@ export type { InstalledModuleInfo } from "@shadowcat/types";
 export { listUsers, createUser, deleteUser, listWorldMembers, createWorldInvite, listWorldInvites, revokeWorldInvite } from "./user-rest";
 export type { ServerUser, WorldMember, MintedInvite, InviteEntry } from "./user-rest";
 export { ACTOR_DOC_TYPE, buildSceneDoc, buildTokenDoc, buildSceneEntityDoc, buildActorDoc, buildTokenFromActor, setNameHidden, buildFactionRegistryDoc, buildConditionRegistryDoc, buildWorldSettingsDoc, DEFAULT_WORLD_SETTINGS, resolveSceneSettings, resolveViewedScene, DEFAULT_GRADATION, buildLightGradationDoc, resolveGradation, SEED_VISION_MODES, buildVisionModesDoc, resolveVisionModes, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildRegionDoc, setRegionVisibility, DEFAULT_SCENE_BOUNDS, envelope, buildItemDoc, ITEM_DOC_TYPE, deterministicId, COMBAT_DOC_TYPE, COMBATANT_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, EFFECT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE, buildCombatDoc, buildCombatantDoc, newCombatEngine, ENGINE_COMBAT_DEFAULTS, buildResourceRegistryDoc, buildEffectDoc, buildCombatHistoryDoc, SYSTEM_DEFAULTS_DOC_TYPE, buildSystemDefaultsDoc, resolveSettingProvenance, AUTHOR_CAPS, grantAuthor } from "./scene-docs";
-export type { SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, Perception, VisionModesEngine, VisionAssignment, LightEngine, LightEmission, Falloff, FalloffCurve, RegionShapeKind, RegionShape, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, NoticeAudience, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, CombatEngine, CombatantEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
+export type { SceneEngine, TokenEngine, ActorEngine, TokenOverrides, RenderVisual, AnimatedSource, GeneratedCrop, GeneratedBorder, GeneratedBackground, FaceVisual, TokenVisual, AuraEmission, SoundEmission, VfxEmission, VfxAnchor, Faction, FactionStance, FactionRegistryEngine, Condition, ConditionFx, ConditionRegistryEngine, MovementRestriction, MovementModel, LightMode, DiagonalRule, EasingMode, EnvironmentLight, GridDistance, SceneVisionOverrides, SceneLightingOverrides, WorldSceneDefaults, WorldSettingsEngine, SceneAmbience, Occlusion, AudioOverlay, ResolvedSceneSettings, GradationBand, LightGradationEngine, VisionMode, Perception, VisionModesEngine, VisionAssignment, LightEngine, LightEmission, Falloff, FalloffCurve, RegionShapeKind, RegionShape, RegionBehavior, RegionEngine, RegionTrigger, TriggerEvent, TriggerEffect, NoticeAudience, SceneDimensions, ItemSystem, DrawingEngine, DrawingShape, TemplateEngine, TemplateShape, Stroke, Fill, Grid, WallEngine, Seg, CombatEngine, CombatantEngine, CombatantKind, CombatantResource, CombatDefaults, MovementRules, Interpretation, Enforcement, TurnControl, ResourceRegistryEngine, Resource, ResourceBinding, Recovery, Formula, EffectEngine, Duration, DurationUnit, ExpiryPoint, EffectLifecycle, EffectLifecycleDefaults, EffectSnapshot, CapturedCombatant, TurnRecord, CombatHistoryEngine, CombatantDocOptions, SystemDefaultsEngine, SceneDefaultsOverlay, PathfindingOverlay, AnimationOverlay, SettingSource, SettingPath } from "./scene-docs";
 export { resolveTokenActor, effectiveOwner, ownerFloorApplies, actorDisplayName, resolveConditions, conditionTarget, resolveTokenBox, resolveTokenVisual, selectedFaceNamesFor } from "./actor";
 export type { EffectiveActor, ConditionTarget, TokenBox } from "./actor";
 export { parseFootprints, EMPTY_FOOTPRINTS } from "./footprints";
 export type { FootprintExtent, FootprintLookup } from "./footprints";
+export { parseAudibility, sceneAudibility, EMPTY_AUDIBILITY, EMPTY_SCENE_AUDIBILITY } from "./audibility";
+export type { AudibleEmitter, AudibilityPayload, SceneAudibility } from "./audibility";
 export { COMBAT_SERVICE, CombatController, CombatClientError } from "./combat";
 export type {
   CombatApi,
@@ -172,7 +181,12 @@ export { TABLE_DOC_TYPE, buildTableDoc } from "./table-docs";
 export type { TableEngine, DrawRule, TableRow, RowRange, TableEntry, BuildTableDocOptions } from "./table-docs";
 export { NOTE_DOC_TYPE, buildNoteDoc, parseNoteBody } from "./note-docs";
 export type { NoteEngine, BuildNoteDocOptions } from "./note-docs";
+export { PLAYLIST_DOC_TYPE, AUDIO_STATE_DOC_TYPE, buildPlaylistDoc } from "./playlist-docs";
+export type { AudioChannel, AudioStateEngine, PlayingTrack, PlaylistEngine, PlaylistMode, PlaylistTrack, BuildPlaylistDocOptions } from "./playlist-docs";
+export type { AudioChannelId, AudioChannelState, AudioApi, DuckController, DuckSource } from "./audio";
 export { structuralDiff, deepEqual, isPlacementExcluded, restampSubtree, placementExclusions, isMergeableBandPointer, normalizeBase } from "./merge";
 export type { Diff, MergeBase, EmbeddedBaseChild } from "./merge";
 export { snapshotBase, stampInstance, findInstances, syncState } from "./templates";
 export type { StampOpts, SyncState } from "./templates";
+export { PRESETS, resolveAuto, parsePersisted, serializePersisted, effectiveSettings, PERFORMANCE_STORAGE_KEY, fpsCapToTickerValue } from "./performance";
+export type { PerformanceSettings, PerformancePreset, DeviceSignals, PersistedPerformance } from "./performance";

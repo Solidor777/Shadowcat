@@ -88,42 +88,140 @@ ServerMsg::AudioError { reason: String }          // refusal (authz, cap, unknow
 
 ### 2.3 Transcode pipeline (`data::asset::process` audio arm; master §7, D9)
 
+#### Measured: cmake availability (Task 1a)
+
+Measured via a temporary probe step in the `rust` CI job (run 34940788676, all legs green —
+the `opusic-sys` cmake build itself compiled libopus successfully on every leg):
+
+| OS | cmake version | Action needed |
+| --- | --- | --- |
+| ubuntu-latest | `cmake version 3.31.6` | none |
+| windows-latest | `cmake version 4.4.3` | none |
+| macos-latest | `cmake version 4.4.3` | none |
+
+Every leg reports a version, so no `lukka/get-cmake` step is needed on any leg; the temporary
+probe was removed (from `.github/workflows/ci.yml` and the matching `scripts/gates.toml`
+entry) after the measurement was captured.
+
+#### Measured: canPlayType per engine (Task 1b)
+
+Measured locally via Playwright 1.61.0 (`chromium` 1228, `firefox` 1532, `webkit` 2311 —
+`@playwright/test` from `src/client/shell`, probe script discarded after the run):
+
+| Engine | audio/ogg;codecs=opus | audio/webm;codecs=opus |
+| --- | --- | --- |
+| Chromium | `probably` | `probably` |
+| Firefox | `probably` | `probably` |
+| WebKit | `""` | `probably` |
+
+#### Measured: WebM decodeAudioData per engine (the WebM-only gate probe)
+
+Measured with the REAL pipeline derivative (a 1.005 s / 48 kHz mono WebM: 48,240 valid
+samples, pre-skip 312, produced by `data::asset::process::audio` from a synthetic WAV;
+`decodeAudioData` in each engine, `ok: false` recorded verbatim rather than assumed):
+
+| Engine | decodeAudioData | decoded length | delta vs 48,240 |
+| --- | --- | --- | --- |
+| Chromium | OK | 48,648 | +408 (pre-skip + tail — NOT trimmed) |
+| Firefox | OK | 48,648 | +408 (pre-skip + tail — NOT trimmed) |
+| WebKit | **FAIL** | — | — |
+
+The WebKit failure is API-level, not codec-level: this machine's Playwright WebKit build
+(Safari 26.5 UA, Windows) has **no Web Audio API at all** — `AudioContext`,
+`webkitAudioContext`, `OfflineAudioContext`, and `webkitOfflineAudioContext` are all
+`undefined` in both headless modes, while its media element still reports
+`canPlayType("audio/webm; codecs=opus") === "probably"`. The probe's decode attempt therefore
+returned `ok: false` (`ReferenceError: Can't find variable: OfflineAudioContext`, then
+`TypeError: undefined is not a constructor` via the `AudioContext` fallback).
+
+**Outcome (the directive's own gate, applied):** the probe is not green on WebKit, so the
+WebM-only refactor is REVERTED and the **dual-container status quo stands**: the transcode
+pipeline keeps emitting both `.opus.ogg` and `.opus.webm` derivatives per the import
+selection, the `ogg` crate stays, and the WASM `ogg-opus-decoder` fallback stays for Ogg on
+WebKit. Two measurements this probe DID establish are recorded for the architecture: (1)
+chromium and firefox both decode WebM/Opus successfully but do NOT trim to the valid sample
+count (+408 = pre-skip + tail padding), so any future sample-exact looping must come from
+transcode-known bounds rather than decoder trim behavior; (2) WebKit clients play the WebM
+derivative via the streaming `<audio>` element path (the media stack reports `probably`), and
+the buffered paths that need Web Audio degrade exactly as designed.
+
+#### Measured: Ogg decodeAudioData trim per engine (the loop-bounds follow-on probe)
+
+Same fixture and method as the WebM probe above (48,240 valid samples = 50 full 960-sample
+frames + a 240-sample tail, pre-skip 312; `decodeAudioData` per engine; WebKit omitted — no
+Web Audio API on this machine's build, as recorded above), both containers re-measured in one
+run so the matrix is self-consistent:
+
+| Engine | container | decoded length | delta vs 48,240 |
+| --- | --- | --- | --- |
+| Chromium | `.opus.ogg` | 48,240 | 0 (trimmed exactly) |
+| Firefox | `.opus.ogg` | 48,240 | 0 (trimmed exactly) |
+| Chromium | `.opus.webm` | 48,648 | +408 (NOT trimmed) |
+| Firefox | `.opus.webm` | 48,648 | +408 (NOT trimmed) |
+
+**Outcome (the directive's conditional, applied):** BOTH engines trim the Ogg derivative to
+exactly the valid sample count (both honor RFC 7845's pre-skip header field and end-trim
+granule), so the transcode-known loop-bounds metadata path is NOT built. Rationale: the only
+consumers of sample-exact bounds are `AudioBufferSourceNode` loops, and ruling 2 already
+routes looped playback to the Ogg derivative; with every measured Web-Audio engine decoding
+that derivative to exactly the valid region, `loopStart = 0` / `loopEnd = buffer.duration`
+ARE the correct bounds, and a server-recorded pre_skip/valid-samples pair would add a column,
+a wire field, and a client-side comparison to guard against decoder behavior no shipped
+engine exhibits. Should a future engine decode Ogg untrimmed, this probe regenerates in
+minutes and the bounds path can be reconsidered with that data.
+
+#### Rulings (owner, superseding the earlier single-container note)
+
+1. **Dual container, end to end.** The pipeline supports BOTH Ogg and WebM derivatives. The
+   `ogg` crate STAYS; the OggS magic-byte probe/validation STAYS as originally written. WebKit's
+   `""` for `audio/ogg; codecs=opus` does NOT eliminate Ogg: Ogg on WebKit decodes via a WASM
+   opus decoder (`ogg-opus-decoder`, MIT) feeding the Web Audio API.
+2. **Seamless looping is a PLAYBACK-TIME flag, not an asset property.** `loop=true` ⇒ decode
+   to `AudioBuffer` + `AudioBufferSourceNode` `loopStart`/`loopEnd` (sample-accurate gapless).
+   Looped playback prefers the Ogg derivative; one-shots prefer native containers.
+3. **Import-time format choice.** The audio import UI offers Ogg / WebM / Both (`"both"` stores
+   both container derivatives off the retained original). Default: **Both** (any file may be
+   looped, and a WebKit client needs the WebM derivative). Audio assets are UNCLASSIFIED — no
+   ambient/stinger tagging anywhere in `AssetMeta`.
+
 - `AssetKind::Audio` (`content_type` starts with `audio/`); the `kind` filter and the browser's
   kind chips learn it. Assets table gains `duration_ms INTEGER NULL` and `sample_rate INTEGER
   NULL` (edit `migrations/0001_init.sql` in place — no migration files pre-customers).
 - `process_staged`'s new arm for `audio/*` (sniffed by `symphonia`'s probe, never trusted from
   the client's `Content-Type` alone): decode → mono/stereo f32 at source rate → `rubato`
   (MIT) resample to 48 kHz → `opus` encode (VBR, 96 kbps stereo / 64 kbps mono, 20 ms frames)
-  → `ogg` pages → `<uuid>.opus.ogg` (`Variant::Opus`, appended to `Variant` and
-  `SIBLING_SUFFIXES`). **Audio deliberately does NOT mirror the image pipeline's canonical
+  → mux into the import-selected container(s): Ogg pages via `ogg` → `<uuid>.opus.ogg`,
+  and/or a minimal single-track EBML (this module's own writer, no extra crate) →
+  `<uuid>.opus.webm` (neither is a `Variant`; both are appended to `SIBLING_SUFFIXES`).
+  **Audio deliberately does NOT mirror the image pipeline's canonical
   SWAP** (where the converted bytes become the canonical file and the original moves to the
   GM-only `.orig` sibling served by `/original`): for audio the CANONICAL file stays the
   uploaded original (member-readable through the normal serve route, because it is every
   non-GM player's playback fallback) and Opus is a derivative SIBLING like `.thumb.webp`,
-  served through `?variant=opus`. `retain_originals` is not consulted for audio. The
+  served through `?variant=opus` (Ogg) / `?variant=opus-webm` (WebM). `retain_originals` is
+  not consulted for audio. The
   derivative is produced at commit time or not at all: over-cap input (duration > 30 min or
   decoded frames > 2^28 samples) or a decode failure stores the original with the explicit
-  tag `audio:untranscoded` and NO derivative, and `?variant=opus` on an asset without the
-  sibling answers 404 — there is NO lazy on-demand regeneration path for audio (the
+  tag `audio:untranscoded` and NO derivative, and `?variant=opus`/`opus-webm` on an asset
+  without the sibling answers 404 — there is NO lazy on-demand regeneration path for audio (the
   thumb/preview `write_derivatives` regenerate-on-serve convention is cheap for an image
   resize and unacceptable for a minutes-long transcode); `reconvert` is the only way to retry.
-- Build toolchain: `opus` binds libopus through `audiopus_sys`, whose build script drives
-  `cmake` (unlike `libwebp-sys`, which uses the `cc` crate — so the webp precedent proves
-  only that a C compiler is present, not cmake). GitHub-hosted runner images for all three
-  OSes ship `cmake`; **the plan's first task runs `cmake --version` on each matrix leg (a
-  throwaway CI step, or a check inside the existing rust job) and records the result here
-  before the dependency lands.** If any leg lacks it, add the `lukka/get-cmake` step to that
-  leg — never a hand-installed toolchain.
-- `GET /api/worlds/{world}/assets/{id}?variant=opus` serves the derivative (the `serve`
-  route's `ServeQuery` variant match gains an `"opus"` arm beside `"thumb"`/`"preview"`);
-  `reconvert` accepts audio assets (its `original_retained` precondition holds by
-  construction for audio).
-- Client `AssetResolver.audioUrl(id): { primary: string; fallback: string; primaryType:
-  "audio/ogg; codecs=opus" }` and the engine picks `primary` iff
-  `HTMLMediaElement.canPlayType(primaryType) !== ""`. **The plan's first task is a probe that
-  records `canPlayType` for `audio/ogg; codecs=opus`, `audio/webm; codecs=opus` on Chromium,
-  Firefox and WebKit (Playwright's three engines) into the spec's §2.3 as measured text** — the
-  container choice (Ogg vs WebM) is decided by that measurement, not assumed.
+- Build toolchain: `opus` binds libopus through `opusic-sys` (the `opus` crate's `-sys` half;
+  BSD-3-Clause), whose build script drives `cmake` via its default `bundled` feature
+  (unlike `libwebp-sys`, which uses the `cc` crate — so the webp precedent proves
+  only that a C compiler is present, not cmake). **Measured: every CI matrix leg ships `cmake`
+  (see the table above), so no toolchain step is needed on any leg.**
+- `GET /api/worlds/{world}/assets/{id}?variant=opus` / `?variant=opus-webm` serves the
+  respective derivative (the `serve` route's variant handling gains an early branch beside
+  `"thumb"`/`"preview"`); `reconvert` accepts audio assets (its `original_retained`
+  precondition holds by construction for audio, and the retry re-emits the derivative set the
+  asset currently has — `effective_reencode_selection`).
+- Client `AssetResolver.audioUrl(id)` exposes BOTH derivatives plus the canonical fallback
+  (`{ ogg, webm, fallback, oggType, webmType }`); the player picks per the rulings above —
+  loops prefer the Ogg derivative (WASM decode on WebKit), one-shots prefer the native
+  original, and every candidate is checked through `canPlayType`/decode-fallback, never
+  assumed playable. **The Task 1b probe recorded the raw `canPlayType` matrix above; the
+  dual-container ruling governs how it is consumed.**
 
 ### 2.4 World seed / bundle
 

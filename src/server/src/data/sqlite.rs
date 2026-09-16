@@ -16,10 +16,11 @@ use crate::data::document::{
     World, WorldCapDefaults, WorldRole,
 };
 use crate::data::engine::{
-    CombatEngine, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE, COMBAT_HISTORY_DOC_TYPE,
-    CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE,
-    SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    CombatEngine, AUDIO_STATE_DOC_TYPE, COMBATANT_DOC_TYPE, COMBAT_DOC_TYPE,
+    COMBAT_HISTORY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE,
+    RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
+use crate::data::membership::PermissionContext;
 use crate::data::permission::{
     cap, carried_light_in_body, carried_light_touched, declared_caps_for_document,
     declared_caps_for_path, required_cap_for_path, resolve_access_world, Access,
@@ -46,6 +47,7 @@ const SINGLETON_DOC_TYPES: &[&str] = &[
     CONDITION_REGISTRY_DOC_TYPE,
     RESOURCE_REGISTRY_DOC_TYPE,
     SYSTEM_DEFAULTS_DOC_TYPE,
+    AUDIO_STATE_DOC_TYPE,
     crate::chat::CHAT_SETTINGS_DOC_TYPE,
     crate::chat::DICE_SETTINGS_DOC_TYPE,
     crate::data::engine::CHANNEL_REGISTRY_DOC_TYPE,
@@ -224,6 +226,14 @@ pub struct SqliteRepository {
     /// re-derive this by re-parsing a URL string (see
     /// `crate::db::parse_connect_options`'s doc for why).
     connect_options: sqlx::sqlite::SqliteConnectOptions,
+    /// Installed-modules discovery root, `None` when this repository was never wired to one
+    /// (every existing test construction via `connect()` alone) — validators never run
+    /// without it, fail-open by absence exactly like `scan_installed_modules`'s own missing-
+    /// dir handling.
+    modules_dir: Option<std::path::PathBuf>,
+    /// Compiled validator cache, mirroring `crate::modules::ModuleScanCache`'s own
+    /// invalidation. Always present (cheap to construct; does no I/O until first scan).
+    validator_registry_cache: std::sync::Arc<crate::sandbox::registry::ValidatorRegistryCache>,
 }
 
 impl SqliteRepository {
@@ -256,6 +266,8 @@ impl SqliteRepository {
         Ok(Self {
             pool,
             connect_options,
+            modules_dir: None,
+            validator_registry_cache: Default::default(),
         })
     }
 
@@ -299,6 +311,60 @@ impl SqliteRepository {
     /// ```
     pub async fn open_read_pool(&self) -> Result<SqlitePool, sqlx::Error> {
         crate::db::open_read_only_pool(self.connect_options.clone()).await
+    }
+
+    /// Attaches an installed-modules discovery root, enabling sandboxed validator support
+    /// on this repository. Every existing `connect()` caller that never calls this keeps
+    /// `modules_dir: None` — validators never run, exactly as if none were installed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:")
+    ///     .await?
+    ///     .with_modules_dir("no-such-modules-dir");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_modules_dir(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.modules_dir = Some(dir.into());
+        self
+    }
+
+    /// The compiled validator registry for this repository's own `modules_dir`, or an empty
+    /// registry when none was wired (`with_modules_dir` was never called). Off the async
+    /// worker via `spawn_blocking`, matching every other blocking module-scan call site in
+    /// this crate. The repository's own field is the ONE source of the directory — callers
+    /// never pass their own copy, so two call sites can never disagree about which directory
+    /// the registry was compiled from.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let registry = repo.validator_registry().await;
+    /// assert!(registry.validator_for("example-module", "actor").is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn validator_registry(
+        &self,
+    ) -> std::sync::Arc<crate::sandbox::registry::ValidatorRegistry> {
+        match self.modules_dir.clone() {
+            Some(dir) => {
+                let cache = self.validator_registry_cache.clone();
+                tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
+                    .await
+                    .unwrap_or_default()
+            }
+            None => Default::default(),
+        }
     }
 
     /// See `Repository::get_link_preview_cache`.
@@ -437,6 +503,336 @@ fn check_command_scope(doc: &Document, world_id: Uuid) -> Result<(), DataError> 
             "document scope does not match the command's world".into(),
         )),
     }
+}
+
+/// Phase 1's Create authorization, resolved per op through ONE function both the
+/// in-transaction Phase-1 arm and `apply_intent`'s pre-transaction validator screen
+/// call — authz is the codebase's never-fork class, so the screen never re-spells
+/// any of these checks. Returns the resolved `Access` (the screen additionally reads
+/// it for the validator `prior` band's READ gate). `executor` is the write
+/// transaction for Phase 1, a read-only pool connection for the screen — both only
+/// ever feed `load_effective_owner`.
+async fn authorize_create_intent<'e, E>(
+    executor: E,
+    ctx: &PermissionContext,
+    doc: &Document,
+    origin: WriteOrigin,
+    world_defaults: &crate::data::document::WorldCapDefaults,
+    world_reqs: &[crate::data::document::CapabilityRequirement],
+) -> Result<Access, DataError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    // `system-defaults` is server-authored: its content mirrors the installed
+    // system package's declaration, so every client-reachable origin is rejected
+    // outright — `WriteOrigin::ConfigSeed` (the world-config seed/refresh path) is
+    // the ONLY origin that may author it.
+    if doc.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+        return Err(DataError::Forbidden);
+    }
+    // `audio-state` is server-authored, created exactly once by the world-seed path: the
+    // world's singleton transport state. Reserved to `ConfigSeed` (the same origin
+    // `system-defaults` reserves Create to, immediately above) — `AudioTransport` never
+    // creates this singleton, only updates the one `world_seed` already made.
+    if doc.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+        return Err(DataError::Forbidden);
+    }
+    let create_owner = SqliteRepository::load_effective_owner(executor, doc).await?;
+    let access = resolve_access_world(
+        ctx.user_id,
+        ctx.world_role,
+        doc,
+        &world_defaults.grants_for(&doc.doc_type),
+        create_owner,
+    );
+    // A capability-skipping server-authored origin (`WriteOrigin::
+    // skips_capability_gates`) has already been vetted by its own trusted caller,
+    // so the ordinary per-op capability floor and the world-level create gate
+    // below are skipped for those origins ONLY — every other check (the
+    // `system-defaults` one above included) still runs unconditionally.
+    if !origin.skips_capability_gates() && !access.has(cap::WRITE_FIELDS) {
+        return Err(DataError::Forbidden);
+    }
+    // Baseline chat-posting right: a Player may author a `message`, exempt from
+    // the otherwise-GM-only core:create gate. The WRITE_FIELDS floor above still
+    // applies, and the extra `doc.owner == Some(ctx.user_id)` clause ties the
+    // message to its poster. REQUIRED PRECONDITION for soundness: the WS/HTTP
+    // client-intent ingress MUST reject any client-authored `message` op (it
+    // does — see `chat::ops_target_message`), so that a `message` Create reaches
+    // `apply_intent` only from the server-side message-send handler.
+    let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
+        && ctx.world_role == WorldRole::Player
+        && doc.owner == Some(ctx.user_id);
+    if !origin.skips_capability_gates()
+        && ctx.world_role != WorldRole::Gm
+        && !is_baseline_message
+        && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
+    {
+        tracing::debug!(
+            user = %ctx.user_id, doc_type = %doc.doc_type,
+            "create denied: missing core:create"
+        );
+        return Err(DataError::Forbidden);
+    }
+    // Create writes the whole body at once, so any declared requirement whose
+    // protected path is populated must be authorized — otherwise Create is a
+    // wholesale bypass of the declarative gate that Update enforces field-by-field.
+    let doc_json = serde_json::to_value(doc)?;
+    for extra in declared_caps_for_document(&doc_json, world_reqs) {
+        if !access.has(extra) {
+            tracing::debug!(
+                user = %ctx.user_id, doc = %doc.id, capability = extra,
+                "create denied: missing declared capability"
+            );
+            return Err(DataError::Forbidden);
+        }
+    }
+    // Create carries no field paths, so the carried-light GM gate (see
+    // `authorize_update_change`) checks the body directly: a non-GM may not
+    // create a token/actor already carrying an emission, even in a world whose
+    // `core:create` grant otherwise admits the Create itself.
+    if !origin.skips_capability_gates()
+        && ctx.world_role != WorldRole::Gm
+        && carried_light_in_body(&doc.doc_type, &doc_json)
+    {
+        tracing::debug!(
+            user = %ctx.user_id, doc_type = %doc.doc_type,
+            "create denied: carried-light authoring is GM-only"
+        );
+        return Err(DataError::Forbidden);
+    }
+    Ok(access)
+}
+
+/// Phase 1's stored-type rejections and access resolution for an Update, shared by
+/// the in-transaction arm and the pre-transaction validator screen (see
+/// `authorize_create_intent` for why this is one function). Returns the resolved
+/// `Access` plus whether the op is a `ServerMessageRevision` write to a message
+/// doc — `authorize_update_change` needs that exact scope for its two exact-path
+/// exemptions.
+async fn authorize_update_access<'e, E>(
+    executor: E,
+    ctx: &PermissionContext,
+    cur: &Document,
+    origin: WriteOrigin,
+    world_defaults: &crate::data::document::WorldCapDefaults,
+) -> Result<(Access, bool), DataError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    // Message docs are server-authored and immutable to clients: `Update` carries
+    // no `doc_type` for `chat::ops_target_message` to classify, so the rejection
+    // reads the authoritative STORED doc_type. `WriteOrigin::ServerMessageRevision`
+    // — set ONLY by the server edit/delete handlers or the post-publish enrichment
+    // republish, never derivable from any wire frame — re-opens this path for
+    // their sanitized authoritative revision; every other origin is rejected, so a
+    // combat clock batch may `Create` a `message` doc but can never `Update` one.
+    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE && origin != WriteOrigin::ServerMessageRevision
+    {
+        return Err(DataError::Forbidden);
+    }
+    // `system-defaults` is server-authored (see `authorize_create_intent`'s
+    // matching rejection): rejected against the authoritative STORED doc_type for
+    // every origin but the world-config seed/refresh path's `ConfigSeed`.
+    if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+        return Err(DataError::Forbidden);
+    }
+    // `audio-state` Updates are reserved to the audio transport path — rejected against the
+    // authoritative STORED doc_type for every origin but `audio::transport::handle_transport`'s
+    // `AudioTransport`. Unlike `system-defaults` (whose ConfigSeed refresh also Updates it),
+    // `audio-state`'s ConfigSeed writer only ever Creates the singleton once, so Update is
+    // guarded to the OTHER origin, not the same one Create/Delete use.
+    if cur.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::AudioTransport {
+        return Err(DataError::Forbidden);
+    }
+    // A `ServerMessageRevision` handler has ALREADY vetted owner-or-GM authority
+    // before ever reaching here, so re-deriving capability from the document's
+    // own permission fields for THIS origin+doc_type pair would incorrectly
+    // re-restrict a GM's moderation edit/delete of a restricted-audience message.
+    // Grant only READ + WRITE_FIELDS (never `all: true`): both existing handlers
+    // construct a single `/engine` FieldChange and never touch `/permissions` or
+    // `/embedded`, so the exemption is scoped to exactly what it is used for.
+    let is_server_message_revision = cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
+        && origin == WriteOrigin::ServerMessageRevision;
+    let access = if is_server_message_revision {
+        Access {
+            caps: [cap::READ.to_string(), cap::WRITE_FIELDS.to_string()]
+                .into_iter()
+                .collect(),
+            all: false,
+            see_gm_only: true,
+            is_owner: true,
+        }
+    } else {
+        // Effective owner joined from the LIVE linked actor — a linked token's
+        // owner is never stored on the token.
+        let upd_owner = SqliteRepository::load_effective_owner(executor, cur).await?;
+        resolve_access_world(
+            ctx.user_id,
+            ctx.world_role,
+            cur,
+            &world_defaults.grants_for(&cur.doc_type),
+            upd_owner,
+        )
+    };
+    Ok((access, is_server_message_revision))
+}
+
+/// The per-op context `authorize_update_change` shares across a batch's changes:
+/// everything that is not the individual `FieldChange` being judged or the
+/// pre-image serialization it is judged against.
+struct UpdateAuthzContext<'a> {
+    /// The intent's author and world role.
+    ctx: &'a PermissionContext,
+    /// The stored pre-image document the Update applies to.
+    cur: &'a Document,
+    /// The write's origin (capability-skipping origins are exempted inside).
+    origin: WriteOrigin,
+    /// The world's GM-authored declarative capability requirements.
+    world_reqs: &'a [crate::data::document::CapabilityRequirement],
+    /// The resolved per-op `Access` (from `authorize_update_access`).
+    access: &'a Access,
+    /// Whether this op is a `ServerMessageRevision` write to a message doc.
+    is_server_message_revision: bool,
+}
+
+/// Phase 1's per-change authorization for an Update — the structural capability
+/// mapping (`required_cap_for_path`), the additive declared-requirement check
+/// (`declared_caps_for_path`), and the carried-light GM gate
+/// (`carried_light_touched`) for one `FieldChange`. Pure: every input was resolved
+/// by `authorize_update_access` (or Phase 1's own load), so the in-transaction
+/// arm and the pre-transaction validator screen apply the identical decision.
+fn authorize_update_change(
+    op: &UpdateAuthzContext<'_>,
+    ch: &FieldChange,
+    whole: &serde_json::Value,
+) -> Result<(), DataError> {
+    let UpdateAuthzContext {
+        ctx,
+        cur,
+        origin,
+        world_reqs,
+        access,
+        is_server_message_revision,
+    } = *op;
+    // Each field path requires its capability (`permission::required_cap_for_path`):
+    // an immutable envelope field (id, scope, source, ...) maps to no capability
+    // and is rejected for everyone. `/base` maps to no capability too: it is
+    // server-owned (`permission::WRITABLE_BANDS`), derived at Create and refreshed
+    // by server merge writes only.
+    let need = required_cap_for_path(&ch.path);
+    // The one server-owned field write through this gate: a merge handler's
+    // whole-band `/base` refresh under `WriteOrigin::TemplateMerge`. The handler
+    // already derived authorization against the computed Update, so the capability
+    // mapping does not apply to it — every other check still runs. `/base/...`
+    // sub-paths stay rejected for every origin.
+    let merge_base_refresh =
+        need.is_none() && origin == WriteOrigin::TemplateMerge && ch.path == "/base";
+    // A capability-skipping origin (`WriteOrigin::skips_capability_gates`) skips
+    // only the actor-holds-`need` test, never `required_cap_for_path`'s mapping:
+    // an immutable envelope path (`None`, the merge refresh excepted) is still
+    // rejected for every origin, those included.
+    if need.is_none() && !merge_base_refresh {
+        return Err(DataError::Forbidden);
+    }
+    if let Some(need) = need {
+        if !origin.skips_capability_gates() && !access.has(need) {
+            // A `ServerMessageRevision` write to a message doc may ALSO write
+            // exactly `/permissions/property_overrides` (never any other
+            // `/permissions` subpath) without holding `cap::EDIT_PERMISSIONS` —
+            // `handle_recalc_roll` needs this to register a freshly-appended
+            // recalc entry's gm_only override pointer. This exact-path admission
+            // widens nothing for any other doc_type/origin/path.
+            let is_recalc_override_write =
+                is_server_message_revision && ch.path == "/permissions/property_overrides";
+            if !is_recalc_override_write {
+                tracing::debug!(
+                    user = %ctx.user_id, path = %ch.path, capability = need,
+                    "intent denied: missing capability"
+                );
+                return Err(DataError::Forbidden);
+            }
+        }
+    }
+    // Declarative requirements are additive: a module/world may demand extra
+    // capabilities for a sub-path on top of the structural base above. SKIPPED
+    // only for a `ServerMessageRevision` write to exactly `/engine` or
+    // `/permissions/property_overrides` — a world's `CapabilityRequirement`
+    // carries no `doc_type`, so an ancestor write to `/engine` would otherwise
+    // inherit a requirement declared for a wholly unrelated doc_type's field,
+    // blocking a GM's already-vetted moderation write. Any OTHER path under this
+    // origin still goes through this check.
+    let is_scoped_smr_write = is_server_message_revision
+        && matches!(
+            ch.path.as_str(),
+            "/engine" | "/permissions/property_overrides"
+        );
+    if !origin.skips_capability_gates() && !is_scoped_smr_write {
+        for extra in declared_caps_for_path(&ch.path, world_reqs) {
+            if !access.has(extra) {
+                tracing::debug!(
+                    user = %ctx.user_id, path = %ch.path, capability = extra,
+                    "intent denied: missing declared capability"
+                );
+                return Err(DataError::Forbidden);
+            }
+        }
+    }
+    // Carried-light authoring is GM-only, value-aware
+    // (`permission::carried_light_touched`): an emission joins the SHARED
+    // illumination field every viewer's lit mask and movement gate read, so unlike
+    // an owner's other writable fields, writing one edits other players' secrecy
+    // masks. An ancestor write is refused only when the emission subtree actually
+    // changes, so a whole-`/engine/overrides` write that leaves `light` untouched
+    // stays legal.
+    if !origin.skips_capability_gates()
+        && ctx.world_role != WorldRole::Gm
+        && carried_light_touched(&cur.doc_type, &ch.path, ch.remove, whole, &ch.new)
+    {
+        tracing::debug!(
+            user = %ctx.user_id, path = %ch.path,
+            "intent denied: carried-light authoring is GM-only"
+        );
+        return Err(DataError::Forbidden);
+    }
+    Ok(())
+}
+
+/// Reconstructs the MERGED post-image document a `changes` Update would produce against
+/// `doc_id`'s CURRENT stored row, read through `executor` — shared by Phase 2's authoritative
+/// merge (`&mut *tx`, inside the write transaction) and the pre-transaction validator
+/// pre-image build (a read-only pool connection, before the transaction opens): both merges
+/// must reach the IDENTICAL document, or the validated post-image and the committed one could
+/// silently diverge. Returns the PRE-image and the merged POST-image. `DataError::NotFound` if
+/// the row is absent; `DataError::OpFailed` if `changes` would change the document id.
+async fn merge_update_document<'e, E>(
+    executor: E,
+    doc_id: Uuid,
+    changes: &[FieldChange],
+) -> Result<(Document, Document), DataError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
+        .bind(doc_id.to_string())
+        .fetch_optional(executor)
+        .await?
+        .ok_or(DataError::NotFound)?;
+    let pre_value: serde_json::Value = serde_json::from_str(row.get::<String, _>("json").as_str())?;
+    let pre_doc: Document = serde_json::from_value(pre_value.clone())?;
+    let mut post_value = pre_value;
+    for ch in changes {
+        // THE `apply_field_change` mutation rule — the same call the authoritative
+        // merge makes; never a re-spelled remove/set branch.
+        apply_field_change(&mut post_value, ch)?;
+    }
+    let post_doc: Document = serde_json::from_value(post_value)?;
+    if post_doc.id != doc_id {
+        return Err(DataError::OpFailed(
+            "update must not change the document id".into(),
+        ));
+    }
+    Ok((pre_doc, post_doc))
 }
 
 /// `doc`'s `CombatEngine`, or `None` if `doc` is not a `combat` document.
@@ -810,6 +1206,164 @@ impl Repository for SqliteRepository {
         // This is the GM-controlled tier-2 structural schema registry; the
         // writer never supplies its own judging schema.
         let world_schemas = self.world_schema_declarations(world_id).await?;
+        // Sandboxed validators run HERE, entirely before the write transaction opens: the
+        // single-writer pool (`max_connections(1)`) serializes every `apply_intent` server-wide,
+        // so a validator held inside the transaction would throttle every hosted world. A stale
+        // pre-image read here is safe — see `validated_pre_images` below for the in-transaction
+        // re-validation that closes the gap the per-pointer OCC check leaves.
+        let mut validated_pre_images: std::collections::HashMap<Uuid, (Document, bool)> =
+            std::collections::HashMap::new();
+        let mut validator_pass: Option<(
+            std::sync::Arc<crate::sandbox::registry::ValidatorRegistry>,
+            Vec<String>,
+        )> = None;
+        if let Some(modules_dir) = self.modules_dir.clone() {
+            let enabled = match self.world_enabled_modules(world_id).await {
+                Ok(e) => e,
+                Err(e) => {
+                    tracing::warn!(world = %world_id, error = %e, "enabled-module read failed; validator pass skipped for this intent");
+                    Vec::new()
+                }
+            };
+            let enabled_module_ids: Vec<String> = enabled
+                .iter()
+                .filter(|e| e.validators_enabled)
+                .map(|e| e.id.clone())
+                .collect();
+            if !enabled_module_ids.is_empty() {
+                let registry = {
+                    let cache = self.validator_registry_cache.clone();
+                    tokio::task::spawn_blocking(move || cache.get_or_scan(&modules_dir))
+                        .await
+                        .unwrap_or_default()
+                };
+                let read_pool = self.open_read_pool().await?;
+                for op in &ops {
+                    let (mut doc, prior): (Document, Option<Document>) = match op {
+                        Operation::Create { doc } => (doc.clone(), None),
+                        Operation::Update { doc_id, changes } => {
+                            let touches_system = changes
+                                .iter()
+                                .any(|c| crate::data::permission::targets_system_band(&c.path));
+                            if !touches_system {
+                                continue;
+                            }
+                            match merge_update_document(&read_pool, *doc_id, changes).await {
+                                Ok((pre, post)) => (post, Some(pre)),
+                                // A missing/malformed pre-image here is not this pass's problem
+                                // to report — the real, authoritative Phase 1 load inside the
+                                // transaction below surfaces the SAME failure properly.
+                                Err(_) => continue,
+                            }
+                        }
+                        Operation::Move { .. } => continue,
+                        Operation::Delete { .. } => continue,
+                    };
+                    // Authorization screen, consulted BEFORE any validator: the SAME shared
+                    // functions Phase 1's own arms call inside the transaction below
+                    // (`authorize_create_intent`/`authorize_update_access`/
+                    // `authorize_update_change`), never a re-spelled copy — an op Phase 1
+                    // would refuse with `Forbidden` must not reach a validator's error text
+                    // (which can disclose the validator's rules), must not burn a faulting
+                    // module's streak toward auto-disable, and must not burn fuel CPU.
+                    // Capability-skipping origins are exempt inside the shared functions
+                    // exactly as they are in Phase 1. The screen's `Forbidden` also short-
+                    // circuits the structural pre-pass below — a deliberately stricter
+                    // precedence than Phase 1's (less disclosure), never a weaker one:
+                    // anything the screen admits still faces Phase 1 unchanged.
+                    let prior_permitted = match op {
+                        Operation::Create { doc: create_doc } => {
+                            // Scope before anything else: a foreign-scope intent must
+                            // never reach a validator (same check Phase 1 runs).
+                            check_command_scope(create_doc, world_id)?;
+                            authorize_create_intent(
+                                &read_pool,
+                                ctx,
+                                create_doc,
+                                origin,
+                                &world_defaults,
+                                &world_reqs,
+                            )
+                            .await?;
+                            // A Create carries no prior band, so there is nothing the
+                            // READ gate could withhold.
+                            true
+                        }
+                        Operation::Update { changes, .. } => {
+                            let pre_doc = prior
+                                .as_ref()
+                                .expect("an Update reaching this point always merged a pre-image");
+                            // Scope before anything else: `merge_update_document` loads by
+                            // bare id, so without this check an intent targeting world A
+                            // could feed a world-B document through world A's validators
+                            // and use the verdict/reason as a cross-world oracle.
+                            check_command_scope(pre_doc, world_id)?;
+                            let (access, is_smr) = authorize_update_access(
+                                &read_pool,
+                                ctx,
+                                pre_doc,
+                                origin,
+                                &world_defaults,
+                            )
+                            .await?;
+                            let whole = serde_json::to_value(pre_doc)?;
+                            let authz_op = UpdateAuthzContext {
+                                ctx,
+                                cur: pre_doc,
+                                origin,
+                                world_reqs: &world_reqs,
+                                access: &access,
+                                is_server_message_revision: is_smr,
+                            };
+                            for ch in changes {
+                                authorize_update_change(&authz_op, ch, &whole)?;
+                            }
+                            // The validator's `prior` band is stored content: a writer
+                            // WITHOUT whole-document READ must not receive it (directly,
+                            // or reflected through a crafted refusal reason).
+                            access.has(cap::READ)
+                        }
+                        Operation::Move { .. } | Operation::Delete { .. } => {
+                            unreachable!("Move/Delete ops continue above the screen")
+                        }
+                    };
+                    match crate::sandbox::validate_document(
+                        &registry,
+                        &enabled_module_ids,
+                        &mut doc,
+                        prior.as_ref(),
+                        prior_permitted,
+                        world_id,
+                        &world_schemas,
+                    )
+                    .await
+                    {
+                        // `validate_document`'s own structural pre-pass rejected `doc` before
+                        // any validator ran — Phase 1 below would reject it identically, so
+                        // its error is returned untouched here.
+                        Err(structural_err) => return Err(structural_err),
+                        Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
+                        Ok(crate::sandbox::ValidatorVerdict::Refuse { module, reason }) => {
+                            return Err(DataError::OpFailed(format!(
+                                "validator {module}: {reason}"
+                            )));
+                        }
+                        Ok(crate::sandbox::ValidatorVerdict::Fault(fault)) => {
+                            return Err(DataError::Validator(fault));
+                        }
+                    }
+                    // Captured for the in-transaction re-validation below: Phase 1's OCC
+                    // covers only each change's own pointer, so a concurrent write to any
+                    // OTHER path of the same document would pass OCC and commit a post-image
+                    // no validator ever saw. The Update arm compares its in-transaction
+                    // pre-image against this capture and re-validates when they differ.
+                    if let (Operation::Update { doc_id, .. }, Some(pre)) = (op, prior) {
+                        validated_pre_images.insert(*doc_id, (pre, prior_permitted));
+                    }
+                }
+                validator_pass = Some((registry, enabled_module_ids));
+            }
+        }
         let mut tx = self.pool.begin().await?;
 
         // Phase 1 — authorize, structurally validate, and check pre-images.
@@ -1211,95 +1765,27 @@ impl Repository for SqliteRepository {
                     if doc.parent_id == Some(doc.id) {
                         return Err(Self::self_parent_error());
                     }
-                    // `system-defaults` is server-authored: its content mirrors
-                    // the installed system package's declaration, so every
-                    // client-reachable origin is rejected outright —
-                    // `WriteOrigin::ConfigSeed` (the world-config seed/refresh
-                    // path) is the ONLY origin that may author it.
-                    if doc.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
-                    {
-                        return Err(DataError::Forbidden);
-                    }
-                    let create_owner = Self::load_effective_owner(&mut *tx, doc).await?;
-                    let access = resolve_access_world(
-                        ctx.user_id,
-                        ctx.world_role,
+                    // Authorization: the ONE shared statement of the Create
+                    // capability floor (`authorize_create_intent`, which also reserves
+                    // `system-defaults`/`audio-state` Create to `WriteOrigin::ConfigSeed`) — the
+                    // pre-transaction validator screen above consults the same
+                    // function, so the two can never disagree. A capability-
+                    // skipping server-authored origin (`WriteOrigin::
+                    // skips_capability_gates`: the combat clock's
+                    // `CombatTransition`, the world-config seed's `ConfigSeed`)
+                    // is exempt from the per-op capability floor inside it —
+                    // every other check in this arm (scope, size, engine,
+                    // containment, singleton, one-active-per-scene, schema)
+                    // still runs unconditionally.
+                    authorize_create_intent(
+                        &mut *tx,
+                        ctx,
                         doc,
-                        &world_defaults.grants_for(&doc.doc_type),
-                        create_owner,
-                    );
-                    // A capability-skipping server-authored origin
-                    // (`WriteOrigin::skips_capability_gates`: the combat
-                    // clock's `CombatTransition`, the world-config seed's
-                    // `ConfigSeed`) has already been vetted by its own trusted
-                    // caller, so the ordinary per-op capability floor and the
-                    // world-level create gate below are skipped for those
-                    // origins ONLY — every other check in this arm (scope,
-                    // size, engine, containment, singleton, one-active-per-
-                    // scene, schema) still runs unconditionally.
-                    if !origin.skips_capability_gates() && !access.has(cap::WRITE_FIELDS) {
-                        return Err(DataError::Forbidden);
-                    }
-                    // World-level create authorization: GM/admin hold every
-                    // capability; any other actor's WorldRole must hold core:create
-                    // for this doc type. Create has no document, so this rides
-                    // WorldRole (role_caps), not the per-document DocRole.
-                    //
-                    // Baseline chat-posting right: a Player may author a `message`,
-                    // exempt from the otherwise-GM-only core:create gate. The
-                    // WRITE_FIELDS floor above still applies, and the extra
-                    // `doc.owner == Some(ctx.user_id)` clause below ties the message
-                    // to its poster. REQUIRED PRECONDITION for soundness: the
-                    // WS/HTTP client-intent ingress MUST reject any client-authored
-                    // `message` op, so that a `message` Create reaches `apply_intent`
-                    // only from the server-side message-send handler (which builds a
-                    // sanitized doc). Without that ingress rejection this exemption
-                    // lets a Player create a self-owned `message` with an arbitrary
-                    // body (forged `actor_owner`/`kind`) via a raw `Intent`; do not
-                    // rely on this exemption until that rejection is in place, and do
-                    // not weaken it thereafter.
-                    let is_baseline_message = doc.doc_type == crate::chat::MESSAGE_DOC_TYPE
-                        && ctx.world_role == WorldRole::Player
-                        && doc.owner == Some(ctx.user_id);
-                    if !origin.skips_capability_gates()
-                        && ctx.world_role != WorldRole::Gm
-                        && !is_baseline_message
-                        && !world_defaults.role_has(ctx.world_role, &doc.doc_type, cap::CREATE)
-                    {
-                        tracing::debug!(
-                            user = %ctx.user_id, doc_type = %doc.doc_type,
-                            "create denied: missing core:create"
-                        );
-                        return Err(DataError::Forbidden);
-                    }
-                    // Create writes the whole body at once, so any declared
-                    // requirement whose protected path is populated must be
-                    // authorized — otherwise Create is a wholesale bypass of the
-                    // declarative gate that Update enforces field-by-field.
-                    let doc_json = serde_json::to_value(&*doc)?;
-                    for extra in declared_caps_for_document(&doc_json, &world_reqs) {
-                        if !access.has(extra) {
-                            tracing::debug!(
-                                user = %ctx.user_id, doc = %doc.id, capability = extra,
-                                "create denied: missing declared capability"
-                            );
-                            return Err(DataError::Forbidden);
-                        }
-                    }
-                    // Create carries no field paths, so the carried-light GM gate
-                    // (see the Update arm below) checks the body directly: a non-GM may not
-                    // create a token/actor already carrying an emission, even in a world whose
-                    // `core:create` grant otherwise admits the Create itself.
-                    if !origin.skips_capability_gates()
-                        && ctx.world_role != WorldRole::Gm
-                        && carried_light_in_body(&doc.doc_type, &doc_json)
-                    {
-                        tracing::debug!(
-                            user = %ctx.user_id, doc_type = %doc.doc_type,
-                            "create denied: carried-light authoring is GM-only"
-                        );
-                        return Err(DataError::Forbidden);
-                    }
+                        origin,
+                        &world_defaults,
+                        &world_reqs,
+                    )
+                    .await?;
                     // Create is non-clobbering: an existing id is a conflict,
                     // not a silent overwrite (unlike upsert in apply_command).
                     if Self::load_document(&mut *tx, doc.id).await?.is_some() {
@@ -1347,6 +1833,11 @@ impl Repository for SqliteRepository {
                     {
                         return Err(DataError::Forbidden);
                     }
+                    // `audio-state` deletion is reserved to the config-seed path, same as
+                    // Create — against the authoritative STORED doc_type.
+                    if cur.doc_type == AUDIO_STATE_DOC_TYPE && origin != WriteOrigin::ConfigSeed {
+                        return Err(DataError::Forbidden);
+                    }
                     let del_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
                     // Capability-skipping origins (`WriteOrigin::
                     // skips_capability_gates`) skip this gate — see the Create
@@ -1377,116 +1868,18 @@ impl Repository for SqliteRepository {
                         pre_owners.insert(*doc_id, pre_owner);
                     }
                     check_command_scope(&cur, world_id)?;
-                    // Message docs are server-authored and immutable to clients
-                    // in this checkpoint: `Update` carries no `doc_type` for
-                    // `ops_target_message` to classify, so it is instead
-                    // rejected here against the authoritative STORED doc_type
-                    // (never a client-supplied one). Without this, an owning
-                    // Player's `DocRole::Owner` grants WRITE_FIELDS on their
-                    // own message, letting a raw Update forge `kind`/
-                    // `user_owner`/`channel` or rewrite `content` unsanitized.
-                    // `WriteOrigin::ServerMessageRevision` — set ONLY by the
-                    // server edit/delete handlers or the post-publish
-                    // enrichment republish, never derivable from any
-                    // wire frame — re-opens this path for their sanitized
-                    // authoritative revision; the ordinary WRITE_FIELDS/OCC
-                    // checks below still apply on top of it. `CombatTransition`
-                    // is NOT exempted here: the condition below rejects any
-                    // origin other than `ServerMessageRevision`, so a combat
-                    // clock batch may `Create` a `message` doc (roll results,
-                    // event messages) but can never reach this arm to `Update`
-                    // one — the same blanket rejection `Client` gets.
-                    if cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
-                        && origin != WriteOrigin::ServerMessageRevision
-                    {
-                        return Err(DataError::Forbidden);
-                    }
-                    // `system-defaults` is server-authored (see the Create
-                    // arm's matching rejection): rejected against the
-                    // authoritative STORED doc_type for every origin but the
-                    // world-config seed/refresh path's `ConfigSeed`.
-                    if cur.doc_type == SYSTEM_DEFAULTS_DOC_TYPE && origin != WriteOrigin::ConfigSeed
-                    {
-                        return Err(DataError::Forbidden);
-                    }
-                    // A message doc's `gm_role`/`users` fields exist to gate
-                    // ordinary READ visibility for OTHER recipients (e.g. an
-                    // `Audience::Whisper` a GM isn't individually listed on
-                    // resolves them to `DocRole::None`; `Audience::GmOnly`
-                    // resolves them to `DocRole::Observer`, READ-only) — not
-                    // the server's own moderation capability. The handler
-                    // that produced this `ServerMessageRevision` write
-                    // (`handle_edit_message`/`handle_delete_message`, or the
-                    // post-publish enrichment republish) already
-                    // independently vetted owner-or-GM authority before ever
-                    // reaching here, so re-deriving capability from the
-                    // document's own permission fields for THIS specific
-                    // origin+doc_type pair would incorrectly re-restrict a
-                    // GM's moderation edit/delete of a restricted-audience
-                    // message. PRESUPPOSITION: this branch trusts that the
-                    // calling handler has ALREADY performed an owner-or-GM
-                    // check before setting `WriteOrigin::ServerMessageRevision`
-                    // — the storage layer does not re-derive that decision,
-                    // it only authorizes the write's SHAPE. Any future
-                    // `ServerMessageRevision` construction site must be
-                    // reviewed against this invariant.
-                    //
-                    // Grant only READ + WRITE_FIELDS (never `all: true`) —
-                    // both existing handlers construct a single `/engine`
-                    // FieldChange and never touch `/permissions` or
-                    // `/embedded`, so the exemption is
-                    // scoped to exactly what it is used for. This still
-                    // authorizes the GM-not-addressed moderation edit/delete
-                    // of `/engine` while denying `/permissions`/`/embedded`
-                    // writes by construction, closing the gap even for a
-                    // hypothetical future `ServerMessageRevision` caller with
-                    // a broader op.
-                    // A `CapabilityRequirement` carries no `doc_type` — it is a
-                    // world-wide policy keyed on `path_prefix` alone, and
-                    // `declared_caps_for_path`'s ancestor-overlap rule treats a
-                    // whole-band `/engine` write as covering EVERY requirement
-                    // declared anywhere under `/engine`, regardless of which
-                    // doc_type that requirement was authored for (e.g. an
-                    // actor's `/engine/vision`). A `ServerMessageRevision`
-                    // write to EXACTLY `/engine` or
-                    // `/permissions/property_overrides` is therefore exempted
-                    // from that ADDITIVE check below (`is_scoped_smr_write`) —
-                    // the calling handler has already vetted owner-or-GM
-                    // authority, and this origin's writes are hard-scoped to
-                    // those two paths only, so there is no message-specific
-                    // declared requirement for them to legitimately satisfy.
-                    // The exemption is scoped by PATH, not just by origin: a
-                    // `ServerMessageRevision` write to any OTHER path (e.g.
-                    // `/name`, `/system`) still passes through
-                    // `declared_caps_for_path` like any other write — the
-                    // structural cap check above would almost certainly deny
-                    // such a write first (this origin's grant is `all: false`
-                    // and holds only `READ`/`WRITE_FIELDS`), but the additive
-                    // check must not be silently bypassed for a path this
-                    // origin was never meant to touch.
-                    let is_server_message_revision = cur.doc_type == crate::chat::MESSAGE_DOC_TYPE
-                        && origin == WriteOrigin::ServerMessageRevision;
-                    let access = if is_server_message_revision {
-                        Access {
-                            caps: [cap::READ.to_string(), cap::WRITE_FIELDS.to_string()]
-                                .into_iter()
-                                .collect(),
-                            all: false,
-                            see_gm_only: true,
-                            is_owner: true,
-                        }
-                    } else {
-                        // Effective owner joined from the LIVE linked actor inside this
-                        // transaction — a linked token's owner is never stored on the token.
-                        let upd_owner = Self::load_effective_owner(&mut *tx, &cur).await?;
-                        resolve_access_world(
-                            ctx.user_id,
-                            ctx.world_role,
-                            &cur,
-                            &world_defaults.grants_for(&cur.doc_type),
-                            upd_owner,
-                        )
-                    };
+                    // Stored-type rejections and access resolution: the ONE shared
+                    // statement (`authorize_update_access`, which also reserves
+                    // `audio-state` Update to `WriteOrigin::AudioTransport`) the
+                    // pre-transaction validator screen also consults — see
+                    // `authorize_create_intent` for the never-fork rationale. The
+                    // `ServerMessageRevision` branch trusts the calling handler to have
+                    // already vetted owner-or-GM authority; the storage layer only
+                    // authorizes the write's SHAPE (a scoped READ + WRITE_FIELDS grant,
+                    // never `all: true`).
+                    let (access, is_server_message_revision) =
+                        authorize_update_access(&mut *tx, ctx, &cur, origin, &world_defaults)
+                            .await?;
                     // Recorded for Phase 2's derived-path capability check
                     // before any per-change validation below can reject this
                     // op -- an error return here never reaches Phase 2, so
@@ -1504,121 +1897,24 @@ impl Repository for SqliteRepository {
                     // into one `FieldEdit[]` batch rather than issuing several
                     // Updates to the same doc in one command.
                     let whole = serde_json::to_value(&cur)?;
+                    let authz_op = UpdateAuthzContext {
+                        ctx,
+                        cur: &cur,
+                        origin,
+                        world_reqs: &world_reqs,
+                        access: &access,
+                        is_server_message_revision,
+                    };
                     for ch in &*changes {
                         validation::validate_field_change(ch)?;
-                        // Each field path requires its capability
-                        // (`permission::required_cap_for_path`): an
-                        // immutable envelope field (id, scope, source, ...) maps
-                        // to no capability and is rejected for everyone.
-                        // /system, /engine, /name -> write_fields;
-                        // /embedded -> manage_embedded; /permissions AND /owner
-                        // -> edit_permissions. /owner is NOT immutable — it is
-                        // an access-control field, writable by a GM (or an
-                        // explicit edit_permissions grant) but never by an owner,
-                        // since the DocRole::Owner floor excludes that cap.
-                        // `/base` maps to no capability too: it is server-owned
-                        // (`permission::WRITABLE_BANDS`), derived at Create and
-                        // refreshed by server merge writes only.
-                        let need = required_cap_for_path(&ch.path);
-                        // The one server-owned field write through this gate: a
-                        // merge handler's whole-band `/base` refresh under
-                        // `WriteOrigin::TemplateMerge`. The handler already
-                        // derived authorization against the computed Update, so
-                        // the capability mapping does not apply to it — OCC and
-                        // every structural check below still run. `/base/...`
-                        // sub-paths stay rejected for every origin: merge
-                        // emission is whole-band only
-                        // (`merge::plan::plan_to_update`).
-                        let merge_base_refresh = need.is_none()
-                            && origin == WriteOrigin::TemplateMerge
-                            && ch.path == "/base";
-                        // A capability-skipping origin (`WriteOrigin::
-                        // skips_capability_gates`) skips only the
-                        // actor-holds-`need` test below, never
-                        // `required_cap_for_path`'s mapping: an immutable
-                        // envelope path (`None`, the merge refresh excepted) is
-                        // still rejected for every origin, those included.
-                        if need.is_none() && !merge_base_refresh {
-                            return Err(DataError::Forbidden);
-                        }
-                        if let Some(need) = need {
-                            if !origin.skips_capability_gates() && !access.has(need) {
-                                // A `ServerMessageRevision` write to a message doc may
-                                // ALSO write exactly `/permissions/property_overrides`
-                                // (never any other `/permissions` subpath) without
-                                // holding `cap::EDIT_PERMISSIONS` -- `handle_recalc_roll`
-                                // needs this to register a freshly-appended
-                                // `RecalcEntry`'s gm_only override pointer. Granting
-                                // `EDIT_PERMISSIONS` to this origin instead would ALSO
-                                // authorize rewriting `default`/`gm_role`/`users` -- the
-                                // message's own audience-enforcement fields -- which
-                                // this origin's `all: false` scoping deliberately
-                                // excludes (see the `ServerMessageRevision` access-grant
-                                // construction above). This exact-path admission widens
-                                // nothing for any other doc_type/origin/path.
-                                let is_recalc_override_write = is_server_message_revision
-                                    && ch.path == "/permissions/property_overrides";
-                                if !is_recalc_override_write {
-                                    tracing::debug!(
-                                        user = %ctx.user_id, path = %ch.path, capability = need,
-                                        "intent denied: missing capability"
-                                    );
-                                    return Err(DataError::Forbidden);
-                                }
-                            }
-                        }
-                        // Declarative requirements are additive: a module/world
-                        // may demand extra capabilities for a sub-path on top of
-                        // the structural base above. SKIPPED only for a
-                        // `ServerMessageRevision` write to exactly `/engine` or
-                        // `/permissions/property_overrides` (see the
-                        // `is_scoped_smr_write` doc above) — a world's
-                        // `CapabilityRequirement` carries no `doc_type`, so an
-                        // ancestor write to `/engine` would otherwise inherit a
-                        // requirement declared for a wholly unrelated doc_type's
-                        // field, blocking a GM's already-vetted moderation write.
-                        // Any OTHER path under this origin still goes through
-                        // this check, matching `is_recalc_override_write`'s
-                        // exact-path shape above.
-                        let is_scoped_smr_write = is_server_message_revision
-                            && matches!(
-                                ch.path.as_str(),
-                                "/engine" | "/permissions/property_overrides"
-                            );
-                        if !origin.skips_capability_gates() && !is_scoped_smr_write {
-                            for extra in declared_caps_for_path(&ch.path, &world_reqs) {
-                                if !access.has(extra) {
-                                    tracing::debug!(
-                                        user = %ctx.user_id, path = %ch.path, capability = extra,
-                                        "intent denied: missing declared capability"
-                                    );
-                                    return Err(DataError::Forbidden);
-                                }
-                            }
-                        }
-                        // Carried-light authoring is GM-only, value-aware
-                        // (`permission::carried_light_touched`): an emission joins the SHARED
-                        // illumination field every viewer's lit mask and movement gate read, so
-                        // unlike an owner's other writable fields (presentation/self-scoped),
-                        // writing one edits other players' secrecy masks. An ancestor write is
-                        // refused only when the emission subtree actually changes, so a whole-
-                        // `/engine/overrides` write that leaves `light` untouched stays legal.
-                        if !origin.skips_capability_gates()
-                            && ctx.world_role != WorldRole::Gm
-                            && carried_light_touched(
-                                &cur.doc_type,
-                                &ch.path,
-                                ch.remove,
-                                &whole,
-                                &ch.new,
-                            )
-                        {
-                            tracing::debug!(
-                                user = %ctx.user_id, path = %ch.path,
-                                "intent denied: carried-light authoring is GM-only"
-                            );
-                            return Err(DataError::Forbidden);
-                        }
+                        // Per-change authorization: the ONE shared statement
+                        // (`authorize_update_change`) — the structural
+                        // capability mapping (`required_cap_for_path`), the
+                        // additive declared-requirement check, and the
+                        // carried-light GM gate — also consulted by the
+                        // pre-transaction validator screen, so the two can
+                        // never disagree.
+                        authorize_update_change(&authz_op, ch, &whole)?;
                         let actual = whole
                             .pointer(&ch.path)
                             .cloned()
@@ -1845,35 +2141,18 @@ impl Repository for SqliteRepository {
                     }
                 }
                 Operation::Update { doc_id, changes } => {
-                    let row = sqlx::query("SELECT json FROM documents WHERE id = ?")
-                        .bind(doc_id.to_string())
-                        .fetch_optional(&mut *tx)
-                        .await?
-                        .ok_or(DataError::NotFound)?;
-                    let mut value: serde_json::Value =
-                        serde_json::from_str(row.get::<String, _>("json").as_str())?;
+                    let (pre_doc, mut doc) =
+                        merge_update_document(&mut *tx, *doc_id, changes).await?;
                     // Captured before this op's own `changes` apply — the
                     // TRUE stored pre-image `derive_engine_side_effects`
                     // diffs against below, to surface a normalize-time side
                     // effect on an engine key none of this op's own `changes`
                     // named (e.g. `NoteEngine::derive_body`). Capturing after
-                    // the `apply_field_change` loop would compare the
-                    // post-`changes`, pre-normalize value against itself,
+                    // the merge would compare the post-`changes`,
+                    // pre-normalize value against itself,
                     // reporting the wrong `old` for a nested request this
                     // op's own change already applied.
-                    let pre_engine = value.get("engine").cloned();
-                    for ch in changes {
-                        // THE `apply_field_change` mutation rule. Never
-                        // re-derive the remove/set branch here: the derived scene ECS
-                        // mirrors these same changes and must land the same value.
-                        apply_field_change(&mut value, ch)?;
-                    }
-                    let mut doc: Document = serde_json::from_value(value)?;
-                    if doc.id != *doc_id {
-                        return Err(DataError::OpFailed(
-                            "update must not change the document id".into(),
-                        ));
-                    }
+                    let pre_engine = pre_doc.engine.clone();
                     check_command_scope(&doc, world_id)?;
                     // Embedded children NEVER carry `base` (the Create arm's
                     // `derive_create_base` strips it recursively), but a
@@ -1967,6 +2246,53 @@ impl Repository for SqliteRepository {
                     // (existing row + applied `FieldChange`s), matching
                     // `validate_engine_tree` above: never the pre-image.
                     validation::validate_system_schema_tree(&doc, &world_schemas)?;
+                    // In-transaction validator re-validation (the TOCTOU half of
+                    // the pre-transaction pass): the pass validated a post-image
+                    // merged from a pre-transaction read, and Phase 1's OCC covers
+                    // only each change's own pointer — a concurrent write to any
+                    // OTHER path of this document would pass OCC and commit a
+                    // post-image no validator ever saw. When the in-transaction
+                    // pre-image differs from the pass's capture, the SAME
+                    // `sandbox::validate_document` re-runs here against the final,
+                    // fully-normalized post-image that actually commits. Re-
+                    // validation, never `Conflict`: refusing on any concurrent
+                    // write would let two writers livelock a protected document
+                    // (each one's write invalidates the other's validation).
+                    if let (
+                        Some((registry, enabled_module_ids)),
+                        Some((captured_pre, prior_permitted)),
+                    ) = (&validator_pass, validated_pre_images.get(doc_id))
+                    {
+                        let pre_doc_json = serde_json::to_value(&pre_doc)?;
+                        let captured_json = serde_json::to_value(captured_pre)?;
+                        if !crate::data::command::values_semantically_eq(
+                            &pre_doc_json,
+                            &captured_json,
+                        ) {
+                            match crate::sandbox::validate_document(
+                                registry,
+                                enabled_module_ids,
+                                &mut doc,
+                                Some(&pre_doc),
+                                *prior_permitted,
+                                world_id,
+                                &world_schemas,
+                            )
+                            .await
+                            {
+                                Err(structural_err) => return Err(structural_err),
+                                Ok(crate::sandbox::ValidatorVerdict::Accept) => {}
+                                Ok(crate::sandbox::ValidatorVerdict::Refuse { module, reason }) => {
+                                    return Err(DataError::OpFailed(format!(
+                                        "validator {module}: {reason}"
+                                    )));
+                                }
+                                Ok(crate::sandbox::ValidatorVerdict::Fault(fault)) => {
+                                    return Err(DataError::Validator(fault));
+                                }
+                            }
+                        }
+                    }
                     doc.updated_at = ts;
                     Self::upsert_document(&mut tx, &doc, seq).await?;
                     post_images.insert(*doc_id, doc.clone());
@@ -2276,6 +2602,12 @@ impl Repository for SqliteRepository {
         SqliteRepository::member_id_by_username(self, world, username).await
     }
 
+    async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError> {
+        // Delegates to the inherent method of the same name (see `member_role`
+        // above for why this is not infinite recursion).
+        SqliteRepository::asset_id_by_name(self, world, name).await
+    }
+
     async fn world_cap_defaults(&self, world: Uuid) -> Result<WorldCapDefaults, DataError> {
         match self.get_setting(&world_caps_key(world)).await? {
             Some(json) => Ok(serde_json::from_str(&json)?),
@@ -2313,11 +2645,33 @@ impl Repository for SqliteRepository {
         }
     }
 
-    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError> {
+    async fn world_enabled_modules(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::modules::WorldModuleEntry>, DataError> {
         match self.get_setting(&world_modules_key(world)).await? {
-            Some(json) => Ok(serde_json::from_str(&json)?),
+            Some(json) => Ok(crate::modules::WorldModuleEntry::parse_legacy_tolerant(
+                &json,
+            )?),
             None => Ok(Vec::new()),
         }
+    }
+
+    async fn set_world_enabled_modules(
+        &self,
+        world: Uuid,
+        entries: &[crate::modules::WorldModuleEntry],
+    ) -> Result<(), DataError> {
+        let json = serde_json::to_string(entries)?;
+        self.set_setting(&world_modules_key(world), &json).await
+    }
+
+    async fn reset_validator_fault_streak(&self, world: Uuid, module: &str) {
+        self.validator_registry_cache.reset_faults(world, module);
+    }
+
+    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError> {
+        SqliteRepository::list_members(self, world).await
     }
 
     async fn search(

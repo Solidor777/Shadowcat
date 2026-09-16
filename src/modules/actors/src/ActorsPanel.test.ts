@@ -829,7 +829,7 @@ describe("ActorsPanel — carried light", () => {
     const dispatchIntent = vi.fn();
     const { listAssets } = await import("@shadowcat/core");
     vi.mocked(listAssets).mockResolvedValue([
-      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png", byte_size: 100n, created_by: "u-self", created_at: 0n, storage_key: "k1", version: 1n, folder_id: null, tags: [], derived_tags: [], width: null, height: null, has_alpha: false, animated: false, original_content_type: "image/png", original_byte_size: 100n, original_retained: false, conversion_note: null },
+      { id: "asset-1", world_id: "w1", original_name: "hero.png", content_type: "image/png", byte_size: 100n, created_by: "u-self", created_at: 0n, storage_key: "k1", version: 1n, folder_id: null, tags: [], derived_tags: [], width: null, height: null, has_alpha: false, animated: false, original_content_type: "image/png", original_byte_size: 100n, original_retained: false, conversion_note: null, duration_ms: null, sample_rate: null, sheet: null },
     ]);
     const pickAsset = vi.fn().mockResolvedValue("asset-1");
     render(ActorsPanel, {

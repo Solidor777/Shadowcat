@@ -59,6 +59,25 @@
     void run(() => patchAsset(asset.id, { tags: [...asset.tags, tag] }));
   }
 
+  /** Pairs a PixiJS-spritesheet sidecar JSON with this image through a `vfx:sheet=` tag
+   * (replacing any existing pairing; the server validates the sidecar names this image).
+   * @example
+   * ```
+   * // private function; wired to the Pair sheet button below
+   * pairSheet();
+   * ```
+   */
+  function pairSheet(): void {
+    void ctx.pickAsset({ kind: "other" }).then((picked) => {
+      if (!picked) return;
+      void run(() =>
+        patchAsset(asset.id, {
+          tags: [...asset.tags.filter((t) => !t.startsWith("vfx:sheet=")), `vfx:sheet=${picked}`],
+        }),
+      );
+    });
+  }
+
   /** A human-readable byte size.
    * @param n - Byte count.
    * @returns The formatted size.
@@ -77,7 +96,23 @@
 </script>
 
 <div class="preview-pane" data-testid="preview-pane">
-  <img class="preview" src={ctx.assets.url(asset.id, "preview")} alt={asset.original_name} />
+  {#if asset.content_type.startsWith("audio/")}
+    <div class="preview audio-preview" data-testid="preview-audio">
+      <button
+        type="button"
+        data-testid="preview-audio-play"
+        aria-label={t("assetBrowser.previewAudioPlay")}
+        onclick={() => ctx.audio.playOneShot(asset.id)}
+      >▶</button>
+      {#if asset.duration_ms != null}
+        <!-- i64-sourced wire values normalize through Number(), the same way `fmtBytes`'s own
+             `n: number | bigint` parameter does below — never a raw bigint in arithmetic. -->
+        <span>{(Number(asset.duration_ms) / 1000).toFixed(1)}s</span>
+      {/if}
+    </div>
+  {:else}
+    <img class="preview" src={ctx.assets.url(asset.id, "preview")} alt={asset.original_name} />
+  {/if}
 
   {#if renaming && mutable}
     <input
@@ -197,6 +232,14 @@
         disabled={!asset.original_retained || busy}
         onclick={() => void run(() => reconvertAsset(asset.id))}
       >{t("assetBrowser.reconvert")}</button>
+      {#if asset.content_type.startsWith("image/")}
+        <button
+          type="button"
+          data-testid="pair-sheet"
+          disabled={busy}
+          onclick={pairSheet}
+        >{t("assetBrowser.pairSheet")}</button>
+      {/if}
       {#if confirmingDelete}
         <button
           type="button"

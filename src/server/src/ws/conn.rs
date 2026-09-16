@@ -100,6 +100,13 @@ enum Egress {
         /// The subscription to cancel.
         request_id: Uuid,
     },
+    /// Set (or clear) the connection's spatial-audio listening override (`ClientMsg::
+    /// AudioListenAs`'s forward); the egress task owns the value every `compute_derived`
+    /// call this connection makes reads.
+    AudioListenAs {
+        /// The token to listen as, or `None` to clear the override.
+        token: Option<Uuid>,
+    },
 }
 
 /// Max live search subscriptions per connection; a subscribe beyond this is
@@ -207,13 +214,19 @@ fn text(msg: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
 
-/// Map a write-path error to the client-actionable reject category.
-fn reject_reason(e: &crate::data::DataError) -> RejectReason {
+/// Map a write-path error to the client-actionable reject category, plus an optional
+/// player-presentable detail string carried on `ServerMsg::Reject.detail`.
+fn reject_reason(e: &crate::data::DataError) -> (RejectReason, Option<String>) {
     use crate::data::DataError::*;
     match e {
-        Forbidden => RejectReason::Forbidden,
-        Conflict(_) => RejectReason::Conflict,
-        _ => RejectReason::Invalid,
+        Forbidden => (RejectReason::Forbidden, None),
+        Conflict(_) => (RejectReason::Conflict, None),
+        OpFailed(m) => (RejectReason::Invalid, Some(m.clone())),
+        Validator(fault) => (
+            RejectReason::Invalid,
+            Some(format!("validator {} faulted", fault.module)),
+        ),
+        _ => (RejectReason::Invalid, None),
     }
 }
 
@@ -390,6 +403,12 @@ async fn handle_socket(
     let emote_rate = state.ws.emote_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
+    // Per-user audio-transport budget (shared across this user's connections) — its own
+    // bucket, so transport spam cannot starve pings/emotes/chat and vice versa.
+    let audio_rate = state.ws.audio_rate.clone();
+    // Per-user VFX one-shot budget (shared across this user's connections) — a SEPARATE
+    // bucket from ping/emote/message, so a VFX burst cannot starve any other relay.
+    let vfx_rate = state.ws.vfx_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
     // and worlds — a preview's target and cached outcome are world-independent).
     let preview_client = state.ws.link_preview_client.clone();
@@ -417,21 +436,27 @@ async fn handle_socket(
                                             .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                 intent_id,
                                                 reason: RejectReason::Forbidden,
+                                                detail: None,
                                             })))
                                             .await;
                                         continue;
                                     }
                                     // Success is confirmed by the broadcast echo of the
                                     // authored Event; only a rejection is sent directly.
+                                    // A validator fault over the auto-disable limit is
+                                    // acted on inside `Room::commit_ops_locked`'s error
+                                    // arm (the one funnel every guarded write path
+                                    // shares), never here.
                                     match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
                                         Ok(_cmd) => {}
                                         Err(e) => {
-                                            let reason = reject_reason(&e);
-                                            tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                                            let (reason, detail) = reject_reason(&e);
+                                            tracing::debug!(world = %world_id, %intent_id, ?reason, error = ?e, "intent rejected");
                                             let _ = etx
                                                 .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                     intent_id,
                                                     reason,
+                                                    detail,
                                                 })))
                                                 .await;
                                         }
@@ -569,6 +594,82 @@ async fn handle_socket(
                                         });
                                     }
                                 }
+                                Ok(ClientMsg::AudioTransport { op }) => {
+                                    // Fire-and-forget on the wire: no reply frame on success (the
+                                    // broadcast Event echo of the audio-state Update IS the
+                                    // success signal); a refusal is a connection-local AudioError.
+                                    // Rate check first (own budget — see WsState::audio_rate),
+                                    // then the GM/state/op checks inside handle_transport itself.
+                                    if !audio_rate.check(user_id, now_millis(), crate::ws::AUDIO_RATE_PER_MIN) {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
+                                                reason: "too many audio commands".into(),
+                                            })))
+                                            .await;
+                                    } else if let Err(e) = crate::audio::transport::handle_transport(
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &room,
+                                        op,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
+                                                reason: e.to_string(),
+                                            })))
+                                            .await;
+                                    }
+                                }
+                                Ok(ClientMsg::AudioListenAs { token }) => {
+                                    // GM-only preview seam (see the type's own doc comment):
+                                    // silent drop on a non-GM sender, same shape as
+                                    // `ScenePing`/`Emote` (no error frame, so a non-GM never
+                                    // learns the check ran). The egress task owns the value
+                                    // (every `compute_derived` call lives there) — forward like
+                                    // every other connection-local scene control.
+                                    if audio_listen_as_permitted(&ctx) {
+                                        let _ = etx.send(Egress::AudioListenAs { token }).await;
+                                    }
+                                }
+                                Ok(ClientMsg::PlayVfx { scene, asset, x, y, scale, rotation, duration_ms, sound, elevation }) => {
+                                    // Out-of-band relay, same shape as `ScenePing`/`Emote`
+                                    // (silent drop on any denial — no error frame, so a
+                                    // non-reader never learns whether `scene` exists).
+                                    // Guard order: cheap rate check first (its own bucket —
+                                    // a VFX burst cannot starve ping/emote/message), then
+                                    // bounds (no I/O), then the authz lookup (one doc read).
+                                    let req = crate::ws::vfx::VfxRequest {
+                                        scene,
+                                        asset: asset.clone(),
+                                        x,
+                                        y,
+                                        scale,
+                                        rotation,
+                                        duration_ms,
+                                        sound: sound.clone(),
+                                        elevation,
+                                    };
+                                    if vfx_rate.check(user_id, now_millis(), 30)
+                                        && crate::ws::vfx::validate_bounds(&req)
+                                        && crate::ws::vfx::vfx_permitted(scene, &ctx, world_id, repo.as_ref()).await
+                                    {
+                                        room.broadcast_aux(ServerMsg::Vfx {
+                                            scene,
+                                            user: user_id,
+                                            asset,
+                                            x,
+                                            y,
+                                            scale,
+                                            rotation,
+                                            duration_ms,
+                                            sound,
+                                            elevation,
+                                            id: Uuid::new_v4(),
+                                        });
+                                    }
+                                }
                                 Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
                                     // Server-authoritative move execution. On success, broadcasts
                                     // MoveStream out-of-band to the room — no etx reply to the requester.
@@ -607,6 +708,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
@@ -618,7 +721,7 @@ async fn handle_socket(
         )
                                     .await
                                     {
-                                        Ok((cmd, pending)) => {
+                                        Ok(Some((cmd, pending))) => {
                                             if !pending.is_empty() {
                                                 if let Some(message_id) = crate::chat::command_message_id(&cmd) {
                                                     tokio::spawn(crate::chat::run_pending_enrichments(
@@ -638,6 +741,10 @@ async fn handle_socket(
                                                 }
                                             }
                                         }
+                                        // A successful `/fx`: no message document, no
+                                        // enrichment, no reply frame (the broadcast `vfx`
+                                        // echo IS the confirmation).
+                                        Ok(None) => {}
                                         Err(e) => {
                                             tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
                                             if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
@@ -660,6 +767,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
@@ -950,6 +1059,13 @@ async fn scene_ping_permitted(
         crate::data::permission::effective_owner(&doc, None),
     );
     access.has(crate::data::permission::cap::READ)
+}
+
+/// Whether `ctx` may send `ClientMsg::AudioListenAs`: a GM-only preview seam (see that type's
+/// own doc comment), no scene/token lookup needed. Denial is a silent drop at the call site,
+/// same convention as `scene_ping_permitted`/`token_emote_permitted`.
+fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
+    ctx.world_role == crate::data::document::WorldRole::Gm
 }
 
 /// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
@@ -1659,7 +1775,7 @@ async fn welcome_capability_requirements(
         let installed = tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
             .await
             .unwrap_or_default();
-        for id in &enabled {
+        for entry in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
             // or an on-disk manifest edit. Engine-compat is enforced at BOTH
@@ -1667,7 +1783,7 @@ async fn welcome_capability_requirements(
             // so a now-incompatible enabled module must not publish requirements.
             if let Some(m) = installed
                 .iter()
-                .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
+                .find(|m| m.id == entry.id && crate::modules::engine_compat_ok(m))
             {
                 for r in &m.requirements {
                     by_prefix
@@ -1798,6 +1914,10 @@ async fn egress_loop<S>(
     let mut scene_subs: std::collections::HashMap<Uuid, SceneSub> =
         std::collections::HashMap::new();
     let mut reeval_deadline: Option<tokio::time::Instant> = None;
+    // The connection's spatial-audio listening override (`ClientMsg::AudioListenAs`); read by
+    // every `compute_derived` call this connection makes, for every channel (only the
+    // `"audibility"` arm consults it — passing it uniformly avoids a channel-name branch here).
+    let mut listen_as: Option<Uuid> = None;
 
     let mut next_expected = current_seq + 1;
     loop {
@@ -1871,6 +1991,14 @@ async fn egress_loop<S>(
                 Some(Egress::Unsubscribe { request_id }) => {
                     subs.remove(&request_id);
                 }
+                Some(Egress::AudioListenAs { token }) => {
+                    listen_as = token;
+                    // Fire the existing debounced scene-channel re-eval on the very next loop
+                    // iteration (never later than an already-armed in-flight window — bringing
+                    // it forward is always safe, since the recompute reads the now-updated
+                    // `listen_as` regardless of when it fires).
+                    reeval_deadline = Some(tokio::time::Instant::now());
+                }
                 Some(Egress::SceneSubscribe { request_id, channel, as_user }) => {
                     if scene_subs.contains_key(&request_id) {
                         // A duplicate id would silently orphan the prior sub (mirrors the search path).
@@ -1910,7 +2038,7 @@ async fn egress_loop<S>(
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
                         let (payload, seq, grid, grid_shapes) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                         };
                         match payload {
                             Some(mut p) => {
@@ -2132,7 +2260,7 @@ async fn egress_loop<S>(
                             *id,
                             s.channel.clone(),
                             s.view_ctx,
-                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults),
+                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults, listen_as),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())

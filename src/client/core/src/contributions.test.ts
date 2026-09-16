@@ -1,5 +1,6 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from "vitest";
-import { ContributionRegistry, type Contribution, PANEL_CONTRACT, type PanelMeta } from "./contributions";
+import { ContributionRegistry, type Contribution, PANEL_CONTRACT, type PanelMeta, SCENE_TOOL_CONTRACT, type SceneToolMeta } from "./contributions";
 
 const c = (over: Partial<Contribution>): Contribution => ({
   id: "x",
@@ -67,6 +68,18 @@ describe("ContributionRegistry", () => {
     off();
     r.contribute(c({ id: "a" }));
     expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("round-trips scene-tool metadata through SCENE_TOOL_CONTRACT, order-sorted, multi-module", () => {
+    const r = new ContributionRegistry();
+    const toolB: SceneToolMeta = { id: "tb", icon: "b", labelKey: "tool.b", onSceneClick: () => {} };
+    const toolA: SceneToolMeta = { id: "ta", icon: "a", labelKey: "tool.a", onSceneClick: () => {} };
+    r.contribute(c({ id: "m2:b", contract: SCENE_TOOL_CONTRACT, order: 2, sceneTool: toolB }), { module: "m2" });
+    r.contribute(c({ id: "m1:a", contract: SCENE_TOOL_CONTRACT, order: 1, sceneTool: toolA }), { module: "m1" });
+    const result = r.contributionsFor(SCENE_TOOL_CONTRACT);
+    expect(result.map((x) => x.id)).toEqual(["m1:a", "m2:b"]);
+    expect(result[0].sceneTool).toEqual(toolA);
+    expect(result[1].sceneTool).toEqual(toolB);
   });
 });
 

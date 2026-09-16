@@ -236,9 +236,15 @@ async fn welcome_unions_enabled_modules_requirements_with_gm_authored_ones() {
     assert_eq!(reqs[0].path_prefix, "/system/vision");
 
     // Enabling the module adds its requirement WITHOUT removing the GM's own.
-    repo.set_world_enabled_modules(world.id, &["actors-plus".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "actors-plus".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
         world.id,
@@ -357,9 +363,15 @@ async fn welcome_capability_requirements_unions_caps_for_the_same_path_prefix() 
     )
     .await
     .unwrap();
-    repo.set_world_enabled_modules(world.id, &["scene-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "scene-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
@@ -421,9 +433,15 @@ async fn welcome_excludes_requirements_from_an_enabled_but_now_incompatible_modu
     // Enabled directly at the repo layer (bypassing the HTTP enable-time
     // engine-compat gate), simulating a module that was compatible at enable
     // time but no longer is (server downgrade / manifest edit).
-    repo.set_world_enabled_modules(world.id, &["stale-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "stale-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
@@ -469,9 +487,15 @@ async fn welcome_capability_requirements_still_resolves_module_requirements_via_
         .await
         .unwrap();
     let world = repo.create_world_owned("W", gm, 0).await.unwrap();
-    repo.set_world_enabled_modules(world.id, &["blocking-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "blocking-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
@@ -517,9 +541,15 @@ async fn welcome_capability_requirements_reflects_an_in_place_manifest_edit_thro
         .await
         .unwrap();
     let world = repo.create_world_owned("W", gm, 0).await.unwrap();
-    repo.set_world_enabled_modules(world.id, &["editable-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "editable-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let cache = Arc::new(crate::modules::ModuleScanCache::new());
     let reqs1 = welcome_capability_requirements(repo.as_ref(), world.id, dir.path(), &cache).await;
@@ -1305,6 +1335,25 @@ async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
     assert!(
         !scene_ping_permitted(Uuid::from_u128(0xDEAD), &spectator, world.id, repo.as_ref()).await
     );
+}
+
+/// `audio_listen_as_permitted` admits only the GM: `ClientMsg::AudioListenAs` is a GM-only
+/// preview seam, and a non-GM sender's frame must have no effect on the audibility channel.
+#[test]
+fn audio_listen_as_permitted_admits_only_the_gm() {
+    use crate::data::document::WorldRole;
+    use crate::data::membership::PermissionContext;
+
+    let gm = PermissionContext {
+        user_id: Uuid::new_v4(),
+        world_role: WorldRole::Gm,
+    };
+    let player = PermissionContext {
+        user_id: Uuid::new_v4(),
+        world_role: WorldRole::Player,
+    };
+    assert!(audio_listen_as_permitted(&gm));
+    assert!(!audio_listen_as_permitted(&player));
 }
 
 /// A `Pathfind` naming a scene the requester controls no token in is refused, even when that

@@ -9,6 +9,7 @@
   import InviteManager from "./InviteManager.svelte";
   import UserManager from "./UserManager.svelte";
   import ThemeEditor from "./ThemeEditor.svelte";
+  import PerformanceEditor from "./PerformanceEditor.svelte";
 
   const { role, t, leaveWorld, logout, contributions } = getAppContext();
 
@@ -119,6 +120,7 @@
       <ThemeEditor themeId={editing.id} onclose={closeEditor} />
     {/key}
   {/if}
+  <PerformanceEditor />
   {#if role === "gm"}
     <ModuleManager />
   {/if}
