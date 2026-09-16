@@ -756,6 +756,7 @@ async fn room_with_player_create_capability_and_lit_corner() -> PlaceHandle {
             &WorldCapDefaults::default(),
             scene_id,
             true,
+            0.0,
         );
         assert!(
             !mask.is_empty(),
@@ -1067,6 +1068,7 @@ async fn room_with_player_create_capability_and_revealed_corner() -> PlaceHandle
             &WorldCapDefaults::default(),
             scene_id,
             true,
+            0.0,
         );
         assert!(
             !mask.is_empty(),
@@ -2295,6 +2297,7 @@ async fn execute_move_gate_inputs_come_from_the_tokens_own_scene() {
         &WorldCapDefaults::default(),
         h.scene_id,
         true,
+        0.0,
     );
     assert!(
         mask.contains(&committed_cell),

@@ -936,10 +936,12 @@ impl Room {
             };
             {
                 let scene = self.scene.read().await;
-                // Memoize the visible mask per (scene, leniency) within this publish so a
-                // batch of Creates in the same scene does not recompute the mask per token.
+                // Memoize the visible mask per (scene, leniency, mover level) within this publish
+                // so a batch of same-floor Creates in the same scene does not recompute the mask
+                // per token — level is part of the key because the mask is now level-scoped to
+                // each placed token's own floor.
                 let mut visible_cache: std::collections::HashMap<
-                    (uuid::Uuid, bool),
+                    (uuid::Uuid, bool, String),
                     std::collections::BTreeSet<(i32, i32)>,
                 > = std::collections::HashMap::new();
                 for op in &ops {
@@ -984,6 +986,17 @@ impl Room {
                         let target = scene
                             .resolve_grid_shape(scene_id, cell)
                             .cell_of((eng.x, eng.y));
+                        // The placed token's OWN elevation decides which level's mask/explored
+                        // memory the placement gate consults — a mask/explored source on another
+                        // floor of the same scene must not admit or reveal a cell on this one.
+                        let placed_elevation =
+                            crate::scene::elevation::elevation_or_ground(eng.elevation);
+                        let level = crate::scene::elevation::level_of(
+                            &scene.scene_levels(scene_id),
+                            placed_elevation,
+                        )
+                        .map(|l| l.id.clone())
+                        .unwrap_or_default();
                         // Guaranteed `Some`: reaching this point means this op is a token Create
                         // with a parent, which is exactly what `needs_world_defaults` scanned for.
                         // Fail closed rather than defaulting an authority input.
@@ -993,14 +1006,16 @@ impl Room {
                         match settings.movement_restriction {
                             crate::scene::MovementRestriction::Unrestricted => {}
                             crate::scene::MovementRestriction::Visible => {
-                                let mask =
-                                    visible_cache.entry((scene_id, lenient)).or_insert_with(|| {
+                                let mask = visible_cache
+                                    .entry((scene_id, lenient, level.clone()))
+                                    .or_insert_with(|| {
                                         scene.visible_cells_cached(
                                             ctx.user_id,
                                             ctx.world_role,
                                             wd,
                                             scene_id,
                                             lenient,
+                                            placed_elevation,
                                         )
                                     });
                                 if !mask.contains(&target) {
@@ -1009,7 +1024,7 @@ impl Room {
                             }
                             crate::scene::MovementRestriction::Revealed => {
                                 let mask = visible_cache
-                                    .entry((scene_id, lenient))
+                                    .entry((scene_id, lenient, level.clone()))
                                     .or_insert_with(|| {
                                         scene.visible_cells_cached(
                                             ctx.user_id,
@@ -1017,6 +1032,7 @@ impl Room {
                                             wd,
                                             scene_id,
                                             lenient,
+                                            placed_elevation,
                                         )
                                     })
                                     .clone();
@@ -1027,12 +1043,6 @@ impl Room {
                                 // The placed token's OWN level decides which level's explored
                                 // memory unions in: explored is keyed per level, and the cell
                                 // being admitted sits on the new token's floor.
-                                let level = crate::scene::elevation::level_of(
-                                    &scene.scene_levels(scene_id),
-                                    crate::scene::elevation::elevation_or_ground(eng.elevation),
-                                )
-                                .map(|l| l.id.clone())
-                                .unwrap_or_default();
                                 revealed_pending.push((
                                     scene_id,
                                     level,
@@ -1340,11 +1350,13 @@ impl Room {
 
             let settings = scene.resolve_scene(token_scene);
             // Captured under this same read guard for the same reason `cell` is: the explored
-            // decode below runs after the guard is dropped.
+            // decode below runs after the guard is dropped. Also feeds `visible_cells_cached`
+            // below, so the movement gate's mask is level-scoped to this SAME mover floor.
+            let mover_elevation = scene.token_mover_elevation(token);
             grid_kind = settings.grid_kind;
             mover_level = crate::scene::elevation::level_of(
                 &scene.scene_levels(token_scene),
-                scene.token_mover_elevation(token),
+                mover_elevation,
             )
             .map(|l| l.id.clone())
             .unwrap_or_default();
@@ -1391,6 +1403,7 @@ impl Room {
                     &world_defaults,
                     token_scene,
                     lenient,
+                    mover_elevation,
                 )
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
@@ -2069,10 +2082,21 @@ impl Room {
                     unreachable!("the find matched a Teleport effect")
                 };
                 let dest_scene = target.scene.unwrap_or(scene);
-                // Scene existence is checked here (fire time), never at ingress
-                // (`validate_engine_tree` is pure — no repository access).
+                // Scene existence AND same-world membership are checked here (fire time), never
+                // at ingress (`validate_engine_tree` is pure — no repository access). Without the
+                // world check, a cross-world (or otherwise wrong-world) portal target still
+                // passes `doc_type == "scene"` and only fails deep inside `commit_ops_locked`'s
+                // `check_command_scope` — which drops the WHOLE ops batch (every unrelated
+                // condition/resource/chat effect fired in the same pass) through the generic
+                // `tracing::debug!` arm below, with no GM notice. Checking it here instead routes
+                // the failure through `failures` like every other teleport refusal, so the
+                // batch's OTHER effects still commit and the GM is told specifically why the
+                // portal itself failed.
                 let scene_exists = match repo.get_document(dest_scene).await {
-                    Ok(Some(doc)) => doc.doc_type == "scene",
+                    Ok(Some(doc)) => {
+                        doc.doc_type == "scene"
+                            && crate::data::document::world_of(&doc) == Some(self.world_id)
+                    }
                     _ => false,
                 };
                 if !scene_exists {

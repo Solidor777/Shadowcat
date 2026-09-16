@@ -775,6 +775,84 @@ async fn teleport_to_a_missing_scene_notices_the_gm_and_moves_nothing() {
     );
 }
 
+/// A portal target that exists (`doc_type == "scene"`) but belongs to a DIFFERENT world must
+/// refuse exactly like a missing scene — not fail deep inside `commit_ops_locked`'s
+/// `check_command_scope`, which would silently drop the WHOLE ops batch (every unrelated
+/// effect fired in the same pass) through the generic `tracing::debug!` arm with no GM notice.
+/// This region fires TWO effects on entry — the teleport AND an unrelated `chat_notice` — so a
+/// batch-wide drop and a properly-isolated teleport refusal are distinguishable: the notice
+/// commits either way, but only the fixed behavior ALSO posts a GM-only failure notice naming
+/// the teleport.
+#[tokio::test]
+async fn teleport_to_a_cross_world_scene_notices_the_gm_and_moves_nothing() {
+    let h = movement_scene("unrestricted", false).await;
+
+    // A scene document that genuinely exists, in a SEPARATE world owned by the same GM.
+    let other_world = h
+        .repo
+        .create_world_owned("other", h.gm.user_id, 0)
+        .await
+        .unwrap();
+    let reg_other = RoomRegistry::new();
+    let room_other = reg_other
+        .get_or_create(&h.repo, other_world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let foreign_scene_id = Uuid::from_u128(0x7F0_5CE1);
+    let mut foreign_scene =
+        crate::data::document::tests::world_scoped_doc(other_world.id, foreign_scene_id, "scene");
+    foreign_scene.owner = Some(h.gm.user_id);
+    room_other
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: foreign_scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    place_region(
+        &h,
+        0x7F0,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": foreign_scene_id.to_string(), "x": 0.0, "y": 0.0, "elevation": null, "vfx": null } } },
+            { "on": "enter", "effect": { "type": "chat_notice",
+                "text": "entered the cross-world portal region", "audience": "public" } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        h.adj,
+        "the token stays where the walk ended (no cross-world move, no update)"
+    );
+    assert_eq!(token.parent_id, Some(h.scene_id));
+
+    let notices = region_notices(&h).await;
+    let texts: Vec<String> = notices.iter().map(notice_text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("does not exist")),
+        "a GM-only failure notice names the cross-world teleport refusal, got {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("entered the cross-world portal region")),
+        "the batch's OTHER effect (the unrelated chat_notice) still committed, got {texts:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_chained_portal_is_refused_after_one_hop() {
     let h = movement_scene("unrestricted", false).await;

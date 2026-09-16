@@ -9,10 +9,11 @@ import type { FootprintExtent } from "./FootprintExtent";
  * ```
  * use shadowcat::scene::footprint::{FootprintExtent, TokenFootprint};
  *
- * let refused = TokenFootprint { token: uuid::Uuid::nil(), extent: None };
+ * let refused = TokenFootprint { token: uuid::Uuid::nil(), extent: None, level: None };
  * let sized = TokenFootprint {
  *     token: uuid::Uuid::nil(),
  *     extent: Some(FootprintExtent { w: 1.0, h: 1.0 }),
+ *     level: None,
  * };
  * assert!(refused.extent.is_none());
  * assert!(sized.extent.is_some());
@@ -31,4 +32,10 @@ token: string,
  * grant passage runs server-side off the radius, where the identical refusal blocks the move
  * outright.
  */
-extent: FootprintExtent | null, };
+extent: FootprintExtent | null, 
+/**
+ * The token's resolved level id (`elevation::level_of` over the scene's declared levels at
+ * the token's stored elevation), `None` for ground/a level-less scene — lets the client
+ * scope by level without re-deriving it from elevation.
+ */
+level: string | null, };

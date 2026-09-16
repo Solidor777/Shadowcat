@@ -2666,6 +2666,7 @@ impl SceneEcs {
                     world_defaults,
                     scene,
                     settings.partial_cell_leniency,
+                    elevation,
                 )),
                 MovementRestriction::Revealed => {
                     let mut m = self.visible_cells(
@@ -2674,6 +2675,7 @@ impl SceneEcs {
                         world_defaults,
                         scene,
                         settings.partial_cell_leniency,
+                        elevation,
                     );
                     if let Some(ex) = explored {
                         m.extend(ex.iter());
@@ -4148,12 +4150,19 @@ impl SceneEcs {
             .collect()
     }
 
-    /// The set of cells visible to `user` in `scene` for the movement gate. Reuses the exact
-    /// egress primitives (`lighting_inputs`, `source_los_poly`, `cell_visible`) so it agrees with
-    /// the secrecy mask. `lenient` selects the rasterization rule: strict samples the
-    /// cell CENTER only (≡ `player_lit_mask`); lenient also samples the four corners, so a cell
-    /// whose vision polygon merely overlaps it counts — a superset, never extending past polygon
-    /// overlap. Empty ⇒ no in-scene vision source for this user (fail closed).
+    /// The set of cells visible to `user` in `scene`, ON THE MOVER'S OWN LEVEL, for the movement
+    /// gate. Reuses the exact egress primitives (`lighting_inputs`, `source_los_poly`,
+    /// `cell_visible`) so it agrees with the secrecy mask. `lenient` selects the rasterization
+    /// rule: strict samples the cell CENTER only (≡ `player_lit_mask`); lenient also samples the
+    /// four corners, so a cell whose vision polygon merely overlaps it counts — a superset, never
+    /// extending past polygon overlap. Empty ⇒ no same-level in-scene vision source for this user
+    /// (fail closed).
+    ///
+    /// `mover_elevation` resolves to a level id exactly as `move_walls`/`region_field` resolve
+    /// their own mover-floor parameter (`elevation::level_of`); every gathered source is filtered
+    /// to that SAME level before accumulation — a source on another floor contributes nothing,
+    /// mirroring `player_lit_mask`'s per-level accumulation. Callers MUST pass the mover's OWN
+    /// resolved elevation, never a client-claimed one.
     ///
     /// `world_role`/`world_defaults` feed `gather_vision_sources_in_scene`'s observer-vision
     /// admission (`user_access` → `resolve_access_world`), so a world-level READ grant widens
@@ -4168,7 +4177,7 @@ impl SceneEcs {
     /// let ecs = SceneEcs::new();
     /// let defaults = WorldCapDefaults::default();
     /// // No scene document exists: refuses rather than synthesizing a grid.
-    /// let cells = ecs.visible_cells(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false);
+    /// let cells = ecs.visible_cells(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false, 0.0);
     /// assert!(cells.is_empty());
     /// ```
     pub fn visible_cells(
@@ -4178,6 +4187,7 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         lenient: bool,
+        mover_elevation: f64,
     ) -> std::collections::BTreeSet<(i32, i32)> {
         use std::collections::BTreeSet;
         let mut out: BTreeSet<(i32, i32)> = BTreeSet::new();
@@ -4190,32 +4200,33 @@ impl SceneEcs {
             return out;
         }
 
-        let sources =
+        let mut sources =
             self.gather_vision_sources_in_scene(user, world_role, world_defaults, scene, &settings);
         if sources.is_empty() {
             return out;
         }
 
-        // Scene-shared lighting inputs per SOURCE LEVEL (a lamp on another floor contributes
-        // nothing to a source's own cells — the same rule `player_lit_mask` applies, so the
-        // gate mask and the egress mask agree cell for cell), then per-source per-cell test.
+        // Level-scope the gathered sources to the MOVER's own floor before any cell is
+        // accumulated: a lamp/token-eye on another level contributes nothing to this mover's
+        // mask, mirroring `player_lit_mask`'s per-level accumulation and `move_walls`/
+        // `region_field`'s mover-elevation filtering.
         let levels = self.scene_levels(scene);
-        let grid = self.resolve_grid_shape(scene, cell);
-        for src in &sources {
-            let level = elevation::level_of(&levels, src.elevation)
+        let mover_level = elevation::level_of(&levels, mover_elevation)
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
+        sources.retain(|s| {
+            elevation::level_of(&levels, s.elevation)
                 .map(|l| l.id.clone())
-                .unwrap_or_default();
-            let li = self.lighting_inputs(scene, &level, &settings, cell);
-            accumulate_visible_cells(
-                &mut out,
-                std::slice::from_ref(src),
-                &settings,
-                cell,
-                &li,
-                lenient,
-                &*grid,
-            );
+                .unwrap_or_default()
+                == mover_level
+        });
+        if sources.is_empty() {
+            return out;
         }
+
+        let grid = self.resolve_grid_shape(scene, cell);
+        let li = self.lighting_inputs(scene, &mover_level, &settings, cell);
+        accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient, &*grid);
         out
     }
 
@@ -4245,7 +4256,7 @@ impl SceneEcs {
     /// let ecs = SceneEcs::new();
     /// let defaults = WorldCapDefaults::default();
     /// // No scene document exists: refuses rather than synthesizing a grid.
-    /// let cells = ecs.visible_cells_cached(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false);
+    /// let cells = ecs.visible_cells_cached(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false, 0.0);
     /// assert!(cells.is_empty());
     /// ```
     pub fn visible_cells_cached(
@@ -4255,6 +4266,7 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         lenient: bool,
+        mover_elevation: f64,
     ) -> std::collections::BTreeSet<(i32, i32)> {
         use std::collections::BTreeSet;
         let settings = self.resolve_scene(scene);
@@ -4268,6 +4280,21 @@ impl SceneEcs {
 
         let mut sources =
             self.gather_vision_sources_in_scene(user, world_role, world_defaults, scene, &settings);
+        if sources.is_empty() {
+            return BTreeSet::new();
+        }
+        // Level-scope to the MOVER's own floor, mirroring `visible_cells` exactly: a source on
+        // another level of the same scene contributes nothing to this mover's mask.
+        let levels = self.scene_levels(scene);
+        let mover_level = elevation::level_of(&levels, mover_elevation)
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
+        sources.retain(|s| {
+            elevation::level_of(&levels, s.elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default()
+                == mover_level
+        });
         if sources.is_empty() {
             return BTreeSet::new();
         }
@@ -4301,7 +4328,9 @@ impl SceneEcs {
             // The scene's declared levels decide each source's level (`elevation::level_of`)
             // and therefore which level-filtered illumination field its cells are judged
             // against — a levels edit must miss the cache exactly like a light edit.
-            levels: self.scene_levels(scene),
+            levels: levels.clone(),
+            mover_level: mover_level.clone(), // fingerprinted explicitly — see the field's own doc
+
             lights,
             light_walls,
             sight_walls,
@@ -4321,27 +4350,11 @@ impl SceneEcs {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let grid = self.resolve_grid_shape(scene, cell);
-        // The field itself comes from the shared memo per SOURCE LEVEL (a hit whenever the clip
-        // or the lit mask already raycast this scene's lights for that level); only the
-        // per-source cell scan is ours. Same per-source-level rule `visible_cells` applies, so
-        // the cached and uncached masks are identical.
-        let levels = self.scene_levels(scene);
+        // `sources` is already level-scoped above, so one shared illumination read covers the
+        // whole batch — mirrors `visible_cells`.
+        let li = self.lighting_inputs(scene, &mover_level, &settings, cell);
         let mut mask = BTreeSet::new();
-        for src in &sources {
-            let level = elevation::level_of(&levels, src.elevation)
-                .map(|l| l.id.clone())
-                .unwrap_or_default();
-            let li = self.lighting_inputs(scene, &level, &settings, cell);
-            accumulate_visible_cells(
-                &mut mask,
-                std::slice::from_ref(src),
-                &settings,
-                cell,
-                &li,
-                lenient,
-                &*grid,
-            );
-        }
+        accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
 
         let mut cache = self.visible_cells_cache.lock().unwrap();
         cache.insert((user, scene), (snapshot, mask.clone()));
@@ -4634,6 +4647,10 @@ struct VisibilityInputsSnapshot {
     /// (`elevation::level_of`) and therefore which level-filtered illumination field its cells
     /// are judged against, so they are fingerprinted like every other input.
     levels: Vec<eng::SceneLevel>,
+    /// The MOVER's own resolved level id (`""` = ground/a level-less scene) — `sources` is
+    /// already filtered to it, but it is fingerprinted explicitly too rather than relying
+    /// solely on the filtered `sources` list to imply it.
+    mover_level: String,
     /// Resolved scene lights.
     lights: Vec<lighting::Light>,
     /// `blocksLight` wall segments with their elevation bands.

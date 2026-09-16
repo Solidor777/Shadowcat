@@ -2474,6 +2474,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_grid() {
             &WorldCapDefaults::default(),
             scene,
             false,
+            0.0,
         );
         // NOT `if let Ok` — a fixture that yields no route must fail the test, not skip it.
         let route = ecs
@@ -2540,6 +2541,7 @@ fn route_admissible_implies_gate_admissible_for_a_non_gm_continuous() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let route = ecs
         .pathfind(
@@ -2600,6 +2602,7 @@ fn gate_refused_steps_are_absent_from_every_route_non_gm_grid() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let candidates = [
         [(50.0, 50.0), (150.0, 50.0)],
@@ -2667,6 +2670,7 @@ fn a_default_footprint_step_across_a_wall_is_truncated() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let out = execute_move(
         &ecs,
@@ -2698,6 +2702,7 @@ fn a_wide_token_cannot_enter_a_cell_whose_footprint_overlaps_fog() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let out = execute_move(
         &ecs,
@@ -2733,6 +2738,7 @@ fn a_sub_half_cell_footprint_diagonal_is_admissible() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let out = execute_move(
         &ecs,
@@ -2767,6 +2773,7 @@ fn arrest_stays_center_cell_matching_the_router() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let out = execute_move(
         &ecs,

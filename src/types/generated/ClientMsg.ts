@@ -86,7 +86,13 @@ channel: string,
 /**
  * GM-only see-as-player target; `None` = the connection's own view.
  */
-as_user?: string, } | { "type": "scene_unsubscribe", 
+as_user?: string, 
+/**
+ * The level to scope explored-fog accumulation/emission to (`None` ⇒ implicit ground,
+ * `""` on the wire's internal representation — see `enrich_vision_explored`).
+ * Consulted only for the `"vision"` channel; ignored by every other channel.
+ */
+level?: string, } | { "type": "scene_unsubscribe", 
 /**
  * The derived subscription to cancel.
  */

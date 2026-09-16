@@ -442,6 +442,7 @@ fn visible_cells_parity_two_sources_pins_full_cell_set() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let expected: BTreeSet<(i32, i32)> = (-1..=4)
         .flat_map(|i| (-1..=4).map(move |j| (i, j)))
@@ -569,6 +570,7 @@ fn visible_cells_lenient_parity_pins_full_cell_set_including_corner_ring() {
         &WorldCapDefaults::default(),
         scene,
         false,
+        0.0,
     );
     let expected_strict: BTreeSet<(i32, i32)> = (-1..=4)
         .flat_map(|i| (-1..=4).map(move |j| (i, j)))
@@ -582,6 +584,7 @@ fn visible_cells_lenient_parity_pins_full_cell_set_including_corner_ring() {
         &WorldCapDefaults::default(),
         scene,
         true,
+        0.0,
     );
     let expected_lenient: BTreeSet<(i32, i32)> = (-1..=5)
         .flat_map(|i| (-1..=5).map(move |j| (i, j)))
