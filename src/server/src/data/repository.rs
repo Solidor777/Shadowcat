@@ -497,6 +497,25 @@ pub trait Repository: Send + Sync {
         username: &str,
     ) -> Result<Option<Uuid>, DataError>;
 
+    /// The first asset in `world` whose `original_name` case-insensitively equals `name`, or
+    /// `None`. Ties (two assets sharing a name) resolve to the earliest-created — an
+    /// under-specified but stable pick; asset names are not enforced unique.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let found = repo.asset_id_by_name(uuid::Uuid::nil(), "no-such-asset").await?;
+    /// assert!(found.is_none());
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn asset_id_by_name(&self, world: Uuid, name: &str) -> Result<Option<Uuid>, DataError>;
+
     /// A world's default capability grants (additive over the per-document
     /// `DocRole` floor). Empty when unset.
     ///
@@ -577,7 +596,10 @@ pub trait Repository: Send + Sync {
         world: Uuid,
     ) -> Result<Vec<SchemaDeclaration>, DataError>;
 
-    /// A world's enabled installed-module ids (GM-set). Empty when unset.
+    /// A world's enabled installed-module entries (GM-set), id + per-world
+    /// `validators_enabled` flag. Empty when unset. A stored legacy bare-string-array
+    /// setting reads back as every id with `validators_enabled: false`
+    /// (`WorldModuleEntry::parse_legacy_tolerant`).
     ///
     /// # Examples
     ///
@@ -587,12 +609,84 @@ pub trait Repository: Send + Sync {
     /// use shadowcat::data::repository::Repository;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// let ids = repo.world_enabled_modules(uuid::Uuid::nil()).await?;
-    /// assert!(ids.is_empty());
+    /// let entries = repo.world_enabled_modules(uuid::Uuid::nil()).await?;
+    /// assert!(entries.is_empty());
     /// # Ok(())
     /// # }
     /// ```
-    async fn world_enabled_modules(&self, world: Uuid) -> Result<Vec<String>, DataError>;
+    async fn world_enabled_modules(
+        &self,
+        world: Uuid,
+    ) -> Result<Vec<crate::modules::WorldModuleEntry>, DataError>;
+
+    /// Replace a world's enabled installed-module set (GM/admin-authorized by the caller — this
+    /// trait method itself performs no authorization). Stored as JSON in `settings`, beside
+    /// `world_cap_requirements`/`world_contract_declarations` — enable/disable never mutates
+    /// either of those.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// use shadowcat::modules::WorldModuleEntry;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
+    /// let entries = vec![WorldModuleEntry {
+    ///     id: "mock-module".into(),
+    ///     validators_enabled: false,
+    /// }];
+    /// repo.set_world_enabled_modules(world.id, &entries).await?;
+    /// assert_eq!(repo.world_enabled_modules(world.id).await?, entries);
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn set_world_enabled_modules(
+        &self,
+        world: Uuid,
+        entries: &[crate::modules::WorldModuleEntry],
+    ) -> Result<(), DataError>;
+
+    /// A world's member list as `(user_id, username, role)` triples, ordered by
+    /// username (case-insensitive) — the membership read `world_seed::seed_author`
+    /// and the member-listing route share.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// let members = repo.list_members(uuid::Uuid::nil()).await?;
+    /// assert!(members.is_empty());
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn list_members(&self, world: Uuid) -> Result<Vec<(Uuid, String, WorldRole)>, DataError>;
+
+    /// Resets `module`'s consecutive sandbox-validator fault counter for `world` to zero —
+    /// called by `Room::disable_faulting_validator_locked` once it finishes disabling a
+    /// persistently faulting module, so a future re-enable starts the streak at zero. A cheap,
+    /// synchronous, in-memory operation: a repository never wired to a `modules_dir` has no
+    /// counter to reset, so this is a no-op for it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
+    /// use shadowcat::data::repository::Repository;
+    /// use shadowcat::data::sqlite::SqliteRepository;
+    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
+    /// repo.reset_validator_fault_streak(uuid::Uuid::nil(), "mock-module").await;
+    /// # Ok(())
+    /// # }
+    /// ```
+    async fn reset_validator_fault_streak(&self, world: Uuid, module: &str);
 
     /// Full-text search over a world's documents, ranked by relevance and
     /// filtered to what `ctx` may read. `cursor` is the raw-rank offset from a

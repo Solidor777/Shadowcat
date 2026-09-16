@@ -14,6 +14,9 @@ import type { Asset, AssetPage, BulkAssetRequest, PatchAssetRequest } from "@sha
  * function), surfacing as a client-actionable 429/413 respectively.
  * @param world The world id to upload into.
  * @param file The image file to upload.
+ * @param audioContainers Which Opus derivative container(s) an audio upload emits; absent =
+ * the server's default (`"both"`). Sent as the multipart `containers` field; ignored for a
+ * non-audio upload.
  * @returns The created asset record.
  * @example
  * ```ts
@@ -23,9 +26,14 @@ import type { Asset, AssetPage, BulkAssetRequest, PatchAssetRequest } from "@sha
  * const asset = await uploadAsset("00000000-0000-0000-0000-000000000001", file);
  * ```
  */
-export async function uploadAsset(world: string, file: File): Promise<Asset> {
+export async function uploadAsset(
+  world: string,
+  file: File,
+  audioContainers?: "ogg" | "webm" | "both",
+): Promise<Asset> {
   const form = new FormData();
   form.append("file", file);
+  if (audioContainers) form.append("containers", audioContainers);
   const res = await fetch(`/api/worlds/${world}/assets`, { method: "POST", body: form });
   if (!res.ok) throw new Error(`upload failed: ${res.status}`);
   return (await res.json()) as Asset;
@@ -49,6 +57,25 @@ export async function listAssets(world: string): Promise<Asset[]> {
   const res = await fetch(`/api/worlds/${world}/assets`);
   if (!res.ok) throw new Error(`list failed: ${res.status}`);
   return (await res.json()) as Asset[];
+}
+
+/**
+ * Fetch one asset's metadata (never bytes) by id.
+ * @param id - The asset id.
+ * @returns The asset's metadata.
+ * @throws If the asset doesn't exist, isn't in a world the caller may read, or the
+ * request otherwise fails — the error text comes from `restErrorText`.
+ * @example
+ * ```ts
+ * import { getAssetMeta } from "@shadowcat/core";
+ *
+ * const meta = await getAssetMeta("00000000-0000-0000-0000-000000000001");
+ * ```
+ */
+export async function getAssetMeta(id: string): Promise<Asset> {
+  const res = await fetch(`/api/assets/${id}/meta`);
+  if (!res.ok) throw new Error(await restErrorText(res));
+  return (await res.json()) as Asset;
 }
 
 /** Replace an asset's bytes behind its stable UUID (the id and every existing
@@ -104,8 +131,8 @@ export interface AssetQuery {
   recursive?: boolean;
   /** Every listed tag must be present (explicit or derived). */
   tags?: string[];
-  /** `"image"` (`content_type` starts with `image/`) or `"other"`. */
-  kind?: "image" | "other";
+  /** `"image"` (`content_type` starts with `image/`), `"audio"` (`audio/`), or `"other"`. */
+  kind?: "image" | "other" | "audio";
   /** Full-text query over the display name and every tag (explicit and derived),
    * sanitized server-side. */
   q?: string;

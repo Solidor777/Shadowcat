@@ -43,6 +43,21 @@ pub struct AssetMeta {
     pub original_retained: bool,
     /// Why the upload was stored pass-through instead of converted, if it was.
     pub conversion_note: Option<String>,
+    /// Decoded audio duration, milliseconds; `None` for a non-audio asset or a decode
+    /// failure. `f64`-adjacent precision is unnecessary here — this is metadata display, not
+    /// a sync anchor (unlike `PlayingTrack.startedAt`), so a plain `i64` is fine: it is
+    /// consumed only by `AssetResolver`/display code, never round-tripped through a
+    /// client-authored write.
+    pub duration_ms: Option<i64>,
+    /// Decoded audio sample rate, Hz (the SOURCE rate, before the pipeline's 48 kHz Opus
+    /// resample); `None` for a non-audio asset or a decode failure.
+    pub sample_rate: Option<i64>,
+    /// Server-derived grid-sheet geometry/timing for an animated source, or `None` for a
+    /// non-animated asset or one whose sheet generation produced nothing (fewer than 2 decoded
+    /// frames, or a write failure) — a `None` here is not itself an error; `VfxEmission`/`PlayVfx`
+    /// consumers fall back to the PixiJS-spritesheet pairing path (`vfx:sheet=` tag) or fail
+    /// closed to no playback.
+    pub sheet: Option<crate::data::asset::process::SheetMeta>,
 }
 
 impl AssetMeta {
@@ -70,6 +85,9 @@ impl AssetMeta {
             original_byte_size: byte_size,
             original_retained: false,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
+            sheet: None,
         }
     }
 }
@@ -276,7 +294,7 @@ pub async fn remove_asset_files(canonical: &std::path::Path) {
 /// # #[tokio::main]
 /// # async fn main() {
 /// // A missing staged file fails to open rather than panicking.
-/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true)
+/// let err = process_staged_blocking(PathBuf::from("no-such-staged"), "image/png".into(), 0, true, Default::default())
 ///     .await
 ///     .unwrap_err();
 /// assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
@@ -287,6 +305,7 @@ pub async fn process_staged_blocking(
     original_content_type: String,
     original_byte_size: i64,
     retain_originals: bool,
+    audio_containers: process::audio::AudioContainers,
 ) -> std::io::Result<process::Processed> {
     let path = staged.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -295,6 +314,7 @@ pub async fn process_staged_blocking(
             &original_content_type,
             original_byte_size,
             retain_originals,
+            audio_containers,
         )
     })
     .await
@@ -504,6 +524,9 @@ pub async fn create_asset_from_bytes(
         content_type.to_string(),
         bytes.len() as i64,
         retain_originals,
+        // A programmatic byte-source (chat image, fixture) has no import-time
+        // container selection to honor — the default selection applies.
+        Default::default(),
     )
     .await?;
     let derived = tags::derive(tags::DeriveInput {

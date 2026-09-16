@@ -209,6 +209,7 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
     lighting: null,
     combat: null,
     levels: [],
+    ambience: null,
   });
   expect(typeof doc.id).toBe("string");
   expect(doc.id.length).toBeGreaterThan(0);

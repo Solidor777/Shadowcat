@@ -23,7 +23,7 @@ use crate::http::{routes::require_gm, routes::write_ops, AppState};
 use crate::ws::protocol::{AssetOp, ServerMsg};
 
 use super::uploads::{validate_folder, validate_tags};
-use super::{commit_replacement, delete_asset_files_and_row};
+use super::{commit_replacement, delete_asset_files_and_row, detect_audio_type};
 
 /// Tri-state deserializer: a missing key is `None` (leave unchanged), an
 /// explicit `null` is `Some(None)` (set to root), a value is `Some(Some(v))`.
@@ -167,11 +167,64 @@ pub async fn reconvert(
     Path(id): Path<Uuid>,
 ) -> Result<Json<Asset>, AppError> {
     let existing = gm_asset(&state, &user, id).await?;
+    let final_path = state.config.assets_path().join(&existing.storage_key);
+    let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", Uuid::new_v4()));
+
+    // The bytes win over the stored label here exactly as they do at upload
+    // (`label_content_type`): sniff the CANONICAL head FIRST, so a mislabeled audio asset
+    // (an `application/octet-stream` WAV stored before the upload sniff existed, a
+    // wrong-labeled .m4a) routes through the audio re-transcode arm regardless of the stored
+    // label. Audio's canonical is NEVER converted, so the canonical IS the source bytes and
+    // the audio arm needs no `original_retained` precondition — placing the probe behind
+    // that check left exactly its stated case (an unprocessed, un-retained, mislabeled
+    // audio) unreachable.
+    let head = read_head(&final_path).await?;
+    let audio_sniff = detect_audio_type(&head);
+
+    if existing.content_type.starts_with("audio/") || audio_sniff.is_some() {
+        // Audio's `original_retained` precondition holds by construction: the canonical is
+        // NEVER converted (only sibling derivatives are emitted), so the "original" a retry
+        // re-processes is the canonical file itself. This is audio's only recovery from an
+        // over-cap/failed transcode; a stale derivative of a previous success is removed by
+        // `commit_replacement`'s sibling swap when the retry emits none. The sniffed type
+        // reclassifies a mislabeled canonical; a correctly labeled one sniffs identically.
+        let copied = tokio::fs::copy(&final_path, &tmp_path).await;
+        if let Err(e) = copied {
+            tracing::error!(?e, %id, "audio canonical missing for existing record");
+            return Err(AppError::Internal);
+        }
+        let containers = crate::data::asset::process::audio::effective_reencode_selection(
+            crate::data::asset::process::audio::has_sibling(
+                &final_path,
+                crate::data::asset::process::audio::OPUS_SUFFIX,
+            ),
+            crate::data::asset::process::audio::has_sibling(
+                &final_path,
+                crate::data::asset::process::audio::WEBM_SUFFIX,
+            ),
+        );
+        let processed = process_staged_blocking(
+            tmp_path.clone(),
+            audio_sniff
+                .map(str::to_string)
+                .unwrap_or_else(|| existing.content_type.clone()),
+            existing.meta.original_byte_size,
+            state.config.retain_originals,
+            containers,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(?e, %id, "audio reconvert processing failed");
+            AppError::Internal
+        })?;
+        let asset =
+            commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await?;
+        return Ok(Json(asset));
+    }
+
     if !existing.meta.original_retained {
         return Err(AppError::NotFound);
     }
-    let final_path = state.config.assets_path().join(&existing.storage_key);
-    let tmp_path = final_path.with_file_name(format!("{id}.{}.tmp", Uuid::new_v4()));
     let copied = tokio::fs::copy(original_path(&final_path), &tmp_path).await;
     if let Err(e) = copied {
         tracing::error!(?e, %id, "retained original missing for existing record");
@@ -182,6 +235,7 @@ pub async fn reconvert(
         existing.meta.original_content_type.clone(),
         existing.meta.original_byte_size,
         state.config.retain_originals,
+        Default::default(),
     )
     .await
     .map_err(|e| {
@@ -190,6 +244,27 @@ pub async fn reconvert(
     })?;
     let asset = commit_replacement(&state, &existing, &tmp_path, &final_path, processed).await?;
     Ok(Json(asset))
+}
+
+/// Read the leading bytes of `path` for the magic-byte sniffs (`detect_audio_type`/
+/// `detect_image_type`): up to 16 bytes, fewer near EOF. A missing/unreadable file is
+/// `AppError::Internal`, the same failure the reprocess copy that follows would report.
+async fn read_head(path: &std::path::Path) -> Result<Vec<u8>, AppError> {
+    use tokio::io::AsyncReadExt;
+    let mut head = vec![0u8; 16];
+    let mut f = tokio::fs::File::open(path)
+        .await
+        .map_err(|_| AppError::Internal)?;
+    let mut read = 0usize;
+    while read < head.len() {
+        match f.read(&mut head[read..]).await {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(_) => return Err(AppError::Internal),
+        }
+    }
+    head.truncate(read);
+    Ok(head)
 }
 
 /// `PATCH /api/assets/{uuid}` body. Every field optional; an absent field is
@@ -288,6 +363,9 @@ pub async fn patch(
         Some(f) => Some(validate_folder(&state, existing.world_id, f).await?),
     };
     let tags = body.tags.map(validate_tags).transpose()?;
+    if let Some(t) = &tags {
+        validate_sheet_pairing(&state, existing.world_id, &existing.original_name, t).await?;
+    }
     let updated = state
         .repo
         .update_asset_placement(id, name.as_deref(), folder, tags.as_deref())
@@ -301,6 +379,65 @@ pub async fn patch(
         });
     }
     Ok(Json(updated))
+}
+
+/// Prefix every `vfx:sheet=<uuid>` explicit tag carries; the suffix names the paired
+/// PixiJS-spritesheet-format sidecar JSON asset.
+const VFX_SHEET_TAG_PREFIX: &str = "vfx:sheet=";
+
+/// Validates at most one `vfx:sheet=<uuid>` tag is present in `tags`, and — when one is —
+/// that the named asset exists in `world`, is `application/json`, and its parsed `meta.image`
+/// names `image_original_name` exactly (the TexturePacker/PixiJS spritesheet-tool
+/// convention: the sidecar's `meta.image` is the paired atlas image's FILENAME, never an
+/// internal id, so an unmodified third-party export pairs correctly). A second
+/// `vfx:sheet=` tag, an unresolvable/wrong-type/wrong-world sidecar id, or a
+/// `meta.image` mismatch all refuse with the same `Unprocessable` — pairing is a GM
+/// authoring action, not a secrecy boundary, so the reason is safe to state precisely.
+async fn validate_sheet_pairing(
+    state: &AppState,
+    world: Uuid,
+    image_original_name: &str,
+    tags: &[String],
+) -> Result<(), AppError> {
+    let sheet_tags: Vec<&str> = tags
+        .iter()
+        .filter_map(|t| t.strip_prefix(VFX_SHEET_TAG_PREFIX))
+        .collect();
+    if sheet_tags.is_empty() {
+        return Ok(());
+    }
+    if sheet_tags.len() > 1 {
+        return Err(AppError::Unprocessable(
+            "at most one vfx:sheet= tag is allowed".into(),
+        ));
+    }
+    let json_id = Uuid::parse_str(sheet_tags[0])
+        .map_err(|_| AppError::Unprocessable("vfx:sheet= must name a valid asset id".into()))?;
+    let json_asset = state
+        .repo
+        .get_asset(json_id)
+        .await?
+        .filter(|a| a.world_id == world && a.content_type == "application/json")
+        .ok_or_else(|| {
+            AppError::Unprocessable("vfx:sheet= names no JSON asset in this world".into())
+        })?;
+    let canonical = state.config.assets_path().join(&json_asset.storage_key);
+    let bytes = tokio::fs::read(&canonical).await.map_err(|_| {
+        AppError::Unprocessable("vfx:sheet='s JSON sidecar could not be read".into())
+    })?;
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| {
+        AppError::Unprocessable("vfx:sheet='s JSON sidecar is not valid JSON".into())
+    })?;
+    let named_image = parsed
+        .get("meta")
+        .and_then(|m| m.get("image"))
+        .and_then(|i| i.as_str());
+    if named_image != Some(image_original_name) {
+        return Err(AppError::Unprocessable(
+            "vfx:sheet='s sidecar meta.image does not name this image".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// `POST /api/worlds/{world}/assets/bulk` body.

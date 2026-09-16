@@ -381,22 +381,22 @@ fn vision_channel_is_per_recipient() {
 
     // GM sees all (no fog).
     assert_eq!(
-        compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default()).unwrap()["mode"],
+        compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default(), None).unwrap()["mode"],
         "all"
     );
     // The token owner gets one non-empty visibility polygon, tagged with its scene so the
     // client cuts holes only for the scene it renders (cross-scene leak guard).
-    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(pv["mode"], "masked");
     assert_eq!(pv["polygons"].as_array().unwrap().len(), 1);
     assert_eq!(pv["polygons"][0]["scene"], json!(Uuid::from_u128(10)));
     assert!(!pv["polygons"][0]["points"].as_array().unwrap().is_empty());
     // A player who controls no token gets empty polygons → full fog (never see-all).
-    let ov = compute_derived("vision", &ecs, &other, &WorldCapDefaults::default()).unwrap();
+    let ov = compute_derived("vision", &ecs, &other, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(ov["mode"], "masked");
     assert!(ov["polygons"].as_array().unwrap().is_empty());
     // Unknown channel → None.
-    assert!(compute_derived("nope", &ecs, &gm, &WorldCapDefaults::default()).is_none());
+    assert!(compute_derived("nope", &ecs, &gm, &WorldCapDefaults::default(), None).is_none());
 }
 
 #[test]
@@ -424,7 +424,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(pv["mode"], "masked");
     let lit = pv["lit"]
         .as_array()
@@ -453,7 +453,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         user_id: Uuid::from_u128(1),
         world_role: WorldRole::Gm,
     };
-    let gv = compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default()).unwrap();
+    let gv = compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(gv["mode"], "all");
     assert!(gv.get("lit").is_none());
     assert!(gv.get("bands").is_none());
@@ -485,7 +485,7 @@ fn vision_payload_resolves_render_hint_index() {
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     let hints = pv["renderHints"].as_array().unwrap();
     assert!(hints.iter().any(|h| h == "desaturate"));
     let cells = pv["lit"][0]["cells"].as_array().unwrap();
@@ -1606,6 +1606,7 @@ fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_err
         &ecs,
         &footprint_gm_ctx(),
         &WorldCapDefaults::default(),
+        None,
     )
     .expect("the channel is recognized");
     let decoded: footprint::FootprintsPayload =
@@ -1619,7 +1620,8 @@ fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_err
         "footprint",
         &ecs,
         &footprint_gm_ctx(),
-        &WorldCapDefaults::default()
+        &WorldCapDefaults::default(),
+        None
     )
     .is_none());
 }

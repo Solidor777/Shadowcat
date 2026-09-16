@@ -19,6 +19,18 @@ async function until(cond: () => boolean): Promise<void> {
 }
 
 describe("UploadQueue", () => {
+  it("threads the audio container selection into the upload options", async () => {
+    const start = vi.spyOn(api, "startChunkedUpload").mockResolvedValue({ id: "a1" } as never);
+    const q = new UploadQueue("w1", vi.fn());
+    q.enqueue([file("loop.wav")], null, "ogg");
+    await until(() => q.entries[0].status === "done");
+    expect(start).toHaveBeenCalledWith(
+      "w1",
+      expect.anything(),
+      expect.objectContaining({ audioContainers: "ogg" }),
+    );
+  });
+
   it("runs sequentially and mirrors per-chunk progress", async () => {
     const seen: string[] = [];
     vi.spyOn(api, "startChunkedUpload").mockImplementation(async (_w, f, opts) => {

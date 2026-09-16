@@ -59,6 +59,13 @@ fn parse_validates_every_parameter() {
     assert_eq!(p.sort, AssetSort::Size);
     assert_eq!(p.limit, 2);
 
+    let audio = parse(AssetQuery {
+        kind: Some("audio".into()),
+        ..AssetQuery::default()
+    })
+    .unwrap();
+    assert_eq!(audio.filter.kind, Some(AssetKind::Audio));
+
     for bad in [
         AssetQuery {
             folder: Some("not-a-uuid".into()),

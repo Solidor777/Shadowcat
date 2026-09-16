@@ -58,11 +58,16 @@ test("renders overlay-surface contributions outside the layout grid", async () =
 // The middle grid row is `1fr` of a `100vh` grid, and a row is at least as tall as its
 // tallest item's minimum contribution — so EVERY item in that row must carry the growth
 // cap (`min-height: 0` plus a non-visible `overflow-y`), or that one item's content grows
-// the row, the grid and every sibling past the viewport. Enumerated so a region added to
-// the row without the cap fails here rather than in a real layout.
-test("every region sharing the 1fr row carries the growth cap", () => {
+// the row, the grid and every sibling past the viewport. `.statusbar` shares this cap even
+// though its own row is a fixed `2rem` track, not `1fr`: a grid track sized by a fixed
+// length still grows to fit an uncapped item's minimum content size (the same mechanism
+// `.main`/`.toolrail` guard against), which is exactly what a tall `DockChips` contribution
+// (`min-height: 44px`, the mobile touch-target floor) hosted in the statusbar row would
+// otherwise do. Enumerated so a region added to either row without the cap fails here
+// rather than in a real layout.
+test("every region carrying the growth cap enforces it, 1fr row and fixed-row alike", () => {
   const { container } = render(Layout, { context: setAppContextForTest() });
-  for (const selector of [".main", ".toolrail"]) {
+  for (const selector of [".main", ".toolrail", ".statusbar"]) {
     const el = container.querySelector(selector);
     expect(el, selector).toBeTruthy();
     const cs = getComputedStyle(el!);
@@ -72,6 +77,33 @@ test("every region sharing the 1fr row carries the growth cap", () => {
     const overflowY = cs.overflowY === "visible" ? cs.overflow : cs.overflowY;
     expect(["hidden", "auto", "scroll", "clip"], `${selector} overflow-y`).toContain(overflowY);
   }
+});
+
+// jsdom performs no real layout (see the toolrail-column test's own note), so the fixed
+// 2rem statusbar track's actual pixel height can't be read back here even after mounting a
+// tall `DockChips`-shaped child — the growth-cap CSS declaration above is what pins the
+// invariant in this environment; a real-viewport confirmation belongs to the e2e suite. This
+// test instead confirms the cap survives a genuinely oversized child in the DOM: the
+// `.statusbar` cell's OWN computed `min-height`/`overflow` (the properties that stop a grid
+// track from growing) are unaffected by what is mounted inside it.
+test("the statusbar's growth cap holds with an oversized (touch-target-floor) child mounted", async () => {
+  const { ContributionRegistry } = await import("@shadowcat/core");
+  const contributions = new ContributionRegistry();
+  contributions.contribute({
+    id: "test:statusbar-tall-chip",
+    contract: "shadowcat.surface:statusbar",
+    order: 0,
+    component: OverlayProbe,
+  });
+  const { container } = render(Layout, {
+    context: setAppContextForTest({ contributions }),
+  });
+  const el = container.querySelector(".statusbar");
+  expect(el).toBeTruthy();
+  const cs = getComputedStyle(el!);
+  expect(cs.minHeight).toBe("0px");
+  const overflowY = cs.overflowY === "visible" ? cs.overflow : cs.overflowY;
+  expect(["hidden", "auto", "scroll", "clip"]).toContain(overflowY);
 });
 
 // jsdom performs no real layout, so the toolrail column's actual pixel width can't be read via

@@ -332,7 +332,11 @@ impl Command {
 /// handlers, never derivable from any wire frame — skips the same per-op
 /// capability gates (the handler already derived authorization against the
 /// actual computed Update) and is the ONLY origin permitted to write the
-/// server-owned `/base` field.
+/// server-owned `/base` field. `AudioTransport` — set ONLY by the audio
+/// transport handler, never derivable from any wire frame — skips the same
+/// per-op capability gates (the handler enforces GM-only before constructing
+/// an op) and is the ONLY origin permitted to `Update` the `audio-state`
+/// singleton (its Create/Delete stay reserved to `ConfigSeed`).
 ///
 /// # Examples
 ///
@@ -378,6 +382,14 @@ pub enum WriteOrigin {
     /// `ResourceDelta`/`ChatNotice`/`Teleport`) commits under this origin;
     /// `CombatTransition` belongs to combat state transitions alone.
     Trigger,
+    /// Server-authored audio-transport write: per-op capability gates are skipped (the
+    /// handler, `audio::transport::handle_transport`, already enforces GM-only before ever
+    /// constructing an op); scope, size, engine, containment, singleton, schema and OCC
+    /// checks all run; never derivable from a wire frame. The ONLY origin permitted to
+    /// `Update` an `audio-state` doc — Create/Delete of that singleton are reserved to
+    /// `WriteOrigin::ConfigSeed` (the world-seed path creates it once; the transport handler
+    /// never creates or deletes one, only updates the existing singleton).
+    AudioTransport,
 }
 
 impl WriteOrigin {
@@ -392,6 +404,7 @@ impl WriteOrigin {
     /// assert!(!WriteOrigin::Client.is_server_authored());
     /// assert!(WriteOrigin::CombatTransition.is_server_authored());
     /// assert!(WriteOrigin::TemplateMerge.is_server_authored());
+    /// assert!(WriteOrigin::AudioTransport.is_server_authored());
     /// ```
     pub fn is_server_authored(&self) -> bool {
         matches!(
@@ -401,6 +414,7 @@ impl WriteOrigin {
                 | WriteOrigin::ConfigSeed
                 | WriteOrigin::TemplateMerge
                 | WriteOrigin::Trigger
+                | WriteOrigin::AudioTransport
         )
     }
 
@@ -421,6 +435,7 @@ impl WriteOrigin {
     /// assert!(WriteOrigin::CombatTransition.skips_capability_gates());
     /// assert!(WriteOrigin::ConfigSeed.skips_capability_gates());
     /// assert!(WriteOrigin::TemplateMerge.skips_capability_gates());
+    /// assert!(WriteOrigin::AudioTransport.skips_capability_gates());
     /// assert!(!WriteOrigin::ServerMessageRevision.skips_capability_gates());
     /// ```
     pub fn skips_capability_gates(&self) -> bool {
@@ -430,6 +445,7 @@ impl WriteOrigin {
                 | WriteOrigin::ConfigSeed
                 | WriteOrigin::TemplateMerge
                 | WriteOrigin::Trigger
+                | WriteOrigin::AudioTransport
         )
     }
 }

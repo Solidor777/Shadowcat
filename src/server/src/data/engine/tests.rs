@@ -945,6 +945,7 @@ fn engine_literal_defaults_match_client_default() {
             "animation": null,
             "activeScene": null,
             "combat": null,
+            "audio": null,
         })
     );
 }
@@ -1946,6 +1947,7 @@ fn scene_with_levels(levels: Vec<SceneLevel>) -> SceneEngine {
         lighting: None,
         combat: None,
         levels,
+        ambience: None,
     }
 }
 

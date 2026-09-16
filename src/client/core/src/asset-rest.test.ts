@@ -19,6 +19,23 @@ test("uploadAsset POSTs multipart FormData and returns the asset", async () => {
   expect(url).toBe("/api/worlds/w1/assets");
   expect((init as RequestInit).method).toBe("POST");
   expect((init as RequestInit).body).toBeInstanceOf(FormData);
+  expect(((init as RequestInit).body as FormData).get("containers")).toBeNull();
+});
+
+test("uploadAsset appends the containers field when a selection is given", async () => {
+  const f = mockFetch(200, { id: "a1" });
+  const file = new File([new Uint8Array([1])], "loop.wav", { type: "audio/wav" });
+  await api.uploadAsset("w1", file, "ogg");
+  const [, init] = f.mock.calls[0];
+  const form = (init as RequestInit).body as FormData;
+  expect(form.get("containers")).toBe("ogg");
+});
+
+test("queryAssets round-trips the audio kind", async () => {
+  const f = mockFetch(200, { items: [], next_cursor: null });
+  await api.queryAssets("w1", { kind: "audio" });
+  const url = new URL(String(f.mock.calls[0][0]), "http://x");
+  expect(url.searchParams.get("kind")).toBe("audio");
 });
 
 test("listAssets GETs the per-world list", async () => {

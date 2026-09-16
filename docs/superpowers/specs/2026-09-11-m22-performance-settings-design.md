@@ -171,7 +171,8 @@ reflecting the live settings (the e2e hook — `Stage.svelte` already exposes `d
 - ui-kit `performance.svelte.test.ts`: `set` flips preset to custom and fires `onChange`;
   `setPreset` clears overrides; `load(undefined, signals)` resolves auto.
 - shell `sessionState.test.ts`: `readPerformanceMirror`/`writePerformanceMirror` round-trip,
-  garbage ⇒ `undefined`.
+  garbage ⇒ the fail-closed auto default (`{ preset: "auto", overrides: {} }`); `undefined`
+  only when the key is absent.
 - render: `engine.test.ts` — with `idleSkip` and a mock backend, N idle ticks call `render()` 0
   times; a `setCameraTransform` makes the next tick render exactly once; an in-flight tween
   renders every tick until it settles. `pixi-backend.test.ts` — `setFrameCap` sets

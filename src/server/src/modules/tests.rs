@@ -163,6 +163,30 @@ fn discovery_order_is_deterministic() {
 }
 
 #[test]
+fn manifest_validators_are_extracted() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(
+        dir.path(),
+        "validated",
+        r#"{"id":"validated","version":"1.0.0","validators":[{"docType":"actor","wasm":"v.wasm"}]}"#,
+    );
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].validators.len(), 1);
+    assert_eq!(found[0].validators[0].doc_type, "actor");
+    assert_eq!(found[0].validators[0].wasm, std::path::Path::new("v.wasm"));
+}
+
+#[test]
+fn a_module_without_validators_scans_with_an_empty_declaration_list() {
+    let dir = tempfile::tempdir().unwrap();
+    write_module(dir.path(), "plain", r#"{"id":"plain","version":"1.0.0"}"#);
+    let found = scan_installed_modules(dir.path());
+    assert_eq!(found.len(), 1);
+    assert!(found[0].validators.is_empty());
+}
+
+#[test]
 fn semver_wildcard_matches_anything() {
     assert!(semver_satisfies("9.9.9", "*"));
 }

@@ -15,21 +15,23 @@ use uuid::Uuid;
 use crate::data::command::{FieldChange, Operation};
 use crate::data::document::{DocRole, Document, PermissionSet, Scope, WorldRole};
 use crate::data::engine::{
-    ChannelRegistryEngine, ChatSettingsEngine, ConditionRegistryEngine, DiceSettingsEngine,
-    FactionRegistryEngine, LightGradationEngine, ResourceRegistryEngine, SystemDefaultsEngine,
-    VisionModesEngine, WorldSettingsEngine, CHANNEL_REGISTRY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE,
-    FACTION_REGISTRY_DOC_TYPE, LIGHT_GRADATION_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE,
-    SYSTEM_DEFAULTS_DOC_TYPE, VISION_MODES_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
+    AudioStateEngine, ChannelRegistryEngine, ChatSettingsEngine, ConditionRegistryEngine,
+    DiceSettingsEngine, FactionRegistryEngine, LightGradationEngine, ResourceRegistryEngine,
+    SystemDefaultsEngine, VisionModesEngine, WorldSettingsEngine, AUDIO_STATE_DOC_TYPE,
+    CHANNEL_REGISTRY_DOC_TYPE, CONDITION_REGISTRY_DOC_TYPE, FACTION_REGISTRY_DOC_TYPE,
+    LIGHT_GRADATION_DOC_TYPE, RESOURCE_REGISTRY_DOC_TYPE, SYSTEM_DEFAULTS_DOC_TYPE,
+    VISION_MODES_DOC_TYPE, WORLD_SETTINGS_DOC_TYPE,
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
+#[cfg(test)]
 use crate::data::sqlite::SqliteRepository;
 use crate::modules::scan_installed_modules;
 
 /// Every world-config singleton doc_type the seed pass owns, in seed order.
 /// One list, read by the ops-builder and by callers querying a world's
 /// current config set — never re-enumerated elsewhere.
-pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 10] = [
+pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 11] = [
     WORLD_SETTINGS_DOC_TYPE,
     VISION_MODES_DOC_TYPE,
     LIGHT_GRADATION_DOC_TYPE,
@@ -40,6 +42,7 @@ pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 10] = [
     CONDITION_REGISTRY_DOC_TYPE,
     RESOURCE_REGISTRY_DOC_TYPE,
     SYSTEM_DEFAULTS_DOC_TYPE,
+    AUDIO_STATE_DOC_TYPE,
 ];
 
 /// Build the ops that bring a world's config-singleton set current: a
@@ -57,7 +60,7 @@ pub const CONFIG_SINGLETON_DOC_TYPES: [&str; 10] = [
 /// use shadowcat::data::world_seed::missing_config_ops;
 ///
 /// let ops = missing_config_ops(&[], uuid::Uuid::nil(), None, 0);
-/// assert_eq!(ops.len(), 10);
+/// assert_eq!(ops.len(), 11);
 /// ```
 pub fn missing_config_ops(
     existing: &[Document],
@@ -118,6 +121,7 @@ fn seed_engine_body(
         }
         crate::chat::CHAT_SETTINGS_DOC_TYPE => serde_json::to_value(ChatSettingsEngine::default()),
         crate::chat::DICE_SETTINGS_DOC_TYPE => serde_json::to_value(DiceSettingsEngine::default()),
+        AUDIO_STATE_DOC_TYPE => serde_json::to_value(AudioStateEngine::default()),
         other => unreachable!("not a config singleton doc_type: {other}"),
     };
     v.expect("engine seed bodies serialize")
@@ -189,7 +193,7 @@ pub async fn enabled_system_defaults(
     }
     scan_installed_modules(modules_dir)
         .into_iter()
-        .find(|m| m.provides_system && enabled.iter().any(|id| id == &m.id))
+        .find(|m| m.provides_system && enabled.iter().any(|e| e.id == m.id))
         .and_then(|m| m.system_defaults)
 }
 
@@ -229,9 +233,10 @@ pub(crate) async fn seed_test_channel_registry(
 /// `Uuid`, so seeds are attributed to a real member deterministically).
 /// `None` when the world has no GM member — the seed pass is skipped there
 /// (`create_world_owned` always seats one, so this arises only in
-/// legacy/test fixtures). Takes the concrete `SqliteRepository` rather than
-/// `dyn Repository` because `list_members` is an inherent method the trait
-/// does not carry.
+/// legacy/test fixtures). Takes `dyn Repository` so the `ws` layer's
+/// Room-bound callers (which hold no concrete repository) can share the
+/// attribution rule; the membership read is the trait's own
+/// `Repository::list_members`.
 ///
 /// # Examples
 ///
@@ -251,7 +256,7 @@ pub(crate) async fn seed_test_channel_registry(
 /// assert_eq!(ctx.world_role, WorldRole::Gm);
 /// # }
 /// ```
-pub async fn seed_author(repo: &SqliteRepository, world_id: Uuid) -> Option<PermissionContext> {
+pub async fn seed_author(repo: &dyn Repository, world_id: Uuid) -> Option<PermissionContext> {
     let members = match repo.list_members(world_id).await {
         Ok(m) => m,
         Err(e) => {

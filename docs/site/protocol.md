@@ -78,6 +78,8 @@ Every `ServerMsg` variant:
 | `scene_error` | Scene subscription failed |
 | `asset_changed` | Out-of-band notice: an asset was `created`, `replaced` (cache-bust signal), `moved` (name/folder/tags; version unchanged) or `deleted` |
 | `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
+| `emote` | A user's transient emote glyph over a token (includes your own echo) |
+| `vfx` | A relayed VFX one-shot at scene coords (includes your own echo) |
 | `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag, and `budget_cells` — the mover's remaining movement budget in cells under an enforced combat, `null` when no enforced combat applies ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
 | `path_error` | Pathfind request failed |
 | `move_error` | Move request failed |
@@ -87,6 +89,7 @@ Every `ServerMsg` variant:
 | `combat_error` | A `combat_*` intent from you was refused; carries the player-presentable reason |
 | `merge_result` | Outcome of a `merge_pull`/`merge_push`/`merge_revert` with this `request_id`: applied, or the conflict set to resolve |
 | `merge_error` | A merge intent was rejected (not found, not an instance, forbidden, or stale/unknown/unresolvable resolutions carrying the fresh outcome) |
+| `audio_error` | An `audio_transport` op was refused (not GM, unknown id, over cap, invalid gain) — connection-local, never broadcast |
 | `evicted` | Terminal: your seat or the world is gone; the server closes the socket — do not reconnect |
 
 ## Frame catalog — client → server
@@ -105,6 +108,8 @@ Every `ClientMsg` variant:
 | `scene_subscribe` | Open a scene-derived channel |
 | `scene_unsubscribe` | Close it |
 | `scene_ping` | Broadcast a location ping at scene coords |
+| `emote` | Broadcast a transient emote glyph over a token you effectively own |
+| `play_vfx` | Fire a one-shot VFX at scene coords; rate-limited per user, spectators refused |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |
@@ -122,6 +127,8 @@ Every `ClientMsg` variant:
 | `merge_pull` | Merge an instance's template into it — the server computes the 3-way merge and, when conflict-free, commits it |
 | `merge_push` | Merge a template into every same-world instance visible to the sender |
 | `merge_revert` | Reset an instance's mergeable bands to its template's current state (never conflicts) |
+| `audio_transport` | GM-only playlist/playback transport op (play/pause/seek/skip/gain) |
+| `audio_listen_as` | Set (or clear) this connection's spatial-audio listening token |
 
 Dice reference resolution: a roll's notation is a **raw template** — `1d20 +
 attributes.str` — never a client-substituted string. The server rewrites each
@@ -294,3 +301,12 @@ combat resources: a hidden combatant is absent from the payload entirely, and a 
 combatant's `resources` is `null` for a recipient the `/engine/resources` property tier does not
 admit (a non-owner, non-GM reader) — the same two-gate discipline the `"footprints"` channel
 follows.
+
+The `"audibility"` channel carries the recipient's resolved spatial-audio listener (if any)
+and every carried `SoundEmission` emitter in the world's active scene, already resolved to a
+final `gain`/`pan` — falloff, wall occlusion, and the world's spatial/occlusion overlay are
+computed once, server-side (`scene::audibility`), never re-derived client-side. A carried
+emitter on a token the recipient cannot whole-document read is OMITTED from the payload
+entirely (the same identity-disclosure gate `RecipientSight::sensed` applies to creature-sense
+perception) — unlike a standalone light, which discloses no emitting-token identity and is
+never gated this way.

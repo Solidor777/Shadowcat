@@ -1,5 +1,5 @@
-import { test, expect, describe, it } from "vitest";
-import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc } from "@shadowcat/core";
+import { test, expect, describe, it, vi } from "vitest";
+import { DocumentStore, OptimisticClient, AssetResolver, buildSceneDoc, buildTokenDoc, buildActorDoc, buildTokenFromActor, PRESETS } from "@shadowcat/core";
 import { RenderEngine, MockBackend } from "./index";
 import type { SceneTool } from "./index";
 import type { FootprintLookup } from "@shadowcat/core";
@@ -1667,4 +1667,256 @@ test("the engine highlights selected tokens via the selectedTokens accessor, ref
   engine.reapplyTokenSelection();
   expect(backend.tokens.get("t1")!.fx).toBeUndefined();
   engine.destroy();
+});
+
+describe("RenderEngine VFX wiring", () => {
+  function vfxTokenCmd(seq: number, tokenId = "tok1") {
+    const actor = buildActorDoc(
+      "w1",
+      "G",
+      { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: { asset: "fx1", anchor: "token", loop: true, enabled: true } },
+      "act1",
+    );
+    const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, tokenId);
+    return { seq, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create" as const, doc: actor }, { op: "create" as const, doc: token }] };
+  }
+
+  function makeVfxEngine(opts: { onVfxChanged?: (count: number) => void; viewedSceneId?: () => string | null } = {}) {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store,
+      assets: new AssetResolver(),
+      backend,
+      grid: { kind: "square", size: 100 },
+      vfxAssets: (id) => (id === "fx1" ? { type: "sheet", url: "/fx.webp", rows: 2, cols: 2, count: 3 } : null),
+      onVfxChanged: opts.onVfxChanged,
+      viewedSceneId: opts.viewedSceneId,
+    });
+    return { store, backend, engine };
+  }
+
+  it("reconciles an emitter-bearing token into one MockBackend.vfx entry", () => {
+    const { store, backend, engine } = makeVfxEngine();
+    engine.start();
+    store.applyCommand(vfxTokenCmd(1));
+    expect([...backend.vfx.keys()]).toEqual(["emitter:tok1"]);
+    engine.destroy();
+  });
+
+  it("playVfx forwards to a live one-shot node keyed oneshot:<id>", () => {
+    const { backend, engine } = makeVfxEngine();
+    engine.start();
+    engine.playVfx({ scene: "s1", asset: "fx1", x: 3, y: 4, id: "one" });
+    const node = backend.vfx.get("oneshot:one");
+    expect(node).toBeDefined();
+    expect(node!.x).toBe(3);
+    expect(node!.y).toBe(4);
+    engine.destroy();
+  });
+
+  it("onVfxChanged fires exactly once per actual count change", () => {
+    const counts: number[] = [];
+    const { store, backend, engine } = makeVfxEngine({ onVfxChanged: (c) => counts.push(c) });
+    engine.start();
+    backend.tick!(16);
+    expect(counts).toEqual([]); // still 0: no spurious initial call
+    store.applyCommand(vfxTokenCmd(1));
+    backend.tick!(16);
+    expect(counts).toEqual([1]);
+    backend.tick!(16); // unchanged count: no repeat call
+    expect(counts).toEqual([1]);
+    engine.playVfx({ scene: "s1", asset: "fx1", x: 0, y: 0, id: "one" });
+    backend.tick!(16);
+    expect(counts).toEqual([1, 2]);
+    engine.destroy();
+  });
+
+  it("reapplyViewedScene removes the prior scene's emitter node", () => {
+    let viewed: string | null = "s1";
+    const { store, backend, engine } = makeVfxEngine({ viewedSceneId: () => viewed });
+    engine.start();
+    store.applyCommand(vfxTokenCmd(1));
+    expect(backend.vfx.has("emitter:tok1")).toBe(true);
+    viewed = "s2";
+    engine.reapplyViewedScene();
+    expect(backend.vfx.has("emitter:tok1")).toBe(false);
+    engine.destroy();
+  });
+
+  it("reapplyVfx resolves an emitter that failed closed against a cold asset cache", () => {
+    // The cold-cache race: the store commit's reconcile ran before the metadata warm landed,
+    // so the emitter failed closed; the warm-settled re-projection is what makes it appear.
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    let resolvable = false;
+    const engine = new RenderEngine({
+      store,
+      assets: new AssetResolver(),
+      backend,
+      grid: { kind: "square", size: 100 },
+      vfxAssets: (id) => (resolvable && id === "fx1" ? { type: "sheet", url: "/fx.webp", rows: 2, cols: 2, count: 3 } : null),
+    });
+    engine.start();
+    store.applyCommand(vfxTokenCmd(1));
+    expect(backend.vfx.has("emitter:tok1")).toBe(false); // cold cache: failed closed
+    resolvable = true;
+    engine.reapplyVfx();
+    expect(backend.vfx.has("emitter:tok1")).toBe(true);
+    engine.destroy();
+  });
+});
+
+describe("idle-skip", () => {
+  function makeIdleEngine(overrides: Partial<import("@shadowcat/core").PerformanceSettings> = {}) {
+    const store = new DocumentStore();
+    const assets = new AssetResolver();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets, backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, idleSkip: true, ...overrides }),
+    });
+    engine.start();
+    backend.renderCount = 0; // discard start()'s own initial-reconcile render
+    return { engine, backend, store };
+  }
+
+  /** An idle-skip engine reading a MUTABLE settings object, so a test can flip one budget key
+   * mid-flight and assert the ticker reacts on that tick. */
+  function makeLiveIdleEngine(settings: import("@shadowcat/core").PerformanceSettings) {
+    const store = new DocumentStore();
+    const assets = new AssetResolver();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets, backend, grid: { kind: "square", size: 100 },
+      performance: () => settings,
+    });
+    engine.start();
+    backend.renderCount = 0; // discard start()'s own initial-reconcile render
+    return { engine, backend, store };
+  }
+
+  it("N idle ticks call render() 0 times", () => {
+    const { backend } = makeIdleEngine();
+    backend.runTicker(16);
+    backend.runTicker(16);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0);
+  });
+
+  it("a setCameraTransform makes the next tick render exactly once", () => {
+    const { engine, backend } = makeIdleEngine();
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0);
+    engine.applyCamera();
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(1);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(1); // consumed; back to idle
+  });
+
+  it("an in-flight tween renders every tick until it settles", () => {
+    const { backend, store } = makeIdleEngine();
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0);
+    // A confirmed position change starts a TokenAnimator tween: every tick pushes a
+    // `setToken`, which `wrapDirtyTracking` marks dirty. Same shape as this file's existing
+    // move tests: `tokenCmd` seeds the token, an update command moves it.
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    backend.runTicker(16); // the create's own reconcile render
+    store.applyCommand({ seq: 2, world_id: "w1", author: "a", ts: 0, ops: [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 0, new: 400 }] }] });
+    const before = backend.renderCount;
+    backend.runTicker(16);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(before + 2);
+    backend.runTicker(1000); // past the tween's duration: it settles
+    const settled = backend.renderCount;
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(settled); // idle again
+  });
+
+  it("!idleSkip renders every tick regardless of dirty state", () => {
+    const { backend } = makeIdleEngine({ idleSkip: false });
+    backend.runTicker(16);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(2);
+  });
+
+  it("applies the frame cap/render scale at start and re-pushes only on change", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true, fpsCap: 30, renderScale: 0.75 };
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const capSpy = vi.spyOn(backend, "setFrameCap");
+    const scaleSpy = vi.spyOn(backend, "setRenderScale");
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => settings,
+    });
+    engine.start(); // applies the initial budget (before the first frame)
+    expect(capSpy).toHaveBeenCalledTimes(1);
+    expect(scaleSpy).toHaveBeenCalledTimes(1);
+    expect(backend.frameCap).toBe(30);
+    expect(backend.renderScale).toBe(0.75);
+    backend.runTicker(16);
+    expect(capSpy).toHaveBeenCalledTimes(1); // unchanged: no re-push
+    expect(scaleSpy).toHaveBeenCalledTimes(1);
+    settings.fpsCap = 60;
+    settings.renderScale = 1;
+    backend.runTicker(16);
+    expect(capSpy).toHaveBeenCalledTimes(2);
+    expect(scaleSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("a renderScale change on an idle engine renders on that tick (the backing-store realloc blanks the canvas)", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true, renderScale: 1 };
+    const { backend } = makeLiveIdleEngine(settings);
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0); // idle
+    settings.renderScale = 0.75;
+    backend.runTicker(16);
+    expect(backend.renderScale).toBe(0.75);
+    expect(backend.renderCount).toBe(1);
+  });
+
+  it("a lighting-mode change on an idle engine re-applies the committed lighting on that tick", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, lighting: "full" };
+    const { backend } = makeLiveIdleEngine(settings);
+    expect(backend.lighting).toBeNull(); // nothing committed yet, nothing painted
+    settings.lighting = "off";
+    backend.runTicker(16);
+    expect(backend.lighting).toEqual({ cell: 0, cells: [], darkness: [] }); // the off branch cleared the overlay
+  });
+
+  it("a tokenFx change re-reconciles the token view and renders on that tick", () => {
+    const settings: import("@shadowcat/core").PerformanceSettings = { ...PRESETS.quality, idleSkip: true };
+    const { backend, store } = makeLiveIdleEngine(settings);
+    store.applyCommand(tokenCmd(1, "t1", 0));
+    backend.runTicker(16); // the create's own reconcile render
+    backend.renderCount = 0;
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(0); // idle
+    settings.tokenFx = false;
+    backend.runTicker(16);
+    expect(backend.renderCount).toBe(1); // the re-reconcile's setToken marked dirty
+  });
+
+  it("maps fpsCap uncapped to a 0 frame cap", () => {
+    const { backend } = makeIdleEngine({ fpsCap: "uncapped" });
+    backend.runTicker(16);
+    expect(backend.frameCap).toBe(0);
+  });
+});
+
+describe("lighting budget", () => {
+  it("off clears the lighting overlay and never forwards a committed frame", () => {
+    const store = new DocumentStore();
+    const backend = new MockBackend();
+    const engine = new RenderEngine({
+      store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+      performance: () => ({ ...PRESETS.quality, lighting: "off" }),
+    });
+    engine.start();
+    expect(backend.lighting).toEqual({ cell: 0, cells: [], darkness: [] });
+
+  });
 });

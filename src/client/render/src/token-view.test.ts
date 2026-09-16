@@ -1,4 +1,4 @@
-import { test, expect, it, vi } from "vitest";
+import { test, expect, describe, it, vi } from "vitest";
 import { DocumentStore, AssetResolver, buildActorDoc, buildTokenFromActor, buildFactionRegistryDoc, buildConditionRegistryDoc, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS } from "@shadowcat/core";
 import { MockBackend, TokenView } from "./index";
 import type { WireDocument, WireOperation, FootprintLookup, TokenVisual } from "@shadowcat/core";
@@ -54,6 +54,25 @@ test("a moved token tweens via tick toward the new position", () => {
   expect(backend.tokens.get("t1")!.x).toBeLessThan(100);
   view.tick(10_000); // settle
   expect(backend.tokens.get("t1")!.x).toBe(100);
+});
+
+test("transformOf returns the live tweened transform, distinct from specOf's target mid-tween", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const view = new TokenView(store, new AssetResolver(), backend);
+  expect(view.transformOf("t1")).toBeUndefined(); // untracked id
+  store.applyCommand(cmd(1, [{ op: "create", doc: tokenDoc("t1", 0, 0, "img1") }]));
+  view.reconcile();
+  store.applyCommand(cmd(2, [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/x", old: 0, new: 100 }] }]));
+  view.reconcile(); // retargets the tween; the doc-projected spec is already at 100
+  expect(view.specOf("t1")!.x).toBe(100);
+  view.tick(16); // partway through the tween
+  const live = view.transformOf("t1");
+  expect(live).toBeDefined();
+  expect(live!.x).toBeGreaterThan(0);
+  expect(live!.x).toBeLessThan(100);
+  view.tick(10_000); // settle: live transform converges on the doc-projected target
+  expect(view.transformOf("t1")!.x).toBe(100);
 });
 
 test("renders a linked token using the actor's visual", () => {
@@ -551,8 +570,22 @@ test("an unselected token (or a view with no selection source) gains no highligh
   expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
 });
 
-// ---- helpers for animation-config tests ----
+describe("tokenFx budget", () => {
+  it("tokenFx: false drops condition fx and keeps only the selection highlight", () => {
+    // Same fixture shape as the condition-fx tests above: a condition that carries fx, with
+    // the token additionally selected (the selection highlight is the one exempt entry).
+    const { store, backend } = storeWithFxToken(
+      { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
+      ["poisoned"],
+    );
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, undefined, () => new Set(["tok1"]), undefined, () => false);
+    view.reconcile();
+    const spec = view.specOf("tok1")!;
+    expect(spec.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
+  });
+});
 
+// ---- helpers for animation-config tests ----
 /** Extends MockBackend with convenience accessors for token position queries. */
 class RecordingBackend extends MockBackend {
   lastTokenX(id: string): number {

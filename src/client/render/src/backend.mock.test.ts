@@ -65,3 +65,32 @@ test("MockBackend records the clear color", () => {
   b.setClearColor(0x112233);
   expect(b.clearColor).toBe(0x112233);
 });
+
+test("MockBackend records vfx upserts/removals and drives completion via completeVfxForTest", () => {
+  const b = new MockBackend();
+  const spec = {
+    layer: "vfx" as const, x: 0, y: 0, scale: 1, rotation: 0,
+    source: { type: "sheet" as const, url: "/fx.webp", rows: 2, cols: 2, count: 3 },
+    loop: false, anchor: "point" as const,
+  };
+  b.setVfx("oneshot:1", spec);
+  expect(b.vfx.get("oneshot:1")).toEqual(spec);
+  b.setVfx("oneshot:1", { ...spec, x: 5 });
+  expect(b.vfx.get("oneshot:1")!.x).toBe(5);
+
+  const done: string[] = [];
+  b.tickVfx(16, (id) => done.push(id));
+  expect(done).toEqual([]);
+  expect(b.vfxDone).toEqual([]);
+
+  b.completeVfxForTest("oneshot:1");
+  b.tickVfx(16, (id) => done.push(id));
+  expect(done).toEqual(["oneshot:1"]);
+  expect(b.vfxDone).toEqual(["oneshot:1"]);
+  // The pending-done queue drained: the next tick completes nothing more.
+  b.tickVfx(16, (id) => done.push(id));
+  expect(done).toEqual(["oneshot:1"]);
+
+  b.removeVfx("oneshot:1");
+  expect(b.vfx.has("oneshot:1")).toBe(false);
+});

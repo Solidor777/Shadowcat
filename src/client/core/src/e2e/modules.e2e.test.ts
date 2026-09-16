@@ -125,7 +125,7 @@ describe("module toolchain e2e", () => {
       {
         method: "PUT",
         headers: { "content-type": "application/json", cookie },
-        body: JSON.stringify(["fixture-mod"]),
+        body: JSON.stringify([{ id: "fixture-mod", validators_enabled: false }]),
       },
     );
     expect(enable.status).toBe(204);
@@ -133,15 +133,15 @@ describe("module toolchain e2e", () => {
     const enabled = (await fetch(
       `${server.baseUrl}/api/worlds/${server.fixture.world}/enabled-modules`,
       { headers: { cookie } },
-    ).then((r) => r.json())) as string[];
-    expect(enabled).toEqual(["fixture-mod"]);
+    ).then((r) => r.json())) as { id: string; validators_enabled: boolean }[];
+    expect(enabled).toEqual([{ id: "fixture-mod", validators_enabled: false }]);
 
     const badEnable = await fetch(
       `${server.baseUrl}/api/worlds/${server.fixture.world}/enabled-modules`,
       {
         method: "PUT",
         headers: { "content-type": "application/json", cookie },
-        body: JSON.stringify(["not-a-real-module"]),
+        body: JSON.stringify([{ id: "not-a-real-module", validators_enabled: false }]),
       },
     );
     expect(badEnable.status).toBe(422);

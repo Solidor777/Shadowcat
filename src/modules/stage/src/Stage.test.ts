@@ -6,7 +6,7 @@ import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS, silentLogger } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__, theme, TokenSelection } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -33,11 +33,12 @@ function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null } {
   return {
     destroyed: false,
     clearColor: null,
     gridColor: null,
+    tick: null,
     ensureLayers() {},
     setBackground() {},
     setClearColor(color: number) { this.clearColor = color; },
@@ -56,9 +57,15 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     clearMeasure() {},
     drawPings() {},
     drawEmotes() {},
+    setVfx() {},
+    removeVfx() {},
+    tickVfx() {},
     setLighting() {},
-    startTicker() {},
+    startTicker(cb: (dtMs: number) => void) { this.tick = cb; },
     resize() {},
+    setFrameCap() {},
+    setRenderScale() {},
+    render() {},
     destroy() { this.destroyed = true; },
   };
 }
@@ -912,4 +919,175 @@ test("a theme change re-reads the color tokens and pushes them into the engine",
     theme.setActive("slate-dark");
     vi.unstubAllGlobals();
   }
+});
+
+test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count becomes 1", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let vfxCb: ((msg: unknown) => void) | null = null;
+  // getAssetMeta's fetch: an asset whose metadata carries a server-derived grid sheet, so
+  // resolveVfxSource resolves a playable source for the warmed id.
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      id: "fx1", tags: [],
+      sheet: { rows: 1, cols: 2, count: 2, frame_ms: [100, 100], width: 8, height: 8 },
+    }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const store = new DocumentStore();
+  const playOneShot = vi.fn();
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      subscribeScene: () => ({ unsubscribe() {} }),
+      vfx: { play: () => {}, onVfx: (cb: (msg: never) => void) => { vfxCb = cb as (msg: unknown) => void; return () => {}; } },
+      audio: {
+        channels: {
+          master: { gain: 1, muted: false }, music: { gain: 1, muted: false },
+          ambience: { gain: 1, muted: false }, sfx: { gain: 1, muted: false }, ui: { gain: 1, muted: false },
+        },
+        setChannel: () => {},
+        unlock: async () => {},
+        duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
+        playOneShot,
+        serverNow: () => 0,
+        transport: () => {},
+        listenAs: () => {},
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(vfxCb).not.toBeNull();
+  // A one-shot with no paired sound never touches the audio API.
+  vfxCb!({
+    scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
+    scale: null, rotation: null, durationMs: null, sound: null, elevation: null, id: "one",
+  });
+  // The Stage warms the asset's metadata first, then plays; the count attribute flips on
+  // the next engine tick after the warm resolves.
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/fx1/meta"));
+  await vi.waitFor(() => {
+    backend.tick!(16);
+    expect(host.dataset.vfxCount).toBe("1");
+  });
+  expect(playOneShot).not.toHaveBeenCalled();
+  // A one-shot WITH a paired sound plays it through the sfx channel.
+  vfxCb!({
+    scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
+    scale: null, rotation: null, durationMs: null, sound: "snd1", elevation: null, id: "two",
+  });
+  await vi.waitFor(() => expect(playOneShot).toHaveBeenCalledWith("snd1", { channel: "sfx" }));
+  vi.unstubAllGlobals();
+});
+
+test("an emitter-bearing token committed into the store warms its emission asset's metadata", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      id: "fx1", tags: [],
+      sheet: { rows: 1, cols: 2, count: 2, frame_ms: [100, 100], width: 8, height: 8 },
+    }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const store = new DocumentStore();
+  const { buildActorDoc, buildTokenFromActor } = await import("@shadowcat/core");
+  const actor = buildActorDoc(
+    "w1",
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: { asset: "fx1", anchor: "token", loop: true, enabled: true } },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, "tok1");
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "s1",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  fetchMock.mockClear();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "create", doc: actor }, { op: "create", doc: token }],
+  });
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/fx1/meta"));
+  vi.unstubAllGlobals();
+});
+
+test("toggling antialias re-creates the backend once and destroys the old one", async () => {
+  const backend1 = fakeBackend();
+  const backend2 = fakeBackend();
+  const createBackend = vi.fn(async () => (createBackend.mock.calls.length === 1 ? backend1 : backend2));
+  const controller = new PerformanceController();
+  controller.setPreset("quality"); // antialias: true
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  expect(backend1.destroyed).toBe(false);
+  controller.set({ antialias: false });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledTimes(2));
+  expect(backend1.destroyed).toBe(true);
+});
+
+test("a non-antialias performance edit does NOT re-create the backend", async () => {
+  const backend1 = fakeBackend();
+  const createBackend = vi.fn(async () => backend1);
+  const controller = new PerformanceController();
+  controller.setPreset("quality");
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  controller.set({ fpsCap: 30 });
+  controller.set({ idleSkip: false });
+  // Let any effect flush settle; the backend must not have been rebuilt.
+  await new Promise((r) => setTimeout(r, 50));
+  expect(createBackend).toHaveBeenCalledOnce();
+  expect(backend1.destroyed).toBe(false);
+});
+
+test("an antialias-flip backend re-init replaces the canvas element and the data-* attributes track every edit", async () => {
+  const backend1 = fakeBackend();
+  const backend2 = fakeBackend();
+  const createBackend = vi.fn(async (_canvas: HTMLCanvasElement) =>
+    createBackend.mock.calls.length === 1 ? backend1 : backend2);
+  const controller = new PerformanceController();
+  controller.setPreset("quality"); // fpsCap "uncapped" → 0, renderScale 1, idleSkip true
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const canvas1 = container.querySelector("[data-testid='stage-canvas']") as HTMLCanvasElement;
+  // The observability attributes are markup-owned: present from the first render, no effect needed.
+  expect(host.dataset.fpsCap).toBe("0");
+  expect(host.dataset.renderScale).toBe("1");
+  expect(host.dataset.idleSkip).toBe("1");
+
+  controller.set({ fpsCap: 30, renderScale: 0.75, antialias: false });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledTimes(2));
+  const canvas2 = container.querySelector("[data-testid='stage-canvas']") as HTMLCanvasElement;
+  // The canvas element itself is replaced (a destroyed GL context is never re-initialized),
+  // and the re-init runs against the NEW element, not the detached one.
+  expect(canvas2).not.toBe(canvas1);
+  expect(createBackend.mock.calls[1][0]).toBe(canvas2);
+  expect(backend1.destroyed).toBe(true);
+  // The host div was NOT replaced, and its attributes reflect the edited settings.
+  expect(host.dataset.fpsCap).toBe("30");
+  expect(host.dataset.renderScale).toBe("0.75");
+  expect(host.dataset.idleSkip).toBe("1");
 });

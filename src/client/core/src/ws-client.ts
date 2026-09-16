@@ -12,11 +12,13 @@ import {
   type WireSearchHit,
   type WireActorOwnerRef,
   type WireAudience,
+  type WireAudioOp,
   type WireRecalcOp,
   type WireMergeOutcome,
   type WireMergeErrorKind,
 } from "./wire";
 import type { AssetChangedNotice } from "./assets";
+import type { VfxPlayRequest } from "./vfx";
 
 // Re-exported so consumers importing `WireWelcome` from this module keep resolving — its
 // canonical declaration lives alongside `ServerMsg`'s other hand-written wire shapes.
@@ -234,6 +236,32 @@ export interface EmoteNotice {
   emote: string;
 }
 
+/** A relayed VFX one-shot (`WsClientHandlers.onVfx`); carries no seq. */
+export interface VfxNotice {
+  /** The scene the effect plays on. */
+  scene: string;
+  /** Who fired it (senders receive their own echo). */
+  user: string;
+  /** The spritesheet or animated-source asset id. */
+  asset: string;
+  /** Scene-coordinate x. */
+  x: number;
+  /** Scene-coordinate y. */
+  y: number;
+  /** Uniform scale multiplier; `null` = the asset's native scale (1). */
+  scale: number | null;
+  /** Rotation in degrees; `null` = unrotated. */
+  rotation: number | null;
+  /** Playback duration cap in ms; `null` = one loop of the asset. */
+  durationMs: number | null;
+  /** Paired sound asset id; `null` = none. */
+  sound: string | null;
+  /** Elevation the effect plays at; `null` = ground. */
+  elevation: number | null;
+  /** Fresh per-broadcast id — the render layer's one-shot node key. */
+  id: string;
+}
+
 /** Timeout override for a correlated request whose only option is how long to wait for the
  * reply before rejecting. Shared by `WsClient.moveRequest` and `WsClient.pathfind` — each
  * signature's own doc states its default. */
@@ -324,8 +352,10 @@ export interface WsClientHandlers {
   onCommand(cmd: WireCommand): void;
   /** An intent the server refused.
    * @param intentId The rejected intent's correlation id.
-   * @param reason The server's rejection category. */
-  onReject?(intentId: string, reason: RejectReason): void;
+   * @param reason The server's rejection category.
+   * @param detail Player/GM-presentable detail text (rendered as a text node only), if the
+   *   server supplied any. */
+  onReject?(intentId: string, reason: RejectReason, detail: string | null): void;
   /** The `welcome` frame following a (re)connect; carries capability/role/current-seq state.
    * @param welcome The parsed `welcome` frame. */
   onWelcome?(welcome: WireWelcome): void;
@@ -346,6 +376,14 @@ export interface WsClientHandlers {
   /** An out-of-band relayed emote over a token (carries no seq).
    * @param msg The emote's scene, token, sending user, and glyph(s). */
   onEmote?(msg: EmoteNotice): void;
+  /** An `audio_transport` op this connection sent was refused. Carries no correlation id —
+   * `audio_transport` itself carries none (fire-and-forget on the wire; see that frame's own
+   * doc).
+   * @param reason Player-presentable failure text. */
+  onAudioError?(reason: string): void;
+  /** An out-of-band relayed VFX one-shot (carries no seq).
+   * @param msg The effect's scene, position, asset, and sending user. */
+  onVfx?(msg: VfxNotice): void;
   /** Terminal eviction (world/account deleted). The client has already
    * stopped (no reconnect) when this fires; route the user out of the world. */
   onEvicted?: () => void;
@@ -758,6 +796,33 @@ export class WsClient {
     this.transport?.send(JSON.stringify(msg));
   }
 
+  /** Send a one-shot `PlayVfx` frame. Fire-and-forget: the server replies with nothing on
+   * success (the broadcast `vfx` echo IS the confirmation, mirroring the ping/emote relay);
+   * a denial (rate limit, unreadable scene, spectator role) drops silently — no reject frame.
+   * @param req The one-shot request.
+   * @example
+   * ```ts
+   * import type { WsClient } from "@shadowcat/core";
+   *
+   * declare const client: WsClient;
+   * client.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 });
+   * ```
+   */
+  playVfx(req: VfxPlayRequest): void {
+    this.send({
+      type: "play_vfx",
+      scene: req.scene,
+      asset: req.asset,
+      x: req.x,
+      y: req.y,
+      scale: req.scale,
+      rotation: req.rotation,
+      duration_ms: req.durationMs,
+      sound: req.sound,
+      elevation: req.elevation,
+    });
+  }
+
   /** The highest authoritative seq applied.
    * @returns `nextExpected - 1`; the watermark `OptimisticClient`/`DocumentStore` key their
    * rebase against (see `render-from-optimistic-view`). */
@@ -952,7 +1017,7 @@ export class WsClient {
         this.applyEvent(msg.command);
         break;
       case "reject":
-        this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason));
+        this.safeEmit(() => this.opts.handlers.onReject?.(msg.intent_id, msg.reason, msg.detail ?? null));
         break;
       case "resync_begin":
         break;
@@ -1146,6 +1211,18 @@ export class WsClient {
       case "emote":
         this.safeEmit(() =>
           this.opts.handlers.onEmote?.({ scene: msg.scene, token: msg.token, user: msg.user, emote: msg.emote }),
+        );
+        break;
+      case "audio_error":
+        this.safeEmit(() => this.opts.handlers.onAudioError?.(msg.reason));
+        break;
+      case "vfx":
+        this.safeEmit(() =>
+          this.opts.handlers.onVfx?.({
+            scene: msg.scene, user: msg.user, asset: msg.asset, x: msg.x, y: msg.y,
+            scale: msg.scale, rotation: msg.rotation, durationMs: msg.duration_ms,
+            sound: msg.sound, elevation: msg.elevation, id: msg.id,
+          }),
         );
         break;
       case "scene_derived": {
@@ -1447,6 +1524,43 @@ export class WsClient {
       this.pending.set(request_id, { resolve: resolve as (r: PendingResult) => void, reject, timer });
       this.send({ type: "move_request", request_id, scene, token_id: tokenId, path });
     });
+  }
+
+  /**
+   * Send a GM-only audio-transport op. Fire-and-forget on the wire: there is no success
+   * reply (the broadcast `event` echo of the `audio-state` Update is the confirmation) and no
+   * correlation id — a refusal arrives as `onAudioError`, not a rejected promise.
+   * @param op The transport operation to apply.
+   * @example
+   * ```ts
+   * import { WsClient, webSocketConnect } from "@shadowcat/core";
+   *
+   * const client = new WsClient({
+   *   connect: webSocketConnect("wss://example.test/ws"),
+   *   world: "world-1",
+   *   handlers: { onCommand: () => {} },
+   * });
+   * client.audioTransport({ type: "stop_all" });
+   * ```
+   */
+  audioTransport(op: WireAudioOp): void {
+    this.send({ type: "audio_transport", op });
+  }
+
+  /**
+   * Set (or clear) this connection's spatial-audio listening token. Fire-and-forget: sends
+   * `{"type":"audio_listen_as","token":...}` with no correlated reply; takes effect on the next
+   * `"audibility"` channel push.
+   * @param token The token to listen as, or `null` to clear the override.
+   * @example
+   * ```ts
+   * declare const client: WsClient;
+   * client.audioListenAs("tok-1");
+   * client.audioListenAs(null); // clears the override
+   * ```
+   */
+  audioListenAs(token: string | null): void {
+    this.send({ type: "audio_listen_as", token });
   }
 
   /**

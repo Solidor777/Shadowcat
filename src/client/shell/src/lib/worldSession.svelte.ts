@@ -23,6 +23,10 @@ import {
   parseFootprints,
   EMPTY_FOOTPRINTS,
   type FootprintLookup,
+  parseAudibility,
+  sceneAudibility,
+  EMPTY_AUDIBILITY,
+  type AudibilityPayload,
   CombatController,
   defineCombatHooks,
   CombatHookEmitter,
@@ -47,6 +51,8 @@ import {
   type SceneSubscription,
   type PathResult,
   type MoveStream,
+  type VfxNotice,
+  type VfxPlayRequest,
   type SubscriptionHandle,
   type WireSearchHit,
   type ClientMsg,
@@ -57,12 +63,18 @@ import {
   listInstalledModules,
   getEnabledModules,
   listWorldMembers,
+  AUDIO_STATE_DOC_TYPE,
+  type AudioApi,
+  type AudioChannelId,
+  type AudioStateEngine,
 } from "@shadowcat/core";
 import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
-import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n } from "@shadowcat/ui-kit";
-import { SvelteMap } from "svelte/reactivity";
+import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
+import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
+import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
 import { getViewedLevel, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
+import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
 export type ConnState = "connecting" | "open" | "closed";
@@ -109,10 +121,15 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
-  /** Called after every rejected intent, with the server's reason — the optimistic prediction
-   * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
-   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
-  onReject?: (reason: RejectReason) => void;
+  /** Called after every rejected intent, with the server's reason and any player-presentable
+   * detail text — the optimistic prediction has already been rolled back (`#optimistic.reject`)
+   * by the time this fires. The shell surfaces it as a toast; a headless caller (tests) may
+   * leave it unset. */
+  onReject?: (reason: RejectReason, detail: string | null) => void;
+  /** Called when an `audio_transport` op this connection sent was refused, with the server's
+   * player-presentable reason (fire-and-forget frame — there is no correlated reply to
+   * reject instead). The shell surfaces it as a toast. */
+  onAudioError?: (reason: string) => void;
   /** External-module entry importer. Defaults to a runtime dynamic `import()`;
    * a seam for unit tests (jsdom cannot import a served module URL), not a
    * production configuration point. */
@@ -132,6 +149,29 @@ interface ResolvedModuleEntry {
   manifest: ModuleManifest;
   /** The importable specifier/URL passed to `loadModules`' `ImportFn`. */
   entry: string;
+}
+
+/** The legacy-prefix global shape older WebKit exposes instead of the standard
+ * `AudioContext` constructor (`createDeviceAudioContext`'s fallback read). */
+interface WebkitAudioGlobal {
+  /** The prefixed constructor (absent on every modern engine). */
+  webkitAudioContext?: typeof AudioContext;
+}
+
+/** Construct the device's `AudioContext` for `AudioEngineOpts.createContext`: the standard
+ * constructor first, then the legacy webkit-prefixed one; when NEITHER exists the throw is
+ * what routes `AudioEngine.unlock` onto its degraded bare-element mode.
+ * @returns The new audio context.
+ * @example
+ * ```
+ * // wired as `AudioEngineOpts.createContext` in `WorldSession`'s constructor — exercised
+ * // through `@shadowcat/audio`'s engine tests with a stub context
+ * ```
+ */
+function createDeviceAudioContext(): AudioContext {
+  const Ctor = globalThis.AudioContext ?? (globalThis as WebkitAudioGlobal).webkitAudioContext;
+  if (!Ctor) throw new Error("this device has no Web Audio API");
+  return new Ctor();
 }
 
 /**
@@ -194,6 +234,8 @@ export class WorldSession {
       emote: string;
     }) => void
   >();
+  /** `onVfx` subscriber set. */
+  #vfxListeners = new Set<(msg: VfxNotice) => void>();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
@@ -237,9 +279,29 @@ export class WorldSession {
   /** Handle for the session-owned `"footprints"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #footprintsSub: SceneSubscription | null = null;
+  /** The per-device mixer + one-shot/loop engine (`AppContext.audio`'s backing); constructed
+   * once here (its wire-facing closures read `#ws` lazily, so a pre-`enter()` read is a safe
+   * no-op) and disposed in `leave()`. */
+  #audioEngine: AudioEngine;
+  /** The audio reactivity bridge, created on the first `audio` read (one per session):
+   * `AudioEngine.subscribe` behind a `createSubscriber`, the same bridge shape
+   * `makeReactiveStore` wraps a `DocumentStore` in — every `channels`/`duck` read through
+   * `AppContext.audio` re-runs its caller's derivation on a device-state change. */
+  #audioSubscribe: ReturnType<typeof createSubscriber> | null = null;
+  /** The audio-state document-store subscription driving `#audioEngine.applyState`; dropped
+   * in `leave()`. */
+  #audioUnsub: (() => void) | null = null;
   /** Handle for the session-owned `"combat"` subscription; dropped in `leave()` so a second
    * `enter()` does not stack a duplicate record. */
   #combatSub: SceneSubscription | null = null;
+  /** Handle for the session-owned `"audibility"` subscription; dropped in `leave()` so a
+   * second `enter()` does not stack a duplicate record. */
+  #audibilitySub: SceneSubscription | null = null;
+  /** The full multi-scene payload from the latest `"audibility"` frame — cached (not just
+   * forwarded) so `setGmViewedScene` can re-derive and re-apply the newly-viewed scene's slice
+   * immediately on a roam, without waiting for the next server push (the SAME reason
+   * `#footprints` caches its own multi-scene lookup rather than discarding it after use). */
+  #audibilityPayload: AudibilityPayload = EMPTY_AUDIBILITY;
   /** userId → username for the world's members, fetched on every role's Welcome
    * (chat author/whisper-recipient name resolution; the GM additionally uses it
    * for see-as labels). A stable reactive Map (mutated in place, never reassigned)
@@ -304,6 +366,59 @@ export class WorldSession {
     return this.#footprints;
   }
 
+  /** The per-device audio seam (`AppContext.audio`). `AudioEngine` implements `AudioApi`
+   * directly for everything but `setChannel`/`duck.setDepth`: those two additionally persist to
+   * this device's `shadowcat.audio` mirror — a `localStorage` dependency `AudioEngine` itself
+   * deliberately does not have, staying framework/platform-neutral — so this getter wraps
+   * exactly those two surfaces. (`listenAs`, like `transport`, is the engine's own forwarder to
+   * the `AudioEngineOpts` seam this session wires to `WsClient`.)
+   * @returns The audio API the shell publishes on `AppContext.audio`. */
+  get audio(): AudioApi {
+    const engine = this.#audioEngine;
+    const subscribeAudio = (this.#audioSubscribe ??= createSubscriber((update) =>
+      engine.subscribe(update),
+    ));
+    return {
+      get channels() {
+        subscribeAudio();
+        return engine.channels;
+      },
+      setChannel: (id, patch) => {
+        engine.setChannel(id, patch);
+        if (typeof localStorage !== "undefined") {
+          writeAudioMirror(localStorage, { channels: engine.channels, duckDepth: engine.duck.depth });
+        }
+      },
+      unlock: () => engine.unlock(),
+      get duck() {
+        const duck = engine.duck;
+        return {
+          addSource: (id: string) => duck.addSource(id),
+          removeSource: (id: string) => duck.removeSource(id),
+          get gain() {
+            subscribeAudio();
+            return duck.gain;
+          },
+          get depth() {
+            subscribeAudio();
+            return duck.depth;
+          },
+          setDepth: (depth: number) => {
+            duck.setDepth(depth);
+            if (typeof localStorage !== "undefined") {
+              writeAudioMirror(localStorage, { channels: engine.channels, duckDepth: duck.depth });
+            }
+            engine.notifyAudioChanged();
+          },
+        };
+      },
+      playOneShot: (asset, opts) => engine.playOneShot(asset, opts),
+      serverNow: () => engine.serverNow(),
+      transport: (op) => engine.transport(op),
+      listenAs: (token) => engine.listenAs(token),
+    };
+  }
+
   /** GM local roam: view any scene without moving players. Ignored (warned) for a non-GM —
    * players have no local override. `null` clears the roam (follow `activeScene`).
    * @param id The scene to roam to, or `null` to resume following `activeScene`.
@@ -324,6 +439,9 @@ export class WorldSession {
     this.#gmViewedScene = id;
     const entering = this.viewedSceneId;
     this.tokenSelection.set(entering ? (this.#tokenSelectionByScene.get(entering) ?? []) : []);
+    // A roam carries no new server frame: re-apply the newly-viewed scene's slice from the
+    // already-cached multi-scene payload immediately, rather than waiting for the next push.
+    this.#audioEngine.applyAudibility(sceneAudibility(this.#audibilityPayload, entering));
   }
 
   /** The FIRST token (lowest `id`, for determinism) in `scene` whose `owner` equals `selfId` —
@@ -611,6 +729,35 @@ export class WorldSession {
     });
     this.#combatEmitter = new CombatHookEmitter(this.#hooks, this.#logger);
     this.#services.provide(COMBAT_SERVICE, this.#combat, { version: COMBAT_HOOK_VERSION });
+    const mirror = typeof localStorage !== "undefined" ? readAudioMirror(localStorage) : undefined;
+    this.#audioEngine = new AudioEngine({
+      resolver: this.assets,
+      serverNow: () => this.#ws?.serverNow() ?? 0,
+      transport: (op) => this.#ws?.audioTransport(op),
+      listenAs: (token) => this.#ws?.audioListenAs(token),
+      createContext: createDeviceAudioContext,
+      onTrackEnded: (id) => this.#ws?.audioTransport({ type: "track_ended", id }),
+      fadeMsFor: (playlistId) => {
+        if (!playlistId) return 0;
+        const doc = this.documents.query("playlist").find((d) => d.id === playlistId);
+        /** The playlist document's engine body (only `fadeMs` is read here). */
+        const engine = doc?.engine as {
+          /** The playlist's crossfade duration, ms. */
+          fadeMs?: number;
+        } | undefined;
+        return engine?.fadeMs ?? 0;
+      },
+      duckDepth: mirror?.duckDepth ?? DEFAULT_DUCK_DEPTH,
+      raf: (cb) => requestAnimationFrame(cb),
+      caf: (handle) => cancelAnimationFrame(handle),
+      spatial: () => performanceController.current.spatialAudio,
+    });
+    setMediaElementFactory(() => document.createElement("audio"));
+    if (mirror) {
+      for (const [id, state] of Object.entries(mirror.channels)) {
+        this.#audioEngine.setChannel(id as AudioChannelId, state);
+      }
+    }
     this.#modules = new ModuleRegistry({
       hooks: this.#hooks,
       services: this.#services,
@@ -797,6 +944,40 @@ export class WorldSession {
     const sceneId = this.viewedSceneId;
     if (!sceneId) return;
     this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
+  }
+
+  /** Subscribe to relayed VFX one-shots (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with each one-shot's scene, position, asset, sending user, and id.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function playVfxLocally(msg: VfxNotice): void;
+   * const off = session.onVfx(playVfxLocally);
+   * off();
+   * ```
+   */
+  onVfx(cb: (msg: VfxNotice) => void): () => void {
+    this.#vfxListeners.add(cb);
+    return () => this.#vfxListeners.delete(cb);
+  }
+
+  /** Broadcast a one-shot VFX playback request. No-op when disconnected. The server
+   * re-authorizes scene readability and world role (spectator refused) and drops an
+   * over-reaching send silently, so callers may offer this client-advisory only. The request
+   * carries an explicit `scene` (unlike `sendPing`/`sendEmote`'s auto-derived target): a
+   * caller may legitimately need to name a scene other than its own currently-viewed one (a
+   * portal effect plays at both ends of a teleport), so the caller supplies it, matching
+   * `pathfind`/`moveRequest`'s explicit-scene convention.
+   * @param req The one-shot request.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * session.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 });
+   * ```
+   */
+  playVfx(req: VfxPlayRequest): void {
+    this.#ws?.playVfx(req);
   }
 
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
@@ -1153,9 +1334,9 @@ export class WorldSession {
             this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
           }
         },
-        onReject: (id, reason) => {
+        onReject: (id, reason, detail) => {
           this.#optimistic.reject(id);
-          this.opts.onReject?.(reason);
+          this.opts.onReject?.(reason, detail);
         },
         onWelcome: (w) => {
           void this.#onWelcome(w);
@@ -1184,6 +1365,14 @@ export class WorldSession {
           // that scene.
           if (msg.scene !== this.viewedSceneId) return;
           for (const cb of this.#emoteListeners) cb(msg);
+        },
+        onAudioError: (reason) => this.opts.onAudioError?.(reason),
+        onVfx: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a vfx
+          // one-shot broadcasts room-wide and must render only for recipients currently
+          // viewing that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#vfxListeners) cb(msg);
         },
       },
     });
@@ -1225,6 +1414,24 @@ export class WorldSession {
     this.#combatSub = this.subscribeScene("combat", (f) => {
       this.#combat.setResolved(parseCombats(f.payload, this.#logger));
     });
+    // Same lifecycle as `#combatSub`: server-resolved spatial audio, never client-derived
+    // geometry — `AudioEngine.applyAudibility` performs no falloff/occlusion math of its own.
+    this.#audibilitySub = this.subscribeScene("audibility", (f) => {
+      this.#audibilityPayload = parseAudibility(f.payload);
+      this.#audioEngine.applyAudibility(sceneAudibility(this.#audibilityPayload, this.viewedSceneId));
+    });
+    // The audio-state singleton drives the device mixer: every authoritative change (this
+    // world's own transport echoes included) reconciles the live TrackPlayer set. Plain
+    // store-level subscription (this class is not a Svelte component), applied once
+    // immediately for the state already in the snapshot.
+    this.#audioUnsub = this.documents.subscribe(() => {
+      const doc = this.documents.query(AUDIO_STATE_DOC_TYPE)[0];
+      if (doc?.engine) this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+    });
+    {
+      const doc = this.documents.query(AUDIO_STATE_DOC_TYPE)[0];
+      if (doc?.engine) this.#audioEngine.applyState(doc.engine as AudioStateEngine);
+    }
     await this.#ws.start();
     this.state = "open";
   }
@@ -1361,10 +1568,11 @@ export class WorldSession {
    */
   async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const resolved = WorldSession.#buildEntries(enabledIds, installed, this.#logger);
       if (resolved.length === 0) return;
       const result = await loadModules({
@@ -1542,10 +1750,11 @@ export class WorldSession {
   async reconcileInstalledModules(): Promise<void> {
     if (!this.world || this.#serverVersion === undefined) return;
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(this.world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const enabledSet = new Set(enabledIds);
       const toUnload = [...this.#externalModuleIds].filter(([folderId]) => !enabledSet.has(folderId));
       for (const [folderId, manifestId] of toUnload) {
@@ -1606,6 +1815,12 @@ export class WorldSession {
     this.#combatSub?.unsubscribe();
     this.#combatSub = null;
     this.#combat.setResolved(EMPTY_COMBATS);
+    this.#audibilitySub?.unsubscribe();
+    this.#audibilitySub = null;
+    this.#audibilityPayload = EMPTY_AUDIBILITY;
+    this.#audioUnsub?.();
+    this.#audioUnsub = null;
+    this.#audioEngine.dispose();
     for (const manifestId of [...this.#moduleStyleLinks.keys()]) {
       this.#removeModuleStyle(manifestId);
     }

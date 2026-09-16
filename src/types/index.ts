@@ -19,6 +19,7 @@ export type { FieldChange } from "./generated/FieldChange";
 // WebSocket wire protocol
 export type { ClientMsg } from "./generated/ClientMsg";
 export type { ServerMsg } from "./generated/ServerMsg";
+export type { AudioOp } from "./generated/AudioOp";
 export type { RejectReason } from "./generated/RejectReason";
 export type { ResyncSource } from "./generated/ResyncSource";
 export type { WsErrorCode } from "./generated/WsErrorCode";
@@ -64,10 +65,12 @@ export type { WorldEntry } from "./generated/WorldEntry";
 
 // Module toolchain
 export type { InstalledModuleInfo } from "./generated/InstalledModuleInfo";
+export type { WorldModuleEntry } from "./generated/WorldModuleEntry";
 
 // Assets
 export type { Asset } from "./generated/Asset";
 export type { AssetMeta } from "./generated/AssetMeta";
+export type { AudioContainers } from "./generated/AudioContainers";
 export type { AssetPage } from "./generated/AssetPage";
 export type { PatchAssetRequest } from "./generated/PatchAssetRequest";
 export type { BulkAssetRequest } from "./generated/BulkAssetRequest";
@@ -99,6 +102,7 @@ export type { GridDistance } from "./generated/engine/GridDistance";
 export type { SceneDimensions } from "./generated/engine/SceneDimensions";
 export type { SceneVisionOverrides } from "./generated/engine/SceneVisionOverrides";
 export type { SceneLightingOverrides } from "./generated/engine/SceneLightingOverrides";
+export type { SceneAmbience } from "./generated/engine/SceneAmbience";
 export type { EnvironmentLight } from "./generated/engine/EnvironmentLight";
 export type { MovementModel } from "./generated/engine/MovementModel";
 export type { MovementRestriction } from "./generated/engine/MovementRestriction";
@@ -106,6 +110,8 @@ export type { LightMode } from "./generated/engine/LightMode";
 export type { DiagonalRule } from "./generated/engine/DiagonalRule";
 export type { EasingMode } from "./generated/engine/EasingMode";
 export type { WorldSettingsEngine } from "./generated/engine/WorldSettingsEngine";
+export type { Occlusion } from "./generated/engine/Occlusion";
+export type { AudioOverlay } from "./generated/engine/AudioOverlay";
 export type { WorldSceneDefaults } from "./generated/engine/WorldSceneDefaults";
 export type { Pathfinding } from "./generated/engine/Pathfinding";
 export type { AnimationSettings } from "./generated/engine/AnimationSettings";
@@ -182,3 +188,9 @@ export type { RowRange } from "./generated/engine/RowRange";
 export type { TableEntry } from "./generated/engine/TableEntry";
 export type { NoteEngine } from "./generated/engine/NoteEngine";
 export type { DocLinkTarget } from "./generated/engine/DocLinkTarget";
+export type { AudioChannel } from "./generated/engine/AudioChannel";
+export type { PlaylistTrack } from "./generated/engine/PlaylistTrack";
+export type { PlaylistEngine } from "./generated/engine/PlaylistEngine";
+export type { PlaylistMode } from "./generated/engine/PlaylistMode";
+export type { PlayingTrack } from "./generated/engine/PlayingTrack";
+export type { AudioStateEngine } from "./generated/engine/AudioStateEngine";

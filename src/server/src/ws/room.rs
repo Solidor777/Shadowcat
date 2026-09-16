@@ -1115,7 +1115,62 @@ impl Room {
                 }
             }
         }
+        // Active-scene change detector: a `world-settings` Update touching
+        // `/engine/activeScene` swaps the world's ambience playlist server-side
+        // (`audio::transport::on_active_scene`). Same shape as `placement_tokens`: detect
+        // BEFORE commit from the ops/pre-image, act AFTER commit from the now-updated ECS.
+        let active_scene_write: Option<uuid::Uuid> = {
+            let scene = self.scene.read().await;
+            let ws_doc_id = scene.world_settings_doc().map(|d| d.id);
+            ops.iter().find_map(|op| match op {
+                Operation::Update { doc_id, changes }
+                    if Some(*doc_id) == ws_doc_id
+                        && changes.iter().any(|c| c.path == "/engine/activeScene") =>
+                {
+                    Some(*doc_id)
+                }
+                _ => None,
+            })
+        };
+        let old_active_scene = if active_scene_write.is_some() {
+            self.scene
+                .read()
+                .await
+                .world_settings_doc()
+                .map(|d| {
+                    crate::data::engine::engine_of::<crate::data::engine::WorldSettingsEngine>(d)
+                        .active_scene
+                })
+                .unwrap_or(None)
+        } else {
+            None
+        };
         let command = self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
+        if let Some(ws_doc_id) = active_scene_write {
+            let new_active_scene = self
+                .scene
+                .read()
+                .await
+                .world_settings_doc()
+                .filter(|d| d.id == ws_doc_id)
+                .map(|d| {
+                    crate::data::engine::engine_of::<crate::data::engine::WorldSettingsEngine>(d)
+                        .active_scene
+                })
+                .unwrap_or(None);
+            if new_active_scene != old_active_scene {
+                crate::audio::transport::on_active_scene(
+                    repo,
+                    ctx,
+                    self,
+                    self.world_id,
+                    old_active_scene,
+                    new_active_scene,
+                    ts,
+                )
+                .await;
+            }
+        }
         if !placement_tokens.is_empty() {
             self.fire_placement_triggers(repo, ctx, placement_tokens, ts)
                 .await;
@@ -1141,9 +1196,27 @@ impl Room {
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
-        let stored = repo
-            .apply_intent(ctx, self.world_id, ops, ts, origin)
-            .await?;
+        let stored = match repo.apply_intent(ctx, self.world_id, ops, ts, origin).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                // The ONE auto-disable funnel: every guarded write path reaches
+                // this error arm, so the `VALIDATOR_FAULT_LIMIT` check exists
+                // here and nowhere else (never beside a single ingress call
+                // site). The caller's `publish_guard` is held, so the disable
+                // runs through the `_locked` form inline — no re-acquisition,
+                // no deadlock. Room-less paths (`import_world`, `create_world`)
+                // never reach here: they record fault streaks only and never
+                // auto-disable, a deliberate policy — a bulk import must not
+                // flip a world's settings as a side effect of being read in.
+                if let DataError::Validator(fault) = &e {
+                    if fault.consecutive >= crate::sandbox::VALIDATOR_FAULT_LIMIT {
+                        self.disable_faulting_validator_locked(repo, &fault.module)
+                            .await;
+                    }
+                }
+                return Err(e);
+            }
+        };
         // Hydrate the derived ECS from the committed command while still holding
         // publish_guard (enforced by the caller), so the ECS is consistent with the seq
         // before the Event (and any derived recompute keyed to that seq) is observable.
@@ -1183,6 +1256,120 @@ impl Room {
         let _guard = self.publish_guard.lock().await;
         self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
             .await
+    }
+
+    /// The audio-transport counterpart of `commit_combat`'s guard discipline: the
+    /// read→apply→commit section (`audio::transport::handle_transport_locked`) runs INSIDE a
+    /// freshly-acquired `publish_guard`, so two transports can never interleave a stale
+    /// `audio-state` read with the other's commit. `on_active_scene` must NOT route through
+    /// here: `publish` already holds the guard and a tokio Mutex is non-reentrant.
+    pub(crate) async fn commit_audio_transport(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        op: crate::ws::protocol::AudioOp,
+        ts: i64,
+    ) -> Result<(), crate::audio::transport::TransportError> {
+        let _guard = self.publish_guard.lock().await;
+        crate::audio::transport::handle_transport_locked(repo, ctx, self, self.world_id, op, ts)
+            .await
+    }
+
+    /// `Box::pin` wrapper around `commit_ops_locked`, existing solely so
+    /// `disable_faulting_validator_locked`'s notice commit can call back into it
+    /// without tripping the async-recursion check (see that call site's comment).
+    fn commit_ops_locked_boxed<'a>(
+        &'a self,
+        repo: &'a dyn Repository,
+        ctx: &'a PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+        origin: WriteOrigin,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Command, DataError>> + Send + 'a>>
+    {
+        Box::pin(self.commit_ops_locked(repo, ctx, ops, ts, origin))
+    }
+
+    /// The guard-held form of the validator auto-disable, called by
+    /// `commit_ops_locked`'s error arm — the ONE funnel every guarded write path
+    /// (intent ingress, HTTP writes, chat sends, merge intents, combat transitions,
+    /// config reseeds) shares, so the auto-disable check exists at exactly one site.
+    /// PRECONDITION (load-bearing): the caller MUST hold `publish_guard` (the notice
+    /// commit goes through `commit_ops_locked`, whose own precondition that is).
+    /// Idempotent: a module whose flag is already `false` (or no longer enabled at
+    /// all) is a no-op beyond the streak reset — a streak of 6, 7, ... must not
+    /// duplicate the GM notice the 5th fault already posted. A world with no GM
+    /// member gets no notice (`seed_author`'s own rule), but is still disabled and
+    /// reset.
+    async fn disable_faulting_validator_locked(&self, repo: &dyn Repository, module: &str) {
+        match repo.world_enabled_modules(self.world_id).await {
+            Ok(mut entries) => {
+                let Some(entry) = entries.iter_mut().find(|e| e.id == module) else {
+                    // No longer enabled at all — nothing to disable, nothing to notice.
+                    repo.reset_validator_fault_streak(self.world_id, module)
+                        .await;
+                    return;
+                };
+                if !entry.validators_enabled {
+                    repo.reset_validator_fault_streak(self.world_id, module)
+                        .await;
+                    return;
+                }
+                entry.validators_enabled = false;
+                if let Err(e) = repo
+                    .set_world_enabled_modules(self.world_id, &entries)
+                    .await
+                {
+                    tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable write failed");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable could not read the enabled set");
+            }
+        }
+        match crate::data::world_seed::seed_author(repo, self.world_id).await {
+            Some(seed_ctx) => {
+                let doc = crate::chat::build_message_doc(
+                    self.world_id,
+                    seed_ctx.user_id,
+                    crate::chat::MessageDraft {
+                        channel: "sandbox".to_string(),
+                        actor_owner: None,
+                        audience: crate::chat::Audience::GmOnly,
+                        kind: crate::chat::MessageKind::System,
+                        content: vec![crate::chat::Segment::Text {
+                            text: format!(
+                                "Sandboxed validator '{module}' faulted {} times in a row and has been disabled for this world.",
+                                crate::sandbox::VALIDATOR_FAULT_LIMIT
+                            ),
+                        }],
+                        source: None,
+                    },
+                    crate::ws::time::now_millis(),
+                );
+                if let Err(e) = self
+                    // Boxed: `commit_ops_locked`'s error arm can reach this notice
+                    // commit, which is itself a `commit_ops_locked` call — async
+                    // recursion requires `Box::pin` (bounded in practice: each
+                    // level disables a distinct module).
+                    .commit_ops_locked_boxed(
+                        repo,
+                        &seed_ctx,
+                        vec![Operation::Create { doc }],
+                        crate::ws::time::now_millis(),
+                        WriteOrigin::ConfigSeed,
+                    )
+                    .await
+                {
+                    tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable notice failed");
+                }
+            }
+            None => {
+                tracing::warn!(world = %self.world_id, module, "validator auto-disable: no GM member to attribute the notice to; notice skipped");
+            }
+        }
+        repo.reset_validator_fault_streak(self.world_id, module)
+            .await;
     }
 
     /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
@@ -2166,6 +2353,39 @@ impl Room {
                         doc_id: token,
                         changes: update_changes,
                     });
+                    // A carried `vfx` asset plays at BOTH ends of the hop — the source position
+                    // on the ORIGIN scene (where the token just vanished from) and the
+                    // destination position on `dest_scene` (where it now stands) — mirroring
+                    // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
+                    // out-of-band, no seq, one fresh id per broadcast).
+                    if let Some(asset) = &target.vfx {
+                        self.broadcast_aux(ServerMsg::Vfx {
+                            scene,
+                            user: ctx.user_id,
+                            asset: asset.clone(),
+                            x: t.x,
+                            y: t.y,
+                            scale: None,
+                            rotation: None,
+                            duration_ms: None,
+                            sound: None,
+                            elevation: t.elevation,
+                            id: Uuid::new_v4(),
+                        });
+                        self.broadcast_aux(ServerMsg::Vfx {
+                            scene: dest_scene,
+                            user: ctx.user_id,
+                            asset: asset.clone(),
+                            x: target.x,
+                            y: target.y,
+                            scale: None,
+                            rotation: None,
+                            duration_ms: None,
+                            sound: None,
+                            elevation: target.elevation,
+                            id: Uuid::new_v4(),
+                        });
+                    }
                     teleported = Some(dest_scene);
                 }
             }

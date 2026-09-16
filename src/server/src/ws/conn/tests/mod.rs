@@ -236,9 +236,15 @@ async fn welcome_unions_enabled_modules_requirements_with_gm_authored_ones() {
     assert_eq!(reqs[0].path_prefix, "/system/vision");
 
     // Enabling the module adds its requirement WITHOUT removing the GM's own.
-    repo.set_world_enabled_modules(world.id, &["actors-plus".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "actors-plus".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
         world.id,
@@ -357,9 +363,15 @@ async fn welcome_capability_requirements_unions_caps_for_the_same_path_prefix() 
     )
     .await
     .unwrap();
-    repo.set_world_enabled_modules(world.id, &["scene-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "scene-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
@@ -421,9 +433,15 @@ async fn welcome_excludes_requirements_from_an_enabled_but_now_incompatible_modu
     // Enabled directly at the repo layer (bypassing the HTTP enable-time
     // engine-compat gate), simulating a module that was compatible at enable
     // time but no longer is (server downgrade / manifest edit).
-    repo.set_world_enabled_modules(world.id, &["stale-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "stale-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
@@ -469,9 +487,15 @@ async fn welcome_capability_requirements_still_resolves_module_requirements_via_
         .await
         .unwrap();
     let world = repo.create_world_owned("W", gm, 0).await.unwrap();
-    repo.set_world_enabled_modules(world.id, &["blocking-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "blocking-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let reqs = welcome_capability_requirements(
         repo.as_ref(),
@@ -517,9 +541,15 @@ async fn welcome_capability_requirements_reflects_an_in_place_manifest_edit_thro
         .await
         .unwrap();
     let world = repo.create_world_owned("W", gm, 0).await.unwrap();
-    repo.set_world_enabled_modules(world.id, &["editable-mod".to_string()])
-        .await
-        .unwrap();
+    repo.set_world_enabled_modules(
+        world.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "editable-mod".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
 
     let cache = Arc::new(crate::modules::ModuleScanCache::new());
     let reqs1 = welcome_capability_requirements(repo.as_ref(), world.id, dir.path(), &cache).await;
@@ -592,11 +622,13 @@ async fn enrich_accumulates_persists_and_emits_explored() {
     });
     enrich_vision_explored(
         &mut payload,
-        &grid,
-        &grid_shapes,
-        &repo,
-        world,
-        user,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world,
+            user,
+        },
         "",
         true,
     )
@@ -623,11 +655,13 @@ async fn enrich_accumulates_persists_and_emits_explored() {
     });
     enrich_vision_explored(
         &mut again,
-        &grid,
-        &grid_shapes,
-        &repo,
-        world,
-        user,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world,
+            user,
+        },
         "",
         true,
     )
@@ -648,7 +682,19 @@ async fn enrich_accumulates_persists_and_emits_explored() {
 
     // A GM payload (no fog) is left untouched — no explored memory.
     let mut gm = json!({ "mode": "all" });
-    enrich_vision_explored(&mut gm, &grid, &grid_shapes, &repo, world, user, "", true).await;
+    enrich_vision_explored(
+        &mut gm,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world,
+            user,
+        },
+        "",
+        true,
+    )
+    .await;
     assert_eq!(gm, json!({ "mode": "all" }));
 }
 
@@ -669,11 +715,13 @@ async fn enrich_skips_scene_absent_from_grid_maps() {
     });
     enrich_vision_explored(
         &mut payload,
-        &grid,
-        &shapes,
-        repo.as_ref(),
-        world,
-        user,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &shapes,
+            repo: repo.as_ref(),
+            world,
+            user,
+        },
         "",
         true,
     )
@@ -718,11 +766,13 @@ async fn enrich_see_as_player_is_read_only() {
     });
     enrich_vision_explored(
         &mut payload,
-        &grid,
-        &grid_shapes,
-        &repo,
-        world,
-        target,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world,
+            user: target,
+        },
         "",
         false,
     )
@@ -1328,6 +1378,25 @@ async fn scene_ping_guard_admits_reader_refuses_foreign_and_hidden() {
     assert!(
         !scene_ping_permitted(Uuid::from_u128(0xDEAD), &spectator, world.id, repo.as_ref()).await
     );
+}
+
+/// `audio_listen_as_permitted` admits only the GM: `ClientMsg::AudioListenAs` is a GM-only
+/// preview seam, and a non-GM sender's frame must have no effect on the audibility channel.
+#[test]
+fn audio_listen_as_permitted_admits_only_the_gm() {
+    use crate::data::document::WorldRole;
+    use crate::data::membership::PermissionContext;
+
+    let gm = PermissionContext {
+        user_id: Uuid::new_v4(),
+        world_role: WorldRole::Gm,
+    };
+    let player = PermissionContext {
+        user_id: Uuid::new_v4(),
+        world_role: WorldRole::Player,
+    };
+    assert!(audio_listen_as_permitted(&gm));
+    assert!(!audio_listen_as_permitted(&player));
 }
 
 /// A `Pathfind` naming a scene the requester controls no token in is refused, even when that
@@ -2383,11 +2452,13 @@ async fn enrich_token_less_player_emits_no_explored() {
     let mut payload = json!({ "mode": "masked", "polygons": [], "lit": [] });
     enrich_vision_explored(
         &mut payload,
-        &grid,
-        &grid_shapes,
-        &repo,
-        Uuid::from_u128(1),
-        Uuid::from_u128(2),
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world: Uuid::from_u128(1),
+            user: Uuid::from_u128(2),
+        },
         "",
         true,
     )
@@ -4036,11 +4107,13 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     // The connection VIEWS l1: floor-2 memory grows but is not restated on the wire.
     enrich_vision_explored(
         &mut payload,
-        &grid,
-        &grid_shapes,
-        &repo,
-        world,
-        user,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world,
+            user,
+        },
         "l1",
         true,
     )
@@ -4069,11 +4142,13 @@ async fn enrich_accumulates_every_source_level_but_emits_only_the_viewed_level()
     // Viewing l2 restates that memory (and only it).
     enrich_vision_explored(
         &mut payload,
-        &grid,
-        &grid_shapes,
-        &repo,
-        world,
-        user,
+        ExploredCtx {
+            grid: &grid,
+            grid_shapes: &grid_shapes,
+            repo: &repo,
+            world,
+            user,
+        },
         "l2",
         true,
     )

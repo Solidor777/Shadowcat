@@ -4,7 +4,7 @@ import type { SceneTool } from "@shadowcat/render";
 import { SceneInteractionBridge, type AppContext } from "@shadowcat/ui-kit";
 import { fakeSceneHost } from "@shadowcat/ui-kit/test";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
-import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, buildTokenDoc, buildLightDoc, buildSceneEntityDoc, buildRegionDoc, ContributionRegistry, SCENE_TOOL_CONTRACT, type WireOperation } from "@shadowcat/core";
 import { TokenSelection, SpeakAsToken } from "@shadowcat/ui-kit";
 import ToolRail from "./ToolRail.svelte";
 import toolRailSource from "./ToolRail.svelte?raw";
@@ -856,4 +856,36 @@ test("the template editor's delete dispatches the full pre-image and closes the 
   expect(op.op).toBe("delete");
   if (op.op === "delete") expect(op.doc.id).toBe("template-1");
   expect(screen.queryByTestId("template-editor")).toBeNull();
+});
+
+test("the rail renders one button per SCENE_TOOL_CONTRACT contribution and clicking it activates the contributed tool", async () => {
+  const { scene, tools } = captureScene();
+  const contributions = new ContributionRegistry();
+  const clicks: Array<{ x: number; y: number }> = [];
+  contributions.contribute({
+    id: "test:fx",
+    contract: SCENE_TOOL_CONTRACT,
+    component: null,
+    sceneTool: { id: "fx", icon: "✨", labelKey: "test.fxTool", onSceneClick: (x, y) => clicks.push({ x, y }) },
+  });
+  contributions.contribute({
+    id: "test:other",
+    contract: SCENE_TOOL_CONTRACT,
+    component: null,
+    sceneTool: { id: "other", icon: "🎯", labelKey: "test.otherTool", onSceneClick: () => {} },
+  });
+  render(ToolRail, { context: setAppContextForTest({ role: "gm", scene, contributions }) });
+
+  const fx = screen.getByTestId("scene-tool-fx");
+  expect(screen.getByTestId("scene-tool-other")).toBeTruthy();
+  await fireEvent.click(fx);
+  expect(fx.getAttribute("aria-pressed")).toBe("true");
+  // The installed tool claims the click and forwards the scene point to onSceneClick.
+  const tool = tools.at(-1);
+  expect(tool).not.toBeNull();
+  expect(tool!.onPointerDown({ x: 11, y: 22 }, {} as PointerEvent)).toBe(true);
+  expect(clicks).toEqual([{ x: 11, y: 22 }]);
+  // A built-in activation clears the contributed one (mutual exclusion).
+  await fireEvent.click(screen.getByTestId("tool-ping"));
+  expect(fx.getAttribute("aria-pressed")).toBe("false");
 });

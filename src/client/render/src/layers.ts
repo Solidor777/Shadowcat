@@ -2,13 +2,13 @@
  * fractional `order`; core ids are reserved. Index = the core order key. */
 export type CoreLayerId =
   | "background" | "grid" | "tiles" | "regions" | "drawings" | "walls"
-  | "tokens" | "templates" | "lighting" | "mask" | "overlays";
+  | "tokens" | "templates" | "vfx" | "lighting" | "mask" | "overlays";
 
 /** The fixed, ascending z-order of the engine-owned core layers — index into this array is the
  * core order key `orderedIds`/`register` resolve fractional module orders against. */
 export const CORE_LAYERS: readonly CoreLayerId[] = [
   "background", "grid", "tiles", "regions", "drawings", "walls",
-  "tokens", "templates", "lighting", "mask", "overlays",
+  "tokens", "templates", "vfx", "lighting", "mask", "overlays",
 ] as const;
 
 /** A module-registered layer spliced between core layers by `LayerRegistry.register`. */

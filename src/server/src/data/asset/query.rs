@@ -135,6 +135,8 @@ pub enum FolderFilter {
 pub enum AssetKind {
     /// `content_type` starts with `image/`.
     Image,
+    /// `content_type` starts with `audio/`.
+    Audio,
     /// Everything else (pass-through uploads).
     Other,
 }

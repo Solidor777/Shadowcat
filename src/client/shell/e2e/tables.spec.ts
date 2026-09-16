@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 
 function stageHost(page: Page) {
@@ -54,7 +54,7 @@ test("tables: create, add rows, draw, and the panel's quick-draw both post cards
   const code = await gm.getByLabel("Invite code").inputValue();
   expect(code.length).toBeGreaterThan(0);
 
-  const playerCtx = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  const playerCtx = await newE2EContext(browser, { baseURL: test.info().project.use.baseURL });
   const player = await playerCtx.newPage();
 
   try {

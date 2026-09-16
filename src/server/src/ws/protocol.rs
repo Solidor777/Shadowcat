@@ -17,6 +17,7 @@ use uuid::Uuid;
 
 use crate::chat::{ActorOwnerRef, Audience, WireRecalcOp};
 use crate::data::command::{Command, Operation};
+use crate::data::engine::AudioChannel;
 use crate::data::search::SearchHit;
 use crate::merge::MergeConflict;
 
@@ -392,6 +393,165 @@ pub enum ClientMsg {
         request_id: Uuid,
         /// The instance to reset.
         child_id: Uuid,
+    },
+    /// GM-only audio transport control (play/pause/seek/skip/gain), applied to the world's
+    /// `audio-state` singleton under `WriteOrigin::AudioTransport`. No `request_id`: transport
+    /// ops are fire-and-forget from the wire's perspective — success is the broadcast `Event`
+    /// echo of the `audio-state` Update; failure is a connection-local `AudioError`.
+    AudioTransport {
+        /// The transport operation to apply.
+        op: AudioOp,
+    },
+    /// Set (or clear) this connection's spatial-audio listening token, independent of the
+    /// connection's own owned tokens — a GM preview seam (see `scene::audibility::select_listener`).
+    /// Applies to every current and future `"audibility"` scene subscription on this connection;
+    /// takes effect on the next debounced re-eval (`ws::conn`'s existing scene-channel sweep).
+    AudioListenAs {
+        /// The token to listen as, or `None` to clear the override (falls back to
+        /// `select_listener`'s owned-token rule).
+        token: Option<Uuid>,
+    },
+    /// A one-shot VFX playback request at scene coords — relayed out-of-band to the world room
+    /// with the sender stamped, exactly like `ScenePing`; never sequenced, logged, or a document.
+    /// `scene` must exist and grant the sender READ; `x`/`y` finite and inside
+    /// `scene::move_exec::MAX_GATE_WALK_COORD`; `scale`, when present, in `(0, 8]`; `duration_ms`,
+    /// when present, `<= 60_000`; `asset` non-empty and `<= 128` bytes; `sound`, when present,
+    /// likewise. Authorized for any world member with `WorldRole::Gm` or `WorldRole::Player`
+    /// (a spectator is refused — a one-shot is a table gesture like a ping); rate-limited per
+    /// user on its own budget, separate from ping/emote/message. Silent drop on any denial — no
+    /// error frame, so a non-reader never learns whether `scene` exists.
+    PlayVfx {
+        /// Scene the effect plays on (must grant the sender READ).
+        scene: Uuid,
+        /// The spritesheet or animated-source asset id.
+        asset: String,
+        /// Scene-coordinate x.
+        x: f64,
+        /// Scene-coordinate y.
+        y: f64,
+        /// Uniform scale multiplier; `None` = the asset's native scale (1).
+        #[serde(default)]
+        #[ts(optional)]
+        scale: Option<f64>,
+        /// Rotation in degrees; `None` = unrotated.
+        #[serde(default)]
+        #[ts(optional)]
+        rotation: Option<f64>,
+        /// Playback duration cap in ms; `None` = one loop of the asset.
+        #[serde(default)]
+        #[ts(optional)]
+        duration_ms: Option<u32>,
+        /// Paired sound asset id; carried through to `ServerMsg::Vfx` and played back through
+        /// `AudioApi.playOneShot` by the relaying client.
+        #[serde(default)]
+        #[ts(optional)]
+        sound: Option<String>,
+        /// Elevation the effect plays at; the render layer filters by the viewed level.
+        #[serde(default)]
+        #[ts(optional)]
+        elevation: Option<f64>,
+    },
+}
+
+/// One audio-transport operation (`ClientMsg::AudioTransport`). GM-only; the server resolves
+/// `Play`'s effective asset/channel/gain from the named playlist (or accepts them directly
+/// when `playlist` is omitted) — see `audio::state::apply`.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::ws::protocol::AudioOp;
+///
+/// let op = AudioOp::StopAll;
+/// let json = serde_json::to_value(&op).unwrap();
+/// assert_eq!(json, serde_json::json!({ "type": "stop_all" }));
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/")]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AudioOp {
+    /// Start a new playing entry, from a playlist track or a direct asset.
+    Play {
+        /// Source playlist, or `None` for a direct asset play.
+        #[serde(default)]
+        playlist: Option<Uuid>,
+        /// Direct asset id; required when `playlist` is `None`, ignored otherwise unless the
+        /// playlist resolution should be overridden (rare — normally left `None`).
+        #[serde(default)]
+        asset: Option<String>,
+        /// Track index within `playlist`; `None` lets the server resolve it (playlist mode's
+        /// natural start, e.g. index 0 for `Sequential`, the shuffle order's first pick for
+        /// `Shuffle`).
+        #[serde(default)]
+        track_index: Option<u32>,
+        /// Overrides the resolved channel; `None` uses the playlist's own channel (or `Sfx`
+        /// for a direct asset play).
+        #[serde(default)]
+        channel: Option<AudioChannel>,
+        /// Overrides the resolved gain; `None` uses the track's own gain (or `1.0` direct).
+        #[serde(default)]
+        gain: Option<f64>,
+        /// Overrides the resolved loop flag; `None` uses the track's own (or `false` direct).
+        #[serde(default, rename = "loop")]
+        loop_: Option<bool>,
+    },
+    /// Pause a playing entry in place.
+    Pause {
+        /// The entry to pause.
+        id: Uuid,
+    },
+    /// Resume a paused entry from where it paused.
+    Resume {
+        /// The entry to resume.
+        id: Uuid,
+    },
+    /// Stop and remove a playing entry.
+    Stop {
+        /// The entry to stop.
+        id: Uuid,
+    },
+    /// Stop and remove every playing entry.
+    StopAll,
+    /// Seek a playing entry to an absolute position.
+    Seek {
+        /// The entry to seek.
+        id: Uuid,
+        /// Target position, milliseconds from the track's own start. `u64`, matching every
+        /// other duration field on this enum: `ClientMsg` is fully hand-mirrored in
+        /// `wire.ts`'s `WireAudioOp` (never through the generated ts-rs binding, which nothing
+        /// imports), so the bigint-drift class this codebase otherwise guards against does not
+        /// apply to this type — a `u32` here would only under-declare the real range for no
+        /// benefit.
+        position_ms: u64,
+    },
+    /// Advance to the next track per the source playlist's mode. GM-only: an EXPLICIT skip,
+    /// applied unconditionally (no elapsed-duration gate — that gate belongs to `TrackEnded`,
+    /// the client-observed report path, so a GM's skip button can never silently no-op).
+    Next {
+        /// The entry to advance.
+        id: Uuid,
+    },
+    /// Step back to the previous track per the source playlist's mode.
+    Prev {
+        /// The entry to step back.
+        id: Uuid,
+    },
+    /// A non-looping track reached its natural end on this client, which reports it so the
+    /// server decides the advance (track END is client-observed but server-decided: the first
+    /// report to arrive wins; a stale id — already advanced by an earlier report — is a silent
+    /// no-op). Any world member may send it; the elapsed-duration gate
+    /// (`audio::transport::handle_transport`) refuses a premature report, so it cannot be used
+    /// to skip a track early.
+    TrackEnded {
+        /// The entry that ended.
+        id: Uuid,
+    },
+    /// Adjust a playing entry's gain without restarting it.
+    SetGain {
+        /// The entry to adjust.
+        id: Uuid,
+        /// The new gain, `0..=1` (presentation range; ingress validates finiteness).
+        gain: f64,
     },
 }
 
@@ -928,6 +1088,12 @@ pub enum ServerMsg {
         intent_id: Uuid,
         /// Why it was refused.
         reason: RejectReason,
+        /// Player/GM-presentable detail text — populated for `DataError::OpFailed`/`Validator`
+        /// refusals (≤ 512 bytes, control characters stripped at the source that produced the
+        /// text — `sandbox::runtime::run_validator` for a validator refusal). Rendered by the
+        /// client as a TEXT NODE only, never HTML.
+        #[serde(default)]
+        detail: Option<String>,
     },
     /// Opens a resync replay range.
     ResyncBegin {
@@ -1203,6 +1369,43 @@ pub enum ServerMsg {
         request_id: Uuid,
         /// Why it was refused.
         reason: MergeErrorKind,
+    },
+    /// An `AudioTransport` op was refused (not GM, unknown id, over cap, invalid gain, etc.).
+    /// Addressed to the originating connection only; never broadcast. Carries no `request_id`
+    /// — `ClientMsg::AudioTransport` itself carries none, since transport ops are
+    /// fire-and-forget on the wire (success is the broadcast `Event` echo).
+    AudioError {
+        /// Player-presentable failure text (`audio::state::AudioError`'s `Display`, or
+        /// "forbidden" for the not-GM case).
+        reason: String,
+    },
+    /// A relayed VFX one-shot: the sender's transient effect at scene coords. Out-of-band (no
+    /// seq, never buffered/resynced), mirroring `ScenePing`/`Emote`. `id` is a fresh id per
+    /// broadcast, letting the `VfxView` render layer key/evict this exact playback (`oneshot:<id>`)
+    /// independent of any document id.
+    Vfx {
+        /// Scene the effect plays on.
+        scene: Uuid,
+        /// Who fired it (senders receive their own echo).
+        user: Uuid,
+        /// The spritesheet or animated-source asset id.
+        asset: String,
+        /// Scene-coordinate x.
+        x: f64,
+        /// Scene-coordinate y.
+        y: f64,
+        /// Uniform scale multiplier; `None` = the asset's native scale (1).
+        scale: Option<f64>,
+        /// Rotation in degrees; `None` = unrotated.
+        rotation: Option<f64>,
+        /// Playback duration cap in ms; `None` = one loop of the asset.
+        duration_ms: Option<u32>,
+        /// Paired sound asset id; carried verbatim (playback wiring is a later integration).
+        sound: Option<String>,
+        /// Elevation the effect plays at.
+        elevation: Option<f64>,
+        /// Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
+        id: Uuid,
     },
 }
 
