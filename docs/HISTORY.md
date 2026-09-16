@@ -2863,6 +2863,93 @@ test`, typecheck, lint, `lint:comments`) green at every commit;
 (`pnpm --filter @shadowcat/shell e2e`) is dispatcher-run, not part of this
 branch's own gate history.
 
+## Phase 3 — Atmosphere
+
+### M25 · Multi-level maps + portals ✅
+Branch `m25-levels`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m25-levels-portals.md` (design:
+`docs/superpowers/specs/2026-09-11-m25-levels-portals-design.md`), as 20
+sequential tasks (task 21, the merge-forward integration, is HELD pending
+M22/M28/M24/M23 landing on `main`). Delivered:
+- **Levels are elevation bands within one scene document, never a
+  separate scene-per-floor model (decision D4).** `SceneEngine.levels:
+  Vec<SceneLevel>`, each a `{id, name, bottom, top, background}` band;
+  `WallEngine::elevation`/`RegionEngine::elevation`/`DrawingEngine::elevation`/
+  `TemplateEngine::elevation` are renamed to the shared `ElevationBand` type
+  (was `WallElevation`, wall-only). `scene::elevation::band_contains`/
+  `level_of` (mirrored client-side by `@shadowcat/core`'s `bandContains`/
+  `levelOf`) are the ONE point-in-band/floor-resolution predicate every
+  consumer calls — movement gates, region selection, render filters, and the
+  client's own `sceneScopedDocs` scoping.
+- **Movement, pathfinding and region triggers all consult elevation.**
+  `move_wall_entries`/`move_walls` filter occluding walls by the mover's
+  elevation; `RouteMover.elevation`/`MoveGateInputs.mover_elevation` thread it
+  through the gate; `region_field`/`trigger_regions` band regions by level;
+  the navmesh is keyed additionally by level.
+- **Vision, lighting and explored-fog are computed per level.** Visibility
+  polygons, the lit mask, lighting inputs, and the `"footprints"` channel's
+  per-token entries are all level-scoped server-side; `SceneSubscribe.level`
+  (wired through `scene_subscribe`'s wire frame) selects which floor's
+  `"vision"` channel a subscription computes. No server-side resting-token
+  fog-stripping was added — explored-fog per level follows the existing
+  per-recipient model unchanged.
+- **Portals: `TriggerEffect::Teleport`/`PortalTarget`, `WriteOrigin::Trigger`.**
+  A region's `Teleport` trigger effect repositions the entering token
+  (same-scene or cross-scene), with a one-hop anti-loop guard, GM notices, a
+  combat notice, and a `vfx` asset id carried (not yet played — M24's
+  broadcast wiring is a Task 21 merge-forward step). `WriteOrigin::Trigger`
+  is the new document-write provenance a server-authored trigger effect
+  writes under, threaded through `apply_intent`'s Move-arm literal-comparison
+  fix.
+- **Client-side scene scoping (`sceneScopedDocs`) gains a `viewedLevel` 4th
+  parameter**, applied by every render-layer view (`TokenView`, `WallView`,
+  `RegionView`, `DrawingView`, `TemplateView`, `LightView`): band-shaped doc
+  types scope via `bandContains` at the viewed level's own `bottom`;
+  point-elevation types scope via `levelOf`.
+- **`AppContext.viewedLevel`/`setViewedLevel`**: GM-persisted (mirroring
+  `getPanelLayout`/`setPanelLayout`'s persistence shape) or, for a player,
+  derived live from their own primary token's elevation. A `viewedLevel`
+  change re-subscribes ONLY the `"vision"` channel
+  (`RenderEngine.reapplyViewedLevel`) — the server, not just client
+  rendering, computes per-level explored-fog.
+- **`LevelSwitcher.svelte`** (any-viewer floor picker, hosted directly in
+  `Stage.svelte`'s chrome — `STAGE_OVERLAY_CONTRACT` is unavailable at this
+  milestone's merge order) and **`LevelsEditor.svelte`** (GM authoring of
+  `SceneEngine.levels`, whole-array-commit pattern via `structuredClone`,
+  contributed into `SceneBrowserPanel`).
+- **scene-tools stamps the viewed level onto newly-authored content.**
+  `ToolContext.viewedLevelBand`/`viewedLevelBottom` stamp elevation onto
+  new walls/regions/drawings/templates (band) and tokens/lights (point);
+  `editWallElevation` is generalized into a shared `editElevationBand`
+  helper. The region tool's trigger editor gains a `Teleport` effect branch
+  (`RegionTriggerTeleportEditor.svelte`: destination scene via live search,
+  x/y, pick-on-stage targeting via `ToolController.beginPickPortalTarget`/
+  `endPickPortalTarget`, elevation, VFX asset picker).
+- **GM ghost-other-levels toggle + observability.** `TokenView` gains a
+  `ghostOtherLevels` toggle rendering other-level tokens desaturated and
+  faded (`TokenFx` gains an `alpha` entry, composed into the same
+  `ColorMatrixFilter` as every other token art effect); `Stage.svelte`
+  exposes `data-level`/`data-token-count` (level-scoped) read-only debug
+  attributes.
+Coverage: server `scene::elevation` (band/level resolution, conformance
+corpus parity with the client), `scene::movement`/`pathfinding` (elevation-
+gated walls/regions/navmesh), `scene::vision`/`lighting` (per-level
+polygons/masks/footprints), `ws::room` (`Teleport` trigger firing, one-hop
+anti-loop, notices, `SceneSubscribe.level`), `data::engine` (`SceneEngine`/
+`ElevationBand`/`PortalTarget` validation); client `scene-scope.test.ts`
+(the shared `sceneScopedDocs` predicate) and each view's own reconcile
+tests, `worldSession.test.ts`/`ws-client.test.ts` (`viewedLevel` persistence
++ wire), `engine.test.ts`/`Stage.test.ts` (`reapplyViewedLevel`, `data-level`/
+`data-token-count`), `LevelSwitcher.test.ts`/`LevelsEditor.test.ts`,
+`controller.svelte.test.ts`/`ToolRail.test.ts` (elevation stamping, the
+`Teleport` trigger editor incl. pick-on-stage), `token-view.test.ts`/
+`pixi-backend.test.ts` (the ghost toggle + `alpha` fx). Full repo gates
+(`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint,
+`lint:comments`) green at every commit. `src/client/shell/e2e/levels.spec.ts`
+(dual-session GM+player: two authored floors, per-floor token scoping, a
+Teleport region trigger walked into) is WRITTEN and typechecked but NOT RUN —
+the dispatcher executes the browser suite separately.
+
 ### M20 · Full default module suite ✅
 Branch `m20-module-suite`, cut from `main`, executed from the approved plan
 `docs/superpowers/plans/2026-09-10-m20-default-module-suite.md` (design:

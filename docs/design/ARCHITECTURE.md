@@ -71,7 +71,7 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Audio mixer (Web Audio + `standardized-audio-context`) | event bus | Phase 3. Simple play/stop/loop/volume first; spatial/occlusion later. |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
 | Discord audio ducking | audio mixer hook points; secondary module | Phase 3+. OS audio-session monitoring (PipeWire / WASAPI / CoreAudio) — never the proprietary Discord Game SDK; requires a dependency/licensing review before integration. |
-| VFX, post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
+| VFX, post-processing, photometric lighting, advanced vision modes | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Server-side untrusted execution (sandbox) | engine-grammar evaluation is server-side already (formulas, dice, schemas) and needs no sandbox; only third-party *code* would | Only if a marketplace with untrusted authors is pursued — then WASM (wasmtime/extism) or rquickjs, never Deno. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |
@@ -158,6 +158,6 @@ Rendering and visibility techniques (raycast visibility polygons, fog of war, il
 
 ## 8. Settled & open items
 
-**Settled:** source layout is under `src/` (see §1); v1 accounts are admin-provisioned, no self-registration/email (see §3). The empty `source/` directory is renamed to `src/` at M1.
+**Settled:** source layout is under `src/` (see §1); v1 accounts are admin-provisioned, no self-registration/email (see §3). The empty `source/` directory is renamed to `src/` at M1. Multi-level maps are elevation-banded, not a separate scene-per-floor model: a scene declares `SceneEngine.levels` (each an `[bottom, top)` elevation band), `scene::elevation::band_contains`/`level_of` resolve band-shaped documents (walls/regions/drawings/templates) and point-elevation documents (tokens/lights) to a floor identically client- and server-side, and portals between floors (same-scene or cross-scene) are a region-trigger effect (`TriggerEffect::Teleport`) rather than a bespoke door/stair primitive — see `docs/HISTORY.md`'s M25 entry for the full delivered shape.
 
 - **Per-milestone feature boundaries** are finalized in implementation plans, not here.

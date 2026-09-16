@@ -253,6 +253,18 @@ a client subscribes to a channel with `scene_subscribe` and receives
 (`computed_at_seq` orders them against the event stream). Subscriptions are
 re-established by the session layer across reconnects.
 
+On a scene with declared floors (`SceneEngine.levels`), `scene_subscribe`'s
+optional `level` field selects which floor the `"vision"` channel computes
+explored-fog and visibility for — level-less scenes and an absent `level` are
+unaffected (the pre-levels behavior). A viewed-level change re-subscribes
+`"vision"` (never `"footprints"` or any other channel) because the SERVER, not
+just the client's own rendering, computes per-level explored-fog. The
+`"footprints"` channel is not itself level-scoped by subscription (it always
+covers the whole scene); each entry instead carries its own resolved `level`
+(the level `scene::elevation::level_of` resolves for that token at its stored
+elevation, or `null` for a level-less scene), so a client scopes it
+client-side the same way it scopes any other point-elevation document type.
+
 Movement is server-authoritative end to end: `move_request` → the server
 validates and *executes* the move → every viewer receives `move_stream`, whose
 position samples and mover-vision polygons are **clipped per recipient** before
