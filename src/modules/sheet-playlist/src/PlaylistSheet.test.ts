@@ -137,6 +137,7 @@ describe("PlaylistSheet", () => {
       props: { docId: doc.id, systemPrefix: "/system", close: () => {} },
       context,
     });
+    expect(getByTestId("track-asset").getAttribute("aria-label")).toBe("sheetPlaylist.trackAsset");
     await fireEvent.click(getByTestId("track-asset"));
     expect(pickAsset).toHaveBeenCalledWith({ kind: "audio" });
     await vi.waitFor(() => expect(calls).toHaveLength(1));

@@ -98,7 +98,12 @@
 <div class="preview-pane" data-testid="preview-pane">
   {#if asset.content_type.startsWith("audio/")}
     <div class="preview audio-preview" data-testid="preview-audio">
-      <button type="button" data-testid="preview-audio-play" onclick={() => ctx.audio.playOneShot(asset.id)}>▶</button>
+      <button
+        type="button"
+        data-testid="preview-audio-play"
+        aria-label={t("assetBrowser.previewAudioPlay")}
+        onclick={() => ctx.audio.playOneShot(asset.id)}
+      >▶</button>
       {#if asset.duration_ms != null}
         <!-- i64-sourced wire values normalize through Number(), the same way `fmtBytes`'s own
              `n: number | bigint` parameter does below — never a raw bigint in arithmetic. -->

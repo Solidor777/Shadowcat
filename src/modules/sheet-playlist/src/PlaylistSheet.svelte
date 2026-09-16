@@ -171,7 +171,13 @@
   <ul data-testid="playlist-tracks">
     {#each engine.tracks as track, i (i)}
       <li data-testid="track-row" data-track-index={i}>
-        <button type="button" data-testid="track-asset" disabled={readOnly} onclick={() => void pickAsset(i)}>
+        <button
+          type="button"
+          data-testid="track-asset"
+          aria-label={t("sheetPlaylist.trackAsset", { n: i + 1 })}
+          disabled={readOnly}
+          onclick={() => void pickAsset(i)}
+        >
           {track.asset || "—"}
         </button>
         <button

@@ -126,6 +126,7 @@ test("an audio asset renders the inline play button and duration; an image rende
   });
   expect(screen.getByTestId("preview-audio")).toBeTruthy();
   expect(screen.getByText("2.5s")).toBeTruthy();
+  expect(screen.getByTestId("preview-audio-play").getAttribute("aria-label")).toBeTruthy();
   await fireEvent.click(screen.getByTestId("preview-audio-play"));
   expect(playOneShot).toHaveBeenCalledWith("a9");
   first.unmount();
