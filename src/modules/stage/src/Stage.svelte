@@ -43,6 +43,19 @@
   const ctx = getAppContext();
   const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members, t } = ctx;
 
+  // Reactive bridge (mandatory, mirrors `SceneBrowserPanel`'s convention): register a dependency
+  // on the doc store so `<LevelSwitcher>`'s `levels` prop re-derives when a level is
+  // added/edited/removed via `LevelsEditor` — a plain `documents.query(...)` read is untracked
+  // (manual pub/sub, not `$state`-backed) and would otherwise evaluate once at mount and never
+  // again.
+  const subscribe = createSubscriber((update) => documents.subscribe(update));
+  const viewedSceneLevels = $derived.by((): SceneEngine["levels"] => {
+    subscribe();
+    const vsid = ctx.viewedSceneId;
+    const doc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+    return (doc?.engine as SceneEngine | undefined)?.levels ?? [];
+  });
+
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
   /** Live engine handle for the GM vision control and the theme-swap recolor
@@ -456,7 +469,7 @@
 <div class="stage-host" bind:this={host}>
   <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
   <LevelSwitcher
-    levels={(documents.query("scene").find((s) => s.id === ctx.viewedSceneId)?.engine as SceneEngine | undefined)?.levels ?? []}
+    levels={viewedSceneLevels}
     active={ctx.viewedLevel}
     onSelect={(id) => ctx.setViewedLevel(id)}
   />

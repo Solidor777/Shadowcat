@@ -105,7 +105,7 @@
   }
 </script>
 
-<div class="levels-editor" data-testid="levels-editor" aria-label={t("levels.editorTitle")}>
+<section class="levels-editor" data-testid="levels-editor" aria-label={t("levels.editorTitle")}>
   {#each levels as level (level.id)}
     <div class="level-row" data-testid="level-row" data-level-id={level.id}>
       <input
@@ -119,6 +119,7 @@
         type="number"
         data-testid="level-bottom"
         aria-label={t("levels.bottom")}
+        aria-invalid={level.bottom >= level.top}
         value={level.bottom}
         oninput={(e) => editLevel(level.id, "bottom", Number(e.currentTarget.value))}
       />
@@ -126,6 +127,7 @@
         type="number"
         data-testid="level-top"
         aria-label={t("levels.top")}
+        aria-invalid={level.bottom >= level.top}
         value={level.top}
         oninput={(e) => editLevel(level.id, "top", Number(e.currentTarget.value))}
       />
@@ -144,10 +146,15 @@
       <button type="button" data-testid="level-remove" onclick={() => removeLevel(level.id)}>
         {t("levels.removeLevel")}
       </button>
+      {#if level.bottom >= level.top}
+        <span class="level-invalid" data-testid="level-invalid" role="alert">
+          {t("levels.invalidBand")}
+        </span>
+      {/if}
     </div>
   {/each}
   <button type="button" data-testid="level-add" onclick={addLevel}>{t("levels.addLevel")}</button>
-</div>
+</section>
 
 <style lang="scss">
   .levels-editor {
@@ -179,5 +186,8 @@
   .level-row button,
   .levels-editor > button {
     cursor: pointer;
+  }
+  .level-invalid {
+    color: var(--danger);
   }
 </style>

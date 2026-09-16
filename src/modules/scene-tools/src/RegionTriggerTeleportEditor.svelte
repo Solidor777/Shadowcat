@@ -157,6 +157,15 @@
   >
     {target.vfx ? `${t("tools.triggerTeleportVfx")}: ${target.vfx}` : t("tools.triggerTeleportVfx")}
   </button>
+  {#if target.vfx}
+    <button
+      type="button"
+      data-testid="region-trigger-teleport-vfx-clear"
+      onclick={() => (target.vfx = null)}
+    >
+      {t("tools.triggerTeleportVfxClear")}
+    </button>
+  {/if}
 </div>
 
 <style lang="scss">

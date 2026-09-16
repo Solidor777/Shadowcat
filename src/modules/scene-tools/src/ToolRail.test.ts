@@ -599,6 +599,29 @@ test("editing scene/x/y/elevation/vfx updates the trigger row's target", async (
   expect(screen.getByTestId("region-trigger-teleport-vfx").textContent).toContain("vfx-asset-1");
 });
 
+test("the teleport VFX clear button resets target.vfx to null and disappears until a VFX is picked again", async () => {
+  const { scene } = captureScene();
+  render(ToolRail, {
+    context: setAppContextForTest({
+      role: "gm", scene,
+      pickAsset: (async () => "vfx-asset-1") as never,
+    }),
+  });
+  await openRegionTriggerRow();
+  await fireEvent.change(screen.getByTestId("region-trigger-effect"), { target: { value: "teleport" } });
+
+  // No clear button until a VFX is picked.
+  expect(screen.queryByTestId("region-trigger-teleport-vfx-clear")).toBeNull();
+
+  await fireEvent.click(screen.getByTestId("region-trigger-teleport-vfx"));
+  expect(screen.getByTestId("region-trigger-teleport-vfx").textContent).toContain("vfx-asset-1");
+  const clearBtn = screen.getByTestId("region-trigger-teleport-vfx-clear");
+
+  await fireEvent.click(clearBtn);
+  expect(screen.getByTestId("region-trigger-teleport-vfx").textContent).not.toContain("vfx-asset-1");
+  expect(screen.queryByTestId("region-trigger-teleport-vfx-clear")).toBeNull();
+});
+
 test("a persisted region document's triggers includes the authored Teleport effect verbatim", async () => {
   const { scene, tools } = captureScene();
   const dispatched: WireOperation[][] = [];

@@ -45,4 +45,25 @@ describe("LevelsEditor", () => {
     expect(pickAsset).toHaveBeenCalledWith({ kind: "image" });
     await vi.waitFor(() => expect(onCommit).toHaveBeenCalledWith([{ id: "l1", name: "Ground", bottom: 0, top: 10, background: "asset-1" }]));
   });
+
+  it("the root is a <section> with an accessible name, not a bare <div>", () => {
+    const context = setAppContextForTest();
+    const { container } = render(LevelsEditor, { props: { levels, onCommit: vi.fn() }, context });
+    const root = container.querySelector('[data-testid="levels-editor"]')!;
+    expect(root.tagName).toBe("SECTION");
+    expect(root.getAttribute("aria-label")).toBeTruthy();
+  });
+
+  it("an invalid band (bottom >= top) shows inline feedback and marks the inputs aria-invalid; a valid band shows neither", () => {
+    const context = setAppContextForTest();
+    const invalid: SceneLevel[] = [{ id: "l1", name: "Bad", bottom: 10, top: 10, background: null }];
+    const { container, rerender } = render(LevelsEditor, { props: { levels: invalid, onCommit: vi.fn() }, context });
+    expect(container.querySelector('[data-testid="level-invalid"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="level-bottom"]')!.getAttribute("aria-invalid")).toBe("true");
+    expect(container.querySelector('[data-testid="level-top"]')!.getAttribute("aria-invalid")).toBe("true");
+
+    rerender({ levels, onCommit: vi.fn() });
+    expect(container.querySelector('[data-testid="level-invalid"]')).toBeNull();
+    expect(container.querySelector('[data-testid="level-bottom"]')!.getAttribute("aria-invalid")).toBe("false");
+  });
 });

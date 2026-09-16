@@ -331,6 +331,7 @@ export const en: Messages = {
   "tools.triggerTeleportPicking": "Click the stage…",
   "tools.triggerTeleportElevation": "Destination elevation (empty = unchanged)",
   "tools.triggerTeleportVfx": "Teleport VFX",
+  "tools.triggerTeleportVfxClear": "Clear VFX",
   "tools.shape": "Shape",
   "tools.color": "Color",
   "tools.light": "Light",
@@ -700,4 +701,5 @@ export const en: Messages = {
   "levels.background": "Background",
   "levels.backgroundClear": "Clear background",
   "levels.ghostOtherLevels": "Ghost other levels",
+  "levels.invalidBand": "Bottom must be less than top",
 };
