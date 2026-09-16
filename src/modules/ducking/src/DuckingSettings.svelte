@@ -8,26 +8,18 @@
 
   let {
     controller,
-    onMicToggle,
-    depth = 0.7,
-    onDepthChange,
   }: {
     /** Owns the running `KeySource`/`OsMonitorSource` for this world session (constructed
-     * once in `register(ctx)`, shared across every mount/unmount of this section). */
+     * once in `register(ctx)`, shared across every mount/unmount of this section). Its
+     * `micToggle` field enables/disables the mic source for real; `null` until
+     * `DuckingRuntime` has wired it (the mic toggle still persists the preference either
+     * way). */
     controller: DuckSourcesController;
-    /** Enables/disables the mic source for real; `undefined` before a real `MicVadSource` is
-     * wired in (the mic toggle still persists the preference either way). */
-    onMicToggle?: (enabled: boolean) => Promise<MicVadDenialReason | null>;
-    /** The per-device duck depth the slider starts at. Interim seam: until `AppContext`
-     * carries `audio`, the section cannot read `audio.duck.depth` itself, so the value and
-     * its setter arrive as props; real integration replaces both with a mount-time
-     * context read. Depth is the audio engine's state, never persisted by this module. */
-    depth?: number;
-    /** Receives a slider change; `undefined` means the slider moves and nothing hears it. */
-    onDepthChange?: (depth: number) => void;
   } = $props();
 
-  const { t } = getAppContext();
+  const { t, audio } = getAppContext();
+
+  let depth = $state(audio.duck.depth);
 
   let prefs = $state<DuckingPreferences>(readDuckingMirror(localStorage));
   let osStatus = $state<OsMonitorStatus>(controller.osMonitor.getStatus());
@@ -87,8 +79,8 @@
   async function toggleMic(enabled: boolean): Promise<void> {
     prefs.micEnabled = enabled;
     persist();
-    if (onMicToggle) {
-      micDenial = (await onMicToggle(enabled)) ?? null;
+    if (controller.micToggle) {
+      micDenial = (await controller.micToggle(enabled)) ?? null;
       if (micDenial) {
         prefs.micEnabled = false;
         persist();
@@ -213,7 +205,7 @@
       max="1"
       step="0.05"
       value={depth}
-      oninput={(e) => onDepthChange?.(Number(e.currentTarget.value))}
+      oninput={(e) => { depth = Number(e.currentTarget.value); audio.duck.setDepth(depth); }}
     />
   </label>
 </div>

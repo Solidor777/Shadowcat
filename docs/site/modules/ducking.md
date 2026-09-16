@@ -13,6 +13,7 @@ push-to-duck key. This milestone never touches gain nodes itself.
 | Id | Contract | Component | Meta |
 |---|---|---|---|
 | `ducking:settings` | `shadowcat.settings-section` | `DuckingSettings` | labelKey `ducking.sectionTitle` |
+| `ducking:runtime` | `shadowcat.surface:overlay` | `DuckingRuntime` | (none — headless) |
 
 ## Components
 
@@ -30,15 +31,21 @@ push-to-duck key. This milestone never touches gain nodes itself.
   failed attempts.
 - `controller.ts` (`DuckSourcesController`) — owns the key + OS-monitor sources for the whole
   world session (constructed once in `register`, outliving the settings panel's own mount
-  lifecycle); the mic source and the wiring to `ctx.audio.duck` are constructed in `App.svelte`'s
-  module registration once M23's `AudioApi` is available (see this module's `index.ts`).
+  lifecycle) and a `micToggle` field `DuckingRuntime` sets once it wires the real `AudioApi`.
+- `DuckingRuntime.svelte` — headless, no visible output; contributed into the always-mounted
+  `shadowcat.surface:overlay` surface (never `register(ctx)` directly, since `ModuleContext`
+  carries no `audio` member — only the Svelte-reachable `AppContext` does). Wires
+  `controller.wireToAudioDuck` to real `AudioApi.duck.addSource` handles and sets
+  `controller.micToggle` to a closure that constructs `MicVadSource` against
+  `AudioApi.context()` on first enable.
 - `duckingMirror.ts` — per-device `localStorage` persistence (`shadowcat.ducking`), styled
   after the shell's theme mirror.
 
 ## Contracts & seams
 
-- **Requires** `shadowcat.settings-section` (from `settings`).
-- Consumes M23's `AudioApi.duck.addSource`/`AudioApi.context()`.
+- **Requires** `shadowcat.settings-section` (from `settings`) and `shadowcat.surface:overlay`
+  (from `core-ui`).
+- Consumes M23's `AudioApi.duck.addSource`/`AudioApi.context()`, via `DuckingRuntime`.
 - The `shadowcat audio-monitor` subcommand it talks to is documented in `server-ops`'s skill
   and this page's own protocol section below.
 

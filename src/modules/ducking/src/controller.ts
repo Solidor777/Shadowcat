@@ -2,6 +2,7 @@ import type { Logger } from "@shadowcat/core";
 import { KeySource, NULL_SINK, type DuckSink } from "./keySource";
 import { OsMonitorSource } from "./osMonitor";
 import type { DuckingPreferences } from "./duckingMirror";
+import type { MicVadDenialReason } from "./micVad";
 
 /**
  * Owns the two sources that need no `AudioContext` (`KeySource`, `OsMonitorSource`) and
@@ -16,6 +17,14 @@ export class DuckSourcesController {
   readonly key: KeySource;
   /** The OS audio-session monitor source. */
   readonly osMonitor: OsMonitorSource;
+  /** Enables/disables the mic source for real. `null` until `DuckingRuntime` (the always-
+   * mounted `shadowcat.surface:overlay` contribution) has wired it — that component, not
+   * `register(ctx)`, is where `AppContext.audio` first becomes reachable, since `ModuleContext`
+   * (the framework-neutral type `register(ctx)` receives) carries no `audio` member. Read by
+   * `DuckingSettings.svelte`'s mic checkbox at click time, so a Settings mount that races
+   * `DuckingRuntime`'s own mount sees whatever is currently set (still persists the preference
+   * either way; see `DuckingSettings.svelte`'s `toggleMic`). */
+  micToggle: ((enabled: boolean) => Promise<MicVadDenialReason | null>) | null = null;
 
   /**
    * Constructs a controller owning the key and OS-monitor sources.
