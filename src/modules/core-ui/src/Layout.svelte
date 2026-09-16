@@ -72,6 +72,14 @@
     border-top: 1px solid var(--border);
     color: var(--text-muted);
     font-size: 0.8rem;
+    /* Same growth cap as `.toolrail`/`.main`: this row hosts arbitrary contributions (the
+     * panel dock's chips carry a 44px touch-target floor), so the cap must be structural
+     * here rather than re-applied per contribution — zeroing the automatic minimum size plus
+     * a non-visible overflow is what keeps a tall child from growing this fixed 2rem row (and
+     * with it the whole grid) past 100vh. `Layout.test` enumerates the row's items against
+     * this cap alongside `.toolrail`'s. */
+    min-height: 0;
+    overflow: hidden;
   }
 
   /* Compact (<48rem): single column; the toolrail is a full-width bottom tool
