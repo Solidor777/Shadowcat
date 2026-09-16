@@ -1,9 +1,11 @@
 <script lang="ts">
   import { getAppContext, setField } from "@shadowcat/ui-kit";
   import { createSubscriber } from "svelte/reactivity";
-  import { getPointer } from "@shadowcat/core";
+  import { getPointer, consoleLogger } from "@shadowcat/core";
   import type { PlaylistEngine, PlaylistMode, PlaylistTrack, AudioChannel } from "@shadowcat/core";
   import { addTrack, removeTrack, moveTrack, setTrack } from "./trackOps";
+
+  const log = consoleLogger();
 
   // Playlist sheet: edits the playlist engine body. Every scalar field is one `setField`
   // call on `change`; the tracks editor replaces the WHOLE `tracks` array per mutation
@@ -91,7 +93,16 @@
    */
   async function pickAsset(i: number): Promise<void> {
     const picked = await ctx.pickAsset({ kind: "audio" });
-    if (typeof picked === "string") patchTrack(i, { asset: picked });
+    if (typeof picked !== "string") return;
+    // The array can shrink (or reorder) during the await — `PlaylistTrack` carries no stable
+    // id, so an index-based re-check is the strongest guard available: if the index no
+    // longer names a row, the write is aborted silently rather than spreading the patch into
+    // whatever now sits there (an index shift, not a value conflict, so OCC never catches it).
+    if (!engine || i >= engine.tracks.length) {
+      log.debug("pickAsset: track index no longer exists, dropping the pick", { i });
+      return;
+    }
+    patchTrack(i, { asset: picked });
   }
 
   /** Open the asset picker and append a track for the pick. Pick-first because

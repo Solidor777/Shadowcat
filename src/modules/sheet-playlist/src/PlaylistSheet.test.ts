@@ -189,6 +189,41 @@ describe("PlaylistSheet", () => {
     ]);
   });
 
+  it("the array shrinking below the picked index during the await drops the patch, no throw", async () => {
+    const calls: unknown[] = [];
+    let resolvePick!: (v: string) => void;
+    const pickAsset = vi.fn().mockReturnValue(new Promise<string>((res) => (resolvePick = res)));
+    const doc = buildPlaylistDoc("w1", "Tavern", engine([TRACK_A, TRACK_B]));
+    const documents = storeWith(doc);
+    const context = setAppContextForTest({
+      documents,
+      dispatchIntent: confirmingDispatch(documents, calls),
+      canEdit: () => true,
+      pickAsset: pickAsset as never,
+    });
+    const { getAllByTestId } = render(PlaylistSheet, {
+      props: { docId: doc.id, systemPrefix: "/system", close: () => {} },
+      context,
+    });
+    // Pick the SECOND track (index 1), but don't resolve the pick yet.
+    await fireEvent.click(getAllByTestId("track-asset")[1]);
+    expect(pickAsset).toHaveBeenCalledWith({ kind: "audio" });
+
+    // The array shrinks to one track (a confirmed remove from elsewhere) while the pick is
+    // still in flight — index 1 no longer names a row.
+    documents.applyCommand({
+      seq: 2,
+      world_id: "w1",
+      author: "u2",
+      ts: 0,
+      ops: [{ op: "update", doc_id: doc.id, changes: [{ path: "/engine/tracks", old: [TRACK_A, TRACK_B], new: [TRACK_A] }] }],
+    });
+
+    resolvePick("picked-asset");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(calls).toHaveLength(0);
+  });
+
   it("a cancelled add-track pick dispatches nothing (an unassigned row can never be staged)", async () => {
     const calls: unknown[] = [];
     const pickAsset = vi.fn().mockResolvedValue(null);
