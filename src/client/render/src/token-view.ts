@@ -95,6 +95,9 @@ export class TokenView {
    * @param viewedSceneId Resolves the currently-viewed scene id; `reconcile()` scopes its query to
    * this scene (falls back to unscoped — every token in the store — when it resolves to `null`).
    * Defaults to always-`null` (legacy/test callers that never pass one).
+   * @param viewedLevel Resolves the currently-viewed level id; `reconcile()` additionally scopes
+   * its query to this level via `levelOf` over each token's own point `elevation` (see
+   * `sceneScopedDocs`). Defaults to always-`null` (every level — the degenerate pre-levels case).
    * @param footprints Resolves the server's current footprint lookup, read fresh per `toSpec` so a
    * newly-arrived frame is picked up on the next reconcile. Defaults to `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`.
@@ -119,6 +122,7 @@ export class TokenView {
     private readonly assets: AssetResolver,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly viewedLevel: () => string | null = () => null,
     private readonly footprints: () => FootprintLookup = () => EMPTY_FOOTPRINTS,
     private readonly perceived: () => ReadonlySet<string> = () => NO_PERCEIVED,
     private readonly selectedTokens: () => ReadonlySet<string> = () => EMPTY_TOKEN_SELECTION,
@@ -311,7 +315,7 @@ export class TokenView {
    */
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId)) {
+    for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId, this.viewedLevel)) {
       const spec = this.toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

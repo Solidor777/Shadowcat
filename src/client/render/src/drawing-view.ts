@@ -17,6 +17,9 @@ export class DrawingView {
    * query to this scene (falls back to unscoped — every `drawing` doc in the store — when
    * it resolves to `null`). Defaults to always-`null` (legacy/test callers that never pass
    * one).
+   * @param viewedLevel Resolves the currently-viewed level id; `reconcile()` additionally
+   * scopes its query to this level (see `sceneScopedDocs`). Defaults to always-`null` (every
+   * level — the degenerate pre-levels case).
    * @example
    * ```ts
    * import { DrawingView, MockBackend } from "@shadowcat/render";
@@ -30,6 +33,7 @@ export class DrawingView {
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly viewedLevel: () => string | null = () => null,
   ) {}
 
   /**
@@ -52,7 +56,7 @@ export class DrawingView {
    */
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of sceneScopedDocs(this.store, "drawing", this.viewedSceneId)) {
+    for (const doc of sceneScopedDocs(this.store, "drawing", this.viewedSceneId, this.viewedLevel)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

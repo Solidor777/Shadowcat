@@ -13,7 +13,7 @@ const actorEngine = (over = {}) => ({ displayName: "G", visual: { kind: "image" 
 
 /** A lookup stating one token's server-resolved extent, standing in for a `"footprints"` frame. */
 function footprintsFor(tokenId: string, w: number, h: number): FootprintLookup {
-  return { token: (id) => (id === tokenId ? { w, h } : null), unit: () => null };
+  return { token: (id) => (id === tokenId ? { w, h } : null), unit: () => null, level: () => null };
 }
 
 test("circle token: a point in the corner of its bounding box misses", () => {

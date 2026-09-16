@@ -199,7 +199,7 @@ test("reconciles a token to the server's resolved extent, with the shape still r
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: actor }, { op: "create", doc: token }]));
   const footprints: FootprintLookup = { token: (id) => (id === "tok1" ? { w: 173.2, h: 200 } : null), unit: () => null, level: () => null };
-  new TokenView(store, assets, backend, () => null, () => footprints).reconcile();
+  new TokenView(store, assets, backend, () => null, () => null, () => footprints).reconcile();
   const spec = backend.tokens.get("tok1")!;
   expect(spec.w).toBe(173.2);
   expect(spec.h).toBe(200);
@@ -532,7 +532,7 @@ test("a selected token's spec appends the selection highlight after every condit
     ["poisoned"],
   );
   const selected = new Set<string>(["tok1"]);
-  new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => selected).reconcile();
+  new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toEqual([
     { kind: "tint", color: 0x66ff66, strength: 0.5 },
     { kind: "highlight", color: 0xffd400, strength: 0.4 },
@@ -542,11 +542,11 @@ test("a selected token's spec appends the selection highlight after every condit
 test("an unselected token (or a view with no selection source) gains no highlight", () => {
   const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
   const selected = new Set<string>(["someone-else"]);
-  new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => selected).reconcile();
+  new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
   // Selection is re-read per reconcile: selecting the token and re-reconciling adds the highlight.
   selected.add("tok1");
-  const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => selected);
+  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected);
   view.reconcile();
   expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
 });
@@ -619,7 +619,7 @@ test("the perceived lookup flags matching tokens; leaving the set restores the f
   const store = new DocumentStore();
   const backend = new MockBackend();
   let perceived: ReadonlySet<string> = new Set(["t1"]);
-  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => EMPTY_FOOTPRINTS, () => perceived);
+  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, () => EMPTY_FOOTPRINTS, () => perceived);
   store.applyCommand(cmd(1, [
     { op: "create", doc: tokenDoc("t1", 0, 0, "img1") },
     { op: "create", doc: tokenDoc("t2", 0, 0, "img1") },
@@ -631,4 +631,20 @@ test("the perceived lookup flags matching tokens; leaving the set restores the f
   perceived = new Set();
   view.reconcile();
   expect(backend.tokens.get("t1")!.perceived).toBe(false);
+});
+
+test("a viewedLevel function scopes reconcile() via levelOf over each token's own elevation", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1").reconcile();
+  expect(backend.tokens.has("tok-ground")).toBe(true);
+  expect(backend.tokens.has("tok-upper")).toBe(false);
 });

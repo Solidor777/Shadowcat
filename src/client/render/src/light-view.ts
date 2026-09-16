@@ -27,6 +27,10 @@ export class LightView {
    * @param viewedSceneId Resolves the currently-viewed scene id; `reconcile()` scopes its
    * query to this scene (falls back to unscoped when it resolves to `null`). Defaults to
    * always-`null` (legacy/test callers that never pass one).
+   * @param viewedLevel Resolves the currently-viewed level id; `reconcile()` additionally
+   * scopes its query to this level via `levelOf` over the light's own point `elevation` (see
+   * `sceneScopedDocs`). Defaults to always-`null` (every level — the degenerate pre-levels
+   * case).
    * @example
    * ```ts
    * import { LightView, MockBackend } from "@shadowcat/render";
@@ -40,6 +44,7 @@ export class LightView {
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly viewedLevel: () => string | null = () => null,
   ) {}
 
   /**
@@ -60,7 +65,7 @@ export class LightView {
    */
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of sceneScopedDocs(this.store, "light", this.viewedSceneId)) {
+    for (const doc of sceneScopedDocs(this.store, "light", this.viewedSceneId, this.viewedLevel)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

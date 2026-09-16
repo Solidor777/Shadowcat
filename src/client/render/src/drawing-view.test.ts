@@ -1,19 +1,40 @@
 import { test, expect } from "vitest";
-import { DocumentStore, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { MockBackend, DrawingView } from "./index";
 
-function drawingDoc(id: string, kind: string, points: number[]): WireDocument {
+function drawingDoc(
+  id: string,
+  kind: string,
+  points: number[],
+  elevation: { bottom: number | null; top: number | null } | null = null,
+): WireDocument {
   return {
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "drawing", schema_version: 1,
     name: null, source: null, owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {}, parent_id: "s1",
-    engine: { shape: { kind, points }, stroke: { color: "#ff0000", width: 2 }, fill: null },
+    engine: { shape: { kind, points }, stroke: { color: "#ff0000", width: 2 }, fill: null, elevation },
     system: {},
     created_at: 0, updated_at: 0,
   };
 }
 const cmd = (seq: number, ops: WireOperation[]) => ({ seq, world_id: "w1", author: "a", ts: 0, ops });
+
+test("a viewedLevel function scopes reconcile() to that level's band", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = drawingDoc("d-ground", "freehand", [0, 0, 5, 5], { bottom: 0, top: 9 });
+  const upper = drawingDoc("d-upper", "freehand", [0, 0, 5, 5], { bottom: 10, top: 20 });
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  new DrawingView(store, backend, () => "s1", () => "l1").reconcile();
+  expect(backend.shapes.has("d-ground")).toBe(true);
+  expect(backend.shapes.has("d-upper")).toBe(false);
+});
 
 test("a freehand drawing reconciles to an open polyline with parsed stroke", () => {
   const store = new DocumentStore();

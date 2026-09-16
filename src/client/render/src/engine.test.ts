@@ -1169,7 +1169,7 @@ test("the engine renders a token at the footprint lookup it was constructed with
   expect(backend.tokens.get("t1")!.w).toBe(173.2);
   expect(backend.tokens.get("t1")!.h).toBe(200);
 
-  footprints = { token: () => ({ w: 346.4, h: 400 }), unit: () => null };
+  footprints = { token: () => ({ w: 346.4, h: 400 }), unit: () => null, level: () => null };
   engine.reapplyFootprints();
   expect(backend.tokens.get("t1")!.w).toBe(346.4);
   expect(backend.tokens.get("t1")!.h).toBe(400);

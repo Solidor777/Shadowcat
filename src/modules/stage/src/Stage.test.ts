@@ -675,7 +675,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
   await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
   expect(spy).not.toHaveBeenCalled();
 
-  footprints = { token: () => ({ w: 173.2, h: 200 }), unit: () => null };
+  footprints = { token: () => ({ w: 173.2, h: 200 }), unit: () => null, level: () => null };
   store.applyCommand({
     seq: 2,
     world_id: "w1",
