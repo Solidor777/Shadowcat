@@ -36,8 +36,16 @@ internals (the contract-only element boundary).
   point value) onto newly-placed tokens/lights'. Absent/no viewed level ⇒
   `elevation: null` (today's behavior for a level-less scene, unchanged).
   `editWallElevation`'s band-edit logic is factored into a shared
-  `editElevationBand` helper, ready for a future region/drawing/template
-  editor (none exists yet — those doc types stay create-only).
+  `editElevationBand` helper, reused by the region/drawing/template
+  elevation-band editors (`editRegionElevation`/`editDrawingElevation`/
+  `editTemplateElevation`): the select tool picks a region/drawing/template
+  shape (`topRegionAt`/`topDrawingAt`/`topTemplateAt` in `hit-test.ts`, reusing
+  the SAME tessellation `regionShapeSpec`/`drawingShapeSpec`/`templateShapeSpec`
+  the corresponding render-layer view draws from) into
+  `ToolController.editingEntity`, and `ToolRail` renders the matching
+  elevation-band editor. Shape/fill/stroke/color/behavior/cost/secrecy/triggers
+  remain create-only for all four kinds (region/drawing/template/wall) — a GM
+  re-authors those by delete+recreate.
 - **`Teleport` region trigger**: `ToolController.beginPickPortalTarget`/
   `endPickPortalTarget` capture one stage click as the trigger's destination
   x/y, temporarily roaming the viewed scene (`ToolContext.setGmViewedScene`,
