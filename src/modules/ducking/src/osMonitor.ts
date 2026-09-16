@@ -65,8 +65,8 @@ export interface OsMonitorSourceOptions {
  * `HANGOVER_MS` after it drops back.
  */
 export class OsMonitorSource {
-  /** Localhost port to connect to. */
-  private readonly port: number;
+  /** Localhost port to connect to; replaceable via `setPort`. */
+  private port: number;
   /** The live watch list, resent as a `watch` frame on every reconnect/`setWatch`. */
   private watch: string[];
   /** Diagnostic sink. */
@@ -162,6 +162,28 @@ export class OsMonitorSource {
    */
   setThreshold(threshold: number): void {
     this.threshold = threshold;
+  }
+
+  /**
+   * Replaces the port to connect to; if currently started, tears down the existing
+   * connection and reconnects to the new port immediately (rather than waiting for the
+   * next backoff-scheduled retry).
+   * @param port The replacement localhost port.
+   * @example
+   * ```
+   * const source = new OsMonitorSource({ port: 31998, watch: ["discord"], logger: { debug() {}, warn() {}, error() {} } });
+   * source.setPort(31999);
+   * ```
+   */
+  setPort(port: number): void {
+    if (this.port === port) return;
+    this.port = port;
+    if (this.started) {
+      this.socket?.close();
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.attempts = 0;
+      this.connect();
+    }
   }
 
   /**

@@ -128,4 +128,21 @@ describe("OsMonitorSource", () => {
     expect(statuses.at(-1)).toBe("not-running");
     source.stop();
   });
+
+  it("setPort reconnects immediately to the new port while started", () => {
+    const createdPorts: number[] = [];
+    const source = new OsMonitorSource({
+      port: 31998,
+      watch: [],
+      logger,
+      createSocket: (url) => {
+        createdPorts.push(Number(new URL(url).port));
+        return new FakeSocket() as unknown as WebSocket;
+      },
+    });
+    source.start();
+    source.setPort(31999);
+    expect(createdPorts).toEqual([31998, 31999]);
+    source.stop();
+  });
 });
