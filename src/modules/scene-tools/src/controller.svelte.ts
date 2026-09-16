@@ -299,6 +299,11 @@ export class ToolController {
   pickingPortalRow = $state<number | null>(null);
   /** Original viewed scene, stashed while a portal-target pick temporarily switches it. */
   #pickOriginalScene: string | null = null;
+  /** The `RegionTrigger` OBJECT (not its array index) a pick in progress targets — the stable
+   * identity `endPickPortalTarget` resolves back to a CURRENT row by, so removing or
+   * reordering `regionTriggers` mid-pick cannot redirect the write onto an unrelated trigger
+   * that happens to sit at the same index. `null` exactly when `pickingPortalRow` is `null`. */
+  #pickingTrigger: RegionTrigger | null = null;
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -346,6 +351,13 @@ export class ToolController {
   /** Begin capturing one stage click as `regionTriggers[row]`'s teleport target x/y. Switches
    * the viewed scene to the trigger's currently-authored target scene (or stays put if none is
    * set yet) and overrides the active tool's pointer handling with a one-shot picker.
+   *
+   * A pick already in progress is cleanly CANCELLED first (`endPickPortalTarget(null)` —
+   * restores the GM's original scene, writes nothing) before this one begins: without this
+   * guard, starting a second pick while `pickingPortalRow !== null` would overwrite
+   * `#pickOriginalScene` with the FIRST pick's already-roamed-to destination scene rather than
+   * the true original, stranding the GM's view on an intermediate scene with no way back
+   * through this feature.
    * @param row Index into `regionTriggers` of the `teleport` trigger being edited.
    * @example
    * ```
@@ -356,12 +368,14 @@ export class ToolController {
   beginPickPortalTarget(row: number): void {
     const trig = this.regionTriggers[row];
     if (!trig || trig.effect.type !== "teleport") return;
+    if (this.pickingPortalRow !== null) this.endPickPortalTarget(null);
     this.#pickOriginalScene = this.ctx.viewedSceneId?.() ?? null;
     const targetScene = trig.effect.target.scene;
     if (targetScene && targetScene !== this.#pickOriginalScene) {
       this.ctx.setGmViewedScene?.(targetScene);
     }
     this.pickingPortalRow = row;
+    this.#pickingTrigger = trig;
     this.ctx.scene.setActiveTool({
       onPointerDown: (p: Point) => {
         this.endPickPortalTarget(p);
@@ -372,8 +386,12 @@ export class ToolController {
     });
   }
 
-  /** End a portal-target pick: write the captured point (if any) into the row's target, restore
-   * the original viewed scene and the tool that was active when the pick began.
+  /** End a portal-target pick: write the captured point (if any) into the target row, restore
+   * the original viewed scene and the tool that was active when the pick began. The target row
+   * is resolved by the CAPTURED TRIGGER OBJECT's current index (`#pickingTrigger`), never the
+   * row index captured at pick-start — a trigger row removed or reordered while a pick is in
+   * progress makes the write a no-op (the scene restore still happens) rather than silently
+   * landing on whatever trigger now occupies that index.
    * @param pos The captured stage point, or `null` to cancel without writing.
    * @example
    * ```
@@ -382,13 +400,13 @@ export class ToolController {
    * ```
    */
   endPickPortalTarget(pos: Point | null): void {
-    const row = this.pickingPortalRow;
+    const pickedTrig = this.#pickingTrigger;
     this.pickingPortalRow = null;
-    if (row !== null && pos) {
-      const trig = this.regionTriggers[row];
-      if (trig?.effect.type === "teleport") {
-        trig.effect.target.x = pos.x;
-        trig.effect.target.y = pos.y;
+    this.#pickingTrigger = null;
+    if (pickedTrig && pos && this.regionTriggers.includes(pickedTrig)) {
+      if (pickedTrig.effect.type === "teleport") {
+        pickedTrig.effect.target.x = pos.x;
+        pickedTrig.effect.target.y = pos.y;
       }
     }
     if (this.#pickOriginalScene !== null) {
