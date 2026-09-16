@@ -86,6 +86,12 @@ export class OneShotPlayer {
     perCallGain.gain.value = gain;
     source.connect(perCallGain);
     perCallGain.connect(this.#channelGains[channel]);
+    // Disconnect both per-call nodes once playback completes — otherwise each `play()` call
+    // accumulates one permanently-connected `GainNode` in the mixer graph over a session.
+    source.onended = () => {
+      source.disconnect();
+      perCallGain.disconnect();
+    };
     source.start();
   }
 

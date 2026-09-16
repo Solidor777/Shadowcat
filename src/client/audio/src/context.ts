@@ -86,6 +86,10 @@ export interface BufferSourceNodeLike {
    * @param dest The downstream node.
    * @returns The downstream node (DOM `AudioNode.connect`); ignored by every caller. */
   connect(dest: AudioNodeLike): unknown;
+  /** Disconnect every outgoing connection (DOM `AudioNode.disconnect`) — `OneShotPlayer.play`'s
+   * `onended` handler calls this so a completed one-shot's source is not left permanently
+   * connected into the graph. */
+  disconnect(): void;
   /** Start playback at `when` (context time), from `offset` seconds into the buffer.
    * @param when The context time to start at (`undefined` = now).
    * @param offset The buffer position to start from, seconds. */

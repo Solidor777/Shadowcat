@@ -133,4 +133,20 @@ describe("OneShotPlayer", () => {
     await player.getBuffer("asset-0");
     expect(f.mock.calls.length).toBe(callsBefore + 1);
   });
+
+  it("disconnects the per-call gain and the source once playback ends", async () => {
+    mockFetchBytes(wavBytes());
+    const ctx = stubAudioContext();
+    const player = new OneShotPlayer(ctx, new AssetResolver(), channelGains(), async () => stubWasmDecoder());
+    await player.play("a1");
+    const source = ctx.sources[0];
+    const perCallGain = ctx.gains[ctx.gains.length - 1];
+    const gainDisconnect = vi.spyOn(perCallGain, "disconnect");
+    expect(source.disconnect).not.toHaveBeenCalled();
+    expect(gainDisconnect).not.toHaveBeenCalled();
+
+    source.onended?.(new Event("ended"));
+    expect(source.disconnect).toHaveBeenCalledTimes(1);
+    expect(gainDisconnect).toHaveBeenCalledTimes(1);
+  });
 });
