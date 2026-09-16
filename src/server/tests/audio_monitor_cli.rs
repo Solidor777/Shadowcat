@@ -30,14 +30,18 @@ fn audio_monitor_dash_dash_port_0_binds_an_ephemeral_port_and_prints_it() {
         .expect("run shadowcat audio-monitor --port 0");
     let stdout = child.stdout.take().expect("piped stdout");
     let mut reader = BufReader::new(stdout);
+    // The tracing diagnostic line ("shadowcat audio-monitor listening") writes to stdout
+    // BEFORE the stable, plain-text CLI contract line below it — scan forward past it
+    // rather than assuming the announcement is the first line on the stream.
     let mut line = String::new();
-    reader
-        .read_line(&mut line)
-        .expect("read the listening line");
-    assert!(
-        line.contains("shadowcat audio-monitor listening on 127.0.0.1:"),
-        "got: {line}"
-    );
+    loop {
+        line.clear();
+        let n = reader.read_line(&mut line).expect("read a stdout line");
+        assert_ne!(n, 0, "stream ended before the listening-on line appeared");
+        if line.contains("shadowcat audio-monitor listening on 127.0.0.1:") {
+            break;
+        }
+    }
     let port: u16 = line
         .trim()
         .rsplit(':')
@@ -50,4 +54,5 @@ fn audio_monitor_dash_dash_port_0_binds_an_ephemeral_port_and_prints_it() {
         "an ephemeral bind must print the ACTUAL bound port, never 0"
     );
     child.kill().expect("stop the audio-monitor process");
+    child.wait().expect("reap the audio-monitor process");
 }

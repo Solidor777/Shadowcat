@@ -163,6 +163,10 @@ pub(super) async fn run_with_monitor(
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound = listener.local_addr()?;
     tracing::info!(port = bound.port(), "shadowcat audio-monitor listening");
+    // A second, deliberately plain (non-ANSI, single fixed-format) line: the `--port 0`
+    // ephemeral-bind contract this subcommand's own CLI test and the hosting guide's
+    // copyable command line depend on need a stable machine-parseable announcement, unlike
+    // the main server's tracing-only "listening" line (nothing scripts against that one).
     println!(
         "shadowcat audio-monitor listening on 127.0.0.1:{}",
         bound.port()

@@ -17,7 +17,7 @@ fn reduce_to_basename_strips_the_directory() {
 
 #[test]
 fn truncate_process_name_caps_at_128_unicode_scalars_not_bytes() {
-    let name: String = std::iter::repeat('é').take(200).collect();
+    let name: String = "é".repeat(200);
     let truncated = truncate_process_name(&name);
     assert_eq!(truncated.chars().count(), PROCESS_NAME_MAX_CHARS);
 }

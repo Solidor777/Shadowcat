@@ -120,15 +120,15 @@ pub trait SessionMonitor: Send {
 pub fn platform_monitor() -> Result<Box<dyn SessionMonitor>, MonitorError> {
     #[cfg(target_os = "windows")]
     {
-        return windows::WindowsMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
+        windows::WindowsMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>)
     }
     #[cfg(target_os = "macos")]
     {
-        return macos::MacosMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
+        macos::MacosMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>)
     }
     #[cfg(target_os = "linux")]
     {
-        return linux::LinuxMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>);
+        linux::LinuxMonitor::new().map(|m| Box::new(m) as Box<dyn SessionMonitor>)
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {

@@ -132,6 +132,7 @@ fn cli_overrides_take_precedence_over_defaults() {
         restore_from: None,
         force: false,
         retain_originals: None,
+        command: None,
     };
     let cfg = Config::load(cli).expect("load");
     assert_eq!(cfg.bind, "0.0.0.0:8080");

@@ -121,9 +121,7 @@ async fn a_watch_frame_replaces_the_live_list_without_a_restart() {
     assert_eq!(first_levels["sessions"].as_array().unwrap().len(), 0); // "firefox" not watched yet
 
     ws.send(TMessage::Text(
-        serde_json::json!({ "type": "watch", "names": ["firefox"] })
-            .to_string()
-            .into(),
+        serde_json::json!({ "type": "watch", "names": ["firefox"] }).to_string(),
     ))
     .await
     .unwrap();
