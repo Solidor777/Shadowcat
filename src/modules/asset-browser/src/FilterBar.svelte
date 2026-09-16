@@ -29,6 +29,23 @@
     if (!tag || filter.tags.includes(tag)) return;
     onChange({ ...filter, tags: [...filter.tags, tag] });
   }
+
+  /** Toggles a quick-filter tag chip on/off (the same state a hand-typed chip drives).
+   * @param tag The tag to add when absent or remove when present.
+   * @example
+   * ```
+   * // private function; wired to the VFX quick-filter chip below
+   * toggleTag("vfx");
+   * ```
+   */
+  function toggleTag(tag: string): void {
+    onChange({
+      ...filter,
+      tags: filter.tags.includes(tag)
+        ? filter.tags.filter((x) => x !== tag)
+        : [...filter.tags, tag],
+    });
+  }
 </script>
 
 <div class="filter-bar">
@@ -50,6 +67,14 @@
   >.*</button>
 
   <span class="tags">
+    <button
+      type="button"
+      class="chip quick"
+      data-testid="filter-vfx"
+      class:active={filter.tags.includes("vfx")}
+      aria-pressed={filter.tags.includes("vfx")}
+      onclick={() => toggleTag("vfx")}
+    >{t("assetBrowser.vfxFilter")}</button>
     {#each filter.tags as tag (tag)}
       <span class="chip">
         {tag}
@@ -144,6 +169,16 @@
       background: none;
       cursor: pointer;
       color: var(--text-muted);
+    }
+  }
+  button.chip.quick {
+    cursor: pointer;
+    background: none;
+    color: var(--text);
+    &.active {
+      background: var(--accent);
+      color: var(--on-accent);
+      border-color: var(--accent);
     }
   }
 </style>

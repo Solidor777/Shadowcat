@@ -59,6 +59,25 @@
     void run(() => patchAsset(asset.id, { tags: [...asset.tags, tag] }));
   }
 
+  /** Pairs a PixiJS-spritesheet sidecar JSON with this image through a `vfx:sheet=` tag
+   * (replacing any existing pairing; the server validates the sidecar names this image).
+   * @example
+   * ```
+   * // private function; wired to the Pair sheet button below
+   * pairSheet();
+   * ```
+   */
+  function pairSheet(): void {
+    void ctx.pickAsset({ kind: "other" }).then((picked) => {
+      if (!picked) return;
+      void run(() =>
+        patchAsset(asset.id, {
+          tags: [...asset.tags.filter((t) => !t.startsWith("vfx:sheet=")), `vfx:sheet=${picked}`],
+        }),
+      );
+    });
+  }
+
   /** A human-readable byte size.
    * @param n - Byte count.
    * @returns The formatted size.
@@ -208,6 +227,14 @@
         disabled={!asset.original_retained || busy}
         onclick={() => void run(() => reconvertAsset(asset.id))}
       >{t("assetBrowser.reconvert")}</button>
+      {#if asset.content_type.startsWith("image/")}
+        <button
+          type="button"
+          data-testid="pair-sheet"
+          disabled={busy}
+          onclick={pairSheet}
+        >{t("assetBrowser.pairSheet")}</button>
+      {/if}
       {#if confirmingDelete}
         <button
           type="button"

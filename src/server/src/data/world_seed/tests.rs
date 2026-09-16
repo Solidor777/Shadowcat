@@ -210,9 +210,15 @@ async fn enabled_system_defaults_resolves_the_single_enabled_system_provider() {
     assert!(enabled_system_defaults(&r, w.id, dir.path())
         .await
         .is_none());
-    r.set_world_enabled_modules(w.id, &["sys".to_string()])
-        .await
-        .unwrap();
+    r.set_world_enabled_modules(
+        w.id,
+        &[crate::modules::WorldModuleEntry {
+            id: "sys".into(),
+            validators_enabled: false,
+        }],
+    )
+    .await
+    .unwrap();
     let sd = enabled_system_defaults(&r, w.id, dir.path())
         .await
         .expect("enabled system's declaration resolves");

@@ -547,16 +547,18 @@ pub async fn upload(
 /// ```
 #[derive(Debug, serde::Deserialize)]
 pub struct ServeQuery {
-    /// `thumb` | `preview` | `opus` | `opus-webm`; absent = the canonical file.
+    /// `thumb` | `preview` | `sheet` | `opus` | `opus-webm`; absent = the canonical file.
     pub variant: Option<String>,
 }
 
-/// `GET /api/assets/{uuid}[?variant=thumb|preview]` — read-gated by world
+/// `GET /api/assets/{uuid}[?variant=thumb|preview|sheet]` — read-gated by world
 /// membership; ETag-revalidated. A derivative shares the canonical's ETag
 /// (`"{id}-{version}"`): it is regenerated whenever the canonical's version
-/// changes, so the version keys it. A missing derivative is regenerated on
+/// changes, so the version keys it. A missing `thumb`/`preview` derivative is regenerated on
 /// demand; if the canonical does not decode, the canonical itself is served
-/// in its place rather than a 404.
+/// in its place rather than a 404. `sheet` is the server-derived grid sheet
+/// (`AssetMeta.sheet`; animated sources only) — written once at commit/reconvert time, never
+/// regenerated on demand, so a missing sheet sibling answers 404 instead.
 ///
 /// # Examples
 ///
@@ -648,6 +650,51 @@ pub async fn serve(
         None => None,
         Some("thumb") => Some(Variant::Thumb),
         Some("preview") => Some(Variant::Preview),
+        Some("sheet") => {
+            // The server-derived grid sheet is written ONCE at commit/reconvert time (never
+            // lazily regenerated), so it does not ride `ensure_derivative`: a missing sibling
+            // is an anomaly answered 404, and the client fails closed — serving the canonical
+            // instead would hand the render layer the raw animated source sliced as if it
+            // were the tiled sheet.
+            let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+            state
+                .repo
+                .permission_context(asset.world_id, user.id, user.role)
+                .await?;
+            // The metadata is authoritative: a `None` sheet means no sheet exists even if a
+            // stale sibling file survived on disk (e.g. the asset was replaced with a
+            // non-animated one through a path that left the file behind).
+            if asset.meta.sheet.is_none() {
+                return Err(AppError::NotFound);
+            }
+            let canonical = state.config.assets_path().join(&asset.storage_key);
+            let sheet = crate::data::asset::process::sheet_path(&canonical);
+            let bytes = tokio::fs::read(&sheet).await.map_err(|e| {
+                tracing::debug!(?e, %id, "grid sheet missing for an asset whose metadata names one");
+                AppError::NotFound
+            })?;
+            let etag = format!("\"{}-{}\"", id, asset.version);
+            let if_none_match = headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if if_none_match.split(',').any(|t| t.trim() == etag) {
+                return Ok((StatusCode::NOT_MODIFIED).into_response());
+            }
+            return Ok((
+                [
+                    (
+                        header::CONTENT_TYPE,
+                        crate::data::asset::process::WEBP_CONTENT_TYPE.to_string(),
+                    ),
+                    (header::CONTENT_DISPOSITION, "inline".to_string()),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::ETAG, etag),
+                ],
+                Body::from(bytes),
+            )
+                .into_response());
+        }
         Some(other) => {
             return Err(AppError::BadRequest(format!("unknown variant '{other}'")));
         }
@@ -712,6 +759,58 @@ pub async fn serve(
         Body::from(bytes),
     )
         .into_response())
+}
+
+/// `GET /api/assets/{uuid}/meta` — membership-gated (any member of the asset's world may
+/// read), returns the `Asset` JSON (metadata only, never the bytes) — the seam a client that
+/// has never listed the world's assets uses to resolve one asset's pipeline metadata (in
+/// particular `AssetMeta.sheet`) synchronously before playing it as a VFX source.
+///
+/// # Examples
+///
+/// ```no_run
+/// # #[tokio::main] async fn main() {
+/// use shadowcat::auth::role::ServerRole;
+/// use shadowcat::auth::session::AuthUser;
+/// use shadowcat::config::Config;
+/// use shadowcat::data::sqlite::SqliteRepository;
+/// use shadowcat::http::AppState;
+/// use std::sync::{atomic::AtomicBool, Arc};
+/// use uuid::Uuid;
+///
+/// let repo = Arc::new(SqliteRepository::connect("sqlite::memory:").await.unwrap());
+/// let state = AppState {
+///     repo,
+///     config: Arc::new(Config::default()),
+///     setup_token: None,
+///     initialized: Arc::new(AtomicBool::new(true)),
+///     ws: shadowcat::ws::WsState::new(),
+///     upload_rate: Arc::new(shadowcat::http::assets::UploadRateLimiter::new()),
+///     uploads: Arc::new(shadowcat::http::assets::uploads::UploadSessions::new()),
+///     auth_throttle: Arc::new(shadowcat::http::throttle::AuthThrottle::new()),
+///     write_barrier: Arc::new(tokio::sync::RwLock::new(())),
+///     preview_fetch_locks: Arc::new(dashmap::DashMap::new()),
+/// };
+/// let user = AuthUser { id: Uuid::new_v4(), username: "member-example".into(), role: ServerRole::User };
+/// let _ = shadowcat::http::assets::meta(
+///     axum::extract::State(state),
+///     user,
+///     axum::extract::Path(Uuid::new_v4()),
+/// )
+/// .await;
+/// # }
+/// ```
+pub async fn meta(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<uuid::Uuid>,
+) -> Result<Json<crate::data::asset::Asset>, AppError> {
+    let asset = state.repo.get_asset(id).await?.ok_or(AppError::NotFound)?;
+    state
+        .repo
+        .permission_context(asset.world_id, user.id, user.role)
+        .await?;
+    Ok(Json(asset))
 }
 
 /// Content types `serve` presents `inline`: raster images a browser can only

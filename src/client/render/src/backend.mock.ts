@@ -1,5 +1,5 @@
 import type { DisplayBackend, BackgroundSpec } from "./backend";
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, VfxNodeSpec } from "./types";
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
@@ -50,6 +50,13 @@ export class MockBackend implements DisplayBackend {
   }> = [];
   /** Every token render node, keyed by document id, reflecting the last `setToken` spec. */
   tokens = new Map<string, TokenNodeSpec>();
+  /** Every VFX render node, keyed by id, reflecting the last `setVfx` spec. */
+  vfx = new Map<string, VfxNodeSpec>();
+  /** Ids passed to `onDone` by the last `tickVfx` call (empty array between calls with nothing
+   * completing). */
+  vfxDone: string[] = [];
+  /** Ids queued to fire `onDone` on the NEXT `tickVfx` call; drained by `tickVfx`. */
+  #pendingDone: string[] = [];
   /** Every shape render node, keyed by document id, reflecting the last `setShape` spec. */
   shapes = new Map<string, ShapeNodeSpec>();
   /** Last `drawOverlay` shapes, recorded verbatim (empty after `clearOverlay`). */
@@ -75,6 +82,12 @@ export class MockBackend implements DisplayBackend {
   /** Set `true` by `destroy` — see `destroy`'s doc for the idempotent-vs-throwing divergence
    * from `PixiBackend`. */
   destroyed = false;
+  /** Last `setFrameCap` value, recorded verbatim; `null` before the first call. */
+  frameCap: number | null = null;
+  /** Last `setRenderScale` value, recorded verbatim; `null` before the first call. */
+  renderScale: number | null = null;
+  /** Count of `render()` calls — the idle-skip assertion surface. */
+  renderCount = 0;
 
   /** `DisplayBackend.ensureLayers`: records the requested z-order verbatim into `this.layers`,
    * replacing any previous value. Unlike `PixiBackend`, which idempotently creates/re-parents real
@@ -294,6 +307,73 @@ export class MockBackend implements DisplayBackend {
     // MockBackend records TokenNodeSpec.visual verbatim; frame-advance is real-AnimatedSprite
     // state owned by PixiBackend only, so this is an intentional no-op in tests.
   }
+  /** `DisplayBackend.setVfx`: upserts `spec` verbatim into `this.vfx`, keyed by `id`. Unlike
+   * `PixiBackend.setVfx`, this does not simulate texture loading or frame-advance state.
+   * @param id The VFX node id.
+   * @param spec The resolved node spec to record.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setVfx("oneshot:1", {
+   *   layer: "vfx", x: 0, y: 0, scale: 1, rotation: 0,
+   *   source: { type: "sheet", url: "https://example.test/fx.webp", rows: 2, cols: 2, count: 3 },
+   *   loop: false, anchor: "point",
+   * });
+   * ```
+   */
+  setVfx(id: string, spec: VfxNodeSpec): void {
+    this.vfx.set(id, spec);
+  }
+  /** `DisplayBackend.removeVfx`: deletes `id` from `this.vfx`. A no-op for an unknown `id`.
+   * @param id The VFX node id to remove.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.removeVfx("oneshot:1");
+   * ```
+   */
+  removeVfx(id: string): void {
+    this.vfx.delete(id);
+  }
+  /** `DisplayBackend.tickVfx`: an intentional no-op on frame-advance state (this mock records
+   * `VfxNodeSpec` verbatim via `setVfx`; there is no real animated-sprite frame index to
+   * advance here) — but DOES drive completion for any node this test has marked done via
+   * {@link completeVfxForTest}, so a test can exercise the one-shot-removed-on-done contract
+   * without a real Pixi ticker. `this.vfxDone` records exactly the ids `onDone` was called
+   * with this tick.
+   * @param _dtMs Milliseconds elapsed since the previous tick (unused).
+   * @param onDone Called once per id marked done via `completeVfxForTest` since the last tick.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.completeVfxForTest("oneshot:1");
+   * backend.tickVfx(16, (id) => {}); // calls back with "oneshot:1"
+   * ```
+   */
+  tickVfx(_dtMs: number, onDone: (id: string) => void): void {
+    this.vfxDone = [...this.#pendingDone];
+    for (const id of this.#pendingDone) onDone(id);
+    this.#pendingDone = [];
+  }
+  /** Test helper: mark `id` as completing on the next `tickVfx` call.
+   * @param id The VFX node id to mark done.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.completeVfxForTest("oneshot:1");
+   * ```
+   */
+  completeVfxForTest(id: string): void {
+    this.#pendingDone.push(id);
+  }
   /** `DisplayBackend.setShape`: upserts `spec` verbatim into `this.shapes`, keyed by `id`.
    * @param id The shape document id.
    * @param spec The resolved shape spec to record.
@@ -452,6 +532,45 @@ export class MockBackend implements DisplayBackend {
    */
   resize(width: number, height: number): void {
     this.size = { width, height };
+  }
+  /** `DisplayBackend.setFrameCap`: records `fps` verbatim into `this.frameCap`.
+   * @param fps The frame-rate cap, or `0` for uncapped.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setFrameCap(30);
+   * ```
+   */
+  setFrameCap(fps: number): void {
+    this.frameCap = fps;
+  }
+  /** `DisplayBackend.setRenderScale`: records `scale` verbatim into `this.renderScale`.
+   * @param scale The render-scale fraction.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.setRenderScale(0.75);
+   * ```
+   */
+  setRenderScale(scale: number): void {
+    this.renderScale = scale;
+  }
+  /** `DisplayBackend.render`: increments `this.renderCount`.
+   * @example
+   * ```ts
+   * import { MockBackend } from "@shadowcat/render";
+   *
+   * const backend = new MockBackend();
+   * backend.render();
+   * backend.renderCount; // 1
+   * ```
+   */
+  render(): void {
+    this.renderCount++;
   }
   /** `DisplayBackend.destroy`: sets `this.destroyed = true`. Does not release any resources (this
    * mock never allocates GPU state) — a test asserts teardown was requested by reading

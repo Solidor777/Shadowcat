@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, openPanel, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 function stageHost(page: Page) {
@@ -45,7 +45,7 @@ test("notes: create, edit, share, roll from a shared body, and a shared child no
   const code = await gm.getByLabel("Invite code").inputValue();
   expect(code.length).toBeGreaterThan(0);
 
-  const playerCtx = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  const playerCtx = await newE2EContext(browser, { baseURL: test.info().project.use.baseURL });
   const player = await playerCtx.newPage();
 
   try {

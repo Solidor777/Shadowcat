@@ -1,4 +1,4 @@
-import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point } from "./types";
+import type { LineSeg, CameraTransform, VisibilityInput, TokenNodeSpec, ShapeNodeSpec, Point, VfxNodeSpec } from "./types";
 import type { LightingFrame } from "./lighting";
 import type { PingRing } from "./ping-view";
 import type { EmoteGlyph } from "./emote-view";
@@ -94,10 +94,31 @@ export interface DisplayBackend {
   /** Register the per-frame render ticker callback (drives tweens).
    * @param cb Called once per frame with the elapsed time since the previous frame, in ms. */
   startTicker(cb: (dtMs: number) => void): void;
+  /** Upsert a VFX render node (create if new; update transform/source otherwise).
+   * @param id The node id (`emitter:<token>` or `oneshot:<uuid>`).
+   * @param spec The resolved node to draw. */
+  setVfx(id: string, spec: VfxNodeSpec): void;
+  /** Remove a VFX render node.
+   * @param id The node id to remove. */
+  removeVfx(id: string): void;
+  /** Advance every VFX node's frame-index playback by `dtMs`, calling `onDone(id)` for any
+   * non-looping node whose animation just completed.
+   * @param dtMs Elapsed time since the previous tick, in ms.
+   * @param onDone Called once per node whose non-looping animation completed this tick. */
+  tickVfx(dtMs: number, onDone: (id: string) => void): void;
   /** Resize the renderer/viewport to CSS pixels (HiDPI handled by the backend).
    * @param width New viewport width, in CSS pixels.
    * @param height New viewport height, in CSS pixels. */
   resize(width: number, height: number): void;
+  /** Cap the render ticker's rate; `0` = uncapped (Pixi's `Ticker.maxFPS = 0` convention).
+   * @param fps The new cap in frames per second, or `0` for uncapped. */
+  setFrameCap(fps: number): void;
+  /** Set the renderer's resolution (device-pixel-ratio × the given scale) and re-apply the last
+   * known viewport size at the new resolution.
+   * @param scale The render-scale fraction, already clamped by the caller. */
+  setRenderScale(scale: number): void;
+  /** Draw exactly one frame now — the idle-skip ticker's render call. */
+  render(): void;
   /** Release all GPU resources and detach the canvas. */
   destroy(): void;
 }

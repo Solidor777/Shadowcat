@@ -1,6 +1,7 @@
-import { EMPTY_FOOTPRINTS } from "@shadowcat/core";
-import type { ReadableDocuments, AssetResolver, FootprintLookup } from "@shadowcat/core";
+import { EMPTY_FOOTPRINTS, PRESETS, fpsCapToTickerValue } from "@shadowcat/core";
+import type { ReadableDocuments, AssetResolver, FootprintLookup, PerformanceSettings, ResolvedVfxSource, VfxOneShotRequest } from "@shadowcat/core";
 import type { DisplayBackend } from "./backend";
+import { wrapDirtyTracking } from "./dirty-backend";
 import type { VisibilityInput, LightingInput, LitCell, SceneTool, SceneToolHost, Point, ShapeNodeSpec, Polygon, MoveVisionSample, MoveLightSample } from "./types";
 import type { TokenTweenConfig } from "./easing";
 import { computeFogBlendFactor, chooseVisionSample } from "./fog-blend";
@@ -20,6 +21,7 @@ import { RegionView } from "./region-view";
 import { LightView } from "./light-view";
 import { PingView } from "./ping-view";
 import { EmoteView } from "./emote-view";
+import { VfxView } from "./vfx-view";
 
 /** Rasterize a flat `[i,j,…]` explored-cell list into one shape polygon per cell, via the active
  * `grid`'s own corner geometry — square on a square grid, hexagon on a hex grid. The fog shader
@@ -111,6 +113,26 @@ export interface RenderEngineOpts {
    * selection change carries no store commit, so the host must call
    * {@link RenderEngine.reapplyTokenSelection} to re-project. */
   selectedTokens?: () => ReadonlySet<string>;
+  /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
+   * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
+   * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
+   * playback at all). */
+  vfxAssets?: (id: string) => ResolvedVfxSource | null;
+  /** Called whenever the live VFX node count changes (host observability hook) — the ONLY way
+   * an e2e/dev-tools surface can confirm a VFX node is live without inspecting WebGL pixels. */
+  onVfxChanged?: (count: number) => void;
+  /** Live per-device render budget (Stage → `() => ctx.performance.current`). Absent ⇒
+   * `PRESETS.quality` with `idleSkip: false` (legacy/test callers keep today's unconditional
+   * per-tick render). A getter, like `viewedSceneId` — read fresh every tick, never cached. */
+  performance?: () => PerformanceSettings;
+  /** Host observability hook: called with the ticker's live fps/frameMs sample, at most 4×/s
+   * (like `onMeasureDrawn`). Absent ⇒ stats are still computed internally but never pushed out. */
+  onStats?: (s: {
+    /** Ticker-rate frames per second, EMA-smoothed over ~30 ticks. */
+    fps: number;
+    /** Milliseconds the last actual `backend.render()` call took. */
+    frameMs: number;
+  }) => void;
 }
 
 /** Theme-driven colors applied to the stage canvas at runtime by
@@ -126,6 +148,10 @@ export interface ThemeColors {
 /** Orchestrates the render model over a DisplayBackend: layers, camera, grid, and
  * the store-driven reconciler. Framework- and Pixi-free (the backend is injected). */
 export class RenderEngine implements SceneToolHost {
+  /** The dirty-tracking-wrapped backend every reconciler/view/compositor/lighting object is
+   * constructed against — see `wrapDirtyTracking`. `opts.backend` itself is never read again
+   * after the constructor. */
+  private readonly backend: DisplayBackend;
   /** Screen↔scene transform driving pan/zoom; pushed to the backend by {@link applyCamera}. */
   readonly camera = new Camera();
   /** Owns the mask/fog compositing target the backend renders; driven by
@@ -164,6 +190,11 @@ export class RenderEngine implements SceneToolHost {
   private pingsActive = false;
   /** Transient emote-glyph state, ticked each frame; drives `DisplayBackend.drawEmotes`. */
   private readonly emotes = new EmoteView();
+  /** Doc→VFX reconciler + one-shot player; tracks emitters via `tokens.transformOf`/`specOf`. */
+  private readonly vfxView: VfxView;
+  /** Last count reported to `onVfxChanged`, so the host is notified only on an actual change
+   * (mirrors `pingsActive`/`emotesActive`'s change-gated redraw pattern). */
+  private lastVfxCount = 0;
   /** Whether emote glyphs were drawn last frame, so the ticker stops redrawing once idle. */
   private emotesActive = false;
   /** Resolved grid line color (0xRRGGBB) — `opts.gridColor`, or the default slate.
@@ -291,6 +322,35 @@ export class RenderEngine implements SceneToolHost {
    */
   private readonly viewedScene = (): string | null =>
     this.opts.viewedSceneId?.() ?? this.opts.store.query("scene")[0]?.id ?? null;
+  /** Resolves the live per-device performance budget. Absent `opts.performance` ⇒
+   * `PRESETS.quality` with `idleSkip: false` (legacy/test callers keep today's unconditional
+   * per-tick render).
+   * @returns The current effective `PerformanceSettings`.
+   * @example
+   * ```
+   * // private field; not part of the public API
+   * const settings = this.perf();
+   * ```
+   */
+  private readonly perf = (): PerformanceSettings =>
+    this.opts.performance?.() ?? { ...PRESETS.quality, idleSkip: false };
+  /** Set by the dirty-tracking backend wrapper on every draw call; consumed and cleared by the
+   * idle-skip ticker branch. Starts `true` so the very first tick always renders. */
+  private dirty = true;
+  /** EMA-smoothed ticker rate, `null` until the first sample (its own doc names the smoothing
+   * window: ~30 ticks). */
+  private statsFpsEma: number | null = null;
+  /** Milliseconds the last actual `backend.render()` call took; `0` until the first render. */
+  private statsFrameMs = 0;
+  /** Milliseconds accumulated since the last `onStats` push — throttles the hook to at most
+   * 4×/s regardless of ticker rate. */
+  private statsElapsedSinceEmit = 0;
+  /** The budget snapshot last applied to the backend — diffed ONCE per tick so every
+   * live-applied budget key (frame cap, render scale, lighting mode, tokenFx, and any future
+   * key) reacts through this ONE comparison site rather than each growing its own
+   * change-detection field. Seeded by `start` (which pushes the initial budget itself, before
+   * the first frame); `null` only before then. */
+  private lastPerf: PerformanceSettings | null = null;
   /** The last vision payload received, re-projected onto a new viewed scene by
    * `reapplyViewedScene` (a scene switch has no new server frame — `activeScene`/roam are
    * client-local). Undefined until the first frame. */
@@ -299,8 +359,9 @@ export class RenderEngine implements SceneToolHost {
   /** Builds the camera, grid, doc-type views (tokens/drawings/templates/walls/regions),
    * compositor, and lighting model from `opts` — every one of these is constructed here,
    * eagerly, so calling a `SceneToolHost` method (`snap`, `setGrid`, `dispatchPointerDown`,
-   * …) before {@link start} never fails from a missing field. Does NOT touch `opts.backend`
-   * beyond passing it through to the constructed sub-objects — no layer containers are
+   * …) before {@link start} never fails from a missing field. `opts.backend` is wrapped in
+   * `wrapDirtyTracking` (the idle-skip dirty flag's one seam) and handed to every constructed
+   * sub-object as `this.backend` — no layer containers are
    * created and no reconcile pass runs yet; call `start()` once to make output visible.
    * @param opts Backend, document source, and grid to render; see {@link RenderEngineOpts}.
    * @example
@@ -312,18 +373,31 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   constructor(private readonly opts: RenderEngineOpts) {
+    this.backend = wrapDirtyTracking(opts.backend, () => { this.dirty = true; });
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
-    this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens);
+    this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
+    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => this.perf().tokenFx, () => this.perf().reducedMotion);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
-    this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
-    this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
-    this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
-    this.regions = new RegionView(opts.store, opts.backend, this.viewedScene);
-    this.lights = new LightView(opts.store, opts.backend, this.viewedScene);
-    this.compositor = new Compositor(opts.backend);
-    this.lighting = new Lighting(opts.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
+    this.vfxView = new VfxView(
+      opts.store,
+      this.backend,
+      this.viewedScene,
+      (id) => opts.vfxAssets?.(id) ?? null,
+      (id) => this.tokens.transformOf(id),
+      (id) => this.tokens.specOf(id),
+      // The SAME per-tick read-fresh budget seam `TokenView` already uses — one perf source,
+      // never a second getter pair for the same value.
+      () => this.perf().vfx,
+      () => this.perf().reducedMotion,
+    );
+    this.drawings = new DrawingView(opts.store, this.backend, this.viewedScene);
+    this.templates = new TemplateView(opts.store, this.backend, this.viewedScene);
+    this.walls = new WallView(opts.store, this.backend, this.viewedScene);
+    this.regions = new RegionView(opts.store, this.backend, this.viewedScene);
+    this.lights = new LightView(opts.store, this.backend, this.viewedScene);
+    this.compositor = new Compositor(this.backend);
+    this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
   }
 
   /** Wires the engine to its backend and store. In order: creates the backend's layer
@@ -334,7 +408,9 @@ export class RenderEngine implements SceneToolHost {
    * current scene renders synchronously, without waiting for a store event; subscribes to
    * further store changes (each one re-reconciles every view, then flushes any deferred
    * derived-vision frame); starts the backend's per-frame ticker (token tween, lighting fade,
-   * vision-sweep advance, ping rings); and opens the `vision` subscription. Call exactly once
+   * vision-sweep advance, ping rings, the performance-budget push and the idle-skip render
+   * decision — see the ticker body); renders one initial frame immediately (consuming the
+   * dirty state the reconciles raised); and opens the `vision` subscription. Call exactly once
    * per engine instance. Every field a `SceneToolHost` method reads is already constructed
    * before `start()` runs (see the constructor) — no `RenderEngine` method of its own depends on
    * `start()` having run — but no scene document has been reconciled into a render node yet, so
@@ -349,10 +425,11 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   start(): void {
-    this.opts.backend.ensureLayers(this.layers.orderedIds());
+    this.backend.ensureLayers(this.layers.orderedIds());
     this.applyCamera();
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.vfxView.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
@@ -361,6 +438,7 @@ export class RenderEngine implements SceneToolHost {
     this.unsubscribe = this.opts.store.subscribe(() => {
       this.reconciler.reconcile();
       this.tokens.reconcile();
+      this.vfxView.reconcile();
       this.drawings.reconcile();
       this.templates.reconcile();
       this.walls.reconcile();
@@ -368,24 +446,99 @@ export class RenderEngine implements SceneToolHost {
       this.lights.reconcile();
       this.flushPendingDerived();
     });
-    this.opts.backend.startTicker((dt) => {
+    this.backend.startTicker((dt) => {
       this.tokens.tick(dt);
+      this.vfxView.tick(dt);
+      const vfxCount = this.vfxView.count();
+      if (vfxCount !== this.lastVfxCount) {
+        this.lastVfxCount = vfxCount;
+        this.opts.onVfxChanged?.(vfxCount);
+      }
       this.lighting.tick(dt);
       this.tickVisionSweep(dt);
       this.tickLightSweep(dt);
       const rings = this.pings.tick(dt);
       // Redraw only while rings live (plus one final clear when they expire).
       if (rings.length > 0 || this.pingsActive) {
-        this.opts.backend.drawPings(rings);
+        this.backend.drawPings(rings);
         this.pingsActive = rings.length > 0;
       }
       const glyphs = this.emotes.tick(dt);
       // Redraw only while glyphs live (plus one final clear when they expire).
       if (glyphs.length > 0 || this.emotesActive) {
-        this.opts.backend.drawEmotes(glyphs);
+        this.backend.drawEmotes(glyphs);
         this.emotesActive = glyphs.length > 0;
       }
+      const perf = this.perf();
+      const lastPerf = this.lastPerf;
+      // Snapshot, never the getter's own reference: a host whose getter returns one cached,
+      // later-mutated object would otherwise alias `lastPerf` and every change would compare
+      // equal to itself.
+      this.lastPerf = { ...perf };
+      const frameCapValue = fpsCapToTickerValue(perf.fpsCap);
+      if (lastPerf === null || frameCapValue !== fpsCapToTickerValue(lastPerf.fpsCap)) {
+        this.backend.setFrameCap(frameCapValue);
+      }
+      if (lastPerf === null || perf.renderScale !== lastPerf.renderScale) {
+        // `PixiBackend.setRenderScale` reallocates the canvas backing store (blanking it), and
+        // the wrapper deliberately does not dirty-track the call — mark dirty here or an idle
+        // engine would never repaint the cleared canvas.
+        this.dirty = true;
+        this.backend.setRenderScale(perf.renderScale);
+      }
+      // Live budget flips: the overlay and the token projection must react on THIS tick, not on
+      // the next committed frame / document commit (which may never come).
+      if (lastPerf !== null && perf.lighting !== lastPerf.lighting) this.applyCommittedLighting();
+      if (lastPerf !== null && perf.tokenFx !== lastPerf.tokenFx) this.tokens.reconcile();
+      // Same live-flip shape for the VFX budget: a `vfx` knob toggle re-runs the view's
+      // reconcile on this tick (it reads the flag fresh and tears every node down when off).
+      if (lastPerf !== null && perf.vfx !== lastPerf.vfx) this.vfxView.reconcile();
+      // A reduced-motion flip likewise re-derives every emitter's loop/freeze state on this
+      // tick (the backend's source-key short-circuit lets the loop flag through — see
+      // `PixiBackend.setVfx`).
+      if (lastPerf !== null && perf.reducedMotion !== lastPerf.reducedMotion) this.vfxView.reconcile();
+      if (dt > 0) {
+        const sample = 1000 / dt;
+        const alpha = 2 / 31; // EMA over ~30 ticks
+        this.statsFpsEma = this.statsFpsEma === null ? sample : alpha * sample + (1 - alpha) * this.statsFpsEma;
+      }
+      const animationsInFlight = this.tokens.hasAnimatedVisual() || this.vfxView.count() > 0;
+      if (!perf.idleSkip || this.dirty || animationsInFlight) {
+        // `globalThis.performance` is the ambient Web Performance API (a monotonic clock), not a
+        // settings object — the explicit `globalThis.` prefix keeps it unshadowable.
+        const t0 = globalThis.performance?.now?.() ?? Date.now();
+        this.backend.render();
+        this.dirty = false;
+        this.statsFrameMs = (globalThis.performance?.now?.() ?? Date.now()) - t0;
+      }
+      this.statsElapsedSinceEmit += dt;
+      if (this.statsElapsedSinceEmit >= 250) {
+        this.statsElapsedSinceEmit = 0;
+        this.opts.onStats?.({ fps: Math.round(this.statsFpsEma ?? 0), frameMs: this.statsFrameMs });
+      }
     });
+    // A `lighting: "off"` budget never forwards a committed frame (`applyCommittedLighting`'s
+    // first branch) — apply it once here so the overlay starts cleared rather than waiting for
+    // the first committed lighting event to reach that branch. The `setLighting` this pushes
+    // marks the dirty flag, which the initial render below consumes.
+    if (this.perf().lighting === "off") this.applyCommittedLighting();
+    // Apply the initial budget BEFORE the first frame: pushing the cap and scale here (rather
+    // than on the first tick) means the initial render below already draws at the right
+    // resolution, and seeding `lastPerf` means the ticker's per-tick diff fires only on a
+    // genuine CHANGE — a redundant re-push of an unchanged render scale would needlessly
+    // reallocate (and blank) the backing store after the canvas was already painted.
+    const initialPerf = this.perf();
+    this.backend.setFrameCap(fpsCapToTickerValue(initialPerf.fpsCap));
+    this.backend.setRenderScale(initialPerf.renderScale);
+    this.lastPerf = { ...initialPerf }; // snapshot, not the getter's reference — see the ticker
+    // One unconditional initial frame: the reconciles above pushed every initial draw (each one
+    // marked the dirty flag through `wrapDirtyTracking`). Rendering now — rather than waiting
+    // for the first ticker callback — paints the scene immediately and consumes that initial
+    // dirty state, so the ticker's idle-skip accounting starts clean.
+    const t0 = globalThis.performance?.now?.() ?? Date.now();
+    this.backend.render();
+    this.dirty = false;
+    this.statsFrameMs = (globalThis.performance?.now?.() ?? Date.now()) - t0;
     this.subscribeVision();
   }
 
@@ -614,6 +767,7 @@ export class RenderEngine implements SceneToolHost {
     }
     this.reconciler.reconcile();
     this.tokens.reconcile();
+    this.vfxView.reconcile();
     this.drawings.reconcile();
     this.templates.reconcile();
     this.walls.reconcile();
@@ -870,6 +1024,10 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   private applyCommittedLighting(): void {
+    if (this.perf().lighting === "off") {
+      this.lighting.setTarget(null);
+      return;
+    }
     const li = this.lastLightingInput;
     const before = this.visionSweeps.size > 0 ? this.lightingBeforeSweep : null;
     let next = before && li ? unionLightingInputs(before, li) : li;
@@ -938,7 +1096,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   registerLayerFilter(layerId: string, filter: unknown): () => void {
-    return this.opts.backend.addLayerFilter(layerId, filter);
+    return this.backend.addLayerFilter(layerId, filter);
   }
 
   // --- SceneToolHost: the canvas interaction seam. The host (Stage)
@@ -1044,7 +1202,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   previewOverlay(shapes: Omit<ShapeNodeSpec, "layer">[]): void {
-    this.opts.backend.drawOverlay(shapes);
+    this.backend.drawOverlay(shapes);
   }
 
   /** `SceneToolHost.clearOverlay`: clear the ephemeral preview overlay. Forwards verbatim to
@@ -1058,7 +1216,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   clearOverlay(): void {
-    this.opts.backend.clearOverlay();
+    this.backend.clearOverlay();
   }
 
   /** `SceneToolHost.gridDistance`: whole-cell distance between two scene points via the active
@@ -1095,7 +1253,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   drawMeasure(from: Point, to: Point, label: string): void {
-    this.opts.backend.drawMeasure(from, to, label);
+    this.backend.drawMeasure(from, to, label);
     this.opts.onMeasureDrawn?.(label);
   }
 
@@ -1110,7 +1268,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   clearMeasure(): void {
-    this.opts.backend.clearMeasure();
+    this.backend.clearMeasure();
   }
 
   /** `SceneToolHost.addPing`: spawn a transient ping ring at scene `(x,y)` (a received or
@@ -1146,7 +1304,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   setThemeColors(colors: ThemeColors): void {
-    if (colors.background !== undefined) this.opts.backend.setClearColor(colors.background);
+    if (colors.background !== undefined) this.backend.setClearColor(colors.background);
     if (colors.gridColor !== undefined) {
       this.gridColor = colors.gridColor;
       this.redrawGrid();
@@ -1177,6 +1335,22 @@ export class RenderEngine implements SceneToolHost {
     if (!spec) return;
     // Top-center of the token's bounding box (spec x/y is the CENTER — see TokenNodeSpec).
     this.emotes.add(spec.x, spec.y - spec.h / 2, emote, this.grid.worldUnitsPerCell());
+  }
+
+  /** Forward a `ServerMsg::Vfx`-sourced one-shot request to `VfxView.play` — the exact
+   * `addPing`/`addEmote` delegation shape, one level removed (the view itself owns eviction
+   * and duration bookkeeping).
+   * @param req The one-shot request, including the server-broadcast `id`.
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0, id: "one-shot-1" });
+   * ```
+   */
+  playVfx(req: VfxOneShotRequest): void {
+    this.vfxView.play(req);
   }
 
   /** Swap the active grid (from the active scene's `engine.grid`) and redraw lines.
@@ -1371,6 +1545,21 @@ export class RenderEngine implements SceneToolHost {
    */
   private applyLightSweep(): void {
     if (this.lightSweeps.size === 0) return;
+    if (this.perf().lighting === "off") {
+      this.lighting.setSweep(null);
+      return;
+    }
+    if (this.perf().lighting === "static") {
+      // No per-frame interpolation: jump straight to the sweep's committed end state. The
+      // post-move committed frame (`lastLightingInput`) already carries the light at its final
+      // position (see `tickLightSweep`'s own doc for why), so clearing every in-flight sweep and
+      // re-applying the committed frame IS "the sweep's final frame, immediately."
+      this.lightSweeps.clear();
+      this.lightingBeforeLightSweep = null;
+      this.lighting.setSweep(null);
+      this.applyCommittedLighting();
+      return;
+    }
     const li = this.lastLightingInput;
     if (!li) {
       this.lighting.setSweep(null);
@@ -1387,7 +1576,8 @@ export class RenderEngine implements SceneToolHost {
         if (s.tMs > cur.tMs && (next === null || s.tMs < next.tMs)) next = s;
       }
       if (next) {
-        this.lighting.setSweep(blendLightCells(cellsOf(cur), cellsOf(next), computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs)));
+        const factor = this.perf().reducedMotion ? 1 : computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs);
+        this.lighting.setSweep(blendLightCells(cellsOf(cur), cellsOf(next), factor));
         return;
       }
     }
@@ -1505,7 +1695,7 @@ export class RenderEngine implements SceneToolHost {
     return {
       from: { mode: "masked", visible: this.samplePolygons(cur), explored: this.lastInput.explored, perceived: this.lastInput.perceived },
       to: { mode: "masked", visible: this.samplePolygons(next), explored: this.lastInput.explored, perceived: this.lastInput.perceived },
-      factor: computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs),
+      factor: this.perf().reducedMotion ? 1 : computeFogBlendFactor(sweep.elapsed, cur.tMs, next.tMs),
     };
   }
 
@@ -1635,7 +1825,7 @@ export class RenderEngine implements SceneToolHost {
    */
   setViewport(width: number, height: number): void {
     this.viewport = { width, height };
-    this.opts.backend.resize(width, height);
+    this.backend.resize(width, height);
     this.redrawGrid();
   }
 
@@ -1655,6 +1845,23 @@ export class RenderEngine implements SceneToolHost {
     this.tokens.reconcile(); // re-resolve token images too (AssetChanged path)
   }
 
+  /** Re-run `vfxView.reconcile()` after an asset-metadata warm settles. A warm completing
+   * carries no store commit (it is an out-of-band HTTP fetch), so the reconcile that would
+   * resolve an emitter's `VfxEmission` has already run against a COLD `vfxAssets` cache and
+   * failed the node closed — the same client-local re-projection shape `reapplyFootprints`
+   * exists for (a footprints frame likewise carries no store commit).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyVfx();
+   * ```
+   */
+  reapplyVfx(): void {
+    this.vfxView.reconcile();
+  }
+
   /** Push the camera transform to the backend and redraw the grid for the new view.
    * @example
    * ```ts
@@ -1665,7 +1872,7 @@ export class RenderEngine implements SceneToolHost {
    * ```
    */
   applyCamera(): void {
-    this.opts.backend.setCameraTransform(this.camera.transform());
+    this.backend.setCameraTransform(this.camera.transform());
     this.redrawGrid();
   }
 
@@ -1682,7 +1889,7 @@ export class RenderEngine implements SceneToolHost {
     const tl = this.camera.screenToScene({ x: 0, y: 0 });
     const br = this.camera.screenToScene({ x: this.viewport.width, y: this.viewport.height });
     const rect = { x: tl.x, y: tl.y, w: br.x - tl.x, h: br.y - tl.y };
-    this.opts.backend.drawGrid(this.grid.lines(rect), this.gridColor);
+    this.backend.drawGrid(this.grid.lines(rect), this.gridColor);
   }
 
   /** Tears down this engine instance: unsubscribes from the document store and the `vision`
@@ -1704,6 +1911,6 @@ export class RenderEngine implements SceneToolHost {
     this.unsubscribe = null;
     this.sceneSub?.unsubscribe();
     this.sceneSub = null;
-    this.opts.backend.destroy();
+    this.backend.destroy();
   }
 }

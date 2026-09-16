@@ -29,6 +29,7 @@ function asset(id: string, version: number): Asset {
     conversion_note: null,
     duration_ms: null,
     sample_rate: null,
+    sheet: null,
   };
 }
 

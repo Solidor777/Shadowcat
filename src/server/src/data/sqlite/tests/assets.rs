@@ -30,6 +30,7 @@ fn sample(world: Uuid) -> Asset {
             conversion_note: None,
             duration_ms: None,
             sample_rate: None,
+            sheet: None,
         },
     }
 }
@@ -513,4 +514,50 @@ async fn query_assets_kind_audio_filters_the_content_type_prefix() {
         other.is_empty(),
         "audio/ is neither image/ nor other/ once the audio kind exists"
     );
+}
+
+#[tokio::test]
+async fn asset_sheet_meta_round_trips_through_flat_columns() {
+    use crate::data::asset::process::SheetMeta;
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let mut a = sample(world.id);
+    a.meta.sheet = Some(SheetMeta {
+        rows: 2,
+        cols: 2,
+        count: 3,
+        frame_ms: vec![100, 100, 100],
+        width: 8,
+        height: 8,
+    });
+    repo.insert_asset(&a).await.unwrap();
+    let got = repo.get_asset(a.id).await.unwrap().unwrap();
+    assert_eq!(got.meta.sheet, a.meta.sheet);
+
+    // replace_asset_bytes persists the same flat columns (and can clear them).
+    repo.replace_asset_bytes(
+        a.id,
+        &a.storage_key,
+        "image/webp",
+        10,
+        &AssetMeta {
+            sheet: None,
+            ..a.meta.clone()
+        },
+    )
+    .await
+    .unwrap();
+    let got = repo.get_asset(a.id).await.unwrap().unwrap();
+    assert_eq!(got.meta.sheet, None);
+}
+
+#[tokio::test]
+async fn asset_without_sheet_round_trips_to_none_not_zeroed_fields() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    assert!(a.meta.sheet.is_none());
+    repo.insert_asset(&a).await.unwrap();
+    let got = repo.get_asset(a.id).await.unwrap().unwrap();
+    assert_eq!(got.meta.sheet, None);
 }

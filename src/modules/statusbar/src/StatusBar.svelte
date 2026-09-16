@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getAppContext, Surface } from "@shadowcat/ui-kit";
+  import PerfStats from "./PerfStats.svelte";
   const ctx = getAppContext();
   const { role } = ctx;
   let unlocked = $state(false);
@@ -28,6 +29,7 @@
       onclick={() => ctx.audio.setChannel("master", { muted: !ctx.audio.channels.master.muted })}
     >{ctx.audio.channels.master.muted ? "🔇" : "🔊"}</button>
   {/if}
+  <PerfStats />
   <div class="dock"><Surface contract="shadowcat.surface:panel-dock" /></div>
 </footer>
 

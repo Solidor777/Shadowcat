@@ -80,3 +80,216 @@ fn a_mislabeled_audio_upload_is_classified_by_its_bytes() {
         "application/octet-stream"
     );
 }
+
+/// A live `AppState` (in-memory repo, temp assets dir) with a GM-seated world and one asset
+/// whose canonical and grid-sheet sibling are on disk, for exercising `serve`'s
+/// `?variant=sheet` arm directly.
+struct SheetFixture {
+    /// Keeps the temp assets dir alive for the fixture's lifetime.
+    _dir: tempfile::TempDir,
+    /// The constructed app state.
+    state: AppState,
+    /// The seeded asset's id.
+    asset: Uuid,
+    /// The seeded world's id.
+    world: Uuid,
+    /// The GM user's id (also the world's creator).
+    gm: Uuid,
+}
+
+impl SheetFixture {
+    /// Builds the state, seats a GM, creates the world, and seeds one asset row plus its
+    /// canonical and `.sheet.webp` sibling bytes.
+    async fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let config = crate::config::Config {
+            assets_dir: Some(dir.path().to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let repo = std::sync::Arc::new(
+            crate::data::sqlite::SqliteRepository::connect("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let gm = repo
+            .create_user("gm", None, crate::auth::role::ServerRole::User, 0)
+            .await
+            .unwrap();
+        let world = repo.create_world_owned("w", gm, 0).await.unwrap();
+        let asset = Uuid::new_v4();
+        let mut meta = crate::data::asset::AssetMeta::unprocessed("image/webp", 10);
+        meta.sheet = Some(crate::data::asset::process::SheetMeta {
+            rows: 1,
+            cols: 2,
+            count: 2,
+            frame_ms: vec![100, 100],
+            width: 8,
+            height: 8,
+        });
+        repo.insert_asset(&crate::data::asset::Asset {
+            id: asset,
+            world_id: world.id,
+            storage_key: format!("{}/{asset}", world.id),
+            original_name: "fx.webp".into(),
+            content_type: "image/webp".into(),
+            byte_size: 10,
+            created_by: Some(gm),
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta,
+        })
+        .await
+        .unwrap();
+        let dir_path = dir.path().join(world.id.to_string());
+        std::fs::create_dir_all(&dir_path).unwrap();
+        std::fs::write(dir_path.join(asset.to_string()), b"canonical").unwrap();
+        std::fs::write(
+            crate::data::asset::process::sheet_path(&dir_path.join(asset.to_string())),
+            b"sheet-bytes",
+        )
+        .unwrap();
+        let state = AppState {
+            repo,
+            config: std::sync::Arc::new(config),
+            setup_token: None,
+            initialized: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            ws: crate::ws::WsState::new(),
+            upload_rate: std::sync::Arc::new(UploadRateLimiter::new()),
+            uploads: std::sync::Arc::new(crate::http::assets::uploads::UploadSessions::new()),
+            auth_throttle: std::sync::Arc::new(crate::http::throttle::AuthThrottle::new()),
+            write_barrier: std::sync::Arc::new(tokio::sync::RwLock::new(())),
+            preview_fetch_locks: std::sync::Arc::new(dashmap::DashMap::new()),
+        };
+        SheetFixture {
+            _dir: dir,
+            state,
+            asset,
+            world: world.id,
+            gm,
+        }
+    }
+
+    /// Calls `serve` for asset `id` with `?variant=sheet`, as the fixture GM.
+    async fn serve_sheet(&self, id: Uuid) -> Result<Response, AppError> {
+        let user = crate::auth::session::AuthUser {
+            id: self.gm,
+            username: "gm".into(),
+            role: crate::auth::role::ServerRole::User,
+        };
+        serve(
+            State(self.state.clone()),
+            user,
+            Path(id),
+            Query(ServeQuery {
+                variant: Some("sheet".into()),
+            }),
+            HeaderMap::new(),
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn serve_variant_sheet_serves_the_grid_sheet_sibling() {
+    let f = SheetFixture::new().await;
+    let res = f.serve_sheet(f.asset).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers().get(header::CONTENT_TYPE).unwrap(),
+        crate::data::asset::process::WEBP_CONTENT_TYPE
+    );
+    let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+    assert_eq!(&body[..], b"sheet-bytes");
+}
+
+#[tokio::test]
+async fn serve_variant_sheet_is_not_found_without_the_sibling() {
+    let f = SheetFixture::new().await;
+    // A second asset whose row exists but whose sheet sibling was never written: 404,
+    // never the canonical standing in (the canonical is the animated source, not a sheet).
+    let other = Uuid::new_v4();
+    let world = f.world;
+    f.state
+        .repo
+        .insert_asset(&crate::data::asset::Asset {
+            id: other,
+            world_id: world,
+            storage_key: format!("{world}/{other}"),
+            original_name: "fx2.webp".into(),
+            content_type: "image/webp".into(),
+            byte_size: 10,
+            created_by: None,
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta: crate::data::asset::AssetMeta::unprocessed("image/webp", 10),
+        })
+        .await
+        .unwrap();
+    let res = f.serve_sheet(other).await;
+    assert!(matches!(res, Err(AppError::NotFound)), "{res:?}");
+    // And an unknown variant name is still a bad request, not a sheet lookup.
+    let user = crate::auth::session::AuthUser {
+        id: Uuid::new_v4(),
+        username: "gm".into(),
+        role: crate::auth::role::ServerRole::User,
+    };
+    let bad = serve(
+        State(f.state.clone()),
+        user,
+        Path(f.asset),
+        Query(ServeQuery {
+            variant: Some("bogus".into()),
+        }),
+        HeaderMap::new(),
+    )
+    .await;
+    assert!(matches!(bad, Err(AppError::BadRequest(_))), "{bad:?}");
+}
+
+#[tokio::test]
+async fn serve_variant_sheet_404s_when_metadata_says_none_even_with_a_file_on_disk() {
+    let f = SheetFixture::new().await;
+    // A stale sibling file (e.g. left behind by a replace that produced no new sheet) must
+    // not be served once the row's metadata says `sheet: None`.
+    let world = f.world;
+    let mut meta = crate::data::asset::AssetMeta::unprocessed("image/webp", 10);
+    meta.sheet = None;
+    let stale = Uuid::new_v4();
+    f.state
+        .repo
+        .insert_asset(&crate::data::asset::Asset {
+            id: stale,
+            world_id: world,
+            storage_key: format!("{world}/{stale}"),
+            original_name: "old-fx.webp".into(),
+            content_type: "image/webp".into(),
+            byte_size: 10,
+            created_by: None,
+            created_at: 0,
+            version: 1,
+            folder_id: None,
+            tags: vec![],
+            derived_tags: vec![],
+            meta,
+        })
+        .await
+        .unwrap();
+    std::fs::write(
+        crate::data::asset::process::sheet_path(
+            &f.state
+                .config
+                .assets_path()
+                .join(format!("{world}/{stale}")),
+        ),
+        b"stale-sheet",
+    )
+    .unwrap();
+    let res = f.serve_sheet(stale).await;
+    assert!(matches!(res, Err(AppError::NotFound)), "{res:?}");
+}

@@ -78,6 +78,8 @@ Every `ServerMsg` variant:
 | `scene_error` | Scene subscription failed |
 | `asset_changed` | Out-of-band notice: an asset was `created`, `replaced` (cache-bust signal), `moved` (name/folder/tags; version unchanged) or `deleted` |
 | `scene_ping` | A user's transient location ping on a scene (includes your own echo) |
+| `emote` | A user's transient emote glyph over a token (includes your own echo) |
+| `vfx` | A relayed VFX one-shot at scene coords (includes your own echo) |
 | `path_result` | Pathfinder answer: waypointed `path`, `cost`, `arrested` flag, and `budget_cells` — the mover's remaining movement budget in cells under an enforced combat, `null` when no enforced combat applies ([`PathResult`](/api/ts/interfaces/_shadowcat_core.PathResult.html)) |
 | `path_error` | Pathfind request failed |
 | `move_error` | Move request failed |
@@ -106,6 +108,8 @@ Every `ClientMsg` variant:
 | `scene_subscribe` | Open a scene-derived channel |
 | `scene_unsubscribe` | Close it |
 | `scene_ping` | Broadcast a location ping at scene coords |
+| `emote` | Broadcast a transient emote glyph over a token you effectively own |
+| `play_vfx` | Fire a one-shot VFX at scene coords; rate-limited per user, spectators refused |
 | `pathfind` | Request a route (`start`, `waypoints`, footprint or `token`) |
 | `move_request` | Request server-executed movement of a token along a path |
 | `send_message` | Chat: post to a channel (optional actor attribution + audience). The channel must be a key of the world's channel registry; dice notation in the body may carry stat references, resolved server-side against the actor binding; a `[[asset:<uuid>\|alt]]` span renders as an image segment |

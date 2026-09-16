@@ -119,3 +119,31 @@ async fn create_asset_from_bytes_created_by_none_is_accepted() {
     let fetched = repo.get_asset(asset.id).await.unwrap().unwrap();
     assert_eq!(fetched.created_by, None);
 }
+
+#[tokio::test]
+async fn move_asset_files_removes_stale_sheet_siblings_absent_at_the_staged_stem() {
+    // Replacing an animated asset with a non-animated one: processing yields no new sheet
+    // (no `.sheet.*` files at the staged stem), so the stale pair at the final stem must be
+    // removed, never left to be served or exported.
+    let dir = tempfile::tempdir().unwrap();
+    let staged = dir.path().join("staged");
+    let final_path = dir.path().join("final");
+    tokio::fs::write(&staged, b"new-still-bytes").await.unwrap();
+    tokio::fs::write(&final_path, b"old-animated-bytes")
+        .await
+        .unwrap();
+    for suffix in [".sheet.webp", ".sheet.json"] {
+        let mut os = final_path.as_os_str().to_owned();
+        os.push(suffix);
+        tokio::fs::write(std::path::PathBuf::from(os), b"stale")
+            .await
+            .unwrap();
+    }
+
+    move_asset_files(&staged, &final_path).await.unwrap();
+
+    for p in crate::data::asset::process::sibling_paths(&final_path) {
+        assert!(!p.exists(), "stale sibling left behind: {}", p.display());
+    }
+    assert!(final_path.exists());
+}

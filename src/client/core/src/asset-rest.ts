@@ -59,6 +59,25 @@ export async function listAssets(world: string): Promise<Asset[]> {
   return (await res.json()) as Asset[];
 }
 
+/**
+ * Fetch one asset's metadata (never bytes) by id.
+ * @param id - The asset id.
+ * @returns The asset's metadata.
+ * @throws If the asset doesn't exist, isn't in a world the caller may read, or the
+ * request otherwise fails — the error text comes from `restErrorText`.
+ * @example
+ * ```ts
+ * import { getAssetMeta } from "@shadowcat/core";
+ *
+ * const meta = await getAssetMeta("00000000-0000-0000-0000-000000000001");
+ * ```
+ */
+export async function getAssetMeta(id: string): Promise<Asset> {
+  const res = await fetch(`/api/assets/${id}/meta`);
+  if (!res.ok) throw new Error(await restErrorText(res));
+  return (await res.json()) as Asset;
+}
+
 /** Replace an asset's bytes behind its stable UUID (the id and every existing
  * reference to it survive; only `version`/`content_type`/`byte_size` change).
  * GM-only, scoped to the asset's OWN world (`require_gm`, `http::assets::replace`);

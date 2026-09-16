@@ -24,6 +24,7 @@ use crate::data::engine::{
 };
 use crate::data::membership::PermissionContext;
 use crate::data::repository::Repository;
+#[cfg(test)]
 use crate::data::sqlite::SqliteRepository;
 use crate::modules::scan_installed_modules;
 
@@ -192,7 +193,7 @@ pub async fn enabled_system_defaults(
     }
     scan_installed_modules(modules_dir)
         .into_iter()
-        .find(|m| m.provides_system && enabled.iter().any(|id| id == &m.id))
+        .find(|m| m.provides_system && enabled.iter().any(|e| e.id == m.id))
         .and_then(|m| m.system_defaults)
 }
 
@@ -232,9 +233,10 @@ pub(crate) async fn seed_test_channel_registry(
 /// `Uuid`, so seeds are attributed to a real member deterministically).
 /// `None` when the world has no GM member — the seed pass is skipped there
 /// (`create_world_owned` always seats one, so this arises only in
-/// legacy/test fixtures). Takes the concrete `SqliteRepository` rather than
-/// `dyn Repository` because `list_members` is an inherent method the trait
-/// does not carry.
+/// legacy/test fixtures). Takes `dyn Repository` so the `ws` layer's
+/// Room-bound callers (which hold no concrete repository) can share the
+/// attribution rule; the membership read is the trait's own
+/// `Repository::list_members`.
 ///
 /// # Examples
 ///
@@ -254,7 +256,7 @@ pub(crate) async fn seed_test_channel_registry(
 /// assert_eq!(ctx.world_role, WorldRole::Gm);
 /// # }
 /// ```
-pub async fn seed_author(repo: &SqliteRepository, world_id: Uuid) -> Option<PermissionContext> {
+pub async fn seed_author(repo: &dyn Repository, world_id: Uuid) -> Option<PermissionContext> {
     let members = match repo.list_members(world_id).await {
         Ok(m) => m,
         Err(e) => {

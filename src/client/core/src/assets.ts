@@ -5,8 +5,10 @@ import type { Asset } from "@shadowcat/types";
  * the bytes behind a URL. */
 export type AssetOp = "created" | "replaced" | "moved" | "deleted";
 
-/** A derivative size class servable via `?variant=`: `thumb` (≤128px) or `preview` (≤512px). */
-export type AssetVariant = "thumb" | "preview" | "opus" | "opus-webm";
+/** A derivative servable via `?variant=`: `thumb` (≤128px) or `preview` (≤512px) size classes,
+ * `sheet` (the server-derived grid sheet, present only for an animated source whose
+ * `AssetMeta.sheet` is set), or the two Opus derivatives (`opus`/`opus-webm`). */
+export type AssetVariant = "thumb" | "preview" | "sheet" | "opus" | "opus-webm";
 
 /** The playback URL set `AssetResolver.audioUrl` returns for an audio asset: both Opus
  * derivatives plus the canonical original, with the derivatives' MIME strings for
@@ -249,6 +251,7 @@ export class AssetResolver {
    *     conversion_note: null,
    *     duration_ms: null,
    *     sample_rate: null,
+   *     sheet: null,
    *   },
    * ]);
    * ```

@@ -48,6 +48,8 @@ import {
   type SceneSubscription,
   type PathResult,
   type MoveStream,
+  type VfxNotice,
+  type VfxPlayRequest,
   type SubscriptionHandle,
   type WireSearchHit,
   type ClientMsg,
@@ -110,10 +112,11 @@ export interface WorldSessionOpts {
   /** Terminal eviction (this world or this account was deleted). The WsClient
    *  has already stopped — the shell routes the user out of the world. */
   onEvicted?: () => void;
-  /** Called after every rejected intent, with the server's reason — the optimistic prediction
-   * has already been rolled back (`#optimistic.reject`) by the time this fires. The shell
-   * surfaces it as a toast; a headless caller (tests) may leave it unset. */
-  onReject?: (reason: RejectReason) => void;
+  /** Called after every rejected intent, with the server's reason and any player-presentable
+   * detail text — the optimistic prediction has already been rolled back (`#optimistic.reject`)
+   * by the time this fires. The shell surfaces it as a toast; a headless caller (tests) may
+   * leave it unset. */
+  onReject?: (reason: RejectReason, detail: string | null) => void;
   /** Called when an `audio_transport` op this connection sent was refused, with the server's
    * player-presentable reason (fire-and-forget frame — there is no correlated reply to
    * reject instead). The shell surfaces it as a toast. */
@@ -222,6 +225,8 @@ export class WorldSession {
       emote: string;
     }) => void
   >();
+  /** `onVfx` subscriber set. */
+  #vfxListeners = new Set<(msg: VfxNotice) => void>();
   /** Listeners for THIS client's own `moveRequest` outcomes —
    * not a broadcast of every scene viewer's moves, unlike `#pingListeners`. */
   #moveOutcomeListeners = new Set<
@@ -862,6 +867,40 @@ export class WorldSession {
     this.#ws?.send({ type: "emote", scene: sceneId, token, emote });
   }
 
+  /** Subscribe to relayed VFX one-shots (incl. our own echo); returns an unsubscribe.
+   * @param cb Called with each one-shot's scene, position, asset, sending user, and id.
+   * @returns A function that removes this listener.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * declare function playVfxLocally(msg: VfxNotice): void;
+   * const off = session.onVfx(playVfxLocally);
+   * off();
+   * ```
+   */
+  onVfx(cb: (msg: VfxNotice) => void): () => void {
+    this.#vfxListeners.add(cb);
+    return () => this.#vfxListeners.delete(cb);
+  }
+
+  /** Broadcast a one-shot VFX playback request. No-op when disconnected. The server
+   * re-authorizes scene readability and world role (spectator refused) and drops an
+   * over-reaching send silently, so callers may offer this client-advisory only. The request
+   * carries an explicit `scene` (unlike `sendPing`/`sendEmote`'s auto-derived target): a
+   * caller may legitimately need to name a scene other than its own currently-viewed one (a
+   * portal effect plays at both ends of a teleport), so the caller supplies it, matching
+   * `pathfind`/`moveRequest`'s explicit-scene convention.
+   * @param req The one-shot request.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * session.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 });
+   * ```
+   */
+  playVfx(req: VfxPlayRequest): void {
+    this.#ws?.playVfx(req);
+  }
+
   /** Request a grid A* path on the server. Thin delegate to `WsClient.pathfind`;
    * rejects immediately when there is no live transport.
    * @param scene The scene to path on.
@@ -1216,9 +1255,9 @@ export class WorldSession {
             this.#combatEmitter.emit(deriveCombatHookEvents((id) => before.get(id), cmd, this.store));
           }
         },
-        onReject: (id, reason) => {
+        onReject: (id, reason, detail) => {
           this.#optimistic.reject(id);
-          this.opts.onReject?.(reason);
+          this.opts.onReject?.(reason, detail);
         },
         onWelcome: (w) => {
           void this.#onWelcome(w);
@@ -1249,6 +1288,13 @@ export class WorldSession {
           for (const cb of this.#emoteListeners) cb(msg);
         },
         onAudioError: (reason) => this.opts.onAudioError?.(reason),
+        onVfx: (msg) => {
+          // Cross-scene guard, same shape as the onScenePing/onEmote filters above: a vfx
+          // one-shot broadcasts room-wide and must render only for recipients currently
+          // viewing that scene.
+          if (msg.scene !== this.viewedSceneId) return;
+          for (const cb of this.#vfxListeners) cb(msg);
+        },
       },
     });
     // Pre-seed the watermark BEFORE start()/open() sends the first Hello — a call after open()
@@ -1443,10 +1489,11 @@ export class WorldSession {
    */
   async #loadExternalModules(world: string, serverVersion: string): Promise<void> {
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const resolved = WorldSession.#buildEntries(enabledIds, installed, this.#logger);
       if (resolved.length === 0) return;
       const result = await loadModules({
@@ -1624,10 +1671,11 @@ export class WorldSession {
   async reconcileInstalledModules(): Promise<void> {
     if (!this.world || this.#serverVersion === undefined) return;
     try {
-      const [enabledIds, installed] = await Promise.all([
+      const [enabledEntries, installed] = await Promise.all([
         getEnabledModules(this.world),
         listInstalledModules(),
       ]);
+      const enabledIds = enabledEntries.map((e) => e.id);
       const enabledSet = new Set(enabledIds);
       const toUnload = [...this.#externalModuleIds].filter(([folderId]) => !enabledSet.has(folderId));
       for (const [folderId, manifestId] of toUnload) {

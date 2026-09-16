@@ -16,7 +16,7 @@ export { TokenSelection } from "./tokenSelection.svelte";
 export { SceneSelection } from "./sceneSelection.svelte";
 export { SpeakAs } from "./speakAs.svelte";
 export { SpeakAsToken } from "./speakAsToken.svelte";
-export { sizeClass } from "./sizeClass.svelte";
+export { sizeClass, isCompactViewport } from "./sizeClass.svelte";
 export type { SizeClass } from "./sizeClass.svelte";
 export { PanelsBridge } from "./panelsBridge.svelte";
 export type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
@@ -59,3 +59,5 @@ export {
 export type { ThemeDefinition, ThemeTokenName, CustomTheme, ContrastPairing } from "./theme";
 export { ThemeController, theme, activeTheme } from "./theme.svelte";
 export type { PersistedTheme, ThemeListener } from "./theme.svelte";
+export { PerformanceController, performanceController, activePerformance } from "./performance.svelte";
+export type { PerformanceStats, PerformanceListener } from "./performance.svelte";

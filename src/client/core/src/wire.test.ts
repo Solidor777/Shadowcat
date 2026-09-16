@@ -593,7 +593,7 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
       intent_id: null,
       command: { seq: 1, world_id: "w", author: "a", ts: 0, ops: [] },
     },
-    reject: { type: "reject", intent_id: "i1", reason: "forbidden" },
+    reject: { type: "reject", intent_id: "i1", reason: "forbidden", detail: null },
     resync_begin: { type: "resync_begin", from_seq: 0, to_seq: 0, source: "buffer" },
     resync_end: { type: "resync_end", current_seq: 0 },
     time_pong: { type: "time_pong", client_t0: 0, server_t: 0 },
@@ -644,6 +644,20 @@ describe("parseServerMsg — exhaustive per-tag coverage", () => {
     },
     evicted: { type: "evicted", user: null },
     audio_error: { type: "audio_error", reason: "forbidden" },
+    vfx: {
+      type: "vfx",
+      scene: "s",
+      user: "u",
+      asset: "a",
+      x: 0,
+      y: 0,
+      scale: null,
+      rotation: null,
+      duration_ms: null,
+      sound: null,
+      elevation: null,
+      id: "i",
+    },
   };
 
   for (const [type, frame] of Object.entries(minimalFrames)) {

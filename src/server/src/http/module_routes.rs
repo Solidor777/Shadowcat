@@ -28,6 +28,8 @@ use crate::http::AppState;
 ///     id: "dnd5e".into(),
 ///     manifest: serde_json::json!({ "id": "dnd5e", "version": "1.0.0" }),
 ///     entry_url: "/modules/dnd5e/index.js".into(),
+///     has_validators: false,
+///     validator_load_error: None,
 /// };
 /// let value = serde_json::to_value(&info).unwrap();
 /// assert_eq!(value["id"], "dnd5e");
@@ -43,14 +45,26 @@ pub struct InstalledModuleInfo {
     pub manifest: serde_json::Value,
     /// Served entry URL: `/modules/<folder-id>/<entry>`.
     pub entry_url: String,
+    /// Whether this module declares any validators (`InstalledModule.validators` non-empty).
+    pub has_validators: bool,
+    /// This module's validator compile diagnostic, if any of its declared validators failed
+    /// to load (`sandbox::registry::ValidatorRegistry::load_error_for`) — shown beside the
+    /// "Run sandboxed validators" toggle.
+    pub validator_load_error: Option<String>,
 }
 
-impl From<&crate::modules::InstalledModule> for InstalledModuleInfo {
-    fn from(m: &crate::modules::InstalledModule) -> Self {
+impl InstalledModuleInfo {
+    /// Projects `m` for the wire, consulting `registry` for its validator load status.
+    fn from_installed(
+        m: &crate::modules::InstalledModule,
+        registry: &crate::sandbox::registry::ValidatorRegistry,
+    ) -> Self {
         InstalledModuleInfo {
             id: m.id.clone(),
             manifest: m.manifest_json.clone(),
             entry_url: m.entry_url.clone(),
+            has_validators: !m.validators.is_empty(),
+            validator_load_error: registry.load_error_for(&m.id).map(str::to_string),
         }
     }
 }
@@ -95,7 +109,13 @@ pub async fn list_installed_modules(
     State(state): State<AppState>,
 ) -> Json<Vec<InstalledModuleInfo>> {
     let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
-    Json(installed.iter().map(Into::into).collect())
+    let registry = state.repo.validator_registry().await;
+    Json(
+        installed
+            .iter()
+            .map(|m| InstalledModuleInfo::from_installed(m, &registry))
+            .collect(),
+    )
 }
 
 use axum::extract::Path;
@@ -112,7 +132,7 @@ use crate::http::error::AppError;
 /// would otherwise collapse the per-module boundary onto its parent, letting
 /// stage 2 read ANY file under `modules_root` — including another module's
 /// own files, not just loose root files.
-fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bool {
+pub(crate) fn is_strictly_within(candidate: &std::path::Path, root: &std::path::Path) -> bool {
     candidate != root && candidate.starts_with(root)
 }
 
@@ -225,7 +245,8 @@ use crate::http::routes::require_gm;
 /// broadcast (via the `Welcome`-time merge) — far above any realistic install.
 const MAX_ENABLED_MODULES: usize = 256;
 
-/// A world's enabled installed-module ids. Any member (needed at join to load
+/// A world's enabled installed-module entries (id + per-world `validators_enabled`
+/// flag). Any member (needed at join to load
 /// the enabled set) — mirrors `list_members`'s any-member-may-read stance.
 ///
 /// # Examples
@@ -264,7 +285,7 @@ pub async fn get_world_enabled_modules(
     user: AuthUser,
     State(state): State<AppState>,
     Path(world): Path<Uuid>,
-) -> Result<Json<Vec<String>>, AppError> {
+) -> Result<Json<Vec<crate::modules::WorldModuleEntry>>, AppError> {
     state
         .repo
         .permission_context(world, user.id, user.role)
@@ -272,11 +293,13 @@ pub async fn get_world_enabled_modules(
     Ok(Json(state.repo.world_enabled_modules(world).await?))
 }
 
-/// Replace a world's enabled installed-module set. GM/admin only. Every id
+/// Replace a world's enabled installed-module set. GM/admin only. Every entry
 /// must name a currently-installed, validly-manifested module whose
 /// `engines.shadowcat` range is satisfied by the running server version —
 /// enabling a version-incompatible or unknown module is rejected outright,
-/// atomically (never partially applied).
+/// atomically (never partially applied). An entry opting into
+/// `validators_enabled` on a module that declares no validators is rejected
+/// the same way (there is nothing to opt into).
 ///
 /// # Examples
 ///
@@ -311,7 +334,10 @@ pub async fn get_world_enabled_modules(
 ///     user,
 ///     State(state),
 ///     Path(world.id),
-///     Json(vec!["dnd5e".to_string()]),
+///     Json(vec![shadowcat::modules::WorldModuleEntry {
+///         id: "dnd5e".into(),
+///         validators_enabled: false,
+///     }]),
 /// )
 /// .await;
 /// // No module is installed on this scan, so an unknown id is rejected.
@@ -322,10 +348,10 @@ pub async fn set_world_enabled_modules(
     user: AuthUser,
     State(state): State<AppState>,
     Path(world): Path<Uuid>,
-    Json(ids): Json<Vec<String>>,
+    Json(entries): Json<Vec<crate::modules::WorldModuleEntry>>,
 ) -> Result<StatusCode, AppError> {
     require_gm(&state, &user, world).await?;
-    if ids.len() > MAX_ENABLED_MODULES {
+    if entries.len() > MAX_ENABLED_MODULES {
         return Err(AppError::Unprocessable(format!(
             "too many enabled modules (max {MAX_ENABLED_MODULES})"
         )));
@@ -333,34 +359,43 @@ pub async fn set_world_enabled_modules(
     // Order-preserving dedup: a duplicate id in the request body is otherwise
     // inert (stored/validated redundantly) but inflates the persisted set and
     // the client's echoed response; first occurrence wins.
-    let mut seen = std::collections::HashSet::with_capacity(ids.len());
-    let ids: Vec<String> = ids
+    let mut seen = std::collections::HashSet::with_capacity(entries.len());
+    let entries: Vec<crate::modules::WorldModuleEntry> = entries
         .into_iter()
-        .filter(|id| seen.insert(id.clone()))
+        .filter(|e| seen.insert(e.id.clone()))
         .collect();
     let installed = crate::modules::scan_installed_modules(&state.config.modules_path());
-    for id in &ids {
-        let Some(m) = installed.iter().find(|m| &m.id == id) else {
+    for entry in &entries {
+        let Some(m) = installed.iter().find(|m| m.id == entry.id) else {
             return Err(AppError::Unprocessable(format!(
-                "module '{id}' is not installed"
+                "module '{}' is not installed",
+                entry.id
             )));
         };
         if !crate::modules::engine_compat_ok(m) {
             return Err(AppError::Unprocessable(format!(
-                "module '{id}' is incompatible with this server version (requires shadowcat {})",
+                "module '{}' is incompatible with this server version (requires shadowcat {})",
+                entry.id,
                 m.engines_shadowcat
                     .as_deref()
                     .unwrap_or("(missing engines.shadowcat)")
+            )));
+        }
+        // An enabled module with no declared validators can never meaningfully opt in.
+        if entry.validators_enabled && m.validators.is_empty() {
+            return Err(AppError::Unprocessable(format!(
+                "module '{}' declares no validators",
+                entry.id
             )));
         }
     }
     // At most one enabled module may provide the system contract: the
     // server's system-defaults derivation and the client's singleton-contract
     // winner must never diverge on which system is active.
-    let systems: Vec<&str> = ids
+    let systems: Vec<&str> = entries
         .iter()
-        .filter(|id| installed.iter().any(|m| &m.id == *id && m.provides_system))
-        .map(String::as_str)
+        .filter(|e| installed.iter().any(|m| m.id == e.id && m.provides_system))
+        .map(|e| e.id.as_str())
         .collect();
     if systems.len() > 1 {
         return Err(AppError::Unprocessable(format!(
@@ -369,7 +404,10 @@ pub async fn set_world_enabled_modules(
             systems.join(", ")
         )));
     }
-    state.repo.set_world_enabled_modules(world, &ids).await?;
+    state
+        .repo
+        .set_world_enabled_modules(world, &entries)
+        .await?;
     // Refresh the world's config from the (possibly changed) enabled set —
     // the SAME reseed pass the world-join runs, so the decision is never
     // forked; a live room broadcasts the refresh. A failed refresh only

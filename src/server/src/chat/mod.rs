@@ -37,6 +37,7 @@ use uuid::Uuid;
 
 mod body;
 mod commands;
+pub mod fx;
 mod host;
 mod link_preview;
 mod oembed;
@@ -924,17 +925,16 @@ pub fn build_message_doc(world_id: Uuid, user: Uuid, draft: MessageDraft, now: i
     }
 }
 
-/// Author a `MessageKind::System` error notice for a failed roll attempt:
-/// whispered to the sender only (same channel), owned by the sender (so they
-/// may delete it), one `Text` segment with the error's player-presentable
-/// `Display` text. This is `MessageKind::System`'s first real producer —
-/// deliberately NOT `parse_command` (which can never emit `System`, proven by
-/// its own exhaustive test); a roll failure is authored directly here instead.
-fn build_roll_error_notice(
+/// Author a `MessageKind::System` error notice: whispered to the sender only
+/// (same channel), owned by the sender (so they may delete it), one `Text`
+/// segment with the given player-presentable text. This is
+/// `MessageKind::System`'s authoring path — deliberately NOT `parse_command`
+/// (which can never emit `System`, proven by its own exhaustive test).
+fn build_system_error_notice(
     world_id: Uuid,
     sender: Uuid,
     channel: String,
-    err: &rolls::RollError,
+    text: &str,
     now: i64,
 ) -> Document {
     build_message_doc(
@@ -948,12 +948,25 @@ fn build_roll_error_notice(
             },
             kind: MessageKind::System,
             content: vec![Segment::Text {
-                text: err.to_string(),
+                text: text.to_string(),
             }],
             source: None,
         },
         now,
     )
+}
+
+/// Author a `MessageKind::System` error notice for a failed roll attempt, via
+/// the shared `build_system_error_notice` with the error's player-presentable
+/// `Display` text.
+fn build_roll_error_notice(
+    world_id: Uuid,
+    sender: Uuid,
+    channel: String,
+    err: &rolls::RollError,
+    now: i64,
+) -> Document {
+    build_system_error_notice(world_id, sender, channel, &err.to_string(), now)
 }
 
 /// Max characters accepted for a single message's raw content (pre-producer).
@@ -1274,6 +1287,7 @@ pub(crate) async fn validate_actor_owner(
 ///     repo: &repo,
 ///     ctx: &ctx,
 ///     rate: &rate,
+///     vfx_rate: &rate,
 ///     preview: LinkPreviewDeps {
 ///         client: &client,
 ///         cache: &LinkPreviewCache::new(),
@@ -1294,6 +1308,11 @@ pub struct MessageRequestCtx<'a> {
     pub ctx: &'a PermissionContext,
     /// The per-user chat flood-budget limiter.
     pub rate: &'a PingRateLimiter,
+    /// The per-user VFX one-shot budget — a SEPARATE bucket from `rate`, charged when the
+    /// content turns out to be a `/fx` command, so a VFX burst cannot starve chat and a chat
+    /// burst cannot starve VFX (one rate decision per VFX play, whichever front door the play
+    /// arrived through).
+    pub vfx_rate: &'a PingRateLimiter,
     /// Link-preview fetch dependencies.
     pub preview: LinkPreviewDeps<'a>,
     /// The moment of this request (used for `created_at`/`edited_at`/rate accounting).
@@ -1306,6 +1325,10 @@ pub struct MessageRequestCtx<'a> {
 /// message doc, and publish it via the authoritative path. The sole message-
 /// authoring entry point (see module-level INVARIANT comment) — a client can
 /// only ever reach a stored `message` doc through this function.
+///
+/// Returns `Ok(None)` when the content was a successful `/fx` command — that
+/// command authors no message document at all (see `chat::fx`); every other
+/// success resolves `Ok(Some((command, pending-enrichments)))`.
 ///
 /// # Examples
 ///
@@ -1350,6 +1373,7 @@ pub struct MessageRequestCtx<'a> {
 ///         repo: &repo,
 ///         ctx: &ctx,
 ///         rate: &rate,
+///         vfx_rate: &rate,
 ///         preview: LinkPreviewDeps {
 ///             client: &client,
 ///             cache: &LinkPreviewCache::new(),
@@ -1364,7 +1388,8 @@ pub struct MessageRequestCtx<'a> {
 ///     Audience::Public,
 /// )
 /// .await
-/// .unwrap();
+/// .unwrap()
+/// .expect("a plain message is not a /fx command");
 /// assert!(pending.is_empty());
 /// assert_eq!(cmd.ops.len(), 1);
 /// # }
@@ -1375,12 +1400,13 @@ pub async fn handle_send_message(
     content: String,
     actor_owner: Option<ActorOwnerRef>,
     audience: Audience,
-) -> Result<(Command, Vec<PendingEnrichment>), SendMessageError> {
+) -> Result<Option<(Command, Vec<PendingEnrichment>)>, SendMessageError> {
     let MessageRequestCtx {
         room,
         repo,
         ctx,
         rate,
+        vfx_rate,
         preview,
         now,
         budget_per_min,
@@ -1419,6 +1445,38 @@ pub async fn handle_send_message(
     // ever chosen — no separate edit-time check is needed.
     if let Some(owner_ref) = &actor_owner {
         validate_actor_owner(repo, room, ctx, owner_ref).await?;
+    }
+    // `/fx` interception BEFORE `parse_command`: a successful play authors no
+    // message document at all; a failure authors the whispered System notice
+    // (the same shape `build_roll_error_notice` establishes for `/roll`). Runs
+    // after the channel-registered check above so the failure notice files
+    // under a valid channel.
+    if let Some(result) =
+        fx::try_handle_fx(repo, room, ctx, room.world_id, &content, vfx_rate, now).await
+    {
+        return match result {
+            Ok(()) => Ok(None),
+            Err(e) => {
+                let notice = build_system_error_notice(
+                    room.world_id,
+                    ctx.user_id,
+                    channel,
+                    &e.to_string(),
+                    now,
+                );
+                let cmd = room
+                    .publish(
+                        repo,
+                        ctx,
+                        vec![Operation::Create { doc: notice }],
+                        now,
+                        WriteOrigin::Client,
+                    )
+                    .await
+                    .map_err(SendMessageError::Data)?;
+                Ok(Some((cmd, Vec::new())))
+            }
+        };
     }
     // Parse leading command (server-authoritative kind; /w whisper targets).
     let parsed = parse_command(&content);
@@ -1517,7 +1575,7 @@ pub async fn handle_send_message(
                         WriteOrigin::Client,
                     )
                     .await
-                    .map(|cmd| (cmd, Vec::new()))
+                    .map(|cmd| Some((cmd, Vec::new())))
                     .map_err(SendMessageError::Data);
             }
         }
@@ -1551,7 +1609,7 @@ pub async fn handle_send_message(
                         WriteOrigin::Client,
                     )
                     .await
-                    .map(|cmd| (cmd, Vec::new()))
+                    .map(|cmd| Some((cmd, Vec::new())))
                     .map_err(SendMessageError::Data);
             }
         }
@@ -1618,7 +1676,7 @@ pub async fn handle_send_message(
         WriteOrigin::Client,
     )
     .await
-    .map(|cmd| (cmd, pending))
+    .map(|cmd| Some((cmd, pending)))
     .map_err(SendMessageError::Data)
 }
 
@@ -1691,6 +1749,7 @@ pub async fn handle_send_message(
 ///     repo: &repo,
 ///     ctx: &ctx,
 ///     rate: &rate,
+///     vfx_rate: &rate,
 ///     preview: LinkPreviewDeps {
 ///         client: &client,
 ///         cache: &cache,
@@ -1708,7 +1767,8 @@ pub async fn handle_send_message(
 ///     Audience::Public,
 /// )
 /// .await
-/// .unwrap();
+/// .unwrap()
+/// .expect("a plain message is not a /fx command");
 /// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
 /// let message_id = doc.id;
 ///
@@ -1731,6 +1791,8 @@ pub async fn handle_edit_message(
         preview,
         now,
         budget_per_min,
+        // An edit never reaches the `/fx` interception, so the VFX bucket goes unread here.
+        vfx_rate: _,
     } = req;
     if content.trim().is_empty() {
         return Err(SendMessageError::Empty);
@@ -2007,6 +2069,7 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
 ///         repo: &repo,
 ///         ctx: &ctx,
 ///         rate: &rate,
+///         vfx_rate: &rate,
 ///         preview: LinkPreviewDeps {
 ///             client: &client,
 ///             cache: &LinkPreviewCache::new(),
@@ -2021,7 +2084,8 @@ pub fn command_message_id(cmd: &Command) -> Option<Uuid> {
 ///     Audience::Public,
 /// )
 /// .await
-/// .unwrap();
+/// .unwrap()
+/// .expect("a plain message is not a /fx command");
 /// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
 /// let message_id = doc.id;
 ///
@@ -2186,6 +2250,7 @@ pub struct RecalcRollRequestCtx<'a> {
 ///         repo: &repo,
 ///         ctx: &ctx,
 ///         rate: &rate,
+///         vfx_rate: &rate,
 ///         preview: LinkPreviewDeps {
 ///             client: &client,
 ///             cache: &LinkPreviewCache::new(),
@@ -2200,7 +2265,8 @@ pub struct RecalcRollRequestCtx<'a> {
 ///     Audience::Public,
 /// )
 /// .await
-/// .unwrap();
+/// .unwrap()
+/// .expect("a plain message is not a /fx command");
 /// let Operation::Create { doc } = &sent.ops[0] else { unreachable!() };
 /// let message_id = doc.id;
 /// let engine = doc.engine.clone().unwrap();

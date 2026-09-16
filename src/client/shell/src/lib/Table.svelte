@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
+  import { setAppContext, Surface, PanelsBridge, SheetsController, SceneSelection, SpeakAs, SpeakAsToken, TemplatesController, TemplateModalHost, NotificationHost, notifications, AssetPickController, performanceController, type PickAssetOptions, type AppContext } from "@shadowcat/ui-kit";
   import { t } from "@shadowcat/ui-kit";
   import { consoleLogger } from "@shadowcat/core";
   import { createSubscriber } from "svelte/reactivity";
@@ -146,6 +146,8 @@
     },
     panels,
     audio: session.audio,
+    performance: performanceController,
+    vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },
     reconcileInstalledModules: () => session.reconcileInstalledModules(),
     leaveWorld,
     logout: async () => {

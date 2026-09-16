@@ -409,6 +409,37 @@ pub(crate) fn targets_engine_band(path: &str) -> bool {
     strip_embedded_hops(path).is_some_and(|rest| writes_band(&rest, "engine"))
 }
 
+/// Whether `path` writes the opaque `system` band of the document itself or of an
+/// embedded child at any depth (`/system…`, `/embedded/<coll>/<idx>/system…`) — the
+/// any-depth band-membership shape `targets_engine_band` owns for the engine band,
+/// stated once for the `system` band so `SqliteRepository::apply_intent`'s
+/// sandboxed-validator pre-pass and every future caller classify an embedded-child
+/// `system` write identically rather than re-deriving (and silently top-level-only)
+/// the hop-stripping. FAIL-CLOSED on every `/embedded…` boundary shape: a whole-map
+/// rewrite (`/embedded`), a whole-collection rewrite (`/embedded/widgets` — the
+/// shape `merge::plan::plan_to_update` emits), or a whole-child replacement
+/// (`/embedded/widgets/0`) replaces children's `system` bands wholesale without
+/// stripping to a provable band, and classifies TRUE so the validator pass judges
+/// the post-image's own walk of those children.
+pub(crate) fn targets_system_band(path: &str) -> bool {
+    // Whole-map rewrite: replaces every embedded child (and every child's
+    // `system` band) wholesale. `strip_embedded_hops` leaves it unstripped (no
+    // trailing separator), so it is decided here, first.
+    if path == "/embedded" {
+        return true;
+    }
+    match strip_embedded_hops(path) {
+        // Stripped to a residual: TRUE iff the residual is provably inside the
+        // `system` band; a residual inside `engine`/`name`/any other band is
+        // the only FALSE outcome.
+        Some(rest) => writes_band(&rest, "system"),
+        // Failed to strip to a provable band: any `/embedded/…` shape (a
+        // whole-collection rewrite or a whole-child replacement) CAN carry
+        // children's `system` bands wholesale — classify TRUE fail-closed.
+        None => path.starts_with("/embedded/"),
+    }
+}
+
 /// Strip zero or more `/embedded/<coll>/<idx>` hops off `path`, returning the
 /// residual (always starting with `/`). Each hop requires BOTH a collection name
 /// and an index segment to keep descending, so a path naming a whole collection

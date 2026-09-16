@@ -405,6 +405,46 @@ pub enum ClientMsg {
         /// `select_listener`'s owned-token rule).
         token: Option<Uuid>,
     },
+    /// A one-shot VFX playback request at scene coords — relayed out-of-band to the world room
+    /// with the sender stamped, exactly like `ScenePing`; never sequenced, logged, or a document.
+    /// `scene` must exist and grant the sender READ; `x`/`y` finite and inside
+    /// `scene::move_exec::MAX_GATE_WALK_COORD`; `scale`, when present, in `(0, 8]`; `duration_ms`,
+    /// when present, `<= 60_000`; `asset` non-empty and `<= 128` bytes; `sound`, when present,
+    /// likewise. Authorized for any world member with `WorldRole::Gm` or `WorldRole::Player`
+    /// (a spectator is refused — a one-shot is a table gesture like a ping); rate-limited per
+    /// user on its own budget, separate from ping/emote/message. Silent drop on any denial — no
+    /// error frame, so a non-reader never learns whether `scene` exists.
+    PlayVfx {
+        /// Scene the effect plays on (must grant the sender READ).
+        scene: Uuid,
+        /// The spritesheet or animated-source asset id.
+        asset: String,
+        /// Scene-coordinate x.
+        x: f64,
+        /// Scene-coordinate y.
+        y: f64,
+        /// Uniform scale multiplier; `None` = the asset's native scale (1).
+        #[serde(default)]
+        #[ts(optional)]
+        scale: Option<f64>,
+        /// Rotation in degrees; `None` = unrotated.
+        #[serde(default)]
+        #[ts(optional)]
+        rotation: Option<f64>,
+        /// Playback duration cap in ms; `None` = one loop of the asset.
+        #[serde(default)]
+        #[ts(optional)]
+        duration_ms: Option<u32>,
+        /// Paired sound asset id; carried through to `ServerMsg::Vfx` and played back through
+        /// `AudioApi.playOneShot` by the relaying client.
+        #[serde(default)]
+        #[ts(optional)]
+        sound: Option<String>,
+        /// Elevation the effect plays at; the render layer filters by the viewed level.
+        #[serde(default)]
+        #[ts(optional)]
+        elevation: Option<f64>,
+    },
 }
 
 /// One audio-transport operation (`ClientMsg::AudioTransport`). GM-only; the server resolves
@@ -1041,6 +1081,12 @@ pub enum ServerMsg {
         intent_id: Uuid,
         /// Why it was refused.
         reason: RejectReason,
+        /// Player/GM-presentable detail text — populated for `DataError::OpFailed`/`Validator`
+        /// refusals (≤ 512 bytes, control characters stripped at the source that produced the
+        /// text — `sandbox::runtime::run_validator` for a validator refusal). Rendered by the
+        /// client as a TEXT NODE only, never HTML.
+        #[serde(default)]
+        detail: Option<String>,
     },
     /// Opens a resync replay range.
     ResyncBegin {
@@ -1325,6 +1371,34 @@ pub enum ServerMsg {
         /// Player-presentable failure text (`audio::state::AudioError`'s `Display`, or
         /// "forbidden" for the not-GM case).
         reason: String,
+    },
+    /// A relayed VFX one-shot: the sender's transient effect at scene coords. Out-of-band (no
+    /// seq, never buffered/resynced), mirroring `ScenePing`/`Emote`. `id` is a fresh id per
+    /// broadcast, letting the `VfxView` render layer key/evict this exact playback (`oneshot:<id>`)
+    /// independent of any document id.
+    Vfx {
+        /// Scene the effect plays on.
+        scene: Uuid,
+        /// Who fired it (senders receive their own echo).
+        user: Uuid,
+        /// The spritesheet or animated-source asset id.
+        asset: String,
+        /// Scene-coordinate x.
+        x: f64,
+        /// Scene-coordinate y.
+        y: f64,
+        /// Uniform scale multiplier; `None` = the asset's native scale (1).
+        scale: Option<f64>,
+        /// Rotation in degrees; `None` = unrotated.
+        rotation: Option<f64>,
+        /// Playback duration cap in ms; `None` = one loop of the asset.
+        duration_ms: Option<u32>,
+        /// Paired sound asset id; carried verbatim (playback wiring is a later integration).
+        sound: Option<String>,
+        /// Elevation the effect plays at.
+        elevation: Option<f64>,
+        /// Fresh per-broadcast id — the render layer's one-shot node key (`oneshot:<id>`).
+        id: Uuid,
     },
 }
 

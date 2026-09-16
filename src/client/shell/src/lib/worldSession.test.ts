@@ -275,10 +275,42 @@ test("a reject frame calls onReject with the reason AND rolls back the optimisti
   expect(session.documents.get(doc.id)).toBeDefined(); // optimistic prediction applied
 
   const intent = sent.find((f) => f.type === "intent") as { intent_id: string };
-  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden" });
+  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden", detail: null });
 
-  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden"));
+  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden", null));
   expect(session.documents.get(doc.id)).toBeUndefined(); // rolled back
+});
+
+test("a reject frame with detail passes it through to onReject", async () => {
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const onReject = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onReject,
+  });
+  await session.enter("w1");
+
+  push({
+    type: "reject",
+    intent_id: "00000000-0000-0000-0000-000000000001",
+    reason: "invalid",
+    detail: "validator example-module: hp must be non-negative",
+  });
+
+  await vi.waitFor(() =>
+    expect(onReject).toHaveBeenCalledWith(
+      "invalid",
+      "validator example-module: hp must be non-negative",
+    ),
+  );
 });
 
 function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
@@ -1314,9 +1346,67 @@ test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, dro
   expect(got[0].scene).toBe("sceneB");
 });
 
+test("playVfx forwards to WsClient.playVfx; onVfx fires only for the viewed scene; a disconnected session no-ops", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneId = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+
+  session.playVfx({ scene: sceneId, asset: "a1", x: 3, y: 4 });
+  const frame = sent.find((m) => m.type === "play_vfx");
+  expect(frame).toBeTruthy();
+  expect(frame!.scene).toBe(sceneId);
+  expect(frame!.asset).toBe("a1");
+  expect(frame!.x).toBe(3);
+  expect(frame!.y).toBe(4);
+
+  const got: Array<{ scene: string; id: string }> = [];
+  session.onVfx((m) => got.push(m));
+  const blank = { scale: null, rotation: null, duration_ms: null, sound: null, elevation: null };
+  push({ type: "vfx", scene: sceneId, user: "u9", asset: "a1", x: 1, y: 2, id: "fx-1", ...blank });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].id).toBe("fx-1");
+  push({ type: "vfx", scene: "some-other-scene", user: "u9", asset: "a1", x: 1, y: 2, id: "fx-2", ...blank });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(1); // a frame for another scene is dropped
+
+  // Disconnected: no WsClient exists yet, so playVfx is a silent no-op (never a throw).
+  const offline = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  expect(() => offline.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 })).not.toThrow();
+});
+
+test("onVfx cross-scene guard: a GM roaming scene B sees one-shots for B, drops one-shots for A", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB");
+
+  const got: Array<{ scene: string }> = [];
+  session.onVfx((m) => got.push(m));
+  const blank = { scale: null, rotation: null, duration_ms: null, sound: null, elevation: null };
+
+  push({ type: "vfx", scene: sceneA, user: "u9", asset: "a1", x: 1, y: 2, id: "fx-a", ...blank }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "vfx", scene: "sceneB", user: "u1", asset: "a1", x: 3, y: 4, id: "fx-b", ...blank }); // the GM's own viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].scene).toBe("sceneB");
+});
+
 test("Welcome warns (but still enters the world) when an enabled id is not installed", async () => {
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["missing-mod"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "missing-mod", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([]);
   const warnings: unknown[][] = [];
   const logger = { ...silentLogger, warn: (...args: unknown[]) => warnings.push(args) };
@@ -1339,12 +1429,14 @@ test("resolves an enabled folder id to its installed entry even when the manifes
   // differ. A lookup keyed on `manifest.id` would (wrongly) treat this
   // entry as "not installed" and skip it.
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["folder-name"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "folder-name", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "folder-name",
       manifest: { id: "declared-manifest-id", version: "1.0.0", dependencies: {}, provides: [] },
       entry_url: "/modules/folder-name/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   const warnings: unknown[][] = [];
@@ -1559,12 +1651,14 @@ test("reconcileInstalledModules loads a newly-enabled module and activates it", 
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
 
@@ -1579,12 +1673,14 @@ test("reconcileInstalledModules unloads (cascade) a module no longer in the enab
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1607,10 +1703,12 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ];
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
   await session.reconcileInstalledModules();
   expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
@@ -1618,7 +1716,7 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
   const before = await registerCallsOf(FIXTURE_A_URL);
 
   // Same enabled set, same installed catalog: nothing to diff.
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
   await session.reconcileInstalledModules();
 
@@ -1631,17 +1729,21 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder", "ext-b-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }, { id: "ext-b-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
     {
       id: "ext-b-folder",
       manifest: { id: "ext-module-b", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_B_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1650,12 +1752,14 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
   const bBefore = await registerCallsOf(FIXTURE_B_URL);
 
   // A drops out of the enabled set; B stays enabled.
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-b-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-b-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-b-folder",
       manifest: { id: "ext-module-b", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_B_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1744,12 +1848,14 @@ const styledModuleManifest = {
 
 async function enterWithStyledModule(): Promise<WorldSession> {
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValue([
     {
       id: "folder-one",
       manifest: styledModuleManifest,
       entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   const externalModule: Module = {
@@ -1795,6 +1901,8 @@ test("a reconcile unload removes the module's stylesheet", async () => {
       id: "folder-one",
       manifest: styledModuleManifest,
       entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1804,12 +1912,14 @@ test("a reconcile unload removes the module's stylesheet", async () => {
 
 test("a module whose activation fails gets no stylesheet link", async () => {
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValue([
     {
       id: "folder-one",
       manifest: styledModuleManifest,
       entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   // The import succeeds (so the load result lists the module) but activation

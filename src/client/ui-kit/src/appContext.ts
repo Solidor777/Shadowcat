@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
@@ -9,6 +9,7 @@ import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
+import type { PerformanceController } from "./performance.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -355,6 +356,20 @@ export interface AppContext {
    * one-shots, GM transport, unlock) — device state plus thin `WsClient`
    * forwarders; see `AudioApi`. */
   audio: AudioApi;
+  /** Per-device render-budget controller — effective settings, active preset, live frame
+   * stats, and the statusbar readout toggle. Per-device only: never read from or written to
+   * the server `ui_state`. */
+  performance: PerformanceController;
+  /** VFX playback seam: fire a one-shot and subscribe to relayed ones (incl. our own echo). */
+  vfx: {
+    /** Broadcast a one-shot VFX playback request.
+     * @param req The one-shot request. */
+    play(req: VfxPlayRequest): void;
+    /** Subscribe to relayed VFX one-shots; returns an unsubscribe.
+     * @param cb Called with each relayed one-shot.
+     * @returns A function that removes this listener. */
+    onVfx(cb: (msg: VfxNotice) => void): () => void;
+  };
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

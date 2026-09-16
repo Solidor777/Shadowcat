@@ -52,6 +52,12 @@ pub struct AssetMeta {
     /// Decoded audio sample rate, Hz (the SOURCE rate, before the pipeline's 48 kHz Opus
     /// resample); `None` for a non-audio asset or a decode failure.
     pub sample_rate: Option<i64>,
+    /// Server-derived grid-sheet geometry/timing for an animated source, or `None` for a
+    /// non-animated asset or one whose sheet generation produced nothing (fewer than 2 decoded
+    /// frames, or a write failure) — a `None` here is not itself an error; `VfxEmission`/`PlayVfx`
+    /// consumers fall back to the PixiJS-spritesheet pairing path (`vfx:sheet=` tag) or fail
+    /// closed to no playback.
+    pub sheet: Option<crate::data::asset::process::SheetMeta>,
 }
 
 impl AssetMeta {
@@ -81,6 +87,7 @@ impl AssetMeta {
             conversion_note: None,
             duration_ms: None,
             sample_rate: None,
+            sheet: None,
         }
     }
 }
