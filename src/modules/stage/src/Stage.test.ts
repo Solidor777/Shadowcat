@@ -645,6 +645,81 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
   spy.mockRestore();
 });
 
+test("a viewedLevel context change re-subscribes vision exactly once per genuine change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null }, levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] }, "sA") },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const context = setAppContextForTest({
+    documents: store,
+    store,
+    assets: new AssetResolver(),
+    viewedSceneId: "sA",
+    subscribeScene: () => ({ unsubscribe() {} }),
+  });
+  let level: string | null = "l1";
+  Object.defineProperty(context.get(__APP_CONTEXT_KEY__), "viewedLevel", {
+    get: () => level,
+    configurable: true,
+  });
+  const spy = vi.spyOn(RenderEngine.prototype, "reapplyViewedLevel");
+  const { container } = render(Stage, { props: { createBackend }, context });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(spy).not.toHaveBeenCalled();
+
+  // Change the viewed level, then drive a real document-store mutation to fire the watcher's
+  // $effect re-run (mirrors the viewedSceneId-change watcher's own test shape).
+  level = "l2";
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          "t1",
+        ),
+      },
+    ],
+  } as never);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+  // A second, unrelated doc mutation with `level` unchanged must NOT re-trigger the watcher.
+  store.applyCommand({
+    seq: 3,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          "t2",
+        ),
+      },
+    ],
+  } as never);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
 test("a new footprints lookup re-projects the tokens exactly once per genuine change", async () => {
   const store = new DocumentStore();
   store.applyCommand({

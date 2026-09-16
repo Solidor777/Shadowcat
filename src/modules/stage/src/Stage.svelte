@@ -136,6 +136,7 @@
         gridColor: readColor("--grid-line", 0x363645),
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
+        viewedLevel: () => ctx.viewedLevel,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
         onDerivedApplied: (input) => {
@@ -187,6 +188,10 @@
       // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
       // carries a new server frame, so the engine must re-filter its views + last vision payload.
       let lastViewed = ctx.viewedSceneId;
+      // A level change alters what the SERVER computes for explored-fog accumulation/emission
+      // (unlike a scene switch), so it re-issues the "vision" wire subscription itself, not just
+      // a client-local re-filter.
+      let lastViewedLevel = ctx.viewedLevel;
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
@@ -201,6 +206,11 @@
           if (now !== lastViewed) {
             lastViewed = now;
             e.reapplyViewedScene();
+          }
+          const nowLevel = ctx.viewedLevel;
+          if (nowLevel !== lastViewedLevel) {
+            lastViewedLevel = nowLevel;
+            e.reapplyViewedLevel();
           }
           const fp = ctx.footprints; // tracks the session's footprints $state
           if (fp !== lastFootprints) {

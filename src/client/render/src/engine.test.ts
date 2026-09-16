@@ -302,6 +302,32 @@ test("setViewAsUser re-subscribes vision with as_user and resets the watermark",
   expect(opts[2]).toBeUndefined();
 });
 
+test("reapplyViewedLevel unsubscribes the old vision handle and re-subscribes with the new level", () => {
+  const store = new DocumentStore();
+  store.applyCommand(sceneCmd(1, "s1"));
+  const backend = new MockBackend();
+  const opts: ({ asUser?: string; level?: string } | undefined)[] = [];
+  let level: string | null = null;
+  let unsubs = 0;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, _cb, o) => { opts.push(o); return { unsubscribe: () => { unsubs++; } }; },
+    viewedLevel: () => level,
+  });
+  engine.start();
+  expect(opts[0]).toBeUndefined(); // no level yet
+
+  level = "l2";
+  engine.reapplyViewedLevel();
+  expect(unsubs).toBe(1);
+  expect(opts[1]).toEqual({ level: "l2" });
+
+  level = null;
+  engine.reapplyViewedLevel();
+  expect(unsubs).toBe(2);
+  expect(opts[2]).toBeUndefined();
+});
+
 test("subscribeScene: a frame above the watermark defers until the store advances", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();

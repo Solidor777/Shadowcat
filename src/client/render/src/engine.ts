@@ -65,6 +65,9 @@ export type SubscribeScene = (
   opts?: {
     /** GM-only see-as-player: view the channel as this user id. */
     asUser?: string;
+    /** The level to scope explored-fog accumulation/emission to (`"vision"` channel only;
+     * ignored by every other channel). */
+    level?: string;
   },
 ) => SceneSubscription;
 
@@ -102,6 +105,10 @@ export interface RenderEngineOpts {
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
+  /** Which level (of the viewed scene) to additionally scope by. From the host (Stage →
+   * `ctx.viewedLevel`). Absent ⇒ every level, preserving pre-levels behavior. Also threaded
+   * into the `"vision"` subscription's `level` option — see {@link RenderEngine.reapplyViewedLevel}. */
+  viewedLevel?: () => string | null;
   /** The server's resolved token footprints (Stage → `ctx.footprints`). The engine computes no
    * footprint geometry: `TokenView` reads the extent from here. Absent ⇒ `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`. */
@@ -291,6 +298,16 @@ export class RenderEngine implements SceneToolHost {
    */
   private readonly viewedScene = (): string | null =>
     this.opts.viewedSceneId?.() ?? this.opts.store.query("scene")[0]?.id ?? null;
+  /** Resolved viewed level, falling back to `null` (every level) so pre-levels tests/hosts are
+   * unaffected. The single definition every level-scoped view reads.
+   * @returns The viewed level id, or `null` for every level.
+   * @example
+   * ```
+   * // private field; not part of the public API
+   * const levelId = this.viewedLevel();
+   * ```
+   */
+  private readonly viewedLevel = (): string | null => this.opts.viewedLevel?.() ?? null;
   /** The last vision payload received, re-projected onto a new viewed scene by
    * `reapplyViewedScene` (a scene switch has no new server frame — `activeScene`/roam are
    * client-local). Undefined until the first frame. */
@@ -315,13 +332,13 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, opts.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, () => null, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens);
+    this.tokens = new TokenView(opts.store, opts.assets, opts.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
-    this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene);
-    this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene);
-    this.walls = new WallView(opts.store, opts.backend, this.viewedScene);
-    this.regions = new RegionView(opts.store, opts.backend, this.viewedScene);
-    this.lights = new LightView(opts.store, opts.backend, this.viewedScene);
+    this.drawings = new DrawingView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
+    this.templates = new TemplateView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
+    this.walls = new WallView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
+    this.regions = new RegionView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
+    this.lights = new LightView(opts.store, opts.backend, this.viewedScene, this.viewedLevel);
     this.compositor = new Compositor(opts.backend);
     this.lighting = new Lighting(opts.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
   }
@@ -400,11 +417,33 @@ export class RenderEngine implements SceneToolHost {
   private subscribeVision(): void {
     if (!this.opts.subscribeScene) return;
     this.sceneSub?.unsubscribe();
+    const level = this.viewedLevel();
+    const subOpts = {
+      ...(this.viewAsUser ? { asUser: this.viewAsUser } : {}),
+      ...(level !== null ? { level } : {}),
+    };
     this.sceneSub = this.opts.subscribeScene(
       "vision",
       (f) => this.onSceneFrame(f),
-      this.viewAsUser ? { asUser: this.viewAsUser } : undefined,
+      Object.keys(subOpts).length > 0 ? subOpts : undefined,
     );
+  }
+
+  /** Re-establishes the `"vision"` subscription with the current {@link RenderEngineOpts.viewedLevel}
+   * — unlike a scene switch (`reapplyViewedScene`), a level change alters what the SERVER
+   * computes for explored-fog accumulation/emission, so the wire subscription itself must
+   * re-issue, not merely re-filter a cached payload. Call this whenever the host's viewed level
+   * changes (Stage's reactive effect on `ctx.viewedLevel`).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyViewedLevel();
+   * ```
+   */
+  reapplyViewedLevel(): void {
+    this.subscribeVision();
   }
 
   /** GM see-as-player: re-subscribe the vision channel viewing as `userId` (null = the GM's
