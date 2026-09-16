@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { ContributionRegistry, PANEL_CONTRACT } from "@shadowcat/core";
 import { coreUi } from "@shadowcat/module-core-ui";
 import { panels } from "@shadowcat/module-panels";
@@ -23,6 +23,8 @@ import { sheetItem } from "@shadowcat/module-sheet-item";
 import { sheetNote } from "@shadowcat/module-sheet-note";
 import { sheetTable } from "@shadowcat/module-sheet-table";
 import { SHEET_FALLBACK_CONTRACT, sheetContract } from "@shadowcat/core";
+import { ducking } from "@shadowcat/module-ducking";
+import { SETTINGS_SECTION_CONTRACT } from "@shadowcat/core";
 
 // Every panel-contributing module in `App`'s default set, registered in the
 // exact order enterWorld() passes to WorldSession. INVARIANT: exactly one
@@ -72,5 +74,18 @@ describe("sheet modules contribute sheets, not panels", () => {
     expect(contributions.entriesFor(sheetContract("item"))).toHaveLength(1);
     expect(contributions.entriesFor(sheetContract("note"))).toHaveLength(1);
     expect(contributions.entriesFor(sheetContract("table"))).toHaveLength(1);
+  });
+});
+
+describe("ducking contributes a settings section, not a panel", () => {
+  afterEach(() => localStorage.clear());
+
+  it("registers exactly one shadowcat.settings-section entry and no shadowcat.panel entry", () => {
+    const contributions = new ContributionRegistry();
+    const ctx = { contributions, hooks: { on: () => () => {} } } as never;
+    ducking.register(ctx);
+    expect(contributions.contributionsFor(PANEL_CONTRACT)).toHaveLength(0);
+    expect(contributions.contributionsFor(SETTINGS_SECTION_CONTRACT)).toHaveLength(1);
+    ducking.unregister?.();
   });
 });

@@ -32,6 +32,7 @@
     "@shadowcat/module-sheet-item": "workspace:*",
     "@shadowcat/module-sheet-note": "workspace:*",
     "@shadowcat/module-sheet-table": "workspace:*",
+    "@shadowcat/module-ducking": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },

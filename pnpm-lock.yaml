@@ -165,6 +165,9 @@ importers:
       '@shadowcat/module-core-ui':
         specifier: workspace:*
         version: link:../../modules/core-ui
+      '@shadowcat/module-ducking':
+        specifier: workspace:*
+        version: link:../../modules/ducking
       '@shadowcat/module-entry':
         specifier: workspace:*
         version: link:../../modules/entry
