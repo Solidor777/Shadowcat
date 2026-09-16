@@ -332,6 +332,9 @@ export class AudioEngine implements AudioApi {
       if (this.#duckNode && this.#context && gain !== this.#lastAppliedDuckGain) {
         this.#duckNode.gain.setTargetAtTime(gain, this.#context.currentTime, 0.02);
         this.#lastAppliedDuckGain = gain;
+        // `duck.depth` already notifies on every mutation; `duck.gain` only changes here, so a
+        // reactive consumer needs this fired from the same only-on-real-change branch.
+        this.notifyAudioChanged();
       }
       this.#duckLoopHandle = this.#opts.raf(frame);
     };
@@ -567,7 +570,7 @@ export class AudioEngine implements AudioApi {
   #degradedVolume(id: AudioChannelId, gain: number): number {
     const channel = this.#channelState[id];
     const master = this.#channelState.master;
-    return channel.muted || master.muted ? 0 : Math.min(1, gain * channel.gain * master.gain);
+    return channel.muted || master.muted ? 0 : Math.max(0, Math.min(1, gain * channel.gain * master.gain));
   }
 
   /** Release every node, player, and the duck-loop `raf` handle; the `AudioContext` itself is

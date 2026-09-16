@@ -148,6 +148,30 @@ describe("AudioEngine", () => {
     expect(pump.hasQueued()).toBe(false);
   });
 
+  it("the duck loop notifies subscribe listeners only when the applied gain actually changes", async () => {
+    const pump = pumpHarness();
+    const opts = makeOpts({ raf: pump.raf, caf: pump.caf });
+    const engine = new AudioEngine(opts);
+    await engine.unlock();
+    const calls: number[] = [];
+    engine.subscribe(() => calls.push(1));
+
+    // Moving the duck target: a pump that changes the applied gain fires a notification.
+    engine.duck.addSource("mic").set(1);
+    pump.pump(1_000);
+    pump.pump(1_100);
+    expect(calls.length).toBeGreaterThan(0);
+
+    // A huge elapsed gap saturates the exponential smoothing to exact float parity with its
+    // target, so the applied gain stops changing from here on.
+    pump.pump(100_000);
+    const settledCalls = calls.length;
+    for (let t = 100_200; t < 102_000; t += 200) pump.pump(t);
+    expect(calls.length, "no further notifications once the applied gain has settled").toBe(
+      settledCalls,
+    );
+  });
+
   it("dispose cancels the duck loop's raf handle and disconnects every player node", async () => {
     const pump = pumpHarness();
     const opts = makeOpts({ raf: pump.raf, caf: pump.caf });
@@ -346,5 +370,30 @@ describe("AudioEngine", () => {
       emitters: [{ token: "tok-2", asset: "a-rain", gain: 1, pan: 0, loop: false }],
     });
     expect(created).toHaveLength(2);
+  });
+
+  it("in the degraded mode, a negative server-sent emitter gain clamps to 0 rather than reaching el.volume negative", async () => {
+    const created: ReturnType<typeof stubMediaElement>[] = [];
+    setMediaElementFactory(() => {
+      const el = stubMediaElement();
+      created.push(el);
+      return el;
+    });
+    const engine = new AudioEngine(
+      makeOpts({
+        createContext: () => {
+          throw new TypeError("undefined is not a constructor");
+        },
+      }),
+    );
+    await engine.unlock();
+    engine.applyAudibility({
+      scene: "s1",
+      listener: "tok-listener",
+      spatial: true,
+      emitters: [{ token: "tok-1", asset: "a-wind", gain: -0.9, pan: 0, loop: true }],
+    });
+    expect(created[0].volume).toBeGreaterThanOrEqual(0);
+    expect(created[0].volume).toBe(0);
   });
 });
