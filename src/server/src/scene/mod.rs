@@ -2644,7 +2644,8 @@ impl SceneEcs {
         // The mover's level id, derived from its OWN elevation through the scene's declared
         // levels — part of the navmesh cache key (`navmesh_for`), so two levels with identical
         // wall geometry never share a mesh. `""` for a level-less scene.
-        let mover_level = elevation::level_of(&self.scene_levels(scene), elevation)
+        let scene_levels_for_navmesh = self.scene_levels(scene);
+        let mover_level = elevation::level_of(&scene_levels_for_navmesh, elevation)
             .map(|l| l.id.as_str())
             .unwrap_or("");
         // Hoisted so `movement_model` is available to the engine dispatch regardless of `is_gm`

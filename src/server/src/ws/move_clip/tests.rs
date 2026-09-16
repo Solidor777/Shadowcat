@@ -903,6 +903,7 @@ fn clip_samples_refuses_a_mover_on_another_level_even_with_clear_line_of_sight()
                 { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
                 { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
             ]),
+            remove: false,
         }],
     });
     let sight = sight(&ecs, &[]);
