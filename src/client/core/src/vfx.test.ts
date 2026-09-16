@@ -26,6 +26,8 @@ function asset(id: string, tags: string[] = []): Asset {
     original_byte_size: 1n,
     original_retained: false,
     conversion_note: null,
+    duration_ms: null,
+    sample_rate: null,
     sheet: null,
   };
 }

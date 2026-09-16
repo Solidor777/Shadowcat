@@ -480,7 +480,14 @@ fn a_still_image_produces_no_sheet() {
     let dir = tempfile::tempdir().unwrap();
     let input = png_rgba(16, 16);
     let staged = stage(dir.path(), &input);
-    let p = process_staged(&staged, "image/png", input.len() as i64, false).unwrap();
+    let p = process_staged(
+        &staged,
+        "image/png",
+        input.len() as i64,
+        false,
+        Default::default(),
+    )
+    .unwrap();
     assert!(p.meta.sheet.is_none());
     assert!(!with_suffix(&staged, ".sheet.webp").exists());
     assert!(!with_suffix(&staged, ".sheet.json").exists());
@@ -513,9 +520,23 @@ fn reprocessing_the_same_animation_regenerates_an_identical_sheet() {
     let dir = tempfile::tempdir().unwrap();
     let input = gif_two_frames();
     let first = stage(dir.path(), &input);
-    let p1 = process_staged(&first, "image/gif", input.len() as i64, true).unwrap();
+    let p1 = process_staged(
+        &first,
+        "image/gif",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     let second = stage(dir.path(), &input);
-    let p2 = process_staged(&second, "image/gif", input.len() as i64, true).unwrap();
+    let p2 = process_staged(
+        &second,
+        "image/gif",
+        input.len() as i64,
+        true,
+        Default::default(),
+    )
+    .unwrap();
     let s1 = p1.meta.sheet.expect("first processing derives a sheet");
     let s2 = p2.meta.sheet.expect("reprocessing regenerates a sheet");
     assert_eq!(s1, s2);

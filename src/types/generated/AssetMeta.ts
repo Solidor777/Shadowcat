@@ -51,7 +51,7 @@ original_retained: boolean,
 /**
  * Why the upload was stored pass-through instead of converted, if it was.
  */
-conversion_note: string | null,
+conversion_note: string | null, 
 /**
  * Decoded audio duration, milliseconds; `None` for a non-audio asset or a decode
  * failure. `f64`-adjacent precision is unnecessary here — this is metadata display, not
@@ -59,12 +59,12 @@ conversion_note: string | null,
  * consumed only by `AssetResolver`/display code, never round-tripped through a
  * client-authored write.
  */
-duration_ms: bigint | null,
+duration_ms: bigint | null, 
 /**
  * Decoded audio sample rate, Hz (the SOURCE rate, before the pipeline's 48 kHz Opus
  * resample); `None` for a non-audio asset or a decode failure.
  */
-sample_rate: bigint | null,
+sample_rate: bigint | null, 
 /**
  * Server-derived grid-sheet geometry/timing for an animated source, or `None` for a
  * non-animated asset or one whose sheet generation produced nothing (fewer than 2 decoded

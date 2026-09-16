@@ -357,49 +357,49 @@ request_id: string,
 /**
  * The instance to reset.
  */
-child_id: string, } | { "type": "audio_transport",
+child_id: string, } | { "type": "audio_transport", 
 /**
  * The transport operation to apply.
  */
-op: AudioOp, } | { "type": "audio_listen_as",
+op: AudioOp, } | { "type": "audio_listen_as", 
 /**
  * The token to listen as, or `None` to clear the override (falls back to
  * `select_listener`'s owned-token rule).
  */
-token: string | null, } | { "type": "play_vfx",
+token: string | null, } | { "type": "play_vfx", 
 /**
  * Scene the effect plays on (must grant the sender READ).
  */
-scene: string,
+scene: string, 
 /**
  * The spritesheet or animated-source asset id.
  */
-asset: string,
+asset: string, 
 /**
  * Scene-coordinate x.
  */
-x: number,
+x: number, 
 /**
  * Scene-coordinate y.
  */
-y: number,
+y: number, 
 /**
  * Uniform scale multiplier; `None` = the asset's native scale (1).
  */
-scale?: number,
+scale?: number, 
 /**
  * Rotation in degrees; `None` = unrotated.
  */
-rotation?: number,
+rotation?: number, 
 /**
  * Playback duration cap in ms; `None` = one loop of the asset.
  */
-duration_ms?: number,
+duration_ms?: number, 
 /**
  * Paired sound asset id; carried through to `ServerMsg::Vfx` and played back through
  * `AudioApi.playOneShot` by the relaying client.
  */
-sound?: string,
+sound?: string, 
 /**
  * Elevation the effect plays at; the render layer filters by the viewed level.
  */
