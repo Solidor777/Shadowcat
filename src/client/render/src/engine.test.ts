@@ -328,6 +328,35 @@ test("reapplyViewedLevel unsubscribes the old vision handle and re-subscribes wi
   expect(opts[2]).toBeUndefined();
 });
 
+test("reapplyViewedLevel resets the mask watermark so a frame at the SAME seq still applies", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  let level: string | null = "l1";
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    viewedLevel: () => level,
+  });
+  engine.start();
+  store.applyCommand(sceneCmd(1, "s1"));
+  // The pre-switch level's frame applies and leaves the watermark at seq 1.
+  onUpdate({ payload: { mode: "all" }, computedAtSeq: 1 });
+  expect(backend.visibility).toEqual({ mode: "all", visible: [], explored: [], perceived: [] });
+
+  // Switch level: the server issues a fresh frame for the new level, but the world seq happens
+  // not to have advanced past the pre-switch watermark. Without the reset this fix adds,
+  // `onSceneFrame` would drop it outright (`computedAtSeq <= lastAppliedSeq`).
+  level = "l2";
+  engine.reapplyViewedLevel();
+  backend.visibility = null; // clears the prior frame so a dropped new one is observable
+  onUpdate({
+    payload: { mode: "masked", polygons: [{ scene: "s1", level: "l2", points: [0, 0, 10, 0, 10, 10] }] },
+    computedAtSeq: 1,
+  });
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
+});
+
 test("subscribeScene: a frame above the watermark defers until the store advances", () => {
   const store = new DocumentStore();
   const backend = new MockBackend();
@@ -1026,6 +1055,53 @@ test("toLighting parses lit cells for the active scene and fails safe", () => {
   expect(engine.toLightingForTest({ mode: "all" })).toBeNull();
   expect(engine.toLightingForTest({ mode: "masked", lit: "garbage" })).toBeNull();
   expect(engine.toLightingForTest(null)).toBeNull();
+});
+
+test("toVisibility/toLighting filter polygons/lit groups to the viewed level on the same scene", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  let onUpdate!: (f: { payload: unknown; computedAtSeq: number }) => void;
+  const engine = new RenderEngine({
+    store, assets: new AssetResolver(), backend, grid: { kind: "square", size: 100 },
+    subscribeScene: (_c, cb) => { onUpdate = cb; return { unsubscribe: () => {} }; },
+    viewedLevel: () => "l1",
+  });
+  engine.start();
+  store.applyCommand(sceneCmd(1, "s1"));
+  onUpdate({
+    payload: {
+      mode: "masked",
+      polygons: [
+        { scene: "s1", level: "l1", points: [0, 0, 10, 0, 10, 10] },
+        { scene: "s1", level: "l2", points: [20, 20, 30, 20, 30, 30] },
+      ],
+      lit: [
+        { scene: "s1", level: "l1", cell: 100, cells: [0, 0, 0, 0, -1] },
+        { scene: "s1", level: "l2", cell: 100, cells: [5, 5, 0, 0, -1] },
+      ],
+      bands: [],
+      renderHints: [],
+    },
+    computedAtSeq: 1,
+  });
+  // Only the "l1"-tagged polygon reaches the fog mask; the "l2" source on the same scene is
+  // excluded even though it shares that scene id.
+  expect(backend.visibility).toEqual({ mode: "masked", visible: [{ points: [0, 0, 10, 0, 10, 10] }], explored: [], perceived: [] });
+
+  const li = engine.toLightingForTest({
+    mode: "masked",
+    bands: [],
+    renderHints: [],
+    lit: [
+      { scene: "s1", level: "l1", cell: 100, cells: [0, 0, 0, 0, -1] },
+      { scene: "s1", level: "l2", cell: 100, cells: [5, 5, 0, 0, -1] },
+    ],
+  });
+  expect(li).not.toBeNull();
+  // The "l2" group's cell (5,5) never reaches the lighting overlay; only "l1"'s (0,0) does.
+  expect(li!.cells).toEqual([
+    { i: 0, j: 0, band: 0, tint: 0, hint: -1, corners: [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 100, y: 100 }, { x: 0, y: 100 }] },
+  ]);
 });
 
 // Regression: on a hex scene the lighting overlay's `lit` cells are also axial (q,r) — this

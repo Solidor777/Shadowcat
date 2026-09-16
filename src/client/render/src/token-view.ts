@@ -407,11 +407,18 @@ export class TokenView {
     if (t) this.backend.setToken(id, { ...spec, x: t.x, y: t.y, rotation: t.rotation });
   }
 
-  /** Resolve `doc`'s own level id on its parent scene (mirrors `sceneScopedDocs`'s point-elevation
-   * branch exactly — the same `levelOf` call over the same `SceneEngine.levels` read), or `null`
-   * when the parent scene is unresolvable or declares no levels. Used only by `toSpec`'s
-   * ghost-other-levels fx decision; `reconcile`'s own level scoping goes through `sceneScopedDocs`
-   * directly, never this helper — two callers reading the SAME shared predicate, not a fork.
+  /** Resolve `doc`'s own level id on its parent scene: prefers the server-resolved
+   * `FootprintLookup.level(tokenId)` (the `"footprints"` channel's authoritative resolution)
+   * when the lookup has an
+   * entry for this token, falling back to a local re-derivation (mirrors `sceneScopedDocs`'s
+   * point-elevation branch exactly — the same `levelOf` call over the same `SceneEngine.levels`
+   * read) only when it does not. Both agree today (same `levelOf` predicate over the same
+   * inputs), but the server value is authoritative should the two ever diverge — e.g. a future
+   * redaction of a token's own `elevation`, which would leave the local derivation reading a
+   * value the recipient should not see while the server-resolved level stays correct. Used only
+   * by `toSpec`'s ghost-other-levels fx decision; `reconcile`'s own level scoping goes through
+   * `sceneScopedDocs` directly, never this helper — two callers reading the SAME shared
+   * predicate, not a fork.
    * @param doc The token document to resolve a level for.
    * @returns The resolved level id, or `null`.
    * @example
@@ -422,6 +429,8 @@ export class TokenView {
    * ```
    */
   private resolvedLevelOf(doc: WireDocument): string | null {
+    const serverLevel = this.footprints().level(doc.id);
+    if (serverLevel !== null) return serverLevel;
     const sceneDoc = this.store.query("scene").find((s) => s.id === doc.parent_id);
     const levels = (sceneDoc?.engine as SceneEngine | undefined)?.levels ?? [];
     if (levels.length === 0) return null;

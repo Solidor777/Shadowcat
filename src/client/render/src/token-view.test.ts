@@ -689,3 +689,31 @@ test("ghostOtherLevels: () => false (default) excludes the other-level token ent
   expect(backend.tokens.has("tok-ground")).toBe(true);
   expect(backend.tokens.has("tok-upper")).toBe(false);
 });
+
+test("resolvedLevelOf prefers the server-resolved FootprintLookup.level over the local elevation-based derivation", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  // Locally, this token's stored elevation (0) resolves to "l1" — but the server's resolved
+  // footprints entry states "l2". The server value must win.
+  const tok = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: tok }]));
+  const footprints: FootprintLookup = {
+    token: () => null,
+    unit: () => null,
+    level: (id) => (id === "tok1" ? "l2" : null),
+  };
+  const view = new TokenView(
+    store, new AssetResolver(), backend, () => "s1", () => "l1",
+    () => footprints, () => new Set(), () => new Set(), () => true,
+  );
+  view.reconcile();
+  // Ghosting is enabled; the server's resolved level ("l2") disagrees with the viewed level
+  // ("l1"), so the token renders ghosted despite its own stored elevation locally resolving to
+  // "l1" — proof `resolvedLevelOf` consumed the server value rather than the local derivation.
+  expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }]);
+});
