@@ -3287,3 +3287,41 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
   escape, so a `-m "C:\path\"` argument can carry a `--no-verify` past the POSIX tokenizer — the
   remote is the backstop for that class.
 
+## Phase 3 — Atmosphere
+
+### M23 · Audio ✅
+Branch `m23-audio`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m23-audio.md` (design:
+`docs/superpowers/specs/2026-09-11-m23-audio-design.md`; phase-3 master integration:
+`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`), as 22 sequential
+tasks split M23a (server-authoritative transport, transcode, mixer UI) / M23b (spatial
+audibility). Delivered:
+- **Server transport:** `playlist`/`audio-state` engine doc types
+  (`data::engine::audio::{PlaylistEngine, AudioStateEngine}`), the pure `audio::state::apply`
+  reducer (mirrors `combat::transition`'s posture — no I/O), `WriteOrigin::AudioTransport`
+  (Update-only; Create/Delete of `audio-state` are `WriteOrigin::ConfigSeed`-only, seeded once
+  by `world_seed` — a genuine per-operation guard split, the first of its kind in the codebase),
+  `ClientMsg::AudioTransport`/`AudioListenAs`, `ServerMsg::AudioError`,
+  `audio::transport::on_active_scene` (swaps a scene's ambience on `world-settings.activeScene`
+  commit).
+- **Transcode pipeline (D9):** `data::asset::process::audio` — `symphonia` probe+decode →
+  `rubato` resample to 48kHz → Opus VBR encode, muxed into Ogg and/or WebM sibling
+  derivatives (`AudioContainers`, selected at import) alongside the untouched canonical
+  original; never a canonical format swap, unlike the image pipeline's WebP conversion. Unlike
+  `thumb`/`preview`, these siblings are explicitly not `Variant`s and are never regenerated on
+  serve — a missing one 404s.
+- **`@shadowcat/audio`:** a new framework-neutral package (`AudioEngine`, `TrackPlayer`
+  server-clock-synced `<audio>` playback, `OneShotPlayer` decode+LRU cache,
+  `EmitterPlayer`, `DuckControllerImpl`), Web-Audio-injected for Node testability.
+- **Modules:** `@shadowcat/module-audio` (channel mixer, now-playing GM transport, playlists
+  list) and `@shadowcat/module-sheet-playlist` (name/mode/channel/fade + whole-array tracks
+  editor), plus the game-settings Audio fieldset (world spatial/occlusion/through-wall-gain
+  overlay) and per-scene ambience picker, and the asset-browser `audio` kind.
+- **M23b spatial audibility:** `scene::audibility` (falloff/occlusion/pan/listener-selection
+  geometry, composed from the SAME `segments_cross`/`elevation::wall_occludes` primitives the
+  sight raycaster uses — never a second occlusion rule), the `"audibility"` derived channel
+  (one `SceneAudibility` slice per scene with a token, mirroring `"footprints"`'/`"vision"`'s own
+  multi-scene shape, gated on whole-document `cap::READ` per emitting token — an
+  identity-disclosure gate `token_light_emission`'s own field does not need),
+  client `EmitterPlayer` + `AudioEngine.applyAudibility`, and the GM "listen as" preview seam.
+
