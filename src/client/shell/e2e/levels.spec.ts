@@ -187,6 +187,19 @@ test("levels: two floors, per-floor token scoping, and a Teleport region trigger
     await expect(stageHost(gm)).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
     await disableSnap(gm);
+    // The player's token is a raw asset placement (no linked/instanced actor), so it carries no
+    // vision source; under the default fail-closed `Visible` movement restriction the player's
+    // own visibility mask would be empty and every non-GM route request would refuse as
+    // Unreachable regardless of the region below. Set the WORLD tier permissive, matching
+    // `hex-movement.spec.ts`'s own setup for the same reason: exercising levels/teleport geometry
+    // needs no vision/lighting authoring, so unrestricted movement is the correct setup here too.
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-game-settings:panel").click();
+    await gm.getByLabel("Movement restriction", { exact: true }).selectOption("unrestricted");
+    await expect(gm.getByLabel("Movement restriction", { exact: true })).toHaveValue("unrestricted");
+    await gm.getByTestId("launcher-trigger").click();
+    await gm.getByTestId("launcher-item-game-settings:panel").click();
+
     await uploadAsset(gm, "token.png", 1);
     await uploadAsset(gm, "ground-bg.png", 2);
     await uploadAsset(gm, "upper-bg.png", 3);
@@ -197,9 +210,13 @@ test("levels: two floors, per-floor token scoping, and a Teleport region trigger
     await expect(gm.getByTestId(`level-${groundId}`)).toHaveAttribute("aria-pressed", "true");
 
     // --- Place the player's token on Ground: the place tool stamps the GM's currently-viewed
-    // floor's bottom onto the new token's elevation. ---
+    // floor's bottom onto the new token's elevation. `AssetPicker` mounts as soon as the place
+    // tool activates (not gated on a scene click), and `controller.selectedAsset` persists
+    // across placements (a stamp-tool convention, mirrored by every other spec) — so pick the
+    // asset, then place with exactly ONE `clickScene`, matching `stage.spec.ts`'s convention.
+    // A priming click here would, on a LATER placement, fire against the still-selected asset
+    // from the PRIOR placement and create a spurious duplicate token. ---
     await gm.getByTestId("tool-place").click();
-    await clickScene(gm, PLAYER_START);
     const tokenPick = gm.getByTestId("picker-asset").first();
     await expect(tokenPick).toBeVisible({ timeout: 10_000 });
     await tokenPick.click();
@@ -219,7 +236,6 @@ test("levels: two floors, per-floor token scoping, and a Teleport region trigger
     await gm.getByTestId(`level-${upperId}`).click();
     await expect(gm.getByTestId(`level-${upperId}`)).toHaveAttribute("aria-pressed", "true");
     await gm.getByTestId("tool-place").click();
-    await clickScene(gm, NPC_START);
     const npcPick = gm.getByTestId("picker-asset").first();
     await expect(npcPick).toBeVisible({ timeout: 10_000 });
     await npcPick.click();
@@ -256,7 +272,16 @@ test("levels: two floors, per-floor token scoping, and a Teleport region trigger
     await gm.getByTestId("region-trigger-effect").selectOption("teleport");
     await gm.getByTestId("region-trigger-teleport-x").fill(String(NPC_START.x));
     await gm.getByTestId("region-trigger-teleport-y").fill(String(NPC_START.y));
-    await gm.getByTestId("region-trigger-teleport-elevation").fill(TELEPORT_ELEVATION);
+    const teleportElevation = gm.getByTestId("region-trigger-teleport-elevation");
+    await teleportElevation.fill(TELEPORT_ELEVATION);
+    // The teleport editor's numeric inputs commit on `change` (fired on blur), not on every
+    // keystroke — `fill()` only dispatches `input`. The x/y fields above each get blurred for
+    // free by the next field stealing focus, but nothing focusable follows the elevation field:
+    // `<canvas>` carries no `tabindex`, so a subsequent `page.mouse.down()` on the stage canvas
+    // never steals DOM focus and never blurs it. Force the blur explicitly, or `target.elevation`
+    // stays at its unfilled default (`null` — "leave the token's current elevation unchanged")
+    // and the teleport lands the player on the right floor's x/y at the WRONG elevation.
+    await teleportElevation.blur();
     await dragScene(gm, REGION_A, REGION_B);
 
     // --- The player walks from their start point into the region: the "enter" trigger fires,
