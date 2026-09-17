@@ -68,6 +68,7 @@ export default defineConfig({
             { text: "audio", link: "/modules/audio" },
             { text: "sheet-playlist", link: "/modules/sheet-playlist" },
             { text: "vfx", link: "/modules/vfx" },
+            { text: "ducking", link: "/modules/ducking" },
           ],
         },
       ],

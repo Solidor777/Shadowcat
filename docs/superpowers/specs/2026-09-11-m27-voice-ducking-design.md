@@ -132,12 +132,15 @@ controller takes the max; this milestone never touches gain nodes itself.
 
 ## 5. Dependency review (filled in by the first task; the master §7 row is the ruling)
 
+Measured against the resolved `Cargo.lock` versions via `cargo metadata` (crates) and each
+project's own licensing (the C libraries they bind).
+
 | Crate | Version | License | Binds | Result |
 |---|---|---|---|---|
-| `windows` | measured | measured | Win32 (system) | measured |
-| `coreaudio-rs` / `coreaudio-sys` | measured | measured | CoreAudio (system) | measured |
-| `core-foundation` | measured | measured | CoreFoundation (system) | measured |
-| `pipewire` / `libspa` | measured | measured | libpipewire-0.3 (MIT) | measured |
+| `windows` | 0.58.0 | MIT OR Apache-2.0 | Win32 (system) | PASS — on the invariant-9 list |
+| `coreaudio-rs` / `coreaudio-sys` | 0.2.18 (sys, latest) | MIT | CoreAudio (system) | NOT USED — `coreaudio-sys` 0.2.18 does not wrap `AudioHardwareCreateProcessTap` (grep of the crate source), so `macos.rs` hand-binds the process-tap surface via `extern "C"` over `core-foundation` per Task 5 |
+| `core-foundation` | 0.10.1 | MIT OR Apache-2.0 | CoreFoundation (system) | PASS — on the invariant-9 list |
+| `pipewire` / `libspa` | 0.8.0 | MIT | libpipewire-0.3 (MIT) | PASS — on the invariant-9 list |
 
 ## 6. Docs + skills
 

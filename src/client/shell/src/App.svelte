@@ -38,6 +38,7 @@
   import { audio } from "@shadowcat/module-audio";
   import { sheetPlaylist } from "@shadowcat/module-sheet-playlist";
   import { vfx } from "@shadowcat/module-vfx";
+  import { ducking } from "@shadowcat/module-ducking";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -185,7 +186,7 @@
     const s = new WorldSession({
       selfId: me.id,
       connect: webSocketConnect(wsUrl),
-      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, audio, sheetPlaylist, vfx],
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, audio, sheetPlaylist, vfx, ducking],
       onEvicted: () => leaveWorld(),
       onReject: (reason, detail) =>
         notifications.push(

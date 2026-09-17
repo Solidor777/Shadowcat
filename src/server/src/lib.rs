@@ -10,6 +10,9 @@
 /// Server-side audio: the pure transport-state engine (`audio::state::apply`)
 /// and the GM-only `AudioTransport` handler (`audio::transport`).
 pub mod audio;
+/// `shadowcat audio-monitor`: the OS audio-session-level subcommand (Windows WASAPI / macOS
+/// Core Audio process tap / Linux PipeWire) serving a localhost WebSocket.
+pub mod audio_monitor;
 /// Accounts, sessions, password hashing, and the first-run setup flow.
 pub mod auth;
 pub mod backup;
