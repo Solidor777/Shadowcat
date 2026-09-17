@@ -168,6 +168,13 @@ reason = "Builds dist/ so the server's rust-embed can compile; the identical com
 [[gate]]
 workflow = "ci.yml"
 job = "e2e"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
+
+[[gate]]
+workflow = "ci.yml"
+job = "e2e"
 command = "cargo build -p shadowcat --bin test_server"
 tier = "push"
 
@@ -184,6 +191,13 @@ job = "ui-e2e"
 command = "pnpm install --frozen-lockfile"
 tier = "setup"
 reason = "Installs the workspace's node dependencies every later step imports."
+
+[[gate]]
+workflow = "ci.yml"
+job = "ui-e2e"
+command = "sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev"
+tier = "ci-only"
+reason = "Installs the system PipeWire dev package the audio-monitor's Linux backend links against; apt-get with sudo exists only on the Ubuntu runner, never on a Windows/macOS developer machine."
 
 [[gate]]
 workflow = "ci.yml"

@@ -143,17 +143,38 @@ extern "C" {
     /// an unrecognized selector fails closed (returns `None`) instead of raising
     /// `doesNotRecognizeSelector:` and aborting the process.
     fn class_respondsToSelector(cls: *mut c_void, sel: *mut c_void) -> i8;
-    /// `objc_msgSend`, the Objective-C runtime's message dispatch — every Objective-C method
-    /// call in this file goes through one of these two arities (both linked to the SAME symbol
-    /// via `link_name`; only the Rust-level signature varies per call site).
-    #[link_name = "objc_msgSend"]
-    fn objc_msg_send_0(receiver: *mut c_void, selector: *mut c_void) -> *mut c_void;
-    #[link_name = "objc_msgSend"]
-    fn objc_msg_send_1(
-        receiver: *mut c_void,
-        selector: *mut c_void,
-        arg1: *mut c_void,
-    ) -> *mut c_void;
+    /// `objc_msgSend`, the Objective-C runtime's message dispatch. Declared ONCE at its minimal
+    /// (0-argument-selector) arity: Objective-C calls this same C symbol with a different
+    /// effective signature per invocation depending on the target method's real argument count,
+    /// which `extern "C"` cannot express as two declarations of one link name (`E0308`
+    /// `clashing_extern_declarations`) — every wider-arity call site instead takes this
+    /// declaration's function pointer and `transmute`s it to the specific
+    /// `unsafe extern "C" fn(...)` type that call needs (`objc_msg_send_1`), the standard
+    /// pattern for calling variable-arity `objc_msgSend` from Rust without the `objc`/`objc2`
+    /// crates.
+    fn objc_msgSend(receiver: *mut c_void, selector: *mut c_void) -> *mut c_void;
+}
+
+/// `objc_msgSend` called with a bare selector (no arguments) — the declared arity, so no
+/// transmute is needed.
+unsafe fn objc_msg_send_0(receiver: *mut c_void, selector: *mut c_void) -> *mut c_void {
+    objc_msgSend(receiver, selector)
+}
+
+/// `objc_msgSend` called with one argument (`initStereoMixdownOfProcesses:` here) — reinterprets
+/// `objc_msgSend`'s function pointer at the 3-argument arity the call actually needs. See
+/// `objc_msgSend`'s doc comment for why this file cannot declare that arity as its own `extern`
+/// item.
+unsafe fn objc_msg_send_1(
+    receiver: *mut c_void,
+    selector: *mut c_void,
+    arg1: *mut c_void,
+) -> *mut c_void {
+    let send: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void =
+        std::mem::transmute(
+            objc_msgSend as unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void,
+        );
+    send(receiver, selector, arg1)
 }
 
 /// A Core Audio device IO callback (`AudioDeviceIOProc`): fires once per IO cycle carrying the
@@ -189,9 +210,13 @@ struct AudioBuffer {
     data: *mut c_void,
 }
 
+/// Shared per-pid running-peak map, published into `TAP_PEAKS` once the dedicated Core Audio
+/// thread starts.
+type TapPeaks = Arc<Mutex<HashMap<i32, f32>>>;
+
 /// Per-process-tap running peak, shared with `enumerate_processes` and reset on each read —
 /// mirrors the Linux backend's window-reset shape (`LinuxMonitor`'s `NodeState.peak`).
-static TAP_PEAKS: Mutex<Option<Arc<Mutex<HashMap<i32, f32>>>>> = Mutex::new(None);
+static TAP_PEAKS: Mutex<Option<TapPeaks>> = Mutex::new(None);
 
 /// The IO callback registered on every tapped aggregate device: computes this window's
 /// max-abs-sample over the buffer's interleaved `Float32` data and folds it into `TAP_PEAKS`
@@ -219,8 +244,10 @@ extern "C" fn tap_io_proc(
         std::slice::from_raw_parts(buffer.data as *const u8, buffer.data_byte_size as usize)
     };
     let peak = samples
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b).abs())
         .fold(0f32, f32::max);
     let pid = client_data as usize as i32;
     if let Ok(guard) = TAP_PEAKS.lock() {
@@ -539,10 +566,7 @@ fn create_tap_for_pid(pid: i32) -> Option<TapHandle> {
     // SAFETY: `description_dict` is a live `CFDictionaryRef` for the duration of this call;
     // `aggregate_id` is a valid `AudioObjectID` out-param.
     let status = unsafe {
-        AudioHardwareCreateAggregateDevice(
-            description_dict.as_CFTypeRef() as *const c_void,
-            &mut aggregate_id,
-        )
+        AudioHardwareCreateAggregateDevice(description_dict.as_CFTypeRef(), &mut aggregate_id)
     };
     if status != 0 {
         // SAFETY: `tap_id` was returned by the successful `AudioHardwareCreateProcessTap`

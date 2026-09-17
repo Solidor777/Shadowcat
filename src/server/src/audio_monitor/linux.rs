@@ -15,7 +15,7 @@
 //! `Core::get_registry`, `Registry`'s listener builder (`global`/`global_remove`),
 //! `GlobalObject`'s `props`, `spa::utils::dict::DictRef::get`,
 //! `stream::Stream::new`/`connect`/`add_local_listener`, `StreamListener`,
-//! `StreamFlags::{AUTOCONNECT, PASSIVE}`, `Stream::dequeue_buffer`, `Buffer::datas_mut`,
+//! `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`, `Buffer::datas_mut`,
 //! `Data::data`/`Data::chunk`, `Chunk::offset`/`Chunk::size`, `LoopRef::add_timer`,
 //! `TimerSource::update_timer`, `spa::param::audio::AudioInfoRaw`,
 //! `spa::pod::serialize::PodSerializer`, and `spa::pod::Pod::from_bytes` — was checked against
@@ -257,8 +257,8 @@ fn run_pipewire_loop(
     main_loop.run();
 }
 
-/// Creates a passive `Stream::Input` connected directly to node `node_id`'s own ports
-/// (`StreamFlags::AUTOCONNECT | StreamFlags::PASSIVE`), whose `process` callback folds each
+/// Creates a `Stream::Input` connected directly to node `node_id`'s own ports
+/// (`StreamFlags::AUTOCONNECT | StreamFlags::MAP_BUFFERS`), whose `process` callback folds each
 /// buffer's interleaved `F32LE` samples into that node's `peak` field via
 /// `max-abs-sample`. Returns `None` on any negotiation failure (logged by discarding — a
 /// single node's capture failing must never take down the whole discovery loop).
@@ -330,7 +330,7 @@ fn attach_monitor_stream(
         .connect(
             spa::utils::Direction::Input,
             Some(node_id),
-            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::PASSIVE,
+            pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
             &mut params,
         )
         .ok()?;
