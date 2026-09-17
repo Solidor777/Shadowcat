@@ -137,7 +137,10 @@ impl SessionMonitor for LinuxMonitor {
 /// order at scope exit tears the listener down first).
 struct CaptureStream {
     /// Dropped FIRST — unregisters the `process` callback from the stream's listener list.
-    listener: pw::stream::StreamListener<()>,
+    /// Held only for its `Drop` side effect (`StreamListener` exposes no other API over its
+    /// opaque internal hook); leading underscore is rustc's own recognized idiom for a binding
+    /// kept solely for drop-order, exempting it from `dead_code` without a suppression attribute.
+    _listener: pw::stream::StreamListener<()>,
     /// Dropped SECOND — destroys the underlying `pw_stream`, safe only once no listener still
     /// points into it.
     stream: pw::stream::Stream,
@@ -366,7 +369,10 @@ fn attach_monitor_stream(
         )
         .ok()?;
 
-    Some(CaptureStream { listener, stream })
+    Some(CaptureStream {
+        _listener: listener,
+        stream,
+    })
 }
 
 /// Pure bounds logic for reading only a `Data`'s valid chunk window (`chunk_offset`/`chunk_size`)
