@@ -3536,3 +3536,37 @@ audibility). Delivered:
   identity-disclosure gate `token_light_emission`'s own field does not need),
   client `EmitterPlayer` + `AudioEngine.applyAudibility`, and the GM "listen as" preview seam.
 
+### M27 · Voice ducking ✅
+
+Branch: `m27-ducking`. Spec: `docs/superpowers/specs/2026-09-11-m27-voice-ducking-design.md`.
+Delivered: `shadowcat audio-monitor` subcommand (Windows WASAPI / macOS Core Audio process tap
+/ Linux PipeWire backends behind one `SessionMonitor` trait; a localhost, origin-gated
+WebSocket at `/levels`; `hello`/`levels`/`watch` frames; watch-list filtering server-side).
+`@shadowcat/module-ducking`: `KeySource`, `MicVadSource` (`VadEngine` + `vad.worklet.ts`,
+PII-invariant boolean-only worklet messaging), `OsMonitorSource` (reconnect/backoff),
+`DuckSourcesController`, a per-device `localStorage` preferences mirror, and the
+`DuckingSettings.svelte` contributed section. New client seam: `SETTINGS_SECTION_CONTRACT`
+(`Contribution.settingsSection`), rendered by `Settings.svelte` after its built-in content;
+`settings` module now `provides` it. Wired to M23's real `DuckController`/`AudioApi.context()`
+via `DuckingRuntime.svelte`, a headless component contributed into the always-mounted
+`shadowcat.surface:overlay` surface rather than from `register(ctx)` directly — `ModuleContext`
+(the framework-neutral type a module's `register` receives) carries no `audio` member, only
+`AppContext` (the Svelte-reachable shell context) does, and the key/OS-monitor sources must
+keep ducking while the Settings panel — which unmounts on close — is closed. Dependency
+review: `windows` 0.58.0 (MIT OR Apache-2.0) and `core-foundation` 0.10.1 (MIT OR Apache-2.0)
+and `pipewire`/`libspa` 0.8.0 (MIT, binds `libpipewire-0.3`, also MIT) all PASS; `coreaudio-rs`/
+`coreaudio-sys` were evaluated and NOT USED (`coreaudio-sys` 0.2.18 does not wrap
+`AudioHardwareCreateProcessTap`), so `macos.rs` hand-binds the process-tap surface via
+`extern "C"` over `core-foundation`. CI: PipeWire dev headers on the Ubuntu legs of `rust`/
+`docs`. Tests: `cargo test --all` 3787 passed 0 failed (2787 lib unit + 130 integration + 870
+doc-tests); `pnpm -r test` all packages green (`@shadowcat/module-ducking` 41 tests across 9
+files). e2e: `ducking.spec.ts` written, NOT run by this milestone (dispatcher-run per master §4).
+Verification caveat: `linux.rs`'s passive monitor-port capture stream and `macos.rs`'s
+process-tap IO callback (peak measurement on both platforms) are implemented against the
+published `pipewire`/`libspa` 0.8 and Core Audio process-tap API surfaces, but are unverified
+end-to-end without a real Linux/macOS host with audio hardware in this development environment
+— `macos.rs`'s `CATapDescription` construction in particular goes through hand-transcribed
+Objective-C runtime calls with no `objc`/`objc2` dependency, the single highest-risk surface in
+the file. Both backends' non-capture surface (node/process enumeration, naming) was checked
+against the resolved crates' vendored source.
+

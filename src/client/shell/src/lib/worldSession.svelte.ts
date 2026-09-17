@@ -376,6 +376,7 @@ export class WorldSession {
         }
       },
       unlock: () => engine.unlock(),
+      context: () => engine.context(),
       get duck() {
         const duck = engine.duck;
         return {

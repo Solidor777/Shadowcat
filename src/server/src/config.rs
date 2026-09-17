@@ -71,6 +71,59 @@ pub struct Cli {
     /// (`Config.retain_originals`); `--retain-originals false` discards it.
     #[arg(long)]
     pub retain_originals: Option<bool>,
+    /// Subcommand; `None` (the default — no subcommand given) is ordinary serve mode. Every
+    /// root flag above continues to work exactly as before this field existed.
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+}
+
+/// Top-level subcommands of the `shadowcat` binary.
+///
+/// # Examples
+///
+/// ```
+/// use clap::Parser;
+/// use shadowcat::config::{Cli, CliCommand};
+///
+/// let cli = Cli::parse_from(["shadowcat", "audio-monitor", "--port", "0"]);
+/// assert!(matches!(cli.command, Some(CliCommand::AudioMonitor(_))));
+/// ```
+#[derive(clap::Subcommand, Debug)]
+pub enum CliCommand {
+    /// Serve the localhost audio-session-level WebSocket the ducking module's
+    /// `OsMonitorSource` connects to (`crate::audio_monitor::server::run`). Never starts the
+    /// main world server; mutually exclusive with `--backup-to`/`--restore-from`.
+    AudioMonitor(AudioMonitorArgs),
+}
+
+/// Arguments for `shadowcat audio-monitor`.
+///
+/// # Examples
+///
+/// ```
+/// use clap::Parser;
+/// use shadowcat::config::{Cli, CliCommand};
+///
+/// let cli = Cli::parse_from(["shadowcat", "audio-monitor", "--watch", "discord", "--watch", "teams"]);
+/// let Some(CliCommand::AudioMonitor(args)) = cli.command else {
+///     unreachable!()
+/// };
+/// assert_eq!(args.port, 31998); // the built-in default
+/// assert_eq!(args.watch, vec!["discord".to_string(), "teams".to_string()]);
+/// ```
+#[derive(clap::Args, Debug)]
+pub struct AudioMonitorArgs {
+    /// Localhost port to bind. `0` binds an ephemeral port (printed on start).
+    #[arg(long, default_value_t = 31998)]
+    pub port: u16,
+    /// Additional allowed `Origin` header values, beside the built-in
+    /// `http://localhost:30000`/`http://127.0.0.1:30000` defaults.
+    #[arg(long)]
+    pub allow_origin: Vec<String>,
+    /// Initial watched-process substrings (case-insensitive); default `discord` when empty.
+    /// The client's live `watch` frame replaces this list at runtime without a restart.
+    #[arg(long)]
+    pub watch: Vec<String>,
 }
 
 /// Effective server configuration after layering. Precedence (high→low):

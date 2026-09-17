@@ -36,6 +36,7 @@
     "@shadowcat/module-sheet-table": "workspace:*",
     "@shadowcat/module-sheet-playlist": "workspace:*",
     "@shadowcat/module-vfx": "workspace:*",
+    "@shadowcat/module-ducking": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },
