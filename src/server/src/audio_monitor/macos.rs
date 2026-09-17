@@ -1,8 +1,13 @@
 //! macOS backend: the Core Audio PROCESS TAP API (`AudioHardwareCreateProcessTap`), added in
 //! macOS 14.2 — new enough that `coreaudio-sys` does not wrap it in the resolved version, so
-//! this file binds the small entry-point surface it needs directly
-//! via `extern "C"` against the `CoreAudio`/`AudioToolbox` frameworks, using `core-foundation`
-//! only for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling. On macOS < 14.2 (detected by
+//! this file binds the small entry-point surface it needs directly via `extern "C"`, linked
+//! against the `CoreAudio` framework (`#[link(name = "CoreAudio", kind = "framework")]` on the
+//! `extern "C"` block declaring these entry points — every symbol this file calls lives in
+//! `CoreAudio.framework`; the Objective-C runtime symbols (`objc_getClass`, `sel_registerName`,
+//! `class_respondsToSelector`, `objc_msgSend`) and `proc_pidpath` resolve via the platform's
+//! always-linked `libSystem`/`libobjc`, needing no framework directive of their own), using
+//! `core-foundation` only for `CFString`/`CFDictionary`/`CFArray`/`CFNumber` handling. On macOS
+//! < 14.2 (detected by
 //! `macos_at_least_14_2`'s Darwin-kernel version probe), `MacosMonitor::new` returns
 //! `MonitorError::Unsupported("macOS 14.2 or newer")` — the hello frame says so verbatim.
 //!
@@ -71,6 +76,7 @@ const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = 0x676c_6f62;
 /// Core Audio's main (non-channel-specific) property element.
 const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
 
+#[link(name = "CoreAudio", kind = "framework")]
 extern "C" {
     /// Reads a Core Audio object property's data into `out_data`, `out_data_size` in/out.
     fn AudioObjectGetPropertyData(

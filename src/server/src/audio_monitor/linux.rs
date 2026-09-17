@@ -15,7 +15,8 @@
 //! `Core::get_registry`, `Registry`'s listener builder (`global`/`global_remove`),
 //! `GlobalObject`'s `props`, `spa::utils::dict::DictRef::get`,
 //! `stream::Stream::new`/`connect`/`add_local_listener`, `StreamListener`,
-//! `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`, `Buffer::datas_mut`,
+//! `StreamFlags::{AUTOCONNECT, MAP_BUFFERS}`, `Stream::dequeue_buffer`, `Stream::state`,
+//! `StreamState`, `Buffer::datas_mut`,
 //! `Data::data`/`Data::chunk`, `Chunk::offset`/`Chunk::size`, `LoopRef::add_timer`,
 //! `TimerSource::update_timer`, `spa::param::audio::AudioInfoRaw`,
 //! `spa::pod::serialize::PodSerializer`, and `spa::pod::Pod::from_bytes` — was checked against
@@ -142,6 +143,22 @@ struct CaptureStream {
     stream: pw::stream::Stream,
 }
 
+impl CaptureStream {
+    /// Reads the underlying `pw_stream`'s own connection state. A stream can transition to
+    /// `StreamState::Error`/`Unconnected` asynchronously (its node's underlying device
+    /// disappearing without the registry ever firing `global_remove` for the node object
+    /// itself) — `run_pipewire_loop`'s shutdown timer sweeps on this every poll so a dead
+    /// stream's stale peak reading is pruned rather than reported forever.
+    fn is_connected(&self) -> bool {
+        matches!(
+            self.stream.state(),
+            pw::stream::StreamState::Connecting
+                | pw::stream::StreamState::Paused
+                | pw::stream::StreamState::Streaming
+        )
+    }
+}
+
 /// Runs the PipeWire main loop on the calling (dedicated) thread for the process's lifetime (or
 /// until `shutdown` is observed): connects to the session's PipeWire core, registers a `global`
 /// listener that records every `Stream/Output/Audio` node, and updates `nodes` from each
@@ -239,13 +256,25 @@ fn run_pipewire_loop(
     // `pipewire::channel` (the crate's own documented cross-thread wakeup primitive) is the
     // alternative; a loop timer avoids the extra pipe/fd pair for a flag that only needs
     // checking, not real-time delivery. Kept alive for `main_loop.run()`'s duration — dropping
-    // it early would disarm the timer.
+    // it early would disarm the timer. Also sweeps `streams` for any capture whose
+    // `CaptureStream::is_connected` has gone false (see its doc comment) so a dead stream's
+    // node entry does not linger reporting a stale peak.
     let shutdown_timer = main_loop.loop_().add_timer({
         let main_loop = main_loop.clone();
+        let streams = streams.clone();
+        let nodes = nodes.clone();
         move |_expirations| {
             if shutdown.load(Ordering::Relaxed) {
                 main_loop.quit();
+                return;
             }
+            streams.borrow_mut().retain(|id, handle| {
+                let connected = handle.is_connected();
+                if !connected {
+                    nodes.lock().expect("node state lock poisoned").remove(id);
+                }
+                connected
+            });
         }
     });
     let _ = shutdown_timer.update_timer(
@@ -297,8 +326,10 @@ fn attach_monitor_stream(
             let (start, end) = valid_sample_window(samples.len(), chunk_offset, chunk_size);
             let samples = &samples[start..end];
             let peak = samples
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]).abs())
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b).abs())
                 .fold(0f32, f32::max);
             if let Ok(mut guard) = nodes.lock() {
                 if let Some(state) = guard.get_mut(&node_id) {
