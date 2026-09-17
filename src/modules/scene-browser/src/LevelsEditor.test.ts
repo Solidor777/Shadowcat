@@ -16,7 +16,17 @@ describe("LevelsEditor", () => {
     const next = onCommit.mock.calls[0][0] as SceneLevel[];
     expect(next).toHaveLength(2);
     expect(next[0]).toEqual(levels[0]); // original row untouched
-    expect(next[1]).toMatchObject({ bottom: 0, top: 10, background: null });
+    expect(next[1]).toMatchObject({ bottom: 10, top: 20, background: null });
+  });
+
+  it("adding a level while one already exists stacks its default band above every existing level's top, so the server's non-overlapping-bands validation never rejects a freshly-added row", async () => {
+    const onCommit = vi.fn();
+    const context = setAppContextForTest();
+    const { container } = render(LevelsEditor, { props: { levels, onCommit }, context });
+    await fireEvent.click(container.querySelector('[data-testid="level-add"]')!);
+    const next = onCommit.mock.calls[0][0] as SceneLevel[];
+    expect(next[1].bottom).toBeGreaterThanOrEqual(levels[0].top);
+    expect(next[1].top).toBeGreaterThan(next[1].bottom);
   });
 
   it("removing a level commits the array without it", async () => {

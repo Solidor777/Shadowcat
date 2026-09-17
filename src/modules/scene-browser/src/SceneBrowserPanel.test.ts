@@ -183,6 +183,6 @@ describe("SceneBrowserPanel", () => {
     const newLevels = op.changes[0].new as { id: string; name: string; bottom: number; top: number; background: null }[];
     expect(newLevels).toHaveLength(2);
     expect(newLevels[0]).toEqual({ id: "l1", name: "Ground", bottom: 0, top: 10, background: null });
-    expect(newLevels[1]).toMatchObject({ bottom: 0, top: 10, background: null });
+    expect(newLevels[1]).toMatchObject({ bottom: 10, top: 20, background: null });
   });
 });

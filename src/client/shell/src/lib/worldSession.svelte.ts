@@ -268,9 +268,12 @@ export class WorldSession {
   #tokenSelectionByScene = new Map<string, Set<string>>();
   /** GM per-scene viewed-level override (`sessionState`'s `viewedLevel` map), loaded lazily per
    * scene on first read. Never set for a player (they follow `levelOf` of their primary token's
-   * elevation). `$state` so a Svelte derived reading `viewedLevel` reacts to a `setViewedLevel`
-   * call. */
-  #gmViewedLevel = $state<Map<string, string | null>>(new Map());
+   * elevation). A `SvelteMap`, not a plain `Map` wrapped in `$state` — `$state` only deep-proxies
+   * plain objects/arrays (`Map`'s prototype is neither), so an in-place `.set()` on a plain
+   * `$state<Map<...>>` is invisible to Svelte's reactivity; `SvelteMap` is the reactive built-in
+   * that makes a `$derived`/`$effect` reading `viewedLevel` (e.g. `LevelSwitcher`'s `active` prop)
+   * re-run after a `setViewedLevel` call. */
+  #gmViewedLevel = new SvelteMap<string, string | null>();
   /** The server's resolved token footprints, replaced wholesale by each `"footprints"` frame.
    * `$state` so every consumer — canvas reconcile, hit-test, the place tool —
    * re-reads the same authoritative extents the moment a frame lands. `EMPTY_FOOTPRINTS` until

@@ -34,7 +34,11 @@
   }
 
   /**
-   * Appends a new level row with a generated id and a default `[0, 10)` band.
+   * Appends a new level row with a generated id and a default 10-unit band stacked directly
+   * above every existing level's `top` (`[0, 10)` when there are none yet). A fixed `[0, 10)`
+   * default for every row would collide with an already-authored level's identical default band,
+   * and the server's `SceneEngine::validate` rejects overlapping bands outright — stacking keeps
+   * every freshly-added row valid without requiring the author to immediately re-edit it.
    * @returns Nothing; dispatches the updated array as a side effect.
    * @example
    * ```
@@ -44,7 +48,8 @@
    */
   function addLevel(): void {
     commit((clone) => {
-      clone.push({ id: crypto.randomUUID(), name: "", bottom: 0, top: 10, background: null });
+      const bottom = clone.reduce((max, l) => Math.max(max, l.top), 0);
+      clone.push({ id: crypto.randomUUID(), name: "", bottom, top: bottom + 10, background: null });
     });
   }
 
