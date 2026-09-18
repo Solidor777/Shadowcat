@@ -198,9 +198,9 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
         ],
         0,
     );
-    assert!(ecs.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // crosses the wall
-    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (1.0, 1.0))); // misses (sum 2 < 10)
-    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (0.0, 0.0))); // a no-op move never blocks
+    assert!(ecs.blocks_move(scene, (0.0, 0.0), (10.0, 10.0), elevation::GROUND)); // crosses the wall
+    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (1.0, 1.0), elevation::GROUND)); // misses (sum 2 < 10)
+    assert!(!ecs.blocks_move(scene, (0.0, 0.0), (0.0, 0.0), elevation::GROUND)); // a no-op move never blocks
 
     // Scene scoping: an identical crossing wall in scene 20 blocks a scene-20 move but NOT
     // a scene-10 move (the `parent_id == Some(scene)` filter).
@@ -212,8 +212,8 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
         ],
         0,
     );
-    assert!(ecs_scope.blocks_move(other, (0.0, 0.0), (10.0, 10.0))); // blocks in scene 20
-    assert!(!ecs_scope.blocks_move(scene, (0.0, 0.0), (10.0, 10.0))); // not in scene 10
+    assert!(ecs_scope.blocks_move(other, (0.0, 0.0), (10.0, 10.0), elevation::GROUND)); // blocks in scene 20
+    assert!(!ecs_scope.blocks_move(scene, (0.0, 0.0), (10.0, 10.0), elevation::GROUND)); // not in scene 10
 
     // A scene whose only crossing wall is blocksMove:false must not block movement.
     let ecs2 = SceneEcs::from_documents(
@@ -228,13 +228,14 @@ fn blocks_move_geometry_scene_scoping_and_filters() {
         ],
         0,
     );
-    assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0)));
+    assert!(!ecs2.blocks_move(scene, (0.0, 0.0), (10.0, 10.0), elevation::GROUND));
 }
 
 /// Anti-drift check: `blocks_move` (the reference implementation) must agree with the
-/// production traversal path (`move_walls(scene, None)` filtered by `segments_cross`, as
-/// used by `move_exec`'s per-cell wall gate) on every segment tried here, evaluated against
-/// BOTH scenes in the fixture — including the case where a segment would cross a wall that
+/// production traversal path (`move_walls(scene, None, mover_elevation)` filtered by
+/// `segments_cross`, as used by `move_exec`'s per-cell wall gate) on every segment tried here,
+/// evaluated against BOTH scenes in the fixture and at BOTH an elevation inside the banded
+/// wall's band and one outside it — including the case where a segment would cross a wall that
 /// belongs to the OTHER scene. A mutation of either `blocks_move`'s or `move_walls`'s wall
 /// filter is expected to fail this test.
 #[test]
@@ -243,6 +244,10 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
     let other_scene = Uuid::from_u128(20);
     let blocking = json!({ "seg": {"x1":0,"y1":10,"x2":10,"y2":0}, "blocksMove": true });
     let non_blocking = json!({ "seg": {"x1":0,"y1":0,"x2":0,"y2":20}, "blocksMove": false });
+    let banded_blocking = json!({
+        "seg": {"x1":0,"y1":20,"x2":20,"y2":0}, "blocksMove": true,
+        "elevation": { "bottom": 10.0, "top": 20.0 },
+    });
     let other_scene_wall = json!({ "seg": {"x1":20,"y1":30,"x2":30,"y2":20}, "blocksMove": true });
 
     let ecs = SceneEcs::from_documents(
@@ -251,6 +256,7 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
             doc(20, None, "scene"),
             entity_doc_eng(12, 10, "wall", blocking),
             entity_doc_eng(13, 10, "wall", non_blocking),
+            entity_doc_eng(14, 10, "wall", banded_blocking),
             entity_doc_eng(24, 20, "wall", other_scene_wall),
         ],
         0,
@@ -261,20 +267,27 @@ fn blocks_move_agrees_with_the_production_move_walls_segments_cross_path() {
         ((0.0, 0.0), (1.0, 1.0)),     // crosses nothing
         ((0.0, 5.0), (5.0, 5.0)),     // crosses the scene-10 non-blocking wall only
         ((20.0, 20.0), (30.0, 30.0)), // would cross the OTHER scene's wall, not scene 10's
+        ((0.0, 20.0), (20.0, 0.0)),   // crosses the scene-10 banded wall only
     ];
-    for (a0, a1) in segments {
-        for s in [scene, other_scene] {
-            let production = ecs
-                .move_walls(s, None)
-                .iter()
-                .any(|w| segments_cross(a0, a1, w.a, w.b));
-            assert_eq!(
-                ecs.blocks_move(s, a0, a1),
-                production,
-                "blocks_move disagreed with the production move_walls/segments_cross path for {a0:?}->{a1:?} in scene {s:?}"
-            );
+    // `elevation::GROUND` is outside the banded wall's `[10, 20]` band; `15.0` is inside it.
+    for mover_elevation in [elevation::GROUND, 15.0] {
+        for (a0, a1) in segments {
+            for s in [scene, other_scene] {
+                let production = ecs
+                    .move_walls(s, None, mover_elevation)
+                    .iter()
+                    .any(|w| segments_cross(a0, a1, w.a, w.b));
+                assert_eq!(
+                    ecs.blocks_move(s, a0, a1, mover_elevation),
+                    production,
+                    "blocks_move disagreed with the production move_walls/segments_cross path for {a0:?}->{a1:?} in scene {s:?} at elevation {mover_elevation}"
+                );
+            }
         }
     }
+    // The band itself decides: the banded wall blocks only inside its band.
+    assert!(ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), 15.0));
+    assert!(!ecs.blocks_move(scene, (0.0, 20.0), (20.0, 0.0), elevation::GROUND));
 }
 
 #[test]
@@ -368,22 +381,22 @@ fn vision_channel_is_per_recipient() {
 
     // GM sees all (no fog).
     assert_eq!(
-        compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default()).unwrap()["mode"],
+        compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default(), None).unwrap()["mode"],
         "all"
     );
     // The token owner gets one non-empty visibility polygon, tagged with its scene so the
     // client cuts holes only for the scene it renders (cross-scene leak guard).
-    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(pv["mode"], "masked");
     assert_eq!(pv["polygons"].as_array().unwrap().len(), 1);
     assert_eq!(pv["polygons"][0]["scene"], json!(Uuid::from_u128(10)));
     assert!(!pv["polygons"][0]["points"].as_array().unwrap().is_empty());
     // A player who controls no token gets empty polygons → full fog (never see-all).
-    let ov = compute_derived("vision", &ecs, &other, &WorldCapDefaults::default()).unwrap();
+    let ov = compute_derived("vision", &ecs, &other, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(ov["mode"], "masked");
     assert!(ov["polygons"].as_array().unwrap().is_empty());
     // Unknown channel → None.
-    assert!(compute_derived("nope", &ecs, &gm, &WorldCapDefaults::default()).is_none());
+    assert!(compute_derived("nope", &ecs, &gm, &WorldCapDefaults::default(), None).is_none());
 }
 
 #[test]
@@ -411,7 +424,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(pv["mode"], "masked");
     let lit = pv["lit"]
         .as_array()
@@ -440,7 +453,7 @@ fn vision_payload_carries_lit_mask_for_players_not_gm() {
         user_id: Uuid::from_u128(1),
         world_role: WorldRole::Gm,
     };
-    let gv = compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default()).unwrap();
+    let gv = compute_derived("vision", &ecs, &gm, &WorldCapDefaults::default(), None).unwrap();
     assert_eq!(gv["mode"], "all");
     assert!(gv.get("lit").is_none());
     assert!(gv.get("bands").is_none());
@@ -472,7 +485,7 @@ fn vision_payload_resolves_render_hint_index() {
         user_id: player,
         world_role: WorldRole::Player,
     };
-    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default()).unwrap();
+    let pv = compute_derived("vision", &ecs, &pl, &WorldCapDefaults::default(), None).unwrap();
     let hints = pv["renderHints"].as_array().unwrap();
     assert!(hints.iter().any(|h| h == "desaturate"));
     let cells = pv["lit"][0]["cells"].as_array().unwrap();
@@ -581,6 +594,7 @@ fn pathfind_refuses_a_scene_with_no_document() {
             footprint_radius: 0.1,
             budget_cells: None,
             traits: MoveTraits::default(),
+            elevation: elevation::GROUND,
         },
     );
     assert!(
@@ -1538,6 +1552,7 @@ fn footprints_payload_carries_a_square_token_extent_of_the_authored_block_in_sce
         vec![footprint::TokenFootprint {
             token,
             extent: Some(footprint::FootprintExtent { w: 200.0, h: 300.0 }),
+            level: None,
         }]
     );
 }
@@ -1558,6 +1573,7 @@ fn footprints_payload_carries_a_hex_token_extent_of_the_hexs_own_bounding_box() 
         vec![footprint::TokenFootprint {
             token,
             extent: Some(want),
+            level: None,
         }]
     );
 }
@@ -1576,6 +1592,7 @@ fn footprints_payload_states_a_refusal_as_a_null_extent_rather_than_a_size() {
         vec![footprint::TokenFootprint {
             token,
             extent: None,
+            level: None,
         }],
         "the wire states the same refusal rather than a drawable size"
     );
@@ -1589,6 +1606,7 @@ fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_err
         &ecs,
         &footprint_gm_ctx(),
         &WorldCapDefaults::default(),
+        None,
     )
     .expect("the channel is recognized");
     let decoded: footprint::FootprintsPayload =
@@ -1602,7 +1620,8 @@ fn the_footprints_channel_serves_the_resolved_payload_and_an_unknown_channel_err
         "footprint",
         &ecs,
         &footprint_gm_ctx(),
-        &WorldCapDefaults::default()
+        &WorldCapDefaults::default(),
+        None
     )
     .is_none());
 }
@@ -2388,11 +2407,11 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     let s10 = Uuid::from_u128(10);
     let s11 = Uuid::from_u128(11);
     assert!(ecs
-        .region_field(s10, None)
+        .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
     assert!(!ecs
-        .region_field(s11, None)
+        .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
 
@@ -2403,11 +2422,47 @@ fn apply_op_move_refields_a_region_into_the_destination_scene() {
     });
 
     assert!(!ecs
-        .region_field(s10, None)
+        .region_field(s10, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
     assert!(ecs
-        .region_field(s11, None)
+        .region_field(s11, None, elevation::GROUND)
         .expect("scene exists")
         .has_terrain_or_impassable());
+}
+
+#[test]
+fn footprints_payload_tags_each_token_with_its_resolved_level() {
+    // A level-bearing scene with a linked token on floor 2 (elevation 15 ∈ [10,20)): its entry
+    // carries `Some("l2")`, matching `level_of` over the scene's declared levels — the client
+    // scopes by level without re-deriving it from elevation.
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100.0 }, "background": null,
+                "levels": [
+                    { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                    { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
+                ] }),
+    );
+    let token = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0,
+                "elevation": 15.0, "actor_id": Uuid::from_u128(200).to_string() }),
+    );
+    let mut ecs = SceneEcs::from_documents(vec![scene, token], 0);
+    ecs.set_actors(vec![entity_doc_top_eng(
+        200,
+        "actor",
+        actor_body_shaped("square", 1.0, 1.0),
+    )]);
+    let s = only_scene_footprints(&ecs);
+    assert_eq!(s.tokens.len(), 1);
+    assert_eq!(
+        s.tokens[0].level.as_deref(),
+        Some("l2"),
+        "the token's floor rides its footprint entry"
+    );
 }

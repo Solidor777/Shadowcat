@@ -28,3 +28,33 @@ export function computeAnimatedFrame(elapsedMs: number, fps: number, frameCount:
   if (loop) return ((frame % frameCount) + frameCount) % frameCount;
   return Math.min(Math.max(frame, 0), frameCount - 1);
 }
+
+/**
+ * Frame index for a per-frame-duration sequence (unlike `computeAnimatedFrame`'s uniform
+ * `fps`): walks cumulative frame durations until `elapsedMs` (wrapped by the total when
+ * `loop`, clamped to the last frame's start otherwise) falls inside one. A `frameMs` shorter
+ * than `frameCount` (an unresolved/partial load) falls back to a uniform 100ms/frame default
+ * for the missing tail, so a partially-loaded sheet still advances at a sane rate.
+ * @param elapsedMs Accumulated elapsed time since this node's source was loaded, in ms.
+ * @param frameMs Per-frame durations in ms, in playback order.
+ * @param frameCount Total frame count (may exceed `frameMs.length`).
+ * @param loop Whether playback wraps at the end.
+ * @returns The frame index to display.
+ * @example
+ * ```
+ * // module-private helper; not exported from @shadowcat/render
+ * computeVfxFrame(150, [100, 100, 100], 3, true); // 1
+ * ```
+ */
+export function computeVfxFrame(elapsedMs: number, frameMs: number[], frameCount: number, loop: boolean): number {
+  if (frameCount <= 0 || !Number.isFinite(elapsedMs)) return 0;
+  const durations = Array.from({ length: frameCount }, (_, i) => frameMs[i] ?? 100);
+  const total = durations.reduce((a, b) => a + b, 0);
+  if (total <= 0) return 0;
+  let t = loop ? ((elapsedMs % total) + total) % total : Math.min(elapsedMs, total - 1);
+  for (let i = 0; i < durations.length; i++) {
+    if (t < durations[i]) return i;
+    t -= durations[i];
+  }
+  return durations.length - 1;
+}

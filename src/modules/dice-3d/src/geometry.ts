@@ -289,9 +289,14 @@ function constructionFor(shape: DieShapeId): ShapeConstruction {
       const phi = PHI;
       const vertices: Vec3[] = [];
       for (const s1 of [1, -1]) for (const s2 of [1, -1]) for (const s3 of [1, -1]) vertices.push([s1, s2, s3]);
-      for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([0, s1 / phi, s2 * phi]);
-      for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([s1 / phi, s2 * phi, 0]);
-      for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([s1 * phi, 0, s2 / phi]);
+      // Dodecahedron vertex directions equal the icosahedron's face normals (the dual
+      // identity this construction relies on): the non-cube third scaled by `phi` on
+      // the axis the cube-block's sign pattern leaves as the "major" one and by `1/phi`
+      // on the other, verified against a brute-force convex-hull face count (every
+      // direction below gathers exactly 5 coplanar vertices, never fewer).
+      for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([0, s1 * phi, s2 / phi]);
+      for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([s1 * phi, s2 / phi, 0]);
+      for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([s1 / phi, 0, s2 * phi]);
       const directions: Vec3[] = [];
       for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([0, s1, s2 * phi]);
       for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([s1, s2 * phi, 0]);
@@ -306,9 +311,11 @@ function constructionFor(shape: DieShapeId): ShapeConstruction {
       for (const s1 of [1, -1]) for (const s2 of [1, -1]) vertices.push([s1 * phi, 0, s2]);
       const directions: Vec3[] = [];
       for (const s1 of [1, -1]) for (const s2 of [1, -1]) for (const s3 of [1, -1]) directions.push([s1, s2, s3]);
-      for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([0, s1 / phi, s2 * phi]);
-      for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([s1 / phi, s2 * phi, 0]);
-      for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([s2 * phi, 0, s1 / phi]);
+      // Icosahedron face normals equal the dodecahedron's vertex directions (the same
+      // dual identity as the d12 block above, mirrored): see that block's comment.
+      for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([0, s1 * phi, s2 / phi]);
+      for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([s1 * phi, s2 / phi, 0]);
+      for (const s1 of [1, -1]) for (const s2 of [1, -1]) directions.push([s2 / phi, 0, s1 * phi]);
       return { vertices, directions, explicitFaces: null };
     }
   }

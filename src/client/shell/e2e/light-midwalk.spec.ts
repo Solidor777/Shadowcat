@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 import { clickScene, dblclickScene, dragScene } from "./stage-gestures";
 import type { ScenePoint as Point } from "./stage-gestures";
@@ -174,7 +174,7 @@ async function setupTorchScene(
   const code = await gm.getByLabel("Invite code").inputValue();
   expect(code.length).toBeGreaterThan(0);
 
-  const playerCtx = await browser.newContext({
+  const playerCtx = await newE2EContext(browser, {
     baseURL: test.info().project.use.baseURL,
     viewport: VIEWPORT,
   });

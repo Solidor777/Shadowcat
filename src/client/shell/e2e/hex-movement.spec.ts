@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page, Locator } from "@playwright/test";
 import { clickScene, dragScene, stageCanvas } from "./stage-gestures";
 
@@ -195,7 +195,7 @@ test("a non-GM player's wall-crossing drag on a hex scene is rejected by the ser
   expect(code.length).toBeGreaterThan(0);
 
   // --- Player session: a second browser context (separate cookie jar). ---
-  const playerCtx = await browser.newContext({
+  const playerCtx = await newE2EContext(browser, {
     baseURL: test.info().project.use.baseURL,
     viewport: VIEWPORT,
   });

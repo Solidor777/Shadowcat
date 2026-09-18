@@ -1,5 +1,51 @@
 import { test as base, expect } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { Page, Browser, BrowserContext } from "@playwright/test";
+import { PERFORMANCE_STORAGE_KEY } from "@shadowcat/core";
+
+/** The full-fidelity mirror seed every e2e session boots with. The shell's boot-time auto
+ * resolution reads the runner's hardware (a 4-vCPU CI runner resolves the mobile budget,
+ * whose static-lighting/reduced-fidelity defaults break visual assertions written against
+ * full fidelity), so the harness pins the per-device mirror — the same `localStorage` blob
+ * the app's own persistence writes — before any page script runs. Product behavior is
+ * untouched; this only makes the test environment deterministic. */
+const PERFORMANCE_MIRROR_SEED = JSON.stringify({ preset: "quality", overrides: {} });
+
+/** Registers `PERFORMANCE_MIRROR_SEED` (see its doc) on `context` for every page it hosts.
+ * @param context The browser context to seed.
+ * @example
+ * ```
+ * declare const context: import("@playwright/test").BrowserContext;
+ * await seedPerformanceMirror(context);
+ * ```
+ */
+export async function seedPerformanceMirror(context: BrowserContext): Promise<void> {
+  await context.addInitScript(
+    ([key, value]) => { window.localStorage.setItem(key, value); },
+    [PERFORMANCE_STORAGE_KEY, PERFORMANCE_MIRROR_SEED],
+  );
+}
+
+/** The suite's ONE context factory for sessions a spec creates beyond its default page
+ * (invited players, observers): a plain `browser.newContext` plus the same
+ * `seedPerformanceMirror` pin the auto fixture applies to the default context, so a
+ * dual-session spec's second client runs the same deterministic budget as the first.
+ * @param browser The Playwright browser to mint the context from.
+ * @param options Forwarded verbatim to `browser.newContext`.
+ * @returns The new context, already seeded.
+ * @example
+ * ```
+ * declare const browser: import("@playwright/test").Browser;
+ * const playerCtx = await newE2EContext(browser, { viewport: { width: 1600, height: 1000 } });
+ * ```
+ */
+export async function newE2EContext(
+  browser: Browser,
+  options?: Parameters<Browser["newContext"]>[0],
+): Promise<BrowserContext> {
+  const context = await browser.newContext(options);
+  await seedPerformanceMirror(context);
+  return context;
+}
 
 /** Logs `page` in as `username`/`password` via the real login form. Shared by every spec (in
  * place of each file's own duplicated inline sequence) and by the worker `account` fixture below.
@@ -132,7 +178,10 @@ export interface WorkerAccount {
  * never bypassing the UI even for setup.
  */
 export const test = base.extend<
-  NonNullable<unknown>,
+  {
+    /** The auto performance-budget pin's marker type — the fixture yields no value. */
+    performanceBudgetPin: void;
+  },
   {
     /** The worker-scoped account fixture — see the class doc above.
      * @example
@@ -144,6 +193,28 @@ export const test = base.extend<
     account: WorkerAccount;
   }
 >({
+  /** Auto fixture: seeds the per-device performance mirror with the full-fidelity budget on
+   * every test's default context BEFORE any page script runs (see
+   * `PERFORMANCE_MIRROR_SEED`'s doc for why the runner's hardware must not decide this).
+   * Contexts a spec creates itself go through `newE2EContext`, the same pin.
+   * @param root0 The fixtures this setup function depends on.
+   * @param root0.context The test's default browser context (covers every page it hosts).
+   * @param use Playwright's fixture-provider callback.
+   * @example
+   * ```
+   * declare const performanceBudgetPin: [
+   *   (fx: { context: import("@playwright/test").BrowserContext }, use: (v: unknown) => Promise<void>) => Promise<void>,
+   *   { auto: true },
+   * ];
+   * ```
+   */
+  performanceBudgetPin: [
+    async ({ context }, use) => {
+      await seedPerformanceMirror(context);
+      await use();
+    },
+    { auto: true },
+  ],
   /** The worker-scoped fixture value: a `[setup, options]` tuple per Playwright's
    * fixture-registration shape, `options` selecting `scope: "worker"` (see the class doc above).
    * The setup function itself mints the worker's admin account (see the class doc above) and
@@ -169,7 +240,7 @@ export const test = base.extend<
       const suffix = `${workerInfo.parallelIndex}-${Date.now().toString(36)}`;
       const username = `e2e-worker-${suffix}`;
       const password = "pw-e2e-worker";
-      const context = await browser.newContext();
+      const context = await newE2EContext(browser);
       const page = await context.newPage();
       await login(page, "ops", "pw-boot");
       await page.getByLabel("New world name").fill(`Worker Setup ${suffix}`);

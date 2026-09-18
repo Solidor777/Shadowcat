@@ -11,6 +11,8 @@
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
     type SettingPath,
+    type AudioOverlay, type Occlusion, type SceneAmbience, PLAYLIST_DOC_TYPE,
+    type WireSearchHit, type SubscriptionHandle,
   } from "@shadowcat/core";
   import type { Asset } from "@shadowcat/types";
   import CombatSettings from "./CombatSettings.svelte";
@@ -181,6 +183,27 @@
     ctx.dispatchIntent([buildUpdate(docId, [{ path, old, value }])]);
   }
 
+  /**
+   * Whole-object write to the world audio overlay: `set_pointer` cannot create a missing
+   * `/engine/audio` parent from a sub-path (same constraint `setBounds` documents for
+   * `/engine/bounds`), so every edit dispatches the full overlay object. A `null` value in
+   * `patch` clears that leaf back to its engine-literal default (explicit JSON `null`
+   * deserializes to `Option::None`); an omitted key preserves the leaf's current value.
+   * @param patch The overlay leaves to change; unspecified leaves keep their current value.
+   * @example
+   * ```
+   * // private function; not part of the public API — wired to each Audio fieldset control
+   * setAudio({ spatial: false });
+   * ```
+   */
+  function setAudio(patch: Partial<AudioOverlay>): void {
+    if (!ws) return;
+    // Partial is the correct write shape: the server's `AudioOverlay` has serde defaults on
+    // every leaf, so an omitted leaf deserializes to absent (its engine-literal default).
+    const cur: Partial<AudioOverlay> = wsys?.audio ?? {};
+    set(ws.id, "/engine/audio", wsys?.audio ?? null, { ...cur, ...patch });
+  }
+
   const MOVEMENT = ["visible", "revealed", "unrestricted"] as const;
   const GRID_KIND = ["square", "hex"] as const;
   const MOVEMENT_MODEL = ["grid-stepped", "continuous"] as const;
@@ -218,6 +241,51 @@
   const scene = $derived.by((): WireDocument | undefined =>
     scenes.find((s) => s.id === (selectedSceneId ?? scenes[0]?.id)));
   const ssys = $derived.by((): SceneEngine | undefined => scene?.engine as SceneEngine | undefined);
+
+  // Ambience playlist search: mirrors the ActorsPanel live-search $effect exactly (same
+  // non-reconnect-resilient contract) but scoped to docTypes: ["playlist"].
+  let ambienceQuery = $state("");
+  let ambienceHits = $state<WireDocument[]>([]);
+  $effect(() => {
+    const q = ambienceQuery.trim();
+    if (!q) {
+      ambienceHits = [];
+      return;
+    }
+    let handle: SubscriptionHandle | null = null;
+    let cancelled = false;
+    void ctx
+      .searchDocuments(q, { limit: 10, docTypes: [PLAYLIST_DOC_TYPE] }, (hits: WireSearchHit[]) => {
+        if (cancelled) return;
+        ambienceHits = hits.map((h) => h.document);
+      })
+      .then((h) => {
+        if (cancelled) h.unsubscribe();
+        else handle = h;
+      })
+      .catch(() => {
+        /* no transport: leave last hits, re-subscribe on next keystroke */
+      });
+    return () => {
+      cancelled = true;
+      handle?.unsubscribe();
+    };
+  });
+
+  /**
+   * Whole-object write to the selected scene's ambience override (same `set_pointer`
+   * whole-object constraint `setBounds`/`setAudio` document). `null` clears the override.
+   * @param next The new ambience override, or `null` to clear it.
+   * @example
+   * ```
+   * // private function; wired to each ambience control's onclick/onchange below
+   * setAmbience({ playlist: "pl1", gain: 0.6 });
+   * ```
+   */
+  function setAmbience(next: SceneAmbience | null): void {
+    if (!scene) return;
+    setScene("/engine/ambience", ssys?.ambience ?? null, next);
+  }
 
   /**
    * Single-field JSON-pointer update against the SELECTED scene doc.
@@ -724,6 +792,54 @@
     </fieldset>
   {/if}
 
+  {#if ctx.role === "gm" && ws && wsys}
+    <!-- The world audio overlay: a flat doc-level overlay exactly like the chat settings
+         above (no scene/system inheritance chain — `audio` is never resolved through
+         resolveSettingProvenance). Every leaf absent = the engine-literal default. -->
+    <fieldset>
+      <legend>{ctx.t("gameSettings.audio.title")}</legend>
+
+      <label>
+        {ctx.t("gameSettings.audio.spatial")}
+        <select aria-label={ctx.t("gameSettings.audio.spatial")}
+          value={wsys.audio?.spatial == null ? "" : wsys.audio.spatial ? "true" : "false"}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setAudio({ spatial: v === "" ? null : v === "true" });
+          }}>
+          <option value="">{ctx.t("gameSettings.audio.spatialDefault")}</option>
+          <option value="true">{ctx.t("gameSettings.enabled")}</option>
+          <option value="false">{ctx.t("gameSettings.disabled")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.audio.occlusion")}
+        <select aria-label={ctx.t("gameSettings.audio.occlusion")}
+          value={wsys.audio?.occlusion ?? ""}
+          onchange={(e) => {
+            const v = (e.currentTarget as HTMLSelectElement).value;
+            setAudio({ occlusion: v === "" ? null : (v as Occlusion) });
+          }}>
+          <option value="">{ctx.t("gameSettings.audio.occlusionDefault")}</option>
+          <option value="walls">{ctx.t("gameSettings.audio.occlusionWalls")}</option>
+          <option value="none">{ctx.t("gameSettings.audio.occlusionNone")}</option>
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.audio.throughWallGain")}
+        <input type="number" min="0" max="1" step="0.05"
+          aria-label={ctx.t("gameSettings.audio.throughWallGain")}
+          value={wsys.audio?.throughWallGain ?? ""}
+          onchange={(e) => {
+            const raw = (e.currentTarget as HTMLInputElement).value;
+            setAudio({ throughWallGain: raw === "" ? null : Number(raw) });
+          }} />
+      </label>
+    </fieldset>
+  {/if}
+
   <ResourceRegistryEditor />
 
   {#if ctx.role === "gm" && scene && ssys}
@@ -957,6 +1073,35 @@
           value={ssys?.bounds?.height ?? DEFAULT_SCENE_BOUNDS.height}
           onchange={(e) => setBounds("height", Number((e.currentTarget as HTMLInputElement).value))} />
       </label>
+
+      <div class="ambience">
+        <h4>{ctx.t("gameSettings.scene.ambienceTitle")}</h4>
+        {#if ssys?.ambience}
+          <p>{ssys.ambience.playlist}</p>
+          <label>
+            {ctx.t("gameSettings.scene.ambienceGain")}
+            <input type="range" min="0" max="1" step="0.05"
+              aria-label={ctx.t("gameSettings.scene.ambienceGain")}
+              value={ssys.ambience.gain}
+              onchange={(e) =>
+                ssys.ambience &&
+                setAmbience({ playlist: ssys.ambience.playlist, gain: Number((e.currentTarget as HTMLInputElement).value) })} />
+          </label>
+          <button type="button" onclick={() => setAmbience(null)}>{ctx.t("gameSettings.scene.ambienceClear")}</button>
+        {:else}
+          <input type="search" aria-label={ctx.t("gameSettings.scene.ambienceSearch")}
+            placeholder={ctx.t("gameSettings.scene.ambienceSearch")} bind:value={ambienceQuery} />
+          <ul>
+            {#each ambienceHits as hit (hit.id)}
+              <li>
+                <button type="button" onclick={() => { setAmbience({ playlist: hit.id, gain: 1 }); ambienceQuery = ""; }}>
+                  {hit.name ?? hit.id}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
     </fieldset>
   {/if}
 </section>

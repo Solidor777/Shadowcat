@@ -1425,6 +1425,22 @@ Depends on Task 11, Task 14.
   lint:docs`, `pnpm lint:aria-labels` PASS.
 - [ ] **Step 3:** `git commit -m "feat(scene-tools): new geometry, tokens and lights stamp the viewed level's elevation" -- src/modules/scene-tools/"`
 
+**Follow-up (scoped separately, landed before Task 21):** this task's own text anticipated
+`editRegionElevation`/`editDrawingElevation`/`editTemplateElevation` and their `<input>` pairs,
+but a buddy-check on the executed plan found the region/drawing/template elevation-band editors
+were never wired — the select tool had no hit-test for those three shape kinds at all (only
+`topWallAt`/`topLightAt` existed), so `ToolController.editingEntity` could never resolve to one.
+That gap was closed on the `m25-levels` branch: `region-view.ts`/`drawing-view.ts`/
+`template-view.ts` each export their tessellation entry point (`regionShapeSpec`/
+`drawingShapeSpec`/`templateShapeSpec`, in place of a module-private `toSpec`) so the hit-test
+reuses the SAME geometry the render layer draws, rather than forking a second tessellator;
+`hit-test.ts` gained `topRegionAt`/`topDrawingAt`/`topTemplateAt` (point-in-polygon for closed
+shapes, nearest-segment-within-tolerance for open ones); `editingEntity`'s `kind` union grew to
+include `"region" | "drawing" | "template"`; the select tool's empty-space pick now tries
+light → wall → region → drawing → template in order; and `ToolRail` renders the three
+elevation-band editors this task's own comment already named, using the `editElevationBand`
+helper exactly as specified above.
+
 ## Task 17: the region tool's `Teleport` trigger effect editor
 
 Depends on Task 7 (server `TriggerEffect::Teleport`/`PortalTarget` types, regenerated), Task 16.

@@ -1,24 +1,26 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+// @vitest-environment node
+import { describe, it, expect } from "vitest";
 import { dice3dEnabled, reducedMotionPreferred, antialiasPreferred } from "./performanceSeam";
 
-describe("performanceSeam (pre-integration device-local getters)", () => {
-  afterEach(() => vi.unstubAllGlobals());
+/** A minimal fixture matching the `Pick<AppContext, "performance">` slice these getters
+ * read — no full `AppContext` construction needed. */
+function ctxWith(current: { dice3d: boolean; reducedMotion: boolean; antialias: boolean }) {
+  return { performance: { current } } as Parameters<typeof dice3dEnabled>[0];
+}
 
-  it("dice3dEnabled defaults on", () => {
-    expect(dice3dEnabled()).toBe(true);
+describe("performanceSeam (reads the caller's resolved AppContext)", () => {
+  it("dice3dEnabled reads PerformanceSettings.dice3d", () => {
+    expect(dice3dEnabled(ctxWith({ dice3d: true, reducedMotion: false, antialias: true }))).toBe(true);
+    expect(dice3dEnabled(ctxWith({ dice3d: false, reducedMotion: false, antialias: true }))).toBe(false);
   });
 
-  it("antialiasPreferred defaults on", () => {
-    expect(antialiasPreferred()).toBe(true);
+  it("reducedMotionPreferred reads PerformanceSettings.reducedMotion", () => {
+    expect(reducedMotionPreferred(ctxWith({ dice3d: true, reducedMotion: true, antialias: true }))).toBe(true);
+    expect(reducedMotionPreferred(ctxWith({ dice3d: true, reducedMotion: false, antialias: true }))).toBe(false);
   });
 
-  it("reducedMotionPreferred reads prefers-reduced-motion", () => {
-    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("reduce") }) as MediaQueryList);
-    expect(reducedMotionPreferred()).toBe(true);
-  });
-
-  it("reducedMotionPreferred is false when matchMedia is unavailable", () => {
-    vi.stubGlobal("matchMedia", undefined);
-    expect(reducedMotionPreferred()).toBe(false);
+  it("antialiasPreferred reads PerformanceSettings.antialias", () => {
+    expect(antialiasPreferred(ctxWith({ dice3d: true, reducedMotion: false, antialias: true }))).toBe(true);
+    expect(antialiasPreferred(ctxWith({ dice3d: true, reducedMotion: false, antialias: false }))).toBe(false);
   });
 });

@@ -1,17 +1,33 @@
 import { test, expect } from "vitest";
-import { DocumentStore, buildLightDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildLightDoc, buildSceneDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { MockBackend, LightView } from "./index";
 
-function lightDoc(id: string, x: number, y: number, over: Record<string, unknown> = {}): WireDocument {
+function lightDoc(id: string, x: number, y: number, over: Record<string, unknown> = {}, elevation: number | null = null): WireDocument {
   const doc = buildLightDoc("w1", "s1", {
     x,
     y,
-    elevation: null,
+    elevation,
     emission: { color: "#ffcc66", intensity: 1, brightRadius: 2, dimRadius: 6, falloff: null, enabled: true, ...over },
   }, id);
   return doc;
 }
 const cmd = (seq: number, ops: WireOperation[]) => ({ seq, world_id: "w1", author: "a", ts: 0, ops });
+
+test("a viewedLevel function scopes reconcile() via levelOf over each light's own elevation", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = lightDoc("lt-ground", 0, 0, {}, 0);
+  const upper = lightDoc("lt-upper", 0, 0, {}, 15);
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  new LightView(store, backend, () => "s1", () => "l1").reconcile();
+  expect(backend.shapes.has("lt-ground")).toBe(true);
+  expect(backend.shapes.has("lt-upper")).toBe(false);
+});
 
 test("a light reconciles to a filled marker in the walls layer", () => {
   const store = new DocumentStore();

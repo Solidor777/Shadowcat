@@ -6,6 +6,7 @@
   "intentionallyNotDocumented": [
     "AnimatedSource.__type.type",
     "Audience.__type.kind",
+    "AudioOp.__type.type",
     "ClientMsg.__type.type",
     "CombatantKind.__type.type",
     "MergeErrorKind.__type.stale_resolutions",

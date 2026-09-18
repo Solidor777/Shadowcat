@@ -1,6 +1,7 @@
 import { consoleLogger } from "@shadowcat/core";
 import { getUiState, putUiState, type UiState, type UiStatePatch } from "./api";
 import { i18n, theme, type PersistedTheme } from "@shadowcat/ui-kit";
+import { PERFORMANCE_STORAGE_KEY, parsePersisted, serializePersisted, type PersistedPerformance } from "@shadowcat/core";
 import { COOLDOWN_MS } from "./uiStatePersistCooldown";
 
 const logger = consoleLogger();
@@ -197,6 +198,9 @@ function copyWorldKey(
     case "chatRead":
       slice.chatRead = w.chatRead;
       return;
+    case "viewedLevel":
+      slice.viewedLevel = w.viewedLevel;
+      return;
     default:
       key satisfies never;
   }
@@ -381,6 +385,95 @@ export function writeThemeMirror(storage: Pick<Storage, "setItem">, value: Persi
   }
 }
 
+/** The single localStorage key holding the per-device audio mirror: channel gains/mutes and
+ * duck depth. Per-device by design: a phone and a desktop want different volumes. */
+export const AUDIO_MIRROR_STORAGE_KEY = "shadowcat.audio";
+
+/** The persisted shape `readAudioMirror`/`writeAudioMirror` round-trip. */
+export interface PersistedAudioMirror {
+  /** Per-channel gain/mute, keyed by `AudioChannelId`. */
+  channels: Record<string, {
+    /** Device gain multiplier, `0..=1`. */
+    gain: number;
+    /** Whether the channel is muted. */
+    muted: boolean;
+  }>;
+  /** Duck depth, `0..=1` (see `@shadowcat/audio`'s `DuckControllerImpl` constructor). */
+  duckDepth: number;
+}
+
+/** Reads the audio mirror, garbage-tolerantly — same posture as `readThemeMirror`.
+ * @param storage The storage to read (injectable for tests; the app entry passes `localStorage`).
+ * @returns The mirrored value, or `undefined` when absent or unreadable.
+ * @example
+ * ```ts
+ * const mirror = readAudioMirror(localStorage);
+ * ```
+ */
+export function readAudioMirror(storage: Pick<Storage, "getItem">): PersistedAudioMirror | undefined {
+  const raw = storage.getItem(AUDIO_MIRROR_STORAGE_KEY);
+  if (raw === null) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    return parsed as PersistedAudioMirror;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Writes the audio mirror; a throwing storage is swallowed with a log — same posture as
+ * `writeThemeMirror`.
+ * @param storage The storage to write (injectable for tests; callers pass `localStorage`).
+ * @param value The mirror to persist.
+ * @example
+ * ```ts
+ * writeAudioMirror(localStorage, { channels: {}, duckDepth: 0.7 });
+ * ```
+ */
+export function writeAudioMirror(storage: Pick<Storage, "setItem">, value: PersistedAudioMirror): void {
+  try {
+    storage.setItem(AUDIO_MIRROR_STORAGE_KEY, JSON.stringify(value));
+  } catch (e) {
+    logger.warn("audio mirror write failed", e);
+  }
+}
+
+/** Reads the performance mirror, garbage-tolerantly: an absent key is `undefined` (which
+ * `PerformanceController.load` resolves via `resolveAuto`); a present-but-garbled value still
+ * parses through `parsePersisted`'s own fail-closed validation, never `undefined`.
+ * @param storage The storage to read (injectable for tests; the app entry passes `localStorage`).
+ * @returns The mirrored value, or `undefined` when the key is absent.
+ * @example
+ * ```ts
+ * const mirror = readPerformanceMirror(localStorage);
+ * ```
+ */
+export function readPerformanceMirror(storage: Pick<Storage, "getItem">): PersistedPerformance | undefined {
+  const raw = storage.getItem(PERFORMANCE_STORAGE_KEY);
+  return raw === null ? undefined : parsePersisted(raw);
+}
+
+/** Writes the performance mirror. A throwing storage (quota, privacy mode) is swallowed with a
+ * log — the mirror is a per-device convenience and a failed write must never break the setting
+ * change that triggered it.
+ * @param storage The storage to write (injectable for tests; callers pass `localStorage`).
+ * @param value The `PerformanceController.serialize` output to mirror.
+ * @example
+ * ```ts
+ * import { performanceController } from "@shadowcat/ui-kit";
+ *
+ * writePerformanceMirror(localStorage, performanceController.serialize());
+ * ```
+ */
+export function writePerformanceMirror(storage: Pick<Storage, "setItem">, value: PersistedPerformance): void {
+  try {
+    storage.setItem(PERFORMANCE_STORAGE_KEY, serializePersisted(value));
+  } catch (e) {
+    logger.warn("performance mirror write failed", e);
+  }
+}
+
 /** Fetches the UI-state blob, applies its saved locale, marks the module
  * loaded, and — once per process lifetime — starts observing future locale
  * changes to persist them. Clears any dirty tracking left over from a prior
@@ -528,6 +621,38 @@ export function setChatRead(world: string, blob: unknown): void {
   const w = (state.worlds[world] ??= {});
   w.chatRead = blob;
   markWorldDirty(world, "chatRead");
+  schedulePersist();
+}
+
+/** Reads a scene's persisted GM-viewed-level id within a world, or `null` if unset.
+ * @param world - World id.
+ * @param scene - Scene id.
+ * @returns The stored level id, or `null`.
+ * @example
+ * ```
+ * const level = getViewedLevel("w1", "s1");
+ * ```
+ */
+export function getViewedLevel(world: string, scene: string): string | null {
+  return state.worlds[world]?.viewedLevel?.[scene] ?? null;
+}
+
+/** Stores a scene's GM-viewed-level id within a world, marks it dirty, and schedules a
+ * persist. Creates the world's entry (and its `viewedLevel` map) if absent.
+ * @param world - World id.
+ * @param scene - Scene id.
+ * @param level - The level id to remember, or `null` to clear it.
+ * @example
+ * ```
+ * setViewedLevel("w1", "s1", "l2");
+ * ```
+ */
+export function setViewedLevel(world: string, scene: string, level: string | null): void {
+  const w = (state.worlds[world] ??= {});
+  const map = (w.viewedLevel ??= {});
+  if (level === null) delete map[scene];
+  else map[scene] = level;
+  markWorldDirty(world, "viewedLevel");
   schedulePersist();
 }
 

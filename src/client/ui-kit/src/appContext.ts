@@ -1,5 +1,5 @@
 import { getContext, setContext } from "svelte";
-import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi } from "@shadowcat/core";
+import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
 import type { Dice3DInteraction } from "./dice3dInteraction";
@@ -10,6 +10,7 @@ import type { SceneSelection } from "./sceneSelection.svelte";
 import type { SpeakAs } from "./speakAs.svelte";
 import type { SpeakAsToken } from "./speakAsToken.svelte";
 import type { AssetPickController, PickAssetOptions, PickAssetMultiple } from "./assetPickController.svelte";
+import type { PerformanceController } from "./performance.svelte";
 
 /** Translate function shape (framework-neutral; the Svelte adapter supplies a
  * reactive implementation). */
@@ -356,6 +357,34 @@ export interface AppContext {
    * reads its own on/off setting) when the overlay is unmounted or the device has 3D dice
    * turned off. */
   dice3d: Dice3DInteraction;
+  /** The level (of the viewed scene) this client renders/subscribes to; `null` for a
+   * level-less scene, or before any scene/level is known. For a player: `levelOf` of their
+   * primary token, tracked live (follows the token through a portal). For a GM: the last
+   * chosen level for the viewed scene (persisted, `ui_state.worlds[id].viewedLevel`). */
+  viewedLevel: string | null;
+  /** Set the viewed level (GM local override; a no-op/warn for a player — mirrors
+   * `setGmViewedScene`'s role gate). `WorldSession` re-subscribes the `"vision"` channel with
+   * the new level.
+   * @param id - The level to view, or `null` to clear to the scene's first level. */
+  setViewedLevel: (id: string | null) => void;
+  /** The per-device audio mixer + transport seam (channel gains/mutes, ducking,
+   * one-shots, GM transport, unlock) — device state plus thin `WsClient`
+   * forwarders; see `AudioApi`. */
+  audio: AudioApi;
+  /** Per-device render-budget controller — effective settings, active preset, live frame
+   * stats, and the statusbar readout toggle. Per-device only: never read from or written to
+   * the server `ui_state`. */
+  performance: PerformanceController;
+  /** VFX playback seam: fire a one-shot and subscribe to relayed ones (incl. our own echo). */
+  vfx: {
+    /** Broadcast a one-shot VFX playback request.
+     * @param req The one-shot request. */
+    play(req: VfxPlayRequest): void;
+    /** Subscribe to relayed VFX one-shots; returns an unsubscribe.
+     * @param cb Called with each relayed one-shot.
+     * @returns A function that removes this listener. */
+    onVfx(cb: (msg: VfxNotice) => void): () => void;
+  };
 }
 
 /** Context key; exported only so test fixtures can seed an AppContext. */

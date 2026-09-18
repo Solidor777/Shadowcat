@@ -13,7 +13,7 @@ export interface FilterState {
   /** Tag chips; every listed tag must match (explicit or derived). */
   tags: string[];
   /** Kind filter, or undefined = all kinds. */
-  kind?: "image" | "other";
+  kind?: "image" | "other" | "audio";
   /** Sort key. */
   sort: "name" | "created" | "size";
 }

@@ -220,7 +220,7 @@ const actorEngine = (over: Partial<ActorEngine> = {}): ActorEngine => ({
  * frame the server has broadcast. `parseFootprints` is exercised against a real payload by its
  * own tests; these cases are about what `resolveTokenBox` does with what it is told. */
 function footprintsFor(tokenId: string, extent: { w: number; h: number } | null): FootprintLookup {
-  return { token: (id) => (id === tokenId ? extent : null), unit: () => null };
+  return { token: (id) => (id === tokenId ? extent : null), unit: () => null, level: () => null };
 }
 
 test("resolveTokenBox takes its box from the server's resolved extent, not from actor.size and the grid", () => {

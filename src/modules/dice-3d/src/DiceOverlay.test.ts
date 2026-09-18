@@ -6,12 +6,17 @@ import { DocumentStore, type WireDocument } from "@shadowcat/core";
 import DiceOverlay from "./DiceOverlay.svelte";
 
 vi.mock("./DiceEngine", () => ({
-  DiceEngine: vi.fn().mockImplementation(() => ({
-    init: vi.fn().mockResolvedValue(undefined),
-    throwDice: vi.fn().mockResolvedValue([]),
-    resize: vi.fn(),
-    dispose: vi.fn(),
-  })),
+  // `DiceOverlay.svelte` invokes this as `new DiceEngine(...)` — the mock implementation must
+  // be a real (non-arrow) function, since an arrow function is never constructible in JS and
+  // `new` on one throws `TypeError: ... is not a constructor`.
+  DiceEngine: vi.fn().mockImplementation(function () {
+    return {
+      init: vi.fn().mockResolvedValue(undefined),
+      throwDice: vi.fn().mockResolvedValue([]),
+      resize: vi.fn(),
+      dispose: vi.fn(),
+    };
+  }),
 }));
 
 function messageDoc(id: string, rollId: string): WireDocument {

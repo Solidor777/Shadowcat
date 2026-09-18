@@ -2863,6 +2863,341 @@ test`, typecheck, lint, `lint:comments`) green at every commit;
 (`pnpm --filter @shadowcat/shell e2e`) is dispatcher-run, not part of this
 branch's own gate history.
 
+## Phase 3 — Atmosphere
+
+### M22 · Performance settings + render budget ✅
+Branch `m22-performance`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m22-performance-settings.md` (design:
+`docs/superpowers/specs/2026-09-11-m22-performance-settings-design.md`), as
+12 sequential tasks (task 13, the merge-forward integration, closes the
+milestone separately). Delivered:
+- **The seam (`@shadowcat/core` `performance.ts`):** `PerformanceSettings`
+  (fpsCap / renderScale / antialias / tokenFx / lighting / vfx / dice3d /
+  spatialAudio / idleSkip / reducedMotion), the `mobile`/`balanced`/`quality`
+  `PRESETS`, `resolveAuto` (mobile on coarse-pointer+compact, ≤4 cores, or
+  ≤4 GiB device memory; `prefers-reduced-motion` always OR-ed on top), and
+  `parsePersisted`/`serializePersisted`/`effectiveSettings` — the ONE place
+  preset + overrides + device signals combine, fail-closed per key on a
+  garbled `localStorage` blob, `renderScale` clamped to `[0.5, 1]` at every
+  read. Per-device only (decision D1): persisted in `localStorage` beside the
+  theme mirror (`readPerformanceMirror`/`writePerformanceMirror`), never the
+  server `ui_state`.
+- **The controller (`@shadowcat/ui-kit`):** `PerformanceController` mirroring
+  `ThemeController`'s shape exactly (`$state`-backed, `subscribe`/`load`/
+  `serialize`, a module singleton exported as `performanceController` — never
+  `performance`, which would shadow the ambient Performance global), live
+  `stats`/`showStats` state, exposed as `AppContext.performance`.
+- **The render engine (`@shadowcat/render`):** `DisplayBackend` gains
+  `setFrameCap`/`setRenderScale`/`render` (`createPixiBackend` removes Pixi's
+  own auto-render ticker listener so the engine owns the render call);
+  `wrapDirtyTracking` is the ONE dirty-flag seam every draw call flows
+  through; `RenderEngine` reads the budget through a
+  `RenderEngineOpts.performance` getter and drives the frame cap, render
+  scale, dirty-flag idle-skip (animated-token visuals via
+  `TokenView.hasAnimatedVisual` still render every tick), a stats sample
+  pushed through `onStats` at most 4×/s, the lighting `static`/`off` budgets
+  (fog/vision secrecy untouched — the overlay is cosmetic), the `tokenFx`
+  budget (condition fx dropped, the selection highlight exempt), and
+  reduced-motion snaps on token tweens and fog/light cross-fades.
+- **The UI surfaces:** `Stage.svelte` re-creates the backend only when
+  `antialias` flips (the one setting Pixi cannot change post-init, read
+  through a `$derived` so no other edit tears the stage down) and exposes
+  `data-fps-cap`/`data-render-scale`/`data-idle-skip` through a dedicated
+  reactive writer; `PerformanceEditor.svelte` (a built-in Settings section —
+  preset radios, per-key controls, show-stats toggle, reset-to-auto) and the
+  statusbar's `PerfStats.svelte` readout.
+- **Tests:** unit coverage at every layer (core truth tables, controller
+  transitions, mirror round-trips, idle-skip/tween/lighting-budget engine
+  tests, animator snaps, backend re-init and no-rebuild-on-other-edit stage
+  tests, editor/statusbar component tests); `performance.spec.ts`
+  (Playwright — preset → stage `data-*` signals, stats toggle → statusbar)
+  written here and dispatcher-run, not part of this branch's own gate
+  history.
+Decisions taken (design doc + plan): per-device `localStorage` persistence,
+never `ui_state` (D1); `effectiveSettings` as the single combination point;
+`PerformanceController.set` writes the FULL resulting settings object as the
+`custom` overrides, never a bare patch; dirty-flag interception at the
+`DisplayBackend` boundary so no reconciler/view changes; `tickTokenAnimations`
+deliberately excluded from dirty-tracking (`hasAnimatedVisual` covers the real
+need); the selection highlight exempt from the `tokenFx` budget (bounded by
+selection size); `lighting: "off"` never touches fog/vision secrecy;
+`start()` renders one initial frame so the idle-skip accounting starts clean;
+antialias re-creation keyed on a `$derived` boolean so other edits never
+rebuild the backend.
+Repo gates green at every commit (the 13-step commit gate: `cargo fmt
+--check`, `test:scripts`, `lint`, `check:svelte-runtime`, `lint:docs`,
+`lint:props`, `lint:comments`, `lint:allowances`, `lint:file-size`,
+`lint:inline-tests`, `lint:aria-labels`, `lint:gate-manifest`,
+`lint:settings-privacy`) plus per-task `pnpm --filter … test`, `pnpm -r
+typecheck` and `pnpm docs:check-examples` runs. The full gate battery runs at
+the milestone's integration task.
+### M28 · Sandboxed third-party validators ✅
+Branch `m28-sandbox`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m28-sandboxed-validators.md` (design:
+`docs/superpowers/specs/2026-09-11-m28-sandboxed-validators-design.md`). Delivered:
+- **`wasmi` 0.51.5 + `wat` 1.259.0** (Task 1 verified the resolved crate's API against the
+  spec's assumed names; the corrections are recorded in the spec's §3). Release binary size
+  after this milestone: 13,732,864 bytes / 60 MiB cap.
+- **`src/server/src/sandbox/`**: `ValidatorVerdict`/`ValidatorFault`/`FaultKind`/`ValidatorInput`
+  (`validate_document`'s embedded-tree walk, mirroring
+  `validation::validate_system_schema_tree`'s recursion exactly, AND its own maintenance of the
+  per-(world, module) fault counter), `runtime::run_validator` (fuel/memory/instance-limited
+  per-call `wasmi` host, `env.log` the only import, a 50ms post-hoc `TooSlow` reclassification
+  plus a 250ms `Hung` hang guard around the `spawn_blocking` join), `registry::ValidatorRegistry`
+  (compiled-once, mtime-invalidated cache; also home of the per-(world, module) consecutive-
+  fault `DashMap`, surviving a rescan via `ValidatorRegistryCache`).
+- **Manifest + discovery**: `module.json`'s `validators` key, `InstalledModule.validators`,
+  the traversal guard shared with `http::module_routes::serve_module_file`.
+- **`WorldModuleEntry`** replaces the bare enabled-module-id `Vec<String>` (`Repository::
+  world_enabled_modules`/`set_world_enabled_modules`, `GET`/`PUT
+  /api/worlds/{world}/enabled-modules`, `module-rest.ts`, `ModuleManager.svelte`'s second
+  "Run sandboxed validators" toggle) — a legacy string-array setting reads as every id
+  `validators_enabled: false`.
+- **Placement**: `apply_intent`'s validator pass runs BEFORE the write transaction opens,
+  against a read-only pre-image, relying on Phase 1's existing OCC check to catch a stale
+  read; `import_world`'s runs inside its own already-exclusive transaction. Both chokepoints
+  call the SAME `sandbox::validate_document`, which first re-runs Phase 1's own pure structural
+  validators on the document and returns that error untouched on failure — a malformed
+  submission never reaches, or counts against, a validator. Never `apply_command`.
+- **Fault policy**: `DataError::Validator(ValidatorFault)` (technical fault, carrying
+  `module`/`kind`/`consecutive`) alongside the existing `DataError::OpFailed` (an authored
+  refusal); `ServerMsg::Reject.detail` (new optional wire field) carries the reason to
+  `App.svelte`'s toast as a text node. The consecutive-fault counter is COUNTED inside
+  `sandbox::validate_document` (a `DashMap` on `sandbox::registry::ValidatorRegistry`, surviving
+  a rescan via `ValidatorRegistryCache`) and ACTED ON by `ws::conn`, which calls
+  `Room::disable_faulting_validator` at `sandbox::VALIDATOR_FAULT_LIMIT` (5) — it disables the
+  module, posts a GM-only notice, and resets the streak via the new
+  `Repository::reset_validator_fault_streak`.
+- **`examples/validator-rust/`**: a `no_std`, dependency-free reference validator (refuses a
+  negative `actor.system.hp`); `src/server/tests/sandbox.rs` builds it for real on every
+  `cargo test --all` and never skips on a missing `wasm32-unknown-unknown` target; the target
+  was added to the three-OS `rust` CI job and the `docs` job.
+- **Docs**: `docs/design/sandboxed-validators.md` (threat model),
+  `docs/site/guides/creating-a-validator.md`, a cross-link from `creating-a-module.md`,
+  ARCHITECTURE.md §3/§4/§5 updated (the parked sandbox row struck, the Deno bullet rewritten
+  to record the wasmi choice). `docs/PLAN.md`'s Phase-3 section already enumerates M28 as an
+  owned milestone — the older "parked capability Phase 3" deferral paragraph the plan told
+  this task to delete was already gone when the section was restructured, so no deletion was
+  needed.
+- **Skills**: new `shadowcat-codebase-sandbox`; `module-toolchain`/`documents-permissions`
+  updated — edited in the plugin checkout, staged uncommitted for the dispatcher's
+  review-and-commit flow.
+- **Recorded design decisions** (spec gaps the amendment left implicit, not
+  re-interpretations of an explicit instruction): the fault counter lives on
+  `sandbox::registry::ValidatorRegistry`/`ValidatorRegistryCache` rather than `Room`, since a
+  compiled-module registry is rebuilt on every rescan and the counter must survive that
+  rebuild; `ValidatorVerdict::Fault` and `DataError::Validator` share one `ValidatorFault`
+  payload type rather than duplicating its three fields; a module's own `Refuse` resets its
+  streak exactly like `Accept`, since only `Fault` is evidence of a technical break. Fixed
+  forward during implementation: `CompiledValidator` carries its compiling `Engine` (a wasmi
+  `Module` is engine-bound); `TooSlow` reclassifies only completed (non-trapping) calls, so a
+  trap's precise `FaultKind` is never masked; the slow-call budget is measured on the blocking
+  thread; test fixtures use the non-engine `"item"` doc_type (an `"actor"` fixture with no
+  engine body fails the structural pre-pass before any validator runs).
+### M24 · VFX ✅
+Branch `m24-vfx`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m24-vfx.md` (design:
+`docs/superpowers/specs/2026-09-11-m24-vfx-design.md`). Delivered:
+- **Server-derived grid sheet (no new codec):** any animated GIF/WebP upload
+  is decoded once at commit/reconvert time (never lazily) by
+  `data::asset::process::generate_grid_sheet` into `<uuid>.sheet.webp`
+  (frames tiled near-square, longest side capped at `SHEET_MAX_PX` = 4096,
+  lossless) plus a `<uuid>.sheet.json` sidecar; the geometry/timings persist
+  as flat `sheet_*` columns on the `assets` row (`AssetMeta.sheet`, ts-rs
+  `SheetMeta`), ride `SIBLING_SUFFIXES` through commit/replace/delete/
+  export-import, and serve membership-gated as `?variant=sheet` (never
+  regenerated on demand — a missing sibling 404s).
+- **Single-asset metadata seam:** `GET /api/assets/{uuid}/meta` +
+  `@shadowcat/core`'s `getAssetMeta`/`AssetMetaCache` — a client that never
+  listed the world's assets resolves one asset's pipeline metadata
+  synchronously before playing it as a VFX source (`Stage.svelte` warms
+  every emitter's asset and awaits the warm before a one-shot's first
+  lookup).
+- **Spritesheet pairing:** a PNG/WebP atlas + a PixiJS-format sidecar JSON
+  uploaded as two assets, paired by the explicit tag `vfx:sheet=<json-id>`
+  on the image; `assets::mutate::patch` validates the pairing (one tag max,
+  JSON in-world, `meta.image` names the image's `original_name`). The
+  sidecar's `animations` map must define `"default"` (the resolver never
+  reads its bytes). The asset browser gained the "Pair sheet" action and a
+  "VFX" quick-filter chip.
+- **Wire + authz:** `ClientMsg::PlayVfx`/`ServerMsg::Vfx` aux frames
+  (ScenePing shape — out-of-band, silent-drop on denial) with a separate
+  per-user `vfx_rate` bucket; `ws::vfx` shares bounds
+  (`MAX_GATE_WALK_COORD`, scale ≤ 8, duration ≤ 60 s) and authorization
+  (Gm/Player + scene READ; spectators refused) between the raw frame and
+  `/fx`. The `/fx <asset-id-or-name> @<token name>` chat command resolves
+  the asset (id, then case-insensitive `original_name` via
+  `Repository::asset_id_by_name`) and the token's center server-side on the
+  world's active scene, never oracles an unreadable token's existence, and
+  authors no message on success (a failure whispers a system notice via the
+  generalized `build_system_error_notice`).
+- **Render layer:** `"vfx"` core layer between `templates` and `lighting`
+  (below the fog `mask`); `VfxView` (the `PingView`/`EmoteView` pattern)
+  plays `EffectiveActor.vfx` emitters tracking the token's LIVE tweened
+  transform (`TokenView.transformOf` — never a second interpolation) and
+  transient one-shots with a 64-per-scene cap (oldest evicted);
+  `DisplayBackend`/`PixiBackend` gained `setVfx`/`removeVfx`/`tickVfx` with
+  per-frame durations (`computeVfxFrame`; spritesheet sidecar
+  `frames[key].duration` honored, 100 ms default); `VfxAnchor` placements
+  pinned (`below` footprint base / `token` center / `above` top edge,
+  z-order 0/1/2, all above the `tokens` layer). Reduced motion freezes
+  emitters on their last frame and skips one-shots; `PerformanceSettings.vfx`
+  off tears every node down (per-device, wired at integration).
+- **UI extension point + module:** `SCENE_TOOL_CONTRACT`
+  (`shadowcat.scene-tool`, `SceneToolMeta{id, icon, labelKey, onSceneClick}`)
+  — the scene-tools rail renders contributed tools through
+  `ToolController.activeContributedId` (parallel to the closed `ToolId`
+  union, mutually exclusive both directions); `@shadowcat/module-vfx`
+  contributes the FX tool + a launcher-only config panel (last-picked
+  asset/scale/sound in module-scoped state; inline asset pick on first
+  click otherwise). `EmissionEditor` gained the VFX-tag filter + preview.
+- **Decisions** (plan's Resolved design decisions, restated): contributed
+  tools get a parallel `activeContributedId`, never a widened `ToolId`;
+  tool config lives in a standard panel, not inline rail controls; the
+  sound picker filters `kind: "other"` (no audio kind exists yet);
+  fixtures split GIF (generated in-test) / WebP (committed);
+  `AssetMeta.sheet.frame_ms` stays snake_case Rust-side; the two "sheet"
+  discriminant keys (`kind` vs `type`) are the spec's own fixed shape;
+  pairing validation rides the existing `PATCH` route, no new route;
+  `/fx` resolves names against `Document.name` directly and refuses
+  target-less invocations with a whispered usage notice.
+- **Tests:** server pipeline (GIF + committed WebP fixture, 4096-px cap,
+  idempotent reconvert), flat-column round-trips incl. export→import,
+  pairing validation, `validate_bounds`/`vfx_permitted` truth tables, `/fx`
+  integration (success broadcast, whispered failures, no-oracle);
+  `resolveVfxSource` truth table; `VfxView` (emitter lifecycle, tween
+  tracking, anchors, 64-cap eviction, duration caps, reduced motion,
+  vfx-off teardown); `PixiBackend` playback (sidecar durations, tick
+  advance, once-only completion); engine/session/wire parity. The e2e spec
+  (`vfx.spec.ts`: emitter + FX-tool one-shot visible to GM and player, a
+  player's `vfx` toggle local-only) is WRITTEN and dispatcher-run — not
+  part of this branch's own gate history.
+
+### M23 · Audio ✅
+Branch `m23-audio`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m23-audio.md` (design:
+`docs/superpowers/specs/2026-09-11-m23-audio-design.md`; phase-3 master integration:
+`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`), as 22 sequential
+tasks split M23a (server-authoritative transport, transcode, mixer UI) / M23b (spatial
+audibility). Delivered:
+- **Server transport:** `playlist`/`audio-state` engine doc types
+  (`data::engine::audio::{PlaylistEngine, AudioStateEngine}`), the pure `audio::state::apply`
+  reducer (mirrors `combat::transition`'s posture — no I/O), `WriteOrigin::AudioTransport`
+  (Update-only; Create/Delete of `audio-state` are `WriteOrigin::ConfigSeed`-only, seeded once
+  by `world_seed` — a genuine per-operation guard split, the first of its kind in the codebase),
+  `ClientMsg::AudioTransport`/`AudioListenAs`, `ServerMsg::AudioError`,
+  `audio::transport::on_active_scene` (swaps a scene's ambience on `world-settings.activeScene`
+  commit).
+- **Transcode pipeline (D9):** `data::asset::process::audio` — `symphonia` probe+decode →
+  `rubato` resample to 48kHz → Opus VBR encode, muxed into Ogg and/or WebM sibling
+  derivatives (`AudioContainers`, selected at import) alongside the untouched canonical
+  original; never a canonical format swap, unlike the image pipeline's WebP conversion. Unlike
+  `thumb`/`preview`, these siblings are explicitly not `Variant`s and are never regenerated on
+  serve — a missing one 404s.
+- **`@shadowcat/audio`:** a new framework-neutral package (`AudioEngine`, `TrackPlayer`
+  server-clock-synced `<audio>` playback, `OneShotPlayer` decode+LRU cache,
+  `EmitterPlayer`, `DuckControllerImpl`), Web-Audio-injected for Node testability.
+- **Modules:** `@shadowcat/module-audio` (channel mixer, now-playing GM transport, playlists
+  list) and `@shadowcat/module-sheet-playlist` (name/mode/channel/fade + whole-array tracks
+  editor), plus the game-settings Audio fieldset (world spatial/occlusion/through-wall-gain
+  overlay) and per-scene ambience picker, and the asset-browser `audio` kind.
+- **M23b spatial audibility:** `scene::audibility` (falloff/occlusion/pan/listener-selection
+  geometry, composed from the SAME `segments_cross`/`elevation::wall_occludes` primitives the
+  sight raycaster uses — never a second occlusion rule), the `"audibility"` derived channel
+  (one `SceneAudibility` slice per scene with a token, mirroring `"footprints"`'/`"vision"`'s own
+  multi-scene shape, gated on whole-document `cap::READ` per emitting token — an
+  identity-disclosure gate `token_light_emission`'s own field does not need),
+  client `EmitterPlayer` + `AudioEngine.applyAudibility`, and the GM "listen as" preview seam.
+
+### M25 · Multi-level maps + portals ✅
+Branch `m25-levels`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m25-levels-portals.md` (design:
+`docs/superpowers/specs/2026-09-11-m25-levels-portals-design.md`), as 21
+sequential tasks — task 21, the merge-forward integration, held until
+M22/M28/M24/M23 landed on `main`, then merged `origin/main` and wired the
+M24 VFX seam (the Teleport trigger's carried `vfx` asset id now plays via two
+`ServerMsg::Vfx` broadcasts, source and destination scene) and an M23b
+audibility inheritance test (a floor-2 emitter occluded for a floor-1
+listener via the elevation-banded raycaster alone). Delivered:
+- **Levels are elevation bands within one scene document, never a
+  separate scene-per-floor model (decision D4).** `SceneEngine.levels:
+  Vec<SceneLevel>`, each a `{id, name, bottom, top, background}` band;
+  `WallEngine::elevation`/`RegionEngine::elevation`/`DrawingEngine::elevation`/
+  `TemplateEngine::elevation` are renamed to the shared `ElevationBand` type
+  (was `WallElevation`, wall-only). `scene::elevation::band_contains`/
+  `level_of` (mirrored client-side by `@shadowcat/core`'s `bandContains`/
+  `levelOf`) are the ONE point-in-band/floor-resolution predicate every
+  consumer calls — movement gates, region selection, render filters, and the
+  client's own `sceneScopedDocs` scoping.
+- **Movement, pathfinding and region triggers all consult elevation.**
+  `move_wall_entries`/`move_walls` filter occluding walls by the mover's
+  elevation; `RouteMover.elevation`/`MoveGateInputs.mover_elevation` thread it
+  through the gate; `region_field`/`trigger_regions` band regions by level;
+  the navmesh is keyed additionally by level.
+- **Vision, lighting and explored-fog are computed per level.** Visibility
+  polygons, the lit mask, lighting inputs, and the `"footprints"` channel's
+  per-token entries are all level-scoped server-side; `SceneSubscribe.level`
+  (wired through `scene_subscribe`'s wire frame) selects which floor's
+  `"vision"` channel a subscription computes. No server-side resting-token
+  fog-stripping was added — explored-fog per level follows the existing
+  per-recipient model unchanged.
+- **Portals: `TriggerEffect::Teleport`/`PortalTarget`, `WriteOrigin::Trigger`.**
+  A region's `Teleport` trigger effect repositions the entering token
+  (same-scene or cross-scene), with a one-hop anti-loop guard, GM notices, a
+  combat notice, and a `vfx` asset id carried (not yet played — M24's
+  broadcast wiring is a Task 21 merge-forward step). `WriteOrigin::Trigger`
+  is the new document-write provenance a server-authored trigger effect
+  writes under, threaded through `apply_intent`'s Move-arm literal-comparison
+  fix.
+- **Client-side scene scoping (`sceneScopedDocs`) gains a `viewedLevel` 4th
+  parameter**, applied by every render-layer view (`TokenView`, `WallView`,
+  `RegionView`, `DrawingView`, `TemplateView`, `LightView`): band-shaped doc
+  types scope via `bandContains` at the viewed level's own `bottom`;
+  point-elevation types scope via `levelOf`.
+- **`AppContext.viewedLevel`/`setViewedLevel`**: GM-persisted (mirroring
+  `getPanelLayout`/`setPanelLayout`'s persistence shape) or, for a player,
+  derived live from their own primary token's elevation. A `viewedLevel`
+  change re-subscribes ONLY the `"vision"` channel
+  (`RenderEngine.reapplyViewedLevel`) — the server, not just client
+  rendering, computes per-level explored-fog.
+- **`LevelSwitcher.svelte`** (any-viewer floor picker, hosted directly in
+  `Stage.svelte`'s chrome — `STAGE_OVERLAY_CONTRACT` is unavailable at this
+  milestone's merge order) and **`LevelsEditor.svelte`** (GM authoring of
+  `SceneEngine.levels`, whole-array-commit pattern via `structuredClone`,
+  contributed into `SceneBrowserPanel`).
+- **scene-tools stamps the viewed level onto newly-authored content.**
+  `ToolContext.viewedLevelBand`/`viewedLevelBottom` stamp elevation onto
+  new walls/regions/drawings/templates (band) and tokens/lights (point);
+  `editWallElevation` is generalized into a shared `editElevationBand`
+  helper. The region tool's trigger editor gains a `Teleport` effect branch
+  (`RegionTriggerTeleportEditor.svelte`: destination scene via live search,
+  x/y, pick-on-stage targeting via `ToolController.beginPickPortalTarget`/
+  `endPickPortalTarget`, elevation, VFX asset picker).
+- **GM ghost-other-levels toggle + observability.** `TokenView` gains a
+  `ghostOtherLevels` toggle rendering other-level tokens desaturated and
+  faded (`TokenFx` gains an `alpha` entry, composed into the same
+  `ColorMatrixFilter` as every other token art effect); `Stage.svelte`
+  exposes `data-level`/`data-token-count` (level-scoped) read-only debug
+  attributes.
+Coverage: server `scene::elevation` (band/level resolution, conformance
+corpus parity with the client), `scene::movement`/`pathfinding` (elevation-
+gated walls/regions/navmesh), `scene::vision`/`lighting` (per-level
+polygons/masks/footprints), `ws::room` (`Teleport` trigger firing, one-hop
+anti-loop, notices, `SceneSubscribe.level`), `data::engine` (`SceneEngine`/
+`ElevationBand`/`PortalTarget` validation); client `scene-scope.test.ts`
+(the shared `sceneScopedDocs` predicate) and each view's own reconcile
+tests, `worldSession.test.ts`/`ws-client.test.ts` (`viewedLevel` persistence
++ wire), `engine.test.ts`/`Stage.test.ts` (`reapplyViewedLevel`, `data-level`/
+`data-token-count`), `LevelSwitcher.test.ts`/`LevelsEditor.test.ts`,
+`controller.svelte.test.ts`/`ToolRail.test.ts` (elevation stamping, the
+`Teleport` trigger editor incl. pick-on-stage), `token-view.test.ts`/
+`pixi-backend.test.ts` (the ghost toggle + `alpha` fx). Full repo gates
+(`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint,
+`lint:comments`) green at every commit. `src/client/shell/e2e/levels.spec.ts`
+(dual-session GM+player: two authored floors, per-floor token scoping, a
+Teleport region trigger walked into) is WRITTEN and typechecked but NOT RUN —
+the dispatcher executes the browser suite separately.
+
 ### M20 · Full default module suite ✅
 Branch `m20-module-suite`, cut from `main`, executed from the approved plan
 `docs/superpowers/plans/2026-09-10-m20-default-module-suite.md` (design:
@@ -2978,6 +3313,96 @@ src/types/generated` clean after the Welcome field's ts-rs regen. The
 browser suite (`pnpm --filter @shadowcat/shell e2e`), including the two
 specs this milestone adds, is dispatcher-run, not part of this branch's own
 gate history.
+
+### M27 · Voice ducking ✅
+Branch: `m27-ducking`. Spec: `docs/superpowers/specs/2026-09-11-m27-voice-ducking-design.md`.
+Delivered: `shadowcat audio-monitor` subcommand (Windows WASAPI / macOS Core Audio process tap
+/ Linux PipeWire backends behind one `SessionMonitor` trait; a localhost, origin-gated
+WebSocket at `/levels`; `hello`/`levels`/`watch` frames; watch-list filtering server-side).
+`@shadowcat/module-ducking`: `KeySource`, `MicVadSource` (`VadEngine` + `vad.worklet.ts`,
+PII-invariant boolean-only worklet messaging), `OsMonitorSource` (reconnect/backoff),
+`DuckSourcesController`, a per-device `localStorage` preferences mirror, and the
+`DuckingSettings.svelte` contributed section. New client seam: `SETTINGS_SECTION_CONTRACT`
+(`Contribution.settingsSection`), rendered by `Settings.svelte` after its built-in content;
+`settings` module now `provides` it. Wired to M23's real `DuckController`/`AudioApi.context()`
+via `DuckingRuntime.svelte`, a headless component contributed into the always-mounted
+`shadowcat.surface:overlay` surface rather than from `register(ctx)` directly — `ModuleContext`
+(the framework-neutral type a module's `register` receives) carries no `audio` member, only
+`AppContext` (the Svelte-reachable shell context) does, and the key/OS-monitor sources must
+keep ducking while the Settings panel — which unmounts on close — is closed. Dependency
+review: `windows` 0.58.0 (MIT OR Apache-2.0) and `core-foundation` 0.10.1 (MIT OR Apache-2.0)
+and `pipewire`/`libspa` 0.8.0 (MIT, binds `libpipewire-0.3`, also MIT) all PASS; `coreaudio-rs`/
+`coreaudio-sys` were evaluated and NOT USED (`coreaudio-sys` 0.2.18 does not wrap
+`AudioHardwareCreateProcessTap`), so `macos.rs` hand-binds the process-tap surface via
+`extern "C"` over `core-foundation`. CI: PipeWire dev headers on the Ubuntu legs of `rust`/
+`docs`. Tests: `cargo test --all` 3787 passed 0 failed (2787 lib unit + 130 integration + 870
+doc-tests); `pnpm -r test` all packages green (`@shadowcat/module-ducking` 41 tests across 9
+files). e2e: `ducking.spec.ts` written, NOT run by this milestone (dispatcher-run per master §4).
+Verification caveat: `linux.rs`'s passive monitor-port capture stream and `macos.rs`'s
+process-tap IO callback (peak measurement on both platforms) are implemented against the
+published `pipewire`/`libspa` 0.8 and Core Audio process-tap API surfaces, but are unverified
+end-to-end without a real Linux/macOS host with audio hardware in this development environment
+— `macos.rs`'s `CATapDescription` construction in particular goes through hand-transcribed
+Objective-C runtime calls with no `objc`/`objc2` dependency, the single highest-risk surface in
+the file. Both backends' non-capture surface (node/process enumeration, naming) was checked
+against the resolved crates' vendored source.
+
+
+### M26 · 3D dice ✅
+Branch `m26-dice-3d`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m26-dice-3d.md` (design:
+`docs/superpowers/specs/2026-09-11-m26-dice-3d-design.md`; master:
+`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`). Delivered:
+`DieRecord.kind: Option<DieKind>` (every-recipient, filled at all three
+`dice::eval::groups` construction sites, `#[serde(default)]` fail-closed for a
+pre-existing roll); `DiceSettingsEngine.sound: Option<Uuid>` plus
+`DiceSettingsEngine::validate` wired into `normalize_engine`'s `"dice-settings"` arm; the
+client's hand-written `chat-docs.ts` mirror (`kind` on `DieRecordSchema`, `RollEmbedSegment`
+extracted to a named export); `STAGE_OVERLAY_CONTRACT` (`shadowcat.stage-overlay`) and
+`Stage.svelte`'s `<Surface>` render of it; `@shadowcat/module-dice-3d` — a transparent
+`three`/`@dimforge/rapier3d-compat` overlay canvas, lazy-imported on first roll, seeded from
+`roll_id` (`mulberry32`) so every client throws the same tumble, remapping each die's face
+labels after settle (`remapFaces`) so the up face always shows the server's authoritative
+result (D6); a store-subscription trigger (`trigger.ts`) that seeds a `seen` set from the
+cold-start snapshot, plays a `roll_embed`/`table_draw` arriving after mount exactly once,
+and re-plays a recalculated roll under its new `recalc_history` length; a `<= 3` concurrent
+tumble queue with a `+N` overflow badge past 30 dice; `Dice3DBridge` (the
+`SceneInteractionBridge` late-binding pattern) exposing `AppContext.dice3d.roll`/`.clear`;
+the dice-settings sound picker on the game-settings panel.
+Decisions taken (full log: design doc, master §9 D5/D6): a separate three.js WebGL context
+on a transparent overlay canvas, never the PixiJS context (D5); the client always shows the
+server's rolled value, simulating locally only for the tumble's appearance, never for the
+result (D6). This milestone's own resolution of the milestone-spec/master-spec seam
+description (master §2.5's one-line "chat-card drives it" summary vs. the milestone spec
+§2.3's fully-worked direct-store-subscription design): the milestone spec's design is
+authoritative — dice-3d has no dependency on `chat-card`. Two plan-level corrections the
+implementation surfaced: the `@types/three` open question resolved from published registry
+metadata (`three@0.169.0` ships no bundled declarations, `@types/three@0.169.0` tracks it
+1:1 — the devDependency stays); and the plan's d10 geometry (apex `1.2`, ring height `0.4`,
+kite decomposition `{apex, 1 upper, 2 lowers}`) is mathematically incapable of planar kite
+faces — the shipped `geometry.ts` derives every shape from one construction (Platonic
+solids from their dual's vertex directions, the d10 from the corrected trapezohedron with
+apex/ring-height `(2+φ)/(2−φ)`), verified by node-environment planarity/containment tests
+rather than an unverifiable `ConvexGeometry` face ordering.
+Coverage: `dice::eval::groups::tests`/`dice::outcome::tests` (kind population at all three
+sites, serde-default fail-closed), `data::engine::tests` (`sound` round-trip, `validate`
+wiring), `chat-docs.test.ts`'s drift guard (`RollEmbedSegment`), `remapFaces.test.ts`/
+`rng.test.ts`/`shapes.test.ts` (truth tables: every standard shape, the d100 split, symbolic
+faces, unused-face padding), `geometry.test.ts` (per-shape face counts and polygon sizes,
+planarity, hull containment, outward unit normals), `trigger.test.ts`
+(seed-at-mount/play-once/recalc-replay/queue-cap/overflow-badge),
+`DiceEngine.test.ts`/`DiceOverlay.test.ts` (`three`/`@dimforge/rapier3d-compat` mocked via
+`vi.mock`), `defaultModuleOrder.test.ts`'s new `dice3d` case, and `dice-3d.spec.ts`
+(written; dispatcher-run — GM+player settle to the same value, dice3d-off leaves the player
+idle). The 13-step commit gate (fmt, scripts tests, eslint, docs/props/comments/
+allowances/file-size/inline-tests/aria-labels/gate-manifest/settings-privacy lints,
+svelte-runtime check) is green at every commit on the branch; the full battery
+(`pnpm install` for the three/rapier lockfile edge, `pnpm -r typecheck`, `pnpm -r test`,
+`pnpm build`, `cargo test --all`, docs builds) runs in the dependency-install lease window
+that follows the branch's code-complete state, and the browser suite
+(`pnpm --filter @shadowcat/shell e2e`),
+including this milestone's new spec, is dispatcher-run, not part of this branch's own gate
+history.
 
 ## Documentation campaign — completed sweeps
 
@@ -3287,61 +3712,3 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
   escape, so a `-m "C:\path\"` argument can carry a `--no-verify` past the POSIX tokenizer — the
   remote is the backstop for that class.
 
-
-## Phase 3 — Atmosphere
-
-### M26 · 3D dice ✅
-Branch `m26-dice-3d`, cut from `main`, executed from the approved plan
-`docs/superpowers/plans/2026-09-11-m26-dice-3d.md` (design:
-`docs/superpowers/specs/2026-09-11-m26-dice-3d-design.md`; master:
-`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`). Delivered:
-`DieRecord.kind: Option<DieKind>` (every-recipient, filled at all three
-`dice::eval::groups` construction sites, `#[serde(default)]` fail-closed for a
-pre-existing roll); `DiceSettingsEngine.sound: Option<Uuid>` plus
-`DiceSettingsEngine::validate` wired into `normalize_engine`'s `"dice-settings"` arm; the
-client's hand-written `chat-docs.ts` mirror (`kind` on `DieRecordSchema`, `RollEmbedSegment`
-extracted to a named export); `STAGE_OVERLAY_CONTRACT` (`shadowcat.stage-overlay`) and
-`Stage.svelte`'s `<Surface>` render of it; `@shadowcat/module-dice-3d` — a transparent
-`three`/`@dimforge/rapier3d-compat` overlay canvas, lazy-imported on first roll, seeded from
-`roll_id` (`mulberry32`) so every client throws the same tumble, remapping each die's face
-labels after settle (`remapFaces`) so the up face always shows the server's authoritative
-result (D6); a store-subscription trigger (`trigger.ts`) that seeds a `seen` set from the
-cold-start snapshot, plays a `roll_embed`/`table_draw` arriving after mount exactly once,
-and re-plays a recalculated roll under its new `recalc_history` length; a `<= 3` concurrent
-tumble queue with a `+N` overflow badge past 30 dice; `Dice3DBridge` (the
-`SceneInteractionBridge` late-binding pattern) exposing `AppContext.dice3d.roll`/`.clear`;
-the dice-settings sound picker on the game-settings panel.
-Decisions taken (full log: design doc, master §9 D5/D6): a separate three.js WebGL context
-on a transparent overlay canvas, never the PixiJS context (D5); the client always shows the
-server's rolled value, simulating locally only for the tumble's appearance, never for the
-result (D6). This milestone's own resolution of the milestone-spec/master-spec seam
-description (master §2.5's one-line "chat-card drives it" summary vs. the milestone spec
-§2.3's fully-worked direct-store-subscription design): the milestone spec's design is
-authoritative — dice-3d has no dependency on `chat-card`. Two plan-level corrections the
-implementation surfaced: the `@types/three` open question resolved from published registry
-metadata (`three@0.169.0` ships no bundled declarations, `@types/three@0.169.0` tracks it
-1:1 — the devDependency stays); and the plan's d10 geometry (apex `1.2`, ring height `0.4`,
-kite decomposition `{apex, 1 upper, 2 lowers}`) is mathematically incapable of planar kite
-faces — the shipped `geometry.ts` derives every shape from one construction (Platonic
-solids from their dual's vertex directions, the d10 from the corrected trapezohedron with
-apex/ring-height `(2+φ)/(2−φ)`), verified by node-environment planarity/containment tests
-rather than an unverifiable `ConvexGeometry` face ordering.
-Coverage: `dice::eval::groups::tests`/`dice::outcome::tests` (kind population at all three
-sites, serde-default fail-closed), `data::engine::tests` (`sound` round-trip, `validate`
-wiring), `chat-docs.test.ts`'s drift guard (`RollEmbedSegment`), `remapFaces.test.ts`/
-`rng.test.ts`/`shapes.test.ts` (truth tables: every standard shape, the d100 split, symbolic
-faces, unused-face padding), `geometry.test.ts` (per-shape face counts and polygon sizes,
-planarity, hull containment, outward unit normals), `trigger.test.ts`
-(seed-at-mount/play-once/recalc-replay/queue-cap/overflow-badge),
-`DiceEngine.test.ts`/`DiceOverlay.test.ts` (`three`/`@dimforge/rapier3d-compat` mocked via
-`vi.mock`), `defaultModuleOrder.test.ts`'s new `dice3d` case, and `dice-3d.spec.ts`
-(written; dispatcher-run — GM+player settle to the same value, dice3d-off leaves the player
-idle). The 13-step commit gate (fmt, scripts tests, eslint, docs/props/comments/
-allowances/file-size/inline-tests/aria-labels/gate-manifest/settings-privacy lints,
-svelte-runtime check) is green at every commit on the branch; the full battery
-(`pnpm install` for the three/rapier lockfile edge, `pnpm -r typecheck`, `pnpm -r test`,
-`pnpm build`, `cargo test --all`, docs builds) runs in the dependency-install lease window
-that follows the branch's code-complete state, and the browser suite
-(`pnpm --filter @shadowcat/shell e2e`),
-including this milestone's new spec, is dispatcher-run, not part of this branch's own gate
-history.

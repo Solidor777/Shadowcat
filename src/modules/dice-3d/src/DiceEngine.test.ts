@@ -37,15 +37,34 @@ function makeRapierMock() {
   return { RigidBodyDesc, ColliderDesc, World, init: vi.fn().mockResolvedValue(undefined) };
 }
 
+// Every mock implementation below is invoked as `new THREE.X(...)` by `DiceEngine`, so each
+// must be a real (non-arrow) function — an arrow function is never constructible in JS and
+// `new` on one throws `TypeError: ... is not a constructor`.
 vi.mock("three", () => ({
-  WebGLRenderer: vi.fn().mockImplementation(() => ({ setSize: vi.fn(), render: vi.fn(), dispose: vi.fn() })),
-  Scene: vi.fn().mockImplementation(() => ({ add: vi.fn() })),
-  PerspectiveCamera: vi.fn().mockImplementation(() => ({ position: { set: vi.fn() }, lookAt: vi.fn(), aspect: 1, updateProjectionMatrix: vi.fn() })),
-  Mesh: vi.fn().mockImplementation((geometry: unknown, material: unknown) => ({ geometry, material })),
-  MeshStandardMaterial: vi.fn().mockImplementation((opts: { map?: unknown }) => ({ map: opts.map, needsUpdate: false })),
-  CanvasTexture: vi.fn().mockImplementation((canvas: unknown) => ({ canvas, needsUpdate: false, dispose: vi.fn() })),
-  BufferGeometry: vi.fn().mockImplementation(() => ({ setAttribute: vi.fn(), addGroup: vi.fn(), computeVertexNormals: vi.fn() })),
-  Float32BufferAttribute: vi.fn().mockImplementation((array: unknown, itemSize: number) => ({ array, itemSize })),
+  WebGLRenderer: vi.fn().mockImplementation(function () {
+    return { setSize: vi.fn(), render: vi.fn(), dispose: vi.fn() };
+  }),
+  Scene: vi.fn().mockImplementation(function () {
+    return { add: vi.fn() };
+  }),
+  PerspectiveCamera: vi.fn().mockImplementation(function () {
+    return { position: { set: vi.fn() }, lookAt: vi.fn(), aspect: 1, updateProjectionMatrix: vi.fn() };
+  }),
+  Mesh: vi.fn().mockImplementation(function (geometry: unknown, material: unknown) {
+    return { geometry, material };
+  }),
+  MeshStandardMaterial: vi.fn().mockImplementation(function (opts: { map?: unknown }) {
+    return { map: opts.map, needsUpdate: false };
+  }),
+  CanvasTexture: vi.fn().mockImplementation(function (canvas: unknown) {
+    return { canvas, needsUpdate: false, dispose: vi.fn() };
+  }),
+  BufferGeometry: vi.fn().mockImplementation(function () {
+    return { setAttribute: vi.fn(), addGroup: vi.fn(), computeVertexNormals: vi.fn() };
+  }),
+  Float32BufferAttribute: vi.fn().mockImplementation(function (array: unknown, itemSize: number) {
+    return { array, itemSize };
+  }),
 }));
 vi.mock("@dimforge/rapier3d-compat", () => makeRapierMock());
 

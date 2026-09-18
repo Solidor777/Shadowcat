@@ -21,6 +21,9 @@ export class WallView {
    * query to this scene (falls back to unscoped — every `wall` doc in the store — when it
    * resolves to `null`). Defaults to always-`null` (legacy/test callers that never pass
    * one).
+   * @param viewedLevel Resolves the currently-viewed level id; `reconcile()` additionally
+   * scopes its query to this level (see `sceneScopedDocs`). Defaults to always-`null` (every
+   * level — the degenerate pre-levels case).
    * @example
    * ```ts
    * import { WallView, MockBackend } from "@shadowcat/render";
@@ -34,6 +37,7 @@ export class WallView {
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly viewedLevel: () => string | null = () => null,
   ) {}
 
   /**
@@ -57,7 +61,7 @@ export class WallView {
    */
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of sceneScopedDocs(this.store, "wall", this.viewedSceneId)) {
+    for (const doc of sceneScopedDocs(this.store, "wall", this.viewedSceneId, this.viewedLevel)) {
       const spec = toSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);

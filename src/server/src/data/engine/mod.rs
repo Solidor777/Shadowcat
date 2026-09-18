@@ -9,6 +9,7 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 pub mod asset_folder;
+pub mod audio;
 pub mod combat;
 pub mod geometry;
 pub mod note;
@@ -18,6 +19,11 @@ pub mod system_defaults;
 pub mod table;
 pub mod token;
 
+pub use audio::{
+    AudioChannel, AudioStateEngine, PlayingTrack, PlaylistEngine, PlaylistMode, PlaylistTrack,
+    AUDIO_STATE_DOC_TYPE, MAX_PLAYING_TRACKS, MAX_PLAYLIST_FADE_MS, MAX_PLAYLIST_TRACKS,
+    PLAYLIST_DOC_TYPE,
+};
 pub use combat::{
     resolve_combat_rules, CapturedCombatant, CombatDefaults, CombatEngine, CombatHistoryEngine,
     CombatantEngine, CombatantKind, CombatantResource, Duration, DurationUnit, EffectEngine,
@@ -26,9 +32,9 @@ pub use combat::{
     ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
-    DrawingEngine, DrawingShape, Fill, NoticeAudience, RegionEngine, RegionShape, RegionTrigger,
-    Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallElevation,
-    WallEngine, MAX_TRIGGER_ID_CHARS,
+    DrawingEngine, DrawingShape, ElevationBand, Fill, NoticeAudience, PortalTarget, RegionEngine,
+    RegionShape, RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect,
+    TriggerEvent, WallEngine, MAX_TRIGGER_ID_CHARS,
 };
 pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{
@@ -37,11 +43,12 @@ pub use registries::{
     FactionRegistryEngine, FactionStance,
 };
 pub use scene::{
-    AnimationSettings, DiagonalRule, EasingMode, EnvironmentLight, Falloff, FalloffCurve, Grid,
-    GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode, MovementModel,
-    MovementRestriction, Pathfinding, Perception, SceneDimensions, SceneEngine,
-    SceneLightingOverrides, SceneVisionOverrides, VisionMode, VisionModesEngine,
-    WorldSceneDefaults, WorldSettingsEngine,
+    AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
+    FalloffCurve, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode,
+    MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception, SceneDimensions,
+    SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
+    VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
+    MAX_SCENE_LEVELS,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,
@@ -49,7 +56,7 @@ pub use system_defaults::{
 pub use table::{DrawRule, RowRange, TableEngine, TableEntry, TableRow, TABLE_DOC_TYPE};
 pub use token::{
     ActorEngine, AnimatedSource, GeneratedBackground, GeneratedBorder, GeneratedCrop, RenderVisual,
-    Size, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
+    Size, SoundEmission, TokenEngine, TokenOverrides, TokenVisual, VisionAssignment,
 };
 
 use crate::data::DataError;
@@ -121,6 +128,8 @@ pub(crate) const ENGINE_DOC_TYPES: &[&str] = &[
     "asset_folder",
     "table",
     "note",
+    "playlist",
+    "audio-state",
 ];
 
 /// Every `/engine/<key>` path a `doc_type`'s `normalize_engine` arm can
@@ -400,6 +409,22 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
                 .map_err(|m| DataError::BadEngine(format!("note: {m}")))?;
             Ok(serde_json::to_value(typed)?)
         }
+        "playlist" => {
+            let typed: PlaylistEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("playlist: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("playlist: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
+        "audio-state" => {
+            let typed: AudioStateEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("audio-state: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("audio-state: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         _ => unreachable!("is_engine_doc_type and this match must stay in sync"),
     }
 }
@@ -566,7 +591,7 @@ pub fn search_text(doc_type: &str, engine: &serde_json::Value) -> Option<String>
             .unwrap_or_default(),
         "scene" | "wall" | "region" | "light" | "drawing" | "template" | "world-settings"
         | "chat-settings" | "dice-settings" | "combat" | "combatant" | "effect"
-        | "system-defaults" | "asset_folder" => String::new(),
+        | "system-defaults" | "asset_folder" | "playlist" | "audio-state" => String::new(),
         _ => unreachable!("ENGINE_DOC_TYPES and this match must stay in sync"),
     })
 }

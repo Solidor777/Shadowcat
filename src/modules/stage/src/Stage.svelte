@@ -1,14 +1,24 @@
 <script lang="ts">
   import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, consoleLogger, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
+    sceneScopedDocs,
     type DisplayBackend,
     type Point,
   } from "@shadowcat/render";
   import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
+  import LevelSwitcher from "./LevelSwitcher.svelte";
+
+  /** Options every `createBackend` call carries — declared once so the prop's type annotation
+   * and its default's parameter share one shape (an inline copy in each would drift). */
+  interface CreateBackendOpts {
+    /** The per-device antialias budget at mount (`ctx.performance.current.antialias`) — fixed
+     * at Pixi init (`PixiBackendOptions.antialias`). */
+    antialias: boolean;
+  }
 
   /** Backend factory; defaults to the real Pixi backend. Tests inject a fake
    * (jsdom has no WebGL — real GL is covered by Playwright).
@@ -18,15 +28,15 @@
    * shipped build is multisampled. It trims a per-pixel term rather than making a canvas cheap —
    * see `PixiBackendOptions.antialias` for what it does not fix. */
   let {
-    createBackend = (canvas: HTMLCanvasElement): Promise<DisplayBackend> =>
+    createBackend = (canvas: HTMLCanvasElement, opts: CreateBackendOpts): Promise<DisplayBackend> =>
       createPixiBackend(canvas, {
         background: readColor("--surface-base", 0x101014),
-        antialias: import.meta.env.VITE_SC_ANTIALIAS !== "0",
+        antialias: import.meta.env.VITE_SC_ANTIALIAS !== "0" && opts.antialias,
       }),
     logger,
   }: {
     /** See the doc comment on the destructured default above. */
-    createBackend?: (canvas: HTMLCanvasElement) => Promise<DisplayBackend>;
+    createBackend?: (canvas: HTMLCanvasElement, opts: CreateBackendOpts) => Promise<DisplayBackend>;
     /** Diagnostic sink for a backend-init failure; no logger seam exists on
      * AppContext (mirrors `PanelHost`'s identical pattern), so this component
      * accepts one as an optional prop and falls back to the production
@@ -39,7 +49,33 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, audio, onMoveOutcome, role, members, t } = ctx;
+
+  // Reactive bridge (mandatory, mirrors `SceneBrowserPanel`'s convention): register a dependency
+  // on the doc store so `<LevelSwitcher>`'s `levels` prop re-derives when a level is
+  // added/edited/removed via `LevelsEditor` — a plain `documents.query(...)` read is untracked
+  // (manual pub/sub, not `$state`-backed) and would otherwise evaluate once at mount and never
+  // again.
+  const subscribe = createSubscriber((update) => documents.subscribe(update));
+  const viewedSceneLevels = $derived.by((): SceneEngine["levels"] => {
+    subscribe();
+    const vsid = ctx.viewedSceneId;
+    const doc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+    return (doc?.engine as SceneEngine | undefined)?.levels ?? [];
+  });
+
+  /** Per-world-session cache of asset metadata for VFX resolution (never bytes). Module
+   * scope, so it survives an `$effect` re-run and warms are never re-fetched needlessly. */
+  const vfxAssetCache = new AssetMetaCache();
+
+  // Live render-budget signals are Svelte-OWNED markup attributes (never an effect writer):
+  // any re-render carries them, and there is exactly one path that can produce them.
+  const perfBudget = $derived(ctx.performance.current);
+  // The one budget Pixi cannot change post-init (`PixiBackendOptions.antialias`), read through a
+  // `$derived` so the mount $effect below re-runs only when this VALUE flips: any other
+  // performance edit re-derives `current` without changing the derived's boolean, so the
+  // backend is never torn down for a setting the engine applies live through its getter.
+  const antialiasBudget = $derived(ctx.performance.current.antialias);
 
   let host: HTMLDivElement;
   let canvas: HTMLCanvasElement;
@@ -52,6 +88,11 @@
   /** Candidate see-as targets: distinct token owners the GM sees (best-effort; usernames need a
    * members source — labeled by short id for now). */
   let playerOptions = $state<string[]>([]);
+  /** GM-only ghost-other-levels toggle (`ghost-other-levels` control below): forwarded into
+   * `RenderEngineOpts.ghostOtherLevels`, read fresh via the getter so flipping it re-renders
+   * immediately without a manual reconcile call. Gated to GM-only at the control itself — this
+   * flag carries no server round-trip and is never read for a non-GM (the control never mounts). */
+  let ghostOtherLevels = $state(false);
 
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
@@ -111,6 +152,11 @@
   }
 
   $effect(() => {
+    // Tracked FIRST (the script-level `antialiasBudget` derived): antialias cannot change after
+    // Pixi init (`PixiBackendOptions.antialias`'s doc), so a flip re-runs this whole effect,
+    // tearing down and rebuilding both the engine and the backend (the destroy() path below is
+    // exercised, never leaked).
+    const antialias = antialiasBudget;
     let engine: RenderEngine | null = null;
     let disposed = false;
     let observer: ResizeObserver | null = null;
@@ -118,6 +164,7 @@
     let offGrid: (() => void) | null = null;
     let offPing: (() => void) | null = null;
     let offEmote: (() => void) | null = null;
+    let offVfx: (() => void) | null = null;
     let offMoveOutcome: (() => void) | null = null;
     let offViewed: (() => void) | null = null;
     let detachScene: (() => void) | null = null;
@@ -126,7 +173,7 @@
     const controller = new AbortController();
 
     void (async () => {
-      const backend = await createBackend(canvas);
+      const backend = await createBackend(canvas, { antialias });
       if (disposed) { backend.destroy(); return; } // teardown raced the async init
       engine = new RenderEngine({
         store: documents,
@@ -136,8 +183,17 @@
         gridColor: readColor("--grid-line", 0x363645),
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
+        viewedLevel: () => ctx.viewedLevel,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
+        ghostOtherLevels: () => ghostOtherLevels,
+        performance: () => ctx.performance.current,
+        onStats: (s) => ctx.performance.recordStats(s),
+        vfxAssets: (id) => {
+          const meta = vfxAssetCache.get(id);
+          return meta ? resolveVfxSource(meta, assets) : null;
+        },
+        onVfxChanged: (count) => { host.dataset.vfxCount = String(count); },
         onDerivedApplied: (input) => {
           host.dataset.sceneDerived = "1";
           host.dataset.visionMode = input.mode;
@@ -145,6 +201,14 @@
           // id-sorted so the string is order-independent. This is the set `TokenView` raises
           // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
           host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
+          // Level observability: written here too (not just in the store-commit reconcile
+          // below) so a level SWITCH — which resubscribes vision (`reapplyViewedLevel`) and
+          // thus fires a fresh derived frame without necessarily committing a document — still
+          // updates both attributes promptly.
+          host.dataset.level = ctx.viewedLevel ?? "";
+          host.dataset.tokenCount = String(
+            sceneScopedDocs(documents, "token", () => ctx.viewedSceneId, () => ctx.viewedLevel).length,
+          );
         },
         // Mirrors a scene tool's route-preview label (a combat movement-budget overage/stop
         // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
@@ -187,6 +251,10 @@
       // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
       // carries a new server frame, so the engine must re-filter its views + last vision payload.
       let lastViewed = ctx.viewedSceneId;
+      // A level change alters what the SERVER computes for explored-fog accumulation/emission
+      // (unlike a scene switch), so it re-issues the "vision" wire subscription itself, not just
+      // a client-local re-filter.
+      let lastViewedLevel = ctx.viewedLevel;
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
@@ -201,6 +269,11 @@
           if (now !== lastViewed) {
             lastViewed = now;
             e.reapplyViewedScene();
+          }
+          const nowLevel = ctx.viewedLevel;
+          if (nowLevel !== lastViewedLevel) {
+            lastViewedLevel = nowLevel;
+            e.reapplyViewedLevel();
           }
           const fp = ctx.footprints; // tracks the session's footprints $state
           if (fp !== lastFootprints) {
@@ -259,7 +332,13 @@
           e.setAnimation({ speedCellsPerSec: anim.speedCellsPerSec, easing: anim.easing });
         }
         const sceneTokens = documents.query("token").filter((t) => !vsid || t.parent_id === vsid);
-        host.dataset.tokenCount = String(sceneTokens.length);
+        // Level-scoped, mirroring `onDerivedApplied`'s own write of the same two attributes —
+        // both sites stay in sync so a level switch OR a document commit (e.g. a token's
+        // elevation moving it across the viewed level's boundary) updates them promptly.
+        host.dataset.level = ctx.viewedLevel ?? "";
+        host.dataset.tokenCount = String(
+          sceneScopedDocs(documents, "token", () => ctx.viewedSceneId, () => ctx.viewedLevel).length,
+        );
         // Read-only observability signal: each viewed-scene token's COMMITTED
         // `/engine/x,y` as `id:x,y`, id-sorted so the string is order-independent of
         // the store's iteration. Mirrors data-token-count/data-last-ping. Because the
@@ -302,6 +381,14 @@
           .map((t) => `${t.id}:${(e.badgesForTest(t.id) ?? []).join(",")}`)
           .sort()
           .join(";");
+        // Warm the metadata cache for every emitter's asset proactively, then re-run the VFX
+        // reconcile once each warm settles: the store-commit reconcile that would resolve the
+        // emission ran against a COLD cache (the warm is an out-of-band fetch), so without
+        // the re-projection the emitter would never appear until an unrelated commit.
+        for (const t of sceneTokens) {
+          const eff = resolveTokenActor(t, documents);
+          if (eff?.vfx?.enabled) void vfxAssetCache.warm(eff.vfx.asset).then(() => e.reapplyVfx());
+        }
         // Read-only observability signal mirroring the reconciler's own background
         // resolution (the viewed scene's `engine.background`) — "" when unset, so an
         // e2e assertion can confirm the authored background reached the render layer
@@ -327,6 +414,21 @@
         e.addEmote(m.token, m.emote);
         host.dataset.lastEmote = `${m.token}:${m.emote}`;
       });
+      // Relayed VFX one-shots (incl. our own echo) play through the engine. Warm the asset's
+      // metadata BEFORE calling engine.playVfx so the render layer's own synchronous
+      // vfxAssets(id) lookup always hits on this exact arrival — a cold cache would otherwise
+      // fail the node closed for the FIRST one-shot of any asset a client has never seen.
+      offVfx = vfx.onVfx((m) => {
+        void vfxAssetCache.warm(m.asset).then(() => {
+          e.playVfx({
+            scene: m.scene, asset: m.asset, x: m.x, y: m.y,
+            scale: m.scale ?? undefined, rotation: m.rotation ?? undefined,
+            durationMs: m.durationMs ?? undefined, sound: m.sound ?? undefined,
+            elevation: m.elevation ?? undefined, id: m.id,
+          });
+        });
+        if (m.sound) audio.playOneShot(m.sound, { channel: "sfx" });
+      });
       // Read-only observability signal for the local player's own move requests —
       // no behavior change to movement, just an outcome the client already
       // receives via `WorldSession.moveRequest`'s resolution.
@@ -335,8 +437,13 @@
       });
       // AssetChanged mutates the AssetResolver (cache-bust / placeholder) without a
       // document mutation, so the store-subscription reconcile never fires for it.
-      // Re-reconcile explicitly so a replaced/deleted background re-resolves.
-      offAsset = onAssetChanged(() => e.reconcileNow());
+      // Re-reconcile explicitly so a replaced/deleted background re-resolves. The VFX
+      // metadata cache is invalidated the same way: a replaced animated asset derives a NEW
+      // grid sheet, and the stale SheetMeta would slice it with the old geometry.
+      offAsset = onAssetChanged((m) => {
+        vfxAssetCache.invalidate(m.uuid);
+        e.reconcileNow();
+      });
       observer = new ResizeObserver(() => {
         e.setViewport(host.clientWidth, host.clientHeight);
       });
@@ -359,6 +466,7 @@
       offGrid?.();
       offPing?.();
       offEmote?.();
+      offVfx?.();
       offMoveOutcome?.();
       offAsset?.();
       offViewed?.();
@@ -421,12 +529,34 @@
   }
 </script>
 
-<div class="stage-host" bind:this={host}>
-  <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+<div
+  class="stage-host"
+  bind:this={host}
+  data-fps-cap={String(fpsCapToTickerValue(perfBudget.fpsCap))}
+  data-render-scale={String(perfBudget.renderScale)}
+  data-idle-skip={perfBudget.idleSkip ? "1" : "0"}
+>
+  <!-- Keyed canvas: a WebGL context cannot be re-initialized on a canvas whose renderer was
+       destroyed (the mount effect's backend re-create on an antialias flip), so the element
+       itself is replaced and the mount effect's `canvas` binding always points at a pristine
+       element. Only the canvas is keyed — the host div (and its data-* observability
+       attributes) must remain one stable element. -->
+  {#key antialiasBudget}
+    <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
+  {/key}
   <div class="stage-overlays">
     <Surface contract={STAGE_OVERLAY_CONTRACT} />
   </div>
+  <LevelSwitcher
+    levels={viewedSceneLevels}
+    active={ctx.viewedLevel}
+    onSelect={(id) => ctx.setViewedLevel(id)}
+  />
   {#if role === "gm"}
+    <label class="ghost-toggle">
+      <input type="checkbox" data-testid="ghost-other-levels" bind:checked={ghostOtherLevels} />
+      {t("levels.ghostOtherLevels")}
+    </label>
     <select
       class="gm-view"
       data-testid="gm-view-select"
@@ -459,6 +589,21 @@
   }
   canvas {
     display: block;
+  }
+  .ghost-toggle {
+    position: absolute;
+    top: var(--space-2);
+    right: calc(var(--space-2) + 9rem);
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    cursor: pointer;
   }
   .gm-view {
     position: absolute;

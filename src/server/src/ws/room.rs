@@ -24,6 +24,7 @@ use crate::data::snapshot::StoredCommand;
 use crate::data::DataError;
 use crate::scene::SceneEcs;
 use crate::ws::protocol::{ResyncSource, ServerMsg};
+use crate::ws::PingRateLimiter;
 
 /// The room-facing result of a server-authoritative token move. Production code reads only
 /// `frame` (the wire `MoveStream`, already registered in the room's in-flight registry); the
@@ -664,6 +665,12 @@ pub struct Room {
     /// frame on every socket open (`WsClient`'s `open()`), so every connection this room ever
     /// sees establishes its floor before it could plausibly send a `ResyncRequest`.
     resync_floor_enforced_flag: bool,
+    /// Per-user VFX one-shot budget for trigger-fired plays (`fire_region_triggers`'s Teleport
+    /// arm) — the SAME `Arc<PingRateLimiter>` instance `RoomRegistry::vfx_rate` hands to
+    /// `WsState::vfx_rate`, so a portal's carried VFX draws from the identical bucket the raw
+    /// `ClientMsg::PlayVfx` frame and `/fx` already share, rather than a parallel unthrottled
+    /// path (never-fork: one validation+authz/budget source per one-shot family).
+    vfx_rate: Arc<PingRateLimiter>,
 }
 
 /// One firing report: the token that entered, the scene it happened in, the cells it
@@ -695,6 +702,7 @@ impl Room {
         scene: SceneEcs,
         broadcast_capacity: usize,
         resync_floor_enforced: bool,
+        vfx_rate: Arc<PingRateLimiter>,
     ) -> Self {
         let (tx, _rx) = broadcast::channel(broadcast_capacity);
         Self {
@@ -708,6 +716,7 @@ impl Room {
             moving: Mutex::new(HashMap::new()),
             session_floors: Mutex::new(HashMap::new()),
             resync_floor_enforced_flag: resync_floor_enforced,
+            vfx_rate,
         }
     }
 
@@ -914,8 +923,13 @@ impl Room {
             // cells, visible_set). Revealed mode requires an async get_explored call which
             // cannot occur while holding the scene read lock.
             type CellSet = std::collections::BTreeSet<(i32, i32)>;
-            let mut revealed_pending: Vec<(uuid::Uuid, CellSet, CellSet, crate::scene::GridKind)> =
-                Vec::new();
+            let mut revealed_pending: Vec<(
+                uuid::Uuid,
+                String,
+                CellSet,
+                CellSet,
+                crate::scene::GridKind,
+            )> = Vec::new();
             // The Create placement gate's mask (`visible_cells_cached`) resolves observer-vision
             // source admission through `resolve_access_world`, which reads the world's capability
             // grants — an await, which must not run under the scene read guard below. Fetched
@@ -931,10 +945,12 @@ impl Room {
             };
             {
                 let scene = self.scene.read().await;
-                // Memoize the visible mask per (scene, leniency) within this publish so a
-                // batch of Creates in the same scene does not recompute the mask per token.
+                // Memoize the visible mask per (scene, leniency, mover level) within this publish
+                // so a batch of same-floor Creates in the same scene does not recompute the mask
+                // per token — level is part of the key because the mask is now level-scoped to
+                // each placed token's own floor.
                 let mut visible_cache: std::collections::HashMap<
-                    (uuid::Uuid, bool),
+                    (uuid::Uuid, bool, String),
                     std::collections::BTreeSet<(i32, i32)>,
                 > = std::collections::HashMap::new();
                 for op in &ops {
@@ -979,6 +995,17 @@ impl Room {
                         let target = scene
                             .resolve_grid_shape(scene_id, cell)
                             .cell_of((eng.x, eng.y));
+                        // The placed token's OWN elevation decides which level's mask/explored
+                        // memory the placement gate consults — a mask/explored source on another
+                        // floor of the same scene must not admit or reveal a cell on this one.
+                        let placed_elevation =
+                            crate::scene::elevation::elevation_or_ground(eng.elevation);
+                        let level = crate::scene::elevation::level_of(
+                            &scene.scene_levels(scene_id),
+                            placed_elevation,
+                        )
+                        .map(|l| l.id.clone())
+                        .unwrap_or_default();
                         // Guaranteed `Some`: reaching this point means this op is a token Create
                         // with a parent, which is exactly what `needs_world_defaults` scanned for.
                         // Fail closed rather than defaulting an authority input.
@@ -988,14 +1015,16 @@ impl Room {
                         match settings.movement_restriction {
                             crate::scene::MovementRestriction::Unrestricted => {}
                             crate::scene::MovementRestriction::Visible => {
-                                let mask =
-                                    visible_cache.entry((scene_id, lenient)).or_insert_with(|| {
+                                let mask = visible_cache
+                                    .entry((scene_id, lenient, level.clone()))
+                                    .or_insert_with(|| {
                                         scene.visible_cells_cached(
                                             ctx.user_id,
                                             ctx.world_role,
                                             wd,
                                             scene_id,
                                             lenient,
+                                            placed_elevation,
                                         )
                                     });
                                 if !mask.contains(&target) {
@@ -1004,7 +1033,7 @@ impl Room {
                             }
                             crate::scene::MovementRestriction::Revealed => {
                                 let mask = visible_cache
-                                    .entry((scene_id, lenient))
+                                    .entry((scene_id, lenient, level.clone()))
                                     .or_insert_with(|| {
                                         scene.visible_cells_cached(
                                             ctx.user_id,
@@ -1012,6 +1041,7 @@ impl Room {
                                             wd,
                                             scene_id,
                                             lenient,
+                                            placed_elevation,
                                         )
                                     })
                                     .clone();
@@ -1019,8 +1049,12 @@ impl Room {
                                 // scene read guard — defer exactly as the movement gate did. The
                                 // grid kind is captured here, under the same guard `settings` was
                                 // resolved in, since decoding runs after the guard is dropped.
+                                // The placed token's OWN level decides which level's explored
+                                // memory unions in: explored is keyed per level, and the cell
+                                // being admitted sits on the new token's floor.
                                 revealed_pending.push((
                                     scene_id,
+                                    level,
                                     [target].into_iter().collect(),
                                     mask,
                                     settings.grid_kind,
@@ -1031,18 +1065,18 @@ impl Room {
                 }
             } // scene read guard dropped here — safe to await
 
-            // Memoize the explored blob per scene: a batch of Revealed moves in the same
+            // Memoize the explored blob per (scene, level): a batch of Revealed moves in the same
             // scene (e.g. multi-waypoint) must not issue N DB round-trips. Pattern mirrors
             // visible_cache above. Fail closed: error or missing blob → empty set (visible-only).
             let mut explored_cache: std::collections::HashMap<
-                uuid::Uuid,
+                (uuid::Uuid, String),
                 crate::scene::explored::ExploredSet,
             > = std::collections::HashMap::new();
-            for (scene_id, move_cells, visible, grid_kind) in revealed_pending {
-                let explored = match explored_cache.entry(scene_id) {
+            for (scene_id, level, move_cells, visible, grid_kind) in revealed_pending {
+                let explored = match explored_cache.entry((scene_id, level.clone())) {
                     std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
-                        let set = match repo.get_explored(scene_id, ctx.user_id).await {
+                        let set = match repo.get_explored(scene_id, &level, ctx.user_id).await {
                             Ok(Some(blob)) => {
                                 crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind)
                             }
@@ -1090,7 +1124,62 @@ impl Room {
                 }
             }
         }
+        // Active-scene change detector: a `world-settings` Update touching
+        // `/engine/activeScene` swaps the world's ambience playlist server-side
+        // (`audio::transport::on_active_scene`). Same shape as `placement_tokens`: detect
+        // BEFORE commit from the ops/pre-image, act AFTER commit from the now-updated ECS.
+        let active_scene_write: Option<uuid::Uuid> = {
+            let scene = self.scene.read().await;
+            let ws_doc_id = scene.world_settings_doc().map(|d| d.id);
+            ops.iter().find_map(|op| match op {
+                Operation::Update { doc_id, changes }
+                    if Some(*doc_id) == ws_doc_id
+                        && changes.iter().any(|c| c.path == "/engine/activeScene") =>
+                {
+                    Some(*doc_id)
+                }
+                _ => None,
+            })
+        };
+        let old_active_scene = if active_scene_write.is_some() {
+            self.scene
+                .read()
+                .await
+                .world_settings_doc()
+                .map(|d| {
+                    crate::data::engine::engine_of::<crate::data::engine::WorldSettingsEngine>(d)
+                        .active_scene
+                })
+                .unwrap_or(None)
+        } else {
+            None
+        };
         let command = self.commit_ops_locked(repo, ctx, ops, ts, origin).await?;
+        if let Some(ws_doc_id) = active_scene_write {
+            let new_active_scene = self
+                .scene
+                .read()
+                .await
+                .world_settings_doc()
+                .filter(|d| d.id == ws_doc_id)
+                .map(|d| {
+                    crate::data::engine::engine_of::<crate::data::engine::WorldSettingsEngine>(d)
+                        .active_scene
+                })
+                .unwrap_or(None);
+            if new_active_scene != old_active_scene {
+                crate::audio::transport::on_active_scene(
+                    repo,
+                    ctx,
+                    self,
+                    self.world_id,
+                    old_active_scene,
+                    new_active_scene,
+                    ts,
+                )
+                .await;
+            }
+        }
         if !placement_tokens.is_empty() {
             self.fire_placement_triggers(repo, ctx, placement_tokens, ts)
                 .await;
@@ -1116,9 +1205,27 @@ impl Room {
         ts: i64,
         origin: WriteOrigin,
     ) -> Result<Command, DataError> {
-        let stored = repo
-            .apply_intent(ctx, self.world_id, ops, ts, origin)
-            .await?;
+        let stored = match repo.apply_intent(ctx, self.world_id, ops, ts, origin).await {
+            Ok(stored) => stored,
+            Err(e) => {
+                // The ONE auto-disable funnel: every guarded write path reaches
+                // this error arm, so the `VALIDATOR_FAULT_LIMIT` check exists
+                // here and nowhere else (never beside a single ingress call
+                // site). The caller's `publish_guard` is held, so the disable
+                // runs through the `_locked` form inline — no re-acquisition,
+                // no deadlock. Room-less paths (`import_world`, `create_world`)
+                // never reach here: they record fault streaks only and never
+                // auto-disable, a deliberate policy — a bulk import must not
+                // flip a world's settings as a side effect of being read in.
+                if let DataError::Validator(fault) = &e {
+                    if fault.consecutive >= crate::sandbox::VALIDATOR_FAULT_LIMIT {
+                        self.disable_faulting_validator_locked(repo, &fault.module)
+                            .await;
+                    }
+                }
+                return Err(e);
+            }
+        };
         // Hydrate the derived ECS from the committed command while still holding
         // publish_guard (enforced by the caller), so the ECS is consistent with the seq
         // before the Event (and any derived recompute keyed to that seq) is observable.
@@ -1158,6 +1265,120 @@ impl Room {
         let _guard = self.publish_guard.lock().await;
         self.commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
             .await
+    }
+
+    /// The audio-transport counterpart of `commit_combat`'s guard discipline: the
+    /// read→apply→commit section (`audio::transport::handle_transport_locked`) runs INSIDE a
+    /// freshly-acquired `publish_guard`, so two transports can never interleave a stale
+    /// `audio-state` read with the other's commit. `on_active_scene` must NOT route through
+    /// here: `publish` already holds the guard and a tokio Mutex is non-reentrant.
+    pub(crate) async fn commit_audio_transport(
+        &self,
+        repo: &dyn Repository,
+        ctx: &PermissionContext,
+        op: crate::ws::protocol::AudioOp,
+        ts: i64,
+    ) -> Result<(), crate::audio::transport::TransportError> {
+        let _guard = self.publish_guard.lock().await;
+        crate::audio::transport::handle_transport_locked(repo, ctx, self, self.world_id, op, ts)
+            .await
+    }
+
+    /// `Box::pin` wrapper around `commit_ops_locked`, existing solely so
+    /// `disable_faulting_validator_locked`'s notice commit can call back into it
+    /// without tripping the async-recursion check (see that call site's comment).
+    fn commit_ops_locked_boxed<'a>(
+        &'a self,
+        repo: &'a dyn Repository,
+        ctx: &'a PermissionContext,
+        ops: Vec<Operation>,
+        ts: i64,
+        origin: WriteOrigin,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Command, DataError>> + Send + 'a>>
+    {
+        Box::pin(self.commit_ops_locked(repo, ctx, ops, ts, origin))
+    }
+
+    /// The guard-held form of the validator auto-disable, called by
+    /// `commit_ops_locked`'s error arm — the ONE funnel every guarded write path
+    /// (intent ingress, HTTP writes, chat sends, merge intents, combat transitions,
+    /// config reseeds) shares, so the auto-disable check exists at exactly one site.
+    /// PRECONDITION (load-bearing): the caller MUST hold `publish_guard` (the notice
+    /// commit goes through `commit_ops_locked`, whose own precondition that is).
+    /// Idempotent: a module whose flag is already `false` (or no longer enabled at
+    /// all) is a no-op beyond the streak reset — a streak of 6, 7, ... must not
+    /// duplicate the GM notice the 5th fault already posted. A world with no GM
+    /// member gets no notice (`seed_author`'s own rule), but is still disabled and
+    /// reset.
+    async fn disable_faulting_validator_locked(&self, repo: &dyn Repository, module: &str) {
+        match repo.world_enabled_modules(self.world_id).await {
+            Ok(mut entries) => {
+                let Some(entry) = entries.iter_mut().find(|e| e.id == module) else {
+                    // No longer enabled at all — nothing to disable, nothing to notice.
+                    repo.reset_validator_fault_streak(self.world_id, module)
+                        .await;
+                    return;
+                };
+                if !entry.validators_enabled {
+                    repo.reset_validator_fault_streak(self.world_id, module)
+                        .await;
+                    return;
+                }
+                entry.validators_enabled = false;
+                if let Err(e) = repo
+                    .set_world_enabled_modules(self.world_id, &entries)
+                    .await
+                {
+                    tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable write failed");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable could not read the enabled set");
+            }
+        }
+        match crate::data::world_seed::seed_author(repo, self.world_id).await {
+            Some(seed_ctx) => {
+                let doc = crate::chat::build_message_doc(
+                    self.world_id,
+                    seed_ctx.user_id,
+                    crate::chat::MessageDraft {
+                        channel: "sandbox".to_string(),
+                        actor_owner: None,
+                        audience: crate::chat::Audience::GmOnly,
+                        kind: crate::chat::MessageKind::System,
+                        content: vec![crate::chat::Segment::Text {
+                            text: format!(
+                                "Sandboxed validator '{module}' faulted {} times in a row and has been disabled for this world.",
+                                crate::sandbox::VALIDATOR_FAULT_LIMIT
+                            ),
+                        }],
+                        source: None,
+                    },
+                    crate::ws::time::now_millis(),
+                );
+                if let Err(e) = self
+                    // Boxed: `commit_ops_locked`'s error arm can reach this notice
+                    // commit, which is itself a `commit_ops_locked` call — async
+                    // recursion requires `Box::pin` (bounded in practice: each
+                    // level disables a distinct module).
+                    .commit_ops_locked_boxed(
+                        repo,
+                        &seed_ctx,
+                        vec![Operation::Create { doc }],
+                        crate::ws::time::now_millis(),
+                        WriteOrigin::ConfigSeed,
+                    )
+                    .await
+                {
+                    tracing::warn!(world = %self.world_id, module, error = %e, "validator auto-disable notice failed");
+                }
+            }
+            None => {
+                tracing::warn!(world = %self.world_id, module, "validator auto-disable: no GM member to attribute the notice to; notice skipped");
+            }
+        }
+        repo.reset_validator_fault_streak(self.world_id, module)
+            .await;
     }
 
     /// Server-authoritative token move: resolves gate inputs off the ECS read lock, calls the
@@ -1275,6 +1496,10 @@ impl Room {
         let is_gm;
         let footprint;
         let grid_kind;
+        // The mover's resolved level id (`""` = ground/a level-less scene), captured under the
+        // first guard: explored memory is keyed per level, so the Revealed union reads the
+        // mover's OWN floor's memory — a floor the token is not on grants nothing.
+        let mover_level: String;
         // The mover's resolved locomotion traits (terrain exemption), resolved in the SAME
         // first guard block as `footprint` and threaded into `MoveGateInputs` — the executor
         // never re-derives them (that struct's caller-resolves invariant). The tags belong to
@@ -1321,8 +1546,16 @@ impl Room {
 
             let settings = scene.resolve_scene(token_scene);
             // Captured under this same read guard for the same reason `cell` is: the explored
-            // decode below runs after the guard is dropped.
+            // decode below runs after the guard is dropped. Also feeds `visible_cells_cached`
+            // below, so the movement gate's mask is level-scoped to this SAME mover floor.
+            let mover_elevation = scene.token_mover_elevation(token);
             grid_kind = settings.grid_kind;
+            mover_level = crate::scene::elevation::level_of(
+                &scene.scene_levels(token_scene),
+                mover_elevation,
+            )
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
             // Fail-closed on a `parent_id` with no scene document: `scene_grid_sizes` carries an
             // entry (defaulting to 100) for every live scene, so an absent entry means the scene
             // itself is gone — no authored cell size exists to index the visibility mask, the
@@ -1366,6 +1599,7 @@ impl Room {
                     &world_defaults,
                     token_scene,
                     lenient,
+                    mover_elevation,
                 )
             };
         } // scene read guard dropped here — safe to await (publish_guard still held)
@@ -1411,7 +1645,10 @@ impl Room {
         // (falls back to visible-only, which is stricter but safe).
         let visible = if is_revealed {
             let mut union = visible_cells;
-            let explored = match repo.get_explored(token_scene, ctx.user_id).await {
+            let explored = match repo
+                .get_explored(token_scene, &mover_level, ctx.user_id)
+                .await
+            {
                 Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, grid_kind),
                 _ => crate::scene::explored::ExploredSet::new(),
             };
@@ -1450,6 +1687,9 @@ impl Room {
                     // the combatant is hidden from — see `BudgetGate::enforced`).
                     budget: move_budget_cells,
                     traits: move_traits,
+                    // The mover's floor, resolved off the token's stored elevation under this
+                    // same read guard — never the client's claim (mirrors `footprint`/`traits`).
+                    mover_elevation: scene.token_mover_elevation(token),
                 },
                 token,
                 &path,
@@ -1663,6 +1903,7 @@ impl Room {
                 arrest_stop: outcome.arrested.then_some(outcome.stop),
             },
             ts,
+            true,
         )
         .await;
 
@@ -1726,7 +1967,7 @@ impl Room {
     /// cells of the new position) — so the two cannot drift on what an effect means.
     ///
     /// Effects are server-authored and commit as ONE batch via `commit_ops_locked` under
-    /// `WriteOrigin::CombatTransition` — never batched with the client-origin write that
+    /// `WriteOrigin::Trigger` — never batched with the client-origin write that
     /// triggered them (the split discipline `execute_move`'s position commit states). A commit
     /// failure is logged and swallowed rather than propagated: the triggering write already
     /// stands, and failing the caller over a lost effect would desync it from what was
@@ -1756,12 +1997,31 @@ impl Room {
     ///   recipients cannot see. `Owner` (effective owner + every GM) has no
     ///   `chat::Audience` shape of its own, so it builds the `GmOnly` permission shape and
     ///   grants the token's effective owner a read on top.
+    /// - `Teleport`: the token moves to the target — same-scene (`target.scene: None`) as a
+    ///   server-authored `Operation::Update` of `/engine/x`,`/engine/y` (+ `/engine/elevation`
+    ///   when the target names one); cross-scene as the server-authored `Operation::Move`
+    ///   reparenting PLUS the position Update, in the SAME committed batch (one seq). At most
+    ///   ONE teleport applies per token per fire (a region's own trigger list could carry
+    ///   several; only the first wins). The target scene's existence is checked at FIRE time,
+    ///   never at ingress (`validate_engine_tree` is pure): a missing target scene is a GM-only
+    ///   notice, no move. After a teleport the destination cells fire `Enter` effects EXCEPT
+    ///   another `Teleport` (one hop per move; a chained portal is refused with a GM-only
+    ///   notice) — enforced by the recursive re-fire passing `allow_teleport: false`. A token
+    ///   teleported OFF its combat's scene keeps its combatant record and turn but moves
+    ///   unbudgeted there (a portal is a legitimate escape), made visible by a GM-only notice
+    ///   when an active combat runs on the source scene.
+    ///
+    /// `allow_teleport` is a FUNCTION parameter rather than a `TriggerReport` field by
+    /// deliberate choice: the report describes the entry EVENT (scene, token, cells, arrest),
+    /// while the flag is a property of the firing PASS (the one-hop anti-loop), so it travels
+    /// beside `ts`, not inside the event description.
     pub(crate) async fn fire_region_triggers(
         &self,
         repo: &dyn Repository,
         ctx: &PermissionContext,
         report: TriggerReport,
         ts: i64,
+        allow_teleport: bool,
     ) {
         let TriggerReport {
             scene,
@@ -1789,11 +2049,30 @@ impl Room {
             }
         };
 
+        // The token's actor join, resolved once: `TokenEngine.actor_id` else the embedded
+        // copy's id (`SceneEcs::combatant_for_token`'s rule). The CONDITIONS host uses the
+        // `formula_host` precedence instead (embedded copy first, else the linked actor) —
+        // the two answers differ only for a token carrying both, and each consumer's own
+        // precedent is kept.
+        let token_eng: Option<eng::TokenEngine> = token_doc
+            .engine
+            .clone()
+            .and_then(|v| serde_json::from_value(v).ok());
+
         // The authoritative identity table (the server springs secret regions), the arrest
         // cell, and the token's effective owner — one read guard, no lock across an await.
+        // `trigger_regions` is filtered to the entering token's floor: a region banded to
+        // another level never fires on this token (`elevation::band_contains`).
         let (regions, arrest_cell, effective_owner) = {
             let ecs = self.scene.read().await;
-            let regions = ecs.trigger_regions(scene).unwrap_or_default();
+            let regions = ecs
+                .trigger_regions(
+                    scene,
+                    crate::scene::elevation::elevation_or_ground(
+                        token_eng.as_ref().and_then(|t| t.elevation),
+                    ),
+                )
+                .unwrap_or_default();
             let arrest_cell = match arrest_stop {
                 Some(pos) => ecs
                     .scene_grid_sizes()
@@ -1812,15 +2091,6 @@ impl Room {
         let mut ops: Vec<Operation> = Vec::new();
         let mut failures: Vec<String> = Vec::new();
 
-        // The token's actor join, resolved once: `TokenEngine.actor_id` else the embedded
-        // copy's id (`SceneEcs::combatant_for_token`'s rule). The CONDITIONS host uses the
-        // `formula_host` precedence instead (embedded copy first, else the linked actor) —
-        // the two answers differ only for a token carrying both, and each consumer's own
-        // precedent is kept.
-        let token_eng: Option<eng::TokenEngine> = token_doc
-            .engine
-            .clone()
-            .and_then(|v| serde_json::from_value(v).ok());
         let embedded_actor = token_doc
             .embedded
             .get("actor")
@@ -1995,6 +2265,164 @@ impl Room {
             }
         }
 
+        // --- Teleport: at most ONE per token per fire (a region's own trigger list could in
+        // principle carry several teleports; only the FIRST wins — a second is silently ignored
+        // rather than double-moving the token, mirroring "one hop per move"). ---
+        let mut teleported: Option<Uuid> = None;
+        if allow_teleport {
+            if let Some((_, trigger)) = fired
+                .iter()
+                .find(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
+            {
+                let eng::TriggerEffect::Teleport { target } = &trigger.effect else {
+                    unreachable!("the find matched a Teleport effect")
+                };
+                let dest_scene = target.scene.unwrap_or(scene);
+                // Scene existence AND same-world membership are checked here (fire time), never
+                // at ingress (`validate_engine_tree` is pure — no repository access). Without the
+                // world check, a cross-world (or otherwise wrong-world) portal target still
+                // passes `doc_type == "scene"` and only fails deep inside `commit_ops_locked`'s
+                // `check_command_scope` — which drops the WHOLE ops batch (every unrelated
+                // condition/resource/chat effect fired in the same pass) through the generic
+                // `tracing::debug!` arm below, with no GM notice. Checking it here instead routes
+                // the failure through `failures` like every other teleport refusal, so the
+                // batch's OTHER effects still commit and the GM is told specifically why the
+                // portal itself failed.
+                let scene_exists = match repo.get_document(dest_scene).await {
+                    Ok(Some(doc)) => {
+                        doc.doc_type == "scene"
+                            && crate::data::document::world_of(&doc) == Some(self.world_id)
+                    }
+                    _ => false,
+                };
+                if !scene_exists {
+                    failures.push(format!("teleport target scene {dest_scene} does not exist"));
+                } else if token_eng.is_none() {
+                    failures.push("token has no engine body to teleport".to_string());
+                } else {
+                    let t = token_eng.as_ref().expect("checked non-None above");
+                    let mut update_changes = Vec::new();
+                    update_changes.push(crate::data::command::FieldChange {
+                        path: "/engine/x".to_string(),
+                        old: serde_json::json!(t.x),
+                        new: serde_json::json!(target.x),
+                        remove: false,
+                    });
+                    update_changes.push(crate::data::command::FieldChange {
+                        path: "/engine/y".to_string(),
+                        old: serde_json::json!(t.y),
+                        new: serde_json::json!(target.y),
+                        remove: false,
+                    });
+                    if let Some(new_elev) = target.elevation {
+                        update_changes.push(crate::data::command::FieldChange {
+                            path: "/engine/elevation".to_string(),
+                            old: serde_json::json!(t.elevation),
+                            new: serde_json::json!(new_elev),
+                            remove: false,
+                        });
+                    }
+                    if dest_scene != scene {
+                        ops.push(Operation::Move {
+                            doc_id: token,
+                            parent_id: Some(dest_scene),
+                            old_parent_id: Some(scene),
+                        });
+                        // Active-combat visibility: the budget decrement for the walk that
+                        // entered the portal already happened; this notice only makes the
+                        // scene-change visible.
+                        if self
+                            .scene
+                            .read()
+                            .await
+                            .active_combat_for_scene(scene)
+                            .is_some()
+                        {
+                            let notice = build_message_doc(
+                                self.world_id,
+                                ctx.user_id,
+                                MessageDraft {
+                                    channel: "region".to_string(),
+                                    actor_owner: None,
+                                    audience: Audience::GmOnly,
+                                    kind: MessageKind::System,
+                                    content: vec![Segment::Text {
+                                        text: format!(
+                                            "Token {token} teleported off scene {scene} while an active combat is running there"
+                                        ),
+                                    }],
+                                    source: None,
+                                },
+                                ts,
+                            );
+                            ops.push(Operation::Create { doc: notice });
+                        }
+                    }
+                    ops.push(Operation::Update {
+                        doc_id: token,
+                        changes: update_changes,
+                    });
+                    // A carried `vfx` asset plays at BOTH ends of the hop — the source position
+                    // on the ORIGIN scene (where the token just vanished from) and the
+                    // destination position on `dest_scene` (where it now stands) — mirroring
+                    // `chat::fx`'s `ServerMsg::Vfx` broadcast shape (`ScenePing`'s precedent:
+                    // out-of-band, no seq, one fresh id per broadcast). Charged against
+                    // `self.vfx_rate` BEFORE either broadcast — the SAME `Arc<PingRateLimiter>`
+                    // `RoomRegistry::vfx_rate` hands to `WsState::vfx_rate`, which the raw
+                    // `ClientMsg::PlayVfx` frame and `/fx` already share — so repeatedly walking
+                    // into and out of a portal's trigger region cannot emit unlimited,
+                    // unthrottled broadcasts the way an unthrottled third VFX-broadcast site
+                    // would (never-fork: one budget source per one-shot family). Keyed on the
+                    // token's effective owner: a GM-owned/NPC-moved token
+                    // (`effective_owner: None`) has no attributable player to charge and is
+                    // admitted uncharged, matching this codebase's broader pattern of GM actions
+                    // being less restricted than player ones; a player-owned token charges that
+                    // player's bucket exactly once per fire (one check covers both ends of the
+                    // hop, not two).
+                    if let Some(asset) = &target.vfx {
+                        let vfx_admitted = match effective_owner {
+                            Some(owner) => self.vfx_rate.check(owner, ts, 30),
+                            None => true,
+                        };
+                        if vfx_admitted {
+                            self.broadcast_aux(ServerMsg::Vfx {
+                                scene,
+                                user: ctx.user_id,
+                                asset: asset.clone(),
+                                x: t.x,
+                                y: t.y,
+                                scale: None,
+                                rotation: None,
+                                duration_ms: None,
+                                sound: None,
+                                elevation: t.elevation,
+                                id: Uuid::new_v4(),
+                            });
+                            self.broadcast_aux(ServerMsg::Vfx {
+                                scene: dest_scene,
+                                user: ctx.user_id,
+                                asset: asset.clone(),
+                                x: target.x,
+                                y: target.y,
+                                scale: None,
+                                rotation: None,
+                                duration_ms: None,
+                                sound: None,
+                                elevation: target.elevation,
+                                id: Uuid::new_v4(),
+                            });
+                        }
+                    }
+                    teleported = Some(dest_scene);
+                }
+            }
+        } else if fired
+            .iter()
+            .any(|(_, t)| matches!(t.effect, eng::TriggerEffect::Teleport { .. }))
+        {
+            failures.push("chained portal refused (one hop per move)".to_string());
+        }
+
         // --- Chat notices, in fired order ---
         for (region, trigger) in &fired {
             if let eng::TriggerEffect::ChatNotice { text, audience } = &trigger.effect {
@@ -2070,15 +2498,59 @@ impl Room {
         if ops.is_empty() {
             return;
         }
-        if let Err(err) = self
-            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::CombatTransition)
+        match self
+            .commit_ops_locked(repo, ctx, ops, ts, WriteOrigin::Trigger)
             .await
         {
-            tracing::debug!(
-                %scene, %token, ?err,
-                "region-trigger commit failed after the triggering write already committed; \
-                 the write stands, the effects were not applied"
-            );
+            Err(err) => {
+                tracing::debug!(
+                    %scene, %token, ?err,
+                    "region-trigger commit failed after the triggering write already committed; \
+                     the write stands, the effects were not applied"
+                );
+            }
+            Ok(_) => {
+                // A teleport that committed re-fires `Enter` on the destination cells — EXCEPT
+                // another Teleport (`allow_teleport: false`): one hop per move, so a portal
+                // chain can never loop. The destination's other effects (conditions, resources,
+                // notices) fire exactly as if the token had been placed there.
+                if let Some(dest_scene) = teleported {
+                    let new_cells = {
+                        let ecs = self.scene.read().await;
+                        // The same footprint-cell computation `fire_placement_triggers` runs —
+                        // never a second footprint formula. `None` (the token or its scene
+                        // unreadable, or a refused footprint) skips the re-fire silently,
+                        // mirroring placement's own `continue`.
+                        (|| {
+                            let (_, pos, _) = ecs.token_move(token, &[])?;
+                            let &cell = ecs.scene_grid_sizes().get(&dest_scene)?;
+                            let radius = ecs.resolve_token_footprint(token, dest_scene)?;
+                            let grid = ecs.resolve_grid_shape(dest_scene, cell);
+                            Some(grid.footprint_cells(
+                                grid.cell_of(pos),
+                                pos,
+                                radius.max(0.0) * cell,
+                                cell,
+                            ))
+                        })()
+                    };
+                    if let Some(entered) = new_cells {
+                        Box::pin(self.fire_region_triggers(
+                            repo,
+                            ctx,
+                            TriggerReport {
+                                scene: dest_scene,
+                                token,
+                                entered,
+                                arrest_stop: None,
+                            },
+                            ts,
+                            false,
+                        ))
+                        .await;
+                    }
+                }
+            }
         }
     }
 
@@ -2134,7 +2606,7 @@ impl Room {
             }
         }
         for report in reports {
-            self.fire_region_triggers(repo, ctx, report, ts).await;
+            self.fire_region_triggers(repo, ctx, report, ts, true).await;
         }
     }
 
@@ -2364,6 +2836,11 @@ pub struct RoomRegistry {
     /// production constructor: the client unconditionally sends a cold-start `Hello`
     /// as the first frame on every socket open, so enforcement is always safe.
     resync_floor_enforced: bool,
+    /// Per-user VFX one-shot budget shared by every room this registry creates. `WsState::new`
+    /// clones this SAME instance into `WsState.vfx_rate` (via `RoomRegistry::vfx_rate`), so the
+    /// raw `ClientMsg::PlayVfx` frame, `/fx`, and any `Room`-internal trigger-fired VFX draw from
+    /// one bucket rather than three independent ones.
+    vfx_rate: Arc<PingRateLimiter>,
 }
 
 impl RoomRegistry {
@@ -2385,6 +2862,7 @@ impl RoomRegistry {
             deleting: DashSet::new(),
             broadcast_capacity: BROADCAST_CAPACITY,
             resync_floor_enforced: true,
+            vfx_rate: Arc::new(PingRateLimiter::new()),
         }
     }
 
@@ -2406,7 +2884,24 @@ impl RoomRegistry {
             deleting: DashSet::new(),
             broadcast_capacity,
             resync_floor_enforced: true,
+            vfx_rate: Arc::new(PingRateLimiter::new()),
         }
+    }
+
+    /// The registry's shared VFX-budget limiter — the same instance every `Room` it creates
+    /// charges against for a trigger-fired one-shot. `WsState::new` clones this into
+    /// `WsState.vfx_rate` so the raw `PlayVfx` frame and `/fx` share the identical bucket.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::ws::room::RoomRegistry;
+    ///
+    /// let reg = RoomRegistry::new();
+    /// assert!(reg.vfx_rate().check(uuid::Uuid::nil(), 0, 30));
+    /// ```
+    pub fn vfx_rate(&self) -> Arc<PingRateLimiter> {
+        self.vfx_rate.clone()
     }
 
     /// Get the room for an existing world, creating it (seeded from the world's
@@ -2530,6 +3025,7 @@ impl RoomRegistry {
                     scene_ecs,
                     self.broadcast_capacity,
                     self.resync_floor_enforced,
+                    self.vfx_rate.clone(),
                 ))
             })
             .clone();

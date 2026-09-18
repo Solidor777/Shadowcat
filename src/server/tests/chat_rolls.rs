@@ -126,6 +126,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.alice,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,
@@ -140,6 +142,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|opt| opt.expect("a plain message is not a /fx command"))
         .map(|(cmd, _pending)| cmd)
     }
 
@@ -319,6 +322,8 @@ async fn edit_of_roll_message_is_immutable() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -348,6 +353,8 @@ async fn edit_into_roll_is_rejected() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,
@@ -392,6 +399,8 @@ async fn edit_content_with_inline_span_is_refused_as_roll_immutable() {
             repo: &f.repo,
             ctx: &f.alice,
             rate: &f.rate,
+            vfx_rate: &f.rate,
+
             preview: LinkPreviewDeps {
                 client: &f.preview_client,
                 cache: &f.preview_cache,

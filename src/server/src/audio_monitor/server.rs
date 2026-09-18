@@ -1,0 +1,318 @@
+//! The `shadowcat audio-monitor` localhost WebSocket server: origin-gated `/levels` upgrade,
+//! the `hello`/`levels`/`watch` frame protocol, and the 10 Hz broadcast loop.
+
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::Router;
+use futures_util::stream::SplitSink;
+use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
+
+use super::{filter_for_watch_list, platform_monitor, MonitorError, SessionLevel, SessionMonitor};
+use crate::config::AudioMonitorArgs;
+
+/// How often the loop polls the backend and broadcasts a `levels` frame.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Sets its shared flag to `true` on drop — the signal both the thin polling-wrapper task AND
+/// the real macOS/Linux backend's own dedicated OS thread observe (`platform_monitor` threads
+/// the same `Arc<AtomicBool>` into `MacosMonitor::new`/`LinuxMonitor::new`, so setting this one
+/// flag reaches the thread that actually holds the Core Audio taps / PipeWire connection, not
+/// just the wrapper loop polling it). See `run_with_monitor`'s `_shutdown_guard`.
+struct ShutdownGuard(Arc<AtomicBool>);
+
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Default watched-process substring when `--watch`/the live `watch` frame is empty.
+const DEFAULT_WATCH: &str = "discord";
+
+/// Caps on an untrusted `watch` frame's `names`, matching this codebase's other
+/// untrusted-input-size caps (dice notation, chat egress): a client cannot force this
+/// process's memory to grow unboundedly through a live-reconfigurable list.
+const MAX_WATCH_ENTRIES: usize = 64;
+/// Max characters per watch-list entry.
+const MAX_WATCH_ENTRY_CHARS: usize = 256;
+
+/// Cap on a raw incoming text frame's byte size, checked BEFORE `serde_json::from_str` ever
+/// runs — `validate_watch_names`'s entry-count/entry-length caps only apply after a frame has
+/// already parsed successfully, so an oversized-but-well-formed-JSON frame (or an oversized
+/// malformed one) would otherwise reach the parser uncapped. 16 KiB comfortably covers
+/// `MAX_WATCH_ENTRIES` entries of `MAX_WATCH_ENTRY_CHARS` UTF-8 characters each with room to
+/// spare for JSON framing.
+const MAX_INCOMING_FRAME_BYTES: usize = 16 * 1024;
+
+/// The `hello` frame — sent once, immediately after a connection is accepted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OutgoingFrame {
+    /// Sent once on connect: the host OS and whether a working backend exists.
+    Hello {
+        /// A short OS label (`std::env::consts::OS`: `"windows"` | `"macos"` | `"linux"`).
+        os: &'static str,
+        /// Whether `platform_monitor()` returned a working backend.
+        supported: bool,
+        /// Present iff `supported` is false: the player-presentable reason.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// Sent at `POLL_INTERVAL`: the current watch-filtered session levels.
+    Levels {
+        /// The watched sessions currently active, already filtered/clamped/truncated.
+        sessions: Vec<WireSessionLevel>,
+    },
+}
+
+/// Wire shape of one `SessionLevel`.
+#[derive(Debug, Clone, Serialize)]
+struct WireSessionLevel {
+    /// The process's basename.
+    process: String,
+    /// Clamped peak level.
+    peak: f32,
+}
+
+impl From<SessionLevel> for WireSessionLevel {
+    fn from(s: SessionLevel) -> Self {
+        Self {
+            process: s.process,
+            peak: s.peak,
+        }
+    }
+}
+
+/// A frame the client may send: replaces the live watch list without a restart.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum IncomingFrame {
+    /// Replace the watch list with `names`.
+    Watch {
+        /// The new watch-list substrings (case-insensitive; replaces the previous list
+        /// wholesale).
+        names: Vec<String>,
+    },
+}
+
+/// Shared server state: the origin allowlist, the live watch list (mutated by `watch`
+/// frames), and the most recent poll result the background polling thread published.
+struct SharedState {
+    /// Origins allowed to complete the WS upgrade.
+    allow_origin: Vec<String>,
+    /// The live watch list; starts from `--watch` (default `["discord"]` when empty) and is
+    /// replaced wholesale by every `watch` frame from ANY connected client.
+    watch: Mutex<Vec<String>>,
+    /// The latest raw (unfiltered) backend poll, published by the dedicated polling thread
+    /// this module spawns in `run_with_monitor`.
+    latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>>,
+    /// Whether `platform_monitor()` produced a working backend at all (drives the `hello`
+    /// frame's `supported`/`reason`; independent of a later transient `MonitorError::Backend`).
+    supported: bool,
+    /// Present iff `!supported`: the player-presentable reason.
+    unsupported_reason: Option<String>,
+}
+
+/// Runs `shadowcat audio-monitor`: constructs the real platform backend, then serves. Never
+/// returns `Ok` while serving — only on a bind failure.
+///
+/// # Examples
+///
+/// ```no_run
+/// use shadowcat::audio_monitor::server::run;
+/// use shadowcat::config::AudioMonitorArgs;
+///
+/// # async fn example() -> anyhow::Result<()> {
+/// // Binds 127.0.0.1 and serves until the process exits.
+/// run(AudioMonitorArgs { port: 31998, allow_origin: vec![], watch: vec![] }).await
+/// # }
+/// ```
+pub async fn run(args: AudioMonitorArgs) -> anyhow::Result<()> {
+    // Created before the backend so `platform_monitor` can thread it straight into the
+    // macOS/Linux backend's own dedicated OS thread (see `run_with_monitor`'s `_shutdown_guard`
+    // doc comment for why a real exit path all the way down matters).
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let (supported, unsupported_reason, monitor) = match platform_monitor(shutdown.clone()) {
+        Ok(m) => (true, None, Some(m)),
+        Err(MonitorError::Unsupported(reason)) => (false, Some(reason), None),
+        Err(MonitorError::Backend(reason)) => (false, Some(reason), None),
+    };
+    run_with_monitor(args, supported, unsupported_reason, monitor, shutdown).await
+}
+
+/// The testable core of `run`: takes the backend construction OUTCOME already decided (so
+/// tests can inject a `FakeMonitor`/a scripted `Unsupported` outcome without touching a real
+/// OS audio API). Spawns the polling thread (only when `monitor` is `Some`), binds
+/// `127.0.0.1:<port>`, prints the bound port, and serves until the process exits.
+pub(super) async fn run_with_monitor(
+    args: AudioMonitorArgs,
+    supported: bool,
+    unsupported_reason: Option<String>,
+    monitor: Option<Box<dyn SessionMonitor>>,
+    shutdown: Arc<AtomicBool>,
+) -> anyhow::Result<()> {
+    let initial_watch = if args.watch.is_empty() {
+        vec![DEFAULT_WATCH.to_string()]
+    } else {
+        args.watch
+    };
+    let mut allow_origin = args.allow_origin;
+    if allow_origin.is_empty() {
+        allow_origin.push("http://localhost:30000".to_string());
+        allow_origin.push("http://127.0.0.1:30000".to_string());
+    }
+
+    let latest: Arc<Mutex<Result<Vec<SessionLevel>, MonitorError>>> =
+        Arc::new(Mutex::new(Ok(Vec::new())));
+    // Signals both the thin polling-wrapper thread below AND (via the same `Arc` the caller
+    // threaded into `platform_monitor`) the real backend's own OS thread to exit. Held by
+    // `_shutdown_guard`, whose `Drop` sets it — that fires both on a normal return from this
+    // function AND when the enclosing tokio task is aborted (an aborted future's live locals
+    // are dropped in place), so an integration test calling `JoinHandle::abort()` cannot leak
+    // either thread.
+    let _shutdown_guard = ShutdownGuard(shutdown.clone());
+    if let Some(mut m) = monitor {
+        let latest = latest.clone();
+        std::thread::spawn(move || {
+            while !shutdown.load(Ordering::Relaxed) {
+                let result = m.poll();
+                *latest.lock().expect("audio-monitor poll state poisoned") = result;
+                std::thread::sleep(POLL_INTERVAL);
+            }
+        });
+    }
+
+    let state = Arc::new(SharedState {
+        allow_origin,
+        watch: Mutex::new(initial_watch),
+        latest,
+        supported,
+        unsupported_reason,
+    });
+
+    let app = Router::new()
+        .route("/levels", get(upgrade))
+        .with_state(state);
+    let addr: SocketAddr = ([127, 0, 0, 1], args.port).into();
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let bound = listener.local_addr()?;
+    tracing::info!(port = bound.port(), "shadowcat audio-monitor listening");
+    // A second, deliberately plain (non-ANSI, single fixed-format) line: the `--port 0`
+    // ephemeral-bind contract this subcommand's own CLI test and the hosting guide's
+    // copyable command line depend on need a stable machine-parseable announcement, unlike
+    // the main server's tracing-only "listening" line (nothing scripts against that one).
+    println!(
+        "shadowcat audio-monitor listening on 127.0.0.1:{}",
+        bound.port()
+    );
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Origin-gated upgrade handler: refuses the upgrade outright (never reaching the `hello`
+/// frame) when the request's `Origin` header is absent or not in `allow_origin`: an
+/// unlisted origin is closed before the hello frame.
+async fn upgrade(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<SharedState>>,
+    headers: HeaderMap,
+) -> Response {
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok());
+    let allowed = origin.is_some_and(|o| state.allow_origin.iter().any(|a| a == o));
+    if !allowed {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    ws.on_upgrade(move |socket| handle_socket(socket, state))
+}
+
+/// Per-connection loop: sends `hello` once, then a `levels` frame every `POLL_INTERVAL`,
+/// concurrently reading `watch` frames the client sends (each replaces the live watch list).
+/// The socket is split so the `select!` can hold a read future while the tick arm writes
+/// (the same split-sink shape `ws::conn`'s connection loop uses).
+async fn handle_socket(socket: WebSocket, state: Arc<SharedState>) {
+    let (mut sink, mut stream) = socket.split();
+    let hello = OutgoingFrame::Hello {
+        os: std::env::consts::OS,
+        supported: state.supported,
+        reason: state.unsupported_reason.clone(),
+    };
+    if send_frame(&mut sink, &hello).await.is_err() {
+        return;
+    }
+
+    let mut interval = tokio::time::interval(POLL_INTERVAL);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                let raw = state.latest.lock().expect("audio-monitor poll state poisoned").clone();
+                let sessions = match raw {
+                    Ok(raw) => filter_for_watch_list(raw, &state.watch.lock().expect("audio-monitor watch list poisoned")),
+                    Err(_) => Vec::new(),
+                };
+                let frame = OutgoingFrame::Levels {
+                    sessions: sessions.into_iter().map(WireSessionLevel::from).collect(),
+                };
+                if send_frame(&mut sink, &frame).await.is_err() {
+                    return;
+                }
+            }
+            incoming = stream.next() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if text.len() > MAX_INCOMING_FRAME_BYTES {
+                            continue;
+                        }
+                        if let Ok(IncomingFrame::Watch { names }) = serde_json::from_str(text.as_str()) {
+                            if let Some(names) = validate_watch_names(names) {
+                                *state.watch.lock().expect("audio-monitor watch list poisoned") = names;
+                            }
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => return,
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => return,
+                }
+            }
+        }
+    }
+}
+
+/// Rejects a `watch` frame's `names` outright when it exceeds `MAX_WATCH_ENTRIES` or any entry
+/// exceeds `MAX_WATCH_ENTRY_CHARS` — the same silent-drop shape this handler already uses for a
+/// malformed frame (the previous watch list is left in place rather than partially applied).
+fn validate_watch_names(names: Vec<String>) -> Option<Vec<String>> {
+    if names.len() > MAX_WATCH_ENTRIES {
+        return None;
+    }
+    if names
+        .iter()
+        .any(|n| n.chars().count() > MAX_WATCH_ENTRY_CHARS)
+    {
+        return None;
+    }
+    Some(names)
+}
+
+/// Serializes and sends one JSON text frame, mapping any send failure to `Err(())` so the
+/// caller can end the connection loop without inspecting axum's error type.
+async fn send_frame(
+    sink: &mut SplitSink<WebSocket, Message>,
+    frame: &OutgoingFrame,
+) -> Result<(), ()> {
+    let text = serde_json::to_string(frame).map_err(|_| ())?;
+    sink.send(Message::Text(text.into())).await.map_err(|_| ())
+}
+
+#[cfg(test)]
+mod tests;

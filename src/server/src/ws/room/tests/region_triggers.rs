@@ -619,3 +619,519 @@ async fn placement_and_teleport_fire_enter_effects_but_region_edits_and_disabled
         "re-enabling is still just an edit"
     );
 }
+
+// --- Teleport (portals) ---
+
+/// Creates a GM-owned, world-readable second scene in `h`'s world, for cross-scene teleports.
+async fn place_scene(h: &MovementHandle, id: u128) -> Uuid {
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let scene_id = Uuid::from_u128(id);
+    let mut scene = wdoc(h.world_id, scene_id, "scene");
+    scene.owner = Some(h.gm.user_id);
+    // The same envelope convention `place_region` uses: world-readable.
+    scene.permissions.default = DocRole::Observer;
+    scene.engine = Some(json!({
+        "grid": { "kind": "square", "size": 100.0 }, "background": null }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    scene_id
+}
+
+/// Every persisted command on `h`'s world, in seq order.
+async fn committed_events(h: &MovementHandle) -> Vec<crate::data::snapshot::StoredCommand> {
+    crate::data::repository::Repository::events_since(&h.repo, h.world_id, 0)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn same_scene_teleport_repositions_the_token_without_a_move_op() {
+    let h = movement_scene("unrestricted", false).await;
+    place_region(
+        &h,
+        0x7B0,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 450.0, "y": 450.0, "elevation": 15.0, "vfx": null } } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(eng["x"], json!(450.0));
+    assert_eq!(eng["y"], json!(450.0));
+    assert_eq!(
+        eng["elevation"],
+        json!(15.0),
+        "a target naming an elevation writes it"
+    );
+    assert_eq!(
+        token.parent_id,
+        Some(h.scene_id),
+        "a same-scene teleport never reparents"
+    );
+    let has_move = committed_events(&h).await.iter().any(|e| {
+        e.command
+            .ops
+            .iter()
+            .any(|op| matches!(op, Operation::Move { doc_id, .. } if *doc_id == h.token_id))
+    });
+    assert!(!has_move, "no Move op lands for a same-scene teleport");
+}
+
+#[tokio::test]
+async fn cross_scene_teleport_reparents_and_repositions_in_one_command() {
+    let h = movement_scene("unrestricted", false).await;
+    let dest = place_scene(&h, 0x7C0).await;
+    place_region(
+        &h,
+        0x7C1,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": dest.to_string(), "x": 250.0, "y": 250.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    // The fixture token is PLAYER-owned: with any capability-gated origin the Move arm of
+    // `apply_intent` would refuse the reparenting outright — the teleport landing at all is
+    // the behavioral assertion that the batch committed under a capability-skipping origin
+    // (`WriteOrigin::Trigger`).
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    assert_eq!(token.parent_id, Some(dest), "the token is reparented");
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(eng["x"], json!(250.0));
+    assert_eq!(eng["y"], json!(250.0));
+    let teleport_cmd = committed_events(&h)
+        .await
+        .into_iter()
+        .find(|e| {
+            e.command
+                .ops
+                .iter()
+                .any(|op| matches!(op, Operation::Move { doc_id, .. } if *doc_id == h.token_id))
+        })
+        .expect("the teleport's reparenting committed");
+    assert!(
+        teleport_cmd
+            .command
+            .ops
+            .iter()
+            .any(|op| matches!(op, Operation::Update { doc_id, .. } if *doc_id == h.token_id)),
+        "the reparenting Move and the position Update commit in ONE command (one seq)"
+    );
+}
+
+/// Drains every currently-buffered broadcast off `rx` (non-blocking) and returns how many were
+/// `ServerMsg::Vfx` frames.
+fn count_vfx_frames(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::ws::room::RoomEvent>,
+) -> usize {
+    use tokio::sync::broadcast::error::TryRecvError;
+    let mut n = 0;
+    loop {
+        match rx.try_recv() {
+            Ok(RoomEvent::Other(msg)) => {
+                if matches!(&*msg, ServerMsg::Vfx { .. }) {
+                    n += 1;
+                }
+            }
+            Ok(RoomEvent::Event(_)) => {}
+            // A skipped-messages notification, not a stop condition — keep draining what
+            // remains resident in the ring so a Vfx frame after the gap is still counted.
+            Err(TryRecvError::Lagged(_)) => {}
+            Err(TryRecvError::Empty) | Err(TryRecvError::Closed) => break,
+        }
+    }
+    n
+}
+
+/// A region whose `enter` trigger carries BOTH a same-scene teleport with a carried `vfx` asset
+/// AND an unrelated `chat_notice` — lets a test distinguish "the whole batch was dropped" from
+/// "only the VFX broadcast was throttled".
+async fn place_vfx_teleport_region(h: &MovementHandle, id: u128, cell: (i32, i32)) -> Uuid {
+    place_region(
+        h,
+        id,
+        cell,
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 450.0, "y": 450.0, "elevation": null, "vfx": "portal-flash" } } },
+            { "on": "enter", "effect": { "type": "chat_notice", "text": "A portal hums.", "audience": "public" } },
+        ]),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn teleport_vfx_plays_at_both_ends_when_the_shared_budget_has_room() {
+    // Positive control (see the "a green gate can be inert" lesson): proves the detector FIRES
+    // under budget before the throttled test below proves it refuses over budget.
+    let h = movement_scene("unrestricted", false).await;
+    place_vfx_teleport_region(&h, 0x7B8, (1, 0)).await;
+    let (mut rx, _) = h.room.subscribe();
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    assert_eq!(
+        count_vfx_frames(&mut rx),
+        2,
+        "a carried vfx plays once at the origin and once at the destination when the bucket has room"
+    );
+    let notices = region_notices(&h).await;
+    assert_eq!(notices.len(), 1, "the unrelated chat_notice still commits");
+}
+
+#[tokio::test]
+async fn teleport_vfx_is_throttled_by_the_shared_vfx_rate_bucket_like_repeated_fx_calls() {
+    let h = movement_scene("unrestricted", false).await;
+    place_vfx_teleport_region(&h, 0x7B9, (1, 0)).await;
+    let (mut rx, _) = h.room.subscribe();
+
+    // Exhaust the SAME bucket `ws::conn`'s `PlayVfx` arm and `chat::fx` charge, keyed on the
+    // token's effective owner (the fixture token is player-owned — see `movement_scene`'s own
+    // doc) — mirroring a player who already spent their 30/min budget via repeated `/fx` calls.
+    // Charged at real wall-clock time (`PingRateLimiter::check`'s window is relative to the
+    // `now_ms` each call passes, not absolute): `move_token` below fires the trigger moments
+    // later via its own fresh `now_millis()`, which must land inside the SAME trailing-60s
+    // window as these charges or `retain` prunes them all before the trigger's own check runs.
+    let now = crate::ws::time::now_millis();
+    for i in 0..30 {
+        assert!(h.room.vfx_rate.check(h.player.user_id, now + i, 30));
+    }
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    assert_eq!(
+        count_vfx_frames(&mut rx),
+        0,
+        "the portal's carried vfx is refused once the shared budget is exhausted, exactly like a \
+         31st /fx call would be"
+    );
+    // The teleport itself and the unrelated same-batch chat_notice are NOT throttled — only the
+    // vfx broadcast is refused (never-fork: the budget gates the one-shot, not the whole batch).
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(eng["x"], json!(450.0), "the teleport still committed");
+    assert_eq!(eng["y"], json!(450.0));
+    let notices = region_notices(&h).await;
+    assert_eq!(
+        notices.len(),
+        1,
+        "the unrelated chat_notice still commits when only the vfx broadcast is throttled"
+    );
+}
+
+#[tokio::test]
+async fn teleport_to_a_missing_scene_notices_the_gm_and_moves_nothing() {
+    let h = movement_scene("unrestricted", false).await;
+    let missing = Uuid::from_u128(0xDEAD);
+    place_region(
+        &h,
+        0x7D0,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": missing.to_string(), "x": 0.0, "y": 0.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        h.adj,
+        "the token stays where the walk ended (no move, no update)"
+    );
+    assert_eq!(token.parent_id, Some(h.scene_id));
+    let notices = region_notices(&h).await;
+    assert_eq!(notices.len(), 1, "one deduplicated failure notice");
+    let engine = notice_engine(&notices[0]);
+    assert_eq!(engine.audience, Audience::GmOnly);
+    assert!(
+        notice_text(&notices[0]).contains("does not exist"),
+        "the notice names the failure"
+    );
+}
+
+/// A portal target that exists (`doc_type == "scene"`) but belongs to a DIFFERENT world must
+/// refuse exactly like a missing scene — not fail deep inside `commit_ops_locked`'s
+/// `check_command_scope`, which would silently drop the WHOLE ops batch (every unrelated
+/// effect fired in the same pass) through the generic `tracing::debug!` arm with no GM notice.
+/// This region fires TWO effects on entry — the teleport AND an unrelated `chat_notice` — so a
+/// batch-wide drop and a properly-isolated teleport refusal are distinguishable: the notice
+/// commits either way, but only the fixed behavior ALSO posts a GM-only failure notice naming
+/// the teleport.
+#[tokio::test]
+async fn teleport_to_a_cross_world_scene_notices_the_gm_and_moves_nothing() {
+    let h = movement_scene("unrestricted", false).await;
+
+    // A scene document that genuinely exists, in a SEPARATE world owned by the same GM.
+    let other_world = h
+        .repo
+        .create_world_owned("other", h.gm.user_id, 0)
+        .await
+        .unwrap();
+    let reg_other = RoomRegistry::new();
+    let room_other = reg_other
+        .get_or_create(&h.repo, other_world.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let foreign_scene_id = Uuid::from_u128(0x7F0_5CE1);
+    let mut foreign_scene =
+        crate::data::document::tests::world_scoped_doc(other_world.id, foreign_scene_id, "scene");
+    foreign_scene.owner = Some(h.gm.user_id);
+    room_other
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: foreign_scene }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+
+    place_region(
+        &h,
+        0x7F0,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": foreign_scene_id.to_string(), "x": 0.0, "y": 0.0, "elevation": null, "vfx": null } } },
+            { "on": "enter", "effect": { "type": "chat_notice",
+                "text": "entered the cross-world portal region", "audience": "public" } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        h.adj,
+        "the token stays where the walk ended (no cross-world move, no update)"
+    );
+    assert_eq!(token.parent_id, Some(h.scene_id));
+
+    let notices = region_notices(&h).await;
+    let texts: Vec<String> = notices.iter().map(notice_text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("does not exist")),
+        "a GM-only failure notice names the cross-world teleport refusal, got {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("entered the cross-world portal region")),
+        "the batch's OTHER effect (the unrelated chat_notice) still committed, got {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_chained_portal_is_refused_after_one_hop() {
+    let h = movement_scene("unrestricted", false).await;
+    // The first region (cell (1,0)) teleports into the second's cell (2,0), whose own trigger
+    // list carries ANOTHER teleport to (450,50).
+    place_region(
+        &h,
+        0x7E0,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 250.0, "y": 50.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+    place_region(
+        &h,
+        0x7E1,
+        (2, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 450.0, "y": 50.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        (250.0, 50.0),
+        "the token ends on the FIRST destination — one hop per move"
+    );
+    let texts: Vec<String> = region_notices(&h).await.iter().map(notice_text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("chained portal refused")),
+        "the refused second hop surfaces as a GM-only notice, got {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn destination_enter_effects_fire_after_a_teleport() {
+    let h = movement_scene("unrestricted", false).await;
+    let actor_id = link_actor(&h, 0x7F0, vec![], json!({})).await;
+    place_region(
+        &h,
+        0x7F1,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 250.0, "y": 50.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+    place_region(
+        &h,
+        0x7F2,
+        (2, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "condition_add", "condition": "prone" } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    let eng = token.engine.clone().unwrap();
+    assert_eq!(
+        (eng["x"].as_f64().unwrap(), eng["y"].as_f64().unwrap()),
+        (250.0, 50.0)
+    );
+    let actor = h.repo.get_document(actor_id).await.unwrap().unwrap();
+    assert_eq!(
+        actor.engine.unwrap()["conditions"],
+        json!(["prone"]),
+        "the destination region's Enter effects fire after the teleport, in the same firing pass"
+    );
+}
+
+#[tokio::test]
+async fn teleporting_a_combatant_off_an_active_combats_scene_posts_a_notice() {
+    let h = movement_scene("unrestricted", false).await;
+    let actor_id = link_actor(&h, 0x800, vec![], json!({})).await;
+    let wdoc = crate::data::document::tests::world_scoped_doc;
+    let (combat_id, combatant_id) = (Uuid::from_u128(0x801), Uuid::from_u128(0x802));
+    let mut combat = wdoc(h.world_id, combat_id, "combat");
+    combat.owner = Some(h.gm.user_id);
+    combat.engine = Some(json!({
+        "scene_id": h.scene_id,
+        "active": true,
+        "round": 1,
+        "turn": combatant_id,
+        "turn_control": "owner_may_end",
+        "order": [combatant_id],
+        "movement": { "resource": null, "interpretation": "spaces", "enforcement": "none" },
+        "effect_cleanup": true,
+        "rewind_restore": true,
+        "forward_restore": false,
+        "effect_lifecycle": {}
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: combat }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    let mut combatant = wdoc(h.world_id, combatant_id, "combatant");
+    combatant.parent_id = Some(combat_id);
+    combatant.owner = Some(h.player.user_id);
+    combatant
+        .permissions
+        .users
+        .insert(h.player.user_id, DocRole::Owner);
+    combatant.engine = Some(json!({
+        "kind": { "type": "actor", "token_id": h.token_id, "actor_id": actor_id },
+        "initiative": null,
+        "tiebreak": 0.0,
+        "resources": {}
+    }));
+    h.room
+        .publish(
+            &h.repo,
+            &h.gm,
+            vec![Operation::Create { doc: combatant }],
+            0,
+            WriteOrigin::Client,
+        )
+        .await
+        .unwrap();
+    // The baseline is the STORED (normalized) engine body, read back after the publish.
+    let combatant_engine = h
+        .repo
+        .get_document(combatant_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .engine
+        .unwrap();
+
+    let dest = place_scene(&h, 0x803).await;
+    place_region(
+        &h,
+        0x804,
+        (1, 0),
+        "terrain",
+        json!([
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": dest.to_string(), "x": 250.0, "y": 250.0, "elevation": null, "vfx": null } } }
+        ]),
+    )
+    .await;
+
+    move_token(&h, vec![h.start, h.adj]).await;
+
+    let token = h.repo.get_document(h.token_id).await.unwrap().unwrap();
+    assert_eq!(token.parent_id, Some(dest));
+    let texts: Vec<String> = region_notices(&h).await.iter().map(notice_text).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("teleported off scene")),
+        "a GM-only notice names the combatant leaving its combat's scene, got {texts:?}"
+    );
+    // The combatant record is unaffected: still exists, unchanged engine body (no combat
+    // document write rode the teleport batch).
+    let after = h.repo.get_document(combatant_id).await.unwrap().unwrap();
+    assert_eq!(
+        after.engine.unwrap(),
+        combatant_engine,
+        "the combatant record is untouched by the teleport"
+    );
+}

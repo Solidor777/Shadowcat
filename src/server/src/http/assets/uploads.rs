@@ -17,6 +17,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::session::AuthUser;
+use crate::data::asset::process::audio::AudioContainers;
 use crate::data::asset::tags::{derive, DeriveInput};
 use crate::data::asset::{
     commit_staged_asset, process_staged_blocking, remove_asset_files, Asset, Provenance,
@@ -26,7 +27,7 @@ use crate::data::repository::Repository;
 use crate::http::error::AppError;
 use crate::http::{routes::require_gm, AppState};
 
-use super::{detect_image_type, label_content_type, UploadRateLimiter};
+use super::{detect_audio_type, detect_image_type, label_content_type, UploadRateLimiter};
 
 /// Fixed chunk size the client must honor; the single-shot route covers
 /// anything at or under one chunk.
@@ -56,6 +57,7 @@ const MAX_NAME_CHARS: usize = 255;
 ///     received: 4,
 ///     folder_id: None,
 ///     tags: vec![],
+///     audio_containers: Default::default(),
 ///     staged: std::path::PathBuf::from("staged.tmp"),
 ///     rate_hit_ms: 0,
 ///     last_touch_ms: 0,
@@ -95,6 +97,7 @@ pub enum ChunkReject {
 ///     received: 0,
 ///     folder_id: None,
 ///     tags: vec![],
+///     audio_containers: Default::default(),
 ///     staged: std::path::PathBuf::from("staged.tmp"),
 ///     rate_hit_ms: 0,
 ///     last_touch_ms: 0,
@@ -124,6 +127,9 @@ pub struct UploadSession {
     pub folder_id: Option<Uuid>,
     /// Explicit tags to record at completion (validated at create).
     pub tags: Vec<String>,
+    /// The audio derivative container selection, resolved at create (an absent request field
+    /// already defaulted here, so `complete` never re-decides it).
+    pub audio_containers: AudioContainers,
     /// The staging file chunks append to.
     pub staged: PathBuf,
     /// `now_ms` the rate slot was taken at (refund key).
@@ -155,6 +161,7 @@ impl UploadSession {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -199,6 +206,7 @@ impl UploadSession {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -232,6 +240,7 @@ impl UploadSession {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -302,6 +311,7 @@ impl UploadSessions {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -333,6 +343,7 @@ impl UploadSessions {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -365,6 +376,7 @@ impl UploadSessions {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -399,6 +411,7 @@ impl UploadSessions {
     ///     received: 0,
     ///     folder_id: None,
     ///     tags: vec![],
+    ///     audio_containers: Default::default(),
     ///     staged: std::path::PathBuf::from("staged.tmp"),
     ///     rate_hit_ms: 0,
     ///     last_touch_ms: 0,
@@ -489,6 +502,7 @@ async fn discard(session: &UploadSession, rate: &UploadRateLimiter) {
 ///     received: 0,
 ///     folder_id: None,
 ///     tags: vec![],
+///     audio_containers: Default::default(),
 ///     staged: std::env::temp_dir().join("shadowcat-doc-sweeper-never-written.tmp"),
 ///     rate_hit_ms: 0,
 ///     last_touch_ms: 0,
@@ -572,6 +586,10 @@ pub struct CreateUploadRequest {
     /// Explicit tags to record.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Which Opus derivative container(s) an audio upload emits; omitted = the default
+    /// (`AudioContainers::Both`). Ignored for a non-audio upload.
+    #[serde(default)]
+    pub audio_containers: Option<AudioContainers>,
 }
 
 /// `POST /api/worlds/{world}/assets/uploads` response.
@@ -636,6 +654,7 @@ pub struct CreateUploadResponse {
 ///     byte_size: 1024,
 ///     folder_id: None,
 ///     tags: vec![],
+///     audio_containers: None,
 /// });
 /// let _ = shadowcat::http::assets::uploads::create_session(
 ///     axum::extract::State(state),
@@ -703,6 +722,7 @@ pub async fn create_session(
         received: 0,
         folder_id,
         tags,
+        audio_containers: body.audio_containers.unwrap_or_default(),
         staged,
         rate_hit_ms: now,
         last_touch_ms: now,
@@ -913,13 +933,17 @@ pub async fn complete_session(
         let head = read_head(&session.staged)
             .await
             .map_err(|_| AppError::Internal)?;
-        let content_type =
-            label_content_type(detect_image_type(&head), Some(&session.content_type));
+        let content_type = label_content_type(
+            detect_image_type(&head),
+            detect_audio_type(&head),
+            Some(&session.content_type),
+        );
         let processed = process_staged_blocking(
             session.staged.clone(),
             content_type,
             session.byte_size as i64,
             state.config.retain_originals,
+            session.audio_containers,
         )
         .await
         .map_err(|e| {

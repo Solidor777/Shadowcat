@@ -18,6 +18,7 @@ pub mod room;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
+pub mod vfx;
 
 pub use room::RoomRegistry;
 
@@ -91,6 +92,12 @@ impl PingRateLimiter {
 /// nothing failing to report it.
 pub(crate) const MESSAGE_RATE_PER_MIN: usize = 30;
 
+/// The per-user, per-trailing-60s budget the `ClientMsg::AudioTransport` handler spends
+/// against, from its OWN bucket (`WsState::audio_rate` — a transport flood must not starve
+/// chat/pings/emotes or vice versa). Declared once, beside the limiter it governs, for the
+/// same no-fork reason `MESSAGE_RATE_PER_MIN` states above.
+pub(crate) const AUDIO_RATE_PER_MIN: usize = 30;
+
 /// Realtime state shared in `AppState`. A thin handle today; the seam for future
 /// bus internals (actor pool / external broker) without touching callers.
 ///
@@ -114,6 +121,15 @@ pub struct WsState {
     /// Per-user flood budget for every handler `MESSAGE_RATE_PER_MIN` governs (shared across a
     /// user's connections).
     pub message_rate: Arc<PingRateLimiter>,
+    /// Per-user audio-transport budget (shared across a user's connections); a
+    /// SEPARATE bucket from ping/emote/message so transport spam cannot starve them or vice versa.
+    pub audio_rate: Arc<PingRateLimiter>,
+    /// Per-user VFX one-shot budget (shared across a user's connections); a SEPARATE bucket
+    /// from `ping_rate`/`emote_rate`/`message_rate` so a VFX spam burst cannot starve any other
+    /// relay. Charged by BOTH entry paths — the raw `ClientMsg::PlayVfx` arm in `ws::conn` and
+    /// the `/fx` chat command (`chat::fx::run_fx`) — at the same inline 30/min/user budget, so
+    /// neither front door buys more plays than the other.
+    pub vfx_rate: Arc<PingRateLimiter>,
     /// The link-preview SSRF-guarded fetch client, built ONCE via
     /// `chat::build_link_preview_client()` (the no-flag production
     /// constructor — never the test-only loopback-permitting one) and
@@ -143,11 +159,18 @@ impl WsState {
     /// assert!(ws.rooms.get(uuid::Uuid::nil()).is_none());
     /// ```
     pub fn new() -> Self {
+        // `rooms` owns the canonical VFX-budget limiter; `vfx_rate` clones the SAME instance
+        // (never a fresh one) so the raw `ClientMsg::PlayVfx` frame, `/fx`, and a `Room`-internal
+        // trigger-fired VFX (`fire_region_triggers`'s Teleport arm) share one bucket.
+        let rooms = Arc::new(RoomRegistry::new());
+        let vfx_rate = rooms.vfx_rate();
         Self {
-            rooms: Arc::new(RoomRegistry::new()),
+            rooms,
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            audio_rate: Arc::new(PingRateLimiter::new()),
+            vfx_rate,
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
@@ -167,11 +190,16 @@ impl WsState {
     /// assert!(state.rooms.get(uuid::Uuid::nil()).is_none());
     /// ```
     pub fn with_broadcast_capacity(capacity: usize) -> Self {
+        // See `WsState::new`'s doc: `vfx_rate` clones `rooms`'s own canonical limiter.
+        let rooms = Arc::new(RoomRegistry::with_capacity(capacity));
+        let vfx_rate = rooms.vfx_rate();
         Self {
-            rooms: Arc::new(RoomRegistry::with_capacity(capacity)),
+            rooms,
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
+            audio_rate: Arc::new(PingRateLimiter::new()),
+            vfx_rate,
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),

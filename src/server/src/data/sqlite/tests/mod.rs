@@ -1,12 +1,15 @@
 //! Repository tests, split by subject; shared fixtures live here.
 
 mod assets;
+mod audio_bundle_roundtrip;
+mod audio_origin;
 mod base_ownership;
 mod combat_batches;
 mod commands_and_intents;
 mod invites_and_ownership;
 mod moves;
 mod rows_and_validation;
+mod sandbox_validators;
 mod search_and_worlds;
 
 pub(super) use super::*;

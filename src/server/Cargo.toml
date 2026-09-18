@@ -58,10 +58,53 @@ webp = "0.3"
 # compile-size caps, so an untrusted pattern cannot stall the server.
 regex = "1"
 
+# Phase 3: M23 (audio). Pure-Rust decode covers every upload format a GM has (mp3, flac, wav
+# (via the `pcm` codec feature), ogg/vorbis, aac-lc, isomp4) with no C toolchain — the same
+# "no FFmpeg" posture as the image pipeline (symphonia is MPL-2.0; the "ogg" feature demuxes
+# the container vorbis arrives in, "mkv" the one webm arrives in and the WebM round-trip
+# probe needs).
+# `opus` (MIT/Apache-2.0) / `opusic-sys` (BSD-3-Clause) bind libopus via cmake — opusic-sys's
+# default `bundled` feature drives the `cmake` crate (see spec §2.3's measured per-OS cmake
+# availability); `ogg` (BSD-3-Clause) wraps the encoded frames in
+# Ogg pages; `rubato` (MIT/Apache-2.0) resamples to the 48 kHz Opus wants before encoding.
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac", "wav", "pcm", "vorbis", "ogg", "aac", "isomp4", "mkv"] }
+opus = "0.4"
+ogg = "0.9"
+rubato = "5"
+
+# Phase 3: M28 — sandboxed third-party validators (opt-in, per-world, over the `system`
+# band only). wasmi (MIT/Apache-2.0) is a pure-Rust WASM interpreter: no JIT attack surface,
+# no host imports beyond what `sandbox::runtime` wires up, fuel-metered, and small (~1 MiB) —
+# the only WASM runtime whose own footprint fits the 60 MiB binary-size budget without adding
+# a JIT or native codegen path.
+wasmi = "0.51"
+
 # Embeds the application icon into the Windows executable (see build.rs); a
 # no-op on other targets, so it never affects the Linux/macOS binaries.
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# Phase 3: M27 (audio-monitor subcommand — per-platform OS audio-session peak level).
+# windows 0.58.0 — MIT OR Apache-2.0 (measured via `cargo metadata`).
+# core-foundation 0.10.1 — MIT OR Apache-2.0 (measured via `cargo metadata`).
+# pipewire 0.8.0 + libspa 0.8.0 — MIT (measured via `cargo metadata`); binds the system
+# libpipewire-0.3 (MIT). coreaudio-rs/coreaudio-sys (MIT) are NOT used: the latest
+# coreaudio-sys does not wrap the macOS process-tap entry points this subcommand needs,
+# so the macOS backend binds them via a small `extern "C"` block over core-foundation.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_System_Com",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+pipewire = "0.8"
 
 [dev-dependencies]
 # The shared WS harness the integration tests drive. A path dependency rather than a
@@ -81,4 +124,6 @@ futures-util = "0.3"
 tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "net", "time"] }
 uuid = { version = "1", features = ["v4"] }
 serde_json = "1"
+# WAT-authored WASM test fixtures for `sandbox::runtime`'s unit tests (MIT/Apache-2.0).
+wat = "1"
 axum = { version = "0.8", features = ["ws"] }

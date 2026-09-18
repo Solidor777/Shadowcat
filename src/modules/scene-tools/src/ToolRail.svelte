@@ -1,16 +1,40 @@
 <script lang="ts">
   import { createSubscriber } from "svelte/reactivity";
   import { getAppContext, sizeClass, LightEmissionEditor } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, type WireDocument, type LightEngine, type WallEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience } from "@shadowcat/core";
-  import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode } from "./controller.svelte";
+  import { resolveSceneSettings, ownerFloorApplies, buildUpdate, SCENE_TOOL_CONTRACT, type WireDocument, type LightEngine, type WallEngine, type RegionEngine, type DrawingEngine, type TemplateEngine, type RegionTrigger, type TriggerEvent, type NoticeAudience, type SceneEngine, type ElevationBand, type SceneToolMeta } from "@shadowcat/core";
+  import { ToolController, type HostToolContext, type ToolId, type DrawMode, type TemplateMode, type RegionShapeMode, type RegionBehaviorMode, type ViewedLevelBand } from "./controller.svelte";
   import AssetPicker from "./AssetPicker.svelte";
+  import RegionTriggerTeleportEditor from "./RegionTriggerTeleportEditor.svelte";
 
   const ctx = getAppContext();
+
+  /**
+   * Resolves the `SceneLevel` `ctx.viewedLevel` names on the viewed scene, or `null` (no scene,
+   * no viewed level, or the level id no longer names a declared level).
+   * @returns The resolved `SceneLevel`, or `null`.
+   * @example
+   * ```
+   * // private helper; not part of the public API — read by viewedLevelBand/viewedLevelBottom
+   * resolvedViewedLevel();
+   * ```
+   */
+  function resolvedViewedLevel(): ViewedLevelBand | null {
+    const sceneId = ctx.viewedSceneId;
+    const level = ctx.viewedLevel;
+    if (sceneId === null || level === null) return null;
+    const scene = ctx.documents.query("scene").find((s) => s.id === sceneId);
+    const levels = (scene?.engine as SceneEngine | undefined)?.levels ?? [];
+    const found = levels.find((l) => l.id === level);
+    return found ? { bottom: found.bottom, top: found.top } : null;
+  }
+
   // The controller is fixed per ToolRail instance; capturing the context once is intended.
   // `satisfies HostToolContext` makes every AppContext-supplied ToolContext member mandatory
   // here, so a seam the host has can never be left out of this literal without a type error.
+  // The two viewedLevel* fields below are ToolContext-only (no AppContext counterpart), so they
+  // sit OUTSIDE this checked literal — spread in below — rather than widening the check itself.
   // svelte-ignore state_referenced_locally
-  const controller = new ToolController({
+  const hostToolContext = {
     scene: ctx.scene,
     actorSelection: ctx.actorSelection,
     tokenSelection: ctx.tokenSelection,
@@ -26,7 +50,13 @@
     viewedSceneId: () => ctx.viewedSceneId,
     footprints: () => ctx.footprints,
     t: ctx.t,
-  } satisfies HostToolContext);
+    setGmViewedScene: ctx.setGmViewedScene,
+  } satisfies HostToolContext;
+  const controller = new ToolController({
+    ...hostToolContext,
+    viewedLevelBand: () => resolvedViewedLevel(),
+    viewedLevelBottom: () => resolvedViewedLevel()?.bottom ?? null,
+  });
   const t = ctx.t;
   // Authoring is GM-gated (the server is authoritative; this hides the controls).
   // Gating is PER TOOL, not per component: the controller is constructed for every user so
@@ -49,6 +79,18 @@
   const snapToGrid = $derived.by((): boolean => {
     subscribe();
     return resolveSceneSettings(activeScene, ctx.documents).snapToGrid;
+  });
+
+  // Contributed scene tools (SCENE_TOOL_CONTRACT): contribution changes are NOT document-store
+  // changes, so this needs its own `ctx.contributions.subscribe` bridge, separate from the
+  // document-store `subscribe` above.
+  const subscribeContributions = createSubscriber((update) => ctx.contributions.subscribe(update));
+  const sceneTools = $derived.by((): SceneToolMeta[] => {
+    subscribeContributions();
+    return ctx.contributions
+      .contributionsFor(SCENE_TOOL_CONTRACT)
+      .map((c) => c.sceneTool)
+      .filter((m): m is SceneToolMeta => m !== undefined);
   });
 
   /** GM-authored scene-level snap toggle: writes the engine-owned
@@ -205,7 +247,7 @@
   const regionShapeModes: RegionShapeMode[] = ["rect", "circle", "polygon"];
   const regionBehaviors: RegionBehaviorMode[] = ["terrain", "impassable", "arrest"];
 
-  // The light/wall editor's target document, resolved live from the shared editing selection
+  // The open editor's target document, resolved live from the shared editing selection
   // (reactive: re-reads on every store commit, so the inputs reflect the server's state).
   const editingDoc = $derived.by((): WireDocument | null => {
     subscribe();
@@ -221,7 +263,7 @@
     if (controller.editingEntity && !editingDoc) controller.editingEntity = null;
   });
 
-  /** Dispatch one field-level update against the light/wall being edited. `old` MUST be the
+  /** Dispatch one field-level update against the entity open in the editor. `old` MUST be the
    * RAW stored value at `path` (the server's field-level optimistic-concurrency check compares
    * against it) — never a resolved/defaulted value. The standing raw-`old` convention.
    * @param path The engine-band JSON pointer being written.
@@ -290,31 +332,58 @@
     editSelected("/engine/elevation", old, next);
   }
 
-  /** Write one end of the edited wall's `/engine/elevation` band, preserving the other end.
-   * An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field writes
-   * `null` (canonical "occludes every elevation" — an absent band, matching
-   * `wall_occludes`). `old` is the raw stored band object (or `null`).
+  /** Write one end of an edited entity's `/engine/elevation` band, preserving the other end —
+   * the shared body behind `editEntityElevation`, the one band editor every band-shaped kind
+   * (wall, region, drawing, template) uses: they all carry the identical `Option<ElevationBand>`
+   * shape. An emptied end is unbounded (`null`); when BOTH ends are unbounded the whole field
+   * resolves to `null` (canonical "every elevation" — an absent band, matching
+   * `band_contains`/`wall_occludes`).
+   * @param old The raw stored band object (or `null`).
+   * @param end Which band end this edit changes; the other end is carried forward unchanged.
+   * @param raw The input's raw string value.
+   * @returns The next band value, or `undefined` when `raw` doesn't parse (no write).
+   * @example
+   * ```
+   * editElevationBand(null, "bottom", "2"); // { bottom: 2, top: null }
+   * ```
+   */
+  function editElevationBand(
+    old: ElevationBand | null,
+    end: "bottom" | "top",
+    raw: string,
+  ): ElevationBand | null | undefined {
+    const parsed = parseElevation(raw);
+    if (parsed === undefined) return undefined;
+    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
+    const top = end === "top" ? parsed : (old?.top ?? null);
+    return bottom === null && top === null ? null : { bottom, top };
+  }
+
+  /** Write one end of the edited entity's `/engine/elevation` band, preserving the other end.
+   * `old` is the raw stored band object (or `null`). One shared body for every band-shaped kind
+   * (wall/region/drawing/template) — they all carry the identical `elevation: ElevationBand |
+   * null` engine field, so a per-kind cast would only fork this decision, never change it.
    * @param end Which band end this edit changes; the other end is carried forward unchanged.
    * @param raw The input's raw string value.
    * @example
    * ```
-   * editWallElevation("bottom", "2"); // band starts at elevation 2, top unchanged
+   * editEntityElevation("bottom", "2"); // band starts at elevation 2, top unchanged
    * ```
    */
-  function editWallElevation(end: "bottom" | "top", raw: string): void {
+  function editEntityElevation(end: "bottom" | "top", raw: string): void {
     const doc = editingDoc;
     if (!doc) return;
-    const eng = doc.engine as WallEngine;
-    const parsed = parseElevation(raw);
-    if (parsed === undefined) return;
+    const eng = doc.engine as {
+      /** The raw stored elevation band; absent/`null` means "every elevation". */
+      elevation?: ElevationBand | null;
+    };
     const old = eng.elevation ?? null;
-    const bottom = end === "bottom" ? parsed : (old?.bottom ?? null);
-    const top = end === "top" ? parsed : (old?.top ?? null);
-    const next = bottom === null && top === null ? null : { bottom, top };
+    const next = editElevationBand(old, end, raw);
+    if (next === undefined) return;
     editSelected("/engine/elevation", old, next);
   }
 
-  /** Escape backs out of an open light/wall editor (clears the editing selection). Tool
+  /** Escape backs out of any open scene-entity editor (clears the editing selection). Tool
    * deactivation itself stays with the rail's re-select-clears rule (`controller.toggle`).
    * @param event The window keydown event.
    * @example
@@ -342,7 +411,7 @@
   const triggerEvents: TriggerEvent[] = ["enter", "arrest"];
   /** The `TriggerEffect` discriminant vocabulary, mirroring the server's serde `type` tag. */
   type TriggerEffectType = RegionTrigger["effect"]["type"];
-  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice"];
+  const triggerEffectTypes: TriggerEffectType[] = ["condition_add", "condition_remove", "resource_delta", "chat_notice", "teleport"];
   const noticeAudiences: NoticeAudience[] = ["public", "gm_only", "owner"];
 
   /** Append a blank trigger row (a `condition_add` on `enter`) to the region tool's authored
@@ -372,6 +441,7 @@
       case "condition_remove": trig.effect = { type: "condition_remove", condition: "" }; break;
       case "resource_delta": trig.effect = { type: "resource_delta", resource: "", amount: 0 }; break;
       case "chat_notice": trig.effect = { type: "chat_notice", text: "", audience: "gm_only" }; break;
+      case "teleport": trig.effect = { type: "teleport", target: { scene: null, x: 0, y: 0, elevation: null, vfx: null } }; break;
       default: trig.effect = { type: "condition_add", condition: "" };
     }
   }
@@ -407,6 +477,20 @@
       onclick={() => controller.toggle(tool.id)}
     >
       {tool.label}
+    </button>
+  {/each}
+
+  {#each sceneTools as tool (tool.id)}
+    <button
+      type="button"
+      class="tool"
+      class:active={controller.activeContributedId === tool.id}
+      aria-pressed={controller.activeContributedId === tool.id}
+      data-testid="scene-tool-{tool.id}"
+      title={t(tool.labelKey)}
+      onclick={() => controller.toggleContributed(tool)}
+    >
+      {t(tool.labelKey)}
     </button>
   {/each}
 
@@ -532,6 +616,8 @@
               <select data-testid="region-trigger-audience" aria-label={t("tools.triggerAudience")} bind:value={trig.effect.audience}>
                 {#each noticeAudiences as a (a)}<option value={a}>{a}</option>{/each}
               </select>
+            {:else if trig.effect.type === "teleport"}
+              <RegionTriggerTeleportEditor bind:target={trig.effect.target} row={i} {controller} />
             {/if}
             <button type="button" data-testid="region-trigger-remove" title={t("tools.removeTrigger")} onclick={() => controller.regionTriggers.splice(i, 1)}>×</button>
           </div>
@@ -540,11 +626,12 @@
       </div>
     {/if}
 
-    <!-- The light/wall editors key off the shared editing selection, not the active tool:
+    <!-- Every entity editor below keys off the shared editing selection, not the active tool:
          both the select tool and the light tool can open one. The light editor reuses
          `LightEmissionEditor` (the same field set every emission surface edits) and commits the
          WHOLE `/engine/emission` payload with the raw stored emission as `old` — the same
-         whole-payload convention the actor/sheet/token surfaces use. -->
+         whole-payload convention the actor/sheet/token surfaces use. The wall/region/drawing/
+         template editors share `editElevationBand` for their `/engine/elevation` band inputs. -->
     {#if editingDoc && controller.editingEntity?.kind === "light"}
       {@const eng = editingDoc.engine as LightEngine}
       <div class="controls" data-testid="light-editor">
@@ -608,7 +695,7 @@
             step="1"
             data-testid="wall-elevation-bottom"
             value={eng.elevation?.bottom ?? ""}
-            onchange={(e) => editWallElevation("bottom", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
           />
         </label>
         <label>
@@ -618,10 +705,89 @@
             step="1"
             data-testid="wall-elevation-top"
             value={eng.elevation?.top ?? ""}
-            onchange={(e) => editWallElevation("top", e.currentTarget.value)}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
           />
         </label>
         <button type="button" class="tool" data-testid="wall-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "region"}
+      <!-- The elevation band a region's geometry occupies; both ends empty = unbounded
+           (stored as an absent band, occupying every level — `band_contains`). -->
+      {@const eng = editingDoc.engine as RegionEngine}
+      <div class="controls" data-testid="region-editor">
+        <label>
+          {t("tools.regionElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="region-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.regionElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="region-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="region-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "drawing"}
+      <!-- The elevation band a drawing's geometry occupies; both ends empty = unbounded. -->
+      {@const eng = editingDoc.engine as DrawingEngine}
+      <div class="controls" data-testid="drawing-editor">
+        <label>
+          {t("tools.drawingElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="drawing-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.drawingElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="drawing-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="drawing-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
+      </div>
+    {:else if editingDoc && controller.editingEntity?.kind === "template"}
+      <!-- The elevation band a template's geometry occupies; both ends empty = unbounded. -->
+      {@const eng = editingDoc.engine as TemplateEngine}
+      <div class="controls" data-testid="template-editor">
+        <label>
+          {t("tools.templateElevationBottom")}
+          <input
+            type="number"
+            step="1"
+            data-testid="template-elevation-bottom"
+            value={eng.elevation?.bottom ?? ""}
+            onchange={(e) => editEntityElevation("bottom", e.currentTarget.value)}
+          />
+        </label>
+        <label>
+          {t("tools.templateElevationTop")}
+          <input
+            type="number"
+            step="1"
+            data-testid="template-elevation-top"
+            value={eng.elevation?.top ?? ""}
+            onchange={(e) => editEntityElevation("top", e.currentTarget.value)}
+          />
+        </label>
+        <button type="button" class="tool" data-testid="template-delete" onclick={deleteSelected}>{t("tools.delete")}</button>
       </div>
     {/if}
   {/if}

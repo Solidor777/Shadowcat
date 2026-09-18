@@ -1,7 +1,7 @@
 //! Asset row + tag persistence (`data::sqlite::assets`).
 
 use super::*;
-use crate::data::asset::query::AssetFilter;
+use crate::data::asset::query::{AssetFilter, AssetKind};
 use crate::data::asset::{Asset, AssetMeta};
 
 fn sample(world: Uuid) -> Asset {
@@ -28,6 +28,9 @@ fn sample(world: Uuid) -> Asset {
             original_byte_size: 20,
             original_retained: true,
             conversion_note: None,
+            duration_ms: None,
+            sample_rate: None,
+            sheet: None,
         },
     }
 }
@@ -444,4 +447,117 @@ async fn assets_fts_rows_removed_on_world_delete() {
         .await
         .unwrap();
     assert_eq!(n, 0);
+}
+
+/// An audio-kind asset row (WAV label, audio metadata populated).
+fn audio_sample(world: Uuid) -> Asset {
+    let id = Uuid::new_v4();
+    Asset {
+        id,
+        world_id: world,
+        storage_key: format!("{world}/{id}"),
+        original_name: "loop.wav".into(),
+        content_type: "audio/wav".into(),
+        byte_size: 100,
+        created_by: None,
+        created_at: 1,
+        version: 1,
+        folder_id: None,
+        tags: vec![],
+        derived_tags: vec![],
+        meta: AssetMeta {
+            duration_ms: Some(2_000),
+            sample_rate: Some(44_100),
+            ..AssetMeta::unprocessed("audio/wav", 100)
+        },
+    }
+}
+
+#[tokio::test]
+async fn query_assets_kind_audio_filters_the_content_type_prefix() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let image = sample(world.id);
+    let audio = audio_sample(world.id);
+    repo.insert_asset(&image).await.unwrap();
+    repo.insert_asset(&audio).await.unwrap();
+
+    let filter = |kind| AssetFilter {
+        kind,
+        ..Default::default()
+    };
+    let audio_only = repo
+        .query_assets(
+            world.id,
+            &filter(Some(AssetKind::Audio)),
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        audio_only.iter().map(|x| x.id).collect::<Vec<_>>(),
+        vec![audio.id]
+    );
+    let other = repo
+        .query_assets(
+            world.id,
+            &filter(Some(AssetKind::Other)),
+            Default::default(),
+            None,
+            10,
+        )
+        .await
+        .unwrap();
+    assert!(
+        other.is_empty(),
+        "audio/ is neither image/ nor other/ once the audio kind exists"
+    );
+}
+
+#[tokio::test]
+async fn asset_sheet_meta_round_trips_through_flat_columns() {
+    use crate::data::asset::process::SheetMeta;
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let mut a = sample(world.id);
+    a.meta.sheet = Some(SheetMeta {
+        rows: 2,
+        cols: 2,
+        count: 3,
+        frame_ms: vec![100, 100, 100],
+        width: 8,
+        height: 8,
+    });
+    repo.insert_asset(&a).await.unwrap();
+    let got = repo.get_asset(a.id).await.unwrap().unwrap();
+    assert_eq!(got.meta.sheet, a.meta.sheet);
+
+    // replace_asset_bytes persists the same flat columns (and can clear them).
+    repo.replace_asset_bytes(
+        a.id,
+        &a.storage_key,
+        "image/webp",
+        10,
+        &AssetMeta {
+            sheet: None,
+            ..a.meta.clone()
+        },
+    )
+    .await
+    .unwrap();
+    let got = repo.get_asset(a.id).await.unwrap().unwrap();
+    assert_eq!(got.meta.sheet, None);
+}
+
+#[tokio::test]
+async fn asset_without_sheet_round_trips_to_none_not_zeroed_fields() {
+    let repo = repo().await;
+    let world = repo.create_world("w", 1).await.unwrap();
+    let a = sample(world.id);
+    assert!(a.meta.sheet.is_none());
+    repo.insert_asset(&a).await.unwrap();
+    let got = repo.get_asset(a.id).await.unwrap().unwrap();
+    assert_eq!(got.meta.sheet, None);
 }

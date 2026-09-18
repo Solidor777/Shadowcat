@@ -116,6 +116,7 @@ fn reject_round_trips_snake_case() {
     let m = ServerMsg::Reject {
         intent_id: Uuid::from_u128(3),
         reason: RejectReason::Conflict,
+        detail: None,
     };
     let s = serde_json::to_string(&m).unwrap();
     assert!(s.contains("\"type\":\"reject\""));
@@ -254,6 +255,7 @@ fn scene_frames_round_trip() {
         request_id: Uuid::from_u128(1),
         channel: "identity".into(),
         as_user: None,
+        level: None,
     };
     let j = serde_json::to_value(&sub).unwrap();
     assert_eq!(j["type"], "scene_subscribe");

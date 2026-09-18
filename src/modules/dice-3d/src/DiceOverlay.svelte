@@ -100,7 +100,7 @@
       idleTimer = null;
     }
     if (!engine) {
-      engine = new DiceEngine(canvas, { antialias: antialiasPreferred(), ...resolveDeviceColors() });
+      engine = new DiceEngine(canvas, { antialias: antialiasPreferred(ctx), ...resolveDeviceColors() });
       await engine.init();
     }
     return engine;
@@ -203,7 +203,7 @@
   async function playQueued(q: QueuedRoll): Promise<void> {
     settledState = "tumbling";
     const specs = throwSpecsFor(q.outcome.records.slice(0, specsCap(q)));
-    if (reducedMotionPreferred()) {
+    if (reducedMotionPreferred(ctx)) {
       // Dice appear already settled (one frame) and fade — no tumble animation.
       settledState = "settled";
       lastSettledValues = q.outcome.records.map((r) => r.value).join(",");
@@ -221,7 +221,7 @@
         settledState = "idle";
         scheduleIdleDisposal();
       }
-    }, reducedMotionPreferred() ? 0 : 2500);
+    }, reducedMotionPreferred(ctx) ? 0 : 2500);
   }
 
   /** Reads the world's `dice-settings.sound` asset id, or `null` if the singleton doc is
@@ -252,11 +252,11 @@
    * ```
    */
   function handlePlay(play: RollPlay): void {
-    if (!dice3dEnabled()) return; // seen-bookkeeping already ran in scanForPlays
+    if (!dice3dEnabled(ctx)) return; // seen-bookkeeping already ran in scanForPlays
     const queued = toQueuedRoll(play);
     const before = queue.active.length;
     queue = enqueueRoll(queue, queued);
-    playThrowSound(diceThrowSound()); // audioSeam.ts is a no-op until `AudioApi` is wired in
+    playThrowSound(ctx, diceThrowSound());
     if (queue.active.length > before) void playQueued(queued);
   }
 

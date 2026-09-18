@@ -1,47 +1,54 @@
-/**
- * Rewired to read `getAppContext().performance
- * .current.dice3d`/`.reducedMotion`/`.antialias` once `PerformanceSettings` exists.
- * Until then these are the device-local getters this module binds itself — so
- * `DiceOverlay`/`DiceEngine` never take a private duplicate of `PerformanceSettings`; only
- * these three function bodies change at integration, never their call sites.
- */
+import type { AppContext } from "@shadowcat/ui-kit";
+
+/** The slice of `AppContext` these getters read — narrowed so a caller need not construct a
+ * full fixture just to exercise the performance budget. Every call site invokes these from
+ * outside Svelte's component-initialisation window (a document-store subscription callback,
+ * fired well after mount), where `getAppContext()`'s own `getContext()` call would throw
+ * (`lifecycle_outside_component`); `DiceOverlay.svelte` therefore resolves `AppContext` once,
+ * synchronously, at its own top level and threads it through as `ctx`. */
+type PerformanceReader = Pick<AppContext, "performance">;
 
 /** Whether the 3D dice overlay is enabled on this device.
- * @returns `true` while the pre-integration default is on.
+ * @param ctx The caller's already-resolved `AppContext`.
+ * @returns The device's `PerformanceSettings.dice3d` budget.
  * @example
  * ```ts
  * import { dice3dEnabled } from "@shadowcat/module-dice-3d";
+ * import { getAppContext } from "@shadowcat/ui-kit";
  *
- * dice3dEnabled();
+ * dice3dEnabled(getAppContext());
  * ```
  */
-export function dice3dEnabled(): boolean {
-  return true;
+export function dice3dEnabled(ctx: PerformanceReader): boolean {
+  return ctx.performance.current.dice3d;
 }
 
 /** Whether this device prefers reduced motion (`prefers-reduced-motion: reduce`).
- * @returns `true` when the media query matches, `false` when it does not or `matchMedia`
- * is unavailable.
+ * @param ctx The caller's already-resolved `AppContext`.
+ * @returns The device's `PerformanceSettings.reducedMotion` budget.
  * @example
  * ```ts
  * import { reducedMotionPreferred } from "@shadowcat/module-dice-3d";
+ * import { getAppContext } from "@shadowcat/ui-kit";
  *
- * reducedMotionPreferred();
+ * reducedMotionPreferred(getAppContext());
  * ```
  */
-export function reducedMotionPreferred(): boolean {
-  return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+export function reducedMotionPreferred(ctx: PerformanceReader): boolean {
+  return ctx.performance.current.reducedMotion;
 }
 
 /** Whether the WebGL context should multisample.
- * @returns `true` while the pre-integration default is on.
+ * @param ctx The caller's already-resolved `AppContext`.
+ * @returns The device's `PerformanceSettings.antialias` budget.
  * @example
  * ```ts
  * import { antialiasPreferred } from "@shadowcat/module-dice-3d";
+ * import { getAppContext } from "@shadowcat/ui-kit";
  *
- * antialiasPreferred();
+ * antialiasPreferred(getAppContext());
  * ```
  */
-export function antialiasPreferred(): boolean {
-  return true;
+export function antialiasPreferred(ctx: PerformanceReader): boolean {
+  return ctx.performance.current.antialias;
 }

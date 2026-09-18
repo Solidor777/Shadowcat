@@ -127,6 +127,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.ctx,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,
@@ -141,6 +143,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|opt| opt.expect("a plain message is not a /fx command"))
         .map(|(cmd, _pending)| cmd)
     }
 
@@ -189,6 +192,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.ctx,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,
@@ -203,6 +208,7 @@ impl Fixture {
             Audience::Public,
         )
         .await
+        .map(|opt| opt.expect("a plain message is not a /fx command"))
     }
 
     async fn edit(
@@ -217,6 +223,8 @@ impl Fixture {
                 repo: &self.repo,
                 ctx: &self.ctx,
                 rate: &self.rate,
+                vfx_rate: &self.rate,
+
                 preview: LinkPreviewDeps {
                     client: &self.preview_client,
                     cache: &self.preview_cache,

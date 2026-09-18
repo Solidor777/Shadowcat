@@ -22,6 +22,9 @@ import type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SceneAmbience,
+  Occlusion,
+  AudioOverlay,
   Pathfinding,
   AnimationSettings,
   TokenEngine,
@@ -47,6 +50,7 @@ import type {
   RegionTrigger,
   TriggerEvent,
   TriggerEffect,
+  PortalTarget,
   NoticeAudience,
   Faction,
   FactionStance,
@@ -117,6 +121,9 @@ export type {
   SceneEngine,
   WorldSceneDefaults,
   WorldSettingsEngine,
+  SceneAmbience,
+  Occlusion,
+  AudioOverlay,
   Pathfinding,
   AnimationSettings,
   TokenEngine,
@@ -142,6 +149,7 @@ export type {
   RegionTrigger,
   TriggerEvent,
   TriggerEffect,
+  PortalTarget,
   NoticeAudience,
   Faction,
   FactionStance,
@@ -505,6 +513,8 @@ export function buildSceneDoc(worldId: string, engine: Partial<SceneEngine> = {}
     vision: engine.vision ?? null,
     lighting: engine.lighting ?? null,
     combat: engine.combat ?? null,
+    levels: engine.levels ?? [],
+    ambience: engine.ambience ?? null,
   };
   return envelope(worldId, "scene", null, {}, id, full, null);
 }
@@ -1089,6 +1099,7 @@ export const DEFAULT_LIGHT_EMISSION: LightEmission = Object.freeze({
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true,
  *   triggers: [{ on: "enter", effect: { type: "chat_notice", text: "You step inside.", audience: "public" } }],
+ *   elevation: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * region.doc_type; // "region"
@@ -1118,6 +1129,7 @@ export function buildRegionDoc(worldId: string, sceneId: string, engine: RegionE
  * const engine: RegionEngine = {
  *   shape: { kind: "rect", points: [0, 0, 5, 5] },
  *   behavior: "impassable", cost: 1, enabled: true, triggers: [],
+ *   elevation: null,
  * };
  * const region = buildRegionDoc("world-1", "scene-1", engine);
  * setRegionVisibility(region, true);

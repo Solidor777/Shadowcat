@@ -27,9 +27,9 @@ function snapBridge(): SceneInteractionBridge {
 
 /** A lookup stating a 100x100 unit footprint for every scene, standing in for a `"footprints"`
  * frame on a 100-unit square grid. */
-const unitFootprints: FootprintLookup = { token: () => null, unit: () => ({ w: 100, h: 100 }) };
+const unitFootprints: FootprintLookup = { token: () => null, unit: () => ({ w: 100, h: 100 }), level: () => null };
 
-function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperation[][] } {
+function ctxWith(documents: DocumentStore, viewedLevelBottom?: () => number | null): { ctx: ToolContext; sent: WireOperation[][] } {
   const sent: WireOperation[][] = [];
   const ctx: ToolContext = {
     scene: snapBridge(),
@@ -40,6 +40,7 @@ function ctxWith(documents: DocumentStore): { ctx: ToolContext; sent: WireOperat
     role: "gm",
     sendPing: () => {}, t: (k) => k,
     footprints: () => unitFootprints,
+    viewedLevelBottom,
   };
   return { ctx, sent };
 }
@@ -156,4 +157,32 @@ test("place keeps a linked actor selected when keepAfterPlace is set", () => {
   const controller = new ToolController(ctx);
   expect(makePlaceTool(ctx, controller).onPointerDown({ x: 0, y: 0 }, ev)).toBe(true);
   expect(ctx.actorSelection.selectedId).toBe("act3");
+});
+
+test("with viewedLevelBottom set, a placed asset token's engine body carries the expected elevation", () => {
+  const { ctx, sent } = ctxWith(docsWithScene(true), () => 10);
+  const controller = new ToolController(ctx);
+  controller.selectedAsset = "asset-1";
+  expect(makePlaceTool(ctx, controller).onPointerDown({ x: 140, y: 160 }, ev)).toBe(true);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: 10 });
+});
+
+test("with viewedLevelBottom unset, a placed asset token's engine body's elevation stays null", () => {
+  const { ctx, sent } = ctxWith(docsWithScene(true));
+  const controller = new ToolController(ctx);
+  controller.selectedAsset = "asset-1";
+  expect(makePlaceTool(ctx, controller).onPointerDown({ x: 140, y: 160 }, ev)).toBe(true);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
+});
+
+test("with viewedLevelBottom set, a placed actor token's engine body carries the expected elevation", () => {
+  const { ctx, sent } = ctxWith(docsWithSceneAndActor("act4", true), () => 10);
+  ctx.actorSelection = new ActorSelection();
+  ctx.actorSelection.select("act4");
+  const controller = new ToolController(ctx);
+  expect(makePlaceTool(ctx, controller).onPointerDown({ x: 140, y: 160 }, ev)).toBe(true);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: 10 });
 });

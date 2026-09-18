@@ -21,6 +21,9 @@ export class TemplateView {
    * query to this scene (falls back to unscoped — every `template` doc in the store —
    * when it resolves to `null`). Defaults to always-`null` (legacy/test callers that
    * never pass one).
+   * @param viewedLevel Resolves the currently-viewed level id; `reconcile()` additionally
+   * scopes its query to this level (see `sceneScopedDocs`). Defaults to always-`null` (every
+   * level — the degenerate pre-levels case).
    * @example
    * ```ts
    * import { TemplateView, MockBackend } from "@shadowcat/render";
@@ -34,13 +37,14 @@ export class TemplateView {
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null = () => null,
+    private readonly viewedLevel: () => string | null = () => null,
   ) {}
 
   /**
    * Diffs the store's `template` docs (scoped to `viewedSceneId`) against the ids tracked
    * in `ids`: every current doc gets a fresh spec and an upsert via `backend.setShape`,
    * and every tracked id no longer present is torn down via `backend.removeShape`. A doc
-   * whose `toSpec` resolves to `null` (a missing `engine.shape` or an unrecognized
+   * whose `templateShapeSpec` resolves to `null` (a missing `engine.shape` or an unrecognized
    * `shape.kind`) is treated as absent — never added to `seen`, so it is torn down on
    * this same pass if it was tracked.
    * @example
@@ -55,8 +59,8 @@ export class TemplateView {
    */
   reconcile(): void {
     const seen = new Set<string>();
-    for (const doc of sceneScopedDocs(this.store, "template", this.viewedSceneId)) {
-      const spec = toSpec(doc);
+    for (const doc of sceneScopedDocs(this.store, "template", this.viewedSceneId, this.viewedLevel)) {
+      const spec = templateShapeSpec(doc);
       if (!spec) continue;
       seen.add(doc.id);
       this.ids.add(doc.id);
@@ -83,24 +87,27 @@ export class TemplateView {
  * `x`/`y`/`size`/`direction`. This is defense-in-depth, not a claim about any particular
  * upstream conversion: the render layer draws the OPTIMISTIC view (`AppContext.documents`), so
  * a scene-tool bug that builds a Create op with a missing or non-numeric coordinate reaches
- * `toSpec` on the authoring client before the server has validated anything. Guarded on the RAW
- * authored scalars, before tessellation, matching `DrawingView.toSpec`, `RegionView.toSpec`, and
- * `WallView.toSpec` — see the guard's own comment for why the placement, not just the presence, is
- * load-bearing.
+ * `templateShapeSpec` on the authoring client before the server has validated anything. Guarded
+ * on the RAW authored scalars, before tessellation, matching `drawingShapeSpec`, `regionShapeSpec`,
+ * and `WallView.toSpec` — see the guard's own comment for why the placement, not just the
+ * presence, is load-bearing. Exported so `scene-tools`' hit-test can reuse the SAME tessellation
+ * this view draws from, rather than forking a second copy of the shape math.
  * @param doc The `template` document to convert.
  * @returns A `ShapeNodeSpec` for the `templates` layer, or `null` if it can't be rendered.
  * @example
- * ```
- * // not exported from @shadowcat/render; internal to TemplateView.reconcile
+ * ```ts
+ * import { templateShapeSpec } from "@shadowcat/render";
+ * import type { WireDocument } from "@shadowcat/core";
+ *
  * declare const doc: WireDocument;
- * const spec = toSpec(doc); // null if doc.engine.shape is absent or malformed
+ * const spec = templateShapeSpec(doc); // null if doc.engine.shape is absent or malformed
  * ```
  */
-function toSpec(doc: WireDocument): ShapeNodeSpec | null {
+export function templateShapeSpec(doc: WireDocument): ShapeNodeSpec | null {
   const s = doc.engine as TemplateEngine | undefined;
   if (!s?.shape) return null;
   const { kind, x, y, size, direction } = s.shape;
-  // Checked on the RAW authored scalars, before tessellation — matching `RegionView.toSpec` and
+  // Checked on the RAW authored scalars, before tessellation — matching `regionShapeSpec` and
   // `WallView.toSpec`. Post-tessellation would be too late: JS coerces `null` to 0 in arithmetic,
   // so a null `x` on a circle yields finite, plausible-looking geometry no later check can
   // distinguish from an authored shape. `direction` is included because `cone`/`rect`/`line`

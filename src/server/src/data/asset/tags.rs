@@ -132,6 +132,7 @@ pub fn derive(input: DeriveInput<'_>) -> Vec<String> {
     let mut out: BTreeSet<String> = BTreeSet::new();
     let (kind, subtype) = match input.content_type.split_once('/') {
         Some(("image", sub)) => ("image", Some(sub)),
+        Some(("audio", sub)) => ("audio", Some(sub)),
         _ => ("other", None),
     };
     out.insert(kind.into());
@@ -141,12 +142,18 @@ pub fn derive(input: DeriveInput<'_>) -> Vec<String> {
         if !sub.is_empty() {
             out.insert(sub.to_string());
         }
-        if input.meta.animated {
+        if kind == "image" && input.meta.animated {
             out.insert("animated".into());
             if sub == "gif" {
                 out.insert("gif-animated".into());
             }
         }
+    }
+    // An audio upload whose transcode was skipped (over-cap or failed) is marked — the only
+    // audio classification tag: pipeline outcome, never a content judgment (no
+    // ambient/stinger-style tagging anywhere).
+    if kind == "audio" && input.meta.conversion_note.is_some() {
+        out.insert("audio:untranscoded".into());
     }
     if let (Some(w), Some(h)) = (input.meta.width, input.meta.height) {
         if w == h {

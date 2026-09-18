@@ -10,6 +10,7 @@ import { SceneSelection } from "../sceneSelection.svelte";
 import { SpeakAs } from "../speakAs.svelte";
 import { SpeakAsToken } from "../speakAsToken.svelte";
 import { AssetPickController, type PickAssetOptions } from "../assetPickController.svelte";
+import { PerformanceController } from "../performance.svelte";
 
 /**
  * Build a Map for @testing-library/svelte's `context` option holding a minimal
@@ -106,6 +107,26 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
     dice3d: over.dice3d ?? new Dice3DBridge(),
+    viewedLevel: over.viewedLevel ?? null,
+    setViewedLevel: over.setViewedLevel ?? (() => {}),
+    audio: over.audio ?? {
+      channels: {
+        master: { gain: 1, muted: false },
+        music: { gain: 1, muted: false },
+        ambience: { gain: 1, muted: false },
+        sfx: { gain: 1, muted: false },
+        ui: { gain: 1, muted: false },
+      },
+      setChannel: () => {},
+      unlock: async () => {},
+      context: () => null,
+      duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
+      playOneShot: () => {},
+      serverNow: () => 0,
+      transport: () => {},
+      listenAs: () => {},
+    },
+    vfx: over.vfx ?? { play: () => {}, onVfx: () => () => {} },
     reconcileInstalledModules: over.reconcileInstalledModules ?? (async () => {}),
     viewedSceneId: over.viewedSceneId ?? null,
     footprints: over.footprints ?? EMPTY_FOOTPRINTS,
@@ -124,6 +145,7 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       canPull: () => false,
       canPush: () => false,
     },
+    performance: over.performance ?? new PerformanceController(),
   };
   return new Map([[__APP_CONTEXT_KEY__, ctx]]);
 }

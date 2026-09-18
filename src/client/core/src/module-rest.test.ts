@@ -22,28 +22,43 @@ test("listInstalledModules throws on a non-ok response", async () => {
 });
 
 test("getEnabledModules GETs the world's enabled-modules endpoint", async () => {
-  const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ["a", "b"] });
+  const fetchMock = vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => [
+      { id: "a", validators_enabled: false },
+      { id: "b", validators_enabled: true },
+    ],
+  });
   vi.stubGlobal("fetch", fetchMock);
   const got = await getEnabledModules("w1");
   expect(fetchMock).toHaveBeenCalledWith("/api/worlds/w1/enabled-modules", expect.any(Object));
-  expect(got).toEqual(["a", "b"]);
+  expect(got).toEqual([
+    { id: "a", validators_enabled: false },
+    { id: "b", validators_enabled: true },
+  ]);
 });
 
-test("setEnabledModules PUTs the ids as a JSON body", async () => {
+test("setEnabledModules PUTs the entries as a JSON body", async () => {
   const fetchMock = vi.fn().mockResolvedValue({ ok: true });
   vi.stubGlobal("fetch", fetchMock);
-  await setEnabledModules("w1", ["a", "b"]);
+  const entries = [
+    { id: "a", validators_enabled: false },
+    { id: "b", validators_enabled: true },
+  ];
+  await setEnabledModules("w1", entries);
   expect(fetchMock).toHaveBeenCalledWith(
     "/api/worlds/w1/enabled-modules",
     expect.objectContaining({
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(["a", "b"]),
+      body: JSON.stringify(entries),
     }),
   );
 });
 
 test("setEnabledModules throws on a non-ok response", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 422 }));
-  await expect(setEnabledModules("w1", ["a"])).rejects.toThrow(/422/);
+  await expect(setEnabledModules("w1", [{ id: "a", validators_enabled: false }])).rejects.toThrow(
+    /422/,
+  );
 });

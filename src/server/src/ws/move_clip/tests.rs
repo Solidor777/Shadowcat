@@ -186,6 +186,8 @@ fn clip_samples_admits_only_the_samples_inside_the_targets_line_of_sight() {
         sight: &sight,
         in_flight: &[],
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let samples = vec![pos(0.0, 50.0, 60.0), pos(100.0, 150.0, 60.0)];
     let out = clip_samples(&samples, 1000.0, &inputs);
@@ -208,6 +210,7 @@ fn clip_samples_reads_the_targets_own_in_flight_viewpoint_per_instant() {
         start_server_ms: 1100.0,
         mover: TARGET,
         token: TARGET_TOKEN,
+        mover_elevation: 0.0,
         positions: &own,
         light: None,
     }];
@@ -215,6 +218,8 @@ fn clip_samples_reads_the_targets_own_in_flight_viewpoint_per_instant() {
         sight: &sight,
         in_flight: &in_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let samples = vec![pos(0.0, 150.0, 60.0), pos(200.0, 150.0, 60.0)];
     let out = clip_samples(&samples, 1000.0, &inputs);
@@ -224,6 +229,7 @@ fn clip_samples_reads_the_targets_own_in_flight_viewpoint_per_instant() {
         start_server_ms: 1100.0,
         mover: STRANGER,
         token: Uuid::from_u128(0xC8),
+        mover_elevation: 0.0,
         positions: &own,
         light: None,
     }];
@@ -231,6 +237,8 @@ fn clip_samples_reads_the_targets_own_in_flight_viewpoint_per_instant() {
         sight: &sight,
         in_flight: &foreign,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert!(clip_samples(&samples, 1000.0, &inputs).is_empty());
 }
@@ -251,6 +259,7 @@ fn clip_samples_judges_pre_start_instants_from_the_targets_own_start_sample_neve
         start_server_ms: 1100.0,
         mover: TARGET,
         token: TARGET_TOKEN,
+        mover_elevation: 0.0,
         positions: &own,
         light: None,
     }];
@@ -258,6 +267,8 @@ fn clip_samples_judges_pre_start_instants_from_the_targets_own_start_sample_neve
         sight: &sight,
         in_flight: &in_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let samples = vec![pos(0.0, 150.0, 60.0), pos(200.0, 150.0, 60.0)];
     assert_eq!(
@@ -285,6 +296,7 @@ fn a_torch_whose_move_has_not_started_lights_from_its_first_sample() {
         start_server_ms: 1100.0,
         mover: STRANGER,
         token: torch_token,
+        mover_elevation: 0.0,
         positions: &torch_positions,
         light: Some(&torch),
     }];
@@ -292,6 +304,8 @@ fn a_torch_whose_move_has_not_started_lights_from_its_first_sample() {
         sight: &dark,
         in_flight: &in_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let bystander = vec![pos(0.0, 60.0, 50.0)];
     assert_eq!(clip_samples(&bystander, 1000.0, &inputs), bystander);
@@ -307,6 +321,8 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
         sight: &dark,
         in_flight: &[],
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let samples = vec![pos(0.0, 50.0, 60.0)];
     assert!(clip_samples(&samples, 1000.0, &inputs).is_empty());
@@ -317,6 +333,7 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
         start_server_ms: 1000.0,
         mover: STRANGER,
         token: Uuid::from_u128(0xC8),
+        mover_elevation: 0.0,
         positions: &samples,
         light: Some(&torch),
     }];
@@ -324,6 +341,8 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
         sight: &dark,
         in_flight: &bearer,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert_eq!(clip_samples(&samples, 1000.0, &inputs), samples);
 
@@ -336,6 +355,7 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
         start_server_ms: 1000.0,
         mover: STRANGER,
         token: Uuid::from_u128(0xC8),
+        mover_elevation: 0.0,
         positions: &samples,
         light: Some(&faint),
     }];
@@ -343,6 +363,8 @@ fn clip_samples_requires_illumination_for_a_normal_vision_target() {
         sight: &dark,
         in_flight: &bearer,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert!(clip_samples(&samples, 1000.0, &inputs).is_empty());
 }
@@ -355,6 +377,8 @@ fn clip_samples_admits_a_dark_sample_to_a_darkvision_target_within_range() {
         sight: &dark,
         in_flight: &[],
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     // (50,60) is 0.1 cells from the viewpoint: within range, dark floor met.
     // (50,460) is 4.1 cells away: beyond the 3-cell range, so darkvision does not reach it.
@@ -383,6 +407,7 @@ fn another_movers_in_flight_torch_lights_a_bystander_per_instant() {
         start_server_ms: 1000.0,
         mover: STRANGER,
         token: torch_token,
+        mover_elevation: 0.0,
         positions: &torch_positions,
         light: Some(&torch),
     }];
@@ -390,6 +415,8 @@ fn another_movers_in_flight_torch_lights_a_bystander_per_instant() {
         sight: &dark,
         in_flight: &in_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let bystander = vec![pos(0.0, 60.0, 50.0), pos(500.0, 60.0, 50.0)];
     assert_eq!(
@@ -480,6 +507,8 @@ fn admit_light_samples_is_none_in_none_out_and_none_when_nothing_reaches() {
         sight: &sight,
         in_flight: &[],
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert!(admit_light_samples(None, 0.0, &inputs).is_none());
     // 5,000 units past the wall with a 1-unit reach: nothing reaches the target's sight.
@@ -509,6 +538,7 @@ fn admit_light_samples_keeps_only_the_samples_whose_glow_reaches_the_line_of_sig
         start_server_ms: 0.0,
         mover: STRANGER,
         token: Uuid::from_u128(0xC8),
+        mover_elevation: 0.0,
         positions: &positions,
         light: Some(&samples),
     }];
@@ -516,6 +546,8 @@ fn admit_light_samples_keeps_only_the_samples_whose_glow_reaches_the_line_of_sig
         sight: &sight,
         in_flight: &flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let out = admit_light_samples(Some(&samples), 0.0, &inputs).unwrap();
     assert_eq!(out.iter().map(tag_of).collect::<Vec<_>>(), vec![0, 2]);
@@ -544,6 +576,7 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
         start_server_ms: 0.0,
         mover: STRANGER,
         token: Uuid::from_u128(0xC8),
+        mover_elevation: 0.0,
         positions: &positions,
         light: Some(&blocked),
     }];
@@ -551,6 +584,8 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
         sight: &sight,
         in_flight: &flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert!(admit_light_samples(Some(&blocked), 0.0, &inputs).is_none());
     let open = [light(1, 0.0, [150.0, 50.0], 120.0)];
@@ -558,6 +593,7 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
         start_server_ms: 0.0,
         mover: STRANGER,
         token: Uuid::from_u128(0xC8),
+        mover_elevation: 0.0,
         positions: &positions,
         light: Some(&open),
     }];
@@ -565,6 +601,8 @@ fn admit_light_samples_drops_a_glow_whose_occluded_polygon_lights_no_cell_in_sig
         sight: &sight,
         in_flight: &flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert_eq!(
         admit_light_samples(Some(&open), 0.0, &inputs)
@@ -583,12 +621,14 @@ fn glow_reaches_fails_closed_on_a_degenerate_reach_and_never_falls_open_on_a_wid
     assert!(!glow_reaches(
         &instant,
         &[],
-        &light(0, 0.0, [50.0, 50.0], f64::NAN)
+        &light(0, 0.0, [50.0, 50.0], f64::NAN),
+        0.0
     ));
     assert!(!glow_reaches(
         &instant,
         &[],
-        &light(0, 0.0, [50.0, 50.0], 0.0)
+        &light(0, 0.0, [50.0, 50.0], 0.0),
+        0.0
     ));
     // A reach of 10,000 units is a 200×200-cell disc box. The fine test still runs — over the
     // disc box ∩ the target's line-of-sight box ∩ the sample's own polygon box, never the whole
@@ -597,16 +637,16 @@ fn glow_reaches_fails_closed_on_a_degenerate_reach_and_never_falls_open_on_a_wid
     // while the same glow with no occluder lights the target's own cell and is admitted.
     let mut huge = light(0, 0.0, [50.0, 50.0], 10_000.0);
     huge.polygons = vec![vec![[5000.0, 5000.0], [5001.0, 5000.0], [5001.0, 5001.0]]];
-    assert!(!glow_reaches(&instant, &[], &huge));
+    assert!(!glow_reaches(&instant, &[], &huge, 0.0));
     huge.polygons.clear();
-    assert!(glow_reaches(&instant, &[], &huge));
+    assert!(glow_reaches(&instant, &[], &huge, 0.0));
     // An emptied polygon composes as an unoccluded light and reaches its own cell; a polygon
     // that excludes every cell in reach paints nothing → dropped.
     let mut small = light(0, 0.0, [50.0, 50.0], 100.0);
     small.polygons.clear();
-    assert!(glow_reaches(&instant, &[], &small));
+    assert!(glow_reaches(&instant, &[], &small, 0.0));
     small.polygons = vec![vec![[5000.0, 5000.0], [5001.0, 5000.0], [5001.0, 5001.0]]];
-    assert!(!glow_reaches(&instant, &[], &small));
+    assert!(!glow_reaches(&instant, &[], &small, 0.0));
 }
 
 #[test]
@@ -622,6 +662,7 @@ fn admit_light_samples_reads_the_same_instant_sight_as_clip_samples() {
         start_server_ms: 1100.0,
         mover: TARGET,
         token: TARGET_TOKEN,
+        mover_elevation: 0.0,
         positions: &own,
         light: None,
     }];
@@ -629,6 +670,8 @@ fn admit_light_samples_reads_the_same_instant_sight_as_clip_samples() {
         sight: &sight,
         in_flight: &in_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let lights = vec![
         light(0, 0.0, [150.0, 50.0], 0.01),
@@ -649,6 +692,7 @@ fn bearer<'a>(positions: &'a [PosSample], light: &'a [LightSample]) -> [InFlight
         start_server_ms: 1000.0,
         mover: STRANGER,
         token: MOVER_TOKEN,
+        mover_elevation: 0.0,
         positions,
         light: Some(light),
     }]
@@ -678,6 +722,7 @@ fn clip_frame_resolves_each_distinct_instant_once_for_both_gates() {
         start_server_ms: 1000.0,
         mover: STRANGER,
         token: MOVER_TOKEN,
+        mover_elevation: 0.0,
         positions: &positions,
         light: Some(&lights),
     }];
@@ -685,6 +730,8 @@ fn clip_frame_resolves_each_distinct_instant_once_for_both_gates() {
         sight: &sight,
         in_flight: &flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     let (visible, admitted) = clip_frame(&positions, Some(&lights), 1000.0, &inputs);
     assert_eq!(sight.at_calls(), 4, "one resolution per distinct instant");
@@ -718,6 +765,8 @@ fn inputs_for(sight: &crate::scene::RecipientSight) -> ClipInputs<'_> {
         sight,
         in_flight: &[],
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     }
 }
 
@@ -771,6 +820,8 @@ fn creature_senses_admit_tokens_never_glow() {
         sight: &dark,
         in_flight: &flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert_eq!(clip_samples(&positions, 1000.0, &inputs), positions);
     assert!(admit_light_samples(Some(&ember), 1000.0, &inputs).is_none());
@@ -796,6 +847,8 @@ fn glow_admission_requires_the_glow_to_light_a_cell_the_target_sees() {
         sight: &dark,
         in_flight: &ember_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert!(
         admit_light_samples(Some(&ember), 1000.0, &inputs).is_none(),
@@ -806,6 +859,8 @@ fn glow_admission_requires_the_glow_to_light_a_cell_the_target_sees() {
         sight: &dark,
         in_flight: &torch_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert_eq!(
         admit_light_samples(Some(&torch), 1000.0, &inputs)
@@ -819,6 +874,8 @@ fn glow_admission_requires_the_glow_to_light_a_cell_the_target_sees() {
         sight: &darkvision,
         in_flight: &ember_flight,
         target: TARGET,
+        mover_level: String::new(),
+        mover_elevation: 0.0,
     };
     assert_eq!(
         admit_light_samples(Some(&ember), 1000.0, &inputs)
@@ -826,5 +883,54 @@ fn glow_admission_requires_the_glow_to_light_a_cell_the_target_sees() {
             .len(),
         1,
         "a darkvision target within range sees the ember-lit cell"
+    );
+}
+
+#[test]
+fn clip_samples_refuses_a_mover_on_another_level_even_with_clear_line_of_sight() {
+    // Two levels (`l1` [0,10), `l2` [10,20)) patched onto the fixture's scene; the target
+    // stands on `l1` at ground. The raw LOS polygon CONTAINS the sample (50,60) — geometry
+    // alone admits it (the same-floor control below, the identical sample the first
+    // position-clip test admits) — but two entities on different levels never see each other,
+    // so the level conjunct clips the cross-level sample for this recipient.
+    let mut ecs = fixture(true, None);
+    ecs.apply_op(&crate::data::command::Operation::Update {
+        doc_id: SCENE,
+        changes: vec![crate::data::command::FieldChange {
+            path: "/engine/levels".to_string(),
+            old: serde_json::Value::Null,
+            new: json!([
+                { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
+            ]),
+            remove: false,
+        }],
+    });
+    let sight = sight(&ecs, &[]);
+    let samples = vec![pos(0.0, 50.0, 60.0)];
+    // Same-floor control: admitted.
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &[],
+        target: TARGET,
+        mover_level: "l1".to_string(),
+        mover_elevation: 0.0,
+    };
+    assert_eq!(
+        clip_samples(&samples, 1000.0, &inputs),
+        samples,
+        "a same-level sample in plain sight is admitted"
+    );
+    // The mover on `l2`: the identical geometric sample is clipped.
+    let inputs = ClipInputs {
+        sight: &sight,
+        in_flight: &[],
+        target: TARGET,
+        mover_level: "l2".to_string(),
+        mover_elevation: 15.0,
+    };
+    assert!(
+        clip_samples(&samples, 1000.0, &inputs).is_empty(),
+        "a mover on another level is clipped like a mover out of sight"
     );
 }

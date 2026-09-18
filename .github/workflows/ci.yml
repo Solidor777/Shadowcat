@@ -28,6 +28,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      # The audio-monitor subcommand's Linux backend binds the system PipeWire
+      # library; the sys crate discovers it via pkg-config.
+      - name: Install PipeWire dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       # The repo pins a build-parallelism budget for a desktop the build shares with its user.
       # Cargo does not clamp that value to the host's parallelism, so on a runner with fewer
       # cores it raises concurrent rustc instead of lowering it and multiplies peak memory --
@@ -47,6 +53,8 @@ jobs:
       # Clippy runs on every OS so cfg-gated code is linted on its own target.
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
+      - name: Doc coverage (all OSes; cfg-gated backends only compile on their own OS)
+        run: cargo clippy --all-targets -- -D missing-docs -D clippy::missing-docs-in-private-items
       - name: Test (emits ts-rs bindings)
         run: cargo test --all
       # ts-rs regenerates bindings on test; the LF-committed files only match a
@@ -113,6 +121,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The audio-monitor subcommand's Linux backend binds the system PipeWire
+      # library; the test_server build below compiles the server crate on this leg.
+      - name: Install PipeWire dev headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       # The shadowcat lib embeds dist/ (rust-embed requires the folder at compile
       # time), so the client must be built before any cargo build of the server.
       - run: pnpm build
@@ -138,6 +150,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # The audio-monitor subcommand's Linux backend binds the system PipeWire
+      # library; the `e2e` script below runs `cargo build` on this leg.
+      - name: Install PipeWire dev headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       - run: pnpm --filter @shadowcat/shell exec playwright install --with-deps chromium
       - run: pnpm --filter @shadowcat/shell e2e
       # The traces this uploads are the only forensic channel for a failure that
@@ -177,6 +193,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      # The audio-monitor subcommand's Linux backend binds the system PipeWire
+      # library; cargo doc below compiles the server crate on this leg.
+      - name: Install PipeWire dev headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libpipewire-0.3-dev
       # build:all starts with the client build (rust-embed needs dist/ before
       # cargo doc), then typedoc, cargo doc, vitepress, assembly + link check,
       # and finally the active documentation-exemption count. cargo doc runs

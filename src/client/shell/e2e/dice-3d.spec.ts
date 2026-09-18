@@ -60,12 +60,11 @@ test("a roll tumbles and settles to the server's result on both the GM and playe
     expect(gmValues).toBe(total!.trim());
     expect(playerValues).toBe(total!.trim());
 
-    // The player turns dice3d off via localStorage (no PerformanceSettings UI exists yet in
-    // this worktree — the integration task rewires this to the real settings panel toggle);
-    // the next roll leaves the player's overlay idle.
-    await player.evaluate(() => localStorage.setItem("shadowcat.dice3d.enabled", "false"));
-    await player.reload();
-    await expect(player.locator(".stage-host")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
+    // The player turns dice3d off through the real Settings > Performance toggle; the next
+    // roll leaves the player's overlay idle.
+    await player.getByTestId("launcher-trigger").click();
+    await player.getByTestId("launcher-item-settings:panel").click();
+    await player.getByTestId("perf-dice3d").uncheck();
 
     await gm.getByRole("textbox").fill("/roll 1d6");
     await gm.getByRole("textbox").press("Enter");

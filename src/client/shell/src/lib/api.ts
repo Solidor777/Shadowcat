@@ -193,6 +193,10 @@ export interface UiState {
       /** Opaque blob owned by the chat module's per-channel last-read-marker
        * tracking (unread tab badge) — the shell only stores it. */
       chatRead?: unknown;
+      /** GM's last-chosen level id per scene, keyed by scene id. Absent scene key = follow the
+       * default (first/lowest level); never set for a player, who instead follows their primary
+       * token's level. */
+      viewedLevel?: Record<string, string>;
     }
   >;
 }

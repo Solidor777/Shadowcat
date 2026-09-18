@@ -94,11 +94,21 @@ enum Egress {
         channel: String,
         /// GM-only see-as-player target (authorized in the egress handler).
         as_user: Option<Uuid>,
+        /// The level explored-fog accumulation/emission is scoped to (`None` = implicit
+        /// ground; normalized to `""` at insertion — see `SceneSub::level`).
+        level: Option<String>,
     },
     /// Cancel a derived scene-channel subscription.
     SceneUnsubscribe {
         /// The subscription to cancel.
         request_id: Uuid,
+    },
+    /// Set (or clear) the connection's spatial-audio listening override (`ClientMsg::
+    /// AudioListenAs`'s forward); the egress task owns the value every `compute_derived`
+    /// call this connection makes reads.
+    AudioListenAs {
+        /// The token to listen as, or `None` to clear the override.
+        token: Option<Uuid>,
     },
 }
 
@@ -134,6 +144,9 @@ struct SceneSub {
     fingerprint: Option<serde_json::Value>,
     /// The context the channel is computed for (own, or GM see-as target).
     view_ctx: PermissionContext,
+    /// The level explored-fog accumulation/emission is scoped to (`""` = implicit ground —
+    /// the `None` spelling is normalized away at insertion, so every reader sees one form).
+    level: String,
 }
 
 /// A cheap, order-sensitive identity of a result page for no-op suppression:
@@ -207,13 +220,19 @@ fn text(msg: &ServerMsg) -> Message {
     Message::Text(serde_json::to_string(msg).unwrap().into())
 }
 
-/// Map a write-path error to the client-actionable reject category.
-fn reject_reason(e: &crate::data::DataError) -> RejectReason {
+/// Map a write-path error to the client-actionable reject category, plus an optional
+/// player-presentable detail string carried on `ServerMsg::Reject.detail`.
+fn reject_reason(e: &crate::data::DataError) -> (RejectReason, Option<String>) {
     use crate::data::DataError::*;
     match e {
-        Forbidden => RejectReason::Forbidden,
-        Conflict(_) => RejectReason::Conflict,
-        _ => RejectReason::Invalid,
+        Forbidden => (RejectReason::Forbidden, None),
+        Conflict(_) => (RejectReason::Conflict, None),
+        OpFailed(m) => (RejectReason::Invalid, Some(m.clone())),
+        Validator(fault) => (
+            RejectReason::Invalid,
+            Some(format!("validator {} faulted", fault.module)),
+        ),
+        _ => (RejectReason::Invalid, None),
     }
 }
 
@@ -390,6 +409,12 @@ async fn handle_socket(
     let emote_rate = state.ws.emote_rate.clone();
     // Per-user chat flood budget (shared across this user's connections).
     let message_rate = state.ws.message_rate.clone();
+    // Per-user audio-transport budget (shared across this user's connections) — its own
+    // bucket, so transport spam cannot starve pings/emotes/chat and vice versa.
+    let audio_rate = state.ws.audio_rate.clone();
+    // Per-user VFX one-shot budget (shared across this user's connections) — a SEPARATE
+    // bucket from ping/emote/message, so a VFX burst cannot starve any other relay.
+    let vfx_rate = state.ws.vfx_rate.clone();
     // Link-preview fetch client/cache/budget (shared across all connections
     // and worlds — a preview's target and cached outcome are world-independent).
     let preview_client = state.ws.link_preview_client.clone();
@@ -417,21 +442,27 @@ async fn handle_socket(
                                             .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                 intent_id,
                                                 reason: RejectReason::Forbidden,
+                                                detail: None,
                                             })))
                                             .await;
                                         continue;
                                     }
                                     // Success is confirmed by the broadcast echo of the
                                     // authored Event; only a rejection is sent directly.
+                                    // A validator fault over the auto-disable limit is
+                                    // acted on inside `Room::commit_ops_locked`'s error
+                                    // arm (the one funnel every guarded write path
+                                    // shares), never here.
                                     match room.publish(repo.as_ref(), &ctx, ops, now_millis(), WriteOrigin::Client).await {
                                         Ok(_cmd) => {}
                                         Err(e) => {
-                                            let reason = reject_reason(&e);
-                                            tracing::debug!(world = %world_id, %intent_id, ?reason, "intent rejected");
+                                            let (reason, detail) = reject_reason(&e);
+                                            tracing::debug!(world = %world_id, %intent_id, ?reason, error = ?e, "intent rejected");
                                             let _ = etx
                                                 .send(Egress::Frame(Arc::new(ServerMsg::Reject {
                                                     intent_id,
                                                     reason,
+                                                    detail,
                                                 })))
                                                 .await;
                                         }
@@ -506,9 +537,9 @@ async fn handle_socket(
                                     }
                                 }
                                 Ok(ClientMsg::Pong) => {}
-                                Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
+                                Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user, level }) => {
                                     if etx
-                                        .send(Egress::SceneSubscribe { request_id, channel, as_user })
+                                        .send(Egress::SceneSubscribe { request_id, channel, as_user, level })
                                         .await
                                         .is_err()
                                     {
@@ -569,6 +600,82 @@ async fn handle_socket(
                                         });
                                     }
                                 }
+                                Ok(ClientMsg::AudioTransport { op }) => {
+                                    // Fire-and-forget on the wire: no reply frame on success (the
+                                    // broadcast Event echo of the audio-state Update IS the
+                                    // success signal); a refusal is a connection-local AudioError.
+                                    // Rate check first (own budget — see WsState::audio_rate),
+                                    // then the GM/state/op checks inside handle_transport itself.
+                                    if !audio_rate.check(user_id, now_millis(), crate::ws::AUDIO_RATE_PER_MIN) {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
+                                                reason: "too many audio commands".into(),
+                                            })))
+                                            .await;
+                                    } else if let Err(e) = crate::audio::transport::handle_transport(
+                                        repo.as_ref(),
+                                        &ctx,
+                                        &room,
+                                        op,
+                                        now_millis(),
+                                    )
+                                    .await
+                                    {
+                                        let _ = etx
+                                            .send(Egress::Frame(Arc::new(ServerMsg::AudioError {
+                                                reason: e.to_string(),
+                                            })))
+                                            .await;
+                                    }
+                                }
+                                Ok(ClientMsg::AudioListenAs { token }) => {
+                                    // GM-only preview seam (see the type's own doc comment):
+                                    // silent drop on a non-GM sender, same shape as
+                                    // `ScenePing`/`Emote` (no error frame, so a non-GM never
+                                    // learns the check ran). The egress task owns the value
+                                    // (every `compute_derived` call lives there) — forward like
+                                    // every other connection-local scene control.
+                                    if audio_listen_as_permitted(&ctx) {
+                                        let _ = etx.send(Egress::AudioListenAs { token }).await;
+                                    }
+                                }
+                                Ok(ClientMsg::PlayVfx { scene, asset, x, y, scale, rotation, duration_ms, sound, elevation }) => {
+                                    // Out-of-band relay, same shape as `ScenePing`/`Emote`
+                                    // (silent drop on any denial — no error frame, so a
+                                    // non-reader never learns whether `scene` exists).
+                                    // Guard order: cheap rate check first (its own bucket —
+                                    // a VFX burst cannot starve ping/emote/message), then
+                                    // bounds (no I/O), then the authz lookup (one doc read).
+                                    let req = crate::ws::vfx::VfxRequest {
+                                        scene,
+                                        asset: asset.clone(),
+                                        x,
+                                        y,
+                                        scale,
+                                        rotation,
+                                        duration_ms,
+                                        sound: sound.clone(),
+                                        elevation,
+                                    };
+                                    if vfx_rate.check(user_id, now_millis(), 30)
+                                        && crate::ws::vfx::validate_bounds(&req)
+                                        && crate::ws::vfx::vfx_permitted(scene, &ctx, world_id, repo.as_ref()).await
+                                    {
+                                        room.broadcast_aux(ServerMsg::Vfx {
+                                            scene,
+                                            user: user_id,
+                                            asset,
+                                            x,
+                                            y,
+                                            scale,
+                                            rotation,
+                                            duration_ms,
+                                            sound,
+                                            elevation,
+                                            id: Uuid::new_v4(),
+                                        });
+                                    }
+                                }
                                 Ok(ClientMsg::MoveRequest { request_id, scene, token_id, path }) => {
                                     // Server-authoritative move execution. On success, broadcasts
                                     // MoveStream out-of-band to the room — no etx reply to the requester.
@@ -607,6 +714,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
@@ -618,7 +727,7 @@ async fn handle_socket(
         )
                                     .await
                                     {
-                                        Ok((cmd, pending)) => {
+                                        Ok(Some((cmd, pending))) => {
                                             if !pending.is_empty() {
                                                 if let Some(message_id) = crate::chat::command_message_id(&cmd) {
                                                     tokio::spawn(crate::chat::run_pending_enrichments(
@@ -638,6 +747,10 @@ async fn handle_socket(
                                                 }
                                             }
                                         }
+                                        // A successful `/fx`: no message document, no
+                                        // enrichment, no reply frame (the broadcast `vfx`
+                                        // echo IS the confirmation).
+                                        Ok(None) => {}
                                         Err(e) => {
                                             tracing::debug!(world = %world_id, user = %user_id, ?e, "message rejected");
                                             if etx.send(Egress::Frame(Arc::new(ServerMsg::ChatError {
@@ -660,6 +773,8 @@ async fn handle_socket(
                 repo: repo.as_ref(),
                 ctx: &ctx,
                 rate: &message_rate,
+                vfx_rate: &vfx_rate,
+
                 preview: crate::chat::LinkPreviewDeps { client: &preview_client, cache: &preview_cache, rate: &preview_rate },
                 now: now_millis(),
                 budget_per_min: MESSAGE_RATE_PER_MIN,
@@ -952,6 +1067,13 @@ async fn scene_ping_permitted(
     access.has(crate::data::permission::cap::READ)
 }
 
+/// Whether `ctx` may send `ClientMsg::AudioListenAs`: a GM-only preview seam (see that type's
+/// own doc comment), no scene/token lookup needed. Denial is a silent drop at the call site,
+/// same convention as `scene_ping_permitted`/`token_emote_permitted`.
+fn audio_listen_as_permitted(ctx: &crate::data::membership::PermissionContext) -> bool {
+    ctx.world_role == crate::data::document::WorldRole::Gm
+}
+
 /// The `ClientMsg::Emote` payload's maximum byte length (minimum 1, enforced at the call
 /// site): 16 bytes covers 1–4 emoji graphemes (a 4-byte code point plus variation
 /// selector/ZWJ joiners) while capping the relayed frame size.
@@ -1083,10 +1205,17 @@ async fn handle_pathfind(
     };
     // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
     // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
-    // below never re-acquires the lock for it.
-    let (need_explored, grid_kind) = {
+    // below never re-acquires the lock for it. The mover's level is captured here too: explored
+    // memory is keyed per level, and a token-less hypothetical preview routes (and remembers) at
+    // ground.
+    let (need_explored, grid_kind, mover_level) = {
         let s = room.scene().read().await;
         let resolved = s.resolve_scene(scene);
+        let levels = s.scene_levels(scene);
+        let mover_elevation = match token {
+            Some(t) => s.token_mover_elevation(t),
+            None => crate::scene::elevation::GROUND,
+        };
         (
             !is_gm
                 && matches!(
@@ -1094,11 +1223,14 @@ async fn handle_pathfind(
                     crate::scene::MovementRestriction::Revealed
                 ),
             resolved.grid_kind,
+            crate::scene::elevation::level_of(&levels, mover_elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default(),
         )
     };
     // Step 2: fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
-        match repo.get_explored(scene, ctx.user_id).await {
+        match repo.get_explored(scene, &mover_level, ctx.user_id).await {
             Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
                 &blob, grid_kind,
             )),
@@ -1204,6 +1336,13 @@ async fn handle_pathfind(
             footprint_radius,
             budget_cells,
             traits,
+            // The mover's floor: resolved off the named token's stored elevation (the same
+            // re-resolution `footprint_radius` gets above), never the wire's claim; a token-less
+            // hypothetical preview routes at ground.
+            elevation: match token {
+                Some(t) => s.token_mover_elevation(t),
+                None => crate::scene::elevation::GROUND,
+            },
         },
     ) {
         Ok(outcome) => ServerMsg::PathResult {
@@ -1284,39 +1423,69 @@ async fn handle_move_request(
     }
 }
 
+/// The recipient identity + scene-geometry inputs every `enrich_vision_explored` call this
+/// connection makes shares: the grid/shape maps captured under the ECS read lock (once per
+/// egress pass), and the repository + world/user identity `get_explored`/`set_explored` persist
+/// against. Grouped into one struct so the function's own per-call arguments (`level`,
+/// `accumulate`) stay legible alongside it.
+struct ExploredCtx<'a> {
+    /// Each subscribed scene's cell size, captured under the same ECS read lock as `grid_shapes`.
+    grid: &'a std::collections::HashMap<Uuid, f64>,
+    /// Each subscribed scene's resolved grid shape (hex axial on a hex scene, square otherwise);
+    /// `+ Send + Sync` so the borrow may live across the `get_explored`/`set_explored` awaits.
+    grid_shapes: &'a std::collections::HashMap<
+        Uuid,
+        Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
+    >,
+    /// The repository `get_explored`/`set_explored` persist explored-fog blobs through.
+    repo: &'a SqliteRepository,
+    /// The world the explored-fog blob is persisted under.
+    world: Uuid,
+    /// The recipient whose explored-fog memory is read/grown.
+    user: Uuid,
+}
+
 /// Inject the player's scene-tagged `explored` cell sets into a `vision` **masked** payload, and —
 /// when `accumulate` — mark the currently-VISIBLE cells (the payload's `lit` set: line of sight
 /// ∩ illumination, the cells the recipient can actually see, never a line-of-sight polygon on
 /// its own) into the player's stored explored and persist on growth. No-op for a GM
 /// (`mode:"all"`) or any payload without a masked `lit` set. Runs after the ECS read lock is
-/// dropped (it does async DB I/O); `grid` carries each scene's cell size, captured under that
-/// lock. Explored is emitted only for scenes the player currently has a vision source in (the
-/// payload's `lit` groups) — a token-less player gets no explored. `accumulate` is FALSE for a
-/// GM see-as-player view: it is a read-only observer that emits the target's stored explored
-/// but must NOT grow the target's memory from the GM's session.
+/// dropped (it does async DB I/O); `ctx.grid` carries each scene's cell size, captured under
+/// that lock. Explored is emitted only for scenes the player currently has a vision source in
+/// (the payload's `lit` groups) — a token-less player gets no explored. `accumulate` is FALSE
+/// for a GM see-as-player view: it is a read-only observer that emits the target's stored
+/// explored but must NOT grow the target's memory from the GM's session.
+///
+/// Explored is keyed per (scene, LEVEL, user): it is accumulated into the level of its SOURCE
+/// TOKEN (the `level` each `lit` group carries) and emitted for the recipient's VIEWED level
+/// (`level`, the connection's requested level from `ClientMsg::SceneSubscribe::level`, `""` =
+/// implicit ground) only — a floor a player cannot currently see still remembers what THAT
+/// floor's tokens saw, but the wire payload never restates a floor the client is not rendering.
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
-    grid: &std::collections::HashMap<Uuid, f64>,
-    grid_shapes: &std::collections::HashMap<
-        Uuid,
-        Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
-    >,
-    repo: &SqliteRepository,
-    world: Uuid,
-    user: Uuid,
+    ctx: ExploredCtx<'_>,
+    level: &str,
     accumulate: bool,
 ) {
+    let ExploredCtx {
+        grid,
+        grid_shapes,
+        repo,
+        world,
+        user,
+    } = ctx;
     if payload.get("mode").and_then(|m| m.as_str()) != Some("masked") {
         return;
     }
-    // The recipient's visible cells by scene, read back from the payload's own `lit` groups
-    // (`compute_derived`'s 5-int packing: `[i, j, band, tint, hint]` per cell).
+    // The recipient's visible cells by (scene, level), read back from the payload's own `lit`
+    // groups (`compute_derived`'s 5-int packing: `[i, j, band, tint, hint]` per cell; the
+    // group's `level` tags the source token's floor, `""` = ground).
     let lit = payload
         .get("lit")
         .and_then(|l| l.as_array())
         .cloned()
         .unwrap_or_default();
-    let mut by_scene: std::collections::HashMap<Uuid, Vec<(i32, i32)>> =
+    let mut by_scene: std::collections::HashMap<(Uuid, String), Vec<(i32, i32)>> =
         std::collections::HashMap::new();
     for group in &lit {
         let Some(scene) = group
@@ -1326,12 +1495,17 @@ async fn enrich_vision_explored(
         else {
             continue;
         };
+        let group_level = group
+            .get("level")
+            .and_then(|l| l.as_str())
+            .unwrap_or("")
+            .to_string();
         let cells: Vec<i64> = group
             .get("cells")
             .and_then(|c| c.as_array())
             .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
             .unwrap_or_default();
-        let entry = by_scene.entry(scene).or_default();
+        let entry = by_scene.entry((scene, group_level)).or_default();
         for c in cells.as_chunks::<5>().0 {
             if let (Ok(i), Ok(j)) = (i32::try_from(c[0]), i32::try_from(c[1])) {
                 entry.push((i, j));
@@ -1339,7 +1513,7 @@ async fn enrich_vision_explored(
         }
     }
     let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
-    for (scene, visible) in by_scene {
+    for ((scene, group_level), visible) in by_scene {
         // Index this scene's explored fog through its own resolved grid shape (hex axial on a hex
         // scene, byte-identical square math otherwise) so the accumulated cells compose with the
         // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from either map has no
@@ -1357,17 +1531,30 @@ async fn enrich_vision_explored(
         else {
             continue;
         };
-        let mut set = match repo.get_explored(scene, user).await {
+        let mut set = match repo.get_explored(scene, &group_level, user).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
         if accumulate && set.mark_cells(visible) > 0 {
             let _ = repo
-                .set_explored(world, scene, user, &set.to_bytes(shape.kind()))
+                .set_explored(
+                    world,
+                    scene,
+                    &group_level,
+                    user,
+                    &set.to_bytes(shape.kind()),
+                )
                 .await;
         }
+        // Emission is scoped to the recipient's VIEWED level: every level's memory grew above,
+        // but only the level the client renders is restated on the wire.
+        if group_level != level {
+            continue;
+        }
         let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
-        explored_out.push(serde_json::json!({ "scene": scene, "cell": cell, "cells": cells }));
+        explored_out.push(
+            serde_json::json!({ "scene": scene, "level": group_level, "cell": cell, "cells": cells }),
+        );
     }
     payload["explored"] = serde_json::json!(explored_out);
 }
@@ -1514,10 +1701,24 @@ async fn clip_move_stream(
     // Every in-flight mover's carried emission leaves the committed field (its committed
     // position is its move's end); `ClipInputs::at` composes each back in per instant.
     let exclude: Vec<Uuid> = in_flight.iter().map(|m| m.token).collect();
-    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`.
-    let sight = {
+    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`. The
+    // mover's floor is resolved here too (its OWN stored elevation, never the frame's say-so):
+    // the position clip's level conjunct and each composed torch's level both read it.
+    let (sight, mover_level, mover_elevation) = {
         let ecs = room.scene().read().await;
-        ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id)
+        let mover_elevation = ecs.token_mover_elevation(*token_id);
+        let mover_level =
+            crate::scene::elevation::level_of(&ecs.scene_levels(*scene), mover_elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
+        for m in in_flight.iter_mut() {
+            m.mover_elevation = ecs.token_mover_elevation(m.token);
+        }
+        (
+            ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id),
+            mover_level,
+            mover_elevation,
+        )
     };
     if ctx.world_role == crate::data::document::WorldRole::Gm && !sight.has_sources() {
         // See-as target has no vision source in this scene → not applicable → full GM stream.
@@ -1530,6 +1731,8 @@ async fn clip_move_stream(
         sight: &sight,
         in_flight: &in_flight,
         target: target.user_id,
+        mover_level,
+        mover_elevation,
     };
     // Both gates from ONE resolution of each distinct instant: a position sample stays where
     // the target perceives it, a light sample where its glow lights a cell the target sees;
@@ -1598,6 +1801,9 @@ fn in_flight_of(token: Uuid, frame: &ServerMsg) -> Option<crate::ws::move_clip::
             start_server_ms: *start_server_ms,
             mover: *mover,
             token,
+            // Overwritten with the token's resolved elevation under the caller's ECS read guard
+            // (`clip_move_stream`); the frame itself carries no elevation.
+            mover_elevation: crate::scene::elevation::GROUND,
             positions: samples,
             light: mover_light.as_deref(),
         }),
@@ -1659,7 +1865,7 @@ async fn welcome_capability_requirements(
         let installed = tokio::task::spawn_blocking(move || cache.get_or_scan(&dir))
             .await
             .unwrap_or_default();
-        for id in &enabled {
+        for entry in &enabled {
             // Re-check engine-compat here (not just at enable time): a module
             // enabled while compatible can go stale after a server downgrade
             // or an on-disk manifest edit. Engine-compat is enforced at BOTH
@@ -1667,7 +1873,7 @@ async fn welcome_capability_requirements(
             // so a now-incompatible enabled module must not publish requirements.
             if let Some(m) = installed
                 .iter()
-                .find(|m| &m.id == id && crate::modules::engine_compat_ok(m))
+                .find(|m| m.id == entry.id && crate::modules::engine_compat_ok(m))
             {
                 for r in &m.requirements {
                     by_prefix
@@ -1798,6 +2004,10 @@ async fn egress_loop<S>(
     let mut scene_subs: std::collections::HashMap<Uuid, SceneSub> =
         std::collections::HashMap::new();
     let mut reeval_deadline: Option<tokio::time::Instant> = None;
+    // The connection's spatial-audio listening override (`ClientMsg::AudioListenAs`); read by
+    // every `compute_derived` call this connection makes, for every channel (only the
+    // `"audibility"` arm consults it — passing it uniformly avoids a channel-name branch here).
+    let mut listen_as: Option<Uuid> = None;
 
     let mut next_expected = current_seq + 1;
     loop {
@@ -1871,7 +2081,15 @@ async fn egress_loop<S>(
                 Some(Egress::Unsubscribe { request_id }) => {
                     subs.remove(&request_id);
                 }
-                Some(Egress::SceneSubscribe { request_id, channel, as_user }) => {
+                Some(Egress::AudioListenAs { token }) => {
+                    listen_as = token;
+                    // Fire the existing debounced scene-channel re-eval on the very next loop
+                    // iteration (never later than an already-armed in-flight window — bringing
+                    // it forward is always safe, since the recompute reads the now-updated
+                    // `listen_as` regardless of when it fires).
+                    reeval_deadline = Some(tokio::time::Instant::now());
+                }
+                Some(Egress::SceneSubscribe { request_id, channel, as_user, level }) => {
                     if scene_subs.contains_key(&request_id) {
                         // A duplicate id would silently orphan the prior sub (mirrors the search path).
                         let f = ServerMsg::SceneError { request_id, message: "duplicate subscription id".into() };
@@ -1880,6 +2098,9 @@ async fn egress_loop<S>(
                         let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
+                        // `None` (implicit ground) normalizes to the ONE internal spelling here,
+                        // so `SceneSub::level` and `enrich_vision_explored` never handle two.
+                        let level = level.unwrap_or_default();
                         // Resolve the effective view context. `as_user` (see-as-player) is
                         // GM-ONLY, and the target's role is resolved SERVER-SIDE — a non-GM can never
                         // view as another user, and a client-supplied role/scope is never trusted.
@@ -1910,12 +2131,12 @@ async fn egress_loop<S>(
                         // post-lock explored step. Computed for `view_ctx` (own, or the see-as target).
                         let (payload, seq, grid, grid_shapes) = {
                             let ecs = room.scene().read().await;
-                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
+                            (crate::scene::compute_derived(&channel, &ecs, &view_ctx, &world_defaults, listen_as), ecs.committed_seq(), ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                         };
                         match payload {
                             Some(mut p) => {
                                 if channel == "vision" {
-                                    enrich_vision_explored(&mut p, &grid, &grid_shapes, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
+                                    enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                                 }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
@@ -1924,7 +2145,7 @@ async fn egress_loop<S>(
                                     payload: p.clone(),
                                 };
                                 if sink.send(text(&f)).await.is_err() { break; }
-                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p), view_ctx });
+                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p), view_ctx, level });
                             }
                             None => {
                                 let f = ServerMsg::SceneError { request_id, message: format!("unknown channel: {channel}") };
@@ -2132,17 +2353,18 @@ async fn egress_loop<S>(
                             *id,
                             s.channel.clone(),
                             s.view_ctx,
-                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults),
+                            s.level.clone(),
+                            crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults, listen_as),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                 };
-                for (id, channel, view_ctx, payload) in snapshot {
+                for (id, channel, view_ctx, level, payload) in snapshot {
                     if let Some(mut p) = payload {
                         if channel == "vision" {
                             // See-as (view_ctx != own) is read-only: emit the target's explored, never persist.
                             let accumulate = view_ctx.user_id == ctx.user_id;
-                            enrich_vision_explored(&mut p, &grid, &grid_shapes, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
+                            enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                         }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {

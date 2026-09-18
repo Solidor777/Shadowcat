@@ -18,7 +18,30 @@ enablement.
 - `UserManager.svelte` — admin account management.
 - `InviteManager.svelte` — world invite codes.
 - `ModuleManager.svelte` — installed community modules: discovery list +
-  per-world enable toggles (engine-compat gate surfaced here).
+  per-world enable toggles (engine-compat gate surfaced here), plus a second
+  "Run sandboxed validators" toggle for any enabled module that declares
+  `validators` in its manifest (the per-world `validators_enabled` opt-in,
+  persisted as `WorldModuleEntry`). A module whose declared validator fails to
+  compile shows its load error inline beside the toggle
+  (`InstalledModuleInfo.validator_load_error`, from the server's registry
+  scan). See [Creating a validator](/guides/creating-a-validator).
+- `PerformanceEditor.svelte` — the built-in per-device render-budget section
+  (see below).
+
+## Performance
+
+`PerformanceEditor.svelte` is a built-in section of the Settings panel (not a
+contribution — the theme editor is the precedent), inserted between the theme
+block and the module manager. It drives `AppContext.performance` (a
+`PerformanceController`, per-device only, persisted in `localStorage` — never
+the server `ui_state`). Its controls: a preset radio (`auto` / `mobile` /
+`balanced` / `quality`, with a `custom` badge once any field diverges), a
+frame-rate-cap select, a render-scale range (0.5–1), a lighting-quality
+select, boolean toggles for antialiasing, token effects, visual effects, 3D
+dice, spatial audio, idle redraw-skipping and reduced motion, a "Show frame
+stats" toggle (surfaced by the statusbar's `PerfStats`), and a "Reset to auto"
+button. See the [Performance guide](/guides/performance) for what each knob
+costs.
 
 ## Contracts & seams
 

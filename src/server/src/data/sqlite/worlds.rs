@@ -98,8 +98,10 @@ impl SqliteRepository {
         })
     }
 
-    /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
-    /// Per-(scene, user) SECRET memory — never broadcast; dispatched per-recipient over `vision`.
+    /// The player's serialized explored-cell blob for a scene's LEVEL, or `None` when
+    /// unexplored. Per-(scene, level, user) SECRET memory — never broadcast; dispatched
+    /// per-recipient over `vision`. `level` is the level id (`""` = ground/a level-less
+    /// scene) `scene::elevation::level_of` resolves.
     ///
     /// # Examples
     ///
@@ -108,20 +110,24 @@ impl SqliteRepository {
     /// # async fn main() -> Result<(), shadowcat::data::DataError> {
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// assert!(repo.get_explored(uuid::Uuid::nil(), uuid::Uuid::nil()).await?.is_none());
+    /// assert!(repo.get_explored(uuid::Uuid::nil(), "", uuid::Uuid::nil()).await?.is_none());
     /// # Ok(())
     /// # }
     /// ```
     pub async fn get_explored(
         &self,
         scene: Uuid,
+        level: &str,
         user: Uuid,
     ) -> Result<Option<Vec<u8>>, DataError> {
-        let row = sqlx::query("SELECT cells FROM explored_fog WHERE scene_id = ? AND user_id = ?")
-            .bind(scene.to_string())
-            .bind(user.to_string())
-            .fetch_optional(&self.pool)
-            .await?;
+        let row = sqlx::query(
+            "SELECT cells FROM explored_fog WHERE scene_id = ? AND level_id = ? AND user_id = ?",
+        )
+        .bind(scene.to_string())
+        .bind(level)
+        .bind(user.to_string())
+        .fetch_optional(&self.pool)
+        .await?;
         Ok(row.map(|r| r.get::<Vec<u8>, _>("cells")))
     }
 
@@ -169,9 +175,11 @@ impl SqliteRepository {
         Ok(())
     }
 
-    /// Upsert the player's explored-cell blob for a scene. Keyed `(scene_id, user_id)`; `world_id`
+    /// Upsert the player's explored-cell blob for a scene's LEVEL. Keyed `(scene_id, level_id,
+    /// user_id)`; `world_id`
     /// is denormalized for the world-scoped purge (rows are purged by `delete_world` (world-scoped),
-    /// `delete_user` (user-scoped), and `delete_document_tx` (scene-scoped)). Write is whole-blob
+    /// `delete_user` (user-scoped), and `delete_document_tx` (scene-scoped — every level of the
+    /// scene with it)). Write is whole-blob
     /// last-writer-wins: two of the
     /// user's sockets accumulating concurrently can transiently drop a cell one added but the other
     /// didn't observe. Self-healing: explored is a re-derivable dimmed-memory layer (a dropped cell
@@ -187,8 +195,8 @@ impl SqliteRepository {
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
     /// let world = uuid::Uuid::nil();
     /// let (scene, user) = (uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
-    /// repo.set_explored(world, scene, user, &[1, 2, 3]).await?;
-    /// assert_eq!(repo.get_explored(scene, user).await?, Some(vec![1, 2, 3]));
+    /// repo.set_explored(world, scene, "", user, &[1, 2, 3]).await?;
+    /// assert_eq!(repo.get_explored(scene, "", user).await?, Some(vec![1, 2, 3]));
     /// # Ok(())
     /// # }
     /// ```
@@ -196,16 +204,19 @@ impl SqliteRepository {
         &self,
         world: Uuid,
         scene: Uuid,
+        level: &str,
         user: Uuid,
         cells: &[u8],
     ) -> Result<(), DataError> {
         sqlx::query(
-            "INSERT INTO explored_fog (world_id, scene_id, user_id, cells) VALUES (?, ?, ?, ?) \
-             ON CONFLICT(scene_id, user_id) DO UPDATE SET cells = excluded.cells, \
+            "INSERT INTO explored_fog (world_id, scene_id, level_id, user_id, cells) \
+             VALUES (?, ?, ?, ?, ?) \
+             ON CONFLICT(scene_id, level_id, user_id) DO UPDATE SET cells = excluded.cells, \
              world_id = excluded.world_id",
         )
         .bind(world.to_string())
         .bind(scene.to_string())
+        .bind(level)
         .bind(user.to_string())
         .bind(cells)
         .execute(&self.pool)
@@ -383,34 +394,5 @@ impl SqliteRepository {
     ) -> Result<(), DataError> {
         let json = serde_json::to_string(decls)?;
         self.set_setting(&world_schemas_key(world), &json).await
-    }
-
-    /// Replace a world's enabled installed-module set (stored as JSON in
-    /// settings, beside `world_cap_requirements`/`world_contract_declarations`
-    /// — enable/disable never mutates either of those; `welcome_capability_requirements` unions
-    /// the enabled modules' declared requirements with the stored GM-authored record fresh on
-    /// every `Welcome`, leaving the stored record the GM's own edit alone).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[tokio::main]
-    /// # async fn main() -> Result<(), shadowcat::data::DataError> {
-    /// use shadowcat::data::repository::Repository;
-    /// use shadowcat::data::sqlite::SqliteRepository;
-    /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// let world = repo.create_world("MOCK_WORLD", 0).await?;
-    /// repo.set_world_enabled_modules(world.id, &["mock-module".to_string()]).await?;
-    /// assert_eq!(repo.world_enabled_modules(world.id).await?, vec!["mock-module".to_string()]);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn set_world_enabled_modules(
-        &self,
-        world: Uuid,
-        ids: &[String],
-    ) -> Result<(), DataError> {
-        let json = serde_json::to_string(ids)?;
-        self.set_setting(&world_modules_key(world), &json).await
     }
 }

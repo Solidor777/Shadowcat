@@ -8,6 +8,7 @@
 //! shadowcat --bind 0.0.0.0:30000 --db /srv/shadowcat.db
 //! shadowcat --backup-to backups/2026-07-30      # snapshot, then exit
 //! shadowcat --restore-from backups/2026-07-30 --force
+//! shadowcat audio-monitor --port 31998          # localhost audio-session levels, then serve
 //! ```
 
 // Ratchet: every item in this bin crate must carry a doc comment, enforced by
@@ -26,7 +27,15 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+
+    if cli.command.is_some() && (cli.backup_to.is_some() || cli.restore_from.is_some()) {
+        anyhow::bail!("a subcommand and --backup-to/--restore-from are mutually exclusive");
+    }
+    if let Some(shadowcat::config::CliCommand::AudioMonitor(args)) = cli.command.take() {
+        init_tracing();
+        return shadowcat::audio_monitor::server::run(args).await;
+    }
 
     if cli.backup_to.is_some() && cli.restore_from.is_some() {
         anyhow::bail!("--backup-to and --restore-from are mutually exclusive");
@@ -50,7 +59,9 @@ async fn main() -> anyhow::Result<()> {
 
     init_tracing();
 
-    let repo = SqliteRepository::connect(&config.db).await?;
+    let repo = SqliteRepository::connect(&config.db)
+        .await?
+        .with_modules_dir(config.modules_path());
     std::fs::create_dir_all(config.assets_path())?;
 
     // Runs once at boot purely to surface a summary in the log; every actual

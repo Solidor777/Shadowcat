@@ -11,7 +11,8 @@ deploy.
 Linux staging tree with a `.desktop` entry, or a Windows `shadowcat.exe` (icon
 embedded).
 
-**From source** (needs Rust stable, Node 22, pnpm 9):
+**From source** (needs Rust stable with the `wasm32-unknown-unknown` target —
+`rustup target add wasm32-unknown-unknown` — Node 22, pnpm 9):
 
 ```bash
 pnpm install
@@ -203,6 +204,30 @@ Terminate HTTPS at the proxy; Shadowcat itself speaks plain HTTP.
 
 Players join from phone browsers — the client is responsive and touch-ready, and
 there is nothing to install. The same URL serves desktop and mobile.
+
+## Voice ducking on your machine
+
+The ducking module's Settings section can duck the table's music/ambience while Discord (or
+any voice app) is talking, without the Discord SDK — it reads OS-reported audio-session peak
+levels through a small companion command:
+
+```bash
+shadowcat audio-monitor --port 31998 --allow-origin http://localhost:30000 --watch discord
+```
+
+The Settings section prints this exact command line (with `--allow-origin` set to the page's
+own origin) — copy it verbatim rather than retyping it. It runs entirely on your own machine,
+never uploads anything, and only ever reports the peak level of processes matching `--watch`
+(default `discord`) — every other running application stays invisible to it and to the page.
+
+**Windows**: no extra setup; WASAPI session metering works out of the box.
+
+**macOS 14.2+**: the first run triggers the OS's own "System Audio Recording" permission
+prompt — accept it once. Older macOS reports itself unsupported honestly rather than failing
+silently.
+
+**Linux**: needs a running PipeWire session (the default on current Fedora/Ubuntu desktops);
+without one the monitor reports "PipeWire not running" rather than crashing.
 
 ## Troubleshooting
 

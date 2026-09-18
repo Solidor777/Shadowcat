@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@shadowcat/core": "workspace:*",
+    "@shadowcat/audio": "workspace:*",
     "@shadowcat/formula": "workspace:*",
     "@shadowcat/render": "workspace:*",
     "@shadowcat/module-entry": "workspace:*",
@@ -15,6 +16,7 @@
     "@shadowcat/module-settings": "workspace:*",
     "@shadowcat/module-asset-browser": "workspace:*",
     "@shadowcat/module-actors": "workspace:*",
+    "@shadowcat/module-audio": "workspace:*",
     "@shadowcat/module-chat": "workspace:*",
     "@shadowcat/module-chat-composer": "workspace:*",
     "@shadowcat/module-chat-card": "workspace:*",
@@ -33,6 +35,9 @@
     "@shadowcat/module-sheet-note": "workspace:*",
     "@shadowcat/module-sheet-table": "workspace:*",
     "@shadowcat/module-dice-3d": "workspace:*",
+    "@shadowcat/module-sheet-playlist": "workspace:*",
+    "@shadowcat/module-vfx": "workspace:*",
+    "@shadowcat/module-ducking": "workspace:*",
     "@shadowcat/types": "workspace:^",
     "@shadowcat/ui-kit": "workspace:*"
   },

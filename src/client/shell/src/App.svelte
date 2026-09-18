@@ -36,6 +36,10 @@
   import { sheetNote } from "@shadowcat/module-sheet-note";
   import { sheetTable } from "@shadowcat/module-sheet-table";
   import { dice3d } from "@shadowcat/module-dice-3d";
+  import { audio } from "@shadowcat/module-audio";
+  import { sheetPlaylist } from "@shadowcat/module-sheet-playlist";
+  import { vfx } from "@shadowcat/module-vfx";
+  import { ducking } from "@shadowcat/module-ducking";
   import { WorldSession } from "./lib/worldSession.svelte";
   import Table from "./lib/Table.svelte";
 
@@ -183,9 +187,16 @@
     const s = new WorldSession({
       selfId: me.id,
       connect: webSocketConnect(wsUrl),
-      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d],
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking],
       onEvicted: () => leaveWorld(),
-      onReject: (reason) => notifications.push("warning", t(`intent.rejected.${reason}`)),
+      onReject: (reason, detail) =>
+        notifications.push(
+          "warning",
+          detail ? `${t(`intent.rejected.${reason}`)} ${detail}` : t(`intent.rejected.${reason}`),
+        ),
+      // The audio refusal reason is already player-presentable free text produced server-side
+      // (unlike `RejectReason`'s fixed key set) — pushed raw, never through `t()`.
+      onAudioError: (reason) => notifications.push("warning", reason),
     });
     session = s;
     void s.enter(worldId);

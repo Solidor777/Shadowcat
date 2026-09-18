@@ -1,4 +1,4 @@
-import { test, expect, vi } from "vitest";
+import { test, expect, vi, beforeEach, describe } from "vitest";
 import { render } from "@testing-library/svelte";
 import CanCheckProbe from "./__fixtures__/CanCheckProbe.svelte";
 import {
@@ -23,6 +23,8 @@ import {
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers, CombatClientError } from "@shadowcat/core";
 import { getWorldSnapshot } from "./api";
+import { getViewedLevel } from "./sessionState.svelte";
+import { reactiveRead } from "./__testHelpers__/reactivityProbe.svelte";
 
 // The snapshot-bootstrap fetch hits the network on every enter(); stub it (safe default: no
 // documents, seq 0) so the 25+ existing Welcome-flow tests below are unaffected, alongside the
@@ -275,10 +277,42 @@ test("a reject frame calls onReject with the reason AND rolls back the optimisti
   expect(session.documents.get(doc.id)).toBeDefined(); // optimistic prediction applied
 
   const intent = sent.find((f) => f.type === "intent") as { intent_id: string };
-  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden" });
+  push({ type: "reject", intent_id: intent.intent_id, reason: "forbidden", detail: null });
 
-  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden"));
+  await vi.waitFor(() => expect(onReject).toHaveBeenCalledExactlyOnceWith("forbidden", null));
   expect(session.documents.get(doc.id)).toBeUndefined(); // rolled back
+});
+
+test("a reject frame with detail passes it through to onReject", async () => {
+  let push!: (frame: unknown) => void;
+  const connect: Connect = (handlers) => {
+    push = (frame) => handlers.onMessage(JSON.stringify(frame));
+    queueMicrotask(() => handlers.onMessage(JSON.stringify(welcomeFrame)));
+    return Promise.resolve({ send: () => {}, close: () => handlers.onClose() });
+  };
+  const onReject = vi.fn();
+  const session = new WorldSession({
+    selfId: "u1",
+    connect,
+    modules: [coreUiStub],
+    logger: silentLogger,
+    onReject,
+  });
+  await session.enter("w1");
+
+  push({
+    type: "reject",
+    intent_id: "00000000-0000-0000-0000-000000000001",
+    reason: "invalid",
+    detail: "validator example-module: hp must be non-negative",
+  });
+
+  await vi.waitFor(() =>
+    expect(onReject).toHaveBeenCalledWith(
+      "invalid",
+      "validator example-module: hp must be non-negative",
+    ),
+  );
 });
 
 function sceneCreates(sent: Array<Record<string, unknown>>): unknown[] {
@@ -799,7 +833,7 @@ test("the session subscribes to footprints itself and publishes each frame's res
     computed_at_seq: 0,
     payload: {
       scenes: [
-        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 } }] },
+        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 }, level: null }] },
       ],
     },
   });
@@ -1052,6 +1086,99 @@ test("viewedSceneId: player follows activeScene, else the first scene", async ()
 
   session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: "s1" }) }]);
   expect(session.viewedSceneId).toBe("s1"); // follows activeScene
+});
+
+test("viewedLevel is null for a level-less scene", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // player
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "s0") }]);
+  expect(session.viewedLevel).toBeNull();
+});
+
+test("viewedLevel: a GM defaults to the scene's first level and persists a change", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+
+  session.dispatchIntent([{
+    op: "create",
+    doc: buildSceneDoc(
+      "w1",
+      { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+      "s0",
+    ),
+  }]);
+  expect(session.viewedLevel).toBe("l1"); // defaults to the first level
+
+  session.setViewedLevel("l2");
+  expect(session.viewedLevel).toBe("l2");
+  expect(getViewedLevel("w1", "s0")).toBe("l2"); // persisted
+});
+
+test("viewedLevel: a GM's setViewedLevel is observable through Svelte reactivity, not just a direct getter read", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+
+  // A scene id distinct from the sibling test's "s0" — `sessionState`'s persisted `viewedLevel`
+  // map is module-global, and the sibling test above persists "s0" as "l2" already, which would
+  // otherwise leak in as this session's seeded default on first read.
+  session.dispatchIntent([{
+    op: "create",
+    doc: buildSceneDoc(
+      "w1",
+      { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+      "sReactivity",
+    ),
+  }]);
+
+  // `LevelSwitcher`'s `active={ctx.viewedLevel}` prop binding is a $derived-like reactive read —
+  // a plain direct getter call (as the test above does) cannot tell a correctly-reactive source
+  // from one whose mutation is invisible to Svelte (the exact `$state(new Map())` gotcha).
+  const { before, after } = reactiveRead(
+    () => session.viewedLevel,
+    () => session.setViewedLevel("l2"),
+  );
+  expect(before).toBe("l1");
+  expect(after).toBe("l2");
+});
+
+test("viewedLevel: a player tracks their primary token's elevation, no explicit call needed", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // player
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  session.dispatchIntent([{
+    op: "create",
+    doc: buildSceneDoc(
+      "w1",
+      { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+      "s0",
+    ),
+  }]);
+  const token = buildTokenDoc("w1", "s0", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok1");
+  token.owner = "u1";
+  session.dispatchIntent([{ op: "create", doc: token }]);
+  expect(session.viewedLevel).toBe("l1");
+
+  session.dispatchIntent([{ op: "update", doc_id: "tok1", changes: [{ path: "/engine/elevation", old: 0, new: 15, remove: false }] }]);
+  expect(session.viewedLevel).toBe("l2"); // follows the token through the band change, no setViewedLevel call
 });
 
 test("setGmViewedScene overrides only for a GM; a player call is ignored", async () => {
@@ -1314,9 +1441,67 @@ test("onEmote cross-scene guard: a GM roaming scene B sees own emotes for B, dro
   expect(got[0].scene).toBe("sceneB");
 });
 
+test("playVfx forwards to WsClient.playVfx; onVfx fires only for the viewed scene; a disconnected session no-ops", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneId = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+
+  session.playVfx({ scene: sceneId, asset: "a1", x: 3, y: 4 });
+  const frame = sent.find((m) => m.type === "play_vfx");
+  expect(frame).toBeTruthy();
+  expect(frame!.scene).toBe(sceneId);
+  expect(frame!.asset).toBe("a1");
+  expect(frame!.x).toBe(3);
+  expect(frame!.y).toBe(4);
+
+  const got: Array<{ scene: string; id: string }> = [];
+  session.onVfx((m) => got.push(m));
+  const blank = { scale: null, rotation: null, duration_ms: null, sound: null, elevation: null };
+  push({ type: "vfx", scene: sceneId, user: "u9", asset: "a1", x: 1, y: 2, id: "fx-1", ...blank });
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].id).toBe("fx-1");
+  push({ type: "vfx", scene: "some-other-scene", user: "u9", asset: "a1", x: 1, y: 2, id: "fx-2", ...blank });
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(1); // a frame for another scene is dropped
+
+  // Disconnected: no WsClient exists yet, so playVfx is a silent no-op (never a throw).
+  const offline = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  expect(() => offline.playVfx({ scene: "s1", asset: "a1", x: 0, y: 0 })).not.toThrow();
+});
+
+test("onVfx cross-scene guard: a GM roaming scene B sees one-shots for B, drops one-shots for A", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push({ ...welcomeFrame, user_role: "gm" });
+  await vi.waitFor(() => expect(sceneCreates(sent).length).toBe(1));
+  const sceneA = (sceneCreates(sent)[0] as { ops: Array<{ doc?: { id?: string } }> }).ops.find((o) => o.doc)!.doc!.id as string;
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "sceneB") }]);
+  session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: sceneA }) }]);
+  session.setGmViewedScene("sceneB");
+
+  const got: Array<{ scene: string }> = [];
+  session.onVfx((m) => got.push(m));
+  const blank = { scale: null, rotation: null, duration_ms: null, sound: null, elevation: null };
+
+  push({ type: "vfx", scene: sceneA, user: "u9", asset: "a1", x: 1, y: 2, id: "fx-a", ...blank }); // players' scene — dropped
+  await new Promise((r) => setTimeout(r, 20));
+  expect(got).toHaveLength(0);
+
+  push({ type: "vfx", scene: "sceneB", user: "u1", asset: "a1", x: 3, y: 4, id: "fx-b", ...blank }); // the GM's own viewed scene — accepted
+  await vi.waitFor(() => expect(got).toHaveLength(1));
+  expect(got[0].scene).toBe("sceneB");
+});
+
 test("Welcome warns (but still enters the world) when an enabled id is not installed", async () => {
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["missing-mod"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "missing-mod", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([]);
   const warnings: unknown[][] = [];
   const logger = { ...silentLogger, warn: (...args: unknown[]) => warnings.push(args) };
@@ -1339,12 +1524,14 @@ test("resolves an enabled folder id to its installed entry even when the manifes
   // differ. A lookup keyed on `manifest.id` would (wrongly) treat this
   // entry as "not installed" and skip it.
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["folder-name"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "folder-name", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "folder-name",
       manifest: { id: "declared-manifest-id", version: "1.0.0", dependencies: {}, provides: [] },
       entry_url: "/modules/folder-name/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   const warnings: unknown[][] = [];
@@ -1559,12 +1746,14 @@ test("reconcileInstalledModules loads a newly-enabled module and activates it", 
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
 
@@ -1579,12 +1768,14 @@ test("reconcileInstalledModules unloads (cascade) a module no longer in the enab
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1607,10 +1798,12 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ];
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
   await session.reconcileInstalledModules();
   expect(session.contributions.contributionsFor(MARKER_CONTRACT)).toHaveLength(1);
@@ -1618,7 +1811,7 @@ test("reconcileInstalledModules is idempotent when nothing changed since the las
   const before = await registerCallsOf(FIXTURE_A_URL);
 
   // Same enabled set, same installed catalog: nothing to diff.
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce(installed);
   await session.reconcileInstalledModules();
 
@@ -1631,17 +1824,21 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
   const core = await import("@shadowcat/core");
   const session = await enteredSession();
 
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-a-folder", "ext-b-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-a-folder", validators_enabled: false }, { id: "ext-b-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-a-folder",
       manifest: { id: "ext-module-a", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_A_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
     {
       id: "ext-b-folder",
       manifest: { id: "ext-module-b", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_B_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1650,12 +1847,14 @@ test("reconcileInstalledModules leaves a module present in BOTH the old and new 
   const bBefore = await registerCallsOf(FIXTURE_B_URL);
 
   // A drops out of the enabled set; B stays enabled.
-  vi.mocked(core.getEnabledModules).mockResolvedValueOnce(["ext-b-folder"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValueOnce([{ id: "ext-b-folder", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValueOnce([
     {
       id: "ext-b-folder",
       manifest: { id: "ext-module-b", version: "1.0.0", dependencies: {} },
       entry_url: FIXTURE_B_URL,
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1744,12 +1943,14 @@ const styledModuleManifest = {
 
 async function enterWithStyledModule(): Promise<WorldSession> {
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValue([
     {
       id: "folder-one",
       manifest: styledModuleManifest,
       entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   const externalModule: Module = {
@@ -1795,6 +1996,8 @@ test("a reconcile unload removes the module's stylesheet", async () => {
       id: "folder-one",
       manifest: styledModuleManifest,
       entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   await session.reconcileInstalledModules();
@@ -1804,12 +2007,14 @@ test("a reconcile unload removes the module's stylesheet", async () => {
 
 test("a module whose activation fails gets no stylesheet link", async () => {
   const core = await import("@shadowcat/core");
-  vi.mocked(core.getEnabledModules).mockResolvedValue(["folder-one"]);
+  vi.mocked(core.getEnabledModules).mockResolvedValue([{ id: "folder-one", validators_enabled: false }]);
   vi.mocked(core.listInstalledModules).mockResolvedValue([
     {
       id: "folder-one",
       manifest: styledModuleManifest,
       entry_url: "/modules/folder-one/index.js",
+      has_validators: false,
+      validator_load_error: null,
     },
   ]);
   // The import succeeds (so the load result lists the module) but activation
@@ -1832,4 +2037,219 @@ test("a module whose activation fails gets no stylesheet link", async () => {
   await new Promise((r) => setTimeout(r, 0));
   expect(document.querySelector('link[data-shadowcat-module-style="mod-one"]')).toBeNull();
   session.leave();
+});
+
+describe("WorldSession.audio", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function audioSession(): WorldSession {
+    return new WorldSession({
+      selfId: "u1",
+      connect: mockConnect(),
+      modules: [coreUiStub],
+      logger: silentLogger,
+    });
+  }
+
+  test("the audio getter's setChannel persists channels and duck depth to the mirror", async () => {
+    const session = audioSession();
+    session.audio.setChannel("sfx", { gain: 0.5, muted: true });
+    const raw = localStorage.getItem("shadowcat.audio");
+    expect(raw).not.toBeNull();
+    const mirror = JSON.parse(raw!) as { channels: Record<string, { gain: number; muted: boolean }>; duckDepth: number };
+    expect(mirror.channels.sfx).toEqual({ gain: 0.5, muted: true });
+    expect(mirror.duckDepth).toBe(session.audio.duck.depth);
+    session.leave();
+  });
+
+  test("duck.setDepth persists duckDepth to the SAME mirror without disturbing channels", async () => {
+    const session = audioSession();
+    session.audio.setChannel("music", { gain: 0.4 });
+    session.audio.duck.setDepth(0.3);
+    const mirror = JSON.parse(localStorage.getItem("shadowcat.audio")!) as {
+      channels: Record<string, { gain: number; muted: boolean }>;
+      duckDepth: number;
+    };
+    expect(mirror.duckDepth).toBe(0.3);
+    expect(mirror.channels.music).toEqual({ gain: 0.4, muted: false });
+    session.leave();
+  });
+
+  test("construction from a pre-seeded mirror reports the persisted duck depth", () => {
+    localStorage.setItem(
+      "shadowcat.audio",
+      JSON.stringify({ channels: { sfx: { gain: 0.1, muted: true } }, duckDepth: 0.2 }),
+    );
+    const session = audioSession();
+    expect(session.audio.duck.depth).toBe(0.2);
+    expect(session.audio.channels.sfx).toEqual({ gain: 0.1, muted: true });
+    session.leave();
+  });
+
+  test("audio.serverNow and audio.transport forward to the session's WsClient", async () => {
+    const { WsClient } = await import("@shadowcat/core");
+    const serverNow = vi.spyOn(WsClient.prototype, "serverNow").mockReturnValue(1234);
+    const audioTransport = vi.spyOn(WsClient.prototype, "audioTransport").mockImplementation(() => {});
+    const session = audioSession();
+    await session.enter("w1");
+    expect(session.audio.serverNow()).toBe(1234);
+    expect(serverNow).toHaveBeenCalled();
+    session.audio.transport({ type: "stop_all" });
+    expect(audioTransport).toHaveBeenCalledWith({ type: "stop_all" });
+    session.leave();
+  });
+
+  test("the AudioEngine's spatial opt reads the shared performanceController's spatialAudio setting", async () => {
+    const audioModule = await import("@shadowcat/audio");
+    const { performanceController } = await import("@shadowcat/ui-kit");
+    const ctorSpy = vi.spyOn(audioModule, "AudioEngine");
+    try {
+      // Constructed once, in `WorldSession`'s own constructor — no `enter()`/`leave()` needed
+      // (and `leave()` is deliberately not called: spying on the constructor breaks its `new`
+      // semantics for the produced instance, which is irrelevant here — only the captured
+      // construction options are under test).
+      audioSession();
+      expect(ctorSpy).toHaveBeenCalledTimes(1);
+      const opts = ctorSpy.mock.calls[0][0];
+      const base = performanceController.current;
+      performanceController.set({ ...base, spatialAudio: false });
+      expect(opts.spatial?.()).toBe(false);
+      performanceController.set({ ...base, spatialAudio: true });
+      expect(opts.spatial?.()).toBe(true);
+    } finally {
+      // The spy replaces the module's `AudioEngine` export itself (not a prototype method),
+      // so every later test in this file constructing a `WorldSession` needs the real class
+      // restored — unlike the sibling `AudioEngine.prototype.*` spies below, which restore
+      // via the shared `afterEach`.
+      ctorSpy.mockRestore();
+    }
+  });
+
+  test("an audio-state document-store update drives AudioEngine.applyState", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyState = vi.spyOn(AudioEngine.prototype, "applyState").mockImplementation(() => {});
+    const session = audioSession();
+    await session.enter("w1");
+    const doc = {
+      ...buildWorldSettingsDoc("w1", {}),
+      doc_type: "audio-state",
+      name: null,
+      engine: { playing: [], shuffleSeed: 0 },
+    };
+    applyState.mockClear();
+    session.documents.seedDocuments([doc as never]);
+    expect(applyState).toHaveBeenCalledWith({ playing: [], shuffleSeed: 0 });
+    session.leave();
+  });
+
+  /** A minimal scene document for the audibility tests (`resolveViewedScene`'s first-scene
+   * fallback picks the seeded order's first). */
+  function sceneDoc(id: string) {
+    return {
+      ...buildWorldSettingsDoc("w1", {}),
+      id,
+      doc_type: "scene",
+      name: null,
+      engine: { grid: { kind: "square", size: 100 }, background: null },
+    };
+  }
+
+  /** A two-scene audibility payload: each scene carries exactly one emitter naming the scene. */
+  function twoScenePayload() {
+    return {
+      scenes: [
+        {
+          scene: "scene-1",
+          listener: "tok-1",
+          spatial: true,
+          emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+        },
+        {
+          scene: "scene-2",
+          listener: "tok-2",
+          spatial: true,
+          emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+        },
+      ],
+    };
+  }
+
+  test("an audibility frame drives applyAudibility with ONLY the viewed scene's slice", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyAudibility = vi.spyOn(AudioEngine.prototype, "applyAudibility").mockImplementation(() => {});
+    const sent: Array<Record<string, unknown>> = [];
+    const { connect, push } = pushConnect(sent);
+    const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+    await session.enter("w1");
+    push(welcomeFrame);
+    await vi.waitFor(() => expect(session.role).toBe("player"));
+    session.documents.seedDocuments([sceneDoc("scene-1") as never, sceneDoc("scene-2") as never]);
+    await vi.waitFor(() => expect(session.viewedSceneId).toBe("scene-1"));
+
+    const req = await vi.waitFor(() => {
+      const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "audibility");
+      expect(m).toBeDefined();
+      return m!;
+    });
+    push({
+      type: "scene_derived",
+      request_id: req.request_id,
+      channel: "audibility",
+      computed_at_seq: 0,
+      payload: twoScenePayload(),
+    });
+    await vi.waitFor(() =>
+      expect(applyAudibility).toHaveBeenCalledWith({
+        scene: "scene-1",
+        listener: "tok-1",
+        spatial: true,
+        emitters: [{ token: "tok-a", asset: "a-wind", gain: 0.5, pan: 0.2, loop: true }],
+      }),
+    );
+    expect(applyAudibility).not.toHaveBeenCalledWith(
+      expect.objectContaining({ scene: "scene-2" }),
+      "the OTHER scene's slice never reaches the engine while scene-1 is viewed",
+    );
+    session.leave();
+  });
+
+  test("setGmViewedScene immediately re-applies the roamed-to scene's cached slice", async () => {
+    const { AudioEngine } = await import("@shadowcat/audio");
+    const applyAudibility = vi.spyOn(AudioEngine.prototype, "applyAudibility").mockImplementation(() => {});
+    const sent: Array<Record<string, unknown>> = [];
+    const { connect, push } = pushConnect(sent);
+    const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+    await session.enter("w1");
+    push({ ...welcomeFrame, user_role: "gm" });
+    await vi.waitFor(() => expect(session.role).toBe("gm"));
+    session.documents.seedDocuments([sceneDoc("scene-1") as never, sceneDoc("scene-2") as never]);
+    await vi.waitFor(() => expect(session.viewedSceneId).toBe("scene-1"));
+
+    const req = await vi.waitFor(() => {
+      const m = sent.find((f) => f.type === "scene_subscribe" && f.channel === "audibility");
+      expect(m).toBeDefined();
+      return m!;
+    });
+    push({
+      type: "scene_derived",
+      request_id: req.request_id,
+      channel: "audibility",
+      computed_at_seq: 0,
+      payload: twoScenePayload(),
+    });
+    await vi.waitFor(() => expect(applyAudibility).toHaveBeenCalledWith(expect.objectContaining({ scene: "scene-1" })));
+
+    // The roam: scene-2's slice applies AT ONCE from the cached payload — no new server frame.
+    applyAudibility.mockClear();
+    session.setGmViewedScene("scene-2");
+    expect(applyAudibility).toHaveBeenCalledWith({
+      scene: "scene-2",
+      listener: "tok-2",
+      spatial: true,
+      emitters: [{ token: "tok-b", asset: "a-rain", gain: 0.7, pan: -0.4, loop: false }],
+    });
+    session.leave();
+  });
 });

@@ -16,7 +16,13 @@ itself lives in `src/client/render`, not in this module.
 ## Components
 
 - `Stage.svelte` — mounts the PixiJS canvas, binds the render engine to the
-  session (documents in, scene frames in, interactions out).
+  session (documents in, scene frames in, interactions out). Renders
+  `LevelSwitcher` (any-viewer floor picker) and, GM-only, a ghost-other-levels
+  toggle.
+- `LevelSwitcher.svelte` — floor picker for a scene with declared `levels`:
+  renders nothing when a scene has none. Reads `AppContext.viewedLevel`,
+  writes through `AppContext.setViewedLevel` (GM-persisted; a player's viewed
+  level instead tracks their own token's elevation and ignores writes).
 
 ## Contracts & seams
 
@@ -25,9 +31,27 @@ itself lives in `src/client/render`, not in this module.
 - Renders `STAGE_OVERLAY_CONTRACT` (`shadowcat.stage-overlay`, multi) as absolutely
   positioned children over the render canvas — `dice-3d`'s overlay is today's one consumer.
 - Renders the **optimistic** document view; consumes `viewedSceneId`,
-  scene-derived channels (vision/fog/lighting), `move_stream` playback, and the
-  render-layer API. The canvas renders what the server lets this user see —
-  fog/vision arrive pre-clipped.
+  `viewedLevel`, scene-derived channels (vision/fog/lighting), `move_stream`
+  playback, and the render-layer API. The canvas renders what the server lets
+  this user see — fog/vision arrive pre-clipped.
+- **Levels**: `AppContext.viewedLevel`/`setViewedLevel` name the currently
+  viewed floor on the viewed scene (`SceneEngine.levels`); a `viewedLevel`
+  change re-subscribes the `"vision"` channel (`RenderEngine.reapplyViewedLevel`)
+  since the SERVER computes explored-fog per level, not just per scene. Band-
+  shaped docs (wall/region/drawing/template) scope to the viewed level via
+  `bandContains` at the level's own `bottom`; point-elevation docs (token/light)
+  scope via `level_of`/`levelOf`.
+- **Ghost-other-levels** (GM-only toggle, `data-testid="ghost-other-levels"`):
+  when on, tokens on OTHER levels of the viewed scene still render, desaturated
+  and faded (`TokenFx` `desaturate` + the new `alpha` entry, composed into the
+  same `ColorMatrixFilter` as every other token art effect — no separate
+  opacity mechanism).
+- **Observability**: `data-level` (the viewed level id, or `""`) and
+  `data-token-count` (the viewed scene's token count, scoped to the viewed
+  level) are written wherever the stage's other read-only debug attributes
+  are — on every applied derived (vision) frame and on every document-store
+  commit — so a level switch or a token's elevation crossing a level boundary
+  both update promptly.
 
 ## Pointers
 

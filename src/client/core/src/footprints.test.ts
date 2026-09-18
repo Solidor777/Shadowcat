@@ -7,8 +7,8 @@ const payload = {
       scene: "scene-1",
       unit: { w: 173.20508075688772, h: 200 },
       tokens: [
-        { token: "tok-hex", extent: { w: 346.41016151377545, h: 400 } },
-        { token: "tok-refused", extent: null },
+        { token: "tok-hex", extent: { w: 346.41016151377545, h: 400 }, level: "l2" },
+        { token: "tok-refused", extent: null, level: null },
       ],
     },
     { scene: "scene-2", unit: { w: 100, h: 100 }, tokens: [] },
@@ -20,6 +20,14 @@ test("parseFootprints exposes each scene's unit extent and each token's resolved
   expect(fp.unit("scene-1")).toEqual({ w: 173.20508075688772, h: 200 });
   expect(fp.unit("scene-2")).toEqual({ w: 100, h: 100 });
   expect(fp.token("tok-hex")).toEqual({ w: 346.41016151377545, h: 400 });
+});
+
+test("parseFootprints exposes each token's resolved level, null when the server states none", () => {
+  const fp = parseFootprints(payload);
+  expect(fp.level("tok-hex")).toBe("l2");
+  expect(fp.level("tok-refused")).toBeNull();
+  expect(fp.level("tok-never-mentioned")).toBeNull();
+  expect(EMPTY_FOOTPRINTS.level("anything")).toBeNull();
 });
 
 test("a refused extent reads the same as an unstated one", () => {

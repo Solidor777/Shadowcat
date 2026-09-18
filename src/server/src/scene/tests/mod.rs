@@ -173,8 +173,14 @@ pub(super) fn scene_with_lit_player_token() -> (SceneEcs, Uuid, Uuid) {
 /// Both sides read the same no-grant access inputs, so the helper pins the mask agreement, not
 /// any particular permission resolution.
 pub(super) fn assert_strict_parity(ecs: &SceneEcs, user: Uuid, scene: Uuid) {
-    let strict: std::collections::BTreeSet<(i32, i32)> =
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     let egress: std::collections::BTreeSet<(i32, i32)> = ecs
         .player_lit_mask(
             user,
@@ -256,6 +262,7 @@ pub(super) fn region_doc(
     )
 }
 
+mod audibility;
 mod combat_index;
 mod cost_parity;
 mod ecs_and_footprints;

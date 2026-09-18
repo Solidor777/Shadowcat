@@ -1,4 +1,7 @@
 <script lang="ts">
+  import type { Component } from "svelte";
+  import { createSubscriber } from "svelte/reactivity";
+  import { SETTINGS_SECTION_CONTRACT } from "@shadowcat/core";
   import { getAppContext } from "@shadowcat/ui-kit";
   import { i18n, locale } from "@shadowcat/ui-kit";
   import { BUILTIN_THEMES, theme } from "@shadowcat/ui-kit";
@@ -6,8 +9,22 @@
   import InviteManager from "./InviteManager.svelte";
   import UserManager from "./UserManager.svelte";
   import ThemeEditor from "./ThemeEditor.svelte";
+  import PerformanceEditor from "./PerformanceEditor.svelte";
 
-  const { role, t, leaveWorld, logout } = getAppContext();
+  const { role, t, leaveWorld, logout, contributions } = getAppContext();
+
+  // Bridges the framework-neutral registry's subscribe/snapshot to Svelte's reactivity —
+  // the same pattern `Surface` uses, inlined here (rather than reusing `<Surface>`)
+  // because each section also needs its own `settingsSection.labelKey` heading, which
+  // `Surface` does not render.
+  const subscribeSections = createSubscriber((update) => {
+    const off = contributions.subscribe(update);
+    return () => off();
+  });
+  const sections = $derived.by(() => {
+    subscribeSections();
+    return contributions.contributionsFor(SETTINGS_SECTION_CONTRACT);
+  });
 
   /** Which theme the editor is open on, when it is open. */
   interface EditingTarget {
@@ -103,9 +120,17 @@
       <ThemeEditor themeId={editing.id} onclose={closeEditor} />
     {/key}
   {/if}
+  <PerformanceEditor />
   {#if role === "gm"}
     <ModuleManager />
   {/if}
+  {#each sections as section (section.id)}
+    {@const SectionComponent = section.component as Component<Record<string, unknown>>}
+    <section class="contributed-settings-section">
+      <h3>{t(section.settingsSection?.labelKey ?? "")}</h3>
+      <SectionComponent {...(section.props ?? {})} />
+    </section>
+  {/each}
   <!-- Each self-gates: InviteManager on the world GM role, UserManager on the
        server admin tier. Both gates are advisory; the server re-checks. -->
   <InviteManager />
@@ -128,6 +153,13 @@
     display: grid;
     gap: var(--space-2);
     justify-items: start;
+  }
+  .contributed-settings-section {
+    display: grid;
+    gap: var(--space-2);
+  }
+  .contributed-settings-section h3 {
+    margin: 0;
   }
   .custom-theme-row {
     display: flex;

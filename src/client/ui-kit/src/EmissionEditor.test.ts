@@ -93,4 +93,41 @@ describe("EmissionEditor", () => {
     expect((screen.getByLabelText("actors.vfx") as HTMLInputElement).disabled).toBe(true);
     expect((screen.getByLabelText("actors.auraColor") as HTMLInputElement).disabled).toBe(true);
   });
+
+  it("narrows the VFX asset options to vfx-tagged assets when the VFX-only filter is checked", async () => {
+    const { listAssets, AssetResolver } = await import("@shadowcat/core");
+    const img = (id: string, tags: string[]) => ({
+      id, world_id: "w1", original_name: `${id}.webp`, content_type: "image/webp", byte_size: 1n,
+      created_by: null, created_at: 0n, storage_key: `w1/${id}`, version: 1n, folder_id: null,
+      tags, derived_tags: [], width: null, height: null, has_alpha: false, animated: true,
+      original_content_type: "image/webp", original_byte_size: 1n, original_retained: false,
+      conversion_note: null, duration_ms: null, sample_rate: null, sheet: null,
+    });
+    vi.mocked(listAssets).mockResolvedValue([img("tagged", ["vfx"]), img("untagged", [])]);
+    const vfx: VfxEmission = { asset: "", anchor: "token", loop: true, enabled: true };
+    render(EmissionEditor, {
+      context: setAppContextForTest({ assets: new AssetResolver() }),
+      props: { aura: null, sound: null, vfx, onAura: vi.fn(), onSound: vi.fn(), onVfx: vi.fn() },
+    });
+    const select = (await screen.findByLabelText("actors.vfxAsset")) as HTMLSelectElement;
+    await vi.waitFor(() => expect(select.querySelectorAll("option").length).toBe(3)); // — placeholder + both assets
+    await fireEvent.click(screen.getByLabelText("actors.vfxOnlyFilter"));
+    await vi.waitFor(() => expect(select.querySelectorAll("option").length).toBe(2)); // placeholder + tagged only
+    const names = [...select.querySelectorAll("option")].map((o) => o.textContent);
+    expect(names).toContain("tagged.webp");
+    expect(names).not.toContain("untagged.webp");
+  });
+
+  it("renders the preview image only once an asset is picked", async () => {
+    const vfx: VfxEmission = { asset: "fx1", anchor: "token", loop: true, enabled: true };
+    const { container, rerender } = render(EmissionEditor, {
+      context: setAppContextForTest({}),
+      props: { aura: null, sound: null, vfx, onAura: vi.fn(), onSound: vi.fn(), onVfx: vi.fn() },
+    });
+    const preview = container.querySelector("[data-testid='vfx-preview']") as HTMLImageElement;
+    expect(preview).not.toBeNull();
+    expect(preview.getAttribute("src")).toBe("/api/assets/fx1");
+    await rerender({ aura: null, sound: null, vfx: { ...vfx, asset: "" }, onAura: vi.fn(), onSound: vi.fn(), onVfx: vi.fn() });
+    expect(container.querySelector("[data-testid='vfx-preview']")).toBeNull();
+  });
 });

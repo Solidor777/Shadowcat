@@ -330,8 +330,14 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
         "animation": { "speedCellsPerSec": 6, "easing": "easeInOut" }
     }));
 
-    let before =
-        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
+    let before = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene_id,
+        false,
+        0.0,
+    );
 
     // Mutate the scene document's grid kind through apply_op, matching how a real write
     // would reach the ECS.
@@ -345,8 +351,14 @@ fn changing_a_scenes_grid_kind_invalidates_the_cached_visibility_mask() {
         }],
     });
 
-    let after =
-        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
+    let after = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene_id,
+        false,
+        0.0,
+    );
     assert_ne!(
         before, after,
         "a grid-kind change must produce a different mask"
@@ -502,8 +514,14 @@ fn visible_cells_strict_equals_player_lit_mask_cells() {
     // egress secrecy mask for the scene. Both paths use the same cell_visible predicate and
     // lighting_inputs, so any divergence is a sampling or illumination bug.
     let (ecs, user, scene) = scene_with_lit_player_token();
-    let strict: std::collections::BTreeSet<(i32, i32)> =
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let strict: std::collections::BTreeSet<(i32, i32)> = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     let egress: std::collections::BTreeSet<(i32, i32)> = ecs
         .player_lit_mask(
             user,
@@ -536,7 +554,14 @@ fn a_square_light_reaches_its_authored_bright_radius_past_the_bound_margin() {
         cells.contains(&(2, 0)),
         "a cell 200 world units from a 300-world-unit bright radius must be lit, got {cells:?}"
     );
-    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert!(
         mask.contains(&(2, 0)),
         "the movement-gate mask agrees with the egress mask"
@@ -580,7 +605,14 @@ fn a_square_light_occludes_behind_a_wall_within_its_grown_reach() {
         !cells.contains(&(2, 0)),
         "a blocksLight wall between the lamp and cell (2,0) must occlude it, got {cells:?}"
     );
-    let mask = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert!(
         !mask.contains(&(2, 0)),
         "the movement-gate mask agrees with the occluded egress mask"
@@ -1019,8 +1051,22 @@ fn visible_cells_lenient_is_a_superset_of_strict() {
     // dim radius → lenient admits it. This guarantees at least one lenient-only cell, so the
     // corner-sampling path is live and proven, not vacuously skipped.
     let (ecs, user, scene) = scene_with_boundary_crossing_light();
-    let strict = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false);
-    let lenient = ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, true);
+    let strict = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
+    let lenient = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        true,
+        0.0,
+    );
     // Subset invariant: every strict cell is also in lenient.
     assert!(
         strict.iter().all(|c| lenient.contains(c)),
@@ -1043,8 +1089,15 @@ fn visible_cells_empty_when_user_has_no_source_in_scene() {
     let (ecs, _user, scene) = scene_with_lit_player_token();
     let stranger = Uuid::from_u128(999);
     assert!(
-        ecs.visible_cells(stranger, WorldRole::Player, &no_world_grants(), scene, true)
-            .is_empty(),
+        ecs.visible_cells(
+            stranger,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            true,
+            0.0
+        )
+        .is_empty(),
         "no sources → empty (fail closed)"
     );
 }
@@ -1095,8 +1148,14 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
     // Cell (2,0), center (50,10): 40 scene units (2 cells) from the token at (10,10), well
     // within the 160-unit (8-cell) dim radius, and on the token's LOS with no wall present.
     let target_cell = (2, 0);
-    let mask1 =
-        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
+    let mask1 = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene_id,
+        false,
+        0.0,
+    );
     assert!(
         mask1.contains(&target_cell),
         "cell visible before a blocksSight wall is added: {mask1:?}"
@@ -1113,8 +1172,14 @@ fn movement_gate_mask_cache_invalidates_on_wall_mutation() {
     );
     ecs.apply_op(&Operation::Create { doc: wall });
 
-    let mask2 =
-        ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene_id, false);
+    let mask2 = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene_id,
+        false,
+        0.0,
+    );
     assert!(
         !mask2.contains(&target_cell),
         "cache must invalidate on wall mutation, never serve a stale wider mask: {mask2:?}"
@@ -1151,7 +1216,14 @@ fn lighting_inputs_are_raycast_once_per_scene_and_exclude_set_and_shared_by_mask
         &no_world_grants(),
         &ecs.resolved_bands(),
     );
-    ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert_eq!(ecs.lighting_inputs_recompute_count(), 1);
     // A different exclude set is a different field: one more raycast, then shared again.
     let mover = Uuid::from_u128(11);
@@ -1186,7 +1258,7 @@ fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
     let settings = ecs.resolve_scene(scene);
     assert_eq!(settings.env_intensity, 0.0);
     assert!(ecs
-        .lighting_inputs(scene, &settings, 100.0)
+        .lighting_inputs(scene, "", &settings, 100.0)
         .env_polys
         .is_empty());
     ecs.set_world_settings_for_test(json!({
@@ -1195,7 +1267,7 @@ fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
     let settings = ecs.resolve_scene(scene);
     assert_eq!(settings.env_intensity, 0.5);
     assert!(!ecs
-        .lighting_inputs(scene, &settings, 100.0)
+        .lighting_inputs(scene, "", &settings, 100.0)
         .env_polys
         .is_empty());
 }
@@ -1204,14 +1276,28 @@ fn environment_polygons_are_not_raycast_at_zero_environment_intensity() {
 fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() {
     let (ecs, user, scene) = scene_with_lit_player_token();
 
-    let mask1 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask1 = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert_eq!(
         ecs.visible_cells_recompute_count(),
         1,
         "first call is always a recompute (cold cache)"
     );
 
-    let mask2 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask2 = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert_eq!(mask1, mask2);
     assert_eq!(
         ecs.visible_cells_recompute_count(),
@@ -1222,7 +1308,14 @@ fn movement_gate_mask_cache_reused_across_repeated_moves_with_no_scene_change() 
     // Sanity: `visible_cells` (the uncached primitive `visible_cells_cached` wraps) agrees.
     assert_eq!(
         mask1,
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
     );
 }
 
@@ -1291,7 +1384,9 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
         0,
     );
 
-    let authoritative = ecs.region_field(scene_id, None).expect("scene exists");
+    let authoritative = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
     assert!(
         authoritative.is_impassable((0, 0)),
         "authoritative field includes the secret region"
@@ -1299,7 +1394,7 @@ fn region_field_authoritative_includes_secret_regions_visible_excludes_them() {
     assert_eq!(authoritative.terrain_multiplier((2, 0)), 2.0);
 
     let player_field = ecs
-        .region_field(scene_id, Some(player))
+        .region_field(scene_id, Some(player), elevation::GROUND)
         .expect("scene exists");
     assert!(
         !player_field.is_impassable((0, 0)),
@@ -1335,7 +1430,7 @@ fn region_field_ignores_disabled_regions() {
         0,
     );
     assert!(!ecs
-        .region_field(scene_id, None)
+        .region_field(scene_id, None, elevation::GROUND)
         .expect("scene exists")
         .is_impassable((0, 0)));
 }
@@ -1377,9 +1472,13 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
         0,
     );
 
-    let field = ecs.region_field(scene_id, None).expect("scene exists");
+    let field = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
     let field_cells: std::collections::BTreeSet<_> = field.iter_cells().map(|(c, _)| c).collect();
-    let rows = ecs.trigger_regions(scene_id).expect("scene exists");
+    let rows = ecs
+        .trigger_regions(scene_id, elevation::GROUND)
+        .expect("scene exists");
     assert_eq!(
         rows.len(),
         2,
@@ -1406,7 +1505,7 @@ fn trigger_region_identity_rows_and_the_composed_field_share_one_rasterization()
 fn move_walls_returns_only_blocks_move_segments_for_the_scene() {
     // A scene with one blocksMove wall and one non-blocksMove wall yields exactly the blocking segment.
     let (ecs, scene) = scene_with_two_walls_one_blocking();
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     assert_eq!(walls.len(), 1, "only the blocksMove wall is returned");
     let w = walls[0];
     assert_eq!((w.a, w.b), ((100.0, 0.0), (100.0, 200.0)));
@@ -1463,11 +1562,11 @@ fn scene_with_invisible_barrier_wall() -> (SceneEcs, Uuid, Uuid) {
 fn move_walls_omits_a_gm_only_wall_for_a_player_viewer() {
     let (ecs, scene, player) = scene_with_public_and_secret_move_walls();
     assert_eq!(
-        ecs.move_walls(scene, None).len(),
+        ecs.move_walls(scene, None, elevation::GROUND).len(),
         2,
         "authoritative view carries every blocksMove wall"
     );
-    let visible = ecs.move_walls(scene, Some(player));
+    let visible = ecs.move_walls(scene, Some(player), elevation::GROUND);
     assert_eq!(
         visible.len(),
         1,
@@ -1486,7 +1585,7 @@ fn move_walls_keeps_a_blocks_sight_false_wall_for_a_player() {
     // must honor it. Only document-level secrecy filters — the two kinds are not the same axis.
     let (ecs, scene, player) = scene_with_invisible_barrier_wall();
     assert_eq!(
-        ecs.move_walls(scene, Some(player)).len(),
+        ecs.move_walls(scene, Some(player), elevation::GROUND).len(),
         1,
         "a blocksSight:false wall is public geometry and stays in the player's routing set"
     );
@@ -1508,7 +1607,7 @@ fn vision_and_lighting_keep_a_gm_only_wall_that_routing_drops() {
         "light_walls keeps the gm_only wall"
     );
     assert_eq!(
-        ecs.move_walls(scene, Some(player)).len(),
+        ecs.move_walls(scene, Some(player), elevation::GROUND).len(),
         1,
         "only the ROUTING set filters per requester"
     );
@@ -1548,7 +1647,8 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
             WorldRole::Player,
             &no_world_grants(),
             ghost_scene,
-            false
+            false,
+            0.0
         )
         .is_empty());
     assert!(ecs
@@ -1557,7 +1657,8 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
             WorldRole::Player,
             &no_world_grants(),
             ghost_scene,
-            true
+            true,
+            0.0
         )
         .is_empty());
     assert!(ecs
@@ -1566,7 +1667,8 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
             WorldRole::Player,
             &no_world_grants(),
             ghost_scene,
-            false
+            false,
+            0.0
         )
         .is_empty());
 }
@@ -1574,21 +1676,29 @@ fn absent_scene_yields_empty_visible_cells_not_a_synthesized_grid() {
 #[test]
 fn absent_scene_region_field_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
-    assert!(ecs.region_field(Uuid::from_u128(0xDEAD), None).is_none());
+    assert!(ecs
+        .region_field(Uuid::from_u128(0xDEAD), None, elevation::GROUND)
+        .is_none());
 }
 
 #[test]
 fn absent_scene_navmesh_for_is_none() {
     let (ecs, _user, _scene) = scene_with_lit_player_token();
-    assert!(ecs.navmesh_for(Uuid::from_u128(0xDEAD), 0.5, &[]).is_none());
+    assert!(ecs
+        .navmesh_for(Uuid::from_u128(0xDEAD), 0.5, "", &[])
+        .is_none());
 }
 
 #[test]
 fn navmesh_for_is_memoized_across_calls() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
-    let a = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
-    let b = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
+    let b = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
         "same (scene, radius, walls) must return the SAME cached Arc, not rebuild"
@@ -1599,8 +1709,12 @@ fn navmesh_for_is_memoized_across_calls() {
 fn navmesh_for_distinguishes_footprint_radii() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
-    let a = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
-    let b = ecs.navmesh_for(scene, 0.9, &[]).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
+    let b = ecs
+        .navmesh_for(scene, 0.9, "", &[])
+        .expect("navmesh builds");
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
         "distinct footprint radii must get distinct cached meshes"
@@ -1612,7 +1726,7 @@ fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
     let ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
     // Prime the cache at footprint_radius_cells == 0.0: quantized key (scene, 0, []).
-    let primed = ecs.navmesh_for(scene, 0.0, &[]);
+    let primed = ecs.navmesh_for(scene, 0.0, "", &[]);
     assert!(
         primed.is_some(),
         "radius 0.0 must build and cache successfully"
@@ -1623,14 +1737,14 @@ fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
     // upfront validation guard this would return the CACHED radius-0.0 mesh instead of
     // failing closed.
     assert!(
-        ecs.navmesh_for(scene, f64::NAN, &[]).is_none(),
+        ecs.navmesh_for(scene, f64::NAN, "", &[]).is_none(),
         "NaN footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
     );
 
     // A small negative rounds to -0 under `(x * 1000.0).round() as i64`, which also casts
     // to the same colliding key.
     assert!(
-        ecs.navmesh_for(scene, -0.0001, &[]).is_none(),
+        ecs.navmesh_for(scene, -0.0001, "", &[]).is_none(),
         "negative footprint radius must fail closed, not reuse the cached radius-0.0 mesh"
     );
 }
@@ -1638,13 +1752,13 @@ fn navmesh_for_rejects_degenerate_radius_even_after_cache_primed_at_zero() {
 #[test]
 fn navmesh_for_does_not_share_a_mesh_across_differing_wall_sets() {
     let (ecs, scene, player) = scene_with_public_and_secret_move_walls();
-    let gm_walls = ecs.move_walls(scene, None);
-    let player_walls = ecs.move_walls(scene, Some(player));
+    let gm_walls = ecs.move_walls(scene, None, elevation::GROUND);
+    let player_walls = ecs.move_walls(scene, Some(player), elevation::GROUND);
     let gm_mesh = ecs
-        .navmesh_for(scene, 0.4, &gm_walls)
+        .navmesh_for(scene, 0.4, "", &gm_walls)
         .expect("gm mesh builds");
     let player_mesh = ecs
-        .navmesh_for(scene, 0.4, &player_walls)
+        .navmesh_for(scene, 0.4, "", &player_walls)
         .expect("player mesh builds");
     assert!(
         !std::sync::Arc::ptr_eq(&gm_mesh, &player_mesh),
@@ -1655,12 +1769,43 @@ fn navmesh_for_does_not_share_a_mesh_across_differing_wall_sets() {
 #[test]
 fn navmesh_for_shares_a_mesh_across_identical_wall_sets() {
     let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
-    let walls = ecs.move_walls(scene, None);
-    let a = ecs.navmesh_for(scene, 0.4, &walls).expect("first build");
-    let b = ecs.navmesh_for(scene, 0.4, &walls).expect("second build");
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("first build");
+    let b = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("second build");
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
         "an identical wall set reuses the memoized mesh"
+    );
+}
+
+#[test]
+fn navmesh_for_does_not_share_a_mesh_across_levels() {
+    // The IDENTICAL wall slice under two level ids: the level is part of the cache key, so the
+    // second call builds its own mesh rather than being served the first's — mirroring
+    // `navmesh_for_does_not_share_a_mesh_across_differing_wall_sets`, varying `level` instead of
+    // `walls`.
+    let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
+    let l1 = ecs
+        .navmesh_for(scene, 0.4, "l1", &walls)
+        .expect("l1 mesh builds");
+    let l2 = ecs
+        .navmesh_for(scene, 0.4, "l2", &walls)
+        .expect("l2 mesh builds");
+    assert!(
+        !std::sync::Arc::ptr_eq(&l1, &l2),
+        "two levels never share a navmesh cache entry, even over identical wall geometry"
+    );
+    let l1_again = ecs
+        .navmesh_for(scene, 0.4, "l1", &walls)
+        .expect("l1 mesh re-fetches");
+    assert!(
+        std::sync::Arc::ptr_eq(&l1, &l1_again),
+        "the same level reuses its own memoized mesh"
     );
 }
 
@@ -1669,12 +1814,14 @@ fn navmesh_for_wall_key_is_order_independent() {
     // `hecs` iteration order is not stable, so the same set produced in a different order must
     // still hit the cache.
     let (ecs, scene, _player) = scene_with_public_and_secret_move_walls();
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let mut reversed = walls.clone();
     reversed.reverse();
-    let a = ecs.navmesh_for(scene, 0.4, &walls).expect("first build");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("first build");
     let b = ecs
-        .navmesh_for(scene, 0.4, &reversed)
+        .navmesh_for(scene, 0.4, "", &reversed)
         .expect("reordered lookup");
     assert!(
         std::sync::Arc::ptr_eq(&a, &b),
@@ -1686,8 +1833,10 @@ fn navmesh_for_wall_key_is_order_independent() {
 fn wall_mutation_invalidates_the_navmesh_cache() {
     let mut ecs = SceneEcs::from_documents(vec![doc(10, None, "scene")], 0);
     let scene = Uuid::from_u128(10);
-    let walls = ecs.move_walls(scene, None);
-    let a = ecs.navmesh_for(scene, 0.4, &walls).expect("navmesh builds");
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &walls)
+        .expect("navmesh builds");
     ecs.apply_op(&Operation::Create {
         doc: entity_doc_eng(
             20,
@@ -1697,9 +1846,9 @@ fn wall_mutation_invalidates_the_navmesh_cache() {
                     "blocksMove": true, "blocksSight": false, "blocksLight": false }),
         ),
     });
-    let walls = ecs.move_walls(scene, None);
+    let walls = ecs.move_walls(scene, None, elevation::GROUND);
     let b = ecs
-        .navmesh_for(scene, 0.4, &walls)
+        .navmesh_for(scene, 0.4, "", &walls)
         .expect("navmesh rebuilds");
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
@@ -1718,7 +1867,9 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
         0,
     );
     let scene = Uuid::from_u128(10);
-    let a = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh builds");
+    let a = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh builds");
     ecs.apply_op(&Operation::Update {
         doc_id: scene,
         changes: vec![crate::data::command::FieldChange {
@@ -1728,7 +1879,9 @@ fn bounds_mutation_invalidates_the_navmesh_cache() {
             new: json!({ "width": 40, "height": 40 }),
         }],
     });
-    let b = ecs.navmesh_for(scene, 0.4, &[]).expect("navmesh rebuilds");
+    let b = ecs
+        .navmesh_for(scene, 0.4, "", &[])
+        .expect("navmesh rebuilds");
     assert!(
         !std::sync::Arc::ptr_eq(&a, &b),
         "changing scene bounds must invalidate the cached navmesh"
@@ -1912,8 +2065,15 @@ fn carried_light_participates_in_the_lit_mask() {
     // No world config: the engine default is lighting on, environmentLight, ambient 0 (dark).
     let scene = Uuid::from_u128(10);
     assert!(
-        ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false)
-            .is_empty(),
+        ecs.visible_cells(
+            player,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .is_empty(),
         "a dark scene with no emitter admits no cells"
     );
 
@@ -1923,8 +2083,15 @@ fn carried_light_participates_in_the_lit_mask() {
         actor_with_light(torch()),
     )]);
     assert!(
-        !ecs.visible_cells(player, WorldRole::Player, &no_world_grants(), scene, false)
-            .is_empty(),
+        !ecs.visible_cells(
+            player,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .is_empty(),
         "the carried torch lights the token's surroundings"
     );
 }
@@ -1967,8 +2134,14 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
     let scene = Uuid::from_u128(10);
 
     // The torch (bright 2 / dim 4 cells) covers the viewer's cell while the carrier stands by.
-    let mask1 =
-        ecs.visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask1 = ecs.visible_cells_cached(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert!(
         mask1.contains(&(0, 0)),
         "the nearby torch lights the viewer's cell"
@@ -1985,8 +2158,14 @@ fn carried_light_move_invalidates_the_cached_visibility_mask() {
             remove: false,
         }],
     });
-    let mask2 =
-        ecs.visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask2 = ecs.visible_cells_cached(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert!(
         ecs.visible_cells_recompute_count() > recomputes,
         "a non-source carrier's move must recompute the mask (its light is a snapshot input)"
@@ -2031,7 +2210,14 @@ fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
     )]);
     let scene = Uuid::from_u128(10);
     assert!(ecs
-        .visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false)
+        .visible_cells_cached(
+            player,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
         .contains(&(0, 0)));
     let recomputes = ecs.visible_cells_recompute_count();
 
@@ -2045,8 +2231,14 @@ fn carried_light_value_change_invalidates_the_cached_visibility_mask() {
                 "dimRadius": 4.0, "enabled": false }),
         ),
     )]);
-    let mask2 =
-        ecs.visible_cells_cached(player, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask2 = ecs.visible_cells_cached(
+        player,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert!(
         ecs.visible_cells_recompute_count() > recomputes,
         "an emission value change must recompute the mask"
@@ -2112,40 +2304,75 @@ fn wall_elevation_band_gates_sight_by_source_elevation() {
     // Grounded viewer against a {0,3} wall: blocked (the pre-elevation behavior).
     let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(null));
     assert!(
-        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
-            .contains(&target),
+        !ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a grounded viewer must not see past a wall whose band covers elevation 0"
     );
 
     // Above the band: sees over.
     let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(5.0));
     assert!(
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
-            .contains(&target),
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a viewer above the wall's top must see over it"
     );
 
     // Below the band: sees under (the bridge-overhead case).
     let (ecs, user, scene) = elevation_los_fixture(band.clone(), json!(-1.0));
     assert!(
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
-            .contains(&target),
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a viewer below the wall's bottom must see under it"
     );
 
     // Malformed interval (bottom > top) fails CLOSED: occludes at every elevation.
     let (ecs, user, scene) = elevation_los_fixture(json!({ "bottom": 5, "top": 1 }), json!(7.0));
     assert!(
-        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
-            .contains(&target),
+        !ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a malformed wall band must block everything, never open a sightline"
     );
 
     // An absent band occludes every elevation (unchanged behavior for unmarked walls).
     let (ecs, user, scene) = elevation_los_fixture(json!(null), json!(50.0));
     assert!(
-        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene, false)
-            .contains(&target),
+        !ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a wall with no elevation band must occlude at any elevation"
     );
 }
@@ -2202,16 +2429,30 @@ fn light_elevation_band_gates_occlusion_per_light() {
         0,
     );
     assert!(
-        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
-            .contains(&target),
+        !ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene_id,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a grounded light must not reach past a wall whose band covers elevation 0"
     );
 
     // The same light above the band shines over the wall.
     let ecs = SceneEcs::from_documents(vec![scene, tok, wall, light_at(json!(5.0))], 0);
     assert!(
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
-            .contains(&target),
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene_id,
+            false,
+            0.0
+        )
+        .contains(&target),
         "a light above the wall's band must shine over it"
     );
 }
@@ -2270,8 +2511,15 @@ fn env_light_stays_occluded_by_walls_at_any_elevation_band() {
     let mut ecs = SceneEcs::from_documents(vec![scene.clone(), tok.clone()], 0);
     ecs.set_world_settings_for_test(world.clone());
     assert!(
-        ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
-            .contains(&target),
+        ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene_id,
+            false,
+            0.0
+        )
+        .contains(&target),
         "anchor: bright environment light must reach the target cell with no wall"
     );
 
@@ -2281,8 +2529,15 @@ fn env_light_stays_occluded_by_walls_at_any_elevation_band() {
     let mut ecs = SceneEcs::from_documents(docs, 0);
     ecs.set_world_settings_for_test(world);
     assert!(
-        !ecs.visible_cells(user, WorldRole::Player, &no_world_grants(), scene_id, false)
-            .contains(&target),
+        !ecs.visible_cells(
+            user,
+            WorldRole::Player,
+            &no_world_grants(),
+            scene_id,
+            false,
+            0.0
+        )
+        .contains(&target),
         "environment ambient must stay occluded by the full wall set at any elevation band"
     );
 }
@@ -2294,13 +2549,27 @@ fn visible_cells_cached_invalidates_on_source_elevation_change() {
     let (mut ecs, user, scene) = elevation_los_fixture(band, json!(null));
     let target = (2, 0);
 
-    let mask1 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask1 = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert!(
         !mask1.contains(&target),
         "grounded: the wall occludes the target cell"
     );
     assert_eq!(ecs.visible_cells_recompute_count(), 1, "cold cache");
-    let again = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let again = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert_eq!(mask1, again);
     assert_eq!(
         ecs.visible_cells_recompute_count(),
@@ -2314,7 +2583,14 @@ fn visible_cells_cached_invalidates_on_source_elevation_change() {
         doc_id: Uuid::from_u128(11),
         changes: vec![fc("/engine/elevation", json!(5.0))],
     });
-    let mask2 = ecs.visible_cells_cached(user, WorldRole::Player, &no_world_grants(), scene, false);
+    let mask2 = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
     assert_eq!(
         ecs.visible_cells_recompute_count(),
         2,
@@ -2388,7 +2664,8 @@ fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites(
             WorldRole::Player,
             &no_world_grants(),
             scene,
-            false
+            false,
+            0.0
         )
         .is_empty(),
         "default: None must not admit the stranger's movement-gate mask"
@@ -2412,7 +2689,8 @@ fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites(
             WorldRole::Player,
             &no_world_grants(),
             scene,
-            false
+            false,
+            0.0
         )
         .contains(&token_cell),
         "an Observer grant must admit the stranger's movement-gate mask"
@@ -2439,7 +2717,7 @@ fn observer_vision_source_admission_is_the_shared_read_resolution_at_both_sites(
                 .collect(),
         );
     assert!(
-        ecs.visible_cells(stranger, WorldRole::Player, &defaults, scene, false)
+        ecs.visible_cells(stranger, WorldRole::Player, &defaults, scene, false, 0.0)
             .contains(&token_cell),
         "a world-level READ grant must admit the stranger's movement-gate mask"
     );
@@ -2524,5 +2802,218 @@ fn recipient_sight_agrees_with_player_lit_mask_cell_for_cell() {
     assert!(
         lit > 0 && dark > 0,
         "non-vacuous: the light reaches some cells, not all"
+    );
+}
+
+#[test]
+fn region_field_and_trigger_regions_select_by_the_movers_elevation_band() {
+    // Two enabled, trigger-bearing, impassable regions: one banded to a floor-2 band [10,20]
+    // over cell (0,0), one unbanded over cell (2,0). The band is the only difference.
+    let scene_id = Uuid::from_u128(10);
+    let enter_notice = serde_json::json!([
+        { "on": "enter", "effect": { "type": "chat_notice", "text": "hi", "audience": "gm_only" } }
+    ]);
+    let region = |id: u128, x0: f64, band: serde_json::Value| {
+        let mut d = crate::data::document::tests::world_scoped_doc(
+            Uuid::from_u128(9),
+            Uuid::from_u128(id),
+            "region",
+        );
+        d.parent_id = Some(scene_id);
+        d.engine = Some(serde_json::json!({
+            "shape": { "kind": "rect", "points": [x0, 0.0, x0 + 100.0, 100.0] },
+            "behavior": "impassable",
+            "cost": 1.0,
+            "enabled": true,
+            "triggers": enter_notice,
+            "elevation": band,
+        }));
+        d
+    };
+    let ecs = SceneEcs::from_documents(
+        vec![
+            crate::data::document::tests::world_scoped_doc(Uuid::from_u128(9), scene_id, "scene"),
+            region(20, 0.0, serde_json::json!({ "bottom": 10.0, "top": 20.0 })),
+            region(21, 200.0, serde_json::Value::Null),
+        ],
+        0,
+    );
+
+    // A floor-0 mover: the floor-2 region is absent from BOTH the composed field and the
+    // trigger table; the unbanded region is present in both.
+    let field = ecs
+        .region_field(scene_id, None, elevation::GROUND)
+        .expect("scene exists");
+    assert!(
+        !field.is_impassable((0, 0)),
+        "a floor-2 region is absent from a floor-0 mover's field"
+    );
+    assert!(
+        field.is_impassable((2, 0)),
+        "an unbanded region applies at every elevation"
+    );
+    let rows = ecs
+        .trigger_regions(scene_id, elevation::GROUND)
+        .expect("scene exists");
+    assert!(
+        rows.iter().all(|r| r.region_id != Uuid::from_u128(20)),
+        "a floor-2 region never fires on a floor-0 token"
+    );
+    assert!(
+        rows.iter().any(|r| r.region_id == Uuid::from_u128(21)),
+        "an unbanded region fires at every elevation"
+    );
+
+    // A mover inside the band: both regions apply, to the field and to the trigger table.
+    let field = ecs
+        .region_field(scene_id, None, 15.0)
+        .expect("scene exists");
+    assert!(field.is_impassable((0, 0)));
+    assert!(field.is_impassable((2, 0)));
+    let rows = ecs.trigger_regions(scene_id, 15.0).expect("scene exists");
+    assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(20)));
+    assert!(rows.iter().any(|r| r.region_id == Uuid::from_u128(21)));
+}
+
+/// A two-level scene (`l1` [0,10), `l2` [10,20)) with a player-owned token on EACH floor — both
+/// at (50,50), so the floor-1 lamp WOULD light the floor-2 token's cell if light leaked across
+/// levels — and a single enabled white light on floor 1 (elevation 0) at that same point.
+fn scene_with_two_levels_and_a_floor_one_light() -> (SceneEcs, Uuid, Uuid) {
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({ "grid": { "kind": "square", "size": 100 }, "background": null,
+                "levels": [
+                    { "id": "l1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                    { "id": "l2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 }
+                ] }),
+    );
+    let mut ground_tok = entity_doc_eng(
+        11,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0 }),
+    );
+    ground_tok.owner = Some(user);
+    let mut upper_tok = entity_doc_eng(
+        12,
+        10,
+        "token",
+        json!({ "x": 50, "y": 50, "w": 100.0, "h": 100.0, "rotation": 0.0, "elevation": 15.0 }),
+    );
+    upper_tok.owner = Some(user);
+    let light = entity_doc_eng(
+        20,
+        10,
+        "light",
+        json!({ "x": 50.0, "y": 50.0, "elevation": 0.0,
+                "emission": { "color": "#ffffff", "intensity": 1.0, "brightRadius": 3.0,
+                              "dimRadius": 6.0, "enabled": true } }),
+    );
+    (
+        SceneEcs::from_documents(vec![scene, ground_tok, upper_tok, light], 0),
+        user,
+        scene_id,
+    )
+}
+
+#[test]
+fn player_lit_mask_accumulates_per_level_and_a_light_never_leaks_across_levels() {
+    let (ecs, user, scene) = scene_with_two_levels_and_a_floor_one_light();
+    let mask = ecs.player_lit_mask(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        &ecs.resolved_bands(),
+    );
+    let l1 = mask
+        .iter()
+        .find(|s| s.scene == scene && s.level == "l1")
+        .expect("a floor-1 entry for the ground token's cells");
+    let l2 = mask
+        .iter()
+        .find(|s| s.scene == scene && s.level == "l2")
+        .expect("a floor-2 entry for the upper token's (empty) cells");
+    assert!(
+        l1.cells.iter().any(|(i, j, ..)| (*i, *j) == (0, 0)),
+        "the floor-1 lamp lights its own cell on floor 1"
+    );
+    assert!(
+        l2.cells.is_empty(),
+        "the floor-1 lamp contributes zero illumination to floor 2: the cell it would light if \
+         it leaked is absent from the floor-2 mask, got {:?}",
+        l2.cells
+    );
+    // Gate/egress parity survives per-level accumulation: the gate mask (a union over the
+    // user's sources, each judged against its own level's field) equals the union of the
+    // per-level egress entries.
+    assert_strict_parity(&ecs, user, scene);
+}
+
+/// Regression: the movement/placement gate mask (`visible_cells`) is level-scoped exactly like
+/// `player_lit_mask` — a mover on one level must never admit a cell lit only by a source on
+/// another level of the same scene, even though the two levels share cell coordinates. Before
+/// this fix `visible_cells` merged every source's cells across ALL levels into one flat mask,
+/// so a player with tokens on two floors could walk (or place a new token) into a floor-2 cell
+/// the floor-2 token's own lighting could never see, purely because the identical `(i,j)` was
+/// lit on floor 1.
+#[test]
+fn visible_cells_is_level_scoped_a_mover_on_one_level_ignores_a_same_cell_source_on_another() {
+    let (ecs, user, scene) = scene_with_two_levels_and_a_floor_one_light();
+    // Floor 1 (mover_elevation=0): the ground token is a same-level source and the lamp lights
+    // its own cell.
+    let l1_mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
+    assert!(
+        l1_mask.contains(&(0, 0)),
+        "floor 1's own source lights its own cell, got {l1_mask:?}"
+    );
+    // Floor 2 (mover_elevation=15): only the upper token is a same-level source, and it carries
+    // no light of its own — the floor-1 lamp must not leak into this mover's mask even though
+    // the cell coordinates coincide.
+    let l2_mask = ecs.visible_cells(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        15.0,
+    );
+    assert!(
+        !l2_mask.contains(&(0, 0)),
+        "a floor-2 mover's mask must not admit a cell lit only by a floor-1 source, got {l2_mask:?}"
+    );
+    // The cached variant must agree exactly with the uncached one at both elevations.
+    let l1_cached = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        0.0,
+    );
+    let l2_cached = ecs.visible_cells_cached(
+        user,
+        WorldRole::Player,
+        &no_world_grants(),
+        scene,
+        false,
+        15.0,
+    );
+    assert_eq!(
+        l1_cached, l1_mask,
+        "cached floor-1 mask must equal the uncached one"
+    );
+    assert_eq!(
+        l2_cached, l2_mask,
+        "cached floor-2 mask must equal the uncached one"
     );
 }

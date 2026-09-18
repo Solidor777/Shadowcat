@@ -6,7 +6,7 @@ import { RenderEngine } from "@shadowcat/render";
 import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
 import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
-import { __APP_CONTEXT_KEY__, theme, TokenSelection } from "@shadowcat/ui-kit";
+import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
 
@@ -33,11 +33,12 @@ function sceneDocs(engine: Record<string, unknown>): ReadableDocuments {
   } as unknown as ReadableDocuments;
 }
 
-function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null } {
+function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: number | null; gridColor: number | null; tick: ((dtMs: number) => void) | null } {
   return {
     destroyed: false,
     clearColor: null,
     gridColor: null,
+    tick: null,
     ensureLayers() {},
     setBackground() {},
     setClearColor(color: number) { this.clearColor = color; },
@@ -56,9 +57,15 @@ function fakeBackend(): DisplayBackend & { destroyed: boolean; clearColor: numbe
     clearMeasure() {},
     drawPings() {},
     drawEmotes() {},
+    setVfx() {},
+    removeVfx() {},
+    tickVfx() {},
     setLighting() {},
-    startTicker() {},
+    startTicker(cb: (dtMs: number) => void) { this.tick = cb; },
     resize() {},
+    setFrameCap() {},
+    setRenderScale() {},
+    render() {},
     destroy() { this.destroyed = true; },
   };
 }
@@ -107,6 +114,23 @@ test("see-as picker falls back to the short id for an unknown owner", async () =
     }),
   });
   await vi.waitFor(() => expect(getByText(`See as ${OWNER.slice(0, 8)}`)).toBeTruthy());
+});
+
+test("the ghost-other-levels toggle is GM-only", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const gm = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ role: "gm", documents: tokenDocs(), subscribeScene: () => ({ unsubscribe() {} }) }),
+  });
+  await vi.waitFor(() => expect(gm.getByTestId("ghost-other-levels")).toBeTruthy());
+  gm.unmount();
+
+  const player = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ role: "player", documents: tokenDocs(), subscribeScene: () => ({ unsubscribe() {} }) }),
+  });
+  await vi.waitFor(() => expect(player.container.querySelector(".stage-host")).toBeTruthy());
+  expect(player.queryByTestId("ghost-other-levels")).toBeNull();
 });
 
 test("a backend-init failure logs through the injected logger, not silently", async () => {
@@ -660,6 +684,150 @@ test("the viewedSceneId-change watcher calls reapplyViewedScene exactly once per
   spy.mockRestore();
 });
 
+test("a viewedLevel context change re-subscribes vision exactly once per genuine change", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      { op: "create", doc: buildSceneDoc("w1", { grid: { kind: "square", size: 100, distance: null }, levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] }, "sA") },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const context = setAppContextForTest({
+    documents: store,
+    store,
+    assets: new AssetResolver(),
+    viewedSceneId: "sA",
+    subscribeScene: () => ({ unsubscribe() {} }),
+  });
+  let level: string | null = "l1";
+  Object.defineProperty(context.get(__APP_CONTEXT_KEY__), "viewedLevel", {
+    get: () => level,
+    configurable: true,
+  });
+  const spy = vi.spyOn(RenderEngine.prototype, "reapplyViewedLevel");
+  const { container } = render(Stage, { props: { createBackend }, context });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(spy).not.toHaveBeenCalled();
+
+  // Change the viewed level, then drive a real document-store mutation to fire the watcher's
+  // $effect re-run (mirrors the viewedSceneId-change watcher's own test shape).
+  level = "l2";
+  store.applyCommand({
+    seq: 2,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          "t1",
+        ),
+      },
+    ],
+  } as never);
+  await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+
+  // A second, unrelated doc mutation with `level` unchanged must NOT re-trigger the watcher.
+  store.applyCommand({
+    seq: 3,
+    world_id: "w1",
+    author: "u",
+    ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildTokenDoc(
+          "w1",
+          "sA",
+          { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: null },
+          "t2",
+        ),
+      },
+    ],
+  } as never);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(spy).toHaveBeenCalledTimes(1);
+  spy.mockRestore();
+});
+
+test("data-level reflects ctx.viewedLevel", async () => {
+  const store = new DocumentStore();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [
+      {
+        op: "create",
+        doc: buildSceneDoc(
+          "w1",
+          { grid: { kind: "square", size: 100, distance: null }, levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+          "sA",
+        ),
+      },
+    ],
+  } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      viewedLevel: "l2",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  await vi.waitFor(() => expect(host.dataset.level).toBe("l2"));
+});
+
+test("data-token-count reflects the level-scoped token count, changing when a token's elevation moves it across the viewed level's boundary", async () => {
+  const store = new DocumentStore();
+  const scene = buildSceneDoc(
+    "w1",
+    { grid: { kind: "square", size: 100, distance: null }, levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "sA",
+  );
+  const token = buildTokenDoc(
+    "w1", "sA",
+    { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 },
+    "t1",
+  );
+  store.applyCommand({ seq: 1, world_id: "w1", author: "u", ts: 0, ops: [{ op: "create", doc: scene }, { op: "create", doc: token }] } as never);
+  const createBackend = vi.fn(async () => fakeBackend());
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "sA",
+      viewedLevel: "l1",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  await vi.waitFor(() => expect(host.dataset.tokenCount).toBe("1")); // t1 is on the viewed level (l1)
+
+  // Move t1's elevation into l2's band: the level-scoped count on l1 must drop to 0.
+  store.applyCommand({
+    seq: 2, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "update", doc_id: "t1", changes: [{ path: "/engine/elevation", old: 0, new: 15 }] }],
+  } as never);
+  await vi.waitFor(() => expect(host.dataset.tokenCount).toBe("0"));
+});
+
 test("a new footprints lookup re-projects the tokens exactly once per genuine change", async () => {
   const store = new DocumentStore();
   store.applyCommand({
@@ -690,7 +858,7 @@ test("a new footprints lookup re-projects the tokens exactly once per genuine ch
   await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
   expect(spy).not.toHaveBeenCalled();
 
-  footprints = { token: () => ({ w: 173.2, h: 200 }), unit: () => null };
+  footprints = { token: () => ({ w: 173.2, h: 200 }), unit: () => null, level: () => null };
   store.applyCommand({
     seq: 2,
     world_id: "w1",
@@ -766,4 +934,176 @@ test("a theme change re-reads the color tokens and pushes them into the engine",
     theme.setActive("slate-dark");
     vi.unstubAllGlobals();
   }
+});
+
+test("a relayed vfx notice plays a one-shot through the engine; data-vfx-count becomes 1", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  let vfxCb: ((msg: unknown) => void) | null = null;
+  // getAssetMeta's fetch: an asset whose metadata carries a server-derived grid sheet, so
+  // resolveVfxSource resolves a playable source for the warmed id.
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      id: "fx1", tags: [],
+      sheet: { rows: 1, cols: 2, count: 2, frame_ms: [100, 100], width: 8, height: 8 },
+    }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const store = new DocumentStore();
+  const playOneShot = vi.fn();
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      subscribeScene: () => ({ unsubscribe() {} }),
+      vfx: { play: () => {}, onVfx: (cb: (msg: never) => void) => { vfxCb = cb as (msg: unknown) => void; return () => {}; } },
+      audio: {
+        channels: {
+          master: { gain: 1, muted: false }, music: { gain: 1, muted: false },
+          ambience: { gain: 1, muted: false }, sfx: { gain: 1, muted: false }, ui: { gain: 1, muted: false },
+        },
+        setChannel: () => {},
+        unlock: async () => {},
+        context: () => null,
+        duck: { addSource: () => ({ set: () => {} }), removeSource: () => {}, gain: 1, depth: 0.7, setDepth: () => {} },
+        playOneShot,
+        serverNow: () => 0,
+        transport: () => {},
+        listenAs: () => {},
+      },
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  expect(vfxCb).not.toBeNull();
+  // A one-shot with no paired sound never touches the audio API.
+  vfxCb!({
+    scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
+    scale: null, rotation: null, durationMs: null, sound: null, elevation: null, id: "one",
+  });
+  // The Stage warms the asset's metadata first, then plays; the count attribute flips on
+  // the next engine tick after the warm resolves.
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/fx1/meta"));
+  await vi.waitFor(() => {
+    backend.tick!(16);
+    expect(host.dataset.vfxCount).toBe("1");
+  });
+  expect(playOneShot).not.toHaveBeenCalled();
+  // A one-shot WITH a paired sound plays it through the sfx channel.
+  vfxCb!({
+    scene: "s1", user: "u9", asset: "fx1", x: 1, y: 2,
+    scale: null, rotation: null, durationMs: null, sound: "snd1", elevation: null, id: "two",
+  });
+  await vi.waitFor(() => expect(playOneShot).toHaveBeenCalledWith("snd1", { channel: "sfx" }));
+  vi.unstubAllGlobals();
+});
+
+test("an emitter-bearing token committed into the store warms its emission asset's metadata", async () => {
+  const backend = fakeBackend();
+  const createBackend = vi.fn(async () => backend);
+  const fetchMock = vi.fn().mockResolvedValue(
+    new Response(JSON.stringify({
+      id: "fx1", tags: [],
+      sheet: { rows: 1, cols: 2, count: 2, frame_ms: [100, 100], width: 8, height: 8 },
+    }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  const store = new DocumentStore();
+  const { buildActorDoc, buildTokenFromActor } = await import("@shadowcat/core");
+  const actor = buildActorDoc(
+    "w1",
+    "G",
+    { displayName: "G", visual: { kind: "image", asset: "actorimg" }, size: { w: 1, h: 1 }, shape: "square", faction: null, conditions: [], prototype: false, vision: null, light: null, movement: [], aura: null, sound: null, vfx: { asset: "fx1", anchor: "token", loop: true, enabled: true } },
+    "act1",
+  );
+  const token = buildTokenFromActor("w1", "s1", actor, "link", { x: 10, y: 20 }, { w: 100, h: 100 }, "tok1");
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({
+      documents: store,
+      store,
+      assets: new AssetResolver(),
+      viewedSceneId: "s1",
+      subscribeScene: () => ({ unsubscribe() {} }),
+    }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(host.dataset.renderReady).toBe("true"));
+  fetchMock.mockClear();
+  store.applyCommand({
+    seq: 1, world_id: "w1", author: "u", ts: 0,
+    ops: [{ op: "create", doc: actor }, { op: "create", doc: token }],
+  });
+  await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/fx1/meta"));
+  vi.unstubAllGlobals();
+});
+
+test("toggling antialias re-creates the backend once and destroys the old one", async () => {
+  const backend1 = fakeBackend();
+  const backend2 = fakeBackend();
+  const createBackend = vi.fn(async () => (createBackend.mock.calls.length === 1 ? backend1 : backend2));
+  const controller = new PerformanceController();
+  controller.setPreset("quality"); // antialias: true
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  expect(backend1.destroyed).toBe(false);
+  controller.set({ antialias: false });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledTimes(2));
+  expect(backend1.destroyed).toBe(true);
+});
+
+test("a non-antialias performance edit does NOT re-create the backend", async () => {
+  const backend1 = fakeBackend();
+  const createBackend = vi.fn(async () => backend1);
+  const controller = new PerformanceController();
+  controller.setPreset("quality");
+  render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  controller.set({ fpsCap: 30 });
+  controller.set({ idleSkip: false });
+  // Let any effect flush settle; the backend must not have been rebuilt.
+  await new Promise((r) => setTimeout(r, 50));
+  expect(createBackend).toHaveBeenCalledOnce();
+  expect(backend1.destroyed).toBe(false);
+});
+
+test("an antialias-flip backend re-init replaces the canvas element and the data-* attributes track every edit", async () => {
+  const backend1 = fakeBackend();
+  const backend2 = fakeBackend();
+  const createBackend = vi.fn(async (_canvas: HTMLCanvasElement) =>
+    createBackend.mock.calls.length === 1 ? backend1 : backend2);
+  const controller = new PerformanceController();
+  controller.setPreset("quality"); // fpsCap "uncapped" → 0, renderScale 1, idleSkip true
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ performance: controller }),
+  });
+  const host = container.querySelector(".stage-host") as HTMLElement;
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledOnce());
+  const canvas1 = container.querySelector("[data-testid='stage-canvas']") as HTMLCanvasElement;
+  // The observability attributes are markup-owned: present from the first render, no effect needed.
+  expect(host.dataset.fpsCap).toBe("0");
+  expect(host.dataset.renderScale).toBe("1");
+  expect(host.dataset.idleSkip).toBe("1");
+
+  controller.set({ fpsCap: 30, renderScale: 0.75, antialias: false });
+  await vi.waitFor(() => expect(createBackend).toHaveBeenCalledTimes(2));
+  const canvas2 = container.querySelector("[data-testid='stage-canvas']") as HTMLCanvasElement;
+  // The canvas element itself is replaced (a destroyed GL context is never re-initialized),
+  // and the re-init runs against the NEW element, not the detached one.
+  expect(canvas2).not.toBe(canvas1);
+  expect(createBackend.mock.calls[1][0]).toBe(canvas2);
+  expect(backend1.destroyed).toBe(true);
+  // The host div was NOT replaced, and its attributes reflect the edited settings.
+  expect(host.dataset.fpsCap).toBe("30");
+  expect(host.dataset.renderScale).toBe("0.75");
+  expect(host.dataset.idleSkip).toBe("1");
 });

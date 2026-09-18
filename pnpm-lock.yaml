@@ -95,6 +95,19 @@ importers:
         specifier: ^29.1.1
         version: 29.1.1
 
+  src/client/audio:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../core
+      ogg-opus-decoder:
+        specifier: ^1.7.5
+        version: 1.7.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.21
+
   src/client/core:
     dependencies:
       '@shadowcat/types':
@@ -135,6 +148,9 @@ importers:
 
   src/client/shell:
     dependencies:
+      '@shadowcat/audio':
+        specifier: workspace:*
+        version: link:../audio
       '@shadowcat/core':
         specifier: workspace:*
         version: link:../core
@@ -147,6 +163,9 @@ importers:
       '@shadowcat/module-asset-browser':
         specifier: workspace:*
         version: link:../../modules/asset-browser
+      '@shadowcat/module-audio':
+        specifier: workspace:*
+        version: link:../../modules/audio
       '@shadowcat/module-chat':
         specifier: workspace:*
         version: link:../../modules/chat
@@ -165,6 +184,12 @@ importers:
       '@shadowcat/module-core-ui':
         specifier: workspace:*
         version: link:../../modules/core-ui
+      '@shadowcat/module-dice-3d':
+        specifier: workspace:*
+        version: link:../../modules/dice-3d
+      '@shadowcat/module-ducking':
+        specifier: workspace:*
+        version: link:../../modules/ducking
       '@shadowcat/module-entry':
         specifier: workspace:*
         version: link:../../modules/entry
@@ -201,6 +226,9 @@ importers:
       '@shadowcat/module-sheet-note':
         specifier: workspace:*
         version: link:../../modules/sheet-note
+      '@shadowcat/module-sheet-playlist':
+        specifier: workspace:*
+        version: link:../../modules/sheet-playlist
       '@shadowcat/module-sheet-table':
         specifier: workspace:*
         version: link:../../modules/sheet-table
@@ -216,6 +244,9 @@ importers:
       '@shadowcat/module-topbar':
         specifier: workspace:*
         version: link:../../modules/topbar
+      '@shadowcat/module-vfx':
+        specifier: workspace:*
+        version: link:../../modules/vfx
       '@shadowcat/render':
         specifier: workspace:*
         version: link:../render
@@ -290,6 +321,28 @@ importers:
         version: link:../../client/core
       '@shadowcat/types':
         specifier: workspace:*
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/audio:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
         version: link:../../types
       '@shadowcat/ui-kit':
         specifier: workspace:*
@@ -424,6 +477,62 @@ importers:
         specifier: workspace:*
         version: link:../../client/ui-kit
     devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/dice-3d:
+    dependencies:
+      '@dimforge/rapier3d-compat':
+        specifier: ^0.14.0
+        version: 0.14.0
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+      three:
+        specifier: ^0.169.0
+        version: 0.169.0
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      '@types/three':
+        specifier: ^0.169.0
+        version: 0.169.0
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/ducking:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@shadowcat/audio':
+        specifier: workspace:*
+        version: link:../../client/audio
       '@testing-library/svelte':
         specifier: ^5.3.1
         version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
@@ -701,6 +810,28 @@ importers:
         specifier: ^1.101.0
         version: 1.101.0
 
+  src/modules/sheet-playlist:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
+        version: link:../../types
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
   src/modules/sheet-table:
     dependencies:
       '@shadowcat/core':
@@ -791,6 +922,28 @@ importers:
       '@shadowcat/core':
         specifier: workspace:*
         version: link:../../client/core
+      '@shadowcat/ui-kit':
+        specifier: workspace:*
+        version: link:../../client/ui-kit
+    devDependencies:
+      '@testing-library/svelte':
+        specifier: ^5.3.1
+        version: 5.3.1(svelte@5.56.3(@typescript-eslint/types@8.65.0))(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))(vitest@4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)))
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      sass:
+        specifier: ^1.101.0
+        version: 1.101.0
+
+  src/modules/vfx:
+    dependencies:
+      '@shadowcat/core':
+        specifier: workspace:*
+        version: link:../../client/core
+      '@shadowcat/types':
+        specifier: workspace:^
+        version: link:../../types
       '@shadowcat/ui-kit':
         specifier: workspace:*
         version: link:../../client/ui-kit
@@ -964,6 +1117,9 @@ packages:
   '@csstools/css-tokenizer@4.0.0':
     resolution: {integrity: sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA==}
     engines: {node: '>=20.19.0'}
+
+  '@dimforge/rapier3d-compat@0.14.0':
+    resolution: {integrity: sha512-/uHrUzS+CRQ+NQrrJCEDUkhwHlNsAAexbNXgbN9sHY+GwR+SFFAFrxRr8Llf5/AJZzqiLANdQIfJ63Cw4gJVqw==}
 
   '@docsearch/css@3.8.2':
     resolution: {integrity: sha512-y05ayQFyUmCXze79+56v/4HpycYF3uFqB78pLPrSV5ZKAlDuIAAJNhaRi8tTdRNXh05yxX/TyNnzD6LwSM89vQ==}
@@ -1142,6 +1298,9 @@ packages:
     engines: {node: '>=12'}
     cpu: [x64]
     os: [win32]
+
+  '@eshaz/web-worker@1.2.2':
+    resolution: {integrity: sha512-WxXiHFmD9u/owrzempiDlBB1ZYqiLnm9s6aPc8AlFQalq2tKmqdmMr9GXOupDgzXtqnBipj8Un0gkIm7Sjf8mw==}
 
   '@eslint-community/eslint-utils@4.9.1':
     resolution: {integrity: sha512-phrYmNiYppR7znFEdqgfWHXR6NCkZEK7hwWDHZUjit/2/U0r6XvkDl0SYnoM51Hq7FhCGdLDT6zxCCOY1hexsQ==}
@@ -1649,6 +1808,9 @@ packages:
       vitest:
         optional: true
 
+  '@tweenjs/tween.js@23.1.3':
+    resolution: {integrity: sha512-vJmvvwFxYuGnF2axRtPYocag6Clbb5YS7kLL+SO/TeVFzHqDIWrNKYtcsPMibjDx9O+bu+psAy9NKfWklassUA==}
+
   '@tybys/wasm-util@0.10.2':
     resolution: {integrity: sha512-RoBvJ2X0wuKlWFIjrwffGw1IqZHKQqzIchKaadZZfnNpsAYp2mM0h36JtPCjNDAHGgYez/15uMBpfGwchhiMgg==}
 
@@ -1691,6 +1853,12 @@ packages:
   '@types/node@25.9.3':
     resolution: {integrity: sha512-603BddQMv3pUcr4U2dhujk83N2tTDVr/34wII2B6bJy6g+8WD6yUb11jszNs0gdi4PesVWl7ABt8nYMVpnLUcg==}
 
+  '@types/stats.js@0.17.4':
+    resolution: {integrity: sha512-jIBvWWShCvlBqBNIZt0KAshWpvSjhkwkEu4ZUcASoAvhmrgAUI2t1dXrjSL4xXVLB4FznPrIsX3nKXFl/Dt4vA==}
+
+  '@types/three@0.169.0':
+    resolution: {integrity: sha512-oan7qCgJBt03wIaK+4xPWclYRPG9wzcg7Z2f5T8xYTNEF95kh0t0lklxLLYBDo7gQiGLYzE6iF4ta7nXF2bcsw==}
+
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
 
@@ -1699,6 +1867,9 @@ packages:
 
   '@types/web-bluetooth@0.0.21':
     resolution: {integrity: sha512-oIQLCGWtcFZy2JW77j9k8nHzAOpqMHLQejDA48XXMWH6tjCQHz5RCFz1bzsmROyL6PUm+LLnUiI4BCn221inxA==}
+
+  '@types/webxr@0.5.24':
+    resolution: {integrity: sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg==}
 
   '@types/ws@8.18.1':
     resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
@@ -1891,6 +2062,12 @@ packages:
   '@vueuse/shared@12.8.2':
     resolution: {integrity: sha512-dznP38YzxZoNloI0qpEfpkms8knDtaoQ6Y/sfS0L7Yki4zh40LFHEhur0odJC6xTHG5dxWVPiUWBXn+wCG2s5w==}
 
+  '@wasm-audio-decoders/common@9.0.7':
+    resolution: {integrity: sha512-WRaUuWSKV7pkttBygml/a6dIEpatq2nnZGFIoPTc5yPLkxL6Wk4YaslPM98OPQvWacvNZ+Py9xROGDtrFBDzag==}
+
+  '@wasm-audio-decoders/opus-ml@0.0.3':
+    resolution: {integrity: sha512-SEeTmk0eb3q5etJA/NHCRWW6BivTx9tqvNTmG0kg2ynuATEQRUZnwQE6Ibvl1BBvqIGHqI57+qyJMWmJBwb5XQ==}
+
   '@webgpu/types@0.1.70':
     resolution: {integrity: sha512-LFiNHHKMvmAEvwVew3JLJmTdShhbdwRFSImUshGhE2mGE8ybQzIo63l5uRp+YKnNx+8Qno8Kf6gN+DKMreIJCA==}
 
@@ -2009,6 +2186,9 @@ packages:
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
+
+  codec-parser@2.5.0:
+    resolution: {integrity: sha512-Ru9t80fV8B0ZiixQl8xhMTLru+dzuis/KQld32/x5T/+3LwZb0/YvQdSKytX9JqCnRdiupvAvyYJINKrXieziQ==}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -2231,6 +2411,9 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   file-entry-cache@8.0.0:
     resolution: {integrity: sha512-XXTUwCvisa5oacNGRP9SfNtYBNAMi+RPwBFmblZEF7N7swHYQS6/Zfk7SRwx4D5j3CH211YNRco1DEMNVfZCnQ==}
@@ -2525,6 +2708,9 @@ packages:
   merge-stream@2.0.0:
     resolution: {integrity: sha512-abv/qOcuPfk3URPfDzmZU1LKmuw8kT+0nIHvKrKgFrwifol/doWcdA4ZqsWQ8ENrFKkd67Mfpo/LovbIUsbt3w==}
 
+  meshoptimizer@0.18.1:
+    resolution: {integrity: sha512-ZhoIoL7TNV4s5B6+rx5mC//fw8/POGyNxS/DZyCJeiZ12ScLfVwRE/GfsxwiTkMYYD5DmK2/JXnEVXqL4rF+Sw==}
+
   micromark-util-character@2.1.1:
     resolution: {integrity: sha512-wv8tdUTJ3thSFFFJKtpYKOYiGP2+v96Hvk4Tu8KpCAsTMs6yi+nVmGh1syvSCsaxz45J6Jbw+9DD6g97+NV67Q==}
 
@@ -2599,6 +2785,9 @@ packages:
     resolution: {integrity: sha512-9miFgM2OFba7hB+pRgvtV84pYTBaoTHohvmIgiRt6dRIzbwEOIaNaP+dIlGs2fNFoB0SeISs0Jz5WFVRid6Xyg==}
     engines: {node: '>=12.20.0'}
 
+  ogg-opus-decoder@1.7.5:
+    resolution: {integrity: sha512-08WfRbuBBew1H63PqQ3zj2B/J0Eh9ISfNOTi+Dk6vuXmkBGSx8BiPJGOJ470EYeKezTa7/GhOAwHe3XlXwOZMw==}
+
   once@1.4.0:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
 
@@ -2612,6 +2801,9 @@ packages:
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
     engines: {node: '>= 0.8.0'}
+
+  opus-decoder@0.7.12:
+    resolution: {integrity: sha512-6zpHFDi/MhYvMwyYiuJPqJ2lcRkfm7wHblSvT3lUtx/kLvHkunoe/rhTn1dLKxqVGLeQj3gQi7CnR0N2p3RuOg==}
 
   os-homedir@1.0.2:
     resolution: {integrity: sha512-B5JU3cabzk8c67mRRd3ECmROafjYMXbuzlwtqdM8IbS8ktlTix8aFGb2bAGKrSRIlnfKwovGUUr72JUPyOb6kQ==}
@@ -2852,6 +3044,9 @@ packages:
   signal-exit@3.0.7:
     resolution: {integrity: sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ==}
 
+  simple-yenc@1.0.4:
+    resolution: {integrity: sha512-5gvxpSd79e9a3V4QDYUqnqxeD4HGlhCakVpb6gMnDD7lexJggSBJRBO5h52y/iJrdXRilX9UCuDaIJhSWm5OWw==}
+
   slash@1.0.0:
     resolution: {integrity: sha512-3TYDR7xWt4dIqV2JauJr+EJeW356RXijHeUlO+8djJ+uBXPn8/2dpzBc8yQhh583sVvc9CvFAeQVgijsH+PNNg==}
     engines: {node: '>=0.10.0'}
@@ -2927,6 +3122,9 @@ packages:
 
   tabbable@6.5.0:
     resolution: {integrity: sha512-wieBHXygIm7OyQOu5hQlkk62/WyCFYGlWg7L6/ZCUZwx0o398Zkn4pVmMyfYhfMG8kGrj/Krt8eIk6UKC6VzwA==}
+
+  three@0.169.0:
+    resolution: {integrity: sha512-Ed906MA3dR4TS5riErd4QBsRGPcx+HBDX2O5yYE5GqJeFQTPU+M56Va/f/Oph9X7uZo3W3o4l2ZhBZ6f6qUv0w==}
 
   tiny-lru@11.4.7:
     resolution: {integrity: sha512-w/Te7uMUVeH0CR8vZIjr+XiN41V+30lkDdK+NRIDCUYKKuL9VcmaUEmaPISuwGhLlrTGh5yu18lENtR9axSxYw==}
@@ -3453,6 +3651,8 @@ snapshots:
 
   '@csstools/css-tokenizer@4.0.0': {}
 
+  '@dimforge/rapier3d-compat@0.14.0': {}
+
   '@docsearch/css@3.8.2': {}
 
   '@docsearch/js@3.8.2(@algolia/client-search@5.56.0)(search-insights@2.17.3)':
@@ -3572,6 +3772,8 @@ snapshots:
 
   '@esbuild/win32-x64@0.21.5':
     optional: true
+
+  '@eshaz/web-worker@1.2.2': {}
 
   '@eslint-community/eslint-utils@4.9.1(eslint@9.39.4)':
     dependencies:
@@ -3992,6 +4194,8 @@ snapshots:
       vite: 8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0)
       vitest: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@8.0.16(@types/node@25.9.3)(sass@1.101.0)(yaml@2.9.0))
 
+  '@tweenjs/tween.js@23.1.3': {}
+
   '@tybys/wasm-util@0.10.2':
     dependencies:
       tslib: 2.8.1
@@ -4038,11 +4242,24 @@ snapshots:
       undici-types: 7.24.6
     optional: true
 
+  '@types/stats.js@0.17.4': {}
+
+  '@types/three@0.169.0':
+    dependencies:
+      '@tweenjs/tween.js': 23.1.3
+      '@types/stats.js': 0.17.4
+      '@types/webxr': 0.5.24
+      '@webgpu/types': 0.1.70
+      fflate: 0.8.3
+      meshoptimizer: 0.18.1
+
   '@types/trusted-types@2.0.7': {}
 
   '@types/unist@3.0.3': {}
 
   '@types/web-bluetooth@0.0.21': {}
+
+  '@types/webxr@0.5.24': {}
 
   '@types/ws@8.18.1':
     dependencies:
@@ -4297,6 +4514,15 @@ snapshots:
     transitivePeerDependencies:
       - typescript
 
+  '@wasm-audio-decoders/common@9.0.7':
+    dependencies:
+      '@eshaz/web-worker': 1.2.2
+      simple-yenc: 1.0.4
+
+  '@wasm-audio-decoders/opus-ml@0.0.3':
+    dependencies:
+      '@wasm-audio-decoders/common': 9.0.7
+
   '@webgpu/types@0.1.70': {}
 
   '@xmldom/xmldom@0.8.13': {}
@@ -4402,6 +4628,8 @@ snapshots:
       readdirp: 5.0.0
 
   clsx@2.1.1: {}
+
+  codec-parser@2.5.0: {}
 
   color-convert@2.0.1:
     dependencies:
@@ -4648,6 +4876,8 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:
       picomatch: 4.0.4
+
+  fflate@0.8.3: {}
 
   file-entry-cache@8.0.0:
     dependencies:
@@ -4936,6 +5166,8 @@ snapshots:
 
   merge-stream@2.0.0: {}
 
+  meshoptimizer@0.18.1: {}
+
   micromark-util-character@2.1.1:
     dependencies:
       micromark-util-symbol: 2.0.1
@@ -4998,6 +5230,13 @@ snapshots:
 
   obug@2.1.3: {}
 
+  ogg-opus-decoder@1.7.5:
+    dependencies:
+      '@wasm-audio-decoders/common': 9.0.7
+      '@wasm-audio-decoders/opus-ml': 0.0.3
+      codec-parser: 2.5.0
+      opus-decoder: 0.7.12
+
   once@1.4.0:
     dependencies:
       wrappy: 1.0.2
@@ -5020,6 +5259,10 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
       word-wrap: 1.2.5
+
+  opus-decoder@0.7.12:
+    dependencies:
+      '@wasm-audio-decoders/common': 9.0.7
 
   os-homedir@1.0.2: {}
 
@@ -5265,6 +5508,8 @@ snapshots:
 
   signal-exit@3.0.7: {}
 
+  simple-yenc@1.0.4: {}
+
   slash@1.0.0: {}
 
   source-map-js@1.2.1: {}
@@ -5352,6 +5597,8 @@ snapshots:
   symbol-tree@3.2.4: {}
 
   tabbable@6.5.0: {}
+
+  three@0.169.0: {}
 
   tiny-lru@11.4.7: {}
 

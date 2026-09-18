@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/svelte";
+import { ContributionRegistry, SETTINGS_SECTION_CONTRACT } from "@shadowcat/core";
 import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { BUILTIN_THEMES, DEFAULT_THEME_ID, theme } from "@shadowcat/ui-kit";
 import Settings from "./Settings.svelte";
+import SectionProbe from "./__fixtures__/SectionProbe.svelte";
 
 // The fixture's `t` is an identity echo (every key resolves to itself), so
 // assertions pin keys and structure rather than resolved English.
@@ -91,5 +93,26 @@ describe("Settings custom theme management", () => {
     render(Settings, { context: setAppContextForTest({ role: "player" }) });
     await fireEvent.click(screen.getByRole("button", { name: "settings.theme.editor.delete" }));
     expect(Object.keys(theme.customThemes)).toEqual(["mine"]);
+  });
+});
+
+describe("Settings contributed sections", () => {
+  it("renders a contributed section's heading and component after the built-in Modules slot", () => {
+    const contributions = new ContributionRegistry();
+    contributions.contribute({
+      id: "example:settings",
+      contract: SETTINGS_SECTION_CONTRACT,
+      component: SectionProbe,
+      settingsSection: { labelKey: "example.sectionTitle" },
+    });
+    render(Settings, { context: setAppContextForTest({ role: "player", contributions }) });
+    const heading = screen.getByText("example.sectionTitle");
+    const logoutButton = screen.getByRole("button", { name: "settings.logout" });
+    // DOM order: the contributed section renders after Modules and BEFORE the built-in
+    // leave/logout buttons.
+    expect(
+      logoutButton.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_PRECEDING,
+    ).toBeTruthy();
+    expect(screen.getByTestId("section-probe")).toBeTruthy();
   });
 });
