@@ -76,8 +76,8 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 |---|---|---|
 | PostgreSQL | `Repository` trait | A real multi-tenant / many-concurrent-world hosted deployment. |
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
-| Animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (animation). |
-| Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
+| ~~Animated-WebP encoding~~ (built: the image pipeline decodes animated WebP into server-derived grid sheets for M24's VFX spritesheets, on top of the M15a canonical/retained/thumb/preview pipeline) | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp) | Phase 3 (M24). |
+| ~~Asset browser UI~~ (built: M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
 | ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), ~~multi-level maps/portals~~ (built: `SceneLevel`/`ElevationBand`, `TriggerEffect::Teleport`, per-level vision/movement/render scoping), post-processing, photometric lighting, advanced vision modes | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |
