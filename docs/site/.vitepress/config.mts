@@ -51,6 +51,7 @@ export default defineConfig({
           text: "Gameplay",
           items: [
             { text: "stage", link: "/modules/stage" },
+            { text: "dice-3d", link: "/modules/dice-3d" },
             { text: "scene-tools", link: "/modules/scene-tools" },
             { text: "actors", link: "/modules/actors" },
             { text: "factions", link: "/modules/factions" },

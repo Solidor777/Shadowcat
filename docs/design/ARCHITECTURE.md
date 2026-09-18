@@ -56,6 +56,8 @@ These hold across every subsystem. Violating one is an architectural defect, not
 | Client embedding | `rust-embed` | MIT | Vendor | Bakes the built client bundle into the binary. |
 | UI framework | Svelte 5 (runes) | MIT | Vendor | Compiled, lean output; default UI only — modders use any framework. |
 | Canvas renderer | PixiJS v8 | MIT | Vendor | Mature WebGL 2D: sprite batching, filter pipeline, mask compositing. Rebuilding this is the largest avoidable cost in the project. |
+| 3D dice rendering | three r169 | MIT | Vendor | A separate WebGL context on a transparent overlay canvas — PixiJS is 2D-only and two renderers cannot share one GL context safely; `PerformanceSettings.dice3d` turns the second context off entirely on a constrained device. |
+| 3D dice physics | `@dimforge/rapier3d-compat` (WASM) | Apache-2.0 | Vendor | Deterministic, actively maintained; lazy-imported only when a roll plays, ~2 MB loaded once. |
 | Build tooling | Cargo, Vite, pnpm | MIT | Vendor | pnpm is build-time only; output embeds into the binary. |
 | Audio decode | symphonia 0.6 | MPL-2.0 | Vendor | Pure-Rust decode of every format a GM uploads (mp3/flac/wav/ogg-vorbis/aac/isomp4/webm) — no FFmpeg, no C toolchain for decode, mirroring the image pipeline's dependency posture. |
 | Audio resample | rubato 5 | MIT/Apache-2.0 | Vendor | Resamples to the 48kHz Opus wants before encoding. |
@@ -76,7 +78,6 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Full-text search engine (Tantivy) | `Core.search` API over FTS5 | FTS5 relevance/scale becomes inadequate (large compendium libraries, BM25 tuning, faceting). |
 | Animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (animation). |
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
-| 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
 | ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), ~~multi-level maps/portals~~ (built: `SceneLevel`/`ElevationBand`, `TriggerEffect::Teleport`, per-level vision/movement/render scoping), post-processing, photometric lighting, advanced vision modes | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |

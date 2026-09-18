@@ -9,6 +9,8 @@ export { notifications, activeNotifications } from "./notifications.svelte";
 export { default as NotificationHost } from "./NotificationHost.svelte";
 export { SceneInteractionBridge } from "./sceneInteraction";
 export type { SceneInteraction } from "./sceneInteraction";
+export { Dice3DBridge } from "./dice3dInteraction";
+export type { Dice3DHost, Dice3DInteraction } from "./dice3dInteraction";
 export { createMenuKeyboard } from "./MenuKeyboard";
 export type { MenuKeyboard } from "./MenuKeyboard";
 export { ActorSelection } from "./actorSelection.svelte";

@@ -11,6 +11,16 @@ import {
 } from "@shadowcat/core";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
+// Suppress listAssets fetch: GameSettingsPanel's dice-sound-picker $effect calls listAssets
+// unconditionally on mount, which hits /api/... in jsdom (EmissionEditor.test.ts precedent).
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listAssets: vi.fn().mockResolvedValue([]),
+  };
+});
+
 function gmStoreWith(...docs: WireDocument[]) {
   const s = new DocumentStore();
   s.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: docs.map((doc) => ({ op: "create", doc })) });

@@ -131,7 +131,17 @@ export function packageOwnName(repoRoot, pkgDir) {
  * example, or a `types`-only dependency used just for the doc) would otherwise fail to
  * resolve it even though some workspace package has it on disk. A name declared by two
  * packages resolves to whichever is visited last; acceptable because this mapping only
- * ever feeds doc-example compilation, never shipped code. */
+ * ever feeds doc-example compilation, never shipped code.
+ *
+ * A `paths` redirect resolves at the target directory ALONE — it does not then re-walk
+ * ancestor `node_modules/@types` the way plain (non-redirected) resolution would, so a
+ * dependency shipping no bundled declarations (no `types`/`typings` field, no adjacent
+ * `.d.ts`) resolves to an untyped module once redirected, even with a companion
+ * `@types/<dep>` package installed. Since every consumer of this mapping is `noEmit:
+ * true` (type-checking only, nothing here is ever run), the sibling `@types/<dep>`
+ * directory — when present — is what the specifier is pointed at instead of the
+ * runtime package: its declarations describe the same exports as types, which is all a
+ * doc example needs. A dependency with no such sibling (the common case) is unaffected. */
 export function externalDepPaths(repoRoot, pkgDirs) {
   const paths = {};
   for (const dir of pkgDirs) {
@@ -139,7 +149,8 @@ export function externalDepPaths(repoRoot, pkgDirs) {
     try { pkg = JSON.parse(readFileSync(join(repoRoot, dir, "package.json"), "utf8")); } catch { continue; }
     for (const dep of Object.keys(pkg.dependencies ?? {})) {
       if (dep.startsWith("@shadowcat/")) continue; // workspace packages: mapped to source by workspacePaths
-      const abs = join(repoRoot, dir, "node_modules", dep);
+      const typesAbs = join(repoRoot, dir, "node_modules", "@types", dep);
+      const abs = existsSync(typesAbs) ? typesAbs : join(repoRoot, dir, "node_modules", dep);
       if (!existsSync(abs)) continue;
       paths[dep] = [toPosix(relative(repoRoot, abs))];
     }

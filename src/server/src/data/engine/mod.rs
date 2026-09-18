@@ -316,7 +316,14 @@ fn normalize_engine(doc_type: &str, v: &serde_json::Value) -> Result<serde_json:
         "vision-modes" => round_trip::<VisionModesEngine>(v, "vision-modes"),
         "light-gradation" => round_trip::<LightGradationEngine>(v, "light-gradation"),
         "chat-settings" => round_trip::<ChatSettingsEngine>(v, "chat-settings"),
-        "dice-settings" => round_trip::<DiceSettingsEngine>(v, "dice-settings"),
+        "dice-settings" => {
+            let typed: DiceSettingsEngine = serde_json::from_value(v.clone())
+                .map_err(|e| DataError::BadEngine(format!("dice-settings: {e}")))?;
+            typed
+                .validate()
+                .map_err(|m| DataError::BadEngine(format!("dice-settings: {m}")))?;
+            Ok(serde_json::to_value(typed)?)
+        }
         "channel-registry" => {
             let typed: ChannelRegistryEngine = serde_json::from_value(v.clone())
                 .map_err(|e| DataError::BadEngine(format!("channel-registry: {e}")))?;

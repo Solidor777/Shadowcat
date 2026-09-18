@@ -35,6 +35,7 @@
   import { sheetItem } from "@shadowcat/module-sheet-item";
   import { sheetNote } from "@shadowcat/module-sheet-note";
   import { sheetTable } from "@shadowcat/module-sheet-table";
+  import { dice3d } from "@shadowcat/module-dice-3d";
   import { audio } from "@shadowcat/module-audio";
   import { sheetPlaylist } from "@shadowcat/module-sheet-playlist";
   import { vfx } from "@shadowcat/module-vfx";
@@ -186,7 +187,7 @@
     const s = new WorldSession({
       selfId: me.id,
       connect: webSocketConnect(wsUrl),
-      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, audio, sheetPlaylist, vfx, ducking],
+      modules: [panels, coreUi, topBar, statusBar, stage, settings, gameSettings, sceneBrowser, assetBrowser, actors, factions, conditions, combatTracker, sceneTools, chat, chatComposer, chatCard, notes, tables, sheetFallback, sheetActor, sheetItem, sheetNote, sheetTable, dice3d, audio, sheetPlaylist, vfx, ducking],
       onEvicted: () => leaveWorld(),
       onReject: (reason, detail) =>
         notifications.push(
