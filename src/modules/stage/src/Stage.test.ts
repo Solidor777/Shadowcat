@@ -3,9 +3,9 @@ import { render } from "@testing-library/svelte";
 import Stage from "./Stage.svelte";
 import type { DisplayBackend, TokenNodeSpec } from "@shadowcat/render";
 import { RenderEngine } from "@shadowcat/render";
-import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, EMPTY_FOOTPRINTS, silentLogger } from "@shadowcat/core";
+import { DocumentStore, AssetResolver, buildSceneDoc, buildTokenDoc, ContributionRegistry, EMPTY_FOOTPRINTS, silentLogger, STAGE_OVERLAY_CONTRACT } from "@shadowcat/core";
 import type { ReadableDocuments, FootprintLookup, Logger } from "@shadowcat/core";
-import { setAppContextForTest } from "@shadowcat/ui-kit/test";
+import { setAppContextForTest, Probe } from "@shadowcat/ui-kit/test";
 import { __APP_CONTEXT_KEY__, theme, TokenSelection, PerformanceController } from "@shadowcat/ui-kit";
 
 const OWNER = "11111111-2222-3333-4444-555555555555";
@@ -150,6 +150,21 @@ test("a backend-init failure logs through the injected logger, not silently", as
   });
   expect(errors).toHaveLength(1);
   expect(errors[0][0]).toContain("Stage backend init failed");
+});
+
+test("a stage-overlay contribution renders inside .stage-overlays", async () => {
+  const createBackend = vi.fn(async () => fakeBackend());
+  const contributions = new ContributionRegistry();
+  contributions.contribute({ id: "test:overlay", contract: STAGE_OVERLAY_CONTRACT, component: Probe, props: { label: "overlay-probe" } });
+  const { container } = render(Stage, {
+    props: { createBackend },
+    context: setAppContextForTest({ contributions, subscribeScene: () => ({ unsubscribe: () => {} }) }),
+  });
+  const overlays = container.querySelector(".stage-overlays");
+  expect(overlays).not.toBeNull();
+  await vi.waitFor(() => {
+    expect(overlays?.querySelector("[data-testid='probe']")?.textContent).toBe("overlay-probe");
+  });
 });
 
 test("pushes the resolved snapToGrid to the engine (grid-stepped scene: default true)", async () => {

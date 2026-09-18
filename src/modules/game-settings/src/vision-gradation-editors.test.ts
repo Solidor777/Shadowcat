@@ -13,6 +13,16 @@ import {
 } from "@shadowcat/core";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
+// Suppress listAssets fetch: the panel's dice-sound picker calls listAssets in an $effect
+// which hits /api/... in jsdom.
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listAssets: vi.fn().mockResolvedValue([]),
+  };
+});
+
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();
   s.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: docs.map((doc) => ({ op: "create" as const, doc })) });

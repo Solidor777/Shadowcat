@@ -149,6 +149,7 @@
       setChatRead: (blob) => setChatRead(session.world!, blob),
     },
     panels,
+    dice3d: session.dice3d,
     audio: session.audio,
     performance: performanceController,
     vfx: { play: (req) => session.playVfx(req), onVfx: (cb) => session.onVfx(cb) },

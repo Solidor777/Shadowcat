@@ -34,6 +34,7 @@
     "@shadowcat/module-sheet-item": "workspace:*",
     "@shadowcat/module-sheet-note": "workspace:*",
     "@shadowcat/module-sheet-table": "workspace:*",
+    "@shadowcat/module-dice-3d": "workspace:*",
     "@shadowcat/module-sheet-playlist": "workspace:*",
     "@shadowcat/module-vfx": "workspace:*",
     "@shadowcat/module-ducking": "workspace:*",

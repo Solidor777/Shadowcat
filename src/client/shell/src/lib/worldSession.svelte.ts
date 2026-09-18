@@ -69,7 +69,7 @@ import {
   type AudioStateEngine,
 } from "@shadowcat/core";
 import type { WorldRole, InstalledModuleInfo, RejectReason } from "@shadowcat/types";
-import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
+import { SceneInteractionBridge, Dice3DBridge, ActorSelection, TokenSelection, i18n, performanceController } from "@shadowcat/ui-kit";
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
@@ -202,6 +202,9 @@ export class WorldSession {
   /** Canvas interaction bridge: the Stage attaches the engine; tool components reach
    * it via AppContext. Stable across Stage remount. */
   readonly sceneInteraction = new SceneInteractionBridge();
+  /** Roll -> 3D dice bridge: DiceOverlay attaches on mount; a system module reaches it via
+   * AppContext even before the overlay has mounted. Stable across Stage/overlay remount. */
+  readonly dice3d = new Dice3DBridge();
   /** The actor the place tool stamps; set by module-actors, read by scene-tools. Stable. */
   readonly actorSelection = new ActorSelection();
   /** Selected token ids for group-select; set by the factions panel, read by the select tool. Stable. */

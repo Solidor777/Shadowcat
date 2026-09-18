@@ -6,6 +6,7 @@
     resolveSettingProvenance,
     resolveGradation,
     buildUpdate,
+    listAssets,
     type WorldSettingsEngine, type LightGradationEngine, type VisionModesEngine, type VisionMode, type Perception,
     type SceneEngine, type WireDocument, DEFAULT_SCENE_BOUNDS, type DiceSettingsEngine,
     type ChatSettingsEngine, type ChannelRegistryEngine,
@@ -13,6 +14,7 @@
     type AudioOverlay, type Occlusion, type SceneAmbience, PLAYLIST_DOC_TYPE,
     type WireSearchHit, type SubscriptionHandle,
   } from "@shadowcat/core";
+  import type { Asset } from "@shadowcat/types";
   import CombatSettings from "./CombatSettings.svelte";
   import CombatSceneOverrides from "./CombatSceneOverrides.svelte";
   import ResourceRegistryEditor from "./ResourceRegistryEditor.svelte";
@@ -24,6 +26,29 @@
   // post-mount. This panel only EDITS config singletons — the server seeds every one of them at
   // world creation and world join, so no client-side create path exists here.
   const subscribe = createSubscriber((update) => ctx.documents.subscribe(update));
+
+  let soundAssets = $state<Asset[]>([]);
+
+  /**
+   * Refetches the world's audio assets for the dice-clatter sound picker — same load/reconcile
+   * pattern as `EmissionEditor.refreshAssets`.
+   * @returns Nothing; assigns the component's own `$state` list.
+   * @example
+   * ```
+   * // private helper; not part of the public API — invoked from the $effect below
+   * refreshSoundAssets();
+   * ```
+   */
+  function refreshSoundAssets(): void {
+    void listAssets(ctx.world).then((a) => {
+      soundAssets = a.filter((x) => x.content_type.startsWith("audio/"));
+      ctx.assets.reconcile(a);
+    });
+  }
+  $effect(() => {
+    refreshSoundAssets();
+    return ctx.onAssetChanged(refreshSoundAssets);
+  });
 
   // Derived reads — each calls subscribe() so they re-resolve when the doc store updates
   // (reactive subscription pattern; matches FactionsPanel's registry/$factionEntries deriveds).
@@ -652,6 +677,15 @@
           {#each DICE_DIRECTION as d}
             <option value={d}>{d === "high_wins" ? ctx.t("gameSettings.dice.directionHigh") : ctx.t("gameSettings.dice.directionLow")}</option>
           {/each}
+        </select>
+      </label>
+
+      <label>
+        {ctx.t("gameSettings.dice.sound")}
+        <select aria-label={ctx.t("gameSettings.dice.sound")} value={dicesys.sound ?? ""}
+          onchange={(e) => set(diceDoc.id, "/engine/sound", dicesys.sound ?? null, (e.currentTarget as HTMLSelectElement).value || null)}>
+          <option value="">{ctx.t("gameSettings.dice.soundNone")}</option>
+          {#each soundAssets as a (a.id)}<option value={a.id}>{a.original_name}</option>{/each}
         </select>
       </label>
 

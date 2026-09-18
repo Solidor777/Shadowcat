@@ -650,3 +650,70 @@ fn explode_retrigger_uses_derived_value_not_raw_index_for_ordered_faces() {
     assert_eq!(recs[1].value, 6);
     assert_eq!(recs[2].value, 1);
 }
+
+#[test]
+fn resolve_group_stamps_kind_on_every_die_from_its_originating_group() {
+    let naturals = vec![d6(0, 3), d6(1, 5)];
+    let mut raws = RawRoll {
+        dice: naturals.clone(),
+        records: vec![],
+        next_id: 2,
+        group_spans: vec![],
+    };
+    let mut rng = NoiseRng::from_seed(1);
+    let recs = resolve_group(&group(vec![]), 0, &naturals, &mut rng, &mut raws);
+    for r in &recs {
+        assert_eq!(r.kind, Some(DieKind::Numeric { min: 1, max: 6 }));
+    }
+}
+
+#[test]
+fn standard_explode_extra_die_carries_the_group_kind() {
+    let naturals = vec![d6(0, 6), d6(1, 2)];
+    let mut raws = RawRoll {
+        dice: naturals.clone(),
+        records: vec![],
+        next_id: 2,
+        group_spans: vec![],
+    };
+    let g = DiceGroup {
+        label: None,
+        count: 2,
+        kind: DieKind::Numeric { min: 1, max: 6 },
+        modifiers: vec![GroupModifier::Explode {
+            kind: ExplodeKind::Standard,
+            comp: Comparator::Gte,
+            target: 6,
+        }],
+    };
+    let mut rng = NoiseRng::from_seed(11);
+    let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+    assert!(recs
+        .iter()
+        .all(|r| r.kind == Some(DieKind::Numeric { min: 1, max: 6 })));
+}
+
+#[test]
+fn penetrate_extra_die_carries_the_group_kind() {
+    let naturals = vec![d6(0, 6)];
+    let mut raws = RawRoll {
+        dice: naturals.clone(),
+        records: vec![],
+        next_id: 1,
+        group_spans: vec![],
+    };
+    let g = DiceGroup {
+        label: None,
+        count: 1,
+        kind: DieKind::Numeric { min: 1, max: 6 },
+        modifiers: vec![GroupModifier::Explode {
+            kind: ExplodeKind::Penetrate,
+            comp: Comparator::Gte,
+            target: 6,
+        }],
+    };
+    let mut rng = ScriptedRng::new(vec![face_x(1)]);
+    let recs = resolve_group(&g, 0, &naturals, &mut rng, &mut raws);
+    assert_eq!(recs.len(), 2);
+    assert_eq!(recs[1].kind, Some(DieKind::Numeric { min: 1, max: 6 }));
+}

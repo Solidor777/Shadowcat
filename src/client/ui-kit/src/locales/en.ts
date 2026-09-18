@@ -455,6 +455,8 @@ export const en: Messages = {
   "gameSettings.dice.channelOverrideFor": "Custom settings for channel {channel}",
   "gameSettings.dice.channelModeFor": "Mode for channel {channel}",
   "gameSettings.dice.channelDirectionFor": "Direction for channel {channel}",
+  "gameSettings.dice.sound": "Dice-roll sound",
+  "gameSettings.dice.soundNone": "None",
   "gameSettings.chat.title": "Chat",
   "gameSettings.chat.hyperlinks": "Hyperlinks",
   "gameSettings.chat.linkPreviews": "Link previews",
@@ -702,6 +704,8 @@ export const en: Messages = {
   "tables.draw": "Draw",
   "tables.delete": "Delete",
   "tables.empty": "No tables yet.",
+
+  "dice3d.dismiss": "Dismiss the dice",
   "levels.switcher": "Floor",
   "levels.editorTitle": "Levels",
   "levels.addLevel": "Add level",

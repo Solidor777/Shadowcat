@@ -4,6 +4,16 @@ import { setAppContextForTest } from "@shadowcat/ui-kit/test";
 import { DocumentStore, buildWorldSettingsDoc, buildLightGradationDoc, buildVisionModesDoc, buildDiceSettingsDoc, buildChatSettingsDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
 import GameSettingsPanel from "./GameSettingsPanel.svelte";
 
+// Suppress listAssets fetch: the panel's dice-sound picker calls listAssets in an $effect
+// which hits /api/... in jsdom.
+vi.mock("@shadowcat/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@shadowcat/core")>();
+  return {
+    ...actual,
+    listAssets: vi.fn().mockResolvedValue([]),
+  };
+});
+
 const cmd = (ops: WireOperation[]) => ({ seq: 1, world_id: "w1", author: "a", ts: 0, ops });
 function storeWith(...docs: WireDocument[]): DocumentStore {
   const s = new DocumentStore();

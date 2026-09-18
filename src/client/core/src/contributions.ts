@@ -79,6 +79,14 @@ export const PANEL_CONTRACT = "shadowcat.panel";
  * returns that winner. */
 export const SYSTEM_CONTRACT = "shadowcat.system";
 
+/** Contract id absolutely-positioned overlay children contribute over the stage canvas
+ * (cardinality multi). `pointer-events: none` by default on the `<Surface>` wrapper itself —
+ * a contributing component opts into pointer capture on its OWN root element when it needs
+ * one (e.g. a transient dismiss layer), never by default, so an inert overlay never blocks
+ * the stage's own pan/zoom/tool gestures. Rendered by `Stage.svelte` as a `<Surface>`
+ * absolutely positioned over the render canvas. */
+export const STAGE_OVERLAY_CONTRACT = "shadowcat.stage-overlay";
+
 /** Contract id modules contribute a scene-tool entry under, rendered by the scene-tools
  * rail. Multi-cardinality: any number of modules may each add a tool. */
 export const SCENE_TOOL_CONTRACT = "shadowcat.scene-tool";

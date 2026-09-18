@@ -2,6 +2,7 @@ import { getContext, setContext } from "svelte";
 import type { ContributionRegistry, DocumentStore, ReadableDocuments, AssetResolver, AssetChangedNotice, SceneFrame, SceneSubscription, WireOperation, WireDocument, PathResult, MoveStream, ChatSendOptions, WireRecalcOp, DrawTableOptions, SheetRef, SubscriptionHandle, WireSearchHit, StampOpts, SyncState, FootprintLookup, NotificationLevel, CombatApi, AudioApi, VfxPlayRequest, VfxNotice } from "@shadowcat/core";
 import type { WorldRole } from "@shadowcat/types";
 import type { SceneInteraction } from "./sceneInteraction";
+import type { Dice3DInteraction } from "./dice3dInteraction";
 import type { ActorSelection } from "./actorSelection.svelte";
 import type { TokenSelection } from "./tokenSelection.svelte";
 import type { PanelsApi, PanelsChipsView } from "./panelsBridge.svelte";
@@ -352,6 +353,10 @@ export interface AppContext {
    * render a panel-dock strip elsewhere. No-ops/empty (with a one-time console
    * warning on a write call) until the panel host binds; see `PanelsBridge`. */
   panels: PanelsApi & PanelsChipsView;
+  /** Roll → 3D dice seam, owned by the `dice-3d` module. A no-op (each call
+   * reads its own on/off setting) when the overlay is unmounted or the device has 3D dice
+   * turned off. */
+  dice3d: Dice3DInteraction;
   /** The level (of the viewed scene) this client renders/subscribes to; `null` for a
    * level-less scene, or before any scene/level is known. For a player: `levelOf` of their
    * primary token, tracked live (follows the token through a portal). For a GM: the last

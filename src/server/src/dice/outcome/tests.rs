@@ -44,6 +44,7 @@ fn labeled_record_ordered(label: &str, value: i32, kept: bool, ordered: bool) ->
         expertise: 0,
         label: Some(label.to_string()),
         symbols: vec![],
+        kind: None,
         ordered,
     }
 }
@@ -168,4 +169,17 @@ fn roll_outcome_missing_defaulted_keys_deserializes() {
     let out: super::RollOutcome = serde_json::from_value(j).unwrap();
     assert!(out.labeled_consts.is_empty());
     assert!(out.symbol_counts.is_empty());
+}
+
+#[test]
+fn die_record_missing_kind_key_deserializes_to_none() {
+    // Pins `#[serde(default)]` on `kind` against a stored DieRecord JSON shape
+    // (predating the field) that carries no "kind" key at all.
+    let j = serde_json::json!({
+        "id": 0, "group_index": 0, "natural": 3, "value": 3, "kept": true,
+        "exploded": false, "rerolled_from": null, "crit_success": false,
+        "crit_fail": false
+    });
+    let rec: super::DieRecord = serde_json::from_value(j).unwrap();
+    assert_eq!(rec.kind, None);
 }

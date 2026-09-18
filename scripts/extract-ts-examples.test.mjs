@@ -724,6 +724,13 @@ describe("externalDepPaths", () => {
     const paths = externalDepPaths(repo, workspacePackageDirs(repo));
     expect(Object.keys(paths).some((k) => k.startsWith("@shadowcat/"))).toBe(false);
   });
+
+  it("prefers a sibling @types/<dep> directory over the runtime package for a dependency shipping no bundled declarations — a `paths` redirect resolves at its target alone, so pointing it at the untyped runtime package would silently drop type coverage for every example importing it (real fixture: dice-3d's `three` dependency ships no `.d.ts`; `@types/three` is a separate devDependency)", () => {
+    const repo = resolve(fileURLToPath(import.meta.url), "..", "..");
+    const paths = externalDepPaths(repo, workspacePackageDirs(repo));
+    expect(paths.three).toBeDefined();
+    expect(paths.three[0].endsWith("@types/three")).toBe(true);
+  });
 });
 
 describe("candidateFiles / svelteFiles", () => {

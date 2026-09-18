@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { getAppContext, activeTheme } from "@shadowcat/ui-kit";
-  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, type Logger, type SceneEngine } from "@shadowcat/core";
+  import { getAppContext, activeTheme, Surface } from "@shadowcat/ui-kit";
+  import { resolveSceneSettings, resolveTokenVisual, resolveTokenActor, consoleLogger, fpsCapToTickerValue, AssetMetaCache, resolveVfxSource, STAGE_OVERLAY_CONTRACT, type Logger, type SceneEngine } from "@shadowcat/core";
   import {
     RenderEngine,
     createPixiBackend,
@@ -544,6 +544,9 @@
   {#key antialiasBudget}
     <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
   {/key}
+  <div class="stage-overlays">
+    <Surface contract={STAGE_OVERLAY_CONTRACT} />
+  </div>
   <LevelSwitcher
     levels={viewedSceneLevels}
     active={ctx.viewedLevel}
@@ -572,11 +575,17 @@
 
 <style lang="scss">
   .stage-host {
+    position: relative;
     height: 100%;
     width: 100%;
     overflow: hidden;
     background: var(--surface-base);
     touch-action: none; /* let pointer gestures drive pan/zoom on touch (#10) */
+  }
+  .stage-overlays {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
   }
   canvas {
     display: block;

@@ -158,6 +158,13 @@ pub struct DieRecord {
     /// die's default-`0` fallback.
     #[serde(default = "default_ordered")]
     pub ordered: bool,
+    /// The die's face space, mirroring the originating `RawDie.kind` — an every-recipient
+    /// fact like `natural` (the face SPACE, not the private notation/spec; `dice-3d`'s
+    /// client-side geometry mapping reads this to pick which physical shape to render).
+    /// `#[serde(default)]`: a roll stored before this field existed has no `kind` on disk,
+    /// and dice-3d renders no 3D dice for it, fail closed.
+    #[serde(default)]
+    pub kind: Option<DieKind>,
 }
 
 /// `serde(default)` fallback for `ordered`: a record deserialized without this

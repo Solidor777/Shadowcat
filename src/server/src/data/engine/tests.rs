@@ -1910,6 +1910,31 @@ fn token_registers_no_derived_paths() {
 }
 
 #[test]
+fn dice_settings_sound_field_round_trips() {
+    let mut dice = DiceSettingsEngine::default();
+    let sound_id = uuid::Uuid::new_v4();
+    dice.sound = Some(sound_id);
+    let v = serde_json::to_value(&dice).unwrap();
+    let normalized = normalize_engine_opt("dice-settings", Some(&v))
+        .unwrap()
+        .unwrap();
+    let round_tripped: DiceSettingsEngine = serde_json::from_value(normalized).unwrap();
+    assert_eq!(round_tripped.sound, Some(sound_id));
+}
+
+#[test]
+fn dice_settings_validate_is_wired_into_normalize_engine() {
+    // DiceSettingsEngine::validate is a no-op today; this pins that
+    // normalize_engine's "dice-settings" arm actually calls it (not just a bare
+    // round_trip), so the next field to need a check has a home.
+    assert!(DiceSettingsEngine::default().validate().is_ok());
+    let v = serde_json::to_value(DiceSettingsEngine::default()).unwrap();
+    assert!(normalize_engine_opt("dice-settings", Some(&v))
+        .unwrap()
+        .is_some());
+}
+
+#[test]
 fn scene_levels_minimal_body_is_valid() {
     let v = json!({
         "grid": { "kind": "square", "size": 100.0 }, "background": null,

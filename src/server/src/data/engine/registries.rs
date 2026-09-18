@@ -18,6 +18,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+use uuid::Uuid;
 
 use super::MAX_CHANNEL_CHARS;
 
@@ -523,4 +524,30 @@ pub struct DiceSettingsEngine {
     /// independently-optional fields (see `ChannelDiceOverride`'s doc).
     #[serde(default)]
     pub channel_overrides: BTreeMap<String, ChannelDiceOverride>,
+    /// The dice-clatter one-shot asset played at throw time (`dice-3d`'s trigger, wired
+    /// through `ctx.audio.playOneShot` once `AudioApi` exists); `None` = silent.
+    /// A bare `Uuid` like every other asset reference in `chat::mod` (e.g.
+    /// `Segment::Image::asset_id`) — no separate existence check at this layer, the asset
+    /// endpoint 404s on a dangling id the same way an image segment's would.
+    #[serde(default)]
+    #[ts(optional)]
+    pub sound: Option<Uuid>,
+}
+
+impl DiceSettingsEngine {
+    /// Ingress validation beyond serde shape. Today `sound` is a bare `Uuid` — already
+    /// exhaustively checked by the type itself — so this always succeeds; it exists as the
+    /// home for the next `DiceSettingsEngine` field that needs a runtime check, the same
+    /// reason `ChannelRegistryEngine`/`ConditionRegistryEngine` each carry one.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use shadowcat::data::engine::DiceSettingsEngine;
+    ///
+    /// assert!(DiceSettingsEngine::default().validate().is_ok());
+    /// ```
+    pub fn validate(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
