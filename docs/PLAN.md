@@ -55,54 +55,47 @@ per-token built-in fx (condition-driven + selection highlight), emote overlays, 
 tooling — delivery notes in [`HISTORY.md`](HISTORY.md)'s M18 entry. Sound/VFX PLAYBACK remains
 Phase 3 by design (the component model landed here; the emit seams are Phase-3 audio/VFX).
 
-## Phase 3 — Atmosphere
+## Phase 3 — Atmosphere ✅
 
-Seven milestones, designed together (master integration spec:
-`superpowers/specs/2026-09-11-phase3-master-integration-design.md` — seam ownership, shared-file
-conventions, merge order M22 → M28 → M24 → M23 → M25 → M26 → M27) and built simultaneously in
-separate worktrees. Each has its own design spec and implementation plan under
-`superpowers/specs/2026-09-11-m2X-*-design.md` / `superpowers/plans/2026-09-11-m2X-*.md`.
+Complete: M22–M28, designed together (master integration spec:
+`superpowers/specs/2026-09-11-phase3-master-integration-design.md`) and built simultaneously in
+separate worktrees, merged in order M22 → M28 → M24 → M23 → M25 → M26 → M27 — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M22–M28 entries.
 
-### M22 · Performance settings + render budget
-Per-device presets (auto / mobile / balanced / quality / custom): frame-rate cap, render scale,
-antialias, token fx, lighting quality, VFX / 3D-dice / spatial-audio switches, dirty-flag idle
-rendering, `prefers-reduced-motion`; a frame-stats readout. The seam every other Phase-3
-milestone reads its budget from.
+### M22 · Performance settings + render budget ✅
+Complete: per-device presets (auto / mobile / balanced / quality / custom) and the frame-stats
+readout — the seam every other Phase-3 milestone reads its budget from — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M22 entry.
 
-### M23 · Audio
-M23a: Web Audio mixer (channels, per-device gains, duck bus), `playlist` + server-owned
-`audio-state` documents with world-clock sync (joiners hear the table), scene ambience, the
-Opus transcode derivative (`symphonia` + `opus`, original retained as the fallback), audio
-panel + playlist sheet. M23b: per-recipient `"audibility"` derived channel (distance falloff +
-elevation-banded wall occlusion computed on the server), spatial emitter playback.
+### M23 · Audio ✅
+Complete: M23a (Web Audio mixer, `playlist` + `audio-state` documents, scene ambience, Opus
+transcode, audio panel + playlist sheet) and M23b (per-recipient `"audibility"` derived channel,
+spatial emitter playback) — delivery notes in [`HISTORY.md`](HISTORY.md)'s M23 entry.
 
-### M24 · VFX
-Server-derived grid sheets from animated WebP, PixiJS spritesheet pairing, the `vfx` render
-layer with `VfxView` (token emitters + concurrent one-shots), `PlayVfx`/`Vfx` frames, the FX
-scene tool through a new `SCENE_TOOL_CONTRACT`, the `/fx` chat command.
+### M24 · VFX ✅
+Complete: server-derived grid sheets, the `vfx` render layer, `PlayVfx`/`Vfx` frames, the FX
+scene tool through `SCENE_TOOL_CONTRACT`, the `/fx` chat command — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M24 entry.
 
-### M25 · Multi-level maps + portals
-`SceneEngine.levels` (elevation bands with their own backgrounds), `ElevationBand` on walls /
-regions / drawings / templates, movement + lighting + explored fog per level, client level
-scoping + switcher, `TriggerEffect::Teleport` (same-scene and cross-scene portals through the
-server-authored `Move`).
+### M25 · Multi-level maps + portals ✅
+Complete: `SceneEngine.levels`, `ElevationBand` on walls / regions / drawings / templates,
+per-level movement/lighting/fog, client level scoping + switcher, `TriggerEffect::Teleport` —
+delivery notes in [`HISTORY.md`](HISTORY.md)'s M25 entry.
 
-### M26 · 3D dice
-`DieRecord.kind` exposed to every recipient; a `dice-3d` module rendering rolls in a separate
-three.js WebGL overlay (rapier physics, seeded per roll, faces remapped to the server's values)
-through a new `STAGE_OVERLAY_CONTRACT`; off by default on the mobile preset.
+### M26 · 3D dice ✅
+Complete: `DieRecord.kind` exposed to every recipient, the `dice-3d` module's three.js/rapier
+overlay through `STAGE_OVERLAY_CONTRACT`, off by default on the mobile preset — delivery notes
+in [`HISTORY.md`](HISTORY.md)'s M26 entry.
 
-### M27 · Voice ducking
-Three `DuckSource`s behind M23's contract: an in-browser mic voice-activity detector (audio
-never leaves the worklet), a push-to-duck key, and the `shadowcat audio-monitor` subcommand
-(WASAPI / Core Audio process tap / PipeWire) serving watched-process levels over a localhost,
-origin-allowlisted WebSocket; a new `SETTINGS_SECTION_CONTRACT`.
+### M27 · Voice ducking ✅
+Complete: the three `DuckSource`s behind M23's contract (in-browser VAD, push-to-duck,
+`shadowcat audio-monitor` subcommand) and `SETTINGS_SECTION_CONTRACT` — delivery notes in
+[`HISTORY.md`](HISTORY.md)'s M27 entry.
 
-### M28 · Sandboxed third-party validators
-The parked capability Phase 3: opt-in, per-world `wasmi` validators declared by a module's
-manifest, run over the `system` band outside the write transaction with fuel / memory /
-wall-clock caps, refusal reasons on a new `Reject.detail` field, auto-disable on faults, a
-threat model and an example validator crate.
+### M28 · Sandboxed third-party validators ✅
+Complete: opt-in per-world `wasmi` validators over the `system` band with fuel/memory/wall-clock
+caps, `Reject.detail`, auto-disable on faults, threat model + example validator crate —
+delivery notes in [`HISTORY.md`](HISTORY.md)'s M28 entry.
 
 ## Phase 4 — Platform & scale
 **Audit-grade point-in-time replay** — a state-as-of-sequence facility: what a document, its
