@@ -1,4 +1,4 @@
-import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS } from "./fixtures";
+import { test, expect, login, createAccount, DUAL_SESSION_TIMEOUT_MS, newE2EContext } from "./fixtures";
 import type { Page } from "@playwright/test";
 
 /** The 3D dice overlay host element on one page (`DiceOverlay`'s root). */
@@ -31,7 +31,12 @@ test("a roll tumbles and settles to the server's result on both the GM and playe
   const code = await gm.getByLabel("Invite code").inputValue();
   expect(code.length).toBeGreaterThan(0);
 
-  const playerCtx = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  // `newE2EContext` (not a plain `browser.newContext`) pins this context to the same
+  // full-fidelity performance mirror the default `page` fixture gets: "auto" resolves to the
+  // "mobile" preset (dice3d disabled) on a low-core-count host, and CI runners report
+  // `hardwareConcurrency <= 4`, so a raw context reads that preset and this whole spec never
+  // sees a die tumble there.
+  const playerCtx = await newE2EContext(browser, { baseURL: test.info().project.use.baseURL });
   const player = await playerCtx.newPage();
 
   try {
