@@ -44,9 +44,10 @@ test("a roll tumbles and settles to the server's result on both the GM and playe
     await gm.getByRole("button", { name: new RegExp(worldName) }).click();
     await expect(gm.locator(".stage-host")).toHaveAttribute("data-render-ready", "true", { timeout: 30_000 });
 
-    // Chat panel docks by default on both sessions; send the roll from the GM.
-    await gm.getByRole("textbox").fill("/roll 1d20");
-    await gm.getByRole("textbox").press("Enter");
+    // Chat panel docks by default on both sessions; send the roll from the GM. The composer's
+    // label text is dynamic ("Message #{name}"/"Message the GM"), so target its stable id.
+    await gm.locator("#chat-composer-input").fill("/roll 1d20");
+    await gm.locator("#chat-composer-input").press("Enter");
 
     const card = gm.locator(".card").filter({ has: gm.locator(".roll-total") });
     await expect(card).toHaveCount(1, { timeout: 15_000 });
@@ -66,8 +67,8 @@ test("a roll tumbles and settles to the server's result on both the GM and playe
     await player.getByTestId("launcher-item-settings:panel").click();
     await player.getByTestId("perf-dice3d").uncheck();
 
-    await gm.getByRole("textbox").fill("/roll 1d6");
-    await gm.getByRole("textbox").press("Enter");
+    await gm.locator("#chat-composer-input").fill("/roll 1d6");
+    await gm.locator("#chat-composer-input").press("Enter");
     await expect(gm.locator(".card").filter({ has: gm.locator(".roll-total") })).toHaveCount(2, { timeout: 15_000 });
     await expect(dice3dOverlay(player)).toHaveAttribute("data-dice3d-state", "idle", { timeout: 5_000 });
   } finally {
