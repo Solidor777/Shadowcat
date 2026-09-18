@@ -57,3 +57,16 @@ fn the_vfx_bucket_is_a_distinct_limiter_from_ping_emote_and_message() {
         assert!(!Arc::ptr_eq(&ws2.vfx_rate, other));
     }
 }
+
+#[test]
+fn vfx_rate_is_the_same_instance_rooms_charges_for_trigger_fired_plays() {
+    // `WsState.vfx_rate` and `RoomRegistry::vfx_rate()` (which every `Room` it creates clones
+    // into its own trigger-firing path) must be the identical `Arc<PingRateLimiter>` — never two
+    // separately-constructed limiters — or a region-trigger-fired VFX would draw from a parallel
+    // bucket instead of the one the raw `PlayVfx` frame and `/fx` already share.
+    let ws = WsState::new();
+    assert!(Arc::ptr_eq(&ws.vfx_rate, &ws.rooms.vfx_rate()));
+
+    let ws2 = WsState::with_broadcast_capacity(1);
+    assert!(Arc::ptr_eq(&ws2.vfx_rate, &ws2.rooms.vfx_rate()));
+}

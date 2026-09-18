@@ -208,6 +208,7 @@ test("buildSceneDoc makes a top-level world scene with a default square grid", (
     vision: null,
     lighting: null,
     combat: null,
+    levels: [],
     ambience: null,
   });
   expect(typeof doc.id).toBe("string");
@@ -286,7 +287,7 @@ test("buildTokenFromActor stamps the scene's unit footprint, which stands until 
 
   // The server's own resolved extent, once stated, wins over the stamped unit footprint.
   const store = storeWith(actor, token);
-  const resolved: FootprintLookup = { token: () => ({ w: 100, h: 100 }), unit: () => null };
+  const resolved: FootprintLookup = { token: () => ({ w: 100, h: 100 }), unit: () => null, level: () => null };
   expect(resolveTokenBox(token, store, resolved, resolveTokenActor(token, store)).w).toBe(100);
 
   // Until then — and permanently for a token no actor sizes — the stamped extent is the box.
@@ -422,6 +423,7 @@ describe("buildRegionDoc", () => {
         { on: "enter", effect: { type: "condition_add", condition: "prone" } },
         { on: "arrest", effect: { type: "resource_delta", resource: "hp", amount: -3 } },
       ],
+      elevation: null,
     };
     const doc = buildRegionDoc("world1", "scene1", eng);
     expect(doc.doc_type).toBe("region");
@@ -438,6 +440,7 @@ describe("buildRegionDoc", () => {
       cost: 1,
       enabled: true,
       triggers: [],
+      elevation: null,
     });
     setRegionVisibility(doc, true);
     expect(doc.permissions.property_overrides["/engine"]).toBe("gm_only");

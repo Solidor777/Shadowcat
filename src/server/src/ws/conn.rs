@@ -94,6 +94,9 @@ enum Egress {
         channel: String,
         /// GM-only see-as-player target (authorized in the egress handler).
         as_user: Option<Uuid>,
+        /// The level explored-fog accumulation/emission is scoped to (`None` = implicit
+        /// ground; normalized to `""` at insertion — see `SceneSub::level`).
+        level: Option<String>,
     },
     /// Cancel a derived scene-channel subscription.
     SceneUnsubscribe {
@@ -141,6 +144,9 @@ struct SceneSub {
     fingerprint: Option<serde_json::Value>,
     /// The context the channel is computed for (own, or GM see-as target).
     view_ctx: PermissionContext,
+    /// The level explored-fog accumulation/emission is scoped to (`""` = implicit ground —
+    /// the `None` spelling is normalized away at insertion, so every reader sees one form).
+    level: String,
 }
 
 /// A cheap, order-sensitive identity of a result page for no-op suppression:
@@ -531,9 +537,9 @@ async fn handle_socket(
                                     }
                                 }
                                 Ok(ClientMsg::Pong) => {}
-                                Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user }) => {
+                                Ok(ClientMsg::SceneSubscribe { request_id, channel, as_user, level }) => {
                                     if etx
-                                        .send(Egress::SceneSubscribe { request_id, channel, as_user })
+                                        .send(Egress::SceneSubscribe { request_id, channel, as_user, level })
                                         .await
                                         .is_err()
                                     {
@@ -1199,10 +1205,17 @@ async fn handle_pathfind(
     };
     // Step 1: check movement_restriction under a short read guard, then drop it. The grid kind is
     // captured in the SAME guard from the `ResolvedScene` already being resolved, so the decode
-    // below never re-acquires the lock for it.
-    let (need_explored, grid_kind) = {
+    // below never re-acquires the lock for it. The mover's level is captured here too: explored
+    // memory is keyed per level, and a token-less hypothetical preview routes (and remembers) at
+    // ground.
+    let (need_explored, grid_kind, mover_level) = {
         let s = room.scene().read().await;
         let resolved = s.resolve_scene(scene);
+        let levels = s.scene_levels(scene);
+        let mover_elevation = match token {
+            Some(t) => s.token_mover_elevation(t),
+            None => crate::scene::elevation::GROUND,
+        };
         (
             !is_gm
                 && matches!(
@@ -1210,11 +1223,14 @@ async fn handle_pathfind(
                     crate::scene::MovementRestriction::Revealed
                 ),
             resolved.grid_kind,
+            crate::scene::elevation::level_of(&levels, mover_elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default(),
         )
     };
     // Step 2: fetch explored (if needed) after the lock is dropped.
     let explored = if need_explored {
-        match repo.get_explored(scene, ctx.user_id).await {
+        match repo.get_explored(scene, &mover_level, ctx.user_id).await {
             Ok(Some(blob)) => Some(crate::scene::explored::ExploredSet::from_bytes(
                 &blob, grid_kind,
             )),
@@ -1320,6 +1336,13 @@ async fn handle_pathfind(
             footprint_radius,
             budget_cells,
             traits,
+            // The mover's floor: resolved off the named token's stored elevation (the same
+            // re-resolution `footprint_radius` gets above), never the wire's claim; a token-less
+            // hypothetical preview routes at ground.
+            elevation: match token {
+                Some(t) => s.token_mover_elevation(t),
+                None => crate::scene::elevation::GROUND,
+            },
         },
     ) {
         Ok(outcome) => ServerMsg::PathResult {
@@ -1400,39 +1423,69 @@ async fn handle_move_request(
     }
 }
 
+/// The recipient identity + scene-geometry inputs every `enrich_vision_explored` call this
+/// connection makes shares: the grid/shape maps captured under the ECS read lock (once per
+/// egress pass), and the repository + world/user identity `get_explored`/`set_explored` persist
+/// against. Grouped into one struct so the function's own per-call arguments (`level`,
+/// `accumulate`) stay legible alongside it.
+struct ExploredCtx<'a> {
+    /// Each subscribed scene's cell size, captured under the same ECS read lock as `grid_shapes`.
+    grid: &'a std::collections::HashMap<Uuid, f64>,
+    /// Each subscribed scene's resolved grid shape (hex axial on a hex scene, square otherwise);
+    /// `+ Send + Sync` so the borrow may live across the `get_explored`/`set_explored` awaits.
+    grid_shapes: &'a std::collections::HashMap<
+        Uuid,
+        Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
+    >,
+    /// The repository `get_explored`/`set_explored` persist explored-fog blobs through.
+    repo: &'a SqliteRepository,
+    /// The world the explored-fog blob is persisted under.
+    world: Uuid,
+    /// The recipient whose explored-fog memory is read/grown.
+    user: Uuid,
+}
+
 /// Inject the player's scene-tagged `explored` cell sets into a `vision` **masked** payload, and —
 /// when `accumulate` — mark the currently-VISIBLE cells (the payload's `lit` set: line of sight
 /// ∩ illumination, the cells the recipient can actually see, never a line-of-sight polygon on
 /// its own) into the player's stored explored and persist on growth. No-op for a GM
 /// (`mode:"all"`) or any payload without a masked `lit` set. Runs after the ECS read lock is
-/// dropped (it does async DB I/O); `grid` carries each scene's cell size, captured under that
-/// lock. Explored is emitted only for scenes the player currently has a vision source in (the
-/// payload's `lit` groups) — a token-less player gets no explored. `accumulate` is FALSE for a
-/// GM see-as-player view: it is a read-only observer that emits the target's stored explored
-/// but must NOT grow the target's memory from the GM's session.
+/// dropped (it does async DB I/O); `ctx.grid` carries each scene's cell size, captured under
+/// that lock. Explored is emitted only for scenes the player currently has a vision source in
+/// (the payload's `lit` groups) — a token-less player gets no explored. `accumulate` is FALSE
+/// for a GM see-as-player view: it is a read-only observer that emits the target's stored
+/// explored but must NOT grow the target's memory from the GM's session.
+///
+/// Explored is keyed per (scene, LEVEL, user): it is accumulated into the level of its SOURCE
+/// TOKEN (the `level` each `lit` group carries) and emitted for the recipient's VIEWED level
+/// (`level`, the connection's requested level from `ClientMsg::SceneSubscribe::level`, `""` =
+/// implicit ground) only — a floor a player cannot currently see still remembers what THAT
+/// floor's tokens saw, but the wire payload never restates a floor the client is not rendering.
 async fn enrich_vision_explored(
     payload: &mut serde_json::Value,
-    grid: &std::collections::HashMap<Uuid, f64>,
-    grid_shapes: &std::collections::HashMap<
-        Uuid,
-        Box<dyn crate::scene::grid_shape::GridShape + Send + Sync>,
-    >,
-    repo: &SqliteRepository,
-    world: Uuid,
-    user: Uuid,
+    ctx: ExploredCtx<'_>,
+    level: &str,
     accumulate: bool,
 ) {
+    let ExploredCtx {
+        grid,
+        grid_shapes,
+        repo,
+        world,
+        user,
+    } = ctx;
     if payload.get("mode").and_then(|m| m.as_str()) != Some("masked") {
         return;
     }
-    // The recipient's visible cells by scene, read back from the payload's own `lit` groups
-    // (`compute_derived`'s 5-int packing: `[i, j, band, tint, hint]` per cell).
+    // The recipient's visible cells by (scene, level), read back from the payload's own `lit`
+    // groups (`compute_derived`'s 5-int packing: `[i, j, band, tint, hint]` per cell; the
+    // group's `level` tags the source token's floor, `""` = ground).
     let lit = payload
         .get("lit")
         .and_then(|l| l.as_array())
         .cloned()
         .unwrap_or_default();
-    let mut by_scene: std::collections::HashMap<Uuid, Vec<(i32, i32)>> =
+    let mut by_scene: std::collections::HashMap<(Uuid, String), Vec<(i32, i32)>> =
         std::collections::HashMap::new();
     for group in &lit {
         let Some(scene) = group
@@ -1442,12 +1495,17 @@ async fn enrich_vision_explored(
         else {
             continue;
         };
+        let group_level = group
+            .get("level")
+            .and_then(|l| l.as_str())
+            .unwrap_or("")
+            .to_string();
         let cells: Vec<i64> = group
             .get("cells")
             .and_then(|c| c.as_array())
             .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
             .unwrap_or_default();
-        let entry = by_scene.entry(scene).or_default();
+        let entry = by_scene.entry((scene, group_level)).or_default();
         for c in cells.as_chunks::<5>().0 {
             if let (Ok(i), Ok(j)) = (i32::try_from(c[0]), i32::try_from(c[1])) {
                 entry.push((i, j));
@@ -1455,7 +1513,7 @@ async fn enrich_vision_explored(
         }
     }
     let mut explored_out: Vec<serde_json::Value> = Vec::with_capacity(by_scene.len());
-    for (scene, visible) in by_scene {
+    for ((scene, group_level), visible) in by_scene {
         // Index this scene's explored fog through its own resolved grid shape (hex axial on a hex
         // scene, byte-identical square math otherwise) so the accumulated cells compose with the
         // `Revealed` gate's hex `line_traversal` move-cells. A scene absent from either map has no
@@ -1473,17 +1531,30 @@ async fn enrich_vision_explored(
         else {
             continue;
         };
-        let mut set = match repo.get_explored(scene, user).await {
+        let mut set = match repo.get_explored(scene, &group_level, user).await {
             Ok(Some(blob)) => crate::scene::explored::ExploredSet::from_bytes(&blob, shape.kind()),
             _ => crate::scene::explored::ExploredSet::new(),
         };
         if accumulate && set.mark_cells(visible) > 0 {
             let _ = repo
-                .set_explored(world, scene, user, &set.to_bytes(shape.kind()))
+                .set_explored(
+                    world,
+                    scene,
+                    &group_level,
+                    user,
+                    &set.to_bytes(shape.kind()),
+                )
                 .await;
         }
+        // Emission is scoped to the recipient's VIEWED level: every level's memory grew above,
+        // but only the level the client renders is restated on the wire.
+        if group_level != level {
+            continue;
+        }
         let cells: Vec<i32> = set.iter().flat_map(|(i, j)| [i, j]).collect();
-        explored_out.push(serde_json::json!({ "scene": scene, "cell": cell, "cells": cells }));
+        explored_out.push(
+            serde_json::json!({ "scene": scene, "level": group_level, "cell": cell, "cells": cells }),
+        );
     }
     payload["explored"] = serde_json::json!(explored_out);
 }
@@ -1630,10 +1701,24 @@ async fn clip_move_stream(
     // Every in-flight mover's carried emission leaves the committed field (its committed
     // position is its move's end); `ClipInputs::at` composes each back in per instant.
     let exclude: Vec<Uuid> = in_flight.iter().map(|m| m.token).collect();
-    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`.
-    let sight = {
+    // Authoritative ECS read, dropped before this function's caller awaits `sink.send`. The
+    // mover's floor is resolved here too (its OWN stored elevation, never the frame's say-so):
+    // the position clip's level conjunct and each composed torch's level both read it.
+    let (sight, mover_level, mover_elevation) = {
         let ecs = room.scene().read().await;
-        ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id)
+        let mover_elevation = ecs.token_mover_elevation(*token_id);
+        let mover_level =
+            crate::scene::elevation::level_of(&ecs.scene_levels(*scene), mover_elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default();
+        for m in in_flight.iter_mut() {
+            m.mover_elevation = ecs.token_mover_elevation(m.token);
+        }
+        (
+            ecs.recipient_sight(&target, world_defaults, *scene, &exclude, *token_id),
+            mover_level,
+            mover_elevation,
+        )
     };
     if ctx.world_role == crate::data::document::WorldRole::Gm && !sight.has_sources() {
         // See-as target has no vision source in this scene → not applicable → full GM stream.
@@ -1646,6 +1731,8 @@ async fn clip_move_stream(
         sight: &sight,
         in_flight: &in_flight,
         target: target.user_id,
+        mover_level,
+        mover_elevation,
     };
     // Both gates from ONE resolution of each distinct instant: a position sample stays where
     // the target perceives it, a light sample where its glow lights a cell the target sees;
@@ -1714,6 +1801,9 @@ fn in_flight_of(token: Uuid, frame: &ServerMsg) -> Option<crate::ws::move_clip::
             start_server_ms: *start_server_ms,
             mover: *mover,
             token,
+            // Overwritten with the token's resolved elevation under the caller's ECS read guard
+            // (`clip_move_stream`); the frame itself carries no elevation.
+            mover_elevation: crate::scene::elevation::GROUND,
             positions: samples,
             light: mover_light.as_deref(),
         }),
@@ -1999,7 +2089,7 @@ async fn egress_loop<S>(
                     // `listen_as` regardless of when it fires).
                     reeval_deadline = Some(tokio::time::Instant::now());
                 }
-                Some(Egress::SceneSubscribe { request_id, channel, as_user }) => {
+                Some(Egress::SceneSubscribe { request_id, channel, as_user, level }) => {
                     if scene_subs.contains_key(&request_id) {
                         // A duplicate id would silently orphan the prior sub (mirrors the search path).
                         let f = ServerMsg::SceneError { request_id, message: "duplicate subscription id".into() };
@@ -2008,6 +2098,9 @@ async fn egress_loop<S>(
                         let f = ServerMsg::SceneError { request_id, message: "too many subscriptions".into() };
                         if sink.send(text(&f)).await.is_err() { break; }
                     } else {
+                        // `None` (implicit ground) normalizes to the ONE internal spelling here,
+                        // so `SceneSub::level` and `enrich_vision_explored` never handle two.
+                        let level = level.unwrap_or_default();
                         // Resolve the effective view context. `as_user` (see-as-player) is
                         // GM-ONLY, and the target's role is resolved SERVER-SIDE — a non-GM can never
                         // view as another user, and a client-supplied role/scope is never trusted.
@@ -2043,7 +2136,7 @@ async fn egress_loop<S>(
                         match payload {
                             Some(mut p) => {
                                 if channel == "vision" {
-                                    enrich_vision_explored(&mut p, &grid, &grid_shapes, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
+                                    enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                                 }
                                 let f = ServerMsg::SceneDerived {
                                     request_id,
@@ -2052,7 +2145,7 @@ async fn egress_loop<S>(
                                     payload: p.clone(),
                                 };
                                 if sink.send(text(&f)).await.is_err() { break; }
-                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p), view_ctx });
+                                scene_subs.insert(request_id, SceneSub { channel, fingerprint: Some(p), view_ctx, level });
                             }
                             None => {
                                 let f = ServerMsg::SceneError { request_id, message: format!("unknown channel: {channel}") };
@@ -2260,17 +2353,18 @@ async fn egress_loop<S>(
                             *id,
                             s.channel.clone(),
                             s.view_ctx,
+                            s.level.clone(),
                             crate::scene::compute_derived(&s.channel, &ecs, &s.view_ctx, &world_defaults, listen_as),
                         ));
                     }
                     (ecs.committed_seq(), out, ecs.scene_grid_sizes(), ecs.scene_grid_shapes())
                 };
-                for (id, channel, view_ctx, payload) in snapshot {
+                for (id, channel, view_ctx, level, payload) in snapshot {
                     if let Some(mut p) = payload {
                         if channel == "vision" {
                             // See-as (view_ctx != own) is read-only: emit the target's explored, never persist.
                             let accumulate = view_ctx.user_id == ctx.user_id;
-                            enrich_vision_explored(&mut p, &grid, &grid_shapes, repo.as_ref(), world_id, view_ctx.user_id, accumulate).await;
+                            enrich_vision_explored(&mut p, ExploredCtx { grid: &grid, grid_shapes: &grid_shapes, repo: repo.as_ref(), world: world_id, user: view_ctx.user_id }, &level, accumulate).await;
                         }
                         if let Some(sub) = scene_subs.get_mut(&id) {
                             if sub.fingerprint.as_ref() != Some(&p) {

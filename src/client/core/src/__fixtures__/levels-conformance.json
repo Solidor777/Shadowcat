@@ -1,0 +1,83 @@
+{
+  "cases": [
+    {
+      "name": "empty levels resolve to null",
+      "levels": [],
+      "elevation": 5,
+      "expect": null
+    },
+    {
+      "name": "elevation inside a band resolves to that level",
+      "levels": [
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null },
+        { "id": "upper", "name": "Upper Floor", "bottom": 10, "top": 20, "background": null }
+      ],
+      "elevation": 5,
+      "expect": "ground"
+    },
+    {
+      "name": "a level's bottom is inclusive",
+      "levels": [
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null },
+        { "id": "upper", "name": "Upper Floor", "bottom": 10, "top": 20, "background": null }
+      ],
+      "elevation": 0,
+      "expect": "ground"
+    },
+    {
+      "name": "a level's top is exclusive and the adjacent level starts there",
+      "levels": [
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null },
+        { "id": "upper", "name": "Upper Floor", "bottom": 10, "top": 20, "background": null }
+      ],
+      "elevation": 10,
+      "expect": "upper"
+    },
+    {
+      "name": "an elevation past a top inside a gap falls back to the level below the gap",
+      "levels": [
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null },
+        { "id": "attic", "name": "Attic", "bottom": 20, "top": 30, "background": null }
+      ],
+      "elevation": 10,
+      "expect": "ground"
+    },
+    {
+      "name": "above every level resolves to the highest (a token on a roof is on the top floor)",
+      "levels": [
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null },
+        { "id": "upper", "name": "Upper Floor", "bottom": 10, "top": 20, "background": null }
+      ],
+      "elevation": 25,
+      "expect": "upper"
+    },
+    {
+      "name": "below every level resolves to the lowest",
+      "levels": [
+        { "id": "basement", "name": "Basement", "bottom": 0, "top": 10, "background": null },
+        { "id": "ground", "name": "Ground Floor", "bottom": 10, "top": 20, "background": null }
+      ],
+      "elevation": -5,
+      "expect": "basement"
+    },
+    {
+      "name": "declaration order does not decide the resolution",
+      "levels": [
+        { "id": "upper", "name": "Upper Floor", "bottom": 10, "top": 20, "background": null },
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null }
+      ],
+      "elevation": 5,
+      "expect": "ground"
+    },
+    {
+      "name": "the highest of several levels below the elevation wins the fallback",
+      "levels": [
+        { "id": "ground", "name": "Ground Floor", "bottom": 0, "top": 10, "background": null },
+        { "id": "upper", "name": "Upper Floor", "bottom": 10, "top": 20, "background": null },
+        { "id": "attic", "name": "Attic", "bottom": 30, "top": 40, "background": null }
+      ],
+      "elevation": 25,
+      "expect": "upper"
+    }
+  ]
+}

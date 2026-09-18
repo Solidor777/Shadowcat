@@ -814,6 +814,24 @@ describe("WsClient", () => {
     expect(frames).toHaveLength(2); // no dispatch after unsubscribe
   });
 
+  it("subscribeScene sends level only when set", async () => {
+    const sent: string[] = [];
+    const client = new WsClient({
+      world: "w1",
+      connect: () => Promise.resolve({ send: (d) => sent.push(d), close: () => {} }),
+      handlers: noop,
+    });
+    await client.start();
+    client.subscribeScene("vision", () => {}, { level: "l2" });
+    const withLevel = JSON.parse(sent.find((s) => JSON.parse(s).type === "scene_subscribe")!);
+    expect(withLevel.level).toBe("l2");
+
+    sent.length = 0;
+    client.subscribeScene("vision", () => {});
+    const withoutLevel = JSON.parse(sent.find((s) => JSON.parse(s).type === "scene_subscribe")!);
+    expect(withoutLevel.level).toBeUndefined();
+  });
+
   it("subscribeScene rejects on a scene_error frame", async () => {
     const sent: string[] = [];
     let onMessage: (d: string) => void = () => {};

@@ -20,6 +20,7 @@ pub(crate) mod navmesh;
 pub(crate) mod pathfinding;
 pub(crate) mod regions;
 pub(crate) mod senses;
+mod visibility_compute;
 pub mod vision;
 
 #[cfg(test)]
@@ -41,6 +42,15 @@ use crate::data::document::Document;
 use crate::data::engine as eng;
 use crate::data::membership::PermissionContext;
 use crate::scene::lighting::Band;
+// The visibility/lighting mask computation lives in a sibling file (file-size gate); every name
+// below is re-exported here so external callers keep addressing them as `scene::segments_cross`/
+// `scene::compute_derived` — moving the implementation file never moves the public path.
+pub use visibility_compute::compute_derived;
+pub(crate) use visibility_compute::segments_cross;
+use visibility_compute::{
+    accumulate_visible_cells, cell_visible, point_qualifies, source_los_poly, LightingInputs,
+    VisSrc, VisibilityInputsSnapshot, VisibleCellsCacheEntry,
+};
 
 /// Resolved per-scene lighting mode. The client's wire twin is generated from
 /// `eng::LightMode`, the identically-named wire enum this module imports under the `eng`
@@ -429,6 +439,7 @@ pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 /// ```
 /// let lit = shadowcat::scene::LitScene {
 ///     scene: uuid::Uuid::new_v4(),
+///     level: String::new(),
 ///     cell: 1.0,
 ///     cells: vec![(0, 0, 0, 0xffffff, None)],
 /// };
@@ -438,6 +449,10 @@ pub type TokenMove = (Uuid, (f64, f64), (f64, f64));
 pub struct LitScene {
     /// Scene document id.
     pub scene: Uuid,
+    /// The level this entry's cells belong to, resolved from each source token's elevation
+    /// through `elevation::level_of`; `""` = ground/a level-less scene. One scene yields one
+    /// entry PER LEVEL its sources occupy, never a cross-level union.
+    pub level: String,
     /// Grid cell size in scene units.
     pub cell: f64,
     /// Visible cells as `(i, j, band_index, tint, render_hint)` tuples.
@@ -500,9 +515,22 @@ impl SightSources {
         self.sources.is_empty()
     }
 
-    /// Every source's committed LOS polygon.
-    pub(crate) fn polygons(&self) -> Vec<Vec<vision::P>> {
-        self.sources.iter().map(|s| s.poly.clone()).collect()
+    /// Every source's committed LOS polygon paired with its resolved level id (`level_of` over
+    /// `levels`, `""` for ground/a level-less scene) — the level tag `player_vision_polygons`
+    /// attaches to each polygon so the client cuts fog holes only into the viewed level's fog.
+    pub(crate) fn polygons_with_level(
+        &self,
+        levels: &[eng::SceneLevel],
+    ) -> Vec<(String, Vec<vision::P>)> {
+        self.sources
+            .iter()
+            .map(|s| {
+                let level = elevation::level_of(levels, s.elevation)
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default();
+                (level, s.poly.clone())
+            })
+            .collect()
     }
 
     /// Every source's `(viewpoint, LOS polygon)` at one instant: the committed pair, except for
@@ -563,9 +591,16 @@ pub(crate) struct InstantLight {
 pub(crate) struct RecipientSight {
     /// The LOS half.
     los: SightSources,
-    /// The scene's illumination inputs, minus the excluded emitters — shared with every other
-    /// recipient of the same frame through `SceneEcs::lighting_inputs_excluding`'s memo.
-    li: std::sync::Arc<LightingInputs>,
+    /// The scene's illumination inputs per LEVEL, minus the excluded emitters — shared with
+    /// every other recipient of the same frame through `SceneEcs::lighting_inputs_excluding`'s
+    /// memo. Keyed by level id (`""` = ground/a level-less scene) for exactly the levels the
+    /// recipient's own sources occupy: a source's cells are judged against its own floor's
+    /// field, and a lamp on another floor brightens nothing (`player_lit_mask`'s rule, applied
+    /// here so the clip and the resting mask agree).
+    li_by_level: std::collections::BTreeMap<String, std::sync::Arc<LightingInputs>>,
+    /// The scene's declared `SceneEngine::levels` (empty for a level-less scene) — maps a
+    /// source's or a composed light's elevation to its level through `elevation::level_of`.
+    levels: Vec<eng::SceneLevel>,
     /// Test-only instrumentation: how many instants `at` has resolved, so a test can pin that a
     /// frame's clip resolves each DISTINCT instant once (`ws::move_clip::clip_frame`), never
     /// once per sample per gate.
@@ -584,6 +619,15 @@ impl RecipientSight {
     /// True when the recipient has no vision source in the scene (nothing is ever visible).
     pub(crate) fn has_sources(&self) -> bool {
         !self.los.is_empty()
+    }
+
+    /// The level id `e` maps to under this scene's declared levels (`""` for ground/a
+    /// level-less scene) — the key `li_by_level` is built on, and the conjunct a cross-level
+    /// mover is clipped by (`InstantSight::sees_token`).
+    pub(crate) fn level_of_elevation(&self, e: f64) -> String {
+        elevation::level_of(&self.levels, e)
+            .map(|l| l.id.clone())
+            .unwrap_or_default()
     }
 
     /// The sight at one instant (`SightSources::los_at` for the LOS half — one raycast per
@@ -606,8 +650,15 @@ impl RecipientSight {
 
     /// The field `Light` for an in-flight carried-light sample: `bright`/`dim` arrive in scene
     /// units and convert back to cells through this scene's own per-cell distance (a
-    /// non-finite or non-positive reach reads as 0, contributing nothing).
-    pub(crate) fn sample_light(&self, sample: &crate::ws::protocol::LightSample) -> InstantLight {
+    /// non-finite or non-positive reach reads as 0, contributing nothing). `elevation` is the
+    /// MOVER's resolved elevation (never the wire's — the sample carries none): it decides the
+    /// composed light's level (`level_of_elevation`), so a torch on another floor composes
+    /// into no source's field, matching the committed field's level filter.
+    pub(crate) fn sample_light(
+        &self,
+        sample: &crate::ws::protocol::LightSample,
+        elevation: f64,
+    ) -> InstantLight {
         let cells = |r: f64| {
             if r.is_finite() && r > 0.0 && self.world_units_per_cell > 0.0 {
                 r / self.world_units_per_cell
@@ -618,7 +669,7 @@ impl RecipientSight {
         InstantLight {
             light: lighting::Light {
                 pos: (sample.pos[0], sample.pos[1]),
-                elevation: elevation::GROUND,
+                elevation,
                 color: sample.color,
                 intensity: sample.intensity.clamp(0.0, 1.0),
                 bright_radius: cells(sample.bright),
@@ -675,9 +726,13 @@ impl InstantSight<'_> {
     }
 
     /// `RecipientSight::sample_light` for this instant's sight — the field light a carried-
-    /// light sample composes as.
-    pub(crate) fn sample_light(&self, sample: &crate::ws::protocol::LightSample) -> InstantLight {
-        self.sight.sample_light(sample)
+    /// light sample composes as, at the mover's own resolved `elevation`.
+    pub(crate) fn sample_light(
+        &self,
+        sample: &crate::ws::protocol::LightSample,
+        elevation: f64,
+    ) -> InstantLight {
+        self.sight.sample_light(sample, elevation)
     }
 
     /// Whether `light` contributes at `center` on its own: `lighting::source_level` — the
@@ -708,14 +763,22 @@ impl InstantSight<'_> {
     }
 
     /// Whether the recipient perceives the frame's moving token at `point` at this instant:
-    /// `sees` (a terrain sense — line of sight and the composed illumination) OR a creature
-    /// sense of some source reaches it (`senses_perceive`). THE token-visibility predicate the
-    /// position clip reads (`ws::move_clip::ClipInputs::sees_at`): at rest the same token is
-    /// visible through the lit mask OR named by `player_perceived_tokens`, and this is that
-    /// disjunction per instant. A glow is admitted through `sees` alone — creature senses
-    /// perceive tokens, never light.
-    pub(crate) fn sees_token(&self, point: vision::P, extra: &[InstantLight]) -> bool {
-        self.sees(point, extra) || self.senses_perceive(point)
+    /// `sees` restricted to sources on the MOVER'S OWN level (`mover_level` — two entities on
+    /// different levels never see each other, so a mover on another floor is clipped exactly
+    /// like a mover out of sight: the SAME per-source conjunction, with one more conjunct,
+    /// never a second door) OR a creature sense of some source reaches it
+    /// (`senses_perceive`). THE token-visibility predicate the position clip reads
+    /// (`ws::move_clip::ClipInputs::sees_at`): at rest the same token is visible through the
+    /// lit mask OR named by `player_perceived_tokens`, and this is that disjunction per
+    /// instant. A glow is admitted through `sees` alone — creature senses perceive tokens,
+    /// never light.
+    pub(crate) fn sees_token(
+        &self,
+        point: vision::P,
+        extra: &[&InstantLight],
+        mover_level: &str,
+    ) -> bool {
+        self.sees_with(point, extra, Some(mover_level)) || self.senses_perceive(point)
     }
 
     /// The creature-sense half of `sees_token`: some source other than the sensed token itself
@@ -751,23 +814,54 @@ impl InstantSight<'_> {
     /// composed into the field: some source's LOS polygon contains the point AND that source
     /// `point_qualifies` at the point's cell center — the mask's own per-source conjunction,
     /// never an LOS-of-one-source-with-the-floor-of-another union.
-    pub(crate) fn sees(&self, point: vision::P, extra: &[InstantLight]) -> bool {
+    pub(crate) fn sees(&self, point: vision::P, extra: &[&InstantLight]) -> bool {
+        self.sees_with(point, extra, None)
+    }
+
+    /// The shared per-source visibility conjunction behind `sees` (any admitting source) and
+    /// `sees_token` (only sources whose own level IS `mover_level`). A source admits `point`
+    /// when its LOS polygon contains it AND `point_qualifies` at the point's cell center
+    /// against the source's OWN level's field (`li_by_level` — `player_lit_mask`'s per-level
+    /// rule, so the clip and the resting mask agree), with `extra` carried lights composed in
+    /// only when the light's own level matches the source's: an in-flight torch on another
+    /// floor lights nothing for this source, exactly as the committed field's level filter
+    /// rules it out at rest.
+    fn sees_with(
+        &self,
+        point: vision::P,
+        extra: &[&InstantLight],
+        mover_level: Option<&str>,
+    ) -> bool {
         let sight = self.sight;
         let center = sight.los.grid.cell_center(sight.los.grid.cell_of(point));
         self.views
             .iter()
             .zip(&sight.los.sources)
             .any(|((vp, poly), src)| {
-                vision::point_in_poly(poly, point)
-                    && point_qualifies(
-                        center,
-                        *vp,
-                        &src.floors,
-                        &sight.los.settings,
-                        &sight.li,
-                        sight.world_units_per_cell,
-                        extra,
-                    )
+                let src_level = sight.level_of_elevation(src.elevation);
+                if mover_level.is_some_and(|ml| ml != src_level) {
+                    return false;
+                }
+                let Some(li) = sight.li_by_level.get(&src_level) else {
+                    return false;
+                };
+                if !vision::point_in_poly(poly, point) {
+                    return false;
+                }
+                let extra_here: Vec<&InstantLight> = extra
+                    .iter()
+                    .filter(|il| sight.level_of_elevation(il.light.elevation) == src_level)
+                    .copied()
+                    .collect();
+                point_qualifies(
+                    center,
+                    *vp,
+                    &src.floors,
+                    &sight.los.settings,
+                    li,
+                    sight.world_units_per_cell,
+                    &extra_here,
+                )
             })
     }
 }
@@ -803,8 +897,8 @@ impl InstantSight<'_> {
 /// ```
 pub struct RouteRequester<'a> {
     /// The requesting user. Selects the per-requester wall/region view via
-    /// `move_walls(scene, Some(user))` / `region_field(scene, Some(user))`, and the visibility
-    /// mask via `visible_cells(user, ..)`.
+    /// `move_walls(scene, Some(user), ..)` / `region_field(scene, Some(user), ..)`, and the
+    /// visibility mask via `visible_cells(user, ..)`.
     pub user: Uuid,
     /// Whether the requester is a GM. Skips the mask entirely and selects the AUTHORITATIVE
     /// (`None`-viewer) wall set and region field — callers must never pass a GM's id as the
@@ -841,6 +935,7 @@ pub struct RouteRequester<'a> {
 ///     footprint_radius: 0.4,
 ///     budget_cells: None,
 ///     traits: Default::default(),
+///     elevation: 0.0,
 /// };
 /// assert_eq!(mover.footprint_radius, 0.4);
 /// ```
@@ -859,6 +954,12 @@ pub struct RouteMover {
     /// weighted sub-path on a Continuous scene (impassable still does: the exemption is terrain
     /// COST, never solidity).
     pub traits: pathfinding::MoveTraits,
+    /// The mover's resolved elevation (`elevation::elevation_or_ground` of the named token's
+    /// stored value, or the hypothetical wire value for a token-less preview) — filters
+    /// `move_walls`/`region_field` to the mover's floor. NEVER the client's raw claim for a
+    /// named-token request: the caller re-resolves it off the token exactly as `footprint_radius`
+    /// is re-resolved.
+    pub elevation: f64,
 }
 
 /// The per-world derived world. Writes are serialized by the caller
@@ -912,7 +1013,7 @@ pub struct SceneEcs {
     /// iteration order.
     combats: HashMap<Uuid, Document>,
     /// Footprint-inflated navmesh cache, keyed by `(scene, quantized footprint-radius
-    /// millicells, wall-set key)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`):
+    /// millicells, level id, wall-set key)`. `std::sync::Mutex` (not `RefCell`) + `Arc` (not `Rc`):
     /// `SceneEcs` sits behind a `tokio::sync::RwLock` shared across connection tasks, so
     /// concurrent readers may call `pathfind`/`navmesh_for` simultaneously — the cache needs
     /// `Sync` interior mutability. Never held across an `.await` (lookup + build are
@@ -976,9 +1077,10 @@ pub struct SceneEcs {
     lighting_inputs_recompute_count: std::sync::atomic::AtomicU64,
 }
 
-/// `lighting_inputs_cache`'s key: the scene and the SORTED token ids whose carried emissions
-/// the entry leaves out (`scene_lights_excluding`).
-type LightingInputsCacheKey = (Uuid, Vec<Uuid>);
+/// `lighting_inputs_cache`'s key: the scene, the LEVEL the field is computed for (a light on
+/// another floor contributes nothing — `level_of(light.elevation)` decides membership), and the
+/// SORTED token ids whose carried emissions the entry leaves out (`scene_lights_excluding`).
+type LightingInputsCacheKey = (Uuid, String, Vec<Uuid>);
 
 /// `lighting_inputs_cache`'s value: the snapshot the inputs were raycast from, paired with them.
 type LightingInputsCacheEntry = (LightingInputsSnapshot, std::sync::Arc<LightingInputs>);
@@ -1159,7 +1261,7 @@ fn engine_geometry_visible_to_world(doc: &Document) -> bool {
     engine_geometry_visible_to(doc, &access)
 }
 
-/// Exact, order-independent key for a routing wall set — the third component of
+/// Exact, order-independent key for a routing wall set — the last component of
 /// `NavmeshCacheKey`. A mesh is only valid for the wall set it was inflated from, so two
 /// requesters share a mesh exactly when they see the same walls. An EXACT sorted key rather than
 /// a hash: a collision would serve one requester a mesh built from another's wall set — the leak
@@ -1182,9 +1284,10 @@ fn wall_set_key(walls: &[vision::Seg]) -> Vec<(u64, u64, u64, u64)> {
     k
 }
 
-/// `(scene, quantized footprint-radius millicells, wall-set key)` — see `navmesh_cache`'s field
-/// doc comment for what each component means and why.
-type NavmeshCacheKey = (Uuid, i64, Vec<(u64, u64, u64, u64)>);
+/// `(scene, quantized footprint-radius millicells, level id, wall-set key)` — see
+/// `navmesh_cache`'s field doc comment for what each component means and why. The level id is
+/// `""` for a level-less scene (or ground) — the same spelling the wire's level fields use.
+type NavmeshCacheKey = (Uuid, i64, String, Vec<(u64, u64, u64, u64)>);
 
 /// The footprint radius used when no effective actor resolves. Not a fail-closed choice: it is
 /// more permissive than a 1×1 square's 0.707, and it is the value the gate, the router and a
@@ -2100,15 +2203,18 @@ impl SceneEcs {
         Some((scene, (cx, cy), (nx, ny)))
     }
 
-    /// Per-player visibility polygons, each tagged with the scene it belongs to: one polygon per
-    /// vision source the user holds in that scene (`SightSources` — owned tokens ∪ observer-tier
-    /// tokens under `observerVision`, the SAME admission the lit mask and the movement gate
-    /// read), computed by `source_los_poly` against the scene's FULL `blocksSight` wall set (so
-    /// a `gm_only` wall the player never receives still occludes) at the source's elevation, or
-    /// the whole scene bound when the scene's `losRestriction` is off. The player only ever gets
-    /// their own polygons. The scene tag lets the client cut fog holes only for the scene it is
-    /// rendering — a token in scene B must not punch a hole into scene A's fog (scene
-    /// coordinates are scene-local). Empty when the player holds no source anywhere.
+    /// Per-player visibility polygons, each tagged with the scene AND the level it belongs to:
+    /// one polygon per vision source the user holds in that scene (`SightSources` — owned tokens
+    /// ∪ observer-tier tokens under `observerVision`, the SAME admission the lit mask and the
+    /// movement gate read), computed by `source_los_poly` against the scene's FULL `blocksSight`
+    /// wall set (so a `gm_only` wall the player never receives still occludes) at the source's
+    /// elevation, or the whole scene bound when the scene's `losRestriction` is off. The player
+    /// only ever gets their own polygons. The scene tag lets the client cut fog holes only for
+    /// the scene it is rendering — a token in scene B must not punch a hole into scene A's fog
+    /// (scene coordinates are scene-local) — and the level tag (`""` = ground/a level-less
+    /// scene, the same spelling `SceneSubscribe.level`'s implicit ground uses, never `null`)
+    /// restricts the holes to the viewed level's fog. Empty when the player holds no source
+    /// anywhere.
     ///
     /// # Examples
     ///
@@ -2127,11 +2233,17 @@ impl SceneEcs {
         user_id: Uuid,
         world_role: crate::data::document::WorldRole,
         world_defaults: &crate::data::document::WorldCapDefaults,
-    ) -> Vec<(Uuid, Vec<vision::P>)> {
+    ) -> Vec<(Uuid, String, Vec<vision::P>)> {
         let mut out = Vec::new();
         for scene in self.token_scene_ids() {
             let sight = self.sight_sources(user_id, world_role, world_defaults, scene);
-            out.extend(sight.polygons().into_iter().map(|p| (scene, p)));
+            let levels = self.scene_levels(scene);
+            out.extend(
+                sight
+                    .polygons_with_level(&levels)
+                    .into_iter()
+                    .map(|(level, p)| (scene, level, p)),
+            );
         }
         out
     }
@@ -2244,7 +2356,37 @@ impl SceneEcs {
         // illumination inputs built here are never consulted; a zero cell size synthesizes no
         // grid.
         let cell = self.scene_grid_sizes().get(&scene).copied().unwrap_or(0.0);
-        let li = self.lighting_inputs_excluding(scene, &los.settings, cell, exclude_emitters);
+        // One level-filtered field per level the recipient's own sources occupy: a source's
+        // cells are judged against its own floor's lights (`player_lit_mask`'s rule), and the
+        // memo makes each distinct level's raycasts run once per frame, not once per recipient.
+        let levels = self.scene_levels(scene);
+        let mut source_levels: Vec<String> = los
+            .sources
+            .iter()
+            .map(|s| {
+                elevation::level_of(&levels, s.elevation)
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        source_levels.sort();
+        source_levels.dedup();
+        let li_by_level: std::collections::BTreeMap<String, std::sync::Arc<LightingInputs>> =
+            source_levels
+                .into_iter()
+                .map(|level| {
+                    (
+                        level.clone(),
+                        self.lighting_inputs_excluding(
+                            scene,
+                            &level,
+                            &los.settings,
+                            cell,
+                            exclude_emitters,
+                        ),
+                    )
+                })
+                .collect();
         let sensed = self.index.get(&mover).and_then(|&e| {
             let ent = self.world.get::<&SceneEntity>(e).ok()?;
             let doc = &ent.doc;
@@ -2261,7 +2403,8 @@ impl SceneEcs {
         RecipientSight {
             world_units_per_cell: los.grid.world_units_per_cell(),
             los,
-            li,
+            li_by_level,
+            levels,
             sensed,
             #[cfg(test)]
             at_calls: std::sync::atomic::AtomicU64::new(0),
@@ -2316,23 +2459,27 @@ impl SceneEcs {
         out
     }
 
-    /// The scene's `blocksMove` wall segments. Mirrors the wall filter in `blocks_move`
-    /// (doc_type "wall", parent = scene, `engine.blocksMove == true`, endpoints at
-    /// `engine.seg.{x1,y1,x2,y2}`). INVARIANT: same filter as `blocks_move` — any divergence
-    /// would allow the pathfinder to route through walls the movement gate would then reject.
+    /// The scene's `blocksMove` wall segments with their elevation bands — the raw collector
+    /// behind `move_walls`. Two-value secrecy contract identical to `region_field`'s, and never a
+    /// third mode: `viewer: None` is the AUTHORITATIVE set — used by `execute_move` and by a GM
+    /// requester; `viewer: Some(user)` is the PER-REQUESTER set used by the routers, where a wall
+    /// is included only when `user` can see the visibility tier declared on its `/engine`. A
+    /// `gm_only` wall is therefore absent from a non-GM's route (its geometry cannot be inferred
+    /// from route shape) but still blocks at execution, exactly as a secret region springs.
+    /// Callers MUST pass `None` for a GM requester.
     ///
-    /// Two-value secrecy contract, identical to `region_field`'s and never a third mode:
-    /// `viewer: None` is the AUTHORITATIVE set — used by `execute_move` and by a GM requester;
-    /// `viewer: Some(user)` is the PER-REQUESTER set used by the routers, where a wall is included
-    /// only when `user` can see the visibility tier declared on its `/engine`. A `gm_only` wall is
-    /// therefore absent from a non-GM's route (its geometry cannot be inferred from route shape)
-    /// but still blocks at execution, exactly as a secret region springs. Callers MUST pass `None`
-    /// for a GM requester.
+    /// INVARIANT: same wall filter as `blocks_move` (doc_type "wall", parent = scene,
+    /// `engine.blocksMove == true`, endpoints at `engine.seg.{x1,y1,x2,y2}`) — any divergence
+    /// would allow the pathfinder to route through walls the movement gate would then reject.
     ///
     /// Scope: this is the ROUTING wall set only. `sight_walls`/`light_walls` deliberately carry the
     /// full set including `gm_only` walls (full-wall-set invariant) — a wall you cannot see
     /// still blocks your sight, which under-reveals and is correct. Do not unify the two.
-    pub(crate) fn move_walls(&self, scene: Uuid, viewer: Option<Uuid>) -> Vec<vision::Seg> {
+    pub(crate) fn move_wall_entries(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+    ) -> Vec<elevation::BandedWall> {
         let mut out = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
@@ -2347,17 +2494,50 @@ impl SceneEcs {
             if !engine_tier_visible(&w.doc, viewer) {
                 continue;
             }
-            out.push(vision::Seg {
-                a: (wall.seg.x1, wall.seg.y1),
-                b: (wall.seg.x2, wall.seg.y2),
-            });
+            out.push((
+                vision::Seg {
+                    a: (wall.seg.x1, wall.seg.y1),
+                    b: (wall.seg.x2, wall.seg.y2),
+                },
+                wall.elevation,
+            ));
         }
         out
     }
 
-    /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells,
+    /// The `blocksMove` wall segments of `scene`, per-requester (`viewer`, see
+    /// `move_wall_entries`), filtered to the segments whose band contains `mover_elevation`
+    /// (`elevation::band_contains` — a floor-2 wall no longer blocks a floor-1 mover). Callers
+    /// MUST pass the mover's OWN resolved elevation (`elevation::elevation_or_ground` of its
+    /// stored value), never a client-claimed one.
+    pub(crate) fn move_walls(
+        &self,
+        scene: Uuid,
+        viewer: Option<Uuid>,
+        mover_elevation: f64,
+    ) -> Vec<vision::Seg> {
+        elevation::walls_at_elevation(&self.move_wall_entries(scene, viewer), mover_elevation)
+    }
+
+    /// The scene's declared `SceneEngine::levels`, empty for a level-less scene or an unreadable
+    /// scene document — the caller's own scene-existence check (`scene_grid_sizes`) is what
+    /// refuses a missing scene; this accessor only ever resolves the floors of a scene that
+    /// check already admitted.
+    pub(crate) fn scene_levels(&self, scene: Uuid) -> Vec<eng::SceneLevel> {
+        self.index
+            .get(&scene)
+            .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+            .and_then(|c| self.engine_as_cached::<eng::SceneEngine>(scene, &c.doc))
+            .map(|s| s.levels)
+            .unwrap_or_default()
+    }
+
+    /// Build-or-fetch the footprint-inflated navmesh for `(scene, footprint_radius_cells, level,
     /// walls)`, memoized in `navmesh_cache` keyed on a quantized radius (nearest 1/1000 cell —
-    /// see the field doc comment) plus an exact wall-set key (`wall_set_key`). Returns `None`
+    /// see the field doc comment), the mover's level id, and an exact wall-set key
+    /// (`wall_set_key`). The level id is part of the key so two levels with coincidentally
+    /// identical wall geometry never share a cache entry — the never-fork pin extends to cache
+    /// identity, not just the predicate. Returns `None`
     /// when `navmesh::build_navmesh` fails closed (a degenerate world extent — which is what a
     /// degenerate cell size becomes — a degenerate footprint distance, or an over-cap obstacle
     /// count) — callers must treat this exactly like the grid router's
@@ -2378,6 +2558,7 @@ impl SceneEcs {
         &self,
         scene: Uuid,
         footprint_radius_cells: f64,
+        level: &str,
         walls: &[vision::Seg],
     ) -> Option<std::sync::Arc<navmesh::NavMesh>> {
         // Validate BEFORE computing the cache key or touching the cache at all. `f64 as i64`
@@ -2395,7 +2576,7 @@ impl SceneEcs {
         // Quantize to the nearest 1/1000 cell so floating-point noise in a client-computed radius
         // (e.g. derived via division) collapses onto the same cache entry as the canonical value.
         let quantized = (footprint_radius_cells * 1000.0).round() as i64;
-        let key = (scene, quantized, wall_set_key(walls));
+        let key = (scene, quantized, level.to_string(), wall_set_key(walls));
         if let Some(cached) = self.navmesh_cache.lock().unwrap().get(&key) {
             return Some(cached.clone());
         }
@@ -2446,7 +2627,7 @@ impl SceneEcs {
     ///     world_defaults: &defaults,
     ///     explored: None,
     /// };
-    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default() };
+    /// let mover = RouteMover { footprint_radius: 0.4, budget_cells: None, traits: Default::default(), elevation: 0.0 };
     /// // No scene document exists: the route is refused, not routed against a synthesized grid.
     /// let result = ecs.pathfind(requester, uuid::Uuid::new_v4(), (0.0, 0.0), &[], mover);
     /// assert!(result.is_err());
@@ -2470,6 +2651,7 @@ impl SceneEcs {
             footprint_radius,
             budget_cells,
             traits,
+            elevation,
         } = mover;
         // Scene-existence admissibility, ahead of any routing work and for every requester
         // including a GM. Coupling: both movement gates (`Room::publish`, `Room::execute_move`)
@@ -2483,12 +2665,20 @@ impl SceneEcs {
             return Err(pathfinding::PathFail::Invalid);
         };
         let grid_shape = self.resolve_grid_shape(scene, cell);
-        // Per-requester routing wall set: a non-GM's route omits `gm_only` walls, so their
-        // geometry cannot be inferred from route shape. The executor always reads the authoritative
-        // set (`None`) and springs a secret wall at execution, exactly as a secret region springs.
-        // Hoisted out of the engine dispatch so BOTH engines receive the SAME slice — never a
-        // forked wall computation (the same discipline `mask` follows).
-        let walls = self.move_walls(scene, if is_gm { None } else { Some(user) });
+        // Per-requester routing wall set, filtered to the mover's floor: a non-GM's route omits
+        // `gm_only` walls, so their geometry cannot be inferred from route shape, and a wall
+        // banded to another level blocks nobody on this one. The executor always reads the
+        // authoritative set (`None`) and springs a secret wall at execution, exactly as a secret
+        // region springs. Hoisted out of the engine dispatch so BOTH engines receive the SAME
+        // slice — never a forked wall computation (the same discipline `mask` follows).
+        let walls = self.move_walls(scene, if is_gm { None } else { Some(user) }, elevation);
+        // The mover's level id, derived from its OWN elevation through the scene's declared
+        // levels — part of the navmesh cache key (`navmesh_for`), so two levels with identical
+        // wall geometry never share a mesh. `""` for a level-less scene.
+        let scene_levels_for_navmesh = self.scene_levels(scene);
+        let mover_level = elevation::level_of(&scene_levels_for_navmesh, elevation)
+            .map(|l| l.id.as_str())
+            .unwrap_or("");
         // Hoisted so `movement_model` is available to the engine dispatch regardless of `is_gm`
         // (a GM can also route on a continuous scene); the mask build and the dispatch discriminant
         // read this one resolution.
@@ -2507,6 +2697,7 @@ impl SceneEcs {
                     world_defaults,
                     scene,
                     settings.partial_cell_leniency,
+                    elevation,
                 )),
                 MovementRestriction::Revealed => {
                     let mut m = self.visible_cells(
@@ -2515,6 +2706,7 @@ impl SceneEcs {
                         world_defaults,
                         scene,
                         settings.partial_cell_leniency,
+                        elevation,
                     );
                     if let Some(ex) = explored {
                         m.extend(ex.iter());
@@ -2530,7 +2722,8 @@ impl SceneEcs {
                 // field; a non-GM requester's field silently omits any region they cannot see, so
                 // a secret region never influences their route or budget (it "springs" only at
                 // execution, `move_exec`, which always reads the authoritative field).
-                let Some(regions) = self.region_field(scene, if is_gm { None } else { Some(user) })
+                let Some(regions) =
+                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
                 else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
@@ -2557,7 +2750,8 @@ impl SceneEcs {
                 // the unchanged pure polyanya route + an arrest post-filter. Arrest applies on both
                 // paths. The per-requester field omits any region a non-GM cannot see (secret
                 // regions spring only at `move_exec`).
-                let Some(regions) = self.region_field(scene, if is_gm { None } else { Some(user) })
+                let Some(regions) =
+                    self.region_field(scene, if is_gm { None } else { Some(user) }, elevation)
                 else {
                     return Err(pathfinding::PathFail::Invalid);
                 };
@@ -2622,7 +2816,7 @@ impl SceneEcs {
                     Ok(navmesh::los_smooth(weighted, &inputs))
                 } else {
                     let nav = self
-                        .navmesh_for(scene, footprint_radius, &walls)
+                        .navmesh_for(scene, footprint_radius, mover_level, &walls)
                         .ok_or(pathfinding::PathFail::Unreachable)?;
                     let raw = navmesh::navmesh_find(&nav, start, waypoints)?;
                     // `raw.path.len() < 2` only when every waypoint leg collapsed to the start
@@ -2696,6 +2890,9 @@ impl SceneEcs {
     /// GM always sees the authoritative field, mirroring `visible_cells`'s GM-skips-the-mask
     /// convention in `pathfind`).
     ///
+    /// The composed field additionally excludes any region whose elevation band does not contain
+    /// `elevation` (`elevation::band_contains`) — the mover's floor, never the viewer's.
+    ///
     /// Returns `None` when `scene` has no live document (an absent `scene_grid_sizes` entry) —
     /// refuse rather than synthesize a grid. Callers must refuse the whole operation on `None`,
     /// mirroring `pathfind`'s `PathFail::Invalid`.
@@ -2703,6 +2900,7 @@ impl SceneEcs {
         &self,
         scene: Uuid,
         viewer: Option<Uuid>,
+        elevation: f64,
     ) -> Option<regions::RegionField> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
@@ -2719,6 +2917,9 @@ impl SceneEcs {
                 continue;
             }
             if !engine_tier_visible(doc, viewer) {
+                continue;
+            }
+            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
                 continue;
             }
             let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
@@ -2743,13 +2944,20 @@ impl SceneEcs {
     /// per-requester form: triggers fire on the server's authoritative view, springing secret
     /// regions exactly as `move_exec` does; secrecy is enforced on the effect side (a
     /// not-visible-to-all region's notices are forced GM-only), never by filtering this table.
+    /// A region whose elevation band does not contain `elevation` (`elevation::band_contains` —
+    /// the entering mover's floor) is excluded alongside the visible-to-all/triggers-non-empty
+    /// filters: a floor-2 region never fires on a floor-1 token.
     /// Recomputed on demand from the same ECS entities `region_field` reads, so a region-doc
     /// mutation applied through `apply_op` is reflected on the next call.
     ///
     /// Returns `None` when `scene` has no live document, mirroring `region_field`'s refusal.
     /// Rows are sorted by region id so downstream effect application order is deterministic
     /// (entity-query order is unspecified).
-    pub(crate) fn trigger_regions(&self, scene: Uuid) -> Option<Vec<regions::TriggerRegion>> {
+    pub(crate) fn trigger_regions(
+        &self,
+        scene: Uuid,
+        elevation: f64,
+    ) -> Option<Vec<regions::TriggerRegion>> {
         let cell = self.scene_grid_sizes().get(&scene).copied()?;
         let grid = self.resolve_grid_shape(scene, cell);
         let mut out = Vec::new();
@@ -2762,6 +2970,9 @@ impl SceneEcs {
                 continue;
             };
             if !region_eng.enabled || region_eng.triggers.is_empty() {
+                continue;
+            }
+            if !elevation::band_contains(region_eng.elevation.as_ref(), elevation) {
                 continue;
             }
             let Some(shape) = regions::parse_region_shape(&region_eng.shape) else {
@@ -3323,10 +3534,12 @@ impl SceneEcs {
         ctx: &PermissionContext,
         world_defaults: &crate::data::document::WorldCapDefaults,
     ) -> footprint::FootprintsPayload {
-        let mut by_scene: BTreeMap<Uuid, (f64, footprint::SceneFootprints)> = BTreeMap::new();
+        let mut by_scene: BTreeMap<Uuid, (f64, Vec<eng::SceneLevel>, footprint::SceneFootprints)> =
+            BTreeMap::new();
         // The cell size comes from `scene_grid_sizes` rather than a second `grid.size` read, so
         // this channel's scale can never disagree with the gates'; the entity scan alongside it
-        // supplies the scene DOCUMENT that map does not carry, which the egress check needs.
+        // supplies the scene DOCUMENT that map does not carry, which the egress check needs —
+        // and its declared levels, which tag each token's entry with its floor.
         let grid_sizes = self.scene_grid_sizes();
         for e in self.world.query::<&SceneEntity>().iter() {
             let doc = &e.doc;
@@ -3337,12 +3550,17 @@ impl SceneEcs {
                 continue;
             };
             let scene = doc.id;
+            let levels = self
+                .engine_as_cached::<eng::SceneEngine>(scene, doc)
+                .map(|s| s.levels)
+                .unwrap_or_default();
             let kind = self.resolve_grid_kind(scene);
             let unit = footprint::resolve_footprint_cells(kind, "square", 1.0, 1.0);
             by_scene.insert(
                 scene,
                 (
                     cell,
+                    levels,
                     footprint::SceneFootprints {
                         scene,
                         unit: footprint::FootprintExtent {
@@ -3375,7 +3593,7 @@ impl SceneEcs {
         }
         tokens.sort_unstable();
         for (scene, token) in tokens {
-            let Some((cell, entry)) = by_scene.get_mut(&scene) else {
+            let Some((cell, levels, entry)) = by_scene.get_mut(&scene) else {
                 continue;
             };
             let Some((shape, size)) = self.token_shape_and_size(token) else {
@@ -3388,12 +3606,26 @@ impl SceneEcs {
                     w: f.box_w * *cell,
                     h: f.box_h * *cell,
                 });
-            entry
-                .tokens
-                .push(footprint::TokenFootprint { token, extent });
+            // The token's floor, derived from its own stored elevation (`level_of`) — `None`
+            // for ground/a level-less scene, so the client scopes by level without re-deriving
+            // it from elevation.
+            let level = self
+                .index
+                .get(&token)
+                .and_then(|&e| self.world.get::<&SceneEntity>(e).ok())
+                .and_then(|ent| self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc))
+                .and_then(|t| {
+                    elevation::level_of(levels, elevation::elevation_or_ground(t.elevation))
+                        .map(|l| l.id.clone())
+                });
+            entry.tokens.push(footprint::TokenFootprint {
+                token,
+                extent,
+                level,
+            });
         }
         footprint::FootprintsPayload {
-            scenes: by_scene.into_values().map(|(_, s)| s).collect(),
+            scenes: by_scene.into_values().map(|(_, _, s)| s).collect(),
         }
     }
     /// The resolved `"combat"` derived-channel payload for `ctx`: every combat `ctx` may READ,
@@ -3541,15 +3773,18 @@ impl SceneEcs {
     }
 
     /// Scene-shared lighting/wall inputs for the visibility mask — `lighting_inputs_excluding`
-    /// with nothing excluded, memoised the same way. `all_bright` short-circuits light
-    /// raycasts under lighting-off or globalIllumination.
+    /// with nothing excluded, memoised the same way. `level` scopes the field to one floor: a
+    /// light contributes only to the level `elevation::level_of(light.elevation)` resolves to,
+    /// so the mask for a floor never brightens from another floor's lamps. `all_bright`
+    /// short-circuits light raycasts under lighting-off or globalIllumination.
     pub(crate) fn lighting_inputs(
         &self,
         scene: Uuid,
+        level: &str,
         settings: &ResolvedScene,
         cell: f64,
     ) -> std::sync::Arc<LightingInputs> {
-        self.lighting_inputs_excluding(scene, settings, cell, &[])
+        self.lighting_inputs_excluding(scene, level, settings, cell, &[])
     }
 
     /// `lighting_inputs` with the carried emissions of `exclude_emitters` (token ids) left out
@@ -3557,25 +3792,39 @@ impl SceneEcs {
     /// movers' torches back in per instant from their timelines rather than at their committed
     /// (end-of-move) positions. Standalone lights are never excluded.
     ///
-    /// MEMOISED per `(scene, sorted exclude set)` in `lighting_inputs_cache`: every recipient of
+    /// MEMOISED per `(scene, level, sorted exclude set)` in `lighting_inputs_cache`: every
+    /// recipient of
     /// one frame excludes the same in-flight set, so the field's light + environment raycasts
-    /// run once per frame per scene rather than once per recipient, and the lit mask, the
-    /// movement gate and the clip share one computation. Reuse is decided by comparing a
+    /// run once per frame per scene per level rather than once per recipient, and the lit mask,
+    /// the movement gate and the clip share one computation. Reuse is decided by comparing a
     /// freshly gathered `LightingInputsSnapshot` (cheap document decodes, no geometry) against
     /// the stored one — a changed light, wall, setting or cell size misses and recomputes.
     pub(crate) fn lighting_inputs_excluding(
         &self,
         scene: Uuid,
+        level: &str,
         settings: &ResolvedScene,
         cell: f64,
         exclude_emitters: &[Uuid],
     ) -> std::sync::Arc<LightingInputs> {
         let all_bright = settings.all_bright();
-        let lights = if all_bright {
+        let levels = self.scene_levels(scene);
+        let mut lights = if all_bright {
             Vec::new()
         } else {
             self.scene_lights_excluding(scene, exclude_emitters)
         };
+        // Level membership: a light contributes only to the level its own elevation resolves
+        // to (`elevation::level_of`); a lamp on another floor lights nothing here. The
+        // light WALL set stays unfiltered by level — walls occlude per-source-elevation at
+        // consumption (`lighting_inputs_from`'s `walls_at_elevation`), and environment ambient
+        // keeps the full set at every elevation.
+        lights.retain(|l| {
+            elevation::level_of(&levels, l.elevation)
+                .map(|x| x.id.as_str())
+                .unwrap_or("")
+                == level
+        });
         let light_walls = if all_bright {
             Vec::new()
         } else {
@@ -3585,7 +3834,7 @@ impl SceneEcs {
         let mut excluded: Vec<Uuid> = exclude_emitters.to_vec();
         excluded.sort_unstable();
         excluded.dedup();
-        let key = (scene, excluded);
+        let key = (scene, level.to_string(), excluded);
         let snapshot = LightingInputsSnapshot {
             settings: settings.clone(),
             cell,
@@ -3692,7 +3941,8 @@ impl SceneEcs {
         }
     }
 
-    /// The per-player lighting-aware visibility mask: per scene, the cells the user can currently
+    /// The per-player lighting-aware visibility mask: per scene PER LEVEL, the cells the user
+    /// can currently
     /// see = LOS-cells ∩ (illumination ≥ vision floor ∨ darkvision-in-range), each tagged with its
     /// illumination band + tint. Vision sources = owned tokens ∪ (observerVision ? tokens the user
     /// holds whole-document `cap::READ` on : ∅), gathered through the ONE admission decision in
@@ -3745,6 +3995,14 @@ impl SceneEcs {
             .iter()
             .map(|&sid| (sid, self.resolve_scene(sid)))
             .collect();
+        // The declared levels per scene, resolved in the same first pass: each source's cells
+        // accumulate under the level its own elevation resolves to (`elevation::level_of`), and
+        // the illumination field is the level-filtered one (`lighting_inputs`), so a lamp on
+        // another floor brightens nothing here.
+        let scene_levels: HashMap<Uuid, Vec<eng::SceneLevel>> = all_scene_ids
+            .iter()
+            .map(|&sid| (sid, self.scene_levels(sid)))
+            .collect();
 
         // 1. Per scene, gather this user's vision sources through the ONE admission decision
         //    (`gather_vision_sources_in_scene`, shared with `visible_cells` so egress and the
@@ -3756,8 +4014,9 @@ impl SceneEcs {
         // (i, j) -> (best_level, band_index, tint, hint_floor, hint). hint_floor seeds NEG_INFINITY so the
         // first admitting mode always sets it; brightness (level/band/tint) and hint reduce independently.
         type CellEntry = BTreeMap<(i32, i32), (f64, usize, u32, f64, Option<String>)>;
-        // scene -> (the scene's `cell` indexing scale, per-cell best)
-        let mut per_scene: BTreeMap<Uuid, (f64, CellEntry)> = BTreeMap::new();
+        // (scene, level id) -> (the scene's `cell` indexing scale, per-cell best): one entry per
+        // level a source occupies — `""` for ground/a level-less scene.
+        let mut per_scene: BTreeMap<(Uuid, String), (f64, CellEntry)> = BTreeMap::new();
 
         for scene in all_scene_ids {
             // Use the memoized settings; fall back to resolve (unreachable in practice since
@@ -3788,14 +4047,22 @@ impl SceneEcs {
             // One grid step's world distance, resolved once per scene: it is a property of the
             // shape, so every candidate cell of every source in this scene shares the value.
             let world_units_per_cell = cell_grid.world_units_per_cell();
-            // Lighting inputs: under globalIllumination or lighting-off, every LOS cell is bright;
-            // else compute per-cell from lights (occluded by blocksLight) + environment.
-            let li = self.lighting_inputs(scene, settings, cell);
-
-            let entry = per_scene
-                .entry(scene)
-                .or_insert_with(|| (cell, BTreeMap::new()));
+            let levels = scene_levels.get(&scene).map(Vec::as_slice).unwrap_or(&[]);
             for src in &sources {
+                // The source's own floor decides both which illumination field its cells are
+                // judged against (a lamp on another floor contributes nothing) and which
+                // `(scene, level)` entry they accumulate into.
+                let level = elevation::level_of(levels, src.elevation)
+                    .map(|l| l.id.clone())
+                    .unwrap_or_default();
+                // Lighting inputs for THIS level: under globalIllumination or lighting-off,
+                // every LOS cell is bright; else compute per-cell from the level's lights
+                // (occluded by blocksLight) + environment. Memoised per (scene, level), so
+                // same-floor sources share one raycast set.
+                let li = self.lighting_inputs(scene, &level, settings, cell);
+                let entry = per_scene
+                    .entry((scene, level))
+                    .or_insert_with(|| (cell, BTreeMap::new()));
                 // LOS polygon for this source (or, LOS off, the whole bound box as a polygon),
                 // raycast against the sight walls whose band covers the source's elevation.
                 let src_walls = elevation::walls_at_elevation(&li.sight_walls, src.elevation);
@@ -3902,8 +4169,9 @@ impl SceneEcs {
 
         per_scene
             .into_iter()
-            .map(|(scene, (cell, cells))| LitScene {
+            .map(|((scene, level), (cell, cells))| LitScene {
                 scene,
+                level,
                 cell,
                 cells: cells
                     .into_iter()
@@ -3913,12 +4181,19 @@ impl SceneEcs {
             .collect()
     }
 
-    /// The set of cells visible to `user` in `scene` for the movement gate. Reuses the exact
-    /// egress primitives (`lighting_inputs`, `source_los_poly`, `cell_visible`) so it agrees with
-    /// the secrecy mask. `lenient` selects the rasterization rule: strict samples the
-    /// cell CENTER only (≡ `player_lit_mask`); lenient also samples the four corners, so a cell
-    /// whose vision polygon merely overlaps it counts — a superset, never extending past polygon
-    /// overlap. Empty ⇒ no in-scene vision source for this user (fail closed).
+    /// The set of cells visible to `user` in `scene`, ON THE MOVER'S OWN LEVEL, for the movement
+    /// gate. Reuses the exact egress primitives (`lighting_inputs`, `source_los_poly`,
+    /// `cell_visible`) so it agrees with the secrecy mask. `lenient` selects the rasterization
+    /// rule: strict samples the cell CENTER only (≡ `player_lit_mask`); lenient also samples the
+    /// four corners, so a cell whose vision polygon merely overlaps it counts — a superset, never
+    /// extending past polygon overlap. Empty ⇒ no same-level in-scene vision source for this user
+    /// (fail closed).
+    ///
+    /// `mover_elevation` resolves to a level id exactly as `move_walls`/`region_field` resolve
+    /// their own mover-floor parameter (`elevation::level_of`); every gathered source is filtered
+    /// to that SAME level before accumulation — a source on another floor contributes nothing,
+    /// mirroring `player_lit_mask`'s per-level accumulation. Callers MUST pass the mover's OWN
+    /// resolved elevation, never a client-claimed one.
     ///
     /// `world_role`/`world_defaults` feed `gather_vision_sources_in_scene`'s observer-vision
     /// admission (`user_access` → `resolve_access_world`), so a world-level READ grant widens
@@ -3933,7 +4208,7 @@ impl SceneEcs {
     /// let ecs = SceneEcs::new();
     /// let defaults = WorldCapDefaults::default();
     /// // No scene document exists: refuses rather than synthesizing a grid.
-    /// let cells = ecs.visible_cells(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false);
+    /// let cells = ecs.visible_cells(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false, 0.0);
     /// assert!(cells.is_empty());
     /// ```
     pub fn visible_cells(
@@ -3943,6 +4218,7 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         lenient: bool,
+        mover_elevation: f64,
     ) -> std::collections::BTreeSet<(i32, i32)> {
         use std::collections::BTreeSet;
         let mut out: BTreeSet<(i32, i32)> = BTreeSet::new();
@@ -3955,15 +4231,32 @@ impl SceneEcs {
             return out;
         }
 
-        let sources =
+        let mut sources =
             self.gather_vision_sources_in_scene(user, world_role, world_defaults, scene, &settings);
         if sources.is_empty() {
             return out;
         }
 
-        // Scene-shared lighting inputs (once), then per-source per-cell test.
-        let li = self.lighting_inputs(scene, &settings, cell);
+        // Level-scope the gathered sources to the MOVER's own floor before any cell is
+        // accumulated: a lamp/token-eye on another level contributes nothing to this mover's
+        // mask, mirroring `player_lit_mask`'s per-level accumulation and `move_walls`/
+        // `region_field`'s mover-elevation filtering.
+        let levels = self.scene_levels(scene);
+        let mover_level = elevation::level_of(&levels, mover_elevation)
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
+        sources.retain(|s| {
+            elevation::level_of(&levels, s.elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default()
+                == mover_level
+        });
+        if sources.is_empty() {
+            return out;
+        }
+
         let grid = self.resolve_grid_shape(scene, cell);
+        let li = self.lighting_inputs(scene, &mover_level, &settings, cell);
         accumulate_visible_cells(&mut out, &sources, &settings, cell, &li, lenient, &*grid);
         out
     }
@@ -3994,7 +4287,7 @@ impl SceneEcs {
     /// let ecs = SceneEcs::new();
     /// let defaults = WorldCapDefaults::default();
     /// // No scene document exists: refuses rather than synthesizing a grid.
-    /// let cells = ecs.visible_cells_cached(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false);
+    /// let cells = ecs.visible_cells_cached(uuid::Uuid::new_v4(), WorldRole::Player, &defaults, uuid::Uuid::new_v4(), false, 0.0);
     /// assert!(cells.is_empty());
     /// ```
     pub fn visible_cells_cached(
@@ -4004,6 +4297,7 @@ impl SceneEcs {
         world_defaults: &crate::data::document::WorldCapDefaults,
         scene: Uuid,
         lenient: bool,
+        mover_elevation: f64,
     ) -> std::collections::BTreeSet<(i32, i32)> {
         use std::collections::BTreeSet;
         let settings = self.resolve_scene(scene);
@@ -4017,6 +4311,21 @@ impl SceneEcs {
 
         let mut sources =
             self.gather_vision_sources_in_scene(user, world_role, world_defaults, scene, &settings);
+        if sources.is_empty() {
+            return BTreeSet::new();
+        }
+        // Level-scope to the MOVER's own floor, mirroring `visible_cells` exactly: a source on
+        // another level of the same scene contributes nothing to this mover's mask.
+        let levels = self.scene_levels(scene);
+        let mover_level = elevation::level_of(&levels, mover_elevation)
+            .map(|l| l.id.clone())
+            .unwrap_or_default();
+        sources.retain(|s| {
+            elevation::level_of(&levels, s.elevation)
+                .map(|l| l.id.clone())
+                .unwrap_or_default()
+                == mover_level
+        });
         if sources.is_empty() {
             return BTreeSet::new();
         }
@@ -4047,6 +4356,12 @@ impl SceneEcs {
                 .iter()
                 .map(|s| (s.id, s.vp, s.elevation, s.floors.clone()))
                 .collect(),
+            // The scene's declared levels decide each source's level (`elevation::level_of`)
+            // and therefore which level-filtered illumination field its cells are judged
+            // against — a levels edit must miss the cache exactly like a light edit.
+            levels: levels.clone(),
+            mover_level: mover_level.clone(), // fingerprinted explicitly — see the field's own doc
+
             lights,
             light_walls,
             sight_walls,
@@ -4066,9 +4381,9 @@ impl SceneEcs {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         let grid = self.resolve_grid_shape(scene, cell);
-        // The field itself comes from the shared memo (a hit whenever the clip or the lit
-        // mask already raycast this scene's lights); only the per-source cell scan is ours.
-        let li = self.lighting_inputs(scene, &settings, cell);
+        // `sources` is already level-scoped above, so one shared illumination read covers the
+        // whole batch — mirrors `visible_cells`.
+        let li = self.lighting_inputs(scene, &mover_level, &settings, cell);
         let mut mask = BTreeSet::new();
         accumulate_visible_cells(&mut mask, &sources, &settings, cell, &li, lenient, &*grid);
 
@@ -4136,19 +4451,29 @@ impl SceneEcs {
     }
 
     /// Engine-owned movement collision. True if the move segment `a0→a1` crosses any `blocksMove`
-    /// wall in `scene`. A no-op move (`a0 == a1`) never blocks.
+    /// wall in `scene` whose elevation band contains `mover_elevation`
+    /// (`elevation::walls_at_elevation` — the same band filter the production `move_walls`
+    /// applies). A no-op move (`a0 == a1`) never blocks.
     ///
     /// This is the REFERENCE implementation of wall-crossing semantics — one home for it, per the
-    /// module's own INVARIANT on `move_walls`. `move_exec::execute_move`'s per-cell wall gate is
-    /// the production traversal path and does not call this function directly (it composes
-    /// `move_walls(scene, None)` with `segments_cross` inline instead); an anti-drift test pins
-    /// the two to agreement, so a change to either wall filter that drifts them apart fails it.
-    /// Test-only: it has no production caller, so it compiles only into test builds.
+    /// module's own INVARIANT on `move_wall_entries`. `move_exec::execute_move`'s per-cell wall
+    /// gate is the production traversal path and does not call this function directly (it composes
+    /// `move_walls(scene, None, mover_elevation)` with `segments_cross` inline instead); an
+    /// anti-drift test pins the two to agreement, so a change to either wall filter that drifts
+    /// them apart fails it. Test-only: it has no production caller, so it compiles only into
+    /// test builds.
     #[cfg(test)]
-    pub(crate) fn blocks_move(&self, scene: Uuid, a0: (f64, f64), a1: (f64, f64)) -> bool {
+    pub(crate) fn blocks_move(
+        &self,
+        scene: Uuid,
+        a0: (f64, f64),
+        a1: (f64, f64),
+        mover_elevation: f64,
+    ) -> bool {
         if a0 == a1 {
             return false;
         }
+        let mut banded: Vec<elevation::BandedWall> = Vec::new();
         for w in self.world.query::<&SceneEntity>().iter() {
             if w.doc.doc_type != "wall" || w.doc.parent_id != Some(scene) {
                 continue;
@@ -4159,536 +4484,36 @@ impl SceneEcs {
             if wall.blocks_move != Some(true) {
                 continue;
             }
-            if segments_cross(
-                a0,
-                a1,
-                (wall.seg.x1, wall.seg.y1),
-                (wall.seg.x2, wall.seg.y2),
-            ) {
+            banded.push((
+                vision::Seg {
+                    a: (wall.seg.x1, wall.seg.y1),
+                    b: (wall.seg.x2, wall.seg.y2),
+                },
+                wall.elevation,
+            ));
+        }
+        for w in elevation::walls_at_elevation(&banded, mover_elevation) {
+            if segments_cross(a0, a1, w.a, w.b) {
                 return true;
             }
         }
         false
     }
-}
 
-/// Scene-shared lighting/wall inputs for the visibility mask. Computed once per scene per
-/// dispatch and reused for every vision source. `all_bright` short-circuits light raycasts
-/// under lighting-off or globalIllumination.
-pub(crate) struct LightingInputs {
-    /// Skip per-light raycasts: lighting off or `GlobalIllumination`.
-    pub(crate) all_bright: bool,
-    /// Resolved scene lights (empty under `all_bright`).
-    pub(crate) lights: Vec<lighting::Light>,
-    /// Per-light visibility polygons, index-aligned with `lights` (built by mapping over it, so
-    /// the lengths always agree). `visibility_polygon` unions the raycast bound's own edges into
-    /// the occluder set, so a non-degenerate bound always yields a non-empty polygon; an EMPTY
-    /// entry arises only from degenerate (non-finite) light positions, and `cell_illumination`
-    /// reads an empty polygon as "no occluder computed" — never occludes. That fail-open is
-    /// inert on this path: a position degenerate enough to empty the polygon also makes the
-    /// per-cell distance non-finite, which `cell_illumination` zeroes per source.
-    pub(crate) lit_polys: Vec<Vec<vision::P>>,
-    /// Scene-boundary visibility polygons occluding the environment ambient (`env_light_polys`).
-    /// Empty under `all_bright` (env is not the mechanism there — every LOS cell is forced bright).
-    pub(crate) env_polys: Vec<Vec<vision::P>>,
-    /// `blocksSight` wall segments with their elevation bands (the LOS raycast input —
-    /// each vision source filters them at its own elevation through
-    /// `elevation::walls_at_elevation` before raycasting).
-    pub(crate) sight_walls: Vec<elevation::BandedWall>,
-}
-
-impl LightingInputs {
-    /// The composed light at `point`: under `all_bright` a full-level cell (untinted with
-    /// lighting off, environment-tinted under globalIllumination — level 1.0 so every vision
-    /// floor, incl. normal "dim", passes and every LOS cell is visible), else the additive field
-    /// (`cell_illumination_from`) over this scene's lights plus `extra` — carried lights an
-    /// in-flight mover composes in at its instant position (`InstantLight`). THE one
-    /// illumination read: `player_lit_mask`'s band/tint bookkeeping and `point_qualifies`'s
-    /// floor test both take their `CellLight` here, so the egress mask, the movement gate and
-    /// the move-stream clip cannot light a cell by different rules.
-    ///
-    /// `world_units_per_cell` is the shape-derived world distance of one grid step
-    /// (`GridShape::world_units_per_cell`), NOT the cell indexing scale — a light's radii are
-    /// authored in cells and convert through it (the two coincide on square, differ by √3 on
-    /// hex).
-    pub(crate) fn cell_light(
-        &self,
-        point: (f64, f64),
-        settings: &ResolvedScene,
-        world_units_per_cell: f64,
-        extra: &[InstantLight],
-    ) -> crate::scene::lighting::CellLight {
-        if self.all_bright {
-            return crate::scene::lighting::CellLight {
-                level: 1.0,
-                tint: if settings.lighting_enabled {
-                    settings.env_color
-                } else {
-                    0
-                },
-            };
-        }
-        crate::scene::lighting::cell_illumination_from(
-            point,
-            settings.env_intensity,
-            settings.env_color,
-            self.lights
-                .iter()
-                .enumerate()
-                .map(|(k, l)| (l, self.lit_polys.get(k).map_or(&[][..], Vec::as_slice)))
-                .chain(extra.iter().map(|e| (&e.light, e.occluder.as_slice()))),
-            &self.env_polys,
-            world_units_per_cell,
-        )
-    }
-}
-
-/// Whether a single sample `point` (already known to lie inside the LOS polygon) qualifies a
-/// cell as visible: its composed light (`LightingInputs::cell_light`, with `extra` carried
-/// lights) against `cell_visible`. This is the ONE canonical place the per-point illumination +
-/// floor decision is made, shared by all three sampling arms of `visible_cells` (lenient-center,
-/// lenient-corner, strict-center) and by the egress clip's `InstantSight::sees`, to prevent the
-/// gate-vs-egress drift hazard: if the decision logic were inlined separately in each arm, a
-/// future edit could silently fork the gate mask from the egress mask.
-///
-/// `world_units_per_cell` is the shape-derived world distance of one grid step
-/// (`GridShape::world_units_per_cell`), NOT the cell indexing scale. Both quantities it feeds — a
-/// light's radii through `cell_light`, and the vision range this function's own `dist_cells` is
-/// compared against — are authored in cells, so both convert through it; the two scalars
-/// coincide on square and differ by √3 on hex.
-fn point_qualifies(
-    point: (f64, f64),
-    src_vp: (f64, f64),
-    floors: &[(f64, f64, Option<String>)],
-    settings: &ResolvedScene,
-    li: &LightingInputs,
-    world_units_per_cell: f64,
-    extra: &[InstantLight],
-) -> bool {
-    let cl = li.cell_light(point, settings, world_units_per_cell, extra);
-    let dist_cells = (((point.0 - src_vp.0).powi(2) + (point.1 - src_vp.1).powi(2)).sqrt())
-        / world_units_per_cell;
-    cell_visible(floors, cl.level, dist_cells)
-}
-
-/// One vision source gathered by `gather_vision_sources_in_scene`: an owned or
-/// observer-vision-admitted token's viewpoint + resolved vision floors. `id` is carried only for
-/// `visible_cells_cached`'s
-/// deterministic snapshot ordering — `visible_cells` itself never reads it.
-struct VisSrc {
-    /// Source token id (snapshot ordering only; see the struct doc).
-    id: Uuid,
-    /// Viewpoint in scene units.
-    vp: vision::P,
-    /// The source token's elevation (0 = grounded): filters the sight-wall set through
-    /// `elevation::wall_occludes` and grounds tremorsense (`SceneEcs::player_perceived_tokens`).
-    elevation: f64,
-    /// Resolved vision floors: `(illumination floor, range cells, render hint)`.
-    floors: Vec<(f64, f64, Option<String>)>,
-    /// Resolved creature senses `(range_cells, requires_los)` (`token_creature_senses`) —
-    /// read by `player_perceived_tokens` and the clip's `SightSource`; the lit mask ignores
-    /// them, so they are no part of `VisibilityInputsSnapshot`.
-    senses: Vec<(f64, bool)>,
-}
-
-/// One `sources` entry in `VisibilityInputsSnapshot`: `(token id, viewpoint, elevation, floors)`.
-/// Elevation is part of the fingerprint: a token gaining/losing height changes which walls
-/// occlude it, so the same walls at two elevations must never share a cached mask.
-type VisSrcSnapshot = (Uuid, vision::P, f64, Vec<(f64, f64, Option<String>)>);
-
-/// Fingerprint of every input `visible_cells`'s computation reads for one `(user, scene,
-/// lenient)` call, used by `visible_cells_cached` to decide whether a prior mask may be reused.
-/// Built from the SAME calls the real computation makes (`gather_vision_sources_in_scene`,
-/// `resolve_scene`, `scene_grid_sizes`, `scene_lights`, and the banded wall collectors
-/// `sight_wall_entries`/`light_wall_entries` — wall geometry, block flags AND elevation bands) —
-/// not a
-/// separately-derived "things that might matter" list — so completeness reduces to "does this
-/// struct hold every field `accumulate_visible_cells`/`gather_vision_sources_in_scene` read",
-/// which is directly checkable by inspection, rather than "were all mutation call sites
-/// enumerated", which `engine_cache`'s `CachedEngine` already proved is an open, unboundable
-/// question for this codebase (`apply_op` is not the sole mutation chokepoint). Any change to
-/// what these fields hold — a token moving/changing elevation/gaining-or-losing source status,
-/// a wall's blocksSight/blocksLight/geometry/elevation-band changing, a light being
-/// added/moved/toggled (its `elevation` rides `lights`), a vision-mode or
-/// gradation band definition changing (both flow into `sources`' `floors` via
-/// `token_vision_floors`), a linked actor's vision assignment changing (same path), the scene's
-/// own grid size or vision/lighting overrides changing, or world-settings' `observerVision`/
-/// `losRestriction`/lighting defaults changing — is captured because it necessarily changes the
-/// value of one of these fields, making the snapshot compare unequal. The inputs to source
-/// ADMISSION (`user_access`'s `resolve_access_world`: the token's permissions, the caller's
-/// world role, the world-level capability grants) need no fields of their own — their entire
-/// effect on the mask is WHICH tokens the gathered `sources` list contains, and that list is
-/// fingerprinted here.
-#[derive(Clone, PartialEq)]
-struct VisibilityInputsSnapshot {
-    /// The sampling mode the mask was computed under.
-    lenient: bool,
-    /// The resolved scene settings the computation read.
-    settings: ResolvedScene,
-    /// Grid cell size in scene units.
-    cell: f64,
-    /// Every vision source's `(id, viewpoint, floors)` snapshot.
-    sources: Vec<VisSrcSnapshot>,
-    /// Resolved scene lights.
-    lights: Vec<lighting::Light>,
-    /// `blocksLight` wall segments with their elevation bands.
-    light_walls: Vec<elevation::BandedWall>,
-    /// `blocksSight` wall segments with their elevation bands.
-    sight_walls: Vec<elevation::BandedWall>,
-}
-
-/// `visible_cells_cache`'s per-entry value: the snapshot it was computed from, paired with the
-/// mask itself.
-type VisibleCellsCacheEntry = (
-    VisibilityInputsSnapshot,
-    std::collections::BTreeSet<(i32, i32)>,
-);
-
-/// The per-source LOS raycast + per-cell scan shared by `visible_cells` and
-/// `visible_cells_cached` on a cache miss — the sole implementation of the expensive half of the
-/// computation, so both entry points share identical behavior.
-fn accumulate_visible_cells(
-    out: &mut std::collections::BTreeSet<(i32, i32)>,
-    sources: &[VisSrc],
-    settings: &ResolvedScene,
-    cell: f64,
-    li: &LightingInputs,
-    lenient: bool,
-    grid: &dyn grid_shape::GridShape,
-) {
-    // One grid step's world distance, resolved once: it is a property of the shape, so every
-    // sample of every candidate cell of every source shares the value.
-    let world_units_per_cell = grid.world_units_per_cell();
-    for src in sources {
-        let src_walls = elevation::walls_at_elevation(&li.sight_walls, src.elevation);
-        let poly = source_los_poly(
-            src.vp,
-            &src_walls,
-            settings.los_restriction,
-            grid.world_extent(settings.bounds),
-        );
-        if poly.len() < 3 {
-            continue;
-        }
-        let (mut minx, mut miny, mut maxx, mut maxy) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
-        for &(x, y) in &poly {
-            minx = minx.min(x);
-            miny = miny.min(y);
-            maxx = maxx.max(x);
-            maxy = maxy.max(y);
-        }
-        // Lenient samples corners, so a cell just outside the center-bbox can still qualify: this
-        // invocation's mode (whichever `lenient` selects) decides how much this call's OWN box is
-        // padded; `scan_box_for` derives both that pad and the (always fully-padded) clamp
-        // decision from the same binding, so a strict and a lenient call over the same source's
-        // bbox always meet an identical window.
-        let bbox = ((minx, miny), (maxx, maxy));
-        let mode = if lenient {
-            crate::scene::explored::ScanMode::Lenient
-        } else {
-            crate::scene::explored::ScanMode::Strict
+    /// A token's resolved elevation for the movement/routing gates:
+    /// `elevation::elevation_or_ground` of its stored `TokenEngine.elevation`. `GROUND` when the
+    /// token or its engine body is unreadable — the caller's own token-existence check
+    /// (`token_move`, `resolve_token_footprint`) is what refuses a missing token; this accessor
+    /// only ever resolves the floor of a token that check already admitted.
+    pub(crate) fn token_mover_elevation(&self, token: Uuid) -> f64 {
+        let Some(&e) = self.index.get(&token) else {
+            return elevation::GROUND;
         };
-        let (min, max) = crate::scene::explored::scan_box_for(
-            grid,
-            src.vp,
-            bbox,
-            cell,
-            crate::scene::explored::MAX_CELLS_PER_POLYGON,
-            mode,
-        );
-        let candidates = match grid.cells_in_bounds(
-            min,
-            max,
-            cell,
-            crate::scene::explored::MAX_CELLS_PER_POLYGON,
-        ) {
-            Some(c) => c,
-            None => {
-                tracing::warn!("visible_cells scan degenerate; skipping source");
-                continue;
-            }
+        let Ok(ent) = self.world.get::<&SceneEntity>(e) else {
+            return elevation::GROUND;
         };
-        for (i, j) in candidates {
-            if out.contains(&(i, j)) {
-                continue;
-            }
-            // Strict: center only. Lenient: center first (so strict cells are always
-            // included), then corners if center fails — a cell whose polygon merely clips
-            // a corner still qualifies under leniency.
-            let center = grid.cell_center((i, j));
-            let mut found = false;
-            if lenient {
-                // Check center first, then corners. `cell_vertices` (the 4 square corners in
-                // byte-identical order, or the 6 pointy-top hex vertices) is computed ONLY on this
-                // path — the strict movement-gate mask never pays for it (6 sin/cos per hex cell).
-                if vision::point_in_poly(&poly, center)
-                    && point_qualifies(
-                        center,
-                        src.vp,
-                        &src.floors,
-                        settings,
-                        li,
-                        world_units_per_cell,
-                        &[],
-                    )
-                {
-                    found = true;
-                }
-                if !found {
-                    let corners = grid.cell_vertices((i, j), cell);
-                    for &corner in &corners {
-                        if vision::point_in_poly(&poly, corner)
-                            && point_qualifies(
-                                corner,
-                                src.vp,
-                                &src.floors,
-                                settings,
-                                li,
-                                world_units_per_cell,
-                                &[],
-                            )
-                        {
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            } else {
-                // Strict: center only (mirrors player_lit_mask exactly).
-                if vision::point_in_poly(&poly, center)
-                    && point_qualifies(
-                        center,
-                        src.vp,
-                        &src.floors,
-                        settings,
-                        li,
-                        world_units_per_cell,
-                        &[],
-                    )
-                {
-                    found = true;
-                }
-            }
-            if found {
-                out.insert((i, j));
-            }
-        }
-    }
-}
-
-/// Per-cell visibility decision shared by `player_lit_mask` (egress/secrecy gate) and
-/// `visible_cells` (movement gate). INVARIANT: identical for both so the move gate never
-/// forbids a shipped-visible cell nor permits an unshipped one. A cell is visible iff
-/// some in-range vision mode's illumination floor is met. `floors`: `(floor_min, range_cells,
-/// hint)`; `range == 0.0` ⇒ unbounded. Returns false when no mode is in range (fail closed).
-fn cell_visible(floors: &[(f64, f64, Option<String>)], cl_level: f64, dist_cells: f64) -> bool {
-    let mut min_floor = f64::INFINITY;
-    for (fmin, range, _hint) in floors {
-        if *range == 0.0 || dist_cells <= *range {
-            min_floor = min_floor.min(*fmin);
-        }
-    }
-    min_floor.is_finite() && cl_level >= min_floor
-}
-
-/// The LOS polygon for one vision source: the raycast visibility polygon when `los_restriction`
-/// is on, else the whole bound box as a rectangle (whole-scene visible). Source: raycast
-/// (`vision::visibility_polygon`). `scene_extent` is the scene's WORLD-unit envelope
-/// (`GridShape::world_extent` of the authored grid-unit bounds), unioned into the wall-derived
-/// bound so a wall-less (or sparsely-walled) scene reveals its own full authored extent instead of
-/// a degenerate `viewpoint±VISION_BOUND_MARGIN` box. THE one LOS polygon builder: `sight_sources`
-/// (the fog's `player_vision_polygons`, the mover's streamed timeline and the egress clip),
-/// `player_lit_mask` and `visible_cells`/`visible_cells_cached` all read it, never a forked bound
-/// computation.
-fn source_los_poly(
-    vp: vision::P,
-    sight_walls: &[vision::Seg],
-    los_restriction: bool,
-    scene_extent: grid_shape::WorldExtent,
-) -> Vec<vision::P> {
-    let b = vision::bound_for_scene(vp, sight_walls, scene_extent, VISION_BOUND_MARGIN);
-    if los_restriction {
-        vision::visibility_polygon(vp, sight_walls, b)
-    } else {
-        vec![
-            (b.minx, b.miny),
-            (b.maxx, b.miny),
-            (b.maxx, b.maxy),
-            (b.minx, b.maxy),
-        ]
-    }
-}
-
-/// Signed area ×2 of triangle abc; >0 = ccw, <0 = cw, 0 = collinear.
-fn orient(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
-    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-}
-
-/// Is `p` within the axis-aligned bounding box of segment `ab` (collinearity assumed)?
-fn on_segment(a: (f64, f64), b: (f64, f64), p: (f64, f64)) -> bool {
-    p.0 >= a.0.min(b.0) && p.0 <= a.0.max(b.0) && p.1 >= a.1.min(b.1) && p.1 <= a.1.max(b.1)
-}
-
-/// Do segments `p1p2` and `p3p4` intersect (proper crossing or a touching endpoint /
-/// T-junction)? Source: standard orientation/cross-product segment-intersection test
-/// (CLRS "Determining whether two segments intersect"). A move that merely touches a wall
-/// counts as blocked (conservative — a token cannot end on or graze a wall).
-pub(crate) fn segments_cross(
-    p1: (f64, f64),
-    p2: (f64, f64),
-    p3: (f64, f64),
-    p4: (f64, f64),
-) -> bool {
-    let d1 = orient(p3, p4, p1);
-    let d2 = orient(p3, p4, p2);
-    let d3 = orient(p1, p2, p3);
-    let d4 = orient(p1, p2, p4);
-    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
-        && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
-    {
-        return true;
-    }
-    (d1 == 0.0 && on_segment(p3, p4, p1))
-        || (d2 == 0.0 && on_segment(p3, p4, p2))
-        || (d3 == 0.0 && on_segment(p1, p2, p3))
-        || (d4 == 0.0 && on_segment(p1, p2, p4))
-}
-
-impl Default for SceneEcs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// Compute a derived payload for `channel` from the scene ECS, for one
-/// recipient. Returns `None` for unknown channels (→ SceneError). `ctx` is
-/// accepted so vision and footprints can derive per recipient; the identity
-/// payload is non-sensitive and global. `world_defaults` supplies the same
-/// world-level capability grants document egress resolves READ against, so the
-/// footprints channel cannot disclose a token the recipient's own document
-/// stream withholds. `listen_as` is the connection's spatial-audio listening
-/// override, consulted only by the `"audibility"` arm (every other channel
-/// ignores it — it is passed uniformly so no channel-name branch lives at the
-/// call sites).
-///
-/// # Examples
-///
-/// ```
-/// use shadowcat::data::document::{WorldCapDefaults, WorldRole};
-/// use shadowcat::data::membership::PermissionContext;
-/// use shadowcat::scene::{compute_derived, SceneEcs};
-///
-/// let ecs = SceneEcs::new();
-/// let ctx = PermissionContext { user_id: uuid::Uuid::new_v4(), world_role: WorldRole::Player };
-/// let defaults = WorldCapDefaults::default();
-/// assert!(compute_derived("not-a-real-channel", &ecs, &ctx, &defaults, None).is_none());
-/// ```
-pub fn compute_derived(
-    channel: &str,
-    ecs: &SceneEcs,
-    ctx: &PermissionContext,
-    world_defaults: &crate::data::document::WorldCapDefaults,
-    listen_as: Option<Uuid>,
-) -> Option<serde_json::Value> {
-    match channel {
-        // Debug seam proof (non-sensitive, global); absent in release.
-        #[cfg(debug_assertions)]
-        "identity" => Some(serde_json::json!({ "entity_count": ecs.entity_count() })),
-        // The resolved drawn footprint of every readable token, so the client renders and
-        // hit-tests the authoritative geometry instead of re-deriving it from a second formula.
-        "footprints" => serde_json::to_value(ecs.resolved_footprints(ctx, world_defaults)).ok(),
-        // One `SceneAudibility` slice per scene with at least one token (`token_scene_ids`)
-        // that the recipient can SEE — `scene_visible_to` is the `ctx_can_see_engine` gate
-        // `resolved_footprints` applies, so this channel never discloses a scene id the
-        // footprints channel withholds. A GM roaming a scene independently of the party's
-        // active one still receives that scene's audibility, and the client filters to the one
-        // it renders. A world with no visible tokened scene yields `scenes: []`, never a
-        // sentinel the client must special-case. `listen_as` is the connection's spatial-audio
-        // listening override (`ClientMsg::AudioListenAs`); only this arm consults it.
-        "audibility" => {
-            let scenes: Vec<audibility::SceneAudibility> = ecs
-                .token_scene_ids()
-                .into_iter()
-                .filter(|scene| ecs.scene_visible_to(ctx, world_defaults, *scene))
-                .map(|scene| ecs.compute_audibility(ctx, world_defaults, scene, listen_as))
-                .collect();
-            serde_json::to_value(audibility::AudibilityPayload { scenes }).ok()
-        }
-        // Server-resolved combat resource numbers and movement budgets, per recipient — the
-        // client evaluates and stores nothing (`SceneEcs::resolved_combats`'s own doc comment).
-        "combat" => serde_json::to_value(ecs.resolved_combats(ctx, world_defaults)).ok(),
-        // Per-player vision: the GM sees all; a player gets ONLY their own visibility
-        // polygons, per-recipient. A token-less player gets empty polygons → full fog (the
-        // client masks everything outside `polygons`, so empty = see nothing, never see-all).
-        // Each polygon carries its `scene` so the client cuts fog holes only for the scene it
-        // renders — a token in another scene must not punch a hole into the active scene's fog.
-        "vision" => {
-            if ctx.world_role == crate::data::document::WorldRole::Gm {
-                Some(serde_json::json!({ "mode": "all" }))
-            } else {
-                let polygons: Vec<serde_json::Value> = ecs
-                    .player_vision_polygons(ctx.user_id, ctx.world_role, world_defaults)
-                    .into_iter()
-                    .map(|(scene, poly)| {
-                        let points: Vec<f64> = poly.into_iter().flat_map(|(x, y)| [x, y]).collect();
-                        serde_json::json!({ "scene": scene, "points": points })
-                    })
-                    .collect();
-                // The secrecy-safe lighting-aware mask — only currently-visible cells, each
-                // tagged with its illumination band + tint. Carries the resolved gradation `bands`
-                // so the client maps band indices → treatment. Additive: `polygons`/`explored` are
-                // unchanged (the client consumes `lit` alongside them).
-                // `renderHints` is a deterministic string table (first-seen order over the
-                // BTreeMap-ordered mask); each cell emits 5 ints: [i,j,band,tint,hint_idx] where
-                // hint_idx is the index into `renderHints`, or -1 for None.
-                // The gradation is resolved ONCE here and passed into the mask computation, so
-                // the payload's `bands` array and the mask's band indices are the same
-                // resolution by construction.
-                let bands = ecs.resolved_bands();
-                let bands_json: Vec<serde_json::Value> = bands
-                    .iter()
-                    .map(|b| serde_json::json!({ "name": b.name, "min": b.min_illumination }))
-                    .collect();
-                // Build the hint table and 5-int cell packing in a plain loop to avoid a
-                // mutable borrow of `hints` inside a closure/flat_map borrow conflict.
-                let mask = ecs.player_lit_mask(ctx.user_id, ctx.world_role, world_defaults, &bands);
-                // Creature senses (tremorsense & kin): the grounded tokens the recipient's
-                // grounded sources perceive, disjoint from `lit` by construction — the SAME
-                // mask value the payload's `lit` set below is built from is the exclusion
-                // set (a target whose center cell is already lit is not restated). Absent on
-                // the GM arm above — a GM sees all, so there is nothing to perceive.
-                let perceived: Vec<serde_json::Value> = ecs
-                    .player_perceived_tokens(ctx, world_defaults, &mask)
-                    .into_iter()
-                    .map(|p| serde_json::json!({ "scene": p.scene, "tokens": p.tokens }))
-                    .collect();
-                let mut hints: Vec<String> = Vec::new();
-                let mut lit: Vec<serde_json::Value> = Vec::new();
-                for s in mask {
-                    let mut flat: Vec<i64> = Vec::new();
-                    for (i, j, band, tint, hint) in s.cells {
-                        let hi: i64 = match hint {
-                            None => -1,
-                            Some(ref h) => match hints.iter().position(|x| x == h) {
-                                Some(idx) => idx as i64,
-                                None => {
-                                    hints.push(h.clone());
-                                    (hints.len() - 1) as i64
-                                }
-                            },
-                        };
-                        flat.extend_from_slice(&[i as i64, j as i64, band as i64, tint as i64, hi]);
-                    }
-                    lit.push(
-                        serde_json::json!({ "scene": s.scene, "cell": s.cell, "cells": flat }),
-                    );
-                }
-                Some(
-                    serde_json::json!({ "mode": "masked", "polygons": polygons, "bands": bands_json, "renderHints": hints, "lit": lit, "perceived": perceived }),
-                )
-            }
-        }
-        _ => None,
+        let eng = self.engine_as_cached::<eng::TokenEngine>(token, &ent.doc);
+        elevation::elevation_or_ground(eng.and_then(|t| t.elevation))
     }
 }
 

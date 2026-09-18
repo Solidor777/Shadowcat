@@ -198,6 +198,9 @@ function copyWorldKey(
     case "chatRead":
       slice.chatRead = w.chatRead;
       return;
+    case "viewedLevel":
+      slice.viewedLevel = w.viewedLevel;
+      return;
     default:
       key satisfies never;
   }
@@ -618,6 +621,38 @@ export function setChatRead(world: string, blob: unknown): void {
   const w = (state.worlds[world] ??= {});
   w.chatRead = blob;
   markWorldDirty(world, "chatRead");
+  schedulePersist();
+}
+
+/** Reads a scene's persisted GM-viewed-level id within a world, or `null` if unset.
+ * @param world - World id.
+ * @param scene - Scene id.
+ * @returns The stored level id, or `null`.
+ * @example
+ * ```
+ * const level = getViewedLevel("w1", "s1");
+ * ```
+ */
+export function getViewedLevel(world: string, scene: string): string | null {
+  return state.worlds[world]?.viewedLevel?.[scene] ?? null;
+}
+
+/** Stores a scene's GM-viewed-level id within a world, marks it dirty, and schedules a
+ * persist. Creates the world's entry (and its `viewedLevel` map) if absent.
+ * @param world - World id.
+ * @param scene - Scene id.
+ * @param level - The level id to remember, or `null` to clear it.
+ * @example
+ * ```
+ * setViewedLevel("w1", "s1", "l2");
+ * ```
+ */
+export function setViewedLevel(world: string, scene: string, level: string | null): void {
+  const w = (state.worlds[world] ??= {});
+  const map = (w.viewedLevel ??= {});
+  if (level === null) delete map[scene];
+  else map[scene] = level;
+  markWorldDirty(world, "viewedLevel");
   schedulePersist();
 }
 

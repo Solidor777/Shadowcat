@@ -217,8 +217,8 @@ test("reconciles a token to the server's resolved extent, with the shape still r
   );
   const token = buildTokenFromActor("w1", "scene1", actor, "link", { x: 0, y: 0 }, { w: 100, h: 100 }, "tok1");
   store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: actor }, { op: "create", doc: token }]));
-  const footprints: FootprintLookup = { token: (id) => (id === "tok1" ? { w: 173.2, h: 200 } : null), unit: () => null };
-  new TokenView(store, assets, backend, () => null, () => footprints).reconcile();
+  const footprints: FootprintLookup = { token: (id) => (id === "tok1" ? { w: 173.2, h: 200 } : null), unit: () => null, level: () => null };
+  new TokenView(store, assets, backend, () => null, () => null, () => footprints).reconcile();
   const spec = backend.tokens.get("tok1")!;
   expect(spec.w).toBe(173.2);
   expect(spec.h).toBe(200);
@@ -551,7 +551,7 @@ test("a selected token's spec appends the selection highlight after every condit
     ["poisoned"],
   );
   const selected = new Set<string>(["tok1"]);
-  new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => selected).reconcile();
+  new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toEqual([
     { kind: "tint", color: 0x66ff66, strength: 0.5 },
     { kind: "highlight", color: 0xffd400, strength: 0.4 },
@@ -561,11 +561,11 @@ test("a selected token's spec appends the selection highlight after every condit
 test("an unselected token (or a view with no selection source) gains no highlight", () => {
   const { store, backend } = storeWithFxToken({ dead: { name: "Dead", icon: "💀" } }, ["dead"]);
   const selected = new Set<string>(["someone-else"]);
-  new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => selected).reconcile();
+  new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected).reconcile();
   expect(backend.tokens.get("tok1")!.fx).toBeUndefined();
   // Selection is re-read per reconcile: selecting the token and re-reconciling adds the highlight.
   selected.add("tok1");
-  const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => selected);
+  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, undefined, undefined, () => selected);
   view.reconcile();
   expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
 });
@@ -578,7 +578,7 @@ describe("tokenFx budget", () => {
       { poisoned: { name: "Poisoned", icon: "🤢", fx: { tint: "#66ff66" } } },
       ["poisoned"],
     );
-    const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, () => new Set(["tok1"]), () => false);
+    const view = new TokenView(store, new AssetResolver(), backend, () => null, undefined, undefined, undefined, () => new Set(["tok1"]), undefined, () => false);
     view.reconcile();
     const spec = view.specOf("tok1")!;
     expect(spec.fx).toEqual([{ kind: "highlight", color: 0xffd400, strength: 0.4 }]);
@@ -652,7 +652,7 @@ test("the perceived lookup flags matching tokens; leaving the set restores the f
   const store = new DocumentStore();
   const backend = new MockBackend();
   let perceived: ReadonlySet<string> = new Set(["t1"]);
-  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => EMPTY_FOOTPRINTS, () => perceived);
+  const view = new TokenView(store, new AssetResolver(), backend, () => null, () => null, () => EMPTY_FOOTPRINTS, () => perceived);
   store.applyCommand(cmd(1, [
     { op: "create", doc: tokenDoc("t1", 0, 0, "img1") },
     { op: "create", doc: tokenDoc("t2", 0, 0, "img1") },
@@ -664,4 +664,89 @@ test("the perceived lookup flags matching tokens; leaving the set restores the f
   perceived = new Set();
   view.reconcile();
   expect(backend.tokens.get("t1")!.perceived).toBe(false);
+});
+
+test("a viewedLevel function scopes reconcile() via levelOf over each token's own elevation", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1").reconcile();
+  expect(backend.tokens.has("tok-ground")).toBe(true);
+  expect(backend.tokens.has("tok-upper")).toBe(false);
+});
+
+test("ghostOtherLevels: () => true renders an other-level token with the ghost TokenFx", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  const view = new TokenView(
+    store, new AssetResolver(), backend, () => "s1", () => "l1",
+    () => EMPTY_FOOTPRINTS, () => new Set(), () => new Set(), () => true,
+  );
+  view.reconcile();
+  // Both tokens now render (the level filter is off while ghosting).
+  expect(backend.tokens.has("tok-ground")).toBe(true);
+  expect(backend.tokens.has("tok-upper")).toBe(true);
+  // Only the OTHER-level token gets the ghost fx; the viewed-level one gets none.
+  expect(backend.tokens.get("tok-ground")!.fx).toBeUndefined();
+  expect(backend.tokens.get("tok-upper")!.fx).toEqual([{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }]);
+});
+
+test("ghostOtherLevels: () => false (default) excludes the other-level token entirely, matching plain level-scoping", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok-ground");
+  const upper = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 15 }, "tok-upper");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  const view = new TokenView(store, new AssetResolver(), backend, () => "s1", () => "l1");
+  view.reconcile();
+  expect(backend.tokens.has("tok-ground")).toBe(true);
+  expect(backend.tokens.has("tok-upper")).toBe(false);
+});
+
+test("resolvedLevelOf prefers the server-resolved FootprintLookup.level over the local elevation-based derivation", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  // Locally, this token's stored elevation (0) resolves to "l1" — but the server's resolved
+  // footprints entry states "l2". The server value must win.
+  const tok = buildTokenDoc("w1", "s1", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok1");
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: tok }]));
+  const footprints: FootprintLookup = {
+    token: () => null,
+    unit: () => null,
+    level: (id) => (id === "tok1" ? "l2" : null),
+  };
+  const view = new TokenView(
+    store, new AssetResolver(), backend, () => "s1", () => "l1",
+    () => footprints, () => new Set(), () => new Set(), () => true,
+  );
+  view.reconcile();
+  // Ghosting is enabled; the server's resolved level ("l2") disagrees with the viewed level
+  // ("l1"), so the token renders ghosted despite its own stored elevation locally resolving to
+  // "l1" — proof `resolvedLevelOf` consumed the server value rather than the local derivation.
+  expect(backend.tokens.get("tok1")!.fx).toEqual([{ kind: "desaturate" }, { kind: "alpha", strength: 0.3 }]);
 });

@@ -721,9 +721,11 @@ pub trait Repository: Send + Sync {
         doc_types: &[String],
     ) -> Result<crate::data::search::SearchPage, DataError>;
 
-    /// The player's serialized explored-cell blob for a scene, or `None` when unexplored.
-    /// Per-(scene, user) secret memory — never broadcast; used by the movement gate's
-    /// `Revealed` mode to union the explored set with the live visibility mask.
+    /// The player's serialized explored-cell blob for a scene's LEVEL, or `None` when
+    /// unexplored.
+    /// Per-(scene, level, user) secret memory — never broadcast; used by the movement gate's
+    /// `Revealed` mode to union the explored set with the live visibility mask. `level` is the
+    /// level id (`""` = ground/a level-less scene) `scene::elevation::level_of` resolves.
     ///
     /// # Examples
     ///
@@ -733,11 +735,16 @@ pub trait Repository: Send + Sync {
     /// use shadowcat::data::repository::Repository;
     /// use shadowcat::data::sqlite::SqliteRepository;
     /// let repo = SqliteRepository::connect("sqlite::memory:").await?;
-    /// assert!(repo.get_explored(uuid::Uuid::nil(), uuid::Uuid::nil()).await?.is_none());
+    /// assert!(repo.get_explored(uuid::Uuid::nil(), "", uuid::Uuid::nil()).await?.is_none());
     /// # Ok(())
     /// # }
     /// ```
-    async fn get_explored(&self, scene: Uuid, user: Uuid) -> Result<Option<Vec<u8>>, DataError>;
+    async fn get_explored(
+        &self,
+        scene: Uuid,
+        level: &str,
+        user: Uuid,
+    ) -> Result<Option<Vec<u8>>, DataError>;
 
     /// A persisted `link_preview_cache` row for `url`, or `None` if absent.
     /// The DB-backed tier BEHIND `chat::LinkPreviewCache`'s in-memory fast

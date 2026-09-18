@@ -247,7 +247,7 @@ fn wall_elevation_partial_band_parses_with_open_end() {
     let w: WallEngine = serde_json::from_value(v).unwrap();
     assert_eq!(
         w.elevation,
-        Some(WallElevation {
+        Some(ElevationBand {
             bottom: Some(2.0),
             top: None
         })
@@ -1569,9 +1569,16 @@ fn region_trigger_payload_round_trips_all_effect_kinds() {
         ]
     });
     let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    // Normalization re-serializes the absent `elevation` key back as an
+    // explicit null, the same way an absent `triggers` key re-serializes as an
+    // explicit empty list (see
+    // `region_without_triggers_loads_and_normalizes_with_an_empty_list`).
+    let mut expected = v.as_object().unwrap().clone();
+    expected.insert("elevation".to_string(), serde_json::Value::Null);
     assert_eq!(
-        n, v,
-        "a valid trigger payload must round-trip byte-identically"
+        n,
+        serde_json::Value::Object(expected),
+        "a valid trigger payload must round-trip byte-identically modulo normalized defaults"
     );
 }
 
@@ -1900,4 +1907,191 @@ fn note_registers_its_derived_body_path() {
 #[test]
 fn token_registers_no_derived_paths() {
     assert!(derived_engine_paths("token").is_empty());
+}
+
+#[test]
+fn scene_levels_minimal_body_is_valid() {
+    let v = json!({
+        "grid": { "kind": "square", "size": 100.0 }, "background": null,
+        "levels": [
+            { "id": "ground", "name": "Ground Floor", "bottom": 0.0, "top": 10.0 },
+            { "id": "upper", "name": "Upper Floor", "bottom": 10.0, "top": 20.0, "background": "asset-1" }
+        ]
+    });
+    assert!(validate_engine("scene", Some(&v)).is_ok());
+}
+
+/// A `SceneLevel` test fixture with the given band; `id` is the caller's.
+fn test_level(id: &str, bottom: f64, top: f64) -> SceneLevel {
+    SceneLevel {
+        id: id.to_string(),
+        name: id.to_string(),
+        bottom,
+        top,
+        background: None,
+    }
+}
+
+/// A `SceneEngine` carrying `levels` and nothing else notable.
+fn scene_with_levels(levels: Vec<SceneLevel>) -> SceneEngine {
+    SceneEngine {
+        grid: Grid {
+            kind: "square".to_string(),
+            size: 100.0,
+            distance: None,
+        },
+        background: None,
+        bounds: None,
+        snap_to_grid: None,
+        vision: None,
+        lighting: None,
+        combat: None,
+        levels,
+        ambience: None,
+    }
+}
+
+#[test]
+fn scene_levels_validate_accepts_disjoint_bands() {
+    let scene = scene_with_levels(vec![
+        test_level("ground", 0.0, 10.0),
+        test_level("upper", 10.0, 20.0),
+    ]);
+    assert!(scene.validate().is_ok());
+}
+
+#[test]
+fn scene_levels_validate_rejects_overlapping_bands() {
+    let scene = scene_with_levels(vec![
+        test_level("ground", 0.0, 15.0),
+        test_level("upper", 10.0, 20.0),
+    ]);
+    assert_eq!(scene.validate(), Err("levels overlap".to_string()));
+}
+
+#[test]
+fn scene_levels_validate_rejects_overlap_regardless_of_declaration_order() {
+    let scene = scene_with_levels(vec![
+        test_level("upper", 10.0, 20.0),
+        test_level("ground", 0.0, 15.0),
+    ]);
+    assert_eq!(scene.validate(), Err("levels overlap".to_string()));
+}
+
+#[test]
+fn scene_levels_validate_rejects_too_many_levels() {
+    let levels = (0..MAX_SCENE_LEVELS + 1)
+        .map(|i| test_level(&format!("l{i}"), i as f64 * 10.0, i as f64 * 10.0 + 5.0))
+        .collect();
+    let scene = scene_with_levels(levels);
+    assert!(scene.validate().is_err());
+}
+
+#[test]
+fn scene_levels_validate_rejects_duplicate_and_empty_and_overlong_ids() {
+    let dup = scene_with_levels(vec![
+        test_level("ground", 0.0, 10.0),
+        test_level("ground", 20.0, 30.0),
+    ]);
+    assert!(dup.validate().is_err());
+    let empty = scene_with_levels(vec![test_level("", 0.0, 10.0)]);
+    assert!(empty.validate().is_err());
+    let overlong = test_level(&"x".repeat(MAX_LEVEL_ID_CHARS + 1), 0.0, 10.0);
+    assert!(scene_with_levels(vec![overlong]).validate().is_err());
+}
+
+#[test]
+fn scene_levels_validate_rejects_an_invalid_band_and_empty_background() {
+    let inverted = scene_with_levels(vec![test_level("ground", 10.0, 0.0)]);
+    assert!(inverted.validate().is_err());
+    let nan_band = scene_with_levels(vec![test_level("ground", 0.0, f64::NAN)]);
+    assert!(nan_band.validate().is_err());
+    let mut blank = test_level("ground", 0.0, 10.0);
+    blank.background = Some(String::new());
+    assert!(scene_with_levels(vec![blank]).validate().is_err());
+}
+
+// --- PortalTarget / TriggerEffect::Teleport validation ---
+
+/// A minimal same-scene teleport target (`scene: None`); the fields are the caller's.
+fn portal_target(x: f64, y: f64) -> PortalTarget {
+    PortalTarget {
+        scene: None,
+        x,
+        y,
+        elevation: None,
+        vfx: None,
+    }
+}
+
+#[test]
+fn portal_target_accepts_a_minimal_same_scene_target() {
+    assert!(portal_target(10.0, -20.0).validate().is_ok());
+}
+
+#[test]
+fn portal_target_rejects_non_finite_and_over_bound_coordinates() {
+    assert!(portal_target(f64::NAN, 0.0).validate().is_err());
+    assert!(portal_target(0.0, f64::INFINITY).validate().is_err());
+    let over = crate::scene::move_exec::MAX_GATE_WALK_COORD + 1.0;
+    assert!(portal_target(over, 0.0).validate().is_err());
+    assert!(portal_target(0.0, -over).validate().is_err());
+}
+
+#[test]
+fn portal_target_rejects_a_non_finite_elevation_and_an_empty_vfx() {
+    let mut t = portal_target(0.0, 0.0);
+    t.elevation = Some(f64::NAN);
+    assert!(t.validate().is_err());
+    let mut t = portal_target(0.0, 0.0);
+    t.vfx = Some(String::new());
+    assert!(t.validate().is_err());
+    t.vfx = Some("asset-1".to_string());
+    assert!(t.validate().is_ok());
+}
+
+/// A `RegionEngine` carrying one `Teleport` trigger whose target is the caller's.
+fn region_with_teleport(target: PortalTarget) -> RegionEngine {
+    RegionEngine {
+        shape: RegionShape {
+            kind: "rect".to_string(),
+            points: vec![0.0, 0.0, 1.0, 1.0],
+        },
+        behavior: "terrain".to_string(),
+        cost: 1.0,
+        enabled: true,
+        triggers: vec![RegionTrigger {
+            on: TriggerEvent::Enter,
+            effect: TriggerEffect::Teleport { target },
+        }],
+        elevation: None,
+    }
+}
+
+#[test]
+fn region_validate_rejects_an_invalid_teleport_target() {
+    assert!(region_with_teleport(portal_target(f64::NAN, 0.0))
+        .validate()
+        .is_err());
+    assert!(region_with_teleport(portal_target(10.0, 10.0))
+        .validate()
+        .is_ok());
+}
+
+#[test]
+fn teleport_effect_round_trips_through_the_engine_wire_shape() {
+    let v = json!({
+        "shape": { "kind": "rect", "points": [0.0, 0.0, 1.0, 1.0] },
+        "behavior": "terrain", "cost": 1.0, "enabled": true,
+        "triggers": [
+            { "on": "enter", "effect": { "type": "teleport",
+                "target": { "scene": null, "x": 10.0, "y": 20.0, "elevation": 15.0, "vfx": "asset-1" } } }
+        ]
+    });
+    assert!(validate_engine("region", Some(&v)).is_ok());
+    let n = normalize_engine_opt("region", Some(&v)).unwrap().unwrap();
+    assert_eq!(n["triggers"][0]["effect"]["type"], "teleport");
+    assert_eq!(n["triggers"][0]["effect"]["target"]["x"], 10.0);
+    assert_eq!(n["triggers"][0]["effect"]["target"]["elevation"], 15.0);
+    assert_eq!(n["triggers"][0]["effect"]["target"]["vfx"], "asset-1");
 }

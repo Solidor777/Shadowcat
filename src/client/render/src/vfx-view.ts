@@ -64,6 +64,10 @@ export class VfxView {
    * @param store The document store to read `token` docs from.
    * @param backend The display backend to push resolved VFX nodes to.
    * @param viewedSceneId Resolves the currently-viewed scene id.
+   * @param viewedLevel Resolves the currently-viewed level id; resolving to `null` means "every
+   * level" — the same `sceneScopedDocs`-style scoping `TokenView`/`WallView`/etc. already apply,
+   * here filtering which tokens' emitters `reconcile()` renders (a one-shot carries no elevation
+   * of its own and is never level-filtered).
    * @param vfxAssets Resolves an asset id to its playable source; `null` fails the node
    * closed (never drawn).
    * @param tokenTransform Resolves a token's CURRENT rendered (tweened) transform — normally
@@ -83,13 +87,14 @@ export class VfxView {
    * import { type ReadableDocuments } from "@shadowcat/core";
    *
    * declare const store: ReadableDocuments;
-   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => undefined, () => undefined);
+   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => null, () => undefined, () => undefined);
    * ```
    */
   constructor(
     private readonly store: ReadableDocuments,
     private readonly backend: DisplayBackend,
     private readonly viewedSceneId: () => string | null,
+    private readonly viewedLevel: () => string | null,
     private readonly vfxAssets: (id: string) => ResolvedVfxSource | null,
     private readonly tokenTransform: (id: string) => TokenTransform | undefined,
     private readonly tokenSpec: (id: string) => TokenNodeSpec | undefined,
@@ -107,7 +112,7 @@ export class VfxView {
    * import { type ReadableDocuments } from "@shadowcat/core";
    *
    * declare const store: ReadableDocuments;
-   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => undefined, () => undefined);
+   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => null, () => undefined, () => undefined);
    * view.reconcile();
    * ```
    */
@@ -132,7 +137,7 @@ export class VfxView {
       this.oneShots = this.oneShots.filter((s) => !drop.has(s.id));
     }
     const seen = new Set<string>();
-    for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId)) {
+    for (const doc of sceneScopedDocs(this.store, "token", this.viewedSceneId, this.viewedLevel)) {
       const eff = resolveTokenActor(doc, this.store);
       const vfx: VfxEmission | null | undefined = eff?.vfx;
       if (!vfx || !vfx.enabled) continue;
@@ -211,7 +216,7 @@ export class VfxView {
    * import { type ReadableDocuments } from "@shadowcat/core";
    *
    * declare const store: ReadableDocuments;
-   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => undefined, () => undefined);
+   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => null, () => undefined, () => undefined);
    * view.play({ scene: "s1", asset: "a1", x: 0, y: 0, id: "one-shot-1" });
    * ```
    */
@@ -251,7 +256,7 @@ export class VfxView {
    * import { type ReadableDocuments } from "@shadowcat/core";
    *
    * declare const store: ReadableDocuments;
-   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => undefined, () => undefined);
+   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => null, () => undefined, () => undefined);
    * view.tick(16);
    * ```
    */
@@ -294,7 +299,7 @@ export class VfxView {
    * import { type ReadableDocuments } from "@shadowcat/core";
    *
    * declare const store: ReadableDocuments;
-   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => undefined, () => undefined);
+   * const view = new VfxView(store, new MockBackend(), () => null, () => null, () => null, () => undefined, () => undefined);
    * view.count(); // 0
    * ```
    */

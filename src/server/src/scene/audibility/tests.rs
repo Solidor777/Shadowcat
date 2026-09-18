@@ -499,6 +499,80 @@ fn compute_audibility_honors_the_wall_elevation_band() {
 }
 
 #[test]
+fn compute_audibility_wall_occlusion_inherits_across_levels_from_the_listeners_own_band() {
+    // `compute_audibility` filters occluding walls to the LISTENER's own elevation
+    // (`elevation::walls_at_elevation`) — it never reads the EMITTER's elevation at all. A
+    // `SceneLevel`-bearing scene therefore needs no dedicated cross-level logic of its own: a
+    // floor-1-banded wall between the listener and a floor-2 emitter occludes it exactly as it
+    // would a floor-1 emitter at the identical horizontal distance — levels compose with the
+    // existing per-listener band filter for free.
+    let user = Uuid::from_u128(7);
+    let scene_id = Uuid::from_u128(10);
+    let scene = entity_doc_top_eng(
+        10,
+        "scene",
+        json!({
+            "grid": { "kind": "square", "size": 100.0 }, "background": null,
+            "levels": [
+                { "id": "1", "name": "Floor 1", "bottom": 0.0, "top": 10.0 },
+                { "id": "2", "name": "Floor 2", "bottom": 10.0, "top": 20.0 },
+            ],
+        }),
+    );
+    // Listener: no authored elevation ⇒ `elevation_or_ground` = 0.0, floor "1".
+    let listener = owned_token(11, 10, 50.0, 50.0, user);
+    // Cross-floor emitter: floor "2" (elevation 15, inside [10, 20)), across the wall.
+    let mut cross_floor_emitter = readable(linked_token(12, 10, 300, 250.0, 50.0));
+    cross_floor_emitter.engine.as_mut().unwrap()["elevation"] = json!(15.0);
+    // Same-floor emitter: floor "1" (elevation 0, matching the listener), the IDENTICAL 200-unit
+    // horizontal distance on the OPPOSITE side of the listener — never crosses the wall.
+    let same_floor_emitter = readable(linked_token(13, 10, 301, -150.0, 50.0));
+    let mut ecs = SceneEcs::from_documents(
+        vec![scene, listener, cross_floor_emitter, same_floor_emitter],
+        0,
+    );
+    ecs.set_actors(vec![
+        entity_doc_top_eng(300, "actor", actor_with_sound(sound())),
+        entity_doc_top_eng(301, "actor", actor_with_sound(sound())),
+    ]);
+    // The SAME wall position `compute_audibility_wall_occlusion_reduces_but_never_silences` uses,
+    // banded to floor "1" only — the listener's own floor.
+    ecs.apply_op(&Operation::Create {
+        doc: entity_doc_eng(
+            50,
+            10,
+            "wall",
+            json!({ "seg": {"x1": 150, "y1": -50, "x2": 150, "y2": 150}, "blocksSight": true,
+                    "elevation": {"bottom": 0.0, "top": 10.0} }),
+        ),
+    });
+    let slice = ecs.compute_audibility(&player_ctx(user), &no_world_grants(), scene_id, None);
+    let cross = slice
+        .emitters
+        .iter()
+        .find(|e| e.token == Uuid::from_u128(12))
+        .expect("cross-floor emitter present")
+        .gain;
+    let same = slice
+        .emitters
+        .iter()
+        .find(|e| e.token == Uuid::from_u128(13))
+        .expect("same-floor emitter present")
+        .gain;
+    // Identical horizontal distance (200 world units, 600-unit radius) ⇒ an IDENTICAL falloff
+    // term for both emitters; `throughWallGain` (0.25) is the ONLY thing distinguishing them.
+    assert!(
+        (same - 0.8 * 8.0 / 9.0).abs() < 1e-9,
+        "same-level pair at the identical distance: unoccluded falloff-only gain: {same}"
+    );
+    assert!(
+        (cross - same * 0.25).abs() < 1e-9,
+        "cross-level pair: occluded via the listener's OWN elevation-band wall filter alone, \
+         with no code change for levels: {cross}"
+    );
+}
+
+#[test]
 fn compute_audibility_skips_a_disabled_emission() {
     let user = Uuid::from_u128(7);
     let mut ecs = SceneEcs::from_documents(

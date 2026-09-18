@@ -2863,122 +2863,6 @@ test`, typecheck, lint, `lint:comments`) green at every commit;
 (`pnpm --filter @shadowcat/shell e2e`) is dispatcher-run, not part of this
 branch's own gate history.
 
-### M20 · Full default module suite ✅
-Branch `m20-module-suite`, cut from `main`, executed from the approved plan
-`docs/superpowers/plans/2026-09-10-m20-default-module-suite.md` (design:
-`docs/superpowers/specs/2026-09-10-m20-default-module-suite-design.md`), as
-10 sequential tasks (task 7 a merge-forward of `main` bringing M21's
-`searchDocuments` `docTypes` filter). Delivered:
-- **Shared seams (`@shadowcat/core`/`@shadowcat/ui-kit`):** `firstChannel`
-  (`chat-docs.ts`, moved from `module-combat-tracker`'s `model.ts`) and
-  `buildMoveOp` (`move-op.ts`, moved from `module-asset-browser`'s
-  `folderOps.ts`) hoisted to core so no consumer forks either decision;
-  `EmissionEditor` moved to `@shadowcat/ui-kit` beside `LightEmissionEditor`;
-  `AUTHOR_CAPS`/`grantAuthor` (`scene-docs.ts`) — the one place "what an
-  author may do to their own document" is stated, stamping
-  `permissions.users[owner] = "owner"` plus `core:delete`/
-  `core:edit_permissions` onto `by_role.owner`; `buildNoteDoc`/
-  `buildTableDoc` call it through their `opts.owner`.
-- **Create-gate mirror:** `ServerMsg::Welcome.role_capabilities`
-  (`RoleCapabilities { all, by_type }`), projected per-connection by
-  `data::permission::project_role_caps_for` from `WorldCapDefaults.role_caps`
-  — never another role's grants cross; `@shadowcat/core`'s `canCreateDoc`
-  mirrors `apply_intent`'s Create arm, `WorldSession.canCreate`/
-  `AppContext.canCreate(docType)` expose it, closing `capabilities.ts`'s
-  pre-existing `TODO`. `AppContext.canDelete(doc)` mirrors
-  `Operation::Delete` through the SAME `#capsFor` resolver `canEdit` already
-  used — never a second resolver call, never raw `doc.owner`.
-  `ActorsPanel`'s create form gained `canCreate(ACTOR_DOC_TYPE)` gating (a
-  new restriction, intended: it hides exactly what the server would refuse).
-- **Rejected-intent toast:** `WorldSession`'s `onReject` now also calls a
-  caller-supplied sink; `App.svelte` wires it to `notifications.push` with
-  `t("intent.rejected.<forbidden|conflict|invalid>")` text — every sheet
-  built on `setField` inherits shell-wide feedback on a refused write.
-- **Actor sheet emissions:** `ActorSheet` renders one `EmissionEditor` bound
-  to `engine.aura`/`sound`/`vfx`, committed through the sheet's existing
-  `setEngine`, no GM gate (carried light alone keeps its GM gate — a vision
-  input, unlike an emitter).
-- **`@shadowcat/module-sheet-note`** (`NoteSheet.svelte`): title, a
-  visibility select over `/permissions/default` (rendered for the author via
-  `grantAuthor`'s `core:edit_permissions`), the server-derived body through
-  `SegmentList` gated on `firstChannel`, a draft-base edit flow over
-  `engine/source` (the OCC `old` is the draft's BASE, not the live stored
-  value, so a concurrent edit refuses with `conflict` instead of being
-  silently overwritten), sort, and parent/children tree navigation with a
-  `canCreate`-gated "New child note".
-- **`@shadowcat/module-sheet-table`** (`TableSheet.svelte`/`RowEditor.svelte`/
-  `EntryEditor.svelte`/`rowOps.ts`): name/description/draw-rule fields, a
-  whole-array `rows` editor (`set_pointer` cannot resize an array, so every
-  row/entry mutation replaces the whole array on `change`, never `input`),
-  Draw posting through `ctx.chat.drawTable` with the server's refusal
-  surfaced verbatim (no client-side draw-count cap). The `doc`/`draw` entry
-  pickers use `ctx.searchDocuments` with `docTypes` once task 7's
-  merge-forward landed it — no client-side re-filter.
-- **`@shadowcat/module-notes`** (`NotesPanel.svelte`/`NoteTree.svelte`/
-  `tree.ts`): `buildNoteTree` builds the parent/children tree from the
-  recipient's own redacted view, promoting a child whose parent is
-  unreadable to root rather than hiding it; live search
-  (`docTypes: ["note"]`) replaces the tree with a flat hit list through the
-  SAME row component, so a hit's Delete/Move-to/open affordances never fork
-  into a second shape; Delete gates on `canDelete(doc)`, never raw
-  ownership; Move-to (GM-only, mirroring the server's GM-only `Move`
-  operation) dispatches `buildMoveOp`.
-- **`@shadowcat/module-tables`** (`TablesPanel.svelte`): name-sorted list,
-  live search (`docTypes: ["table"]`), per-row quick Draw disabled while
-  `firstChannel` is `null`, Delete gated on `canDelete(doc)`. Create builds
-  `{ draw: { kind: "weighted" }, rows: [], description: "" }` with
-  `owner: ctx.selfId`, so a granted player edits and deletes the table they
-  made.
-- **Shell wiring:** `App.svelte`'s module list gains `notes`, `tables`,
-  `sheetNote`, `sheetTable`; `defaultModuleOrder.test.ts` covers both;
-  `docs/site/.vitepress/config.mts`'s Gameplay group gained the pre-existing
-  `combat-tracker` entry it was missing, plus `notes`/`tables`.
-- **Tests:** `notes.spec.ts`/`tables.spec.ts` (Playwright, written to spec
-  §9 — the notes flow's create/edit/share/roll/child-share sequence across a
-  GM and an invited player; the tables flow's row-add/draw/quick-draw with
-  both the GM's and the player's chat cards asserted, including the roll
-  tooltip trigger `SegmentList` renders unconditionally for a `table_draw`
-  segment on every recipient) PASS under the dispatcher-serialized run on
-  port 31999.
-- **Derived engine paths are capability-gated like any other write.** A
-  server-derived engine path (`data::engine::derived_engine_paths`, today
-  only `NoteEngine::derive_body`'s `/engine/body`) rides an Update's
-  returned `Command`, the `world_events` log, and the broadcast as an extra
-  `FieldChange` alongside the caller's own requested changes
-  (`data::validation::derive_engine_side_effects`), and — for every origin
-  that does not skip capability gates (`WriteOrigin::skips_capability_gates`)
-  — is checked against the same declared
-  `CapabilityRequirement`s (`data::permission::declared_caps_for_path`) any
-  other write to that path would need, using the SAME `Access` Phase 1
-  already resolved for the actor rather than re-resolving it in Phase 2.
-Decisions taken (full log: design doc §11, M1–M18): four packages, one per
-doc family/sheet type (M1); markdown + server-derived-body rendering, no
-second `{@html}` sink (M2); the draft's BASE as the note-save OCC pre-image
-(M3); whole-array rows writes (M4); table entries name only `doc` targets,
-never a placed token (M5); one shell-wide reject toast (M6); `canCreate`
-gates the create affordance rather than `role === "gm"` (M7); `EmissionEditor`
-belongs in `ui-kit` (M8); `firstChannel` over a `"general"` literal (M9);
-panels wait for the merge-forward, sheets do not (M10); neither new panel is
-`gmOnly` (M11); no client-side draw-count cap (M12); a hidden-parent note
-promotes to root (M13); `permissions.default` is the note's audience switch,
-not a per-user share list (M14); `grantAuthor` is the one place an author's
-`core:delete`/`core:edit_permissions` grant is stamped (M15); actor ownership
-stays GM-assigned, not `grantAuthor`'d (M16); `canDelete` mirrors the
-server's gate through the shared resolver, never raw ownership (M17); the
-`ActorsPanel` create form gains the `canCreate` restriction it previously
-lacked (M18).
-Full repo gates (`cargo test --all`, `cargo fmt --check`, `cargo clippy -D
-warnings`/`-D missing-docs`, `pnpm -r typecheck`, `pnpm -r test`, `pnpm
-build`, `pnpm lint`/`lint:docs`/`lint:props`/`lint:comments`/
-`lint:allowances`/`lint:file-size`/`lint:inline-tests`/`lint:aria-labels`/
-`lint:gate-manifest`/`lint:settings-privacy`, `pnpm docs:check-examples`,
-`pnpm run test:scripts`, `pnpm run check:svelte-runtime`, `pnpm --filter
-"shadowcat-example-*" build`) green at every commit; `git diff --exit-code
-src/types/generated` clean after the Welcome field's ts-rs regen. The
-browser suite (`pnpm --filter @shadowcat/shell e2e`), including the two
-specs this milestone adds, is dispatcher-run, not part of this branch's own
-gate history.
-
 ## Phase 3 — Atmosphere
 
 ### M22 · Performance settings + render budget ✅
@@ -3188,6 +3072,280 @@ Branch `m24-vfx`, executed from the approved plan
   (`vfx.spec.ts`: emitter + FX-tool one-shot visible to GM and player, a
   player's `vfx` toggle local-only) is WRITTEN and dispatcher-run — not
   part of this branch's own gate history.
+
+### M23 · Audio ✅
+Branch `m23-audio`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m23-audio.md` (design:
+`docs/superpowers/specs/2026-09-11-m23-audio-design.md`; phase-3 master integration:
+`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`), as 22 sequential
+tasks split M23a (server-authoritative transport, transcode, mixer UI) / M23b (spatial
+audibility). Delivered:
+- **Server transport:** `playlist`/`audio-state` engine doc types
+  (`data::engine::audio::{PlaylistEngine, AudioStateEngine}`), the pure `audio::state::apply`
+  reducer (mirrors `combat::transition`'s posture — no I/O), `WriteOrigin::AudioTransport`
+  (Update-only; Create/Delete of `audio-state` are `WriteOrigin::ConfigSeed`-only, seeded once
+  by `world_seed` — a genuine per-operation guard split, the first of its kind in the codebase),
+  `ClientMsg::AudioTransport`/`AudioListenAs`, `ServerMsg::AudioError`,
+  `audio::transport::on_active_scene` (swaps a scene's ambience on `world-settings.activeScene`
+  commit).
+- **Transcode pipeline (D9):** `data::asset::process::audio` — `symphonia` probe+decode →
+  `rubato` resample to 48kHz → Opus VBR encode, muxed into Ogg and/or WebM sibling
+  derivatives (`AudioContainers`, selected at import) alongside the untouched canonical
+  original; never a canonical format swap, unlike the image pipeline's WebP conversion. Unlike
+  `thumb`/`preview`, these siblings are explicitly not `Variant`s and are never regenerated on
+  serve — a missing one 404s.
+- **`@shadowcat/audio`:** a new framework-neutral package (`AudioEngine`, `TrackPlayer`
+  server-clock-synced `<audio>` playback, `OneShotPlayer` decode+LRU cache,
+  `EmitterPlayer`, `DuckControllerImpl`), Web-Audio-injected for Node testability.
+- **Modules:** `@shadowcat/module-audio` (channel mixer, now-playing GM transport, playlists
+  list) and `@shadowcat/module-sheet-playlist` (name/mode/channel/fade + whole-array tracks
+  editor), plus the game-settings Audio fieldset (world spatial/occlusion/through-wall-gain
+  overlay) and per-scene ambience picker, and the asset-browser `audio` kind.
+- **M23b spatial audibility:** `scene::audibility` (falloff/occlusion/pan/listener-selection
+  geometry, composed from the SAME `segments_cross`/`elevation::wall_occludes` primitives the
+  sight raycaster uses — never a second occlusion rule), the `"audibility"` derived channel
+  (one `SceneAudibility` slice per scene with a token, mirroring `"footprints"`'/`"vision"`'s own
+  multi-scene shape, gated on whole-document `cap::READ` per emitting token — an
+  identity-disclosure gate `token_light_emission`'s own field does not need),
+  client `EmitterPlayer` + `AudioEngine.applyAudibility`, and the GM "listen as" preview seam.
+
+### M25 · Multi-level maps + portals ✅
+Branch `m25-levels`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-11-m25-levels-portals.md` (design:
+`docs/superpowers/specs/2026-09-11-m25-levels-portals-design.md`), as 21
+sequential tasks — task 21, the merge-forward integration, held until
+M22/M28/M24/M23 landed on `main`, then merged `origin/main` and wired the
+M24 VFX seam (the Teleport trigger's carried `vfx` asset id now plays via two
+`ServerMsg::Vfx` broadcasts, source and destination scene) and an M23b
+audibility inheritance test (a floor-2 emitter occluded for a floor-1
+listener via the elevation-banded raycaster alone). Delivered:
+- **Levels are elevation bands within one scene document, never a
+  separate scene-per-floor model (decision D4).** `SceneEngine.levels:
+  Vec<SceneLevel>`, each a `{id, name, bottom, top, background}` band;
+  `WallEngine::elevation`/`RegionEngine::elevation`/`DrawingEngine::elevation`/
+  `TemplateEngine::elevation` are renamed to the shared `ElevationBand` type
+  (was `WallElevation`, wall-only). `scene::elevation::band_contains`/
+  `level_of` (mirrored client-side by `@shadowcat/core`'s `bandContains`/
+  `levelOf`) are the ONE point-in-band/floor-resolution predicate every
+  consumer calls — movement gates, region selection, render filters, and the
+  client's own `sceneScopedDocs` scoping.
+- **Movement, pathfinding and region triggers all consult elevation.**
+  `move_wall_entries`/`move_walls` filter occluding walls by the mover's
+  elevation; `RouteMover.elevation`/`MoveGateInputs.mover_elevation` thread it
+  through the gate; `region_field`/`trigger_regions` band regions by level;
+  the navmesh is keyed additionally by level.
+- **Vision, lighting and explored-fog are computed per level.** Visibility
+  polygons, the lit mask, lighting inputs, and the `"footprints"` channel's
+  per-token entries are all level-scoped server-side; `SceneSubscribe.level`
+  (wired through `scene_subscribe`'s wire frame) selects which floor's
+  `"vision"` channel a subscription computes. No server-side resting-token
+  fog-stripping was added — explored-fog per level follows the existing
+  per-recipient model unchanged.
+- **Portals: `TriggerEffect::Teleport`/`PortalTarget`, `WriteOrigin::Trigger`.**
+  A region's `Teleport` trigger effect repositions the entering token
+  (same-scene or cross-scene), with a one-hop anti-loop guard, GM notices, a
+  combat notice, and a `vfx` asset id carried (not yet played — M24's
+  broadcast wiring is a Task 21 merge-forward step). `WriteOrigin::Trigger`
+  is the new document-write provenance a server-authored trigger effect
+  writes under, threaded through `apply_intent`'s Move-arm literal-comparison
+  fix.
+- **Client-side scene scoping (`sceneScopedDocs`) gains a `viewedLevel` 4th
+  parameter**, applied by every render-layer view (`TokenView`, `WallView`,
+  `RegionView`, `DrawingView`, `TemplateView`, `LightView`): band-shaped doc
+  types scope via `bandContains` at the viewed level's own `bottom`;
+  point-elevation types scope via `levelOf`.
+- **`AppContext.viewedLevel`/`setViewedLevel`**: GM-persisted (mirroring
+  `getPanelLayout`/`setPanelLayout`'s persistence shape) or, for a player,
+  derived live from their own primary token's elevation. A `viewedLevel`
+  change re-subscribes ONLY the `"vision"` channel
+  (`RenderEngine.reapplyViewedLevel`) — the server, not just client
+  rendering, computes per-level explored-fog.
+- **`LevelSwitcher.svelte`** (any-viewer floor picker, hosted directly in
+  `Stage.svelte`'s chrome — `STAGE_OVERLAY_CONTRACT` is unavailable at this
+  milestone's merge order) and **`LevelsEditor.svelte`** (GM authoring of
+  `SceneEngine.levels`, whole-array-commit pattern via `structuredClone`,
+  contributed into `SceneBrowserPanel`).
+- **scene-tools stamps the viewed level onto newly-authored content.**
+  `ToolContext.viewedLevelBand`/`viewedLevelBottom` stamp elevation onto
+  new walls/regions/drawings/templates (band) and tokens/lights (point);
+  `editWallElevation` is generalized into a shared `editElevationBand`
+  helper. The region tool's trigger editor gains a `Teleport` effect branch
+  (`RegionTriggerTeleportEditor.svelte`: destination scene via live search,
+  x/y, pick-on-stage targeting via `ToolController.beginPickPortalTarget`/
+  `endPickPortalTarget`, elevation, VFX asset picker).
+- **GM ghost-other-levels toggle + observability.** `TokenView` gains a
+  `ghostOtherLevels` toggle rendering other-level tokens desaturated and
+  faded (`TokenFx` gains an `alpha` entry, composed into the same
+  `ColorMatrixFilter` as every other token art effect); `Stage.svelte`
+  exposes `data-level`/`data-token-count` (level-scoped) read-only debug
+  attributes.
+Coverage: server `scene::elevation` (band/level resolution, conformance
+corpus parity with the client), `scene::movement`/`pathfinding` (elevation-
+gated walls/regions/navmesh), `scene::vision`/`lighting` (per-level
+polygons/masks/footprints), `ws::room` (`Teleport` trigger firing, one-hop
+anti-loop, notices, `SceneSubscribe.level`), `data::engine` (`SceneEngine`/
+`ElevationBand`/`PortalTarget` validation); client `scene-scope.test.ts`
+(the shared `sceneScopedDocs` predicate) and each view's own reconcile
+tests, `worldSession.test.ts`/`ws-client.test.ts` (`viewedLevel` persistence
++ wire), `engine.test.ts`/`Stage.test.ts` (`reapplyViewedLevel`, `data-level`/
+`data-token-count`), `LevelSwitcher.test.ts`/`LevelsEditor.test.ts`,
+`controller.svelte.test.ts`/`ToolRail.test.ts` (elevation stamping, the
+`Teleport` trigger editor incl. pick-on-stage), `token-view.test.ts`/
+`pixi-backend.test.ts` (the ghost toggle + `alpha` fx). Full repo gates
+(`cargo test`/`clippy`/`fmt`, `pnpm -r test`, typecheck, lint,
+`lint:comments`) green at every commit. `src/client/shell/e2e/levels.spec.ts`
+(dual-session GM+player: two authored floors, per-floor token scoping, a
+Teleport region trigger walked into) is WRITTEN and typechecked but NOT RUN —
+the dispatcher executes the browser suite separately.
+
+### M20 · Full default module suite ✅
+Branch `m20-module-suite`, cut from `main`, executed from the approved plan
+`docs/superpowers/plans/2026-09-10-m20-default-module-suite.md` (design:
+`docs/superpowers/specs/2026-09-10-m20-default-module-suite-design.md`), as
+10 sequential tasks (task 7 a merge-forward of `main` bringing M21's
+`searchDocuments` `docTypes` filter). Delivered:
+- **Shared seams (`@shadowcat/core`/`@shadowcat/ui-kit`):** `firstChannel`
+  (`chat-docs.ts`, moved from `module-combat-tracker`'s `model.ts`) and
+  `buildMoveOp` (`move-op.ts`, moved from `module-asset-browser`'s
+  `folderOps.ts`) hoisted to core so no consumer forks either decision;
+  `EmissionEditor` moved to `@shadowcat/ui-kit` beside `LightEmissionEditor`;
+  `AUTHOR_CAPS`/`grantAuthor` (`scene-docs.ts`) — the one place "what an
+  author may do to their own document" is stated, stamping
+  `permissions.users[owner] = "owner"` plus `core:delete`/
+  `core:edit_permissions` onto `by_role.owner`; `buildNoteDoc`/
+  `buildTableDoc` call it through their `opts.owner`.
+- **Create-gate mirror:** `ServerMsg::Welcome.role_capabilities`
+  (`RoleCapabilities { all, by_type }`), projected per-connection by
+  `data::permission::project_role_caps_for` from `WorldCapDefaults.role_caps`
+  — never another role's grants cross; `@shadowcat/core`'s `canCreateDoc`
+  mirrors `apply_intent`'s Create arm, `WorldSession.canCreate`/
+  `AppContext.canCreate(docType)` expose it, closing `capabilities.ts`'s
+  pre-existing `TODO`. `AppContext.canDelete(doc)` mirrors
+  `Operation::Delete` through the SAME `#capsFor` resolver `canEdit` already
+  used — never a second resolver call, never raw `doc.owner`.
+  `ActorsPanel`'s create form gained `canCreate(ACTOR_DOC_TYPE)` gating (a
+  new restriction, intended: it hides exactly what the server would refuse).
+- **Rejected-intent toast:** `WorldSession`'s `onReject` now also calls a
+  caller-supplied sink; `App.svelte` wires it to `notifications.push` with
+  `t("intent.rejected.<forbidden|conflict|invalid>")` text — every sheet
+  built on `setField` inherits shell-wide feedback on a refused write.
+- **Actor sheet emissions:** `ActorSheet` renders one `EmissionEditor` bound
+  to `engine.aura`/`sound`/`vfx`, committed through the sheet's existing
+  `setEngine`, no GM gate (carried light alone keeps its GM gate — a vision
+  input, unlike an emitter).
+- **`@shadowcat/module-sheet-note`** (`NoteSheet.svelte`): title, a
+  visibility select over `/permissions/default` (rendered for the author via
+  `grantAuthor`'s `core:edit_permissions`), the server-derived body through
+  `SegmentList` gated on `firstChannel`, a draft-base edit flow over
+  `engine/source` (the OCC `old` is the draft's BASE, not the live stored
+  value, so a concurrent edit refuses with `conflict` instead of being
+  silently overwritten), sort, and parent/children tree navigation with a
+  `canCreate`-gated "New child note".
+- **`@shadowcat/module-sheet-table`** (`TableSheet.svelte`/`RowEditor.svelte`/
+  `EntryEditor.svelte`/`rowOps.ts`): name/description/draw-rule fields, a
+  whole-array `rows` editor (`set_pointer` cannot resize an array, so every
+  row/entry mutation replaces the whole array on `change`, never `input`),
+  Draw posting through `ctx.chat.drawTable` with the server's refusal
+  surfaced verbatim (no client-side draw-count cap). The `doc`/`draw` entry
+  pickers use `ctx.searchDocuments` with `docTypes` once task 7's
+  merge-forward landed it — no client-side re-filter.
+- **`@shadowcat/module-notes`** (`NotesPanel.svelte`/`NoteTree.svelte`/
+  `tree.ts`): `buildNoteTree` builds the parent/children tree from the
+  recipient's own redacted view, promoting a child whose parent is
+  unreadable to root rather than hiding it; live search
+  (`docTypes: ["note"]`) replaces the tree with a flat hit list through the
+  SAME row component, so a hit's Delete/Move-to/open affordances never fork
+  into a second shape; Delete gates on `canDelete(doc)`, never raw
+  ownership; Move-to (GM-only, mirroring the server's GM-only `Move`
+  operation) dispatches `buildMoveOp`.
+- **`@shadowcat/module-tables`** (`TablesPanel.svelte`): name-sorted list,
+  live search (`docTypes: ["table"]`), per-row quick Draw disabled while
+  `firstChannel` is `null`, Delete gated on `canDelete(doc)`. Create builds
+  `{ draw: { kind: "weighted" }, rows: [], description: "" }` with
+  `owner: ctx.selfId`, so a granted player edits and deletes the table they
+  made.
+- **Shell wiring:** `App.svelte`'s module list gains `notes`, `tables`,
+  `sheetNote`, `sheetTable`; `defaultModuleOrder.test.ts` covers both;
+  `docs/site/.vitepress/config.mts`'s Gameplay group gained the pre-existing
+  `combat-tracker` entry it was missing, plus `notes`/`tables`.
+- **Tests:** `notes.spec.ts`/`tables.spec.ts` (Playwright, written to spec
+  §9 — the notes flow's create/edit/share/roll/child-share sequence across a
+  GM and an invited player; the tables flow's row-add/draw/quick-draw with
+  both the GM's and the player's chat cards asserted, including the roll
+  tooltip trigger `SegmentList` renders unconditionally for a `table_draw`
+  segment on every recipient) PASS under the dispatcher-serialized run on
+  port 31999.
+- **Derived engine paths are capability-gated like any other write.** A
+  server-derived engine path (`data::engine::derived_engine_paths`, today
+  only `NoteEngine::derive_body`'s `/engine/body`) rides an Update's
+  returned `Command`, the `world_events` log, and the broadcast as an extra
+  `FieldChange` alongside the caller's own requested changes
+  (`data::validation::derive_engine_side_effects`), and — for every origin
+  that does not skip capability gates (`WriteOrigin::skips_capability_gates`)
+  — is checked against the same declared
+  `CapabilityRequirement`s (`data::permission::declared_caps_for_path`) any
+  other write to that path would need, using the SAME `Access` Phase 1
+  already resolved for the actor rather than re-resolving it in Phase 2.
+Decisions taken (full log: design doc §11, M1–M18): four packages, one per
+doc family/sheet type (M1); markdown + server-derived-body rendering, no
+second `{@html}` sink (M2); the draft's BASE as the note-save OCC pre-image
+(M3); whole-array rows writes (M4); table entries name only `doc` targets,
+never a placed token (M5); one shell-wide reject toast (M6); `canCreate`
+gates the create affordance rather than `role === "gm"` (M7); `EmissionEditor`
+belongs in `ui-kit` (M8); `firstChannel` over a `"general"` literal (M9);
+panels wait for the merge-forward, sheets do not (M10); neither new panel is
+`gmOnly` (M11); no client-side draw-count cap (M12); a hidden-parent note
+promotes to root (M13); `permissions.default` is the note's audience switch,
+not a per-user share list (M14); `grantAuthor` is the one place an author's
+`core:delete`/`core:edit_permissions` grant is stamped (M15); actor ownership
+stays GM-assigned, not `grantAuthor`'d (M16); `canDelete` mirrors the
+server's gate through the shared resolver, never raw ownership (M17); the
+`ActorsPanel` create form gains the `canCreate` restriction it previously
+lacked (M18).
+Full repo gates (`cargo test --all`, `cargo fmt --check`, `cargo clippy -D
+warnings`/`-D missing-docs`, `pnpm -r typecheck`, `pnpm -r test`, `pnpm
+build`, `pnpm lint`/`lint:docs`/`lint:props`/`lint:comments`/
+`lint:allowances`/`lint:file-size`/`lint:inline-tests`/`lint:aria-labels`/
+`lint:gate-manifest`/`lint:settings-privacy`, `pnpm docs:check-examples`,
+`pnpm run test:scripts`, `pnpm run check:svelte-runtime`, `pnpm --filter
+"shadowcat-example-*" build`) green at every commit; `git diff --exit-code
+src/types/generated` clean after the Welcome field's ts-rs regen. The
+browser suite (`pnpm --filter @shadowcat/shell e2e`), including the two
+specs this milestone adds, is dispatcher-run, not part of this branch's own
+gate history.
+
+### M27 · Voice ducking ✅
+Branch: `m27-ducking`. Spec: `docs/superpowers/specs/2026-09-11-m27-voice-ducking-design.md`.
+Delivered: `shadowcat audio-monitor` subcommand (Windows WASAPI / macOS Core Audio process tap
+/ Linux PipeWire backends behind one `SessionMonitor` trait; a localhost, origin-gated
+WebSocket at `/levels`; `hello`/`levels`/`watch` frames; watch-list filtering server-side).
+`@shadowcat/module-ducking`: `KeySource`, `MicVadSource` (`VadEngine` + `vad.worklet.ts`,
+PII-invariant boolean-only worklet messaging), `OsMonitorSource` (reconnect/backoff),
+`DuckSourcesController`, a per-device `localStorage` preferences mirror, and the
+`DuckingSettings.svelte` contributed section. New client seam: `SETTINGS_SECTION_CONTRACT`
+(`Contribution.settingsSection`), rendered by `Settings.svelte` after its built-in content;
+`settings` module now `provides` it. Wired to M23's real `DuckController`/`AudioApi.context()`
+via `DuckingRuntime.svelte`, a headless component contributed into the always-mounted
+`shadowcat.surface:overlay` surface rather than from `register(ctx)` directly — `ModuleContext`
+(the framework-neutral type a module's `register` receives) carries no `audio` member, only
+`AppContext` (the Svelte-reachable shell context) does, and the key/OS-monitor sources must
+keep ducking while the Settings panel — which unmounts on close — is closed. Dependency
+review: `windows` 0.58.0 (MIT OR Apache-2.0) and `core-foundation` 0.10.1 (MIT OR Apache-2.0)
+and `pipewire`/`libspa` 0.8.0 (MIT, binds `libpipewire-0.3`, also MIT) all PASS; `coreaudio-rs`/
+`coreaudio-sys` were evaluated and NOT USED (`coreaudio-sys` 0.2.18 does not wrap
+`AudioHardwareCreateProcessTap`), so `macos.rs` hand-binds the process-tap surface via
+`extern "C"` over `core-foundation`. CI: PipeWire dev headers on the Ubuntu legs of `rust`/
+`docs`. Tests: `cargo test --all` 3787 passed 0 failed (2787 lib unit + 130 integration + 870
+doc-tests); `pnpm -r test` all packages green (`@shadowcat/module-ducking` 41 tests across 9
+files). e2e: `ducking.spec.ts` written, NOT run by this milestone (dispatcher-run per master §4).
+Verification caveat: `linux.rs`'s passive monitor-port capture stream and `macos.rs`'s
+process-tap IO callback (peak measurement on both platforms) are implemented against the
+published `pipewire`/`libspa` 0.8 and Core Audio process-tap API surfaces, but are unverified
+end-to-end without a real Linux/macOS host with audio hardware in this development environment
+— `macos.rs`'s `CATapDescription` construction in particular goes through hand-transcribed
+Objective-C runtime calls with no `objc`/`objc2` dependency, the single highest-risk surface in
+the file. Both backends' non-capture surface (node/process enumeration, naming) was checked
+against the resolved crates' vendored source.
 
 
 ## Documentation campaign — completed sweeps
@@ -3497,76 +3655,3 @@ pass) lives in [`PLAN.md`](PLAN.md). Sweep 13 (property/type/full-coverage pass)
   `pnpm lint:settings-privacy`. Known, documented boundary: under PowerShell a backslash is not an
   escape, so a `-m "C:\path\"` argument can carry a `--no-verify` past the POSIX tokenizer — the
   remote is the backstop for that class.
-
-## Phase 3 — Atmosphere
-
-### M23 · Audio ✅
-Branch `m23-audio`, cut from `main`, executed from the approved plan
-`docs/superpowers/plans/2026-09-11-m23-audio.md` (design:
-`docs/superpowers/specs/2026-09-11-m23-audio-design.md`; phase-3 master integration:
-`docs/superpowers/specs/2026-09-11-phase3-master-integration-design.md`), as 22 sequential
-tasks split M23a (server-authoritative transport, transcode, mixer UI) / M23b (spatial
-audibility). Delivered:
-- **Server transport:** `playlist`/`audio-state` engine doc types
-  (`data::engine::audio::{PlaylistEngine, AudioStateEngine}`), the pure `audio::state::apply`
-  reducer (mirrors `combat::transition`'s posture — no I/O), `WriteOrigin::AudioTransport`
-  (Update-only; Create/Delete of `audio-state` are `WriteOrigin::ConfigSeed`-only, seeded once
-  by `world_seed` — a genuine per-operation guard split, the first of its kind in the codebase),
-  `ClientMsg::AudioTransport`/`AudioListenAs`, `ServerMsg::AudioError`,
-  `audio::transport::on_active_scene` (swaps a scene's ambience on `world-settings.activeScene`
-  commit).
-- **Transcode pipeline (D9):** `data::asset::process::audio` — `symphonia` probe+decode →
-  `rubato` resample to 48kHz → Opus VBR encode, muxed into Ogg and/or WebM sibling
-  derivatives (`AudioContainers`, selected at import) alongside the untouched canonical
-  original; never a canonical format swap, unlike the image pipeline's WebP conversion. Unlike
-  `thumb`/`preview`, these siblings are explicitly not `Variant`s and are never regenerated on
-  serve — a missing one 404s.
-- **`@shadowcat/audio`:** a new framework-neutral package (`AudioEngine`, `TrackPlayer`
-  server-clock-synced `<audio>` playback, `OneShotPlayer` decode+LRU cache,
-  `EmitterPlayer`, `DuckControllerImpl`), Web-Audio-injected for Node testability.
-- **Modules:** `@shadowcat/module-audio` (channel mixer, now-playing GM transport, playlists
-  list) and `@shadowcat/module-sheet-playlist` (name/mode/channel/fade + whole-array tracks
-  editor), plus the game-settings Audio fieldset (world spatial/occlusion/through-wall-gain
-  overlay) and per-scene ambience picker, and the asset-browser `audio` kind.
-- **M23b spatial audibility:** `scene::audibility` (falloff/occlusion/pan/listener-selection
-  geometry, composed from the SAME `segments_cross`/`elevation::wall_occludes` primitives the
-  sight raycaster uses — never a second occlusion rule), the `"audibility"` derived channel
-  (one `SceneAudibility` slice per scene with a token, mirroring `"footprints"`'/`"vision"`'s own
-  multi-scene shape, gated on whole-document `cap::READ` per emitting token — an
-  identity-disclosure gate `token_light_emission`'s own field does not need),
-  client `EmitterPlayer` + `AudioEngine.applyAudibility`, and the GM "listen as" preview seam.
-
-### M27 · Voice ducking ✅
-
-Branch: `m27-ducking`. Spec: `docs/superpowers/specs/2026-09-11-m27-voice-ducking-design.md`.
-Delivered: `shadowcat audio-monitor` subcommand (Windows WASAPI / macOS Core Audio process tap
-/ Linux PipeWire backends behind one `SessionMonitor` trait; a localhost, origin-gated
-WebSocket at `/levels`; `hello`/`levels`/`watch` frames; watch-list filtering server-side).
-`@shadowcat/module-ducking`: `KeySource`, `MicVadSource` (`VadEngine` + `vad.worklet.ts`,
-PII-invariant boolean-only worklet messaging), `OsMonitorSource` (reconnect/backoff),
-`DuckSourcesController`, a per-device `localStorage` preferences mirror, and the
-`DuckingSettings.svelte` contributed section. New client seam: `SETTINGS_SECTION_CONTRACT`
-(`Contribution.settingsSection`), rendered by `Settings.svelte` after its built-in content;
-`settings` module now `provides` it. Wired to M23's real `DuckController`/`AudioApi.context()`
-via `DuckingRuntime.svelte`, a headless component contributed into the always-mounted
-`shadowcat.surface:overlay` surface rather than from `register(ctx)` directly — `ModuleContext`
-(the framework-neutral type a module's `register` receives) carries no `audio` member, only
-`AppContext` (the Svelte-reachable shell context) does, and the key/OS-monitor sources must
-keep ducking while the Settings panel — which unmounts on close — is closed. Dependency
-review: `windows` 0.58.0 (MIT OR Apache-2.0) and `core-foundation` 0.10.1 (MIT OR Apache-2.0)
-and `pipewire`/`libspa` 0.8.0 (MIT, binds `libpipewire-0.3`, also MIT) all PASS; `coreaudio-rs`/
-`coreaudio-sys` were evaluated and NOT USED (`coreaudio-sys` 0.2.18 does not wrap
-`AudioHardwareCreateProcessTap`), so `macos.rs` hand-binds the process-tap surface via
-`extern "C"` over `core-foundation`. CI: PipeWire dev headers on the Ubuntu legs of `rust`/
-`docs`. Tests: `cargo test --all` 3787 passed 0 failed (2787 lib unit + 130 integration + 870
-doc-tests); `pnpm -r test` all packages green (`@shadowcat/module-ducking` 41 tests across 9
-files). e2e: `ducking.spec.ts` written, NOT run by this milestone (dispatcher-run per master §4).
-Verification caveat: `linux.rs`'s passive monitor-port capture stream and `macos.rs`'s
-process-tap IO callback (peak measurement on both platforms) are implemented against the
-published `pipewire`/`libspa` 0.8 and Core Audio process-tap API surfaces, but are unverified
-end-to-end without a real Linux/macOS host with audio hardware in this development environment
-— `macos.rs`'s `CATapDescription` construction in particular goes through hand-transcribed
-Objective-C runtime calls with no `objc`/`objc2` dependency, the single highest-risk surface in
-the file. Both backends' non-capture surface (node/process enumeration, naming) was checked
-against the resolved crates' vendored source.
-

@@ -3,10 +3,21 @@
 // dispatchIntent for document writes); it never imports core-ui (contract-only
 // boundary). The tool factories close over the context.
 import { rectPoints, ellipsePoints, circlePoints, conePoints, squarePoints, parseColor, type SceneTool, type Point } from "@shadowcat/render";
-import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type SceneToolMeta } from "@shadowcat/core";
+import { buildTokenDoc, buildTokenFromActor, buildSceneEntityDoc, EMPTY_FOOTPRINTS, buildRegionDoc, setRegionVisibility, buildLightDoc, DEFAULT_LIGHT_EMISSION, buildUpdate, type ReadableDocuments, type AssetResolver, type WireOperation, type PathResult, type MoveStream, type FootprintLookup, type LightEmission, type LightEngine, type RegionTrigger, type RegionEngine, type CombatApi, type CombatEngine, type TokenEngine, type SceneToolMeta } from "@shadowcat/core";
 import type { SceneInteraction, ActorSelection, TokenSelection, TFunc, AppContext } from "@shadowcat/ui-kit";
 import type { WorldRole } from "@shadowcat/types";
-import { topTokenAt, topLightAt, topWallAt } from "./hit-test";
+import { topTokenAt, topLightAt, topWallAt, topRegionAt, topDrawingAt, topTemplateAt } from "./hit-test";
+
+/** The viewed level's elevation band, both ends REQUIRED (unlike `@shadowcat/core`'s
+ * `ElevationBand`, whose `bottom`/`top` are independently nullable to express an unbounded
+ * occlusion band) — a `SceneLevel` always declares both ends. Returned by `ToolRail`'s
+ * `resolvedViewedLevel` and read through `ToolContext.viewedLevelBand`. */
+export interface ViewedLevelBand {
+  /** The level's lower elevation bound, in scene units. */
+  bottom: number;
+  /** The level's upper elevation bound, in scene units. */
+  top: number;
+}
 
 /** A tool id, keying `ToolController.#tools` and gating `ToolRail`'s per-role visibility. */
 export type ToolId = "select" | "place" | "draw" | "template" | "measure" | "ping" | "wall" | "region" | "light";
@@ -91,6 +102,23 @@ export interface ToolContext {
    * second copy of the catalog strings would fork the catalog, and a host that forgets to wire
    * it would silently render that copy for every locale. */
   t: TFunc;
+  /** The viewed scene's viewed-level band (`{bottom, top}` of the `SceneLevel` `ctx.viewedLevel`
+   * names, or `null` for a level-less scene/no viewed level). `ToolRail` derives this from
+   * `ctx.viewedLevel` + the viewed scene's `levels` array; `makeWallTool`/`makeRegionTool`/
+   * `makeDrawTool`/`makeTemplateTool` stamp it onto newly-created geometry's `/engine/elevation`
+   * so authoring on a floor bands the new shape to that floor. Absent/`null` ⇒ `elevation: null`
+   * (today's behavior, unchanged). */
+  viewedLevelBand?: () => ViewedLevelBand | null;
+  /** The viewed level's `bottom` (a POINT value, not a band) — stamped onto newly-placed tokens/
+   * lights' `/engine/elevation` by `makePlaceTool`/`makeLightTool`. Absent/`null` ⇒
+   * `elevation: null` (today's behavior, unchanged). */
+  viewedLevelBottom?: () => number | null;
+  /** GM roaming-scene override (from `AppContext.setGmViewedScene`). `beginPickPortalTarget`
+   * calls this to temporarily switch the viewed scene to a `Teleport` trigger's authored target
+   * scene while the GM picks the destination point on stage, then `endPickPortalTarget` restores
+   * the original scene through the same seam. Absent ⇒ pick-on-stage cannot switch scenes (the
+   * GM picks within whichever scene is already viewed). */
+  setGmViewedScene?: (id: string | null) => void;
 }
 
 /** The `ToolContext` members a host `AppContext` supplies under the SAME name, every one
@@ -257,14 +285,14 @@ export class ToolController {
   /** Region-tool authored secrecy flag; `true` sets `gm_only` visibility on the persisted doc
    * via `setRegionVisibility`. */
   regionSecret = $state<boolean>(false);
-  /** The non-token scene entity currently open for editing (a light or a wall picked with the
-   * select or light tool), or `null`. Cleared on every tool switch (`toggle`) and on a GM's
-   * empty-canvas click with the select tool; `ToolRail` renders the matching editor while it is
-   * set. One shared selection source for both tools, so the editor can never disagree with the
-   * canvas about which entity is being edited. */
+  /** The non-token scene entity currently open for editing (a light, wall, region, drawing or
+   * template picked with the select or light tool), or `null`. Cleared on every tool switch
+   * (`toggle`) and on a GM's empty-canvas click with the select tool; `ToolRail` renders the
+   * matching editor while it is set. One shared selection source for every entity kind, so the
+   * editor can never disagree with the canvas about which entity is being edited. */
   editingEntity = $state<{
     /** Which kind of scene entity is being edited. */
-    kind: "light" | "wall";
+    kind: "light" | "wall" | "region" | "drawing" | "template";
     /** The edited document's id. */
     id: string;
   } | null>(null);
@@ -273,6 +301,17 @@ export class ToolController {
    * empty list persists a plain movement-only region). Editing a row in the rail must never
    * mutate an already-persisted doc, which is why `makeRegionTool` clones at persist time. */
   regionTriggers = $state<RegionTrigger[]>([]);
+  /** The `regionTriggers` row index currently awaiting a stage click to capture a `Teleport`
+   * trigger's target x/y, or `null` when no pick is in progress. `ToolRail` reads this to show
+   * the in-progress "click on stage" prompt on the row's pick button. */
+  pickingPortalRow = $state<number | null>(null);
+  /** Original viewed scene, stashed while a portal-target pick temporarily switches it. */
+  #pickOriginalScene: string | null = null;
+  /** The `RegionTrigger` OBJECT (not its array index) a pick in progress targets — the stable
+   * identity `endPickPortalTarget` resolves back to a CURRENT row by, so removing or
+   * reordering `regionTriggers` mid-pick cannot redirect the write onto an unrelated trigger
+   * that happens to sit at the same index. `null` exactly when `pickingPortalRow` is `null`. */
+  #pickingTrigger: RegionTrigger | null = null;
   /** One `SceneTool` instance per `ToolId`, built once in the constructor. */
   readonly #tools: Record<ToolId, SceneTool>;
 
@@ -315,6 +354,74 @@ export class ToolController {
     this.activeContributedId = null;
     this.editingEntity = null; // an edit selection never survives a tool switch
     this.active = this.active === id ? null : id;
+    this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
+  }
+
+  /** Begin capturing one stage click as `regionTriggers[row]`'s teleport target x/y. Switches
+   * the viewed scene to the trigger's currently-authored target scene (or stays put if none is
+   * set yet) and overrides the active tool's pointer handling with a one-shot picker.
+   *
+   * A pick already in progress is cleanly CANCELLED first (`endPickPortalTarget(null)` —
+   * restores the GM's original scene, writes nothing) before this one begins: without this
+   * guard, starting a second pick while `pickingPortalRow !== null` would overwrite
+   * `#pickOriginalScene` with the FIRST pick's already-roamed-to destination scene rather than
+   * the true original, stranding the GM's view on an intermediate scene with no way back
+   * through this feature.
+   * @param row Index into `regionTriggers` of the `teleport` trigger being edited.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.beginPickPortalTarget(0);
+   * ```
+   */
+  beginPickPortalTarget(row: number): void {
+    const trig = this.regionTriggers[row];
+    if (!trig || trig.effect.type !== "teleport") return;
+    if (this.pickingPortalRow !== null) this.endPickPortalTarget(null);
+    this.#pickOriginalScene = this.ctx.viewedSceneId?.() ?? null;
+    const targetScene = trig.effect.target.scene;
+    if (targetScene && targetScene !== this.#pickOriginalScene) {
+      this.ctx.setGmViewedScene?.(targetScene);
+    }
+    this.pickingPortalRow = row;
+    this.#pickingTrigger = trig;
+    this.ctx.scene.setActiveTool({
+      onPointerDown: (p: Point) => {
+        this.endPickPortalTarget(p);
+        return true;
+      },
+      onPointerMove: () => {},
+      onPointerUp: () => {},
+    });
+  }
+
+  /** End a portal-target pick: write the captured point (if any) into the target row, restore
+   * the original viewed scene and the tool that was active when the pick began. The target row
+   * is resolved by the CAPTURED TRIGGER OBJECT's current index (`#pickingTrigger`), never the
+   * row index captured at pick-start — a trigger row removed or reordered while a pick is in
+   * progress makes the write a no-op (the scene restore still happens) rather than silently
+   * landing on whatever trigger now occupies that index.
+   * @param pos The captured stage point, or `null` to cancel without writing.
+   * @example
+   * ```
+   * declare const controller: ToolController;
+   * controller.endPickPortalTarget({ x: 10, y: 20 });
+   * ```
+   */
+  endPickPortalTarget(pos: Point | null): void {
+    const pickedTrig = this.#pickingTrigger;
+    this.pickingPortalRow = null;
+    this.#pickingTrigger = null;
+    if (pickedTrig && pos && this.regionTriggers.includes(pickedTrig)) {
+      if (pickedTrig.effect.type === "teleport") {
+        pickedTrig.effect.target.x = pos.x;
+        pickedTrig.effect.target.y = pos.y;
+      }
+    }
+    if (this.#pickOriginalScene !== null) {
+      this.ctx.setGmViewedScene?.(this.#pickOriginalScene);
+      this.#pickOriginalScene = null;
+    }
     this.ctx.scene.setActiveTool(this.active ? this.#tools[this.active] : null);
   }
 
@@ -385,7 +492,12 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
            * (embeds a frozen copy) rather than links (shares the live document). */
           prototype?: boolean;
         } | undefined)?.prototype ? "instance" : "link";
-        ctx.dispatchIntent([{ op: "create", doc: buildTokenFromActor(ctx.world, scene.id, actor, mode, c, footprintsOf(ctx).unit(scene.id)) }]);
+        const actorToken = buildTokenFromActor(ctx.world, scene.id, actor, mode, c, footprintsOf(ctx).unit(scene.id));
+        // buildTokenFromActor stamps `elevation: null` unconditionally (no override param on
+        // that shared @shadowcat/core builder); patch it post-construction, mirroring the
+        // authored-asset placement path just below.
+        (actorToken.engine as TokenEngine).elevation = ctx.viewedLevelBottom?.() ?? null;
+        ctx.dispatchIntent([{ op: "create", doc: actorToken }]);
         // A unique (linked) actor places once by default: clear the selection so repeated
         // clicks don't stamp duplicate live-views. The user can opt to keep it selected
         // (keepAfterPlace). Instanced actors always stay selected for placing many.
@@ -401,7 +513,7 @@ export function makePlaceTool(ctx: ToolContext, controller: ToolController): Sce
       ctx.dispatchIntent([
         {
           op: "create",
-          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: null }),
+          doc: buildTokenDoc(ctx.world, scene.id, { x: c.x, y: c.y, w: unit?.w ?? 0, h: unit?.h ?? 0, rotation: 0, visual: { kind: "image", asset }, actor_id: null, overrides: null, face: null, elevation: ctx.viewedLevelBottom?.() ?? null }),
         },
       ]);
       return true;
@@ -475,7 +587,7 @@ export function makeWallTool(ctx: ToolContext): SceneTool {
               blocksSight: true,
               blocksMove: true,
               blocksLight: true,
-              elevation: null,
+              elevation: ctx.viewedLevelBand?.() ?? null,
             }),
           },
         ]);
@@ -585,7 +697,7 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
         return true;
       }
       const at = ctx.scene.snap(p);
-      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, elevation: null, emission: { ...NEW_LIGHT_EMISSION } });
+      const doc = buildLightDoc(ctx.world, scene.id, { x: at.x, y: at.y, elevation: ctx.viewedLevelBottom?.() ?? null, emission: { ...NEW_LIGHT_EMISSION } });
       ctx.dispatchIntent([{ op: "create", doc }]);
       // Placing selects the new light so the rail editor targets it immediately (a second
       // click would place ANOTHER light, not select this one).
@@ -627,15 +739,16 @@ export function makeLightTool(ctx: ToolContext, controller: ToolController): Sce
 }
 
 /** Region preview stroke color (distinct from walls/measure route). Actual persisted fill/stroke
- * is behavior-tinted by the render layer (`RegionView.toSpec`); this is just the drag preview. */
+ * is behavior-tinted by the render layer (`regionShapeSpec`); this is just the drag preview. */
 const REGION_PREVIEW_COLOR = 0xd0a030;
 
 /** Author a vector-shaped region: rect/circle drag two opposite corners; polygon is a freehand
  * drag whose traced path becomes the closed boundary (mirrors `makeDrawTool`'s freehand capture).
  * Release persists a `region` doc with the controller's configured behavior/cost/secrecy.
- * Create-only (no edit UI) — a GM re-authors an existing region by delete+recreate, or toggles
- * `enabled` server-side. (Walls and lights, by contrast, are editable after placement: the
- * select tool picks one into `ToolController.editingEntity` and the rail editor writes it.)
+ * Create-only for shape/behavior/cost/secrecy/triggers (no edit UI for those — a GM re-authors
+ * by delete+recreate, or toggles `enabled` server-side); the ELEVATION band is editable after
+ * placement, like walls/lights: the select tool picks a region into
+ * `ToolController.editingEntity` and the rail's region editor writes `/engine/elevation`.
  * The tool rail hides this tool from non-GMs (`ToolRail`'s
  * `visibleTools` filter) — a UI-only visibility gate, not a permission this factory itself
  * checks or enforces.
@@ -687,6 +800,7 @@ export function makeRegionTool(ctx: ToolContext, controller: ToolController): Sc
           // `$state.snapshot`, not `structuredClone`: the reactive proxy a `$state`
           // array wraps its contents in is not cloneable.
           triggers: $state.snapshot(controller.regionTriggers),
+          elevation: ctx.viewedLevelBand?.() ?? null,
         };
         const doc = buildRegionDoc(ctx.world, scene.id, engine);
         if (controller.regionSecret) setRegionVisibility(doc, true);
@@ -1378,6 +1492,7 @@ export function makeDrawTool(ctx: ToolContext, controller: ToolController): Scen
               shape: { kind: mode, points },
               stroke: { color: controller.strokeColor, width: 2 },
               fill: null,
+              elevation: ctx.viewedLevelBand?.() ?? null,
             }),
           },
         ]);
@@ -1508,6 +1623,7 @@ export function makeTemplateTool(ctx: ToolContext, controller: ToolController): 
             doc: buildSceneEntityDoc(ctx.world, scene.id, "template", {
               shape: { kind: controller.templateMode, x: anchor.x, y: anchor.y, size, direction },
               color: controller.templateColor,
+              elevation: ctx.viewedLevelBand?.() ?? null,
             }),
           },
         ]);
@@ -1539,11 +1655,11 @@ const DRAG_THROTTLE_MS = 50;
  * the selection and yields the gesture to the camera. The selection itself is signified on the
  * token node (the render layer's selection highlight fx, driven by `TokenView` off the same
  * `tokenSelection` state), never by a tool overlay. For a GM, an empty-space click additionally
- * picks a light marker or wall segment into `controller.editingEntity` (the rail editor's
- * selection source); a token hit clears it.
+ * picks a light marker, wall segment, or region/drawing/template shape into
+ * `controller.editingEntity` (the rail editor's selection source); a token hit clears it.
  * @param ctx The tool context; reads token selection, snaps points, dispatches
  * intents/pathfind/moveRequest depending on role.
- * @param controller Receives the light/wall editing selection (`editingEntity`).
+ * @param controller Receives the scene-entity editing selection (`editingEntity`).
  * @returns A `SceneTool` implementing the drag-to-move-selection gesture.
  * @example
  * ```
@@ -1667,23 +1783,31 @@ export function makeSelectMoveTool(ctx: ToolContext, controller: ToolController)
       const id = topTokenAt(ctx.documents.query("token"), p, ctx.documents, footprintsOf(ctx));
       if (!id) {
         // GM-only scene-entity editing: a click that hits no token picks a light marker, then a
-        // wall segment, into the shared editing selection the rail editor reads. Both write
-        // paths are GM-gated (the server rejects a non-GM's document write regardless; this
-        // branch only decides which editor opens, and a player gets no editor affordance).
+        // wall segment, then a region/drawing/template shape, into the shared editing selection
+        // the rail editor reads. Every write path is GM-gated (the server rejects a non-GM's
+        // document write regardless; this branch only decides which editor opens, and a player
+        // gets no editor affordance).
         if (ctx.role === "gm") {
           const scene = activeScene(ctx);
-          const lightHit = scene
-            ? topLightAt(ctx.documents.query("light").filter((d) => d.parent_id === scene.id), p)
-            : null;
-          const wallHit =
-            !lightHit && scene
-              ? topWallAt(ctx.documents.query("wall").filter((d) => d.parent_id === scene.id), p)
-              : null;
+          const inScene = (docType: string) =>
+            scene ? ctx.documents.query(docType).filter((d) => d.parent_id === scene.id) : [];
+          const lightHit = topLightAt(inScene("light"), p);
+          const wallHit = !lightHit ? topWallAt(inScene("wall"), p) : null;
+          const regionHit = !lightHit && !wallHit ? topRegionAt(inScene("region"), p) : null;
+          const drawingHit = !lightHit && !wallHit && !regionHit ? topDrawingAt(inScene("drawing"), p) : null;
+          const templateHit =
+            !lightHit && !wallHit && !regionHit && !drawingHit ? topTemplateAt(inScene("template"), p) : null;
           controller.editingEntity = lightHit
             ? { kind: "light", id: lightHit }
             : wallHit
               ? { kind: "wall", id: wallHit }
-              : null;
+              : regionHit
+                ? { kind: "region", id: regionHit }
+                : drawingHit
+                  ? { kind: "drawing", id: drawingHit }
+                  : templateHit
+                    ? { kind: "template", id: templateHit }
+                    : null;
         }
         sel?.clear();
         ctx.scene.clearOverlay();

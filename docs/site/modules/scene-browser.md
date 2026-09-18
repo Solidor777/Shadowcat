@@ -16,6 +16,11 @@ players render).
 ## Components
 
 - `SceneBrowserPanel.svelte` — the list + actions.
+- `LevelsEditor.svelte` — a scene's floor authoring UI (toggled per-scene via
+  the panel's `levels-toggle` button): add/remove/edit a level's name,
+  elevation band (`[bottom, top)`), and background image. Commits the WHOLE
+  `SceneEngine.levels` array on any single edit (`structuredClone` + mutate +
+  one `/engine/levels` write) — never a per-field patch.
 
 ## Contracts & seams
 
@@ -23,6 +28,11 @@ players render).
 - Multi-scene seams on AppContext: `viewedSceneId` (what this client renders),
   `setGmViewedScene` (GM local roam), `sceneSelection` (deep-link into
   game-settings); activation writes `world-settings.activeScene`.
+- `LevelsEditor` writes `world-settings.activeScene`'s sibling per-scene field
+  `/engine/levels` directly (no separate config document); a level's id is
+  server-opaque (`crypto.randomUUID()`, generated client-side at author time,
+  never re-derived) and is what `AppContext.viewedLevel`/`LevelSwitcher`/scene-
+  tools' elevation-band stamping all key on.
 
 ## Pointers
 

@@ -1,6 +1,7 @@
 import type { WireDocument, ReadableDocuments, FootprintLookup } from "@shadowcat/core";
 import { resolveTokenBox } from "@shadowcat/core";
-import type { Point } from "@shadowcat/render";
+import type { Point, ShapeNodeSpec } from "@shadowcat/render";
+import { regionShapeSpec, drawingShapeSpec, templateShapeSpec } from "@shadowcat/render";
 
 /** The id of the topmost token whose footprint contains `p`, or `null`. "Topmost" is the LAST
  * matching entry in `tokens`' own iteration order, which is `ReadableDocuments.query`'s Map-
@@ -150,4 +151,158 @@ export function topWallAt(walls: WireDocument[], p: Point): string | null {
     }
   }
   return hit;
+}
+
+/** Scene-coord distance tolerance for picking an OPEN (unfilled) region/drawing/template
+ * segment — matches `WALL_PICK_TOLERANCE`, the same forgiving-click radius convention. */
+const SHAPE_PICK_TOLERANCE = 8;
+
+/** Point-in-polygon test (even-odd / ray-casting rule) over a flat `[x0,y0,x1,y1,…]` point
+ * ring — the standard Jordan-curve-theorem algorithm (public-domain; clean-room), used for
+ * every CLOSED region/drawing/template shape (`ShapeNodeSpec.closed === true`). A point
+ * exactly on an edge may resolve either way (the usual ray-casting caveat); picking is
+ * forgiving by nature, so this is not worth a dedicated boundary case.
+ * @param points Flat `[x0,y0,x1,y1,…]` polygon points (closed implicitly — the last point
+ * connects back to the first).
+ * @param p The point to test (scene coords).
+ * @returns `true` when `p` is inside the polygon.
+ * @example
+ * ```
+ * pointInPolygon([0, 0, 10, 0, 10, 10, 0, 10], { x: 5, y: 5 }); // true
+ * ```
+ */
+function pointInPolygon(points: number[], p: Point): boolean {
+  let inside = false;
+  const n = points.length / 2;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = points[i * 2];
+    const yi = points[i * 2 + 1];
+    const xj = points[j * 2];
+    const yj = points[j * 2 + 1];
+    if (yi > p.y !== yj > p.y && p.x < ((xj - xi) * (p.y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Nearest distance from `p` to any consecutive-point segment of an OPEN flat
+ * `[x0,y0,x1,y1,…]` polyline (no implicit closing edge), via `pointSegDistance`.
+ * @param points Flat `[x0,y0,x1,y1,…]` polyline points.
+ * @param p The point to measure from (scene coords).
+ * @returns The smallest per-segment distance, or `Infinity` for a degenerate (fewer than 2
+ * points) polyline.
+ * @example
+ * ```
+ * distanceToPolyline([0, 0, 10, 0], { x: 5, y: 3 }); // 3
+ * ```
+ */
+function distanceToPolyline(points: number[], p: Point): number {
+  let best = Infinity;
+  for (let i = 0; i + 3 < points.length; i += 2) {
+    const a = { x: points[i], y: points[i + 1] };
+    const b = { x: points[i + 2], y: points[i + 3] };
+    best = Math.min(best, pointSegDistance(p, a, b));
+  }
+  return best;
+}
+
+/** Shared picking body for region/drawing/template docs: each doc converts to a
+ * `ShapeNodeSpec` via `toSpec` (`regionShapeSpec`/`drawingShapeSpec`/`templateShapeSpec` — the
+ * SAME tessellation the corresponding view draws from, never a forked copy of the shape math),
+ * then is hit-tested by its OWN `closed` flag — a doc list can mix both (a drawing/template doc
+ * can be an open polyline or a closed fill depending on its authored `shape.kind`). **Closed**
+ * shapes use `pointInPolygon` and are picked "topmost wins": any later (higher z / more
+ * recently created — the same iteration-order convention `topTokenAt` uses) containing doc
+ * unconditionally overwrites an earlier hit, since a filled area is a genuine containment click.
+ * **Open** shapes use `distanceToPolyline` and are picked "nearest wins within tolerance" (the
+ * same convention `topWallAt`/`topLightAt` use), since a click near a bare line has no
+ * meaningful z-stacking to prefer. A closed-shape hit always takes priority over an open-shape
+ * hit found earlier in the same pass (an area click is a stronger signal than a near-miss on a
+ * line) — but never over one found LATER, so a later closed doc still overwrites per its own
+ * topmost-wins rule.
+ * @param docs The candidate documents (typically `store.query(docType)`, scene-scoped).
+ * @param p The point to test (scene coords).
+ * @param toSpec Converts a doc to its `ShapeNodeSpec`, or `null` for an unrenderable doc.
+ * @returns The picked doc's id, or `null` when none matches.
+ * @example
+ * ```
+ * // module-private; not exported from @shadowcat/scene-tools
+ * declare const docs: WireDocument[];
+ * declare const p: Point;
+ * topShapeAt(docs, p, regionShapeSpec);
+ * ```
+ */
+function topShapeAt(docs: WireDocument[], p: Point, toSpec: (doc: WireDocument) => ShapeNodeSpec | null): string | null {
+  let closedHit: string | null = null;
+  let openHit: string | null = null;
+  let openBest = SHAPE_PICK_TOLERANCE;
+  for (const doc of docs) {
+    const spec = toSpec(doc);
+    if (!spec) continue;
+    if (spec.closed) {
+      if (pointInPolygon(spec.points, p)) closedHit = doc.id;
+    } else {
+      const d = distanceToPolyline(spec.points, p);
+      if (d <= openBest) {
+        openBest = d;
+        openHit = doc.id;
+      }
+    }
+  }
+  return closedHit ?? openHit;
+}
+
+/** The id of the topmost region whose geometry contains `p`, or `null`. See `topShapeAt` for
+ * the shared picking rule; region shapes (`rect`/`circle`/`polygon`) are always closed, so this
+ * always resolves via `pointInPolygon`. Cull the candidate list to the viewed scene before calling (callers pass
+ * `parent_id`-filtered docs).
+ * @param regions The candidate region documents (typically `store.query("region")`, scene-scoped).
+ * @param p The point to test (scene coords).
+ * @returns The picked region's id, or `null` when none matches.
+ * @example
+ * ```
+ * declare const store: ReadableDocuments;
+ * declare const p: Point;
+ * const id = topRegionAt(store.query("region"), p);
+ * ```
+ */
+export function topRegionAt(regions: WireDocument[], p: Point): string | null {
+  return topShapeAt(regions, p, regionShapeSpec);
+}
+
+/** The id of the topmost drawing whose geometry contains `p` (closed `rect`/`ellipse`/`polygon`),
+ * or that passes within tolerance of `p` (open `freehand`/`line`), or `null`. See `topShapeAt`
+ * for the shared picking rule. Cull the candidate list to the viewed scene before calling
+ * (callers pass `parent_id`-filtered docs).
+ * @param drawings The candidate drawing documents (typically `store.query("drawing")`, scene-scoped).
+ * @param p The point to test (scene coords).
+ * @returns The picked drawing's id, or `null` when none matches.
+ * @example
+ * ```
+ * declare const store: ReadableDocuments;
+ * declare const p: Point;
+ * const id = topDrawingAt(store.query("drawing"), p);
+ * ```
+ */
+export function topDrawingAt(drawings: WireDocument[], p: Point): string | null {
+  return topShapeAt(drawings, p, drawingShapeSpec);
+}
+
+/** The id of the topmost template whose geometry contains `p` (closed `circle`/`cone`/`rect`),
+ * or that passes within tolerance of `p` (open `line`), or `null`. See `topShapeAt` for the
+ * shared picking rule. Cull the candidate list to the viewed scene before calling (callers pass
+ * `parent_id`-filtered docs).
+ * @param templates The candidate template documents (typically `store.query("template")`, scene-scoped).
+ * @param p The point to test (scene coords).
+ * @returns The picked template's id, or `null` when none matches.
+ * @example
+ * ```
+ * declare const store: ReadableDocuments;
+ * declare const p: Point;
+ * const id = topTemplateAt(store.query("template"), p);
+ * ```
+ */
+export function topTemplateAt(templates: WireDocument[], p: Point): string | null {
+  return topShapeAt(templates, p, templateShapeSpec);
 }

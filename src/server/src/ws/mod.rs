@@ -159,13 +159,18 @@ impl WsState {
     /// assert!(ws.rooms.get(uuid::Uuid::nil()).is_none());
     /// ```
     pub fn new() -> Self {
+        // `rooms` owns the canonical VFX-budget limiter; `vfx_rate` clones the SAME instance
+        // (never a fresh one) so the raw `ClientMsg::PlayVfx` frame, `/fx`, and a `Room`-internal
+        // trigger-fired VFX (`fire_region_triggers`'s Teleport arm) share one bucket.
+        let rooms = Arc::new(RoomRegistry::new());
+        let vfx_rate = rooms.vfx_rate();
         Self {
-            rooms: Arc::new(RoomRegistry::new()),
+            rooms,
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
             audio_rate: Arc::new(PingRateLimiter::new()),
-            vfx_rate: Arc::new(PingRateLimiter::new()),
+            vfx_rate,
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),
@@ -185,13 +190,16 @@ impl WsState {
     /// assert!(state.rooms.get(uuid::Uuid::nil()).is_none());
     /// ```
     pub fn with_broadcast_capacity(capacity: usize) -> Self {
+        // See `WsState::new`'s doc: `vfx_rate` clones `rooms`'s own canonical limiter.
+        let rooms = Arc::new(RoomRegistry::with_capacity(capacity));
+        let vfx_rate = rooms.vfx_rate();
         Self {
-            rooms: Arc::new(RoomRegistry::with_capacity(capacity)),
+            rooms,
             ping_rate: Arc::new(PingRateLimiter::new()),
             emote_rate: Arc::new(PingRateLimiter::new()),
             message_rate: Arc::new(PingRateLimiter::new()),
             audio_rate: Arc::new(PingRateLimiter::new()),
-            vfx_rate: Arc::new(PingRateLimiter::new()),
+            vfx_rate,
             link_preview_client: Arc::new(crate::chat::build_link_preview_client()),
             link_preview_cache: Arc::new(crate::chat::LinkPreviewCache::new()),
             preview_rate: Arc::new(crate::chat::PreviewRateLimiter::new()),

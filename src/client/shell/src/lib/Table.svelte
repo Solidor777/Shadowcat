@@ -120,6 +120,10 @@
       return session.footprints;
     },
     setGmViewedScene: (id) => session.setGmViewedScene(id),
+    get viewedLevel() {
+      return session.viewedLevel;
+    },
+    setViewedLevel: (id) => session.setViewedLevel(id),
     searchDocuments: (query, opts, onUpdate) => session.searchDocuments(query, opts, onUpdate),
     sceneSelection,
     speakAsToken,

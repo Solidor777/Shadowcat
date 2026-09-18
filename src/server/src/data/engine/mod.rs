@@ -32,9 +32,9 @@ pub use combat::{
     ResourceRegistryEngine, TurnControl, TurnRecord, MAX_TURN_HISTORY,
 };
 pub use geometry::{
-    DrawingEngine, DrawingShape, Fill, NoticeAudience, RegionEngine, RegionShape, RegionTrigger,
-    Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect, TriggerEvent, WallElevation,
-    WallEngine, MAX_TRIGGER_ID_CHARS,
+    DrawingEngine, DrawingShape, ElevationBand, Fill, NoticeAudience, PortalTarget, RegionEngine,
+    RegionShape, RegionTrigger, Seg, Stroke, TemplateEngine, TemplateShape, TriggerEffect,
+    TriggerEvent, WallEngine, MAX_TRIGGER_ID_CHARS,
 };
 pub use note::{NoteEngine, MAX_NOTE_SOURCE_CHARS, MAX_NOTE_SPANS, NOTE_DOC_TYPE};
 pub use registries::{
@@ -46,8 +46,9 @@ pub use scene::{
     AnimationSettings, AudioOverlay, DiagonalRule, EasingMode, EnvironmentLight, Falloff,
     FalloffCurve, Grid, GridDistance, LightEmission, LightEngine, LightGradationEngine, LightMode,
     MovementModel, MovementRestriction, Occlusion, Pathfinding, Perception, SceneDimensions,
-    SceneEngine, SceneLightingOverrides, SceneVisionOverrides, VisionMode, VisionModesEngine,
-    WorldSceneDefaults, WorldSettingsEngine,
+    SceneEngine, SceneLevel, SceneLightingOverrides, SceneVisionOverrides, VisionMode,
+    VisionModesEngine, WorldSceneDefaults, WorldSettingsEngine, MAX_LEVEL_ID_CHARS,
+    MAX_SCENE_LEVELS,
 };
 pub use system_defaults::{
     AnimationOverlay, PathfindingOverlay, SceneDefaultsOverlay, SystemDefaultsEngine,

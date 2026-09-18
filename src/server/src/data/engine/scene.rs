@@ -282,6 +282,47 @@ pub struct SceneLightingOverrides {
     pub environment: Option<EnvironmentLight>,
 }
 
+/// Upper bound (levels) `SceneEngine::validate` enforces per scene.
+pub const MAX_SCENE_LEVELS: usize = 32;
+/// Upper bound (chars) for a `SceneLevel::id`.
+pub const MAX_LEVEL_ID_CHARS: usize = 64;
+
+/// One floor of a multi-level scene: a named elevation band with its own
+/// background. Levels are data on the scene, never separate scene documents —
+/// a token's floor is derived from its own elevation via
+/// `scene::elevation::level_of`, never authored per-token.
+///
+/// # Examples
+///
+/// ```
+/// use shadowcat::data::engine::SceneLevel;
+///
+/// let ground = SceneLevel {
+///     id: "ground".to_string(), name: "Ground Floor".to_string(),
+///     bottom: 0.0, top: 10.0, background: None,
+/// };
+/// assert_eq!(ground.bottom, 0.0);
+/// ```
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../types/generated/engine/")]
+#[serde(deny_unknown_fields)]
+pub struct SceneLevel {
+    /// Stable id, non-empty, `MAX_LEVEL_ID_CHARS`-bounded, unique within the
+    /// scene. Named by scene-authoring (scene-tools, `LevelsEditor`) and by
+    /// `AppContext.viewedLevel`.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Lower band bound, scene elevation units, inclusive.
+    pub bottom: f64,
+    /// Upper band bound, scene elevation units, exclusive; must exceed `bottom`.
+    pub top: f64,
+    /// Background image asset id for this floor; `None` falls back to
+    /// `SceneEngine::background`.
+    #[serde(default)]
+    pub background: Option<String>,
+}
+
 /// A scene's engine-owned config (mirrors the client's `SceneEngine`).
 /// `bounds` = the authored play-area rectangle in grid units, which the
 /// continuous router and the per-player vision/lighting path both read;
@@ -300,6 +341,7 @@ pub struct SceneLightingOverrides {
 ///     vision: None,
 ///     lighting: None,
 ///     combat: None,
+///     levels: Vec::new(),
 ///     ambience: None,
 /// };
 /// assert_eq!(scene.grid.size, 50.0);
@@ -337,6 +379,12 @@ pub struct SceneEngine {
     /// (`combat::resolve_combat_rules`).
     #[serde(default)]
     pub combat: Option<super::combat::CombatDefaults>,
+    /// The scene's floors: named elevation bands a token's floor is derived
+    /// from via `scene::elevation::level_of`. Empty = one implicit ground
+    /// level (a level-less scene). Levels are data on the scene, never
+    /// separate scene documents.
+    #[serde(default)]
+    pub levels: Vec<SceneLevel>,
     /// This scene's ambient playlist override; `None` = no ambience plays when this scene
     /// becomes active. See `SceneAmbience`.
     #[serde(default)]
@@ -440,18 +488,53 @@ pub struct AnimationSettings {
 }
 
 impl SceneEngine {
-    /// Every combat lifecycle formula present parses, and the ambience override's gain is
-    /// finite when present.
+    /// Every combat lifecycle formula present parses, the ambience override's gain is
+    /// finite when present, and `levels` is well-formed (see `validate_levels`).
     pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(c) = &self.combat {
+            c.validate("combat")?;
+        }
         if let Some(a) = &self.ambience {
             if !a.gain.is_finite() {
                 return Err("ambience gain must be finite".to_string());
             }
         }
-        match &self.combat {
-            Some(c) => c.validate("combat"),
-            None => Ok(()),
+        self.validate_levels()
+    }
+
+    /// `levels`: at most `MAX_SCENE_LEVELS`, every id non-empty/bounded/unique,
+    /// every band finite with `bottom < top`, bands non-overlapping (sorted by
+    /// `bottom`, adjacent bands compared), and a present `background` non-empty.
+    fn validate_levels(&self) -> Result<(), String> {
+        if self.levels.len() > MAX_SCENE_LEVELS {
+            return Err(format!("levels exceeds {MAX_SCENE_LEVELS}"));
         }
+        let mut seen = std::collections::HashSet::new();
+        for level in &self.levels {
+            if level.id.is_empty() || level.id.chars().count() > MAX_LEVEL_ID_CHARS {
+                return Err("level id must be non-empty and bounded".to_string());
+            }
+            if !seen.insert(level.id.as_str()) {
+                return Err(format!("duplicate level id '{}'", level.id));
+            }
+            if !level.bottom.is_finite() || !level.top.is_finite() || level.bottom >= level.top {
+                return Err(format!("level '{}' has an invalid band", level.id));
+            }
+            if level.background.as_deref() == Some("") {
+                return Err(format!(
+                    "level '{}' background must be non-empty when present",
+                    level.id
+                ));
+            }
+        }
+        let mut bands: Vec<(f64, f64)> = self.levels.iter().map(|l| (l.bottom, l.top)).collect();
+        bands.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+        for w in bands.windows(2) {
+            if w[0].1 > w[1].0 {
+                return Err("levels overlap".to_string());
+            }
+        }
+        Ok(())
     }
 }
 

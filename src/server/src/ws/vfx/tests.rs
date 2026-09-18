@@ -307,7 +307,12 @@ impl Repository for StubRepo {
     ) -> Result<crate::data::search::SearchPage, DataError> {
         unimplemented!()
     }
-    async fn get_explored(&self, _scene: Uuid, _user: Uuid) -> Result<Option<Vec<u8>>, DataError> {
+    async fn get_explored(
+        &self,
+        _scene: Uuid,
+        _level: &str,
+        _user: Uuid,
+    ) -> Result<Option<Vec<u8>>, DataError> {
         unimplemented!()
     }
     async fn get_link_preview_cache(

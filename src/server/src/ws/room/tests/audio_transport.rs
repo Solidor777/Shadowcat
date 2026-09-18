@@ -69,6 +69,7 @@ fn scene_doc(world: Uuid, playlist: Uuid, gain: f64) -> crate::data::document::D
         vision: None,
         lighting: None,
         combat: None,
+        levels: Vec::new(),
         ambience: Some(crate::data::engine::scene::SceneAmbience { playlist, gain }),
     };
     crate::data::document::Document {

@@ -25,6 +25,12 @@ export interface FootprintLookup {
    * @param sceneId - The scene document id to look up; `null`/`undefined` answers `null`.
    * @returns The scene's unit extent, or `null` when the server has stated none. */
   unit(sceneId: string | null | undefined): FootprintExtent | null;
+  /** The level the server resolved for one token (`scene::elevation::level_of` over the scene's
+   * declared levels at the token's stored elevation), so a client can scope by level without
+   * re-deriving it.
+   * @param tokenId - The token document id to look up.
+   * @returns The level id, or `null` for ground/a level-less scene or an unstated token. */
+  level(tokenId: string): string | null;
 }
 
 /** Wire shape of one extent; non-finite or negative fails the whole payload rather than
@@ -38,7 +44,9 @@ const payloadSchema = z.object({
     z.object({
       scene: z.string(),
       unit: extentSchema,
-      tokens: z.array(z.object({ token: z.string(), extent: extentSchema.nullable() })),
+      tokens: z.array(
+        z.object({ token: z.string(), extent: extentSchema.nullable(), level: z.string().nullable() }),
+      ),
     }),
   ),
 });
@@ -48,6 +56,7 @@ const payloadSchema = z.object({
 export const EMPTY_FOOTPRINTS: FootprintLookup = {
   token: () => null,
   unit: () => null,
+  level: () => null,
 };
 
 /**
@@ -73,14 +82,17 @@ export function parseFootprints(payload: unknown): FootprintLookup {
   if (!parsed.success) return EMPTY_FOOTPRINTS;
   const tokens = new Map<string, FootprintExtent>();
   const units = new Map<string, FootprintExtent>();
+  const levels = new Map<string, string>();
   for (const s of parsed.data.scenes) {
     units.set(s.scene, s.unit);
     for (const t of s.tokens) {
       if (t.extent) tokens.set(t.token, t.extent);
+      if (t.level !== null) levels.set(t.token, t.level);
     }
   }
   return {
     token: (id) => tokens.get(id) ?? null,
     unit: (id) => (id ? units.get(id) ?? null : null),
+    level: (id) => levels.get(id) ?? null,
   };
 }

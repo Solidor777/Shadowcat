@@ -210,6 +210,10 @@ export function composeTokenFxMatrix(fx: TokenFx[]): number[] {
       const t = 1 / 3;
       return [t, t, t, 0, 0, t, t, t, 0, 0, t, t, t, 0, 0, 0, 0, 0, 1, 0];
     }
+    if (f.kind === "alpha") {
+      // Identity R/G/B rows; the alpha row (index 3) scales the alpha channel by `strength`.
+      return [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, f.strength, 0];
+    }
     const r = ((f.color >> 16) & 0xff) / 255;
     const g = ((f.color >> 8) & 0xff) / 255;
     const b = (f.color & 0xff) / 255;

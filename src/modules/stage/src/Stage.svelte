@@ -4,11 +4,13 @@
   import {
     RenderEngine,
     createPixiBackend,
+    sceneScopedDocs,
     type DisplayBackend,
     type Point,
   } from "@shadowcat/render";
   import { untrack } from "svelte";
   import { createSubscriber } from "svelte/reactivity";
+  import LevelSwitcher from "./LevelSwitcher.svelte";
 
   /** Options every `createBackend` call carries — declared once so the prop's type annotation
    * and its default's parameter share one shape (an inline copy in each would drift). */
@@ -47,7 +49,20 @@
   // `gmViewedScene` $state) — kept intact rather than destructured so reads through it
   // stay live; the other fields are stable references, safe to destructure.
   const ctx = getAppContext();
-  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, audio, onMoveOutcome, role, members } = ctx;
+  const { documents, assets, onAssetChanged, subscribeScene, scene, onPing, onEmote, vfx, audio, onMoveOutcome, role, members, t } = ctx;
+
+  // Reactive bridge (mandatory, mirrors `SceneBrowserPanel`'s convention): register a dependency
+  // on the doc store so `<LevelSwitcher>`'s `levels` prop re-derives when a level is
+  // added/edited/removed via `LevelsEditor` — a plain `documents.query(...)` read is untracked
+  // (manual pub/sub, not `$state`-backed) and would otherwise evaluate once at mount and never
+  // again.
+  const subscribe = createSubscriber((update) => documents.subscribe(update));
+  const viewedSceneLevels = $derived.by((): SceneEngine["levels"] => {
+    subscribe();
+    const vsid = ctx.viewedSceneId;
+    const doc = vsid ? documents.get(vsid) : documents.query("scene")[0];
+    return (doc?.engine as SceneEngine | undefined)?.levels ?? [];
+  });
 
   /** Per-world-session cache of asset metadata for VFX resolution (never bytes). Module
    * scope, so it survives an `$effect` re-run and warms are never re-fetched needlessly. */
@@ -73,6 +88,11 @@
   /** Candidate see-as targets: distinct token owners the GM sees (best-effort; usernames need a
    * members source — labeled by short id for now). */
   let playerOptions = $state<string[]>([]);
+  /** GM-only ghost-other-levels toggle (`ghost-other-levels` control below): forwarded into
+   * `RenderEngineOpts.ghostOtherLevels`, read fresh via the getter so flipping it re-renders
+   * immediately without a manual reconcile call. Gated to GM-only at the control itself — this
+   * flag carries no server round-trip and is never read for a non-GM (the control never mounts). */
+  let ghostOtherLevels = $state(false);
 
   /** Applies the current `gmView` selection to the live engine. `"all"` and `"fog"` are
    * client-only — `"fog"` layers a local full-fog preview overlay, no server round-trip —
@@ -163,8 +183,10 @@
         gridColor: readColor("--grid-line", 0x363645),
         subscribeScene,
         viewedSceneId: () => ctx.viewedSceneId,
+        viewedLevel: () => ctx.viewedLevel,
         footprints: () => ctx.footprints,
         selectedTokens: () => ctx.tokenSelection.ids,
+        ghostOtherLevels: () => ghostOtherLevels,
         performance: () => ctx.performance.current,
         onStats: (s) => ctx.performance.recordStats(s),
         vfxAssets: (id) => {
@@ -179,6 +201,14 @@
           // id-sorted so the string is order-independent. This is the set `TokenView` raises
           // above the fog mask — empty under `mode: "all"` and whenever nothing is perceived.
           host.dataset.perceivedTokens = [...input.perceived].sort().join(";");
+          // Level observability: written here too (not just in the store-commit reconcile
+          // below) so a level SWITCH — which resubscribes vision (`reapplyViewedLevel`) and
+          // thus fires a fresh derived frame without necessarily committing a document — still
+          // updates both attributes promptly.
+          host.dataset.level = ctx.viewedLevel ?? "";
+          host.dataset.tokenCount = String(
+            sceneScopedDocs(documents, "token", () => ctx.viewedSceneId, () => ctx.viewedLevel).length,
+          );
         },
         // Mirrors a scene tool's route-preview label (a combat movement-budget overage/stop
         // suffix, or a plain distance) — the label otherwise exists only as canvas-drawn
@@ -221,6 +251,10 @@
       // Re-project on a client-local viewed-scene switch (activeScene flip or GM roam). Neither
       // carries a new server frame, so the engine must re-filter its views + last vision payload.
       let lastViewed = ctx.viewedSceneId;
+      // A level change alters what the SERVER computes for explored-fog accumulation/emission
+      // (unlike a scene switch), so it re-issues the "vision" wire subscription itself, not just
+      // a client-local re-filter.
+      let lastViewedLevel = ctx.viewedLevel;
       // A "footprints" frame likewise carries no store commit, so the token views need an
       // explicit re-projection when the server states new extents.
       let lastFootprints = ctx.footprints;
@@ -235,6 +269,11 @@
           if (now !== lastViewed) {
             lastViewed = now;
             e.reapplyViewedScene();
+          }
+          const nowLevel = ctx.viewedLevel;
+          if (nowLevel !== lastViewedLevel) {
+            lastViewedLevel = nowLevel;
+            e.reapplyViewedLevel();
           }
           const fp = ctx.footprints; // tracks the session's footprints $state
           if (fp !== lastFootprints) {
@@ -293,7 +332,13 @@
           e.setAnimation({ speedCellsPerSec: anim.speedCellsPerSec, easing: anim.easing });
         }
         const sceneTokens = documents.query("token").filter((t) => !vsid || t.parent_id === vsid);
-        host.dataset.tokenCount = String(sceneTokens.length);
+        // Level-scoped, mirroring `onDerivedApplied`'s own write of the same two attributes —
+        // both sites stay in sync so a level switch OR a document commit (e.g. a token's
+        // elevation moving it across the viewed level's boundary) updates them promptly.
+        host.dataset.level = ctx.viewedLevel ?? "";
+        host.dataset.tokenCount = String(
+          sceneScopedDocs(documents, "token", () => ctx.viewedSceneId, () => ctx.viewedLevel).length,
+        );
         // Read-only observability signal: each viewed-scene token's COMMITTED
         // `/engine/x,y` as `id:x,y`, id-sorted so the string is order-independent of
         // the store's iteration. Mirrors data-token-count/data-last-ping. Because the
@@ -499,7 +544,16 @@
   {#key antialiasBudget}
     <canvas bind:this={canvas} data-testid="stage-canvas"></canvas>
   {/key}
+  <LevelSwitcher
+    levels={viewedSceneLevels}
+    active={ctx.viewedLevel}
+    onSelect={(id) => ctx.setViewedLevel(id)}
+  />
   {#if role === "gm"}
+    <label class="ghost-toggle">
+      <input type="checkbox" data-testid="ghost-other-levels" bind:checked={ghostOtherLevels} />
+      {t("levels.ghostOtherLevels")}
+    </label>
     <select
       class="gm-view"
       data-testid="gm-view-select"
@@ -526,6 +580,21 @@
   }
   canvas {
     display: block;
+  }
+  .ghost-toggle {
+    position: absolute;
+    top: var(--space-2);
+    right: calc(var(--space-2) + 9rem);
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-1);
+    cursor: pointer;
   }
   .gm-view {
     position: absolute;

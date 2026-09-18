@@ -374,6 +374,14 @@ pub enum WriteOrigin {
     /// server-owned merge snapshot, refreshed whole-band to the template's
     /// current snapshot (`merge::plan::plan_to_update`'s emission contract).
     TemplateMerge,
+    /// Server-authored region-trigger write (condition/resource/chat-notice/
+    /// teleport effects applied by `ws::room::Room::fire_region_triggers`):
+    /// per-op capability gates are skipped; scope, size, engine, containment,
+    /// singleton, schema and OCC checks all run; never derivable from a wire
+    /// frame. Every trigger effect (`ConditionAdd`/`ConditionRemove`/
+    /// `ResourceDelta`/`ChatNotice`/`Teleport`) commits under this origin;
+    /// `CombatTransition` belongs to combat state transitions alone.
+    Trigger,
     /// Server-authored audio-transport write: per-op capability gates are skipped (the
     /// handler, `audio::transport::handle_transport`, already enforces GM-only before ever
     /// constructing an op); scope, size, engine, containment, singleton, schema and OCC
@@ -405,6 +413,7 @@ impl WriteOrigin {
                 | WriteOrigin::CombatTransition
                 | WriteOrigin::ConfigSeed
                 | WriteOrigin::TemplateMerge
+                | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
         )
     }
@@ -435,6 +444,7 @@ impl WriteOrigin {
             WriteOrigin::CombatTransition
                 | WriteOrigin::ConfigSeed
                 | WriteOrigin::TemplateMerge
+                | WriteOrigin::Trigger
                 | WriteOrigin::AudioTransport
         )
     }

@@ -105,6 +105,8 @@ export function setAppContextForTest(over: Partial<AppContext> = {}): Map<unknow
       setChatRead: () => {},
     },
     panels: over.panels ?? new PanelsBridge(silentLogger),
+    viewedLevel: over.viewedLevel ?? null,
+    setViewedLevel: over.setViewedLevel ?? (() => {}),
     audio: over.audio ?? {
       channels: {
         master: { gain: 1, muted: false },

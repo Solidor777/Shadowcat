@@ -665,3 +665,53 @@ async fn replayed_two_move_batch_cannot_form_a_cycle() {
     assert!(matches!(err, DataError::OpFailed(_)));
     assert_eq!(r.get_document(a.id).await.unwrap().unwrap().parent_id, None);
 }
+
+#[test]
+fn trigger_origin_is_server_authored_and_skips_capability_gates() {
+    assert!(WriteOrigin::Trigger.is_server_authored());
+    assert!(WriteOrigin::Trigger.skips_capability_gates());
+}
+
+#[tokio::test]
+async fn trigger_origin_moves_a_player_owned_token_past_the_gm_only_gate() {
+    // The exact regression the gate-predicate fix targets: the Move arm compared the origin
+    // literally against one variant and otherwise demanded a full-access GM, so a player-owned
+    // token could never be moved across scenes by a trusted trigger write.
+    let r = repo().await;
+    let (w, ctx) = gm_world(&r).await;
+    let scene_a = Uuid::from_u128(10);
+    let scene_b = Uuid::from_u128(11);
+    let token_id = Uuid::from_u128(12);
+    let player = r.create_user("p", None, ServerRole::User, 0).await.unwrap();
+    r.add_member(w, player, WorldRole::Player).await.unwrap();
+    let mut scene_a_doc = crate::data::document::tests::world_scoped_doc(w, scene_a, "scene");
+    scene_a_doc.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100.0 }, "background": null }));
+    let mut scene_b_doc = crate::data::document::tests::world_scoped_doc(w, scene_b, "scene");
+    scene_b_doc.engine = Some(serde_json::json!({
+        "grid": { "kind": "square", "size": 100.0 }, "background": null }));
+    let mut token = crate::data::document::tests::world_scoped_doc(w, token_id, "token");
+    token.parent_id = Some(scene_a);
+    token.owner = Some(player);
+    token.engine = Some(serde_json::json!({
+        "x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0, "rotation": 0.0 }));
+    create_all(&r, &ctx, w, &[scene_a_doc, scene_b_doc, token.clone()]).await;
+
+    // A PLAYER ctx — no GM role, no `all` grant — authors nothing here; the origin is what
+    // carries the write past the Move arm's capability gate (every other check still runs).
+    let p_ctx = PermissionContext {
+        user_id: player,
+        world_role: WorldRole::Player,
+    };
+    r.apply_intent(
+        &p_ctx,
+        w,
+        vec![move_op(token_id, Some(scene_b), Some(scene_a))],
+        50,
+        WriteOrigin::Trigger,
+    )
+    .await
+    .unwrap();
+    let moved = r.get_document(token_id).await.unwrap().unwrap();
+    assert_eq!(moved.parent_id, Some(scene_b));
+}

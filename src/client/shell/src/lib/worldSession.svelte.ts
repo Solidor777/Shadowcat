@@ -12,6 +12,9 @@ import {
   reconcileTopology,
   buildSceneDoc,
   resolveViewedScene,
+  levelOf,
+  type SceneEngine,
+  type TokenEngine,
   consoleLogger,
   resolveCaps,
   ownerFloorApplies,
@@ -70,6 +73,7 @@ import { SceneInteractionBridge, ActorSelection, TokenSelection, i18n, performan
 import { AudioEngine, DEFAULT_DUCK_DEPTH, setMediaElementFactory } from "@shadowcat/audio";
 import { SvelteMap, createSubscriber } from "svelte/reactivity";
 import { getWorldSnapshot } from "./api";
+import { getViewedLevel, setViewedLevel as persistViewedLevel } from "./sessionState.svelte";
 import { readAudioMirror, writeAudioMirror } from "./sessionState.svelte";
 
 /** The WS connection lifecycle a `WorldSession` exposes as its reactive `state`. */
@@ -81,6 +85,9 @@ export type ConnState = "connecting" | "open" | "closed";
 export interface SubscribeSceneOpts {
   /** GM-only see-as: resolve the channel as if for this user instead of self. */
   asUser?: string;
+  /** The level to scope explored-fog accumulation/emission to (`"vision"` channel only;
+   * ignored by every other channel) — forwarded to `WsClient.subscribeScene`'s own `level`. */
+  level?: string;
 }
 
 /** One `subscribeScene` record, keyed by a locally-generated id in `WorldSession.#sceneSubs`
@@ -92,6 +99,8 @@ interface SceneSubRecord {
   onUpdate: (f: SceneFrame) => void;
   /** GM-only see-as override, if this subscription used one. */
   asUser?: string;
+  /** The level this subscription is scoped to (`"vision"` channel only). */
+  level?: string;
   /** The currently-live WS handle, or `null` while (re-)establishing. */
   handle: SceneSubscription | null;
   /** Generation counter; bumped to invalidate a superseded establish attempt. */
@@ -257,6 +266,14 @@ export class WorldSession {
    * for the scene being ENTERED (empty if never selected there) — so roaming away and back
    * preserves a selection instead of leaking it across scenes or losing it. */
   #tokenSelectionByScene = new Map<string, Set<string>>();
+  /** GM per-scene viewed-level override (`sessionState`'s `viewedLevel` map), loaded lazily per
+   * scene on first read. Never set for a player (they follow `levelOf` of their primary token's
+   * elevation). A `SvelteMap`, not a plain `Map` wrapped in `$state` — `$state` only deep-proxies
+   * plain objects/arrays (`Map`'s prototype is neither), so an in-place `.set()` on a plain
+   * `$state<Map<...>>` is invisible to Svelte's reactivity; `SvelteMap` is the reactive built-in
+   * that makes a `$derived`/`$effect` reading `viewedLevel` (e.g. `LevelSwitcher`'s `active` prop)
+   * re-run after a `setViewedLevel` call. */
+  #gmViewedLevel = new SvelteMap<string, string | null>();
   /** The server's resolved token footprints, replaced wholesale by each `"footprints"` frame.
    * `$state` so every consumer — canvas reconcile, hit-test, the place tool —
    * re-reads the same authoritative extents the moment a frame lands. `EMPTY_FOOTPRINTS` until
@@ -429,6 +446,70 @@ export class WorldSession {
     // A roam carries no new server frame: re-apply the newly-viewed scene's slice from the
     // already-cached multi-scene payload immediately, rather than waiting for the next push.
     this.#audioEngine.applyAudibility(sceneAudibility(this.#audibilityPayload, entering));
+  }
+
+  /** The FIRST token (lowest `id`, for determinism) in `scene` whose `owner` equals `selfId` —
+   * an advisory, client-only read mirroring the server's `token_effective_owner` override-first
+   * rule at the shallow level; never authoritative. Used to derive a player's `viewedLevel` from
+   * their own token's elevation.
+   * @param scene The scene to search.
+   * @returns The resolved token document, or `null` if the caller owns none in `scene`.
+   * @example
+   * ```
+   * declare const scene: string;
+   * // called from the viewedLevel getter; not part of the public API
+   * this.#primaryTokenIn(scene);
+   * ```
+   */
+  #primaryTokenIn(scene: string): WireDocument | null {
+    const owned = this.#optimistic
+      .query("token")
+      .filter((t) => t.parent_id === scene && t.owner === this.selfId)
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    return owned[0] ?? null;
+  }
+
+  /** The level this client renders/subscribes to for the CURRENTLY viewed scene. A GM reads
+   * `#gmViewedLevel`'s stash for that scene (seeded from `getViewedLevel` on first access); a
+   * player follows `levelOf` of their primary token's elevation over the viewed scene's `levels`.
+   * `null` for a level-less scene.
+   * @returns The viewed level id, or `null`. */
+  get viewedLevel(): string | null {
+    const sceneId = this.viewedSceneId;
+    if (sceneId === null) return null;
+    const sceneDoc = this.#optimistic.query("scene").find((s) => s.id === sceneId);
+    const levels = (sceneDoc?.engine as SceneEngine | undefined)?.levels ?? [];
+    if (levels.length === 0) return null;
+    if (this.role === "gm") {
+      if (!this.#gmViewedLevel.has(sceneId)) {
+        this.#gmViewedLevel.set(sceneId, getViewedLevel(this.world ?? "", sceneId));
+      }
+      const stashed = this.#gmViewedLevel.get(sceneId) ?? null;
+      return levels.some((l) => l.id === stashed) ? stashed : (levels[0]?.id ?? null);
+    }
+    const primary = this.#primaryTokenIn(sceneId);
+    const elevation = primary ? ((primary.engine as TokenEngine | undefined)?.elevation ?? 0) : 0;
+    return levelOf(levels, elevation)?.id ?? null;
+  }
+
+  /** GM local viewed-level override for the current scene; ignored (warned) for a non-GM —
+   * a player instead follows their primary token's level.
+   * @param id The level to view, or `null` to clear to the scene's first level.
+   * @example
+   * ```
+   * declare const session: WorldSession;
+   * session.setViewedLevel("l2"); // GM only; no-op+warns for a player
+   * ```
+   */
+  setViewedLevel(id: string | null): void {
+    if (this.role !== "gm") {
+      this.#logger.warn("setViewedLevel ignored: caller is not a GM");
+      return;
+    }
+    const sceneId = this.viewedSceneId;
+    if (sceneId === null) return;
+    this.#gmViewedLevel.set(sceneId, id);
+    if (this.world) persistViewedLevel(this.world, sceneId, id);
   }
 
   /** Live full-text search over documents (subscription seam). Ephemeral: NOT re-established
@@ -1149,7 +1230,7 @@ export class WorldSession {
     opts: SubscribeSceneOpts = {},
   ): SceneSubscription {
     const id = crypto.randomUUID();
-    const rec = { channel, onUpdate, asUser: opts.asUser, handle: null as SceneSubscription | null, gen: 0 };
+    const rec = { channel, onUpdate, asUser: opts.asUser, level: opts.level, handle: null as SceneSubscription | null, gen: 0 };
     this.#sceneSubs.set(id, rec);
     this.#establishScene(id, rec);
     return {
@@ -1181,7 +1262,7 @@ export class WorldSession {
     if (!ws) return;
     const gen = ++rec.gen; // this attempt's generation
     void ws
-      .subscribeScene(rec.channel, rec.onUpdate, { asUser: rec.asUser })
+      .subscribeScene(rec.channel, rec.onUpdate, { asUser: rec.asUser, level: rec.level })
       .then((h) => {
         // Keep the handle only if this record is still active AND this is still the
         // latest establish attempt; a superseded attempt (re-establish on a new

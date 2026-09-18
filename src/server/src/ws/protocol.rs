@@ -111,6 +111,12 @@ pub enum ClientMsg {
         #[serde(default)]
         #[ts(optional)]
         as_user: Option<Uuid>,
+        /// The level to scope explored-fog accumulation/emission to (`None` ⇒ implicit ground,
+        /// `""` on the wire's internal representation — see `enrich_vision_explored`).
+        /// Consulted only for the `"vision"` channel; ignored by every other channel.
+        #[serde(default)]
+        #[ts(optional)]
+        level: Option<String>,
     },
     /// Cancel a derived subscription by request id.
     SceneUnsubscribe {

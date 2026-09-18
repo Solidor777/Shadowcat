@@ -396,6 +396,17 @@ describe("PixiBackend.updateTokenFx", () => {
     expect(h[14]).toBeCloseTo(0); // blue channel of 0xffd400
   });
 
+  test("alpha scales only the alpha-row diagonal, leaving R/G/B rows identity", () => {
+    const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
+    const node = backend.createTokenNode("t1");
+    backend.updateTokenFx(node, { ...base, visual: imageVisual, fx: [{ kind: "alpha", strength: 0.3 }] });
+    const m = node.fx!.matrix;
+    expect(m[0]).toBeCloseTo(1); // red row: identity
+    expect(m[6]).toBeCloseTo(1); // green row: identity
+    expect(m[12]).toBeCloseTo(1); // blue row: identity
+    expect(m[18]).toBeCloseTo(0.3); // alpha row: scaled by strength
+  });
+
   test("later entries transform the output of earlier ones (array order)", () => {
     const backend = headlessBackend() as unknown as PixiBackendTokenInternals;
     const node = backend.createTokenNode("t1");

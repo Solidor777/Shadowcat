@@ -1,20 +1,40 @@
 import { test, expect } from "vitest";
-import { DocumentStore, type WireDocument, type WireOperation } from "@shadowcat/core";
+import { DocumentStore, buildSceneDoc, type WireDocument, type WireOperation } from "@shadowcat/core";
 import { MockBackend, TemplateView } from "./index";
 
-function tmplDoc(id: string, shape: Record<string, unknown>): WireDocument {
+function tmplDoc(
+  id: string,
+  shape: Record<string, unknown>,
+  elevation: { bottom: number | null; top: number | null } | null = null,
+): WireDocument {
   return {
     id, scope: { kind: "world", world_id: "w1" }, doc_type: "template", schema_version: 1,
     name: null, source: null, owner: null,
     permissions: { default: "observer", users: {}, property_overrides: {}, capabilities: { by_role: {}, by_user: {} }, gm_role: null },
     embedded: {}, parent_id: "s1",
-    engine: { shape, color: "#3388ff" },
+    engine: { shape, color: "#3388ff", elevation },
     system: {},
     created_at: 0, updated_at: 0,
   };
 }
 const cmd = (seq: number, ops: WireOperation[]) => ({ seq, world_id: "w1", author: "a", ts: 0, ops });
 const dist = (x: number, y: number, cx = 0, cy = 0): number => Math.hypot(x - cx, y - cy);
+
+test("a viewedLevel function scopes reconcile() to that level's band", () => {
+  const store = new DocumentStore();
+  const backend = new MockBackend();
+  const scene = buildSceneDoc(
+    "w1",
+    { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+    "s1",
+  );
+  const ground = tmplDoc("t-ground", { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, { bottom: 0, top: 9 });
+  const upper = tmplDoc("t-upper", { kind: "circle", x: 0, y: 0, size: 10, direction: 0 }, { bottom: 10, top: 20 });
+  store.applyCommand(cmd(1, [{ op: "create", doc: scene }, { op: "create", doc: ground }, { op: "create", doc: upper }]));
+  new TemplateView(store, backend, () => "s1", () => "l1").reconcile();
+  expect(backend.shapes.has("t-ground")).toBe(true);
+  expect(backend.shapes.has("t-upper")).toBe(false);
+});
 
 test("a circle template renders a closed translucent disc", () => {
   const store = new DocumentStore();

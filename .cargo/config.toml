@@ -19,3 +19,24 @@
 # nothing therefore sets `CARGO_BUILD_JOBS` to its own width and ignores this file.
 [build]
 jobs = 12
+
+# Repo-scoped TEST-RUNNER CPU budget — a separate knob from `[build] jobs` above, which only
+# bounds compilation. `cargo test --all --doc` compiles ~873 tiny doctest binaries then RUNS them
+# with libtest's own default thread count (unbounded, typically num_cpus) — on this 24-core
+# shared desktop that means dozens of doctest processes contending for CPU simultaneously.
+# Measured: `sandbox::runtime::run_validator`'s doctest — which exercises the PRODUCTION
+# `HANG_GUARD` (250ms; deliberately tight, a real security budget for third-party WASM code, not
+# a value this file should loosen) around a `tokio::spawn_blocking` call — spuriously fails as
+# `Fault(Hung)` under full default-thread-count doctest concurrency, because `spawn_blocking`'s
+# OWN scheduling latency (not the WASM call itself, which completes in low single-digit
+# milliseconds) can exceed 250ms when dozens of sibling doctest processes are all contending for
+# the same cores. The doctest passes reliably in isolation and at a bounded thread count; this is
+# host contention, not a code defect, and the fix belongs here (bound the test runner's own
+# concurrency) rather than in the sandbox module (loosening its real security timeout to
+# accommodate a crowded test run would trade a genuine guarantee for local convenience).
+# Rust's libtest reads `RUST_TEST_THREADS` for both unit tests and doctests; unlike
+# `CARGO_BUILD_JOBS`, cargo has no dedicated test-thread-count field, so this repo sets the
+# environment variable libtest itself honors. As with `CARGO_BUILD_JOBS`, any invocation may
+# override this by setting `RUST_TEST_THREADS` itself before running cargo.
+[env]
+RUST_TEST_THREADS = "4"

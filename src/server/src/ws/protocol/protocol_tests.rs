@@ -255,6 +255,7 @@ fn scene_frames_round_trip() {
         request_id: Uuid::from_u128(1),
         channel: "identity".into(),
         as_user: None,
+        level: None,
     };
     let j = serde_json::to_value(&sub).unwrap();
     assert_eq!(j["type"], "scene_subscribe");

@@ -67,6 +67,9 @@ export type SubscribeScene = (
   opts?: {
     /** GM-only see-as-player: view the channel as this user id. */
     asUser?: string;
+    /** The level to scope explored-fog accumulation/emission to (`"vision"` channel only;
+     * ignored by every other channel). */
+    level?: string;
   },
 ) => SceneSubscription;
 
@@ -104,6 +107,10 @@ export interface RenderEngineOpts {
   /** Which scene to render/scene-filter by. From the host (Stage → `ctx.viewedSceneId`).
    * Absent ⇒ the first scene, preserving single-scene behavior. */
   viewedSceneId?: () => string | null;
+  /** Which level (of the viewed scene) to additionally scope by. From the host (Stage →
+   * `ctx.viewedLevel`). Absent ⇒ every level, preserving pre-levels behavior. Also threaded
+   * into the `"vision"` subscription's `level` option — see {@link RenderEngine.reapplyViewedLevel}. */
+  viewedLevel?: () => string | null;
   /** The server's resolved token footprints (Stage → `ctx.footprints`). The engine computes no
    * footprint geometry: `TokenView` reads the extent from here. Absent ⇒ `EMPTY_FOOTPRINTS`, under
    * which every token draws at its document's own authored `w`/`h`. */
@@ -113,6 +120,12 @@ export interface RenderEngineOpts {
    * selection change carries no store commit, so the host must call
    * {@link RenderEngine.reapplyTokenSelection} to re-project. */
   selectedTokens?: () => ReadonlySet<string>;
+  /** The GM-only ghost-other-levels toggle (Stage → a local `$state<boolean>`, gated on
+   * `ctx.role === "gm"` at the control itself — this option only forwards it). Absent/`() =>
+   * false` ⇒ today's behavior: `TokenView.reconcile` scopes strictly to `viewedLevel`, an
+   * other-level token is absent entirely. `true` additionally renders every other-level token
+   * on the viewed scene, ghosted (`TokenView`'s `GHOST_FX`). */
+  ghostOtherLevels?: () => boolean;
   /** Resolves an asset id to its playable VFX source (the host's tag/derived-sheet lookup
    * through `@shadowcat/core`'s `resolveVfxSource`) — the render package stays resolver-free
    * for VFX exactly as it already is for token art. Absent ⇒ every VFX node fails closed (no
@@ -322,6 +335,16 @@ export class RenderEngine implements SceneToolHost {
    */
   private readonly viewedScene = (): string | null =>
     this.opts.viewedSceneId?.() ?? this.opts.store.query("scene")[0]?.id ?? null;
+  /** Resolved viewed level, falling back to `null` (every level) so pre-levels tests/hosts are
+   * unaffected. The single definition every level-scoped view reads.
+   * @returns The viewed level id, or `null` for every level.
+   * @example
+   * ```
+   * // private field; not part of the public API
+   * const levelId = this.viewedLevel();
+   * ```
+   */
+  private readonly viewedLevel = (): string | null => this.opts.viewedLevel?.() ?? null;
   /** Resolves the live per-device performance budget. Absent `opts.performance` ⇒
    * `PRESETS.quality` with `idleSkip: false` (legacy/test callers keep today's unconditional
    * per-tick render).
@@ -377,12 +400,13 @@ export class RenderEngine implements SceneToolHost {
     this.grid = new Grid(opts.grid);
     this.gridColor = opts.gridColor ?? 0x3a3a4a;
     this.reconciler = new SceneReconciler(opts.store, opts.assets, this.backend, this.viewedScene);
-    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => this.perf().tokenFx, () => this.perf().reducedMotion);
+    this.tokens = new TokenView(opts.store, opts.assets, this.backend, this.viewedScene, this.viewedLevel, () => opts.footprints?.() ?? EMPTY_FOOTPRINTS, () => this.perceived, opts.selectedTokens, () => opts.ghostOtherLevels?.() ?? false, () => this.perf().tokenFx, () => this.perf().reducedMotion);
     this.tokens.setWorldUnitsPerCell(this.grid.worldUnitsPerCell());
     this.vfxView = new VfxView(
       opts.store,
       this.backend,
       this.viewedScene,
+      this.viewedLevel,
       (id) => opts.vfxAssets?.(id) ?? null,
       (id) => this.tokens.transformOf(id),
       (id) => this.tokens.specOf(id),
@@ -391,11 +415,11 @@ export class RenderEngine implements SceneToolHost {
       () => this.perf().vfx,
       () => this.perf().reducedMotion,
     );
-    this.drawings = new DrawingView(opts.store, this.backend, this.viewedScene);
-    this.templates = new TemplateView(opts.store, this.backend, this.viewedScene);
-    this.walls = new WallView(opts.store, this.backend, this.viewedScene);
-    this.regions = new RegionView(opts.store, this.backend, this.viewedScene);
-    this.lights = new LightView(opts.store, this.backend, this.viewedScene);
+    this.drawings = new DrawingView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
+    this.templates = new TemplateView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
+    this.walls = new WallView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
+    this.regions = new RegionView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
+    this.lights = new LightView(opts.store, this.backend, this.viewedScene, this.viewedLevel);
     this.compositor = new Compositor(this.backend);
     this.lighting = new Lighting(this.backend, (frame) => opts.onLightingApplied?.(frame, this.lightSweeps.size > 0));
   }
@@ -553,11 +577,39 @@ export class RenderEngine implements SceneToolHost {
   private subscribeVision(): void {
     if (!this.opts.subscribeScene) return;
     this.sceneSub?.unsubscribe();
+    const level = this.viewedLevel();
+    const subOpts = {
+      ...(this.viewAsUser ? { asUser: this.viewAsUser } : {}),
+      ...(level !== null ? { level } : {}),
+    };
     this.sceneSub = this.opts.subscribeScene(
       "vision",
       (f) => this.onSceneFrame(f),
-      this.viewAsUser ? { asUser: this.viewAsUser } : undefined,
+      Object.keys(subOpts).length > 0 ? subOpts : undefined,
     );
+  }
+
+  /** Re-establishes the `"vision"` subscription with the current {@link RenderEngineOpts.viewedLevel}
+   * — unlike a scene switch (`reapplyViewedScene`), a level change alters what the SERVER
+   * computes for explored-fog accumulation/emission, so the wire subscription itself must
+   * re-issue, not merely re-filter a cached payload. Resets the mask watermark first, mirroring
+   * {@link setViewAsUser}: a level switch is a fresh stream whose first frame must apply even at
+   * an unchanged world seq — without the reset, `onSceneFrame` can drop that first frame as a
+   * stale duplicate (`computedAtSeq <= lastAppliedSeq`), leaving the previous level's vision/fog
+   * rendered until an unrelated mutation eventually bumps the seq. Call this whenever the host's
+   * viewed level changes (Stage's reactive effect on `ctx.viewedLevel`).
+   * @example
+   * ```ts
+   * import type { RenderEngine } from "@shadowcat/render";
+   *
+   * declare const engine: RenderEngine;
+   * engine.reapplyViewedLevel();
+   * ```
+   */
+  reapplyViewedLevel(): void {
+    this.lastAppliedSeq = -1;
+    this.pendingDerived = null;
+    this.subscribeVision();
   }
 
   /** GM see-as-player: re-subscribe the vision channel viewing as `userId` (null = the GM's
@@ -842,6 +894,10 @@ export class RenderEngine implements SceneToolHost {
           polygons?: {
             /** The scene id this polygon group belongs to — filtered against the active scene. */
             scene?: string;
+            /** The level id this polygon group's source occupies (`""` = ground/a level-less
+             * scene) — filtered against {@link viewedLevel} so a source on another floor of
+             * the same scene cannot punch a fog hole on this one. */
+            level?: string;
             /** Flat `[x0,y0,x1,y1,…]` polygon points. */
             points?: number[];
           }[];
@@ -868,15 +924,23 @@ export class RenderEngine implements SceneToolHost {
     // Garbled/missing/unknown mode → full fog. Only a well-formed `masked` payload reveals.
     if (p?.mode !== "masked") return { mode: "masked", visible: [], explored: [], perceived: [] };
     const activeScene = this.viewedScene();
+    const activeLevel = this.viewedLevel() ?? "";
     const polygons = Array.isArray(p.polygons) ? p.polygons : [];
     const visible = polygons
       .filter(
         (g): g is {
           /** The scene id this polygon group belongs to. */
           scene?: string;
+          /** The level id this polygon group's source occupies. */
+          level?: string;
           /** Flat `[x0,y0,x1,y1,…]` polygon points (validated `>= 6`, i.e. ≥3 vertices). */
           points: number[];
-        } => !!g && g.scene === activeScene && Array.isArray(g.points) && g.points.length >= 6,
+        } =>
+          !!g &&
+          g.scene === activeScene &&
+          (g.level ?? "") === activeLevel &&
+          Array.isArray(g.points) &&
+          g.points.length >= 6,
       )
       .map((g) => ({ points: g.points }));
     // `explored` is the dimmed memory layer: scene-tagged cell sets rasterized to rect polygons,
@@ -950,6 +1014,9 @@ export class RenderEngine implements SceneToolHost {
       lit?: {
         /** The scene id this cell group belongs to. */
         scene?: string;
+        /** The level id this cell group's source occupies (`""` = ground/a level-less scene) —
+         * filtered against {@link viewedLevel}, mirroring `toVisibility`'s `polygons` filter. */
+        level?: string;
         /** World-unit length of one cell's edge. */
         cell?: number;
         /** Flat `[i,j,band,tint,hint,…]` 5-int cell tuples — see `LitCell`. */
@@ -958,15 +1025,24 @@ export class RenderEngine implements SceneToolHost {
     } | null | undefined;
     if (p?.mode !== "masked" || !Array.isArray(p.lit)) return null;
     const activeScene = this.viewedScene();
+    const activeLevel = this.viewedLevel() ?? "";
     const group = p.lit.find(
       (g): g is {
         /** The scene id this cell group belongs to. */
         scene?: string;
+        /** The level id this cell group's source occupies. */
+        level?: string;
         /** World-unit length of one cell's edge. */
         cell: number;
         /** Flat `[i,j,band,tint,hint,…]` 5-int cell tuples. */
         cells: number[];
-      } => !!g && g.scene === activeScene && typeof g.cell === "number" && g.cell > 0 && Array.isArray(g.cells),
+      } =>
+        !!g &&
+        g.scene === activeScene &&
+        (g.level ?? "") === activeLevel &&
+        typeof g.cell === "number" &&
+        g.cell > 0 &&
+        Array.isArray(g.cells),
     );
     if (!group) return null;
     const cells: LitCell[] = [];

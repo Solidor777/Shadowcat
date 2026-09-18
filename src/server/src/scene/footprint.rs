@@ -132,15 +132,16 @@ pub struct FootprintExtent {
 /// ```
 /// use shadowcat::scene::footprint::{FootprintExtent, TokenFootprint};
 ///
-/// let refused = TokenFootprint { token: uuid::Uuid::nil(), extent: None };
+/// let refused = TokenFootprint { token: uuid::Uuid::nil(), extent: None, level: None };
 /// let sized = TokenFootprint {
 ///     token: uuid::Uuid::nil(),
 ///     extent: Some(FootprintExtent { w: 1.0, h: 1.0 }),
+///     level: None,
 /// };
 /// assert!(refused.extent.is_none());
 /// assert!(sized.extent.is_some());
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../types/generated/")]
 pub struct TokenFootprint {
     /// The token document this extent belongs to.
@@ -152,6 +153,11 @@ pub struct TokenFootprint {
     /// grant passage runs server-side off the radius, where the identical refusal blocks the move
     /// outright.
     pub extent: Option<FootprintExtent>,
+    /// The token's resolved level id (`elevation::level_of` over the scene's declared levels at
+    /// the token's stored elevation), `None` for ground/a level-less scene — lets the client
+    /// scope by level without re-deriving it from elevation.
+    #[serde(default)]
+    pub level: Option<String>,
 }
 
 /// Every resolved token extent in one scene, plus that scene's unit footprint.

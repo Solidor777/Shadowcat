@@ -1167,7 +1167,7 @@ async fn import_world_round_trips_every_table_through_a_real_tar_bundle() {
     src.set_asset_tags(asset_id, &["hero-token".to_string()], &[])
         .await
         .unwrap();
-    src.set_explored(w.id, doc.id, owner, &[1, 2, 3])
+    src.set_explored(w.id, doc.id, "", owner, &[1, 2, 3])
         .await
         .unwrap();
     // A genuine `settings` row (world capability defaults, same storage
@@ -1483,7 +1483,7 @@ async fn import_world_drops_fog_row_when_username_unresolvable() {
         .await
         .unwrap();
     drop(conn);
-    src.set_explored(w.id, scene.id, rememberer, &[9, 9, 9])
+    src.set_explored(w.id, scene.id, "", rememberer, &[9, 9, 9])
         .await
         .unwrap();
 

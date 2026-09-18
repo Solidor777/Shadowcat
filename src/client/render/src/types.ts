@@ -199,6 +199,14 @@ export type TokenFx =
       color: number;
       /** Blend amount, `[0,1]`: `0` = no effect, `1` = the art replaced by `color`. */
       strength: number;
+    }
+  | {
+      /** Discriminant: scale the art's overall opacity by `strength`, composed into the SAME
+       * `ColorMatrixFilter` as the other fx entries (the matrix's alpha row) — no separate
+       * `container.alpha` mechanism. Produced by `TokenView`'s ghost-other-levels rendering. */
+      kind: "alpha";
+      /** Opacity multiplier, `[0,1]`: `0` = fully transparent, `1` = no effect. */
+      strength: number;
     };
 
 /** A resolved token render node: transform + size + resolved visual + faction border +

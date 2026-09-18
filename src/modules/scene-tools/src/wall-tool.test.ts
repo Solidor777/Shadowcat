@@ -9,7 +9,7 @@ import { ToolController, makeWallTool, type ToolContext } from "./controller.sve
 
 const ev = {} as PointerEvent;
 
-function setup(withScene = true) {
+function setup(withScene = true, viewedLevelBand?: () => { bottom: number; top: number } | null) {
   const docs = new DocumentStore();
   if (withScene) docs.applyCommand({ seq: 1, world_id: "w1", author: "a", ts: 0, ops: [{ op: "create", doc: buildSceneDoc("w1", {}, "scene-1") }] });
   let previews = 0;
@@ -17,7 +17,7 @@ function setup(withScene = true) {
   const bridge = new SceneInteractionBridge();
   bridge.attach(fakeSceneHost({ previewOverlay: () => { previews++; }, clearOverlay: () => { cleared++; } }));
   const sent: WireOperation[][] = [];
-  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k };
+  const ctx: ToolContext = { scene: bridge, dispatchIntent: (ops) => sent.push(ops), documents: docs, assets: new AssetResolver(), world: "w1", role: "gm", sendPing: () => {}, t: (k) => k, viewedLevelBand };
   // Construct the controller so the tool is wired the same way the rail builds it.
   void new ToolController(ctx);
   return { tool: makeWallTool(ctx), sent, previews: () => previews, clears: () => cleared };
@@ -47,4 +47,20 @@ test("a no-extent click persists no wall; no active scene is unhandled", () => {
 
   const b = setup(false);
   expect(b.tool.onPointerDown({ x: 0, y: 0 }, ev)).toBe(false);
+});
+
+test("with viewedLevelBand set, a new wall's engine body carries the expected elevation", () => {
+  const { tool, sent } = setup(true, () => ({ bottom: 10, top: 20 }));
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 50 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: { bottom: 10, top: 20 } });
+});
+
+test("with viewedLevelBand unset, a new wall's engine body's elevation stays null", () => {
+  const { tool, sent } = setup(true);
+  tool.onPointerDown({ x: 0, y: 0 }, ev);
+  tool.onPointerUp({ x: 100, y: 50 }, ev);
+  const op = sent[0][0];
+  if (op.op === "create") expect(op.doc.engine).toMatchObject({ elevation: null });
 });

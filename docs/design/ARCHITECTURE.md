@@ -77,7 +77,7 @@ Each item is *designed for* now (the seam exists) and *built* only when its trig
 | Animated-WebP encoding | the image pipeline (`data::asset::process`: `image` 0.25 + `webp`/libwebp, realized in M15a — WebP canonical, retained original, thumb/preview derivatives; animations and non-images stored pass-through) | Phase 3 (animation). |
 | Asset browser UI (M15b) | the M15a query/mutation routes (`GET /api/worlds/{world}/assets` filters + keyset pages, `PATCH`/bulk/reconvert/original, `asset_folder` documents, `DELETE /api/asset-folders/{id}`) + the trigger-maintained `assets_fts` behind the route's `q` parameter (M21) | Phase 2 (M15b). |
 | 3D dice | dice engine + a rendering-context decision | Phase 3. Decide up front: reuse the PixiJS WebGL context vs a separate three.js/WebGL + physics layer. |
-| ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), post-processing, photometric lighting, advanced vision modes, multi-level maps/portals | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
+| ~~VFX~~ (built: server-derived grid sheets, a `vfx` core layer, per-token emitters + room-wide one-shots, the `/fx` command), ~~multi-level maps/portals~~ (built: `SceneLevel`/`ElevationBand`, `TriggerEffect::Teleport`, per-level vision/movement/render scoping), post-processing, photometric lighting, advanced vision modes | render-layer abstraction; ECS components | Phase 2–3, after the gameplay loop is proven. |
 | Undo/redo UI | undoable mutation boundary (invariant 8) | When users need it; no engine change required. |
 | Module registry / signing / SRI / CSP | local trusted-module loading | Same marketplace trigger. |
 | Compression (app-level `zstd`), content hashing (blake3, differential sync) | — | When profiling shows storage/transfer cost matters. |
@@ -169,6 +169,6 @@ Rendering and visibility techniques (raycast visibility polygons, fog of war, il
 
 ## 8. Settled & open items
 
-**Settled:** source layout is under `src/` (see §1); v1 accounts are admin-provisioned, no self-registration/email (see §3). The empty `source/` directory is renamed to `src/` at M1.
+**Settled:** source layout is under `src/` (see §1); v1 accounts are admin-provisioned, no self-registration/email (see §3). The empty `source/` directory is renamed to `src/` at M1. Multi-level maps are elevation-banded, not a separate scene-per-floor model: a scene declares `SceneEngine.levels` (each an `[bottom, top)` elevation band), `scene::elevation::band_contains`/`level_of` resolve band-shaped documents (walls/regions/drawings/templates) and point-elevation documents (tokens/lights) to a floor identically client- and server-side, and portals between floors (same-scene or cross-scene) are a region-trigger effect (`TriggerEffect::Teleport`) rather than a bespoke door/stair primitive — see `docs/HISTORY.md`'s M25 entry for the full delivered shape.
 
 - **Per-milestone feature boundaries** are finalized in implementation plans, not here.

@@ -308,6 +308,9 @@ export interface WsSubscribeSceneOptions {
   /** GM-only see-as-player override; sent as `as_user` only when set (the server gates and
    * resolves it — an unauthorized value is the server's rejection to make). */
   asUser?: string;
+  /** The level to scope explored-fog accumulation/emission to (`"vision"` channel only; ignored
+   * by every other channel — see `SceneSubscribe.level`); sent as `level` only when set. */
+  level?: string;
 }
 
 /** Options for `WsClient.sendChatMessage` and `ChatApi.send` — both post a chat message over
@@ -1402,8 +1405,15 @@ export class WsClient {
         reject(new Error("scene subscribe timeout"));
       }, timeoutMs);
       this.scenePending.set(request_id, { resolve, reject, timer });
-      // `as_user` (GM-only see-as-player) is omitted unless set; the server gates + resolves it.
-      this.send({ type: "scene_subscribe", request_id, channel, ...(opts.asUser ? { as_user: opts.asUser } : {}) });
+      // `as_user` (GM-only see-as-player) and `level` are omitted unless set; the server
+      // gates/resolves `as_user` and defaults `level` to implicit ground.
+      this.send({
+        type: "scene_subscribe",
+        request_id,
+        channel,
+        ...(opts.asUser ? { as_user: opts.asUser } : {}),
+        ...(opts.level !== undefined ? { level: opts.level } : {}),
+      });
     });
   }
 

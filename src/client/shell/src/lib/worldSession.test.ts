@@ -23,6 +23,8 @@ import {
 import { WorldSession } from "./worldSession.svelte";
 import { listWorldMembers, CombatClientError } from "@shadowcat/core";
 import { getWorldSnapshot } from "./api";
+import { getViewedLevel } from "./sessionState.svelte";
+import { reactiveRead } from "./__testHelpers__/reactivityProbe.svelte";
 
 // The snapshot-bootstrap fetch hits the network on every enter(); stub it (safe default: no
 // documents, seq 0) so the 25+ existing Welcome-flow tests below are unaffected, alongside the
@@ -831,7 +833,7 @@ test("the session subscribes to footprints itself and publishes each frame's res
     computed_at_seq: 0,
     payload: {
       scenes: [
-        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 } }] },
+        { scene: "scene-1", unit: { w: 173.2, h: 200 }, tokens: [{ token: "tok1", extent: { w: 346.4, h: 400 }, level: null }] },
       ],
     },
   });
@@ -1084,6 +1086,99 @@ test("viewedSceneId: player follows activeScene, else the first scene", async ()
 
   session.dispatchIntent([{ op: "create", doc: buildWorldSettingsDoc("w1", { ...structuredClone(DEFAULT_WORLD_SETTINGS), activeScene: "s1" }) }]);
   expect(session.viewedSceneId).toBe("s1"); // follows activeScene
+});
+
+test("viewedLevel is null for a level-less scene", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // player
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  session.dispatchIntent([{ op: "create", doc: buildSceneDoc("w1", {}, "s0") }]);
+  expect(session.viewedLevel).toBeNull();
+});
+
+test("viewedLevel: a GM defaults to the scene's first level and persists a change", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+
+  session.dispatchIntent([{
+    op: "create",
+    doc: buildSceneDoc(
+      "w1",
+      { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+      "s0",
+    ),
+  }]);
+  expect(session.viewedLevel).toBe("l1"); // defaults to the first level
+
+  session.setViewedLevel("l2");
+  expect(session.viewedLevel).toBe("l2");
+  expect(getViewedLevel("w1", "s0")).toBe("l2"); // persisted
+});
+
+test("viewedLevel: a GM's setViewedLevel is observable through Svelte reactivity, not just a direct getter read", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const gmFrame = { ...welcomeFrame, user_role: "gm" };
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(gmFrame);
+  await vi.waitFor(() => expect(session.role).toBe("gm"));
+
+  // A scene id distinct from the sibling test's "s0" — `sessionState`'s persisted `viewedLevel`
+  // map is module-global, and the sibling test above persists "s0" as "l2" already, which would
+  // otherwise leak in as this session's seeded default on first read.
+  session.dispatchIntent([{
+    op: "create",
+    doc: buildSceneDoc(
+      "w1",
+      { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+      "sReactivity",
+    ),
+  }]);
+
+  // `LevelSwitcher`'s `active={ctx.viewedLevel}` prop binding is a $derived-like reactive read —
+  // a plain direct getter call (as the test above does) cannot tell a correctly-reactive source
+  // from one whose mutation is invisible to Svelte (the exact `$state(new Map())` gotcha).
+  const { before, after } = reactiveRead(
+    () => session.viewedLevel,
+    () => session.setViewedLevel("l2"),
+  );
+  expect(before).toBe("l1");
+  expect(after).toBe("l2");
+});
+
+test("viewedLevel: a player tracks their primary token's elevation, no explicit call needed", async () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const { connect, push } = pushConnect(sent);
+  const session = new WorldSession({ selfId: "u1", connect, modules: [coreUiStub], logger: silentLogger });
+  await session.enter("w1");
+  push(welcomeFrame); // player
+  await vi.waitFor(() => expect(session.role).toBe("player"));
+
+  session.dispatchIntent([{
+    op: "create",
+    doc: buildSceneDoc(
+      "w1",
+      { levels: [{ id: "l1", name: "Ground", bottom: 0, top: 10, background: null }, { id: "l2", name: "Upper", bottom: 10, top: 20, background: null }] },
+      "s0",
+    ),
+  }]);
+  const token = buildTokenDoc("w1", "s0", { x: 0, y: 0, w: 100, h: 100, rotation: 0, visual: { kind: "image", asset: "a" }, actor_id: null, overrides: null, face: null, elevation: 0 }, "tok1");
+  token.owner = "u1";
+  session.dispatchIntent([{ op: "create", doc: token }]);
+  expect(session.viewedLevel).toBe("l1");
+
+  session.dispatchIntent([{ op: "update", doc_id: "tok1", changes: [{ path: "/engine/elevation", old: 0, new: 15, remove: false }] }]);
+  expect(session.viewedLevel).toBe("l2"); // follows the token through the band change, no setViewedLevel call
 });
 
 test("setGmViewedScene overrides only for a GM; a player call is ignored", async () => {

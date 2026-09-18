@@ -13,6 +13,7 @@ fn bare_scene() -> SceneEngine {
         vision: None,
         lighting: None,
         combat: None,
+        levels: Vec::new(),
         ambience: None,
     }
 }
