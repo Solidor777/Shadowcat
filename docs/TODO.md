@@ -26,6 +26,18 @@ capability already exists — but are deferred as out-of-scope-for-now work.
   through any UI affordance. Orthogonal to the width-containment fix (`docs/CLOSED_BUGS.md`):
   giving `FakeEngine` its own menu is future work if a bespoke-fallback caller needs it.
 
+## Actionable now — e2e context-seeding consistency
+- TODO: `levels.spec.ts` and `audio.spec.ts` construct their player browser context via a bare
+  `browser.newContext(...)` instead of the shared `newE2EContext` helper (`fixtures.ts`), which is
+  the one place `seedPerformanceMirror` applies — every other dual-session spec uses it. Neither
+  spec currently asserts on anything gated by `AppContext.performance` (levels checks scene/
+  teleport geometry, audio checks server-authoritative playback state and role-gated UI), so this
+  is not a live bug — CI is green on main with both as-is. It is a latent landmine: if either
+  spec's scope grows to cover a performance-gated feature (dice3d, vfx, spatialAudio,
+  reducedMotion, fpsCap) on the player side, it will silently read `hardwareConcurrency<=4` on
+  CI's runners and fail the same way `dice-3d.spec.ts` did. Switch both to `newE2EContext` for
+  consistency with the rest of the suite.
+
 ## Actionable now — Kimi Code parity is written but never installed
 - TODO: The skill/agent source moved to the standalone `shadowcat-codebase` plugin repo
   (`github.com/Solidor777/shadowcat-codebase`); this item now targets
