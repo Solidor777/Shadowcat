@@ -7,6 +7,19 @@ unblocking condition, not a "someday maybe." A few headings are explicitly
 labeled "Actionable now": these are NOT blocked on anything — the underlying
 capability already exists — but are deferred as out-of-scope-for-now work.
 
+## Blocked on verifying `--no-experimental-webstorage` against CI's pinned Node version
+- TODO: `pnpm -r test` fails locally on Node 25.3.0+ with `TypeError: localStorage.clear is not
+  a function` in any package whose tests call `localStorage` directly (e.g.
+  `dice-3d`'s `settings.test.ts`) — Node's own native `localStorage`/`sessionStorage` globals
+  (unflagged by default starting some Node 24/25 release) collide with jsdom's own
+  implementation of the same globals. CI is unaffected (pinned to Node 22, which does not inject
+  the native globals unflagged). The working per-invocation fix is
+  `NODE_OPTIONS=--no-experimental-webstorage pnpm -r test` (or `gate:push`/`gate:commit`), but a
+  permanent repo-tracked fix (root `.npmrc`'s `node-options`) risks breaking CI's Node 22 run if
+  that flag isn't recognized there — unverified. Confirm compatibility with CI's exact Node 22.x
+  patch version before adding it to a tracked config file; until then this stays a manual
+  per-invocation env var on any local machine running a newer Node.
+
 ## Blocked on real pointer-gesture QA (unsimulable under jsdom)
 - TODO: `DockviewEngine#toDropSite`'s one remaining fallback branch (a drop's target group
   falling outside the engine's own zone bookkeeping) is a best-effort approximation (falls back
